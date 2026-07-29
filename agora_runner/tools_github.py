@@ -1,0 +1,199 @@
+"""github_read (read-only gh) and create_pr/merge_pr (real GitHub writes via the bot account)."""
+
+import base64
+import json
+import os
+import subprocess
+import urllib.parse
+
+from agora_runner.config import GITHUB_READONLY_TOKEN, GITHUB_BOT_TOKEN, GITHUB_ORG
+from agora_runner.log import log, debug_log
+from agora_runner.http_util import http_json
+
+
+GITHUB_ALLOWED_SUBCOMMANDS = {
+    "issue": {"list", "view"},
+    "pr": {"list", "view", "diff", "checks"},
+    "repo": {"view", "list"},
+    "run": {"list", "view"},
+    "workflow": {"list", "view"},
+    "release": {"list", "view"},
+    "api": {"GET"},  # subcommand here is the request method, enforced GET-only below
+}
+GITHUB_FORBIDDEN_FLAG_PREFIXES = ("--method", "-x", "--input")
+
+
+def github_read(args):
+    if not isinstance(args, dict):
+        return "[gh: invalid arguments]"
+    command = str(args.get("command", "")).strip().lower()
+    sub = str(args.get("subcommand", "")).strip()
+    extra = args.get("args") or []
+    if command not in GITHUB_ALLOWED_SUBCOMMANDS:
+        return f"[gh: command {command!r} not allowed -- only {sorted(GITHUB_ALLOWED_SUBCOMMANDS)}]"
+    if not isinstance(extra, list):
+        return "[gh: 'args' must be a list of strings]"
+    for flag in extra:
+        if str(flag).lower().startswith(GITHUB_FORBIDDEN_FLAG_PREFIXES):
+            return "[gh: only read (GET) requests are allowed through this tool]"
+    if command == "api":
+        # sub is the HTTP path here, not a subcommand -- method is fixed GET.
+        cmd = ["gh", "api", sub, "--method", "GET"] + [str(a) for a in extra]
+    else:
+        allowed_subs = GITHUB_ALLOWED_SUBCOMMANDS[command]
+        if sub not in allowed_subs:
+            return f"[gh: '{command} {sub}' not allowed -- only {sorted(allowed_subs)}]"
+        cmd = ["gh", command, sub] + [str(a) for a in extra]
+    if not GITHUB_READONLY_TOKEN:
+        log("github_read: GITHUB_READONLY_TOKEN not set -- refusing (was the repo-read-token secret ever mounted here?)")
+        return "[gh: no token configured (GITHUB_READONLY_TOKEN not set)]"
+    env = dict(os.environ)
+    env["GH_TOKEN"] = GITHUB_READONLY_TOKEN
+    debug_log(f"github_read: running {cmd}")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=env)
+    except FileNotFoundError:
+        log(f"github_read: binary not installed in this image (cmd={cmd})")
+        return "[gh: binary not installed in this image]"
+    except Exception as e:
+        log(f"github_read: {cmd} raised {e}")
+        return f"[gh error: {e}]"
+    output = (result.stdout or "") + (result.stderr or "")
+    # Always logged, not debug-gated -- same reasoning as kubectl_read: a
+    # nonzero exit here usually means the token is invalid/expired/wrong
+    # scope, not that the query itself was bad.
+    if result.returncode != 0:
+        log(f"github_read: {cmd} exited {result.returncode}: {output[:500]!r}")
+    else:
+        debug_log(f"github_read: {cmd} exited 0, {len(output)} chars output")
+    return output[:8000] or "[no output]"
+
+
+# --------------------------------------------------------------------------
+# create_pr / merge_pr (2026-07-26, githubWrite/githubMerge) -- real GitHub
+# writes via the bot account. Deliberately NOT git/gh-CLI-shaped: no git
+# binary, no local clone, just GitHub's REST API directly (same approach
+# platform-workers/drones/pr-drone already uses, simplified to
+# one-commit-per-file via the Contents API since Agora personas write
+# whole files, same shape as vault_write, not diffs/patches -- far more
+# reliable for a model to produce than a valid unified diff). The scoping
+# here isn't a repo allowlist or a narrower token (Edvard's call: the bot
+# account already has broad access and repo-scoping the tool wouldn't
+# actually restrict what the token itself can do) -- it's that these two
+# functions are hardcoded to exactly one sequence of calls each
+# (branch/contents/pulls for create_pr; pulls/check-runs/merge for
+# merge_pr), never an arbitrary request shaped by model output.
+# --------------------------------------------------------------------------
+def _github_api(method, path, body=None):
+    if not GITHUB_BOT_TOKEN:
+        return None, "no token configured (GITHUB_BOT_TOKEN not set)"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_BOT_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    status, data = http_json(method, f"https://api.github.com{path}", body, headers, timeout=30)
+    if status >= 400:
+        return None, f"GitHub API {method} {path} -> HTTP {status}: {json.dumps(data)[:400]}"
+    return data, None
+
+
+def create_pr(repo, branch, files, commit_message, title, body="", base="main"):
+    """Opens a PR from `branch` -> `base` on `repo`, writing `files`
+    (list of {"path", "content"}) as whole-file commits via the Contents
+    API. `branch` is always caller-supplied (Edvard's call: it should
+    reflect what the change actually is, not an opaque autogenerated
+    slug) -- if it already exists, new commits land on its current tip
+    rather than resetting it, so repeated calls accumulate. Returns the
+    existing open PR for this branch instead of creating a duplicate."""
+    if not repo or not branch or not files:
+        return "[create_pr: repo, branch, and at least one file are required]"
+    if branch in ("main", "master", base):
+        return f"[create_pr: branch must not be the same as base ({base!r})]"
+
+    repo_path = f"/repos/{GITHUB_ORG}/{repo}"
+
+    base_ref, err = _github_api("GET", f"{repo_path}/git/ref/heads/{urllib.parse.quote(base)}")
+    if err:
+        return f"[create_pr: could not resolve base branch {base!r}: {err}]"
+    base_sha = base_ref["object"]["sha"]
+
+    _existing_branch, branch_err = _github_api(
+        "GET", f"{repo_path}/git/ref/heads/{urllib.parse.quote(branch)}"
+    )
+    if branch_err:
+        _created, create_err = _github_api(
+            "POST", f"{repo_path}/git/refs", {"ref": f"refs/heads/{branch}", "sha": base_sha}
+        )
+        if create_err:
+            return f"[create_pr: could not create branch {branch!r}: {create_err}]"
+
+    for f in files:
+        file_path = str(f.get("path", "")).lstrip("/")
+        content = str(f.get("content", ""))
+        if not file_path:
+            return "[create_pr: every file needs a non-empty path]"
+        existing, _existing_err = _github_api(
+            "GET",
+            f"{repo_path}/contents/{urllib.parse.quote(file_path)}?ref={urllib.parse.quote(branch)}",
+        )
+        existing_sha = existing.get("sha") if isinstance(existing, dict) else None
+        put_body = {
+            "message": commit_message,
+            "content": base64.b64encode(content.encode("utf-8")).decode(),
+            "branch": branch,
+        }
+        if existing_sha:
+            put_body["sha"] = existing_sha
+        _committed, put_err = _github_api(
+            "PUT", f"{repo_path}/contents/{urllib.parse.quote(file_path)}", put_body
+        )
+        if put_err:
+            return f"[create_pr: failed writing {file_path}: {put_err}]"
+
+    existing_prs, list_err = _github_api(
+        "GET", f"{repo_path}/pulls?head={GITHUB_ORG}:{urllib.parse.quote(branch)}&state=open"
+    )
+    if not list_err and existing_prs:
+        pr = existing_prs[0]
+        return f"pushed {len(files)} file(s) to existing PR #{pr['number']}: {pr['html_url']}"
+
+    pr, pr_err = _github_api(
+        "POST", f"{repo_path}/pulls", {"title": title, "body": body, "head": branch, "base": base}
+    )
+    if pr_err:
+        return f"[create_pr: {len(files)} file(s) committed to {branch!r} but PR creation failed: {pr_err}]"
+    return f"created PR #{pr['number']}: {pr['html_url']}"
+
+
+def merge_pr(repo, pr_number, merge_method="squash"):
+    """Merges an open PR -- but only once every check-run on its head
+    commit has completed with a passing conclusion. No 'did this
+    bot/persona open it' check: every agent shares the same GitHub
+    account (Edvard's call), so that distinction carries zero signal."""
+    repo_path = f"/repos/{GITHUB_ORG}/{repo}"
+    pr, err = _github_api("GET", f"{repo_path}/pulls/{pr_number}")
+    if err:
+        return f"[merge_pr: could not fetch PR #{pr_number}: {err}]"
+    if pr.get("state") != "open":
+        return f"[merge_pr: PR #{pr_number} is not open (state={pr.get('state')})]"
+
+    head_sha = pr["head"]["sha"]
+    checks, err = _github_api("GET", f"{repo_path}/commits/{head_sha}/check-runs")
+    if err:
+        return f"[merge_pr: could not fetch check runs: {err}]"
+    runs = checks.get("check_runs", [])
+    if not runs:
+        return f"[merge_pr: no CI checks found for {head_sha[:7]} -- refusing to merge blind]"
+    pending = [r["name"] for r in runs if r.get("status") != "completed"]
+    if pending:
+        return f"[merge_pr: checks still running: {', '.join(pending)} -- try again shortly]"
+    failing = [r["name"] for r in runs if r.get("conclusion") not in ("success", "neutral", "skipped")]
+    if failing:
+        return f"[merge_pr: failing checks: {', '.join(failing)} -- refusing to merge]"
+
+    result, merge_err = _github_api(
+        "PUT", f"{repo_path}/pulls/{pr_number}/merge", {"merge_method": merge_method}
+    )
+    if merge_err:
+        return f"[merge_pr: merge failed: {merge_err}]"
+    return f"merged PR #{pr_number} ({merge_method}), sha={(result.get('sha') or '?')[:7]}"
