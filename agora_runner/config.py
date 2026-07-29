@@ -1,0 +1,193 @@
+"""Environment-derived constants, model catalogs, and capability defaults -- shared by every other module in this package. No internal imports."""
+
+import os
+
+
+# Verbose diagnostics (turn decisions, tool dispatch, persistence PATCH
+# results, provider request tracing) -- gated behind an env var so normal
+# operation doesn't permanently carry the extra log volume. The provider
+# error-body logging below (429s, non-200s) is NOT gated by this -- that's
+# cheap (only fires on actual failures) and was the single biggest gap in
+# diagnosing the 2026-07-23 Gemini fallback investigation: every "rate
+# limited (429)" log line up to this point never showed what Google's
+# response body actually said, so there was no way to tell a real per-model
+# quota block from a request-routing bug from an account-wide throttle.
+DEBUG_LOGGING = os.environ.get("DEBUG_LOGGING", "").strip().lower() in ("1", "true", "yes")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+AGORA_URL = os.environ.get("AGORA_URL", "http://agora.agents.svc.cluster.local:8080")
+AGORA_INTERNAL_URL = os.environ.get(
+    "AGORA_INTERNAL_URL", "http://agora.agents.svc.cluster.local:8081"
+)
+AGORA_TOKEN = os.environ.get("AGORA_TOKEN", "")
+RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
+POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "5"))
+COUCHDB_URL = os.environ.get("COUCHDB_URL", "http://couchdb.obsidian.svc.cluster.local:5984")
+COUCHDB_USER = os.environ.get("COUCHDB_USER", "")
+COUCHDB_PASSWORD = os.environ.get("COUCHDB_PASSWORD", "")
+COUCHDB_DB = os.environ.get("COUCHDB_DB", "obsidian")
+# Deliberately separate from GH_TOKEN/GITHUB_TOKEN (the broadly-scoped bot
+# credential used elsewhere on this platform for repo/PR writes) -- falls
+# back to whatever's already in the environment only so the tool degrades
+# to a clear error rather than crashing if nothing is configured yet.
+GITHUB_READONLY_TOKEN = os.environ.get(
+    "GITHUB_READONLY_TOKEN", os.environ.get("GH_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
+).strip()
+# 2026-07-26: the broadly-scoped bot account token itself, ONLY for
+# create_pr/merge_pr (githubWrite/githubMerge) -- every other tool in
+# this file deliberately avoids this credential in favor of a narrower
+# one (GITHUB_READONLY_TOKEN above, COUCHDB_* for vault, the in-cluster
+# ServiceAccount for kubectl_read). Real PR writes have no narrower
+# credential to reach for, so the scoping has to live in what the two
+# tools are hardcoded to do (see create_pr/merge_pr's docstrings), not
+# in the token.
+GITHUB_BOT_TOKEN = os.environ.get("GITHUB_BOT_TOKEN", "").strip()
+GITHUB_ORG = os.environ.get("GITHUB_ORG", "SokratesAI")
+# TinyFish's Search API (Issues #1 revisited again, 2026-07-23): free tier,
+# no credits consumed per their docs, real structured JSON results -- used
+# in place of both providers' broken/dropped search (see web_search_tinyfish
+# below for why DuckDuckGo scraping didn't work out either: it got
+# anti-bot-blocked on the very first live query).
+TINYFISH_API_KEY = os.environ.get("TINYFISH_API_KEY", "").strip()
+
+# Mirrors src/models.ts supportsThinking:false — Haiku has no thinking
+# mode, Fable 5's is always-on and an explicit disable 400s.
+ANTHROPIC_NO_THINKING_TOGGLE = {"claude-haiku-4-5-20251001", "claude-fable-5"}
+
+MAX_HISTORY = 20          # messages included in a generation context
+FETCH_LIMIT = 40          # ?limit for detail fetches (critique #5)
+AI_TURN_CAP = 6           # consecutive automated turns before auto-pause
+FAILURE_PAUSE_CAP = 3     # consecutive speak() failures before auto-pause -- a
+                          # failed turn doesn't append a reply, so without this
+                          # the same conversation gets retried every single poll
+                          # tick (POLL_INTERVAL_SECONDS) forever with zero
+                          # backoff (found live 2026-07-23: two rate-limited
+                          # Gemini conversations retried nonstop for 8+ hours,
+                          # each retry cascading through the entire
+                          # GEMINI_FALLBACK_CHAIN, which is what actually
+                          # exhausted every Gemini model's quota rather than
+                          # just the one each conversation was configured for)
+TOOL_ROUNDS_MAX = 100     # client-side tool loop bound (Issues.md: bumped 50->100)
+VAULT_CONTEXT_CAP = 24000  # chars of injected vault content per heartbeat (critique #8)
+# 2026-07-25: a monitoring-style heartbeat (K3s Sentinel) should only post to
+# the chat when it actually finds something worth Edvard's attention -- a
+# clean/healthy check silently posting "all good" every run is just noise.
+# A heartbeat's own prompt opts into this by instructing the model to reply
+# with EXACTLY this sentinel (and nothing else) when there's nothing to
+# report; run_heartbeat then skips notify()/audit() entirely for that turn
+# (still recorded in the heartbeat's own lastResult, just not the chat).
+HEARTBEAT_NO_REPORT_SENTINEL = "NO_ISSUES_FOUND"
+# Real per-model output ceilings (verified live via the Models API / models.get,
+# 2026-07-22) -- always request the model's actual max rather than an arbitrary
+# cap, so a genuinely long reply never gets silently cut off. Falls back to the
+# lowest known ceiling (Haiku's 64k) for any model not in this table.
+ANTHROPIC_MAX_OUTPUT_TOKENS = {
+    "claude-haiku-4-5-20251001": 64000,
+    "claude-sonnet-5": 128000,
+    "claude-opus-4-8": 128000,
+    "claude-fable-5": 128000,
+}
+GEMINI_MAX_OUTPUT_TOKENS = {
+    "gemini-flash-latest": 65536,
+    "gemini-flash-lite-latest": 65536,
+    "gemini-pro-latest": 65536,
+    # Pinned snapshots added 2026-07-22 so free-tier personas aren't
+    # limited to whatever "-latest" resolves to. See models.ts for which
+    # candidates were live-tested and excluded (2.5-tier 404s).
+    "gemini-3-flash-preview": 65536,
+    "gemini-3.1-flash-lite": 65536,
+    "gemini-3.5-flash": 65536,
+    "gemini-3.5-flash-lite": 65536,
+    "gemini-3.6-flash": 65536,
+}
+
+# Best-to-worst ordering used ONLY by the 429 fallback cascade below (Issues
+# #2) -- not a general routing preference. A rate-limited turn retries
+# starting from the persona's own chosen model's position in this list and
+# walks toward the end, so a persona deliberately set to a cheaper/faster
+# model is never silently upgraded, only ever degraded further on 429s.
+GEMINI_FALLBACK_CHAIN = [
+    "gemini-pro-latest",
+    "gemini-flash-latest",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+]
+GEMINI_LABELS = {
+    "gemini-pro-latest": "Gemini Pro",
+    "gemini-flash-latest": "Gemini Flash",
+    "gemini-3.6-flash": "Gemini 3.6 Flash",
+    "gemini-3.5-flash": "Gemini 3.5 Flash",
+    "gemini-3-flash-preview": "Gemini 3 Flash (Preview)",
+    "gemini-flash-lite-latest": "Gemini Flash Lite",
+    "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
+}
+# Single next-hop fallback per model, derived from GEMINI_FALLBACK_CHAIN's
+# order (2026-07-23 redesign, Issues.md #2 revisited): the old design
+# cascaded through the whole remaining chain on EVERY turn but never
+# remembered the outcome, so a conversation whose primary model was
+# rate-limited kept re-attempting that same exhausted model on every single
+# poll tick forever -- at a 5s poll interval that alone can exceed a model's
+# RPM cap (some Gemini tiers are as low as 5-15 rpm), so the wasted
+# first-attempt request perpetuates its own rate limit. Now the winning
+# fallback is persisted onto the conversation (see gemini_generate_with_fallback
+# below), so subsequent turns start directly at the working model instead of
+# re-attempting a known-bad one. Last entry in the chain has no further
+# fallback (.get() returns None, which ends the walk).
+GEMINI_MODEL_FALLBACK = {
+    GEMINI_FALLBACK_CHAIN[i]: GEMINI_FALLBACK_CHAIN[i + 1]
+    for i in range(len(GEMINI_FALLBACK_CHAIN) - 1)
+}
+
+
+class GeminiRateLimited(RuntimeError):
+    """Raised when a Gemini call returns 429, or a transient infra error
+    (503 UNAVAILABLE/"high demand", 500 INTERNAL) -- signals
+    gemini_generate_with_fallback to try the next model in
+    GEMINI_FALLBACK_CHAIN instead of failing the whole turn (Issues #2).
+
+    2026-07-24: broadened from 429-only after live logs showed 503s
+    ("This model is currently experiencing high demand") failing turns
+    outright with zero fallback attempt, several times in one session --
+    the exact "pauses all the time even though cascading should work"
+    complaint. A 503 is exactly the kind of error a DIFFERENT model is
+    likely to answer fine, same reasoning as 429; unlike 429 it carries no
+    useful quota detail in the body, so there's nothing more to log."""
+
+    def __init__(self, model_id, status=429):
+        reason = "rate limited (429)" if status == 429 else f"unavailable ({status})"
+        super().__init__(f"gemini {model_id} {reason}")
+        self.model_id = model_id
+        self.status = status
+
+
+GEMINI_TRANSIENT_STATUSES = {429, 500, 503}
+
+
+DEFAULT_CAPS = {
+    "webSearch": True,
+    "vaultRead": True,
+    "vaultWrite": False,
+    "codeExecution": False,
+    "kubectlRead": False,
+    "githubRead": False,
+    "manageAgora": False,
+    "githubWrite": False,
+    "githubMerge": False,
+}
+NO_CAPS = {
+    "webSearch": False,
+    "vaultRead": False,
+    "vaultWrite": False,
+    "codeExecution": False,
+    "kubectlRead": False,
+    "githubRead": False,
+    "manageAgora": False,
+    "githubWrite": False,
+    "githubMerge": False,
+    "terminalExec": False,
+}

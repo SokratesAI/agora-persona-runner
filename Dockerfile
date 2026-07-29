@@ -1,18 +1,28 @@
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package.json ./
-RUN npm install
-COPY tsconfig.json ./
-COPY src/ src/
-RUN npm run build
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-FROM node:20-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-COPY package.json ./
-RUN npm install --omit=dev
-COPY --from=builder /app/dist/ dist/
+# kubectl + gh CLI -- used by kubectl_read/github_read/create_pr/merge_pr/
+# terminal_exec (Agora Issues.md #3 and #1). Pinned versions, not "latest",
+# so a rebuild months from now doesn't silently pick up a different major
+# version. Same pattern as the vault-bridge image this service used to
+# borrow before it had its own repo/image (2026-07-29 migration).
+ARG KUBECTL_VERSION=v1.36.2
+RUN curl -fsSLo /usr/local/bin/kubectl \
+    "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
 
-USER node
-EXPOSE 8080
-CMD ["node", "dist/index.js"]
+ARG GH_CLI_VERSION=2.96.0
+RUN curl -fsSL \
+    "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/gh_${GH_CLI_VERSION}_linux_amd64.tar.gz" \
+    | tar -xz -C /usr/local --strip-components=1 "gh_${GH_CLI_VERSION}_linux_amd64/bin/gh"
+
+WORKDIR /app
+# No requirements.txt -- agora_runner is stdlib-only at runtime.
+COPY agora_runner/ agora_runner/
+COPY run.py .
+
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin runner
+USER runner
+
+CMD ["python", "run.py"]
