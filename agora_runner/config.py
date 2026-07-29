@@ -1,6 +1,13 @@
 """Environment-derived constants, model catalogs, and capability defaults -- shared by every other module in this package. No internal imports."""
 
 import os
+from datetime import timezone
+
+try:
+    from zoneinfo import ZoneInfo
+    OSLO = ZoneInfo("Europe/Oslo")
+except Exception:  # pragma: no cover — image without tzdata
+    OSLO = timezone.utc
 
 
 # Verbose diagnostics (turn decisions, tool dispatch, persistence PATCH
