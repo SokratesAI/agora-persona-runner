@@ -3,7 +3,7 @@
 import re
 from datetime import datetime, timedelta, timezone
 
-from agora_runner.config import AI_TURN_CAP, MAX_HISTORY
+from agora_runner.config import AI_TURN_CAP, MAX_HISTORY, OSLO
 
 
 def parse_mentions(text, names):
