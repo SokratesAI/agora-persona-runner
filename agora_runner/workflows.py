@@ -19,16 +19,33 @@ WORKFLOW_MAX_DEPTH = 5  # defense in depth — Agora already rejects a
                          # rule + hard cap" shape as AI_TURN_CAP.
 
 
-def run_workflow_steps(steps, conversation_id, detail, participants, local_thread,
+def run_workflow_steps(steps, conversation_id, detail, participants,
                         last_speaker_idx=-1, depth=0):
     """Decisions/0009 execution engine. One continuous round-robin turn
     pointer across step (and sub-workflow) boundaries — never resets, so
-    a step never immediately repeats whoever just spoke. Non-streamed,
-    one notify() per completed round (matches run_heartbeat's 2026-07-25
-    decision — a round's HEARTBEAT_NO_REPORT_SENTINEL suppress-or-post
-    choice needs the full reply first, before anything is posted).
-    Returns (last_speaker_idx, rounds_run, replies_posted) so the caller
-    can build a meaningful lastResult summary."""
+    a step never immediately repeats whoever just spoke — scoped, per
+    step, to that step's own `personaIds` subset when set (2026-07-30:
+    round-robin across the WHOLE conversation's personas[] is right for
+    genuine multi-agent discussion, wrong for a pipeline step with a
+    known single owner at authoring time — see Step.personaIds's own
+    docstring in workflow-store.ts). Empty/unset `personaIds` falls back
+    to the full `participants` list, unchanged from before.
+
+    Re-fetches the conversation's messages fresh at the top of every
+    round (2026-07-30) rather than working from a static snapshot taken
+    once at the start of the run — a heartbeat is bound to a real
+    conversation specifically so Edvard can steer a run that's going off
+    the rails by just typing into it; a snapshot silently defeated that
+    for any round after the first. Best-effort only: a run never waits
+    for input, it just picks up whatever's there by the time the next
+    round starts.
+
+    Non-streamed, one notify() per completed round (matches
+    run_heartbeat's 2026-07-25 decision — a round's
+    HEARTBEAT_NO_REPORT_SENTINEL suppress-or-post choice needs the full
+    reply first, before anything is posted). Returns (last_speaker_idx,
+    rounds_run, replies_posted) so the caller can build a meaningful
+    lastResult summary."""
     if depth > WORKFLOW_MAX_DEPTH:
         raise RuntimeError(f"workflow recursion depth exceeded ({WORKFLOW_MAX_DEPTH})")
     rounds_run = 0
@@ -40,12 +57,22 @@ def run_workflow_steps(steps, conversation_id, detail, participants, local_threa
                 log(f"workflow step references unknown workflow {step['workflowRef']!r}, skipping")
                 continue
             last_speaker_idx, sub_rounds, sub_replies = run_workflow_steps(
-                sub.get("steps", []), conversation_id, detail, participants, local_thread,
+                sub.get("steps", []), conversation_id, detail, participants,
                 last_speaker_idx, depth + 1,
             )
             rounds_run += sub_rounds
             replies_posted += sub_replies
             continue
+
+        persona_ids_filter = step.get("personaIds") or []
+        if persona_ids_filter:
+            step_participants = [p for p in participants if p.get("personaId") in persona_ids_filter]
+            if not step_participants:
+                log(f"workflow: step {step_index + 1}'s personaIds match none of this "
+                    f"conversation's participants, skipping step")
+                continue
+        else:
+            step_participants = participants
 
         # Mutable per-step-run copy — scoped_write locks a resolved
         # folder-mode path into this dict, shared across every round of
@@ -63,21 +90,26 @@ def run_workflow_steps(steps, conversation_id, detail, participants, local_threa
         extra = "\n\n".join(extra_parts)
 
         for _round in range(max(1, step.get("loopCount", 1))):
-            last_speaker_idx = (last_speaker_idx + 1) % len(participants)
-            link = participants[last_speaker_idx]
+            last_speaker_idx = (last_speaker_idx + 1) % len(step_participants)
+            link = step_participants[last_speaker_idx]
             persona = fetch_persona_uncached(link.get("personaId"))
             if persona is None:
                 log(f"workflow: persona {link.get('personaId')!r} not found, skipping this round")
                 continue
             caps = capabilities_for_step(persona, step)
             system = build_system(persona, detail, participants, extra)
+            status, msgs_body = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
+            thread = msgs_body.get("messages", []) if status == 200 else []
             # Explicit synthetic trigger, same pattern as run_heartbeat —
             # merge_history maps EVERY persona sender to assistant role
             # (Architecture §3's multi-persona convention treats the
             # whole roster as one collective assistant voice), so without
             # this a round after the first would hand the provider a
-            # history with no trailing user turn.
-            history = merge_history(local_thread, persona["name"], len(participants) > 1)
+            # history with no trailing user turn. Based on the WHOLE
+            # conversation's participant count, not this step's own
+            # subset — a message from a persona outside this step is
+            # still "someone else on this thread," not a fresh human turn.
+            history = merge_history(thread, persona["name"], len(participants) > 1)
             history.append({
                 "role": "user",
                 "content": "[Automatic workflow turn — continue the discussion directly.]",
@@ -89,7 +121,6 @@ def run_workflow_steps(steps, conversation_id, detail, participants, local_threa
             except Exception as e:
                 log(f"workflow round failed (step {step_index + 1}, round {_round + 1}): {e}")
                 continue
-            local_thread.append({"sender": persona["name"], "text": reply})
             if not reply.strip().upper().startswith(HEARTBEAT_NO_REPORT_SENTINEL):
                 notify(conversation_id, reply, persona["name"])
                 replies_posted += 1
@@ -122,11 +153,10 @@ def run_workflow_heartbeat(heartbeat):
                         "lastResult": "failed: conversation has no personas"})
         return
 
-    local_thread = list(detail.get("messages", []))
     result = ""
     try:
         _idx, rounds_run, replies_posted = run_workflow_steps(
-            workflow.get("steps", []), heartbeat["conversationId"], detail, participants, local_thread,
+            workflow.get("steps", []), heartbeat["conversationId"], detail, participants,
         )
         result = (
             f"workflow: {len(workflow.get('steps', []))} steps, {rounds_run} rounds, "

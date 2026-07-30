@@ -2112,16 +2112,98 @@ def test_run_workflow_steps_round_robin_continues_across_steps(runner):
     notified = []
 
     with patch.object(runner.workflows, "fetch_persona_uncached", side_effect=lambda pid: personas_by_id[pid]), \
+         patch.object(runner.workflows, "agora_get", return_value=(200, {"messages": []})), \
          patch.object(runner.workflows, "generate_reply", side_effect=lambda persona, *a, **k: f"reply from {persona['name']}"), \
          patch.object(runner.workflows, "notify", side_effect=lambda cid, text, sender, **k: notified.append(sender) or (200, "mid")):
         last_idx, rounds_run, replies_posted = runner.run_workflow_steps(
-            steps, "c1", {"memory": ""}, participants, [],
+            steps, "c1", {"memory": ""}, participants,
         )
 
     assert notified == ["A", "B", "C", "A"]
     assert rounds_run == 4
     assert replies_posted == 4
     assert last_idx == 0
+
+
+def test_run_workflow_steps_scopes_round_robin_to_step_personaids(runner):
+    """2026-07-30 fix: a step with personaIds only round-robins among
+    that subset, not the whole conversation's participants -- the whole
+    reason it exists (Edvard: round-robin was meant for multi-agent
+    discussion, not a pipeline step with one designated owner)."""
+    participants = [
+        {"personaId": "p1", "name": "Coder", "role": "curator"},
+        {"personaId": "p2", "name": "Reviewer", "role": "listener"},
+    ]
+    personas_by_id = {
+        p["personaId"]: {"id": p["personaId"], "name": p["name"],
+                          "model": "anthropic:claude-haiku-4-5-20251001", "capabilities": dict(runner.DEFAULT_CAPS)}
+        for p in participants
+    }
+    steps = [
+        {"prompt": "coder only", "loopCount": 3, "toolWhitelist": [], "personaIds": ["p1"]},
+        {"prompt": "reviewer only", "loopCount": 2, "toolWhitelist": [], "personaIds": ["p2"]},
+    ]
+    notified = []
+
+    with patch.object(runner.workflows, "fetch_persona_uncached", side_effect=lambda pid: personas_by_id[pid]), \
+         patch.object(runner.workflows, "agora_get", return_value=(200, {"messages": []})), \
+         patch.object(runner.workflows, "generate_reply", side_effect=lambda persona, *a, **k: f"reply from {persona['name']}"), \
+         patch.object(runner.workflows, "notify", side_effect=lambda cid, text, sender, **k: notified.append(sender) or (200, "mid")):
+        runner.run_workflow_steps(steps, "c1", {"memory": ""}, participants)
+
+    # Step 1 is Coder-only for all 3 rounds; step 2 is Reviewer-only for
+    # both its rounds -- Reviewer never appears in step 1's output and
+    # Coder never appears in step 2's, unlike unscoped round-robin which
+    # would have interleaved them.
+    assert notified == ["Coder", "Coder", "Coder", "Reviewer", "Reviewer"]
+
+
+def test_run_workflow_steps_skips_step_when_personaids_match_nobody(runner):
+    participants = [{"personaId": "p1", "name": "A", "role": "curator"}]
+    steps = [{"prompt": "", "loopCount": 1, "toolWhitelist": [], "personaIds": ["ghost-not-in-conversation"]}]
+
+    with patch.object(runner.workflows, "notify") as mock_notify:
+        last_idx, rounds_run, replies_posted = runner.run_workflow_steps(steps, "c1", {}, participants)
+
+    mock_notify.assert_not_called()
+    assert rounds_run == 0
+    assert replies_posted == 0
+    assert last_idx == -1
+
+
+def test_run_workflow_steps_refetches_conversation_every_round(runner):
+    """2026-07-30 fix: each round re-fetches the conversation fresh
+    instead of working from a static snapshot taken once at the start
+    of the run -- otherwise a message Edvard posts while a run is
+    executing never reaches a later round of that same run."""
+    participants = [{"personaId": "p1", "name": "A", "role": "curator"}]
+    persona = {"id": "p1", "name": "A", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.DEFAULT_CAPS)}
+    steps = [{"prompt": "", "loopCount": 3, "toolWhitelist": []}]
+    fetch_count = {"n": 0}
+
+    def fake_agora_get(path):
+        fetch_count["n"] += 1
+        if fetch_count["n"] == 2:
+            # Simulate Edvard posting mid-run, between round 1 and round 2.
+            return 200, {"messages": [{"sender": "Edvard", "text": "stop and check X"}]}
+        return 200, {"messages": []}
+
+    seen_histories = []
+
+    def fake_generate_reply(persona, caps, system, history, *a, **k):
+        seen_histories.append(list(history))
+        return "ack"
+
+    with patch.object(runner.workflows, "fetch_persona_uncached", return_value=persona), \
+         patch.object(runner.workflows, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.workflows, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.workflows, "notify", return_value=(200, "mid")):
+        runner.run_workflow_steps(steps, "c1", {}, participants)
+
+    assert fetch_count["n"] == 3
+    assert not any("stop and check X" in str(m) for m in seen_histories[0])
+    assert any("stop and check X" in str(m) for m in seen_histories[1])
 
 
 def test_run_workflow_steps_skips_notify_for_sentinel_reply(runner):
@@ -2131,9 +2213,10 @@ def test_run_workflow_steps_skips_notify_for_sentinel_reply(runner):
     steps = [{"prompt": "", "loopCount": 1, "toolWhitelist": []}]
 
     with patch.object(runner.workflows, "fetch_persona_uncached", return_value=persona), \
+         patch.object(runner.workflows, "agora_get", return_value=(200, {"messages": []})), \
          patch.object(runner.workflows, "generate_reply", return_value=runner.HEARTBEAT_NO_REPORT_SENTINEL), \
          patch.object(runner.workflows, "notify") as mock_notify:
-        last_idx, rounds_run, replies_posted = runner.run_workflow_steps(steps, "c1", {}, participants, [])
+        last_idx, rounds_run, replies_posted = runner.run_workflow_steps(steps, "c1", {}, participants)
 
     mock_notify.assert_not_called()
     assert rounds_run == 1
@@ -2156,10 +2239,11 @@ def test_run_workflow_steps_composition_recurses(runner):
 
     with patch.object(runner.workflows, "fetch_persona_uncached", side_effect=lambda pid: personas_by_id[pid]), \
          patch.object(runner.workflows, "fetch_workflow", return_value=sub_workflow), \
+         patch.object(runner.workflows, "agora_get", return_value=(200, {"messages": []})), \
          patch.object(runner.workflows, "generate_reply", return_value="inner reply"), \
          patch.object(runner.workflows, "notify", side_effect=lambda cid, text, sender, **k: notified.append(sender) or (200, "mid")):
         last_idx, rounds_run, replies_posted = runner.run_workflow_steps(
-            outer_steps, "c1", {}, participants, [],
+            outer_steps, "c1", {}, participants,
         )
 
     assert notified == ["A"]
@@ -2175,7 +2259,7 @@ def test_run_workflow_steps_unknown_workflow_ref_is_skipped_not_fatal(runner):
     with patch.object(runner.workflows, "fetch_workflow", return_value=None), \
          patch.object(runner.workflows, "notify") as mock_notify:
         last_idx, rounds_run, replies_posted = runner.run_workflow_steps(
-            outer_steps, "c1", {}, participants, [],
+            outer_steps, "c1", {}, participants,
         )
 
     mock_notify.assert_not_called()
@@ -2187,7 +2271,7 @@ def test_run_workflow_steps_unknown_workflow_ref_is_skipped_not_fatal(runner):
 def test_run_workflow_steps_depth_cap_raises(runner):
     with pytest.raises(RuntimeError, match="recursion depth"):
         runner.run_workflow_steps(
-            [], "c1", {}, [{"personaId": "p1", "name": "A"}], [],
+            [], "c1", {}, [{"personaId": "p1", "name": "A"}],
             depth=runner.WORKFLOW_MAX_DEPTH + 1,
         )
 
