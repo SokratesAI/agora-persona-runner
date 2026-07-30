@@ -2005,6 +2005,41 @@ def test_run_due_heartbeats_non_workflow_heartbeat_still_runs_synchronously(runn
     mock_thread_ctor.assert_not_called()
 
 
+def test_workflow_bound_conversation_ids_only_counts_enabled_workflow_heartbeats(runner):
+    heartbeats_list = [
+        {"enabled": True, "workflowId": "wf1", "conversationId": "c1"},
+        {"enabled": False, "workflowId": "wf2", "conversationId": "c2"},  # disabled
+        {"enabled": True, "conversationId": "c3"},  # no workflowId -- plain heartbeat
+        {"enabled": True, "workflowId": "wf3", "conversationId": "c4"},
+    ]
+    assert runner.workflow_bound_conversation_ids(heartbeats_list) == {"c1", "c4"}
+
+
+def test_poll_once_skips_workflow_bound_conversations_but_still_runs_heartbeats(runner):
+    conversations_body = {"conversations": [{"id": "c1", "name": "Evolve"}, {"id": "c2", "name": "Normal Chat"}]}
+    heartbeats_body = {"heartbeats": [{"enabled": True, "workflowId": "wf1", "conversationId": "c1"}]}
+
+    def fake_agora_get(path):
+        if path == "/conversations":
+            return 200, conversations_body
+        return 404, {}
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "GET" and path == "/heartbeats":
+            return 200, heartbeats_body
+        return 200, {}
+
+    polled = []
+    with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "run_due_heartbeats") as mock_run_due:
+        runner.poll_once()
+
+    assert polled == ["c2"]  # c1 skipped (workflow-bound), c2 gets ordinary turn-taking
+    mock_run_due.assert_called_once_with(heartbeats_body["heartbeats"])
+
+
 def test_capabilities_for_step_empty_whitelist_is_unrestricted(runner):
     persona = {"capabilities": {
         "webSearch": True, "vaultRead": True, "vaultWrite": True,

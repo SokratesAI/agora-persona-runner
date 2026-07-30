@@ -97,12 +97,35 @@ def run_heartbeat(heartbeat):
 _workflow_threads = {}
 
 
-def run_due_heartbeats():
-    status, body = agora_internal("GET", "/heartbeats")
-    if status != 200:
-        return  # old Agora — feature not there yet
+def workflow_bound_conversation_ids(heartbeats_list):
+    """Conversation ids driven by an enabled, workflow-mode heartbeat.
+    poll_once (2026-07-30) skips ordinary curator/@mention turn-taking
+    for these entirely: a workflow step's own personaIds already decides
+    who acts and when, so decide_turn's @mention-chain logic has nothing
+    legitimate to do there -- and worse, can crash outright. Found live:
+    a workflow persona's reply naturally included "@OtherPersona", the
+    ordinary poll loop picked that up as a real mention and tried to
+    continue the exchange via speak(), but a workflow-only conversation
+    may never have a real Edvard message to anchor on (unlike one Edvard
+    started himself) -- merge_history pops every leading non-user turn,
+    so the history came back empty, speak() raised, and three such
+    crashes auto-paused the conversation via FAILURE_PAUSE_CAP. The
+    workflow engine's own turns are unaffected either way (run_workflow_steps
+    already appends its own synthetic user turn every round)."""
+    return {
+        hb["conversationId"] for hb in heartbeats_list
+        if hb.get("enabled") and hb.get("workflowId") and hb.get("conversationId")
+    }
+
+
+def run_due_heartbeats(heartbeats_list=None):
+    if heartbeats_list is None:
+        status, body = agora_internal("GET", "/heartbeats")
+        if status != 200:
+            return  # old Agora — feature not there yet
+        heartbeats_list = body.get("heartbeats", [])
     now = datetime.now(timezone.utc)
-    for heartbeat in body.get("heartbeats", []):
+    for heartbeat in heartbeats_list:
         if not heartbeat.get("enabled"):
             continue
         try:
