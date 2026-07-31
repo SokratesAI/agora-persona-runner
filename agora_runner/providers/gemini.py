@@ -39,11 +39,16 @@ def _gemini_parts(message):
 
 
 def gemini_generate(model_id, thinking, system, history, caps, persona, conversation_id, on_text=None,
-                     active_step=None):
+                     active_step=None, on_thinking=None):
     """See anthropic_generate's on_text docstring -- same contract:
     fires per round that produces text, is_final=False for a preamble
     round that goes on to call a tool, True for the round (or salvage
-    call) that actually ends the turn."""
+    call) that actually ends the turn.
+
+    on_thinking(text): fires once per round with that round's thought-summary
+    text, whenever thinkingConfig.includeThoughts got Gemini to return any --
+    2026-07-31, see the matching thinkingConfig comment below for why this
+    previously returned nothing to show at all."""
     contents = [
         {"role": "model" if m["role"] == "assistant" else "user", "parts": _gemini_parts(m)}
         for m in history
@@ -97,7 +102,13 @@ def gemini_generate(model_id, thinking, system, history, caps, persona, conversa
             "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS.get(model_id, 65536)
         }
         if thinking:
-            generation_config["thinkingConfig"] = {"thinkingBudget": -1}
+            # includeThoughts (2026-07-31): thinkingBudget alone makes the
+            # model think for real (better answers) but returns none of it
+            # -- Gemini only puts thought-summary parts (marked "thought":
+            # true) in the response when this is also set. Found live: this
+            # is the whole reason "Gemini's thoughts" were never visible in
+            # Agora, not a UI gap -- the API was never asked to send them.
+            generation_config["thinkingConfig"] = {"thinkingBudget": -1, "includeThoughts": True}
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": contents,
@@ -139,7 +150,12 @@ def gemini_generate(model_id, thinking, system, history, caps, persona, conversa
         # can sit alongside a functionCall part in the same round, and
         # was previously discarded whenever calls were present. Posted
         # immediately now (2026-07-24) instead of only the final round.
-        round_text = "".join(p.get("text", "") for p in parts).strip()
+        # thought-marked parts (2026-07-31) are excluded here -- they're
+        # not the answer, they go to on_thinking instead.
+        round_text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+        thought_text = "".join(p.get("text", "") for p in parts if p.get("thought")).strip()
+        if thought_text and on_thinking:
+            on_thinking(thought_text)
         if calls:
             if round_text and on_text:
                 on_text(round_text, False)
@@ -162,10 +178,10 @@ def gemini_generate(model_id, thinking, system, history, caps, persona, conversa
     # whatever gemini-flash-latest resolves to). Salvage: flatten the whole
     # tool transcript into plain text, declare no tools at all, demand an
     # answer — schema-valid by construction, so this terminates in text.
-    return _gemini_salvage(system, contents, url, thinking, model_id, on_text=on_text)
+    return _gemini_salvage(system, contents, url, thinking, model_id, on_text=on_text, on_thinking=on_thinking)
 
 
-def _gemini_salvage(system, contents, url, thinking, model_id, on_text=None):
+def _gemini_salvage(system, contents, url, thinking, model_id, on_text=None, on_thinking=None):
     plain = []
     for content in contents:
         pieces = []
@@ -193,7 +209,7 @@ def _gemini_salvage(system, contents, url, thinking, model_id, on_text=None):
         "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS.get(model_id, 65536)
     }
     if thinking:
-        generation_config["thinkingConfig"] = {"thinkingBudget": -1}
+        generation_config["thinkingConfig"] = {"thinkingBudget": -1, "includeThoughts": True}
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": plain,
@@ -206,9 +222,11 @@ def _gemini_salvage(system, contents, url, thinking, model_id, on_text=None):
         raise GeminiRateLimited(model_id, status)
     if status != 200:
         raise RuntimeError(f"gemini salvage {status}: {json.dumps(resp)[:200]}")
-    text = "".join(
-        p.get("text", "") for p in resp["candidates"][0]["content"].get("parts", [])
-    ).strip()
+    salvage_parts = resp["candidates"][0]["content"].get("parts", [])
+    text = "".join(p.get("text", "") for p in salvage_parts if not p.get("thought")).strip()
+    thought_text = "".join(p.get("text", "") for p in salvage_parts if p.get("thought")).strip()
+    if thought_text and on_thinking:
+        on_thinking(thought_text)
     if not text:
         raise RuntimeError("gemini salvage returned no text")
     if on_text:
@@ -237,7 +255,7 @@ def _gemini_fallback_note(model_id, current, err, sticky, conversation_id):
 
 
 def gemini_generate_with_fallback(model_id, thinking, system, history, caps, persona, conversation_id,
-                                   sticky=False, on_text=None, active_step=None):
+                                   sticky=False, on_text=None, active_step=None, on_thinking=None):
     """2026-07-23 redesign (Issues #2): on a 429, hop to that model's single
     designated fallback (GEMINI_MODEL_FALLBACK), never jumping to something
     "better" than what was configured — only ever degrading further. May
@@ -288,7 +306,7 @@ def gemini_generate_with_fallback(model_id, thinking, system, history, caps, per
 
         try:
             text = gemini_generate(current, thinking, system, history, caps, persona, conversation_id,
-                                    on_text=wrapped_on_text, active_step=active_step)
+                                    on_text=wrapped_on_text, active_step=active_step, on_thinking=on_thinking)
         except GeminiRateLimited as e:
             next_hop = GEMINI_MODEL_FALLBACK.get(current)
             log(f"{e}, falling back to {next_hop!r}")

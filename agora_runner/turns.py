@@ -58,8 +58,14 @@ def decide_turn(thread, personas):
     deliberately left in place (real audit trail); without this
     exclusion a leftover chip as the thread's last message would look
     like "a persona already replied" and the failed turn would never
-    retry."""
-    visible = [m for m in thread if not m.get("forgotten") and not m.get("activity")]
+    retry.
+
+    `thinking` messages (2026-07-31) excluded for the same reason as
+    `activity` -- a persona's own extended-thinking chunk is not
+    something it "said" to anyone, and a leftover one as the thread's
+    last message would look like an already-completed reply the same
+    way a stray activity chip would."""
+    visible = [m for m in thread if not m.get("forgotten") and not m.get("activity") and not m.get("thinking")]
     if not visible:
         return []
     names = [p["name"] for p in personas]
@@ -130,10 +136,17 @@ def merge_history(thread, self_name, multi):
     `activity` exclusion, same day: inline Activity chips (a tool call
     completing) are a UI event, not something anyone said -- a persona
     must never see its own or another's tool use reported back as if it
-    were real conversation content."""
+    were real conversation content.
+
+    `thinking` exclusion (2026-07-31): a persona's own extended-thinking
+    chunk is scratch space, not something anyone said -- feeding it back
+    as if it were a real previous turn would be redundant at best and
+    confusing at worst (a model re-reading its own raw train of thought
+    as context, or another persona in a multi-persona thread reading it
+    as if it were an actual statement)."""
     merged = []
     for message in thread[-MAX_HISTORY:]:
-        if message.get("forgotten") or message.get("system") or message.get("activity"):
+        if message.get("forgotten") or message.get("system") or message.get("activity") or message.get("thinking"):
             continue
         sender = message.get("sender", "")
         text = message.get("text", "")
