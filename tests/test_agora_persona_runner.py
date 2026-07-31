@@ -974,6 +974,55 @@ def test_anthropic_generate_single_text_block_still_works(runner):
     assert result == "hello"
 
 
+# ---------------------------------------------------------------------------
+# 2026-07-31: bring back visible "thinking" (Edvard's old Slack-bridge setup
+# streamed thought blocks as thread replies to a "Thinking..." placeholder;
+# Agora never had this for either provider). Anthropic already excluded
+# thinking blocks from round_text correctly -- they just had nowhere to go.
+# ---------------------------------------------------------------------------
+
+def test_anthropic_generate_calls_on_thinking_with_thinking_blocks(runner):
+    caps = dict(runner.NO_CAPS)
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+        return 200, {
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "let me consider this...", "signature": "sig"},
+                {"type": "text", "text": "the answer"},
+            ],
+        }
+
+    thoughts = []
+    with patch.object(runner.providers.anthropic, "http_json", side_effect=fake_http_json):
+        result = runner.anthropic_generate(
+            "claude-haiku-4-5-20251001", True, "system", [{"role": "user", "content": "hi"}],
+            caps, {"name": "Test", "id": "p1"}, "conv-1", on_thinking=thoughts.append,
+        )
+    assert result == "the answer"
+    assert thoughts == ["let me consider this..."]
+
+
+def test_anthropic_generate_no_on_thinking_does_not_crash_on_thinking_blocks(runner):
+    caps = dict(runner.NO_CAPS)
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+        return 200, {
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "internal", "signature": "sig"},
+                {"type": "text", "text": "answer"},
+            ],
+        }
+
+    with patch.object(runner.providers.anthropic, "http_json", side_effect=fake_http_json):
+        result = runner.anthropic_generate(
+            "claude-haiku-4-5-20251001", True, "system", [{"role": "user", "content": "hi"}],
+            caps, {"name": "Test", "id": "p1"}, "conv-1",
+        )
+    assert result == "answer"
+
+
 def test_anthropic_generate_skips_empty_text_blocks_when_joining(runner):
     caps = dict(runner.NO_CAPS)
 
@@ -1216,7 +1265,7 @@ def test_speak_reads_sticky_fallback_from_conversation_detail(runner):
               "name": "Test", "stickyFallback": True}
     captured = {}
 
-    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None):
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None):
         captured["sticky"] = sticky
         return "reply text"
 
@@ -1235,7 +1284,7 @@ def test_speak_defaults_sticky_false_when_conversation_field_unset(runner):
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
     captured = {}
 
-    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None):
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None):
         captured["sticky"] = sticky
         return "reply text"
 
@@ -1255,7 +1304,7 @@ def test_heartbeat_always_non_sticky_even_if_bound_conversation_is_sticky(runner
     detail = {"personas": [], "messages": [], "stickyFallback": True}
     captured = {}
 
-    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None):
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None):
         captured["sticky"] = sticky
         return "heartbeat reply"
 
@@ -1605,6 +1654,81 @@ def test_gemini_generate_streams_preamble_before_function_call_then_final_text(r
     assert result == "Found it."
 
 
+def test_gemini_generate_requests_include_thoughts_when_thinking_on(runner):
+    """2026-07-31: thinkingBudget alone makes Gemini think for real but
+    returns none of it -- includeThoughts is what actually makes the API
+    send thought-summary parts back. This is the entire reason Edvard
+    never saw Gemini's thoughts in Agora; not a UI gap, a missing request
+    param."""
+    caps = dict(runner.NO_CAPS)
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["thinkingConfig"] = body["generationConfig"].get("thinkingConfig")
+        return 200, {"candidates": [{"content": {"parts": [{"text": "answer"}]}}]}
+
+    with patch.object(runner.providers.gemini, "http_json", side_effect=fake_http_json):
+        runner.gemini_generate(
+            "gemini-flash-latest", True, "system", [{"role": "user", "content": "hi"}],
+            caps, {"name": "Test"}, "conv-1",
+        )
+    assert captured["thinkingConfig"] == {"thinkingBudget": -1, "includeThoughts": True}
+
+
+def test_gemini_generate_omits_thinking_config_when_thinking_off(runner):
+    caps = dict(runner.NO_CAPS)
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["generationConfig"] = body["generationConfig"]
+        return 200, {"candidates": [{"content": {"parts": [{"text": "answer"}]}}]}
+
+    with patch.object(runner.providers.gemini, "http_json", side_effect=fake_http_json):
+        runner.gemini_generate(
+            "gemini-flash-latest", False, "system", [{"role": "user", "content": "hi"}],
+            caps, {"name": "Test"}, "conv-1",
+        )
+    assert "thinkingConfig" not in captured["generationConfig"]
+
+
+def test_gemini_generate_splits_thought_parts_from_the_answer(runner):
+    caps = dict(runner.NO_CAPS)
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        return 200, {"candidates": [{"content": {"parts": [
+            {"text": "reasoning about the problem...", "thought": True},
+            {"text": "the real answer"},
+        ]}}]}
+
+    thoughts = []
+    with patch.object(runner.providers.gemini, "http_json", side_effect=fake_http_json):
+        result = runner.gemini_generate(
+            "gemini-flash-latest", True, "system", [{"role": "user", "content": "hi"}],
+            caps, {"name": "Test"}, "conv-1", on_thinking=thoughts.append,
+        )
+    assert result == "the real answer"
+    assert thoughts == ["reasoning about the problem..."]
+
+
+def test_gemini_generate_with_fallback_threads_on_thinking_through(runner):
+    caps = dict(runner.NO_CAPS)
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        return 200, {"candidates": [{"content": {"parts": [
+            {"text": "thinking...", "thought": True},
+            {"text": "answer"},
+        ]}}]}
+
+    thoughts = []
+    with patch.object(runner.providers.gemini, "http_json", side_effect=fake_http_json):
+        result = runner.gemini_generate_with_fallback(
+            "gemini-flash-latest", True, "system", [{"role": "user", "content": "hi"}],
+            caps, {"name": "Test", "capabilities": caps}, "conv-1", on_thinking=thoughts.append,
+        )
+    assert result == "answer"
+    assert thoughts == ["thinking..."]
+
+
 def test_gemini_fallback_note_prefixes_only_the_first_streamed_chunk(runner):
     caps = dict(runner.NO_CAPS)
 
@@ -1686,6 +1810,31 @@ def test_merge_history_excludes_activity_messages(runner):
     assert "a real reply" in all_content
 
 
+def test_merge_history_excludes_thinking_messages(runner):
+    thread = [
+        {"sender": "Edvard", "text": "a real question"},
+        {"sender": "Gemini", "text": "pondering...", "thinking": True},
+        {"sender": "Gemini", "text": "a real reply"},
+    ]
+    merged = runner.merge_history(thread, "Gemini", False)
+    all_content = " ".join(m["content"] for m in merged)
+    assert "pondering..." not in all_content
+    assert "a real question" in all_content
+    assert "a real reply" in all_content
+
+
+def test_decide_turn_ignores_thinking_messages_for_last_sender(runner):
+    """A thinking chunk trailing a persona's real text must not look like
+    'the persona already replied to a fresh @mention', same reasoning as
+    the activity-chip exclusion right above."""
+    personas = [{"name": "Gemini", "role": "curator"}, {"name": "Haiku", "role": "listener"}]
+    thread = [
+        {"sender": "Edvard", "text": "@Haiku are you there?"},
+        {"sender": "Gemini", "text": "let me think about that", "thinking": True},
+    ]
+    assert runner.decide_turn(thread, personas) == ["Haiku"]
+
+
 def test_notify_sends_push_field_defaulting_true(runner):
     captured = {}
 
@@ -1714,6 +1863,23 @@ def test_notify_push_false_is_sent_through(runner):
     assert captured["payload"]["push"] is False
 
 
+def test_notify_thinking_defaults_false_and_is_sent_through_when_true(runner):
+    captured = {}
+
+    def fake_agora_internal(method, path, payload=None):
+        captured["payload"] = payload
+        return 200, {"message": {"id": "m1"}}
+
+    with patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal):
+        runner.notify("conv-1", "chunk", "Agora")
+    assert captured["payload"]["thinking"] is False
+
+    with patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal):
+        runner.notify("conv-1", "a thought", "Agora", push=False, thinking=True)
+    assert captured["payload"]["thinking"] is True
+    assert captured["payload"]["push"] is False
+
+
 def test_speak_streams_each_chunk_with_push_only_on_the_final_one(runner):
     persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
                "capabilities": dict(runner.NO_CAPS)}
@@ -1722,7 +1888,7 @@ def test_speak_streams_each_chunk_with_push_only_on_the_final_one(runner):
     notify_calls = []
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None):
+                             sticky=False, on_text=None, on_thinking=None):
         on_text("preamble", False)
         on_text("final answer", True)
         return "final answer"
@@ -1740,6 +1906,71 @@ def test_speak_streams_each_chunk_with_push_only_on_the_final_one(runner):
     assert reply == "final answer"
 
 
+def test_speak_streams_thinking_chunks_with_thinking_true_and_push_false(runner):
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    conversation = {"id": "conv-1"}
+    detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
+    notify_calls = []
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
+                             sticky=False, on_text=None, on_thinking=None):
+        on_thinking("pondering the question...")
+        on_text("final answer", True)
+        return "final answer"
+
+    def fake_notify(conversation_id, text, sender, system=False, push=True, thinking=False):
+        notify_calls.append((text, push, thinking))
+        return 200, f"mid-{len(notify_calls)}"
+
+    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+         patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.conversations, "notify", side_effect=fake_notify):
+        reply = runner.speak(conversation, detail, [], "Test")
+
+    assert notify_calls == [
+        ("pondering the question...", False, True),
+        ("final answer", True, False),
+    ]
+    assert reply == "final answer"
+
+
+def test_speak_rolls_back_thinking_chunks_too_when_a_later_round_fails(runner):
+    """A thinking chunk is a real posted message like any streamed text
+    chunk -- a failed turn must roll it back too, same reasoning as the
+    text-chunk rollback test right below."""
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    conversation = {"id": "conv-1"}
+    detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
+    notify_calls = {"n": 0}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
+                             sticky=False, on_text=None, on_thinking=None):
+        on_thinking("thinking that got posted")
+        raise RuntimeError("simulated failure")
+
+    def fake_notify(conversation_id, text, sender, system=False, push=True, thinking=False):
+        notify_calls["n"] += 1
+        return 200, f"mid-{notify_calls['n']}"
+
+    deleted = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "DELETE":
+            deleted.append(path)
+        return 200, {}
+
+    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+         patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.conversations, "notify", side_effect=fake_notify), \
+         patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal):
+        with pytest.raises(RuntimeError):
+            runner.speak(conversation, detail, [], "Test")
+
+    assert deleted == ["/conversations/conv-1/messages/mid-1"]
+
+
 def test_speak_rolls_back_posted_chunks_when_a_later_round_fails(runner):
     """A turn that streams a preamble, then fails on a later round, must not
     leave that preamble as the thread's last message -- decide_turn would
@@ -1750,7 +1981,7 @@ def test_speak_rolls_back_posted_chunks_when_a_later_round_fails(runner):
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None):
+                             sticky=False, on_text=None, on_thinking=None):
         on_text("preamble that got posted", False)
         raise RuntimeError("simulated failure on the next round")
 
@@ -1780,7 +2011,7 @@ def test_speak_rollback_is_best_effort_and_still_raises_the_original_error(runne
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None):
+                             sticky=False, on_text=None, on_thinking=None):
         on_text("preamble", False)
         raise RuntimeError("original failure")
 
@@ -1811,7 +2042,7 @@ def test_run_heartbeat_is_not_streamed(runner):
     captured = {}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None):
+                             sticky=False, on_text=None, on_thinking=None):
         captured["on_text"] = on_text
         return "a real report"
 

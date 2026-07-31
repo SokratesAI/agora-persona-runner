@@ -14,15 +14,18 @@ from agora_runner.reply import generate_reply
 _conversation_failures = {}
 
 
-def notify(conversation_id, text, sender, system=False, push=True):
+def notify(conversation_id, text, sender, system=False, push=True, thinking=False):
     """`push` (2026-07-24, live streaming): False posts the message
     without sending a phone push -- used for every chunk but the last
     in a streamed turn, so watching a turn arrive doesn't ring the
-    phone once per sentence. Returns (status, message_id); message_id
-    is None on any failure response (no message was ever appended)."""
+    phone once per sentence. `thinking` (2026-07-31): marks an extended-
+    thinking chunk -- rendered distinctly, excluded from every LLM
+    context the same as `system`/`activity` (turns.py). Returns (status,
+    message_id); message_id is None on any failure response (no message
+    was ever appended)."""
     status, body = agora_internal(
         "POST", f"/conversations/{conversation_id}/notify",
-        {"text": text, "sender": sender, "system": system, "push": push},
+        {"text": text, "sender": sender, "system": system, "push": push, "thinking": thinking},
     )
     message_id = (body.get("message") or {}).get("id")
     return status, message_id
@@ -65,9 +68,17 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
         if message_id:
             posted_ids.append(message_id)
 
+    # Same posted_ids rollback-on-failure as on_text -- a thinking chunk is
+    # still a real posted message, so a turn that fails partway through must
+    # roll it back too, or it's left behind as a stray reply-less "thought".
+    def on_thinking(chunk):
+        _status, message_id = notify(conversation["id"], chunk, persona["name"], push=False, thinking=True)
+        if message_id:
+            posted_ids.append(message_id)
+
     try:
         reply = generate_reply(persona, caps, system, history, conversation["id"], model_override, sticky,
-                                on_text=on_text)
+                                on_text=on_text, on_thinking=on_thinking)
     except Exception:
         for message_id in posted_ids:
             try:

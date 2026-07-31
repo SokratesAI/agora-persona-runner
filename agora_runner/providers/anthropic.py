@@ -38,7 +38,7 @@ def _anthropic_content(message):
 
 
 def anthropic_generate(model_id, thinking, system, history, caps, persona, conversation_id, on_text=None,
-                        active_step=None):
+                        active_step=None, on_thinking=None):
     """`on_text(chunk, is_final)`, when given, fires once per round that
     produces text -- the preamble round(s) before a tool call
     (is_final=False) and the round that actually ends the turn
@@ -46,7 +46,15 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
     This is what makes a turn stream into the chat as it's generated
     (2026-07-24) instead of only appearing once, batched, at the end.
     The return value is unchanged either way (final round's text) --
-    callers that don't care about streaming just pass nothing."""
+    callers that don't care about streaming just pass nothing.
+
+    `on_thinking(text)` (2026-07-31): fires once per round with that
+    round's extended-thinking block text, when `thinking` is on. The
+    round_text join below already only reads type=="text" blocks, so
+    thinking blocks were always excluded from the answer correctly --
+    they just had nowhere to go. Content is still passed back to the
+    API verbatim either way (Anthropic requires it for a tool-use
+    continuation); on_thinking is purely an extra look at it."""
     tools = []
     betas = []
     # 2026-07-23 (Issues #1 revisited): dropped Anthropic's server-side
@@ -118,6 +126,12 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
             block["text"].strip() for block in resp.get("content", [])
             if block.get("type") == "text" and block.get("text", "").strip()
         )
+        round_thinking = "\n".join(
+            block["thinking"].strip() for block in resp.get("content", [])
+            if block.get("type") == "thinking" and block.get("thinking", "").strip()
+        )
+        if round_thinking and on_thinking:
+            on_thinking(round_thinking)
 
         if resp.get("stop_reason") == "tool_use":
             if round_text and on_text:
@@ -194,6 +208,12 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
         block["text"].strip() for block in resp.get("content", [])
         if block.get("type") == "text" and block.get("text", "").strip()
     )
+    salvage_thinking = "\n".join(
+        block["thinking"].strip() for block in resp.get("content", [])
+        if block.get("type") == "thinking" and block.get("thinking", "").strip()
+    )
+    if salvage_thinking and on_thinking:
+        on_thinking(salvage_thinking)
     if text:
         if on_text:
             on_text(text, True)
