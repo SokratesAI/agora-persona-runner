@@ -24,6 +24,7 @@ from agora_runner.providers.anthropic import *  # noqa: F401,F403
 from agora_runner.providers.anthropic import _anthropic_content  # noqa: F401 -- underscore name, see above
 from agora_runner.providers.gemini import *  # noqa: F401,F403
 from agora_runner.providers.gemini import _gemini_parts  # noqa: F401 -- underscore name, see above
+from agora_runner.providers.claude_cli import *  # noqa: F401,F403
 from agora_runner.reply import *  # noqa: F401,F403
 from agora_runner.workflows import *  # noqa: F401,F403
 from agora_runner.conversations import *  # noqa: F401,F403
