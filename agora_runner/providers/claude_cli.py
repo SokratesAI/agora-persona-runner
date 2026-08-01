@@ -10,12 +10,22 @@ message is sent as this turn's prompt; everything earlier already lives in
 that session. The bridge itself decides whether to prepend the system/
 persona prompt (only on a conversation's first-ever turn there).
 
-Chat mode only (2026-07-31 design decision): the bridge's CLI session has
-its own tools disabled entirely (agora-claude-bridge's
-CHAT_MODE_DISALLOWED_TOOLS), so there is no client-side tool loop here --
-caps/active_step are accepted for interface-compatibility with the other
-two providers but unused. A dev-agent mode (real git/gh access, for the
-Evolve-Coder use case) is a deliberately separate later phase.
+No client-side tool loop here -- caps/active_step are accepted for
+interface-compatibility with the other two providers but unused. Unlike
+Gemini/Anthropic-API personas (whose tools are enforced server-side from
+capability flags, Decisions/0007), this persona's tools -- if any -- live
+entirely inside the CLI's own session; Agora's capability checkboxes don't
+apply to it at all.
+
+2026-08-01 design call (reversed from the original "chat mode, no tools"
+v1 plan): unrestricted by default, same as an interactive Claude Code
+session -- the earlier always-on tool denylist was live-tested and found
+incomplete (the model found and used an unlisted tool to run real shell
+commands anyway), and Edvard's call was that restriction should be an
+explicit choice, not an incomplete default. `persona["claudeCliRestricted"]`
+(off unless a persona sets it) requests the bridge's full known-tool
+denylist for that persona's calls -- see agora-claude-bridge's
+DISCOVERED_FULL_TOOL_ROSTER for exactly what that blocks.
 """
 import json
 
@@ -46,6 +56,7 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         "system": system,
         "prompt": prompt,
         "model": model_id,
+        "restricted": bool(persona.get("claudeCliRestricted")),
     }
     debug_status_log = f"claude_cli request: model={model_id} conversation={conversation_id}"
     log(debug_status_log)
