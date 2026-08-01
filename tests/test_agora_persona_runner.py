@@ -1896,6 +1896,36 @@ def test_claude_cli_generate_sends_restricted_true_when_persona_opts_in(runner):
     assert captured["body"]["restricted"] is True
 
 
+def test_claude_cli_generate_defaults_stateless_false_when_persona_field_absent(runner):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+    assert captured["body"]["stateless"] is False
+
+
+def test_claude_cli_generate_sends_stateless_true_when_persona_opts_in(runner):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test", "claudeCliStateless": True}, "conv-1",
+        )
+    assert captured["body"]["stateless"] is True
+
+
 def test_claude_cli_generate_calls_on_text_and_on_thinking(runner):
     def fake_http_json(method, url, body=None, headers=None, timeout=300):
         return 200, {"text": "final answer", "thinking": "reasoning about it"}

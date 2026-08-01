@@ -26,6 +26,15 @@ explicit choice, not an incomplete default. `persona["claudeCliRestricted"]`
 (off unless a persona sets it) requests the bridge's full known-tool
 denylist for that persona's calls -- see agora-claude-bridge's
 DISCOVERED_FULL_TOOL_ROSTER for exactly what that blocks.
+
+Same day: `persona["claudeCliStateless"]` (also off by default) requests
+that the bridge skip session persistence entirely for this call -- built
+for the Evolve workflow, whose steps are deliberately bounded and should
+only see their own prompt's context, not an ever-accumulating CLI-side
+memory across every cycle (cross-cycle memory is meant to live in the
+vault journal, per identity.md, not in raw session replay). An ordinary
+chat persona wants the opposite -- continuity across turns -- which is
+why this stays opt-in.
 """
 import json
 
@@ -57,6 +66,7 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         "prompt": prompt,
         "model": model_id,
         "restricted": bool(persona.get("claudeCliRestricted")),
+        "stateless": bool(persona.get("claudeCliStateless")),
     }
     debug_status_log = f"claude_cli request: model={model_id} conversation={conversation_id}"
     log(debug_status_log)
