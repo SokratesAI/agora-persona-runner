@@ -1829,6 +1829,131 @@ def test_gemini_fallback_note_prefixes_only_the_first_streamed_chunk(runner):
     assert "actual reply" in result
 
 
+# ---------------------------------------------------------------------------
+# 2026-08-01: claude_cli provider -- calls agora-claude-bridge instead of
+# Anthropic's Messages API directly. Structurally different from the other
+# two providers: the bridge holds a persistent CLI session per
+# conversation_id, so only the LAST history entry is sent as this turn's
+# prompt, not the full history -- see providers/claude_cli.py's own
+# docstring.
+# ---------------------------------------------------------------------------
+
+def test_claude_cli_generate_sends_only_the_last_history_entry(runner):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "the answer", "thinking": ""}
+
+    history = [
+        {"role": "user", "content": "first message, long ago"},
+        {"role": "assistant", "content": "an old reply"},
+        {"role": "user", "content": "the actual new message"},
+    ]
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        result = runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system prompt", history,
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+    assert result == "the answer"
+    assert captured["body"]["prompt"] == "the actual new message"
+    assert captured["body"]["system"] == "system prompt"
+    assert captured["body"]["conversation_id"] == "conv-1"
+    assert captured["body"]["model"] == "claude-haiku-4-5-20251001"
+
+
+def test_claude_cli_generate_calls_on_text_and_on_thinking(runner):
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        return 200, {"text": "final answer", "thinking": "reasoning about it"}
+
+    text_calls = []
+    thinking_calls = []
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", True, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+            on_text=lambda chunk, is_final: text_calls.append((chunk, is_final)),
+            on_thinking=lambda chunk: thinking_calls.append(chunk),
+        )
+    assert text_calls == [("final answer", True)]
+    assert thinking_calls == ["reasoning about it"]
+
+
+def test_claude_cli_generate_skips_on_thinking_when_bridge_returns_none(runner):
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        return 200, {"text": "final answer", "thinking": ""}
+
+    thinking_calls = []
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+            on_thinking=lambda chunk: thinking_calls.append(chunk),
+        )
+    assert thinking_calls == []
+
+
+def test_claude_cli_generate_raises_usage_limited_on_429(runner):
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        return 429, {"error": "usage_limit", "detail": "resets in 4 hours"}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        with pytest.raises(runner.ClaudeBridgeUsageLimited, match="resets in 4 hours"):
+            runner.claude_cli_generate(
+                "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+                dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+            )
+
+
+def test_claude_cli_generate_raises_runtime_error_on_other_failures(runner):
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        return 502, {"error": "cli_error", "detail": "boom"}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        with pytest.raises(RuntimeError, match="claude_cli 502"):
+            runner.claude_cli_generate(
+                "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+                dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+            )
+
+
+def test_claude_cli_generate_raises_on_empty_history(runner):
+    with pytest.raises(RuntimeError, match="empty history"):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system", [],
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+
+
+def test_claude_cli_generate_sends_bridge_token_header_when_configured(runner):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["headers"] = headers
+        return 200, {"text": "ok", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "CLAUDE_BRIDGE_TOKEN", "secret-token"), \
+         patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+    assert captured["headers"]["x-bridge-token"] == "secret-token"
+
+
+def test_generate_reply_dispatches_claude_cli_provider(runner):
+    """reply.py's own dispatch -- model string 'claude-cli:<id>' routes here,
+    same pattern as 'anthropic:'/'gemini:'."""
+    persona = {"name": "Test", "model": "claude-cli:claude-haiku-4-5-20251001"}
+
+    with patch.object(runner.reply, "claude_cli_generate", return_value="dispatched reply") as mock_gen:
+        result = runner.generate_reply(
+            persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}], "conv-1",
+        )
+    assert result == "dispatched reply"
+    mock_gen.assert_called_once()
+
+
 def test_consecutive_ai_turns_counts_runs_not_messages(runner):
     """A single logical turn now streams as several messages -- the
     AI_TURN_CAP must still count actual persona handoffs, not chunks."""

@@ -27,6 +27,10 @@ AGORA_INTERNAL_URL = os.environ.get(
     "AGORA_INTERNAL_URL", "http://agora.agents.svc.cluster.local:8081"
 )
 AGORA_TOKEN = os.environ.get("AGORA_TOKEN", "")
+CLAUDE_BRIDGE_URL = os.environ.get(
+    "CLAUDE_BRIDGE_URL", "http://agora-claude-bridge.agents.svc.cluster.local:8090"
+)
+CLAUDE_BRIDGE_TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "5"))
 COUCHDB_URL = os.environ.get("COUCHDB_URL", "http://couchdb.obsidian.svc.cluster.local:5984")
