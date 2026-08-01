@@ -1860,6 +1860,40 @@ def test_claude_cli_generate_sends_only_the_last_history_entry(runner):
     assert captured["body"]["system"] == "system prompt"
     assert captured["body"]["conversation_id"] == "conv-1"
     assert captured["body"]["model"] == "claude-haiku-4-5-20251001"
+    assert captured["body"]["restricted"] is False
+
+
+def test_claude_cli_generate_defaults_unrestricted_when_persona_field_absent(runner):
+    """2026-08-01 design call: unrestricted by default, same as an
+    interactive Claude Code session -- restriction is an explicit
+    per-persona opt-in via claudeCliRestricted, not a silent default."""
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+    assert captured["body"]["restricted"] is False
+
+
+def test_claude_cli_generate_sends_restricted_true_when_persona_opts_in(runner):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Test", "claudeCliRestricted": True}, "conv-1",
+        )
+    assert captured["body"]["restricted"] is True
 
 
 def test_claude_cli_generate_calls_on_text_and_on_thinking(runner):
