@@ -189,6 +189,7 @@ DEFAULT_CAPS = {
     "manageAgora": False,
     "githubWrite": False,
     "githubMerge": False,
+    "terminalExec": False,
 }
 NO_CAPS = {
     "webSearch": False,

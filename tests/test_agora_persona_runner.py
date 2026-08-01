@@ -989,6 +989,13 @@ def test_new_capabilities_default_off(runner):
     assert runner.NO_CAPS["githubRead"] is False
 
 
+def test_default_caps_and_no_caps_have_same_keys(runner):
+    # Every capability flag must exist in both maps -- a key present in one
+    # but not the other silently drops that capability wherever the missing
+    # map is used as a fallback/reference (e.g. dict(DEFAULT_CAPS) callers).
+    assert set(runner.DEFAULT_CAPS.keys()) == set(runner.NO_CAPS.keys())
+
+
 def test_gemini_fallback_chain_has_no_duplicates(runner):
     assert len(runner.GEMINI_FALLBACK_CHAIN) == len(set(runner.GEMINI_FALLBACK_CHAIN))
 
