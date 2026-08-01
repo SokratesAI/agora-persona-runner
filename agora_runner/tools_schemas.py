@@ -144,6 +144,27 @@ def client_tool_schemas(caps, active_step=None):
                              "required": ["path", "content"]},
         })
         tools.append({
+            "name": "vault_append",
+            "description": (
+                "Add content to an EXISTING vault file WITHOUT losing what's already there -- "
+                "use this instead of vault_write for any append-only log (e.g. an evolution/"
+                "cycle journal): vault_write replaces the WHOLE file, so calling it with only "
+                "your new entry silently destroys every prior one. Give after_marker as a line "
+                "that already exists in the file (e.g. '## Entries') to insert content right "
+                "after it; omit after_marker to just add content at the end of the file. Fails "
+                "if the file doesn't exist yet -- use vault_write to create a new file."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "after_marker": {"type": "string", "description": "optional: an existing line to insert content directly after"},
+                },
+                "required": ["path", "content"],
+            },
+        })
+        tools.append({
             "name": "vault_update_frontmatter_batch",
             "description": (
                 "Bulk-set one frontmatter field to one value across every vault file under prefix "
@@ -442,6 +463,7 @@ TOOL_TO_CAPABILITY = {
     "vault_git_revision_history": "vaultRead",
     "vault_summarize_recent_agent_work": "vaultRead",
     "vault_write": "vaultWrite",
+    "vault_append": "vaultWrite",
     "vault_update_frontmatter_batch": "vaultWrite",
     "kubectl_read": "kubectlRead",
     "github_read": "githubRead",

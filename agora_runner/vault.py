@@ -105,6 +105,38 @@ def vault_write_path(path, content):
     return _vault_put_raw(path, content, existing if status == 200 else None)
 
 
+def vault_append_path(path, content, after_marker=""):
+    """Add `content` to an EXISTING file without losing what's already
+    there -- vault_write_path is a full overwrite, and a run that reads
+    a file then calls it with only its own new bit (easy for a small
+    model to do without noticing) silently destroys every prior entry.
+    Found live 2026-07-31: the Evolve-Coder persona's cycle journal
+    entries were replacing each other one-for-one, run after run,
+    because nothing enforced "combine with the old content" -- the
+    convention lived only in prompt text. Recoverable via vault_write_path's
+    own per-write backups, but the journal itself -- the one thing each
+    new run actually reads for cross-cycle memory -- never accumulated.
+
+    If `after_marker` is a line that exists verbatim in the current
+    file, `content` is inserted directly after it (one blank line
+    between). Otherwise -- no marker given, or marker not found --
+    `content` is appended at the true end of the file. Fails loudly
+    (does not silently fall back to vault_write's create-new-file
+    behavior) if the file doesn't exist yet, since "append" implies
+    something to append to."""
+    existing_content = vault_read_path(path)
+    if existing_content is None:
+        return f"FAILED(not found: {path} -- use vault_write to create a new file)"
+    if after_marker:
+        lines = existing_content.split("\n")
+        for i, line in enumerate(lines):
+            if line.strip() == after_marker.strip():
+                lines[i + 1:i + 1] = ["", content.strip("\n")]
+                return vault_write_path(path, "\n".join(lines))
+    sep = "" if existing_content.endswith("\n\n") else ("\n" if existing_content.endswith("\n") else "\n\n")
+    return vault_write_path(path, existing_content + sep + content.strip("\n") + "\n")
+
+
 def _vault_put_raw(path, content, existing=None):
     path = path.lower()
     now_ms = int(time.time() * 1000)

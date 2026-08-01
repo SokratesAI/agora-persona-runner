@@ -7,7 +7,7 @@ from agora_runner.log import debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
 from agora_runner.vault import (
-    vault_read_path, vault_write_path, vault_list_prefix, vault_search,
+    vault_read_path, vault_write_path, vault_append_path, vault_list_prefix, vault_search,
     vault_query_frontmatter, vault_validate_frontmatter_schema, vault_find_stub_notes,
     vault_find_duplicate_titles, vault_get_token_metrics, vault_git_revision_history,
     vault_summarize_recent_agent_work, vault_update_frontmatter_batch,
@@ -69,6 +69,14 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             before = vault_read_path(path) or ""
             result = vault_write_path(path, content)
             audit(persona_name, conversation_id, "vault_write", path, before=before, after=content)
+            return result
+        if name == "vault_append":
+            path = str(args.get("path", ""))
+            content = str(args.get("content", ""))
+            after_marker = str(args.get("after_marker", ""))
+            before = vault_read_path(path) or ""
+            result = vault_append_path(path, content, after_marker)
+            audit(persona_name, conversation_id, "vault_append", path, before=before, after=content)
             return result
         if name == "vault_search":
             query = str(args.get("query", ""))

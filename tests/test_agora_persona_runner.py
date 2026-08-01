@@ -836,6 +836,79 @@ def test_vault_write_path_backs_up_to_lowercase_agora_backups(runner):
     assert all("Agora/Backups" not in p for p in decoded)
 
 
+# ---------------------------------------------------------------------------
+# 2026-07-31: live incident -- the Agora Evolve workflow's cycle journal
+# (append-only, newest-entry-at-top by convention) was silently losing
+# every prior entry, run after run. vault_write is a full-file overwrite;
+# the Coder persona read the journal, then called vault_write with only
+# its OWN new entry, and the whole file -- including every earlier
+# cycle's history -- was replaced. Prior versions were recoverable from
+# vault_write_path's own per-write backups, but the live journal (the one
+# thing each new run actually reads) never accumulated. Fixed with a
+# purpose-built append tool rather than relying on prompt wording, since
+# a smaller model dropping the convention is a predictable failure mode,
+# not a one-off.
+# ---------------------------------------------------------------------------
+
+def test_vault_append_path_inserts_after_marker_when_found(runner):
+    with patch.object(runner.vault, "vault_read_path",
+                       return_value="---\nfm\n---\n\n## Entries\n\nold entry text"), \
+         patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
+        result = runner.vault_append_path("journal.md", "new entry text", after_marker="## Entries")
+    assert result == "written"
+    written_content = mock_write.call_args[0][1]
+    assert written_content == "---\nfm\n---\n\n## Entries\n\nnew entry text\n\nold entry text"
+
+
+def test_vault_append_path_appends_at_end_when_no_marker_given(runner):
+    with patch.object(runner.vault, "vault_read_path", return_value="line one"), \
+         patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
+        runner.vault_append_path("notes.md", "line two")
+    assert mock_write.call_args[0][1] == "line one\n\nline two\n"
+
+
+def test_vault_append_path_appends_at_end_when_marker_not_found(runner):
+    with patch.object(runner.vault, "vault_read_path", return_value="no marker here"), \
+         patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
+        runner.vault_append_path("notes.md", "addition", after_marker="## Missing")
+    assert mock_write.call_args[0][1] == "no marker here\n\naddition\n"
+
+
+def test_vault_append_path_fails_loudly_for_a_missing_file(runner):
+    with patch.object(runner.vault, "vault_read_path", return_value=None), \
+         patch.object(runner.vault, "vault_write_path") as mock_write:
+        result = runner.vault_append_path("missing.md", "content")
+    assert result.startswith("FAILED")
+    mock_write.assert_not_called()
+
+
+def test_execute_tool_vault_append_dispatches_and_audits(runner):
+    persona = {"name": "Gemini"}
+    with patch.object(runner.tools_dispatch, "vault_read_path", return_value="old content") as mock_read, \
+         patch.object(runner.tools_dispatch, "vault_append_path", return_value="written") as mock_append, \
+         patch.object(runner.tools_dispatch, "audit") as mock_audit:
+        result = runner.execute_tool(
+            "vault_append", {"path": "journal.md", "content": "new entry", "after_marker": "## Entries"},
+            persona, "c1",
+        )
+    assert result == "written"
+    mock_read.assert_called_once_with("journal.md")
+    mock_append.assert_called_once_with("journal.md", "new entry", "## Entries")
+    mock_audit.assert_called_once_with(
+        "Gemini", "c1", "vault_append", "journal.md", before="old content", after="new entry"
+    )
+
+
+def test_vault_append_tool_schema_present_only_with_vault_write_capability(runner):
+    caps_on = {"webSearch": False, "vaultRead": False, "vaultWrite": True,
+               "codeExecution": False, "kubectlRead": False, "githubRead": False}
+    caps_off = dict(runner.NO_CAPS)
+    names_on = {t["name"] for t in runner.client_tool_schemas(caps_on)}
+    names_off = {t["name"] for t in runner.client_tool_schemas(caps_off)}
+    assert "vault_append" in names_on
+    assert "vault_append" not in names_off
+
+
 def test_capability_gated_tools_absent_when_off(runner):
     caps = dict(runner.NO_CAPS)
     schemas = runner.client_tool_schemas(caps)
