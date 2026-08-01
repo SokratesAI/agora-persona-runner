@@ -244,6 +244,16 @@ def build_system(persona, conversation=None, participants=None, heartbeat_extra=
                 "on it is green. It refuses otherwise; there is no override."
             )
         parts.append(" ".join(gh_parts))
+    if caps.get("terminalExec"):
+        parts.append(
+            "## Terminal access\nYou have terminal_exec — an unrestricted shell "
+            "(bash -lc) in this runner pod, no command allowlist unlike your other "
+            "tools. Use it to inspect or fix anything no purpose-built tool covers "
+            "yet, or to run git/npm/python/etc. directly. Commands run in a "
+            "per-pod scratch workspace that persists between calls but not across "
+            "a pod restart. This is your highest-blast-radius tool — prefer a "
+            "narrower tool when one already does the job."
+        )
     if heartbeat_extra:
         parts.append(heartbeat_extra)
     return "\n\n".join(parts)

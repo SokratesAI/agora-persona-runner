@@ -3618,6 +3618,25 @@ def test_execute_tool_terminal_exec_dispatches_with_audit(runner):
     assert audit_args[3] == "echo hi"
 
 
+def test_build_system_includes_terminal_exec_blurb_when_capability_on(runner):
+    persona = {
+        "name": "Test", "personality": "You are Test.",
+        "capabilities": {"terminalExec": True},
+    }
+    system = runner.build_system(persona)
+    assert "terminal_exec" in system
+    assert "Terminal access" in system
+
+
+def test_build_system_omits_terminal_exec_blurb_when_capability_off(runner):
+    persona = {
+        "name": "Test", "personality": "You are Test.",
+        "capabilities": {"terminalExec": False},
+    }
+    system = runner.build_system(persona)
+    assert "Terminal access" not in system
+
+
 # ---------------------------------------------------------------------------
 # 2026-07-26 list_personas / list_models — fixes a real live bug: a
 # manageAgora persona had no way to learn its own personaId (needed by
