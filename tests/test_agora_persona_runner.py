@@ -3600,6 +3600,42 @@ def test_merge_pr_succeeds_when_all_checks_green(runner):
     assert "mergeds" in result
 
 
+def test_github_comment_requires_repo_number_and_body(runner):
+    assert "required" in runner.github_comment("", 42, "hi")
+    assert "required" in runner.github_comment("agora", 0, "hi")
+    assert "must not be empty" in runner.github_comment("agora", 42, "")
+    assert "must not be empty" in runner.github_comment("agora", 42, "   ")
+
+
+def test_github_comment_posts_to_issues_endpoint_for_prs_too(runner):
+    calls = []
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+        calls.append((method, url, body))
+        return 201, {"html_url": "https://github.com/SokratesAI/agora/pull/42#issuecomment-1"}
+
+    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
+        result = runner.github_comment("agora", 42, "looks good")
+
+    # PRs and issues share one numbering space, so the issues endpoint is
+    # correct for both -- this is the whole reason there's no pr/issue branch.
+    assert calls == [
+        ("POST", "https://api.github.com/repos/SokratesAI/agora/issues/42/comments",
+         {"body": "looks good"}),
+    ]
+    assert "commented on agora#42" in result
+    assert "issuecomment-1" in result
+
+
+def test_github_comment_surfaces_api_failure(runner):
+    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+         patch.object(runner.tools_github, "http_json", return_value=(404, {"message": "Not Found"})):
+        result = runner.github_comment("agora", 999, "hello")
+    assert "could not comment on agora#999" in result
+    assert "HTTP 404" in result
+
+
 def test_github_write_and_merge_tools_only_advertised_with_capability(runner):
     caps_on = dict(runner.NO_CAPS, githubWrite=True, githubMerge=True)
     caps_off = dict(runner.NO_CAPS, githubWrite=False, githubMerge=False)
@@ -3607,6 +3643,18 @@ def test_github_write_and_merge_tools_only_advertised_with_capability(runner):
     names_off = {t["name"] for t in runner.client_tool_schemas(caps_off)}
     assert "create_pr" in names_on and "merge_pr" in names_on
     assert "create_pr" not in names_off and "merge_pr" not in names_off
+
+
+def test_github_comment_advertised_with_github_write_capability(runner):
+    names_on = {t["name"] for t in runner.client_tool_schemas(dict(runner.NO_CAPS, githubWrite=True))}
+    names_off = {t["name"] for t in runner.client_tool_schemas(dict(runner.NO_CAPS, githubWrite=False))}
+    assert "github_comment" in names_on
+    assert "github_comment" not in names_off
+    # githubMerge alone must not smuggle it in -- it rides githubWrite only.
+    names_merge_only = {
+        t["name"] for t in runner.client_tool_schemas(dict(runner.NO_CAPS, githubMerge=True))
+    }
+    assert "github_comment" not in names_merge_only
 
 
 def test_execute_tool_create_pr_dispatches_with_audit(runner):
@@ -3633,8 +3681,22 @@ def test_execute_tool_merge_pr_dispatches_with_audit(runner):
     mock_fn.assert_called_once_with("agora", 5, "squash")
 
 
+def test_execute_tool_github_comment_dispatches_with_audit(runner):
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "github_comment",
+                      return_value="commented on agora#7: url") as mock_fn, \
+         patch.object(runner.tools_dispatch, "audit") as mock_audit:
+        result = runner.execute_tool(
+            "github_comment", {"repo": "agora", "issue_number": 7, "body": "nice"}, persona, "c1",
+        )
+    assert result == "commented on agora#7: url"
+    mock_fn.assert_called_once_with("agora", 7, "nice")
+    mock_audit.assert_called_once()
+
+
 def test_tool_to_capability_covers_github_write_and_merge(runner):
     assert runner.TOOL_TO_CAPABILITY["create_pr"] == "githubWrite"
+    assert runner.TOOL_TO_CAPABILITY["github_comment"] == "githubWrite"
     assert runner.TOOL_TO_CAPABILITY["merge_pr"] == "githubMerge"
 
 

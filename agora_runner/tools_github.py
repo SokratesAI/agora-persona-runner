@@ -1,4 +1,4 @@
-"""github_read (read-only gh) and create_pr/merge_pr (real GitHub writes via the bot account)."""
+"""github_read (read-only gh) and create_pr/github_comment/merge_pr (real GitHub writes via the bot account)."""
 
 import base64
 import json
@@ -163,6 +163,28 @@ def create_pr(repo, branch, files, commit_message, title, body="", base="main"):
     if pr_err:
         return f"[create_pr: {len(files)} file(s) committed to {branch!r} but PR creation failed: {pr_err}]"
     return f"created PR #{pr['number']}: {pr['html_url']}"
+
+
+def github_comment(repo, issue_number, body):
+    """Posts a comment on an issue or a PR. One endpoint covers both:
+    GitHub models every PR as an issue, so /issues/{n}/comments is the
+    right call either way -- no pr-vs-issue branch to get wrong, and no
+    extra API round-trip to find out which one `issue_number` is. (This
+    is a review comment on the conversation thread, not an inline
+    review comment on a diff line -- that's a different endpoint and a
+    much larger tool.) Reuses githubWrite: a persona already trusted to
+    open a PR is trusted to comment on one."""
+    if not repo or not issue_number:
+        return "[github_comment: repo and issue_number are required]"
+    if not str(body or "").strip():
+        return "[github_comment: body must not be empty]"
+
+    result, err = _github_api(
+        "POST", f"/repos/{GITHUB_ORG}/{repo}/issues/{issue_number}/comments", {"body": str(body)}
+    )
+    if err:
+        return f"[github_comment: could not comment on {repo}#{issue_number}: {err}]"
+    return f"commented on {repo}#{issue_number}: {result.get('html_url') or '?'}"
 
 
 def merge_pr(repo, pr_number, merge_method="squash"):
