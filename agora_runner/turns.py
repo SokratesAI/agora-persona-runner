@@ -236,7 +236,9 @@ def build_system(persona, conversation=None, participants=None, heartbeat_extra=
             gh_parts.append(
                 "You have create_pr — opens a real PR (or adds commits to one you "
                 "already opened) on any repo the bot account can reach. Pick a branch "
-                "name that reflects the actual change, not a generic one."
+                "name that reflects the actual change, not a generic one. You also "
+                "have github_comment — posts a comment on an issue or a PR by number "
+                "(both share one numbering space, so one tool covers each)."
             )
         if caps.get("githubMerge"):
             gh_parts.append(

@@ -13,7 +13,7 @@ from agora_runner.vault import (
     vault_summarize_recent_agent_work, vault_update_frontmatter_batch,
 )
 from agora_runner.tools_kubectl import kubectl_read
-from agora_runner.tools_github import github_read, create_pr, merge_pr
+from agora_runner.tools_github import github_read, create_pr, github_comment, merge_pr
 from agora_runner.tools_terminal import terminal_exec
 from agora_runner.tools_search import web_search_tinyfish
 
@@ -239,6 +239,12 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
                 str(args.get("body", "")), str(args.get("base") or "main"),
             )
             audit(persona_name, conversation_id, "create_pr", f"{repo}#{branch} ({len(files)} file(s))")
+            return result
+        if name == "github_comment":
+            repo = str(args.get("repo", ""))
+            issue_number = int(args.get("issue_number") or 0)
+            result = github_comment(repo, issue_number, str(args.get("body", "")))
+            audit(persona_name, conversation_id, "github_comment", f"{repo}#{issue_number}")
             return result
         if name == "merge_pr":
             repo = str(args.get("repo", ""))

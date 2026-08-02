@@ -290,6 +290,24 @@ def client_tool_schemas(caps, active_step=None):
                 "required": ["repo", "branch", "files", "commit_message", "title"],
             },
         })
+        tools.append({
+            "name": "github_comment",
+            "description": (
+                "Post a comment on a GitHub issue or pull request using the shared bot "
+                "account. Works for both -- pass the issue number or the PR number, "
+                "they share one numbering space. This comments on the conversation "
+                "thread, not on a specific line of a diff."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "repo name within the SokratesAI org, e.g. 'agora'"},
+                    "issue_number": {"type": "integer", "description": "issue or PR number, e.g. 42"},
+                    "body": {"type": "string", "description": "comment body (markdown)"},
+                },
+                "required": ["repo", "issue_number", "body"],
+            },
+        })
     if caps.get("githubMerge"):
         tools.append({
             "name": "merge_pr",
@@ -475,6 +493,7 @@ TOOL_TO_CAPABILITY = {
     "create_heartbeat": "manageAgora",
     "create_workflow": "manageAgora",
     "create_pr": "githubWrite",
+    "github_comment": "githubWrite",
     "merge_pr": "githubMerge",
 }
 
