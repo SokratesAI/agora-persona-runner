@@ -2896,6 +2896,102 @@ def test_run_workflow_heartbeat_records_summary_in_last_result(runner):
     mock_audit.assert_called_once()
 
 
+def test_run_workflow_heartbeat_claims_run_before_executing(runner):
+    """2026-08-02: the heartbeat must be marked as claimed (forceRun
+    cleared, lastRunAt set) BEFORE the multi-step run starts, not only
+    after it finishes. A workflow run takes minutes; while it was in
+    flight the persisted state still said "still forced, never ran", so
+    a pod restart (which drops heartbeats.py's in-process
+    `_workflow_threads` guard) re-ran the same cycle and produced
+    duplicate work."""
+    heartbeat = {"id": "hb1", "name": "WF HB", "schedule": "every@1h",
+                 "conversationId": "c1", "workflowId": "wf1", "forceRun": True}
+    workflow = {"id": "wf1", "name": "Discuss", "steps": [{"prompt": "", "loopCount": 1, "toolWhitelist": []}]}
+    detail = {"personas": [{"personaId": "p1", "name": "A", "role": "curator"}], "messages": []}
+
+    events = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == f"/heartbeats/{heartbeat['id']}":
+            events.append(("patch", payload))
+        return 200, {}
+
+    def fake_run_workflow_steps(steps, conversation_id, detail, participants, **kwargs):
+        events.append(("run", None))
+        return -1, 1, 1
+
+    with patch.object(runner.workflows, "fetch_workflow", return_value=workflow), \
+         patch.object(runner.workflows, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.workflows, "run_workflow_steps", side_effect=fake_run_workflow_steps), \
+         patch.object(runner.workflows, "audit"), \
+         patch.object(runner.workflows, "agora_internal", side_effect=fake_agora_internal):
+        runner.run_workflow_heartbeat(heartbeat)
+
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["patch", "run", "patch"], kinds
+    claim = events[0][1]
+    assert claim["forceRun"] is False
+    assert claim["lastResult"] == "running"
+    # The claim anchors the next schedule to run START -- deliberate, so
+    # a workflow that outlives its own interval still gets a real
+    # lastRunAt while it is in flight.
+    assert claim["lastRunAt"]
+    assert claim["lastRunAt"] <= events[-1][1]["lastRunAt"]
+
+
+def test_run_workflow_heartbeat_claims_run_even_when_workflow_missing(runner):
+    """The claim is unconditional -- it happens before fetch_workflow, so
+    a heartbeat pointing at a deleted workflow still consumes its
+    forceRun instead of being retried forever."""
+    heartbeat = {"id": "hb1", "name": "WF HB", "schedule": "every@1h",
+                 "conversationId": "c1", "workflowId": "ghost", "forceRun": True}
+    heartbeat_updates = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == f"/heartbeats/{heartbeat['id']}":
+            heartbeat_updates.append(payload)
+        return 200, {}
+
+    with patch.object(runner.workflows, "fetch_workflow", return_value=None), \
+         patch.object(runner.workflows, "agora_internal", side_effect=fake_agora_internal):
+        runner.run_workflow_heartbeat(heartbeat)
+
+    assert heartbeat_updates[0]["lastResult"] == "running"
+    assert "workflow not found" in heartbeat_updates[-1]["lastResult"]
+
+
+def test_run_workflow_heartbeat_logs_when_the_claim_patch_fails(runner):
+    """A failed claim PATCH silently reopens the duplicate window the
+    claim exists to close. The run deliberately continues (a transient
+    Agora blip shouldn't block the whole cycle), but it must say so --
+    otherwise the next duplicate run has no evidence trail."""
+    heartbeat = {"id": "hb1", "name": "WF HB", "schedule": "every@1h",
+                 "conversationId": "c1", "workflowId": "wf1", "forceRun": True}
+    workflow = {"id": "wf1", "name": "Discuss", "steps": [{"prompt": "", "loopCount": 1, "toolWhitelist": []}]}
+    detail = {"personas": [{"personaId": "p1", "name": "A", "role": "curator"}], "messages": []}
+    logs = []
+
+    def failing_claim(method, path, payload=None):
+        # Only the claim (the first PATCH, lastResult "running") fails.
+        if payload and payload.get("lastResult") == "running":
+            return 503, {}
+        return 200, {}
+
+    with patch.object(runner.workflows, "fetch_workflow", return_value=workflow), \
+         patch.object(runner.workflows, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.workflows, "run_workflow_steps", return_value=(-1, 1, 1)), \
+         patch.object(runner.workflows, "audit"), \
+         patch.object(runner.workflows, "log", side_effect=lambda m: logs.append(m)), \
+         patch.object(runner.workflows, "agora_internal", side_effect=failing_claim):
+        runner.run_workflow_heartbeat(heartbeat)
+
+    claim_warnings = [m for m in logs if "claim PATCH failed" in m]
+    assert claim_warnings, logs
+    assert "503" in claim_warnings[0]
+    # ...and the cycle still ran rather than aborting on the blip.
+    assert any("1 replies posted" in m for m in logs)
+
+
 def test_run_workflow_heartbeat_uses_rotated_conversation_id(runner):
     """2026-08-02: when rotate_cycle_conversation hands back a different
     id than the heartbeat's own conversationId, the workflow must run

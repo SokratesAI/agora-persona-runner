@@ -133,6 +133,32 @@ def run_workflow_heartbeat(heartbeat):
     the main poll thread. Mirrors run_heartbeat's fetch/execute/PATCH
     shape exactly, just delegating the "execute" step to the multi-step
     engine above instead of one generate_reply call."""
+    # Claim the run BEFORE running it (2026-08-02). A workflow run can
+    # take many minutes (an Evolve cycle is ~11); until this PATCH
+    # existed, the heartbeat's PERSISTED state said "never ran, still
+    # forced" for that whole window, and the only thing preventing a
+    # second, duplicate run was `_workflow_threads` in heartbeats.py —
+    # an in-process dict that doesn't survive a pod restart and doesn't
+    # exist for any other replica or caller. Measured: 7 of the 19 PRs
+    # opened on this repo since #6 were same-work duplicates.
+    # Writing forceRun/lastRunAt up front makes the claim durable, and
+    # gives a human a visible "running" state mid-cycle instead of a
+    # stale one. Note this deliberately anchors the next scheduled run
+    # to run START rather than run END (schedule_due reads lastRunAt) —
+    # for a workflow that can outlive its own interval, that's the
+    # point. The end-of-run PATCH below still overwrites both fields.
+    claim_status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
+                                     {"forceRun": False,
+                                      "lastRunAt": datetime.now(timezone.utc).isoformat(),
+                                      "lastResult": "running"})
+    if claim_status not in (200, 201):
+        # Deliberately continue rather than return: a transient Agora
+        # blip shouldn't block the cycle entirely. But an unlogged
+        # failure here silently reopens the exact duplicate window this
+        # claim exists to close, so it must not pass quietly — if
+        # duplicate runs ever show up again, this line is the evidence.
+        log(f"workflow heartbeat {heartbeat['name']}: claim PATCH failed (HTTP {claim_status}), "
+            "run is unclaimed and may be duplicated by a restart or another replica")
     workflow = fetch_workflow(heartbeat["workflowId"])
     if workflow is None:
         agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
