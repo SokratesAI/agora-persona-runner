@@ -2417,7 +2417,6 @@ def test_run_heartbeat_claims_run_before_executing(runner):
          patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
          patch.object(runner.heartbeats, "audit"), \
-         patch.object(runner.heartbeat_claim, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
         runner.run_heartbeat(heartbeat)
 
@@ -2463,7 +2462,6 @@ def test_run_heartbeat_claim_survives_the_run_being_killed_mid_flight(runner):
     with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
          patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
          patch.object(runner.heartbeats, "generate_reply", side_effect=killed), \
-         patch.object(runner.heartbeat_claim, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
         with pytest.raises(KeyboardInterrupt):
             runner.run_heartbeat(heartbeat)
@@ -2493,7 +2491,6 @@ def test_run_heartbeat_claims_run_even_when_persona_missing(runner):
         return 200, {}
 
     with patch.object(runner.heartbeats, "fetch_persona", return_value=None), \
-         patch.object(runner.heartbeat_claim, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
         runner.run_heartbeat(heartbeat)
 
@@ -3212,7 +3209,6 @@ def test_run_workflow_heartbeat_claims_run_before_executing(runner):
          patch.object(runner.workflows, "agora_get", return_value=(200, detail)), \
          patch.object(runner.workflows, "run_workflow_steps", side_effect=fake_run_workflow_steps), \
          patch.object(runner.workflows, "audit"), \
-         patch.object(runner.heartbeat_claim, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.workflows, "agora_internal", side_effect=fake_agora_internal):
         runner.run_workflow_heartbeat(heartbeat)
 
@@ -3242,7 +3238,6 @@ def test_run_workflow_heartbeat_claims_run_even_when_workflow_missing(runner):
         return 200, {}
 
     with patch.object(runner.workflows, "fetch_workflow", return_value=None), \
-         patch.object(runner.heartbeat_claim, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.workflows, "agora_internal", side_effect=fake_agora_internal):
         runner.run_workflow_heartbeat(heartbeat)
 
@@ -3272,8 +3267,6 @@ def test_run_workflow_heartbeat_logs_when_the_claim_patch_fails(runner):
          patch.object(runner.workflows, "run_workflow_steps", return_value=(-1, 1, 1)), \
          patch.object(runner.workflows, "audit"), \
          patch.object(runner.workflows, "log", side_effect=lambda m: logs.append(m)), \
-         patch.object(runner.heartbeat_claim, "log", side_effect=lambda m: logs.append(m)), \
-         patch.object(runner.heartbeat_claim, "agora_internal", side_effect=failing_claim), \
          patch.object(runner.workflows, "agora_internal", side_effect=failing_claim):
         runner.run_workflow_heartbeat(heartbeat)
 

@@ -14,18 +14,32 @@ from agora_runner.reply import generate_reply
 from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
 from agora_runner.conversation_rotation import rotate_cycle_conversation
-from agora_runner.heartbeat_claim import claim_heartbeat_run
 
 
 def run_heartbeat(heartbeat):
-    # Claim the run BEFORE running it (2026-08-02). #25 gave this to the
-    # workflow path only; the regular path went without, and the regular
-    # path is what the Evolve loop itself runs on since v2. Confirmed
-    # live the same day: a merge into this repo rolled the pod hosting
-    # the in-flight cycle, `forceRun` was still set because the run died
-    # before its final PATCH, and the replacement pod immediately
-    # started the same cycle over. See heartbeat_claim.py.
-    claim_heartbeat_run(heartbeat)
+    # Claim the run BEFORE running it (2026-08-02) — same claim, same
+    # reasons, as run_workflow_heartbeat's (see its comment for the
+    # measurements). #25 added it there and only there; a regular
+    # heartbeat had no duplicate protection of any kind, and since v2
+    # the Evolve loop runs on a regular heartbeat — so the unguarded
+    # path was the one doing the long, PR-opening runs.
+    #
+    # Confirmed live twice on 2026-08-02: a merge into this repo rolls
+    # the pod hosting the in-flight cycle, the process is killed before
+    # the final PATCH below, so `forceRun` is still set when the
+    # replacement pod reads it — and it starts the same cycle over. A
+    # kill isn't an exception, so the `except Exception` below can never
+    # clean this up; only a claim written up front survives it.
+    claim_status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
+                                     {"forceRun": False,
+                                      "lastRunAt": datetime.now(timezone.utc).isoformat(),
+                                      "lastResult": "running"})
+    if claim_status not in (200, 201):
+        # Not fatal — a transient Agora blip shouldn't block a real
+        # cycle — but never silent: this line is the evidence if
+        # duplicate runs ever reappear.
+        log(f"heartbeat {heartbeat['name']}: claim PATCH failed (HTTP {claim_status}), "
+            "run is unclaimed and may be duplicated by a restart or another replica")
     persona = fetch_persona(heartbeat["personaId"])
     if persona is None:
         agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
