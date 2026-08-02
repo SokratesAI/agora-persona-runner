@@ -147,10 +147,18 @@ def run_workflow_heartbeat(heartbeat):
     # to run START rather than run END (schedule_due reads lastRunAt) —
     # for a workflow that can outlive its own interval, that's the
     # point. The end-of-run PATCH below still overwrites both fields.
-    agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
-                   {"forceRun": False,
-                    "lastRunAt": datetime.now(timezone.utc).isoformat(),
-                    "lastResult": "running"})
+    claim_status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
+                                     {"forceRun": False,
+                                      "lastRunAt": datetime.now(timezone.utc).isoformat(),
+                                      "lastResult": "running"})
+    if claim_status not in (200, 201):
+        # Deliberately continue rather than return: a transient Agora
+        # blip shouldn't block the cycle entirely. But an unlogged
+        # failure here silently reopens the exact duplicate window this
+        # claim exists to close, so it must not pass quietly — if
+        # duplicate runs ever show up again, this line is the evidence.
+        log(f"workflow heartbeat {heartbeat['name']}: claim PATCH failed (HTTP {claim_status}), "
+            "run is unclaimed and may be duplicated by a restart or another replica")
     workflow = fetch_workflow(heartbeat["workflowId"])
     if workflow is None:
         agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
