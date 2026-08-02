@@ -1172,6 +1172,31 @@ def test_repeated_speak_failures_auto_pause_after_cap(runner):
     assert summary["id"] not in runner._conversation_failures, "failure count should reset after pausing"
 
 
+def test_auto_pause_reason_surfaces_the_real_exception(runner):
+    # The pause label used to be a generic "(rate limit or outage)" guess,
+    # with the real exception only ever reaching stdout via poll.py's own
+    # try/except -- never the conversation Edvard actually reads.
+    runner._conversation_failures.clear()
+    summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn), \
+         patch.object(runner.conversations, "speak", side_effect=RuntimeError("simulated 503 from provider")):
+        for _ in range(runner.FAILURE_PAUSE_CAP):
+            with pytest.raises(RuntimeError):
+                runner.poll_conversation(summary)
+
+    notify_calls = [
+        c for c in calls["agora_internal"]
+        if c[0] == "POST" and c[1] == f"/conversations/{summary['id']}/notify"
+    ]
+    assert notify_calls, "auto_pause should have posted a system notice"
+    pause_text = notify_calls[-1][2]["text"]
+    assert "RuntimeError" in pause_text
+    assert "simulated 503 from provider" in pause_text
+
+
 def test_failures_below_cap_do_not_pause(runner):
     runner._conversation_failures.clear()
     summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)

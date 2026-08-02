@@ -153,7 +153,7 @@ def poll_conversation(summary):
             # Later speakers in the same poll see earlier replies
             # (Architecture §3: sequential, each seeing the prior one's answer).
             local_thread.append({"sender": speaker, "text": reply})
-    except Exception:
+    except Exception as exc:
         # No reply got appended, so the turn-taking rule still sees the same
         # "needs a reply" state next tick — without this cap, a persistently
         # failing turn (rate limit, outage) retries every POLL_INTERVAL_SECONDS
@@ -161,12 +161,17 @@ def poll_conversation(summary):
         count = _conversation_failures.get(summary["id"], 0) + 1
         _conversation_failures[summary["id"]] = count
         if count >= FAILURE_PAUSE_CAP:
+            # The old label ("rate limit or outage") was a guess -- the real
+            # exception only ever reached stdout via poll.py's own
+            # try/except, never the conversation Edvard actually reads.
+            # Thread the real error into the visible pause message instead.
+            detail_text = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             auto_pause(
                 summary["id"], detail.get("name"),
                 reason=(
                     f"⏸️ Paused automatically after {FAILURE_PAUSE_CAP} consecutive "
-                    "failed reply attempts (rate limit or outage). Resume from this "
-                    "conversation's menu once the underlying issue has cleared."
+                    f"failed reply attempts. Last error: {detail_text}. Resume from "
+                    "this conversation's menu once the underlying issue has cleared."
                 ),
             )
             _conversation_failures.pop(summary["id"], None)
