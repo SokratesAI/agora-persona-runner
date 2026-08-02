@@ -2611,7 +2611,7 @@ def test_run_heartbeat_trigger_stays_generic_when_last_message_is_from_persona(r
     assert captured["history"][-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
 
 
-def _rotating_heartbeat_run(runner, old_messages, persona_name="Test"):
+def _rotating_heartbeat_run(runner, old_messages, persona_name="Test", older=None):
     """Drives run_heartbeat through a real rotation (c-old -> c-new, the
     new conversation genuinely empty, as a freshly created one always is)
     and returns the history generate_reply was called with."""
@@ -2623,11 +2623,24 @@ def _rotating_heartbeat_run(runner, old_messages, persona_name="Test"):
     old_detail = {"personas": personas, "messages": old_messages, "stickyFallback": False}
     new_detail = {"personas": personas, "messages": [], "stickyFallback": False}
 
+    # `older` maps an earlier cycle-conversation's id -> its messages,
+    # as the pending-message lookback would find them via /conversations.
+    listing = {"conversations": [
+        {"id": cid, "name": f"HB — {cid}", "tags": [runner.cycle_tag("hb1")],
+         "createdAt": f"2026-08-02T0{n}:00:00+00:00"}
+        for n, cid in enumerate(sorted(older or {}))
+    ]}
+
     def fake_agora_get(path):
         if path.startswith("/conversations/c-old"):
             return 200, old_detail
         if path.startswith("/conversations/c-new"):
             return 200, new_detail
+        if path == "/conversations":
+            return 200, listing
+        for cid, messages in (older or {}).items():
+            if path.startswith(f"/conversations/{cid}"):
+                return 200, {"personas": personas, "messages": messages}
         return 200, {}
 
     captured = {}
@@ -2670,6 +2683,99 @@ def test_run_heartbeat_does_not_carry_an_already_answered_message_across_a_rotat
     ])
 
     assert history[-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
+
+
+def test_run_heartbeat_carries_a_message_from_behind_a_dead_cycle(runner):
+    """2026-08-02: #28's one-step lookback lands on an EMPTY conversation
+    whenever the previous cycle was killed before it replied -- which has
+    happened twice in one day, because merging into this repo rolls the
+    pod running the cycle. Everything Edvard typed the cycle before that
+    was then dropped silently and forever. That is exactly why he says he
+    can only reach this loop through vault files."""
+    history = _rotating_heartbeat_run(runner, [], older={
+        "c-cycle3": [{"sender": "Test", "text": "cycle 3's report", "id": "m1"},
+                     {"sender": "Edvard", "text": "look at the PWA next", "id": "m2"}],
+    })
+
+    assert "look at the PWA next" in history[-1]["content"]
+
+
+def test_lookback_stops_at_the_conversation_where_a_persona_replied(runner):
+    """The reply is the boundary of "already seen". Without it, every
+    cycle would walk all the way back and re-surface the same old,
+    already-answered message forever."""
+    history = _rotating_heartbeat_run(runner, [], older={
+        "c-cycle2": [{"sender": "Edvard", "text": "ancient and long since answered", "id": "m1"},
+                     {"sender": "Test", "text": "cycle 2 answered it", "id": "m2"}],
+        "c-cycle1": [{"sender": "Edvard", "text": "even older, also answered", "id": "m0"}],
+    })
+
+    assert history[-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
+
+
+def test_every_unanswered_cycle_conversation_is_carried_oldest_first(runner):
+    """Two dead cycles in a row, Edvard writing into both: he gets read
+    once, in the order he wrote, not just his newest line."""
+    history = _rotating_heartbeat_run(runner, [], older={
+        "c-cycle3": [{"sender": "Test", "text": "cycle 3's report", "id": "m1"},
+                     {"sender": "Edvard", "text": "first thing", "id": "m2"}],
+        "c-cycle4": [{"sender": "Edvard", "text": "second thing", "id": "m3"}],
+    })
+
+    content = history[-1]["content"]
+    assert content.index("first thing") < content.index("second thing")
+
+
+def test_lookback_ignores_activity_chips_left_by_a_cycle_that_never_replied(runner):
+    """A cycle killed mid-run can leave tool-call chips behind having
+    said nothing to anyone -- treating those as a reply would make the
+    lookback stop exactly where it most needs to keep going."""
+    history = _rotating_heartbeat_run(runner, [], older={
+        "c-cycle3": [{"sender": "Test", "text": "ran a tool", "id": "m1", "activity": True},
+                     {"sender": "Edvard", "text": "did that merge work?", "id": "m2"}],
+        "c-cycle2": [{"sender": "Edvard", "text": "the one before", "id": "m0"}],
+    })
+
+    assert "did that merge work?" in history[-1]["content"]
+    assert "the one before" in history[-1]["content"]
+
+
+def test_lookback_is_skipped_entirely_when_the_previous_cycle_replied(runner):
+    """Cost control: the healthy case must not fan out into a listing
+    plus a fetch per old conversation on every single cycle."""
+    heartbeat = {"id": "hb1", "conversationId": "c-new"}
+    previous = {"personas": [], "messages": [
+        {"sender": "Edvard", "text": "answered already", "id": "m1"},
+        {"sender": "Test", "text": "cycle 4's report", "id": "m2"}]}
+
+    with patch.object(runner.heartbeats, "agora_get") as mock_get:
+        carried = runner.pending_across_cycles(heartbeat, previous, "Test")
+
+    assert carried == []
+    mock_get.assert_not_called()
+
+
+def test_pending_across_cycles_drops_the_oldest_when_over_the_char_cap(runner):
+    """Edvard's own constraint on a long-lived channel: "i do not want
+    Claude to read that every time as it can quickly be megabytes of
+    tokens." Newest wins; nothing is truncated mid-sentence."""
+    heartbeat = {"id": "hb1", "conversationId": "c-new"}
+    previous = {"personas": [], "messages": [
+        {"sender": "Edvard", "text": "N" * 3000, "id": "m2"}]}
+    listing = {"conversations": [
+        {"id": "c-old2", "name": "older", "tags": [runner.cycle_tag("hb1")],
+         "createdAt": "2026-08-02T01:00:00+00:00"}]}
+
+    def fake_agora_get(path):
+        if path == "/conversations":
+            return 200, listing
+        return 200, {"personas": [], "messages": [
+            {"sender": "Edvard", "text": "O" * 3000, "id": "m1"}]}
+
+    with patch.object(runner.heartbeats, "agora_get", side_effect=fake_agora_get):
+        carried = runner.pending_across_cycles(heartbeat, previous, "Test")
+
+    assert [text[0] for _source, text in carried] == ["N"]
 
 
 def test_pending_user_turn(runner):

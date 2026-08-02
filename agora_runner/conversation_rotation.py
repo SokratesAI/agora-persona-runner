@@ -23,7 +23,10 @@ from agora_runner.log import log
 DEFAULT_RETENTION = 5
 
 
-def _cycle_tag(heartbeat_id):
+def cycle_tag(heartbeat_id):
+    """The tag every conversation this heartbeat creates carries. Public
+    because heartbeats.py needs it to find previous cycles' conversations
+    when looking for a message from Edvard nobody has answered yet."""
     return f"evolve-cycle:{heartbeat_id}"
 
 
@@ -41,7 +44,7 @@ def rotate_cycle_conversation(heartbeat, participants):
         log("rotate_cycle_conversation: no participants to bootstrap a new conversation with, skipping rotation")
         return heartbeat["conversationId"]
 
-    tag = _cycle_tag(heartbeat["id"])
+    tag = cycle_tag(heartbeat["id"])
     try:
         status, listing = agora_get("/conversations")
         existing = [

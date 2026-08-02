@@ -13,7 +13,102 @@ from agora_runner.turns import build_system, merge_history, pending_user_turn, s
 from agora_runner.reply import generate_reply
 from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
-from agora_runner.conversation_rotation import rotate_cycle_conversation
+from agora_runner.conversation_rotation import cycle_tag, rotate_cycle_conversation
+
+# How many previous cycle-conversations the pending-message lookback may
+# walk back through, and how much of Edvard's text it may carry into one
+# trigger. Retention (conversation_rotation.DEFAULT_RETENTION) is 5, so 5
+# is "everything still un-archived"; the char cap is Edvard's own
+# constraint -- a long-lived channel he can write into freely must not
+# quietly turn into megabytes of prompt every cycle.
+CYCLE_LOOKBACK = 5
+PENDING_CHARS_CAP = 4000
+
+
+def _has_persona_reply(messages):
+    """True if a persona actually said something in this conversation --
+    i.e. this is where "already answered" starts. Deliberately ignores
+    activity chips and thinking chunks (merge_history drops them too):
+    a cycle killed mid-run can leave those behind having never replied
+    to anyone, and treating that as an answer is exactly the bug this
+    lookback exists to fix."""
+    return any(
+        m.get("sender") != "Edvard"
+        and not (m.get("forgotten") or m.get("system")
+                 or m.get("activity") or m.get("thinking"))
+        for m in messages
+    )
+
+
+def _unanswered_tail(detail, persona_name):
+    """Edvard's trailing, unanswered words in one conversation (None if
+    it doesn't end on him), plus whether a persona ever replied there."""
+    participants = detail.get("personas") or []
+    history = merge_history(detail.get("messages", []), persona_name,
+                            len(participants) > 1)
+    return pending_user_turn(history), _has_persona_reply(detail.get("messages", []))
+
+
+def pending_across_cycles(heartbeat, previous_detail, persona_name, current_id=None):
+    """Edvard's unanswered messages, walking back from the conversation
+    we just rotated away from through older cycle-conversations. Returns
+    [(source_label, text)], oldest first.
+
+    2026-08-02: #28 made the rotating heartbeat look back exactly ONE
+    conversation. But a cycle that dies before replying (which has now
+    happened twice in one day -- merging into this repo rolls the pod
+    running the cycle) leaves an EMPTY conversation behind, so one step
+    back lands on nothing and anything Edvard typed two cycles ago is
+    dropped silently and permanently. That is his own top complaint
+    ("even if i write something in an older conversation, it is never
+    read"), and the whole reason he currently has to talk to this loop
+    through vault files instead of the app he built for it.
+
+    The walk stops at the first conversation where a persona actually
+    replied -- that reply is the boundary of "already seen", so nothing
+    can be resurfaced and re-answered cycle after cycle. Its own trailing
+    unanswered messages still count (he may well have written after it)."""
+    collected = []
+    tail, replied = _unanswered_tail(previous_detail, persona_name)
+    if tail:
+        collected.append(("the previous cycle's conversation", tail))
+    if not replied:
+        for detail, label in _older_cycle_conversations(heartbeat, current_id):
+            tail, replied = _unanswered_tail(detail, persona_name)
+            if tail:
+                collected.append((label, tail))
+            if replied:
+                break
+    collected.reverse()  # oldest first -- read in the order he wrote them
+    while len(collected) > 1 and sum(len(t) for _s, t in collected) > PENDING_CHARS_CAP:
+        collected.pop(0)  # drop the oldest rather than truncate mid-sentence
+    return collected
+
+
+def _older_cycle_conversations(heartbeat, current_id):
+    """Details of this heartbeat's earlier cycle-conversations, newest
+    first, excluding both the one already walked (the heartbeat's
+    pre-rotation `conversationId`) and the empty one rotation just
+    created for this cycle. Lazily fetched: the common case (the previous
+    cycle replied) never gets here at all, and a healthy loop stops after
+    one."""
+    status, listing = agora_get("/conversations")
+    if status != 200:
+        return
+    tag = cycle_tag(heartbeat["id"])
+    seen_ids = {heartbeat.get("conversationId"), current_id}
+    candidates = [
+        c for c in listing.get("conversations", [])
+        if tag in (c.get("tags") or []) and not c.get("archived")
+        and c.get("id") not in seen_ids
+    ]
+    candidates.sort(key=lambda c: c.get("createdAt", ""), reverse=True)
+    for conversation in candidates[:CYCLE_LOOKBACK]:
+        detail_status, detail = agora_get(
+            f"/conversations/{conversation['id']}/messages?limit={FETCH_LIMIT}")
+        if detail_status != 200:
+            continue
+        yield detail, f'the conversation "{conversation.get("name") or conversation["id"]}"'
 
 
 def run_heartbeat(heartbeat):
@@ -107,16 +202,24 @@ def run_heartbeat(heartbeat):
     # between cycles lived only in the conversation we just rotated away
     # from, and was dropped silently, forever. So when we rotated, fall
     # back to the pre-rotation thread for his pending message.
+    #
+    # 2026-08-02, later still: one step back isn't enough either -- a
+    # cycle that dies before replying leaves an empty conversation, and
+    # the message from the cycle before it was still lost. See
+    # pending_across_cycles.
     trigger = "[Automatic heartbeat trigger — address Edvard directly.]"
-    pending, source = pending_user_turn(history), "this conversation"
-    if pending is None and rotated:
-        previous_participants = previous_detail.get("personas") or []
-        pending = pending_user_turn(merge_history(
-            previous_detail.get("messages", []), persona["name"],
-            len(previous_participants) > 1))
-        source = "the previous cycle's conversation"
-    if pending:
-        trigger += f" Edvard's most recent message in {source}: {pending}"
+    pending = pending_user_turn(history)
+    carried = [("this conversation", pending)] if pending else []
+    if not carried and rotated:
+        carried = pending_across_cycles(heartbeat, previous_detail, persona["name"],
+                                        conversation_id)
+    if len(carried) == 1:
+        source, text = carried[0]
+        trigger += f" Edvard's most recent message in {source}: {text}"
+    elif carried:
+        lines = "\n".join(f"- in {source}: {text}" for source, text in carried)
+        trigger += ("\n\nEdvard's messages since your last reply, none of them "
+                    f"answered yet, oldest first:\n{lines}")
     history.append({"role": "user", "content": trigger})
 
     result = ""
