@@ -9,7 +9,7 @@ from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
 from agora_runner.agora_api import fetch_persona
 from agora_runner.vault import fetch_vault_context
-from agora_runner.turns import build_system, merge_history, schedule_due
+from agora_runner.turns import build_system, merge_history, pending_user_turn, schedule_due
 from agora_runner.reply import generate_reply
 from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
@@ -36,8 +36,10 @@ def run_heartbeat(heartbeat):
     # workflows.py's run_workflow_heartbeat already uses) -- no-op unless
     # heartbeat["rotateConversationEachRun"] is set. `detail` is stale
     # (the OLD conversation's) when it does rotate, so re-fetch it.
+    previous_detail = detail
     conversation_id = rotate_cycle_conversation(heartbeat, detail.get("personas") or [])
-    if conversation_id != heartbeat["conversationId"]:
+    rotated = conversation_id != heartbeat["conversationId"]
+    if rotated:
         _status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
 
     extra_parts = [
@@ -74,9 +76,24 @@ def run_heartbeat(heartbeat):
     # trigger when it's genuinely his turn (last message role is "user")
     # fixes that without changing anything for Anthropic/Gemini, which
     # already see the full thread regardless.
+    #
+    # 2026-08-02, later: rotation (above) replaces `detail` with a
+    # brand-new EMPTY conversation, so on a rotating heartbeat `history`
+    # is always empty and the fold-in below could never fire -- the two
+    # halves of the fix cancelled each other out. Anything Edvard typed
+    # between cycles lived only in the conversation we just rotated away
+    # from, and was dropped silently, forever. So when we rotated, fall
+    # back to the pre-rotation thread for his pending message.
     trigger = "[Automatic heartbeat trigger — address Edvard directly.]"
-    if history and history[-1]["role"] == "user":
-        trigger += f" Edvard's most recent message in this conversation: {history[-1]['content']}"
+    pending, source = pending_user_turn(history), "this conversation"
+    if pending is None and rotated:
+        previous_participants = previous_detail.get("personas") or []
+        pending = pending_user_turn(merge_history(
+            previous_detail.get("messages", []), persona["name"],
+            len(previous_participants) > 1))
+        source = "the previous cycle's conversation"
+    if pending:
+        trigger += f" Edvard's most recent message in {source}: {pending}"
     history.append({"role": "user", "content": trigger})
 
     result = ""

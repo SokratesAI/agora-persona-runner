@@ -167,6 +167,16 @@ def merge_history(thread, self_name, multi):
     return merged
 
 
+def pending_user_turn(history):
+    """The trailing user content of a merged history, or None if the
+    thread doesn't end on one — i.e. "Edvard spoke last and nobody has
+    answered him yet". Used by run_heartbeat to decide whether the
+    synthetic trigger should carry his real words along with it."""
+    if history and history[-1]["role"] == "user":
+        return history[-1]["content"]
+    return None
+
+
 def build_system(persona, conversation=None, participants=None, heartbeat_extra=None):
     parts = [persona.get("personality") or "You are a helpful assistant."]
     shared = (persona.get("sharedMemory") or "").strip()
