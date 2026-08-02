@@ -126,12 +126,14 @@ def run_due_heartbeats(heartbeats_list=None):
         heartbeats_list = body.get("heartbeats", [])
     now = datetime.now(timezone.utc)
     for heartbeat in heartbeats_list:
-        if not heartbeat.get("enabled"):
-            continue
         try:
-            due = heartbeat.get("forceRun") or schedule_due(
-                heartbeat.get("schedule", ""), heartbeat.get("lastRunAt"),
-                heartbeat.get("createdAt", now.isoformat()), now,
+            # forceRun (POST /heartbeats/:id/run) must bypass enabled --
+            # otherwise "run now" silently no-ops on a disabled heartbeat.
+            due = heartbeat.get("forceRun") or (
+                heartbeat.get("enabled") and schedule_due(
+                    heartbeat.get("schedule", ""), heartbeat.get("lastRunAt"),
+                    heartbeat.get("createdAt", now.isoformat()), now,
+                )
             )
             if not due:
                 continue

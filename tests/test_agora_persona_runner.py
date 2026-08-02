@@ -2505,6 +2505,38 @@ def test_run_due_heartbeats_non_workflow_heartbeat_still_runs_synchronously(runn
     mock_thread_ctor.assert_not_called()
 
 
+def test_run_due_heartbeats_force_run_bypasses_disabled(runner):
+    heartbeat = {
+        "id": "hb3", "name": "Disabled HB", "enabled": False, "forceRun": True,
+        "schedule": "every@1h", "createdAt": "2026-01-01T00:00:00+00:00",
+        "lastRunAt": None, "conversationId": "c1", "personaId": "p1",
+    }
+    with patch.object(runner.heartbeats, "_workflow_threads", {}), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb, \
+         patch.object(runner.threading, "Thread") as mock_thread_ctor:
+        runner.run_due_heartbeats()
+
+    mock_run_hb.assert_called_once_with(heartbeat)
+    mock_thread_ctor.assert_not_called()
+
+
+def test_run_due_heartbeats_disabled_without_force_run_is_skipped(runner):
+    heartbeat = {
+        "id": "hb4", "name": "Disabled HB", "enabled": False, "forceRun": False,
+        "schedule": "every@1h", "createdAt": "2026-01-01T00:00:00+00:00",
+        "lastRunAt": None, "conversationId": "c1", "personaId": "p1",
+    }
+    with patch.object(runner.heartbeats, "_workflow_threads", {}), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb, \
+         patch.object(runner.threading, "Thread") as mock_thread_ctor:
+        runner.run_due_heartbeats()
+
+    mock_run_hb.assert_not_called()
+    mock_thread_ctor.assert_not_called()
+
+
 def test_workflow_bound_conversation_ids_only_counts_enabled_workflow_heartbeats(runner):
     heartbeats_list = [
         {"enabled": True, "workflowId": "wf1", "conversationId": "c1"},
