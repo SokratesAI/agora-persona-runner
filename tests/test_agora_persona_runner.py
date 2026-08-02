@@ -2496,6 +2496,74 @@ def test_run_heartbeat_trigger_stays_generic_when_last_message_is_from_persona(r
     assert captured["history"][-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
 
 
+def _rotating_heartbeat_run(runner, old_messages, persona_name="Test"):
+    """Drives run_heartbeat through a real rotation (c-old -> c-new, the
+    new conversation genuinely empty, as a freshly created one always is)
+    and returns the history generate_reply was called with."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "c-old",
+                 "schedule": "every@6h", "name": "HB", "rotateConversationEachRun": True}
+    persona = {"id": "p1", "name": persona_name, "model": "claude-cli:claude-opus-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    personas = [{"personaId": "p1", "name": persona_name, "role": "curator"}]
+    old_detail = {"personas": personas, "messages": old_messages, "stickyFallback": False}
+    new_detail = {"personas": personas, "messages": [], "stickyFallback": False}
+
+    def fake_agora_get(path):
+        if path.startswith("/conversations/c-old"):
+            return 200, old_detail
+        if path.startswith("/conversations/c-new"):
+            return 200, new_detail
+        return 200, {}
+
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, **kwargs):
+        captured["history"] = history
+        return "ok"
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.heartbeats, "rotate_cycle_conversation", return_value="c-new"), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "m1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+    return captured["history"]
+
+
+def test_run_heartbeat_carries_edvards_message_across_a_rotation(runner):
+    """2026-08-02: rotation replaces `detail` with a brand-new EMPTY
+    conversation, so the fold-in of Edvard's last message could never
+    fire on a rotating heartbeat -- the two halves of #27 cancelled each
+    other out and anything he typed between cycles was dropped silently.
+    Evolve's own heartbeat rotates, so this was live."""
+    history = _rotating_heartbeat_run(
+        runner, [{"sender": "Edvard", "text": "stop merging your own PRs", "id": "m1"}])
+
+    assert "stop merging your own PRs" in history[-1]["content"]
+    assert "the previous cycle's conversation" in history[-1]["content"]
+
+
+def test_run_heartbeat_does_not_carry_an_already_answered_message_across_a_rotation(runner):
+    """Only a message nobody has answered yet gets carried forward -- if
+    the persona already replied in the old conversation, Edvard's earlier
+    line is done with, not pending."""
+    history = _rotating_heartbeat_run(runner, [
+        {"sender": "Edvard", "text": "stop merging your own PRs", "id": "m1"},
+        {"sender": "Test", "text": "understood, leaving it open", "id": "m2"},
+    ])
+
+    assert history[-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
+
+
+def test_pending_user_turn(runner):
+    assert runner.pending_user_turn([]) is None
+    assert runner.pending_user_turn([{"role": "user", "content": "hi"}]) == "hi"
+    assert runner.pending_user_turn(
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]) is None
+
+
 def test_run_heartbeat_skips_notify_when_sentinel_returned(runner):
     heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
                  "schedule": "every@1h", "name": "HB"}
