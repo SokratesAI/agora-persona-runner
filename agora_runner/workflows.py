@@ -11,6 +11,7 @@ from agora_runner.turns import build_system, merge_history
 from agora_runner.reply import generate_reply
 from agora_runner.conversations import notify
 from agora_runner.tools_schemas import capabilities_for_step
+from agora_runner.conversation_rotation import rotate_cycle_conversation
 
 
 WORKFLOW_MAX_DEPTH = 5  # defense in depth — Agora already rejects a
@@ -153,16 +154,27 @@ def run_workflow_heartbeat(heartbeat):
                         "lastResult": "failed: conversation has no personas"})
         return
 
+    # Per-cycle conversation rotation (2026-08-02) -- see
+    # conversation_rotation.py's own module docstring. No-op (returns
+    # heartbeat["conversationId"] unchanged) unless rotateConversationEachRun
+    # is set. When it does rotate, `detail` is stale (it's the OLD
+    # conversation's), so re-fetch it for the new one -- cheap (empty
+    # message list), and build_system's own conversation-memory lookup
+    # should reflect the conversation actually being run against.
+    conversation_id = rotate_cycle_conversation(heartbeat, participants)
+    if conversation_id != heartbeat["conversationId"]:
+        _status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
+
     result = ""
     try:
         _idx, rounds_run, replies_posted = run_workflow_steps(
-            workflow.get("steps", []), heartbeat["conversationId"], detail, participants,
+            workflow.get("steps", []), conversation_id, detail, participants,
         )
         result = (
             f"workflow: {len(workflow.get('steps', []))} steps, {rounds_run} rounds, "
             f"{replies_posted} replies posted"
         )
-        audit("workflow", heartbeat["conversationId"], "heartbeat",
+        audit("workflow", conversation_id, "heartbeat",
               f"{heartbeat['name']} ({heartbeat['schedule']}) -> {workflow.get('name')}")
     except Exception as e:
         result = f"failed: {e}"[:200]

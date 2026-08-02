@@ -2871,6 +2871,50 @@ def test_run_workflow_heartbeat_records_summary_in_last_result(runner):
     mock_audit.assert_called_once()
 
 
+def test_run_workflow_heartbeat_uses_rotated_conversation_id(runner):
+    """2026-08-02: when rotate_cycle_conversation hands back a different
+    id than the heartbeat's own conversationId, the workflow must run
+    against the NEW one (and re-fetch `detail` for it), not the stale
+    one the heartbeat still nominally points at in the dict passed in."""
+    heartbeat = {"id": "hb1", "name": "WF HB", "schedule": "every@1h",
+                 "conversationId": "c-old", "workflowId": "wf1",
+                 "rotateConversationEachRun": True}
+    workflow = {"id": "wf1", "name": "Discuss", "steps": [{"prompt": "", "loopCount": 1, "toolWhitelist": []}]}
+    old_detail = {"personas": [{"personaId": "p1", "name": "A", "role": "curator"}], "messages": ["stale"]}
+    new_detail = {"personas": [{"personaId": "p1", "name": "A", "role": "curator"}], "messages": []}
+    persona = {"id": "p1", "name": "A", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+
+    get_calls = []
+
+    def fake_agora_get(path):
+        get_calls.append(path)
+        if path.startswith("/conversations/c-old"):
+            return 200, old_detail
+        if path.startswith("/conversations/c-new"):
+            return 200, new_detail
+        return 200, {}
+
+    steps_calls = []
+
+    def fake_run_workflow_steps(steps, conversation_id, detail, participants, **kwargs):
+        steps_calls.append((conversation_id, detail))
+        return -1, 1, 1
+
+    with patch.object(runner.workflows, "fetch_workflow", return_value=workflow), \
+         patch.object(runner.workflows, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.workflows, "rotate_cycle_conversation", return_value="c-new") as mock_rotate, \
+         patch.object(runner.workflows, "run_workflow_steps", side_effect=fake_run_workflow_steps), \
+         patch.object(runner.workflows, "audit") as mock_audit, \
+         patch.object(runner.workflows, "agora_internal", return_value=(200, {})):
+        runner.run_workflow_heartbeat(heartbeat)
+
+    mock_rotate.assert_called_once_with(heartbeat, old_detail["personas"])
+    assert steps_calls == [("c-new", new_detail)]
+    mock_audit.assert_called_once()
+    assert mock_audit.call_args[0][1] == "c-new"
+
+
 def test_run_workflow_heartbeat_records_failure_when_workflow_missing(runner):
     heartbeat = {"id": "hb1", "name": "WF HB", "schedule": "every@1h",
                  "conversationId": "c1", "workflowId": "ghost"}
