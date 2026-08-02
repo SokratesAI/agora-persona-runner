@@ -13,6 +13,7 @@ from agora_runner.turns import build_system, merge_history, schedule_due
 from agora_runner.reply import generate_reply
 from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
+from agora_runner.conversation_rotation import rotate_cycle_conversation
 
 
 def run_heartbeat(heartbeat):
@@ -30,6 +31,14 @@ def run_heartbeat(heartbeat):
                        {"forceRun": False, "lastRunAt": datetime.now(timezone.utc).isoformat(),
                         "lastResult": f"failed: conversation fetch {status}"})
         return
+
+    # Per-cycle conversation rotation (2026-08-02, same mechanism
+    # workflows.py's run_workflow_heartbeat already uses) -- no-op unless
+    # heartbeat["rotateConversationEachRun"] is set. `detail` is stale
+    # (the OLD conversation's) when it does rotate, so re-fetch it.
+    conversation_id = rotate_cycle_conversation(heartbeat, detail.get("personas") or [])
+    if conversation_id != heartbeat["conversationId"]:
+        _status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
 
     extra_parts = [
         "## Heartbeat turn",
@@ -56,8 +65,19 @@ def run_heartbeat(heartbeat):
                             len(participants) > 1)
     # A heartbeat may fire into an empty/assistant-ended thread — providers
     # need a user turn, so the trigger itself becomes a synthetic one.
-    history.append({"role": "user",
-                    "content": "[Automatic heartbeat trigger — address Edvard directly.]"})
+    #
+    # 2026-08-02: claude-cli personas only ever see this LAST history entry
+    # (bridge/cli.py's generate_reply forwards history[-1], not the full
+    # thread) -- so if Edvard's real last message was just sitting in
+    # `history` unaddressed, a claude-cli persona would never actually see
+    # it, only this synthetic trigger. Folding his real content into the
+    # trigger when it's genuinely his turn (last message role is "user")
+    # fixes that without changing anything for Anthropic/Gemini, which
+    # already see the full thread regardless.
+    trigger = "[Automatic heartbeat trigger — address Edvard directly.]"
+    if history and history[-1]["role"] == "user":
+        trigger += f" Edvard's most recent message in this conversation: {history[-1]['content']}"
+    history.append({"role": "user", "content": trigger})
 
     result = ""
     try:
@@ -70,13 +90,13 @@ def run_heartbeat(heartbeat):
         # silent HEARTBEAT_NO_REPORT_SENTINEL reply when there's nothing
         # worth Edvard's attention, and that decision can only be made
         # once the full reply is in hand, before anything is posted.
-        reply = generate_reply(persona, caps, system, history, heartbeat["conversationId"], sticky=False)
+        reply = generate_reply(persona, caps, system, history, conversation_id, sticky=False)
         if reply.strip().upper().startswith(HEARTBEAT_NO_REPORT_SENTINEL):
             result = "checked, nothing to report (not posted to chat)"
         else:
-            notify(heartbeat["conversationId"], reply, persona["name"])
+            notify(conversation_id, reply, persona["name"])
             result = f"replied {len(reply)} chars"
-            audit(persona["name"], heartbeat["conversationId"], "heartbeat",
+            audit(persona["name"], conversation_id, "heartbeat",
                   f"{heartbeat['name']} ({heartbeat['schedule']})")
     except Exception as e:
         result = f"failed: {e}"[:200]

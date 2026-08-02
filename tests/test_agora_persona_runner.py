@@ -2394,6 +2394,108 @@ def test_run_heartbeat_posts_a_real_report_and_records_success(runner):
 # nothing to report, and run_heartbeat suppresses notify()/audit() for it.
 # ---------------------------------------------------------------------------
 
+def test_run_heartbeat_uses_rotated_conversation_id(runner):
+    """2026-08-02: regular (non-workflow) heartbeats get the same
+    per-cycle conversation rotation workflow-mode heartbeats already had
+    -- a simple heartbeat can now be the whole Evolve loop, and it needs
+    the same bounded-transcript protection."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "c-old",
+                 "schedule": "every@6h", "name": "HB", "rotateConversationEachRun": True}
+    persona = {"id": "p1", "name": "Test", "model": "claude-cli:claude-opus-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    old_detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}],
+                  "messages": [], "stickyFallback": False}
+    new_detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}],
+                  "messages": [], "stickyFallback": False}
+
+    def fake_agora_get(path):
+        if path.startswith("/conversations/c-old"):
+            return 200, old_detail
+        if path.startswith("/conversations/c-new"):
+            return 200, new_detail
+        return 200, {}
+
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, **kwargs):
+        captured["conversation_id"] = conversation_id
+        return "a real report"
+
+    notify_calls = []
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.heartbeats, "rotate_cycle_conversation", return_value="c-new") as mock_rotate, \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", side_effect=lambda cid, *a, **kw: notify_calls.append(cid) or (200, "m1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+
+    mock_rotate.assert_called_once_with(heartbeat, old_detail["personas"])
+    assert captured["conversation_id"] == "c-new"
+    assert notify_calls == ["c-new"]
+
+
+def test_run_heartbeat_folds_edvards_last_message_into_the_trigger(runner):
+    """2026-08-02: claude-cli only ever sees history[-1] (the synthetic
+    trigger) -- without this, a real message Edvard typed into the
+    conversation would be invisible to a claude-cli persona regardless
+    of timing."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@6h", "name": "HB"}
+    persona = {"id": "p1", "name": "Test", "model": "claude-cli:claude-opus-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {
+        "personas": [],
+        "messages": [{"sender": "Edvard", "text": "please check on the deploy", "id": "m1"}],
+        "stickyFallback": False,
+    }
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, **kwargs):
+        captured["history"] = history
+        return "ok, checked"
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "m1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+
+    assert "please check on the deploy" in captured["history"][-1]["content"]
+
+
+def test_run_heartbeat_trigger_stays_generic_when_last_message_is_from_persona(runner):
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@6h", "name": "HB"}
+    persona = {"id": "p1", "name": "Test", "model": "claude-cli:claude-opus-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {
+        "personas": [],
+        "messages": [{"sender": "Test", "text": "previous cycle's reply", "id": "m1"}],
+        "stickyFallback": False,
+    }
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, **kwargs):
+        captured["history"] = history
+        return "ok"
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "m1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+
+    assert "previous cycle's reply" not in captured["history"][-1]["content"]
+    assert captured["history"][-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
+
+
 def test_run_heartbeat_skips_notify_when_sentinel_returned(runner):
     heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
                  "schedule": "every@1h", "name": "HB"}
