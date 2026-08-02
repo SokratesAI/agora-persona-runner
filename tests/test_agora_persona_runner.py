@@ -2384,6 +2384,121 @@ def test_run_heartbeat_posts_a_real_report_and_records_success(runner):
 
 
 # ---------------------------------------------------------------------------
+# 2026-08-02: regular (non-workflow) heartbeats claim their run up front,
+# the same way #25 made workflow-mode ones. The Evolve loop runs on a
+# plain heartbeat since v2, so the path that had NO duplicate protection
+# was the one doing the long, expensive, PR-opening runs.
+# ---------------------------------------------------------------------------
+
+def test_run_heartbeat_claims_run_before_executing(runner):
+    """The claim PATCH (forceRun cleared, lastResult "running") must land
+    BEFORE generate_reply, not only after. A cycle takes ~11 minutes;
+    for that whole window the persisted state otherwise still read
+    "still forced, never ran"."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@6h", "name": "Agora Evolve", "forceRun": True}
+    persona = {"id": "p1", "name": "Evolve", "model": "claude-cli:claude-opus-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+
+    events = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == f"/heartbeats/{heartbeat['id']}":
+            events.append(("patch", payload))
+        return 200, {}
+
+    def fake_generate_reply(*args, **kwargs):
+        events.append(("run", None))
+        return "did a thing"
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
+        runner.run_heartbeat(heartbeat)
+
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["patch", "run", "patch"], kinds
+    claim = events[0][1]
+    assert claim["forceRun"] is False
+    assert claim["lastResult"] == "running"
+    # Anchors the next scheduled run to run START -- deliberate, same as
+    # the workflow path.
+    assert claim["lastRunAt"] <= events[-1][1]["lastRunAt"]
+
+
+def test_run_heartbeat_claim_survives_the_run_being_killed_mid_flight(runner):
+    """The bug this exists for, end to end. Evolve merges a PR into its
+    own repo -> the deploy rolls the pod hosting its own in-flight cycle
+    -> the process dies before run_heartbeat's final PATCH. Observed
+    live twice on 2026-08-02: the replacement pod read `forceRun: true`
+    (never cleared) and immediately started the same cycle over.
+
+    A kill is not an exception -- run_heartbeat's `except Exception`
+    never sees it -- so BaseException is the faithful simulation. What
+    must hold is that the PERSISTED state left behind is already
+    claimed, so the next poll doesn't find the heartbeat due."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@6h", "name": "Agora Evolve", "forceRun": True,
+                 "enabled": True, "createdAt": "2026-08-02T00:00:00+00:00"}
+    persona = {"id": "p1", "name": "Evolve", "model": "claude-cli:claude-opus-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+
+    # Stands in for Agora's persisted heartbeat row.
+    persisted = dict(heartbeat)
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == f"/heartbeats/{heartbeat['id']}":
+            persisted.update(payload)
+        return 200, {}
+
+    def killed(*args, **kwargs):
+        raise KeyboardInterrupt("SIGTERM: pod rolled mid-cycle")
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=killed), \
+         patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
+        with pytest.raises(KeyboardInterrupt):
+            runner.run_heartbeat(heartbeat)
+
+    assert persisted["forceRun"] is False
+    assert persisted["lastResult"] == "running"
+
+    # ...and the replacement pod, re-reading exactly that persisted row,
+    # must not consider the heartbeat due again.
+    ran = []
+    with patch.object(runner.heartbeats, "run_heartbeat", side_effect=lambda hb: ran.append(hb)):
+        runner.run_due_heartbeats([persisted])
+    assert ran == [], "a restart re-ran a cycle that was already claimed"
+
+
+def test_run_heartbeat_claims_run_even_when_persona_missing(runner):
+    """The claim is unconditional -- before fetch_persona -- so a
+    heartbeat pointing at a deleted persona consumes its forceRun
+    instead of being retried on every single poll tick forever."""
+    heartbeat = {"id": "hb1", "personaId": "ghost", "conversationId": "conv-1",
+                 "schedule": "every@6h", "name": "HB", "forceRun": True}
+    heartbeat_updates = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == f"/heartbeats/{heartbeat['id']}":
+            heartbeat_updates.append(payload)
+        return 200, {}
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=None), \
+         patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
+        runner.run_heartbeat(heartbeat)
+
+    assert heartbeat_updates[0]["lastResult"] == "running"
+    assert "persona not found" in heartbeat_updates[-1]["lastResult"]
+
+
+# ---------------------------------------------------------------------------
 # 2026-07-25: K3s Sentinel was created via New Conversation without
 # kubectlRead (fixed separately, agora#19), and even once it had the tool,
 # a monitoring heartbeat reporting "all clear" every single run would be
