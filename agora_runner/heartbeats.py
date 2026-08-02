@@ -14,9 +14,18 @@ from agora_runner.reply import generate_reply
 from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
 from agora_runner.conversation_rotation import rotate_cycle_conversation
+from agora_runner.heartbeat_claim import claim_heartbeat_run
 
 
 def run_heartbeat(heartbeat):
+    # Claim the run BEFORE running it (2026-08-02). #25 gave this to the
+    # workflow path only; the regular path went without, and the regular
+    # path is what the Evolve loop itself runs on since v2. Confirmed
+    # live the same day: a merge into this repo rolled the pod hosting
+    # the in-flight cycle, `forceRun` was still set because the run died
+    # before its final PATCH, and the replacement pod immediately
+    # started the same cycle over. See heartbeat_claim.py.
+    claim_heartbeat_run(heartbeat)
     persona = fetch_persona(heartbeat["personaId"])
     if persona is None:
         agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",

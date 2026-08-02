@@ -27,6 +27,7 @@ from agora_runner.providers.gemini import _gemini_parts  # noqa: F401 -- undersc
 from agora_runner.providers.claude_cli import *  # noqa: F401,F403
 from agora_runner.reply import *  # noqa: F401,F403
 from agora_runner.conversation_rotation import *  # noqa: F401,F403
+from agora_runner.heartbeat_claim import *  # noqa: F401,F403
 from agora_runner.workflows import *  # noqa: F401,F403
 from agora_runner.conversations import *  # noqa: F401,F403
 from agora_runner.conversations import _conversation_failures  # noqa: F401 -- underscore name, see above
