@@ -1172,6 +1172,31 @@ def test_repeated_speak_failures_auto_pause_after_cap(runner):
     assert summary["id"] not in runner._conversation_failures, "failure count should reset after pausing"
 
 
+def test_auto_pause_reason_surfaces_the_real_exception(runner):
+    # Edvard's complaint: the old pause message was a vague "(rate limit or
+    # outage)" label with no way to see what actually broke. The notify text
+    # must now include the real exception type/message, not a generic label.
+    runner._conversation_failures.clear()
+    summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn), \
+         patch.object(runner.conversations, "speak", side_effect=ValueError("upstream returned 400: bad request body")):
+        for _ in range(runner.FAILURE_PAUSE_CAP):
+            with pytest.raises(ValueError):
+                runner.poll_conversation(summary)
+
+    notify_calls = [
+        c for c in calls["agora_internal"]
+        if c[0] == "POST" and c[1] == f"/conversations/{summary['id']}/notify"
+    ]
+    assert len(notify_calls) == 1
+    pause_text = notify_calls[0][2]["text"]
+    assert "ValueError" in pause_text
+    assert "upstream returned 400: bad request body" in pause_text
+
+
 def test_failures_below_cap_do_not_pause(runner):
     runner._conversation_failures.clear()
     summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
