@@ -70,12 +70,12 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
     }
     debug_status_log = f"claude_cli request: model={model_id} conversation={conversation_id}"
     log(debug_status_log)
-    # Must exceed the bridge's own CLI_TIMEOUT_SECONDS (900s as of
-    # 2026-08-01 -- live-tested with the Evolve workflow's Coder step,
-    # which routinely needs more than 5 minutes for a real clone+edit+
-    # test+push+PR turn) or this HTTP call gives up before the bridge
-    # itself would.
-    status, resp = http_json("POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers, timeout=930)
+    # Must exceed the bridge's own CLI_TIMEOUT_SECONDS (2700s as of
+    # 2026-08-03 -- bumped from 900s after Cycle 8 hit that wall running
+    # the full v2 single-session arc: read state, decide, implement,
+    # review, merge, health-check, journal, all in one call) or this HTTP
+    # call gives up before the bridge itself would.
+    status, resp = http_json("POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers, timeout=2760)
 
     if status == 429:
         detail = resp.get("detail", "usage limit")
