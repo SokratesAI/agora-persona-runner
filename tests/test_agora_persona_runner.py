@@ -30,6 +30,9 @@ Covers the three Issues.md bugs fixed 2026-07-22:
 """
 
 import json
+import os
+import signal
+import time
 import urllib.parse
 from unittest.mock import patch
 
@@ -4366,3 +4369,89 @@ def test_build_system_omits_manage_agora_blurb_when_capability_off(runner):
     }
     system = runner.build_system(persona)
     assert "Manage Agora" not in system
+
+
+# --- Draining on SIGTERM (2026-08-03) -------------------------------------
+#
+# run_heartbeat posts the persona's reply (notify()) only AFTER
+# generate_reply returns -- minutes of work for a claude-cli persona. With
+# no SIGTERM handler, Python's default disposition killed the process
+# instantly, so a redeploy landing mid-cycle destroyed the reply in flight.
+# Observed three cycles running on the Evolve heartbeat 2026-08-02, each
+# time because merging into this repo rolled the pod running the merge.
+
+main_module = sys.modules["agora_runner.main"]
+
+
+@pytest.fixture
+def drainable_main():
+    """Restores the real signal handlers and the shutdown flag, so a test
+    that fires a genuine SIGTERM at the pytest process can't leak either
+    into the rest of the suite."""
+    previous_term = signal.getsignal(signal.SIGTERM)
+    previous_int = signal.getsignal(signal.SIGINT)
+    previous_flag = main_module._shutdown_requested
+    previous_interval = main_module.POLL_INTERVAL_SECONDS
+    main_module.POLL_INTERVAL_SECONDS = 0
+    try:
+        yield main_module
+    finally:
+        main_module.POLL_INTERVAL_SECONDS = previous_interval
+        main_module._shutdown_requested = previous_flag
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
+
+
+def test_main_finishes_the_in_flight_tick_after_sigterm(drainable_main):
+    """The real regression. A genuine SIGTERM is delivered to this process
+    partway through a tick; what must hold is that the REST of that tick
+    still runs (that's where notify() lives) and that main then stops
+    instead of starting another one."""
+    events = []
+
+    def fake_poll_once():
+        events.append("tick")
+        if events.count("tick") == 1:
+            os.kill(os.getpid(), signal.SIGTERM)  # the pod is rolled mid-cycle
+            events.append("reply-posted")  # stands in for notify() + the PATCH
+        if events.count("tick") > 5:
+            # main() catches Exception, so this has to be a BaseException to
+            # actually escape and fail the test rather than loop forever.
+            raise KeyboardInterrupt("main kept polling after SIGTERM")
+
+    with patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
+         patch.object(drainable_main, "start_invoke_server", lambda: None), \
+         patch.object(drainable_main, "log", lambda *a, **k: None):
+        drainable_main.main()
+
+    assert events == ["tick", "reply-posted"], \
+        "the tick in flight when SIGTERM arrived did not run to completion"
+    assert drainable_main.shutdown_requested() is True
+
+
+def test_main_keeps_polling_when_no_signal_arrives(drainable_main):
+    """The drain must not turn the poll loop into a one-shot."""
+    ticks = []
+
+    def fake_poll_once():
+        ticks.append(len(ticks))
+        if len(ticks) == 3:
+            raise KeyboardInterrupt("stop the test loop")
+
+    with patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
+         patch.object(drainable_main, "start_invoke_server", lambda: None), \
+         patch.object(drainable_main, "log", lambda *a, **k: None):
+        with pytest.raises(KeyboardInterrupt):
+            drainable_main.main()
+
+    assert len(ticks) == 3
+
+
+def test_sleep_between_ticks_returns_early_once_shutdown_is_requested(drainable_main):
+    """PEP 475 makes a plain time.sleep RESUME after a signal instead of
+    returning, so an idle pod would otherwise sit out the full interval
+    before noticing it was asked to stop."""
+    drainable_main._shutdown_requested = True
+    started = time.monotonic()
+    drainable_main._sleep_between_ticks(30)
+    assert time.monotonic() - started < 1.0
