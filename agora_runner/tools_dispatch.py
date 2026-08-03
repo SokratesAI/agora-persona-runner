@@ -41,6 +41,29 @@ def _resolve_scoped_target(active_step, args):
     return locked
 
 
+def _audit_vault_write(persona_name, conversation_id, capability, path, result, before, after):
+    """Record what the write actually did, not what it was asked to do.
+
+    Every vault write path returns either "written" or a "FAILED(...)"
+    string -- the file didn't exist, CouchDB rejected the PUT, or (since
+    #35) an after_marker matched no line. The three call sites below used
+    to pass before/after unconditionally, so a call that wrote nothing
+    still produced an audit entry carrying the new content as the "after"
+    side. Agora's Activity feed renders that as a completed diff.
+
+    That matters more than it sounds: the audit log is the only durable
+    record of what a persona did to Edvard's vault, and it was lying in
+    precisely the cases worth reviewing. #35 made the FAILED path
+    genuinely reachable for vault_append, which is why this is being
+    fixed now. On failure the attempt is still audited -- that a persona
+    tried to write is real -- but the reason goes in the detail and no
+    diff is claimed."""
+    if str(result).startswith("FAILED"):
+        audit(persona_name, conversation_id, capability, f"{path} — {result}")
+        return
+    audit(persona_name, conversation_id, capability, path, before=before, after=after)
+
+
 def execute_tool(name, args, persona, conversation_id, active_step=None):
     persona_name = persona.get("name", "?")
     debug_log(f"execute_tool: {name} args={json.dumps(args)[:200]} persona={persona_name} conversation={conversation_id}")
@@ -68,7 +91,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # the before side, same as the file not existing.
             before = vault_read_path(path) or ""
             result = vault_write_path(path, content)
-            audit(persona_name, conversation_id, "vault_write", path, before=before, after=content)
+            _audit_vault_write(persona_name, conversation_id, "vault_write", path, result, before, content)
             return result
         if name == "vault_append":
             path = str(args.get("path", ""))
@@ -76,7 +99,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             after_marker = str(args.get("after_marker", ""))
             before = vault_read_path(path) or ""
             result = vault_append_path(path, content, after_marker)
-            audit(persona_name, conversation_id, "vault_append", path, before=before, after=content)
+            _audit_vault_write(persona_name, conversation_id, "vault_append", path, result, before, content)
             return result
         if name == "vault_search":
             query = str(args.get("query", ""))
@@ -261,7 +284,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             content = str(args.get("content", ""))
             before = vault_read_path(target) or ""
             result = vault_write_path(target, content)
-            audit(persona_name, conversation_id, "scoped_write", target, before=before, after=content)
+            _audit_vault_write(persona_name, conversation_id, "scoped_write", target, result, before, content)
             return result
         return f"[unknown tool {name}]"
     except Exception as e:

@@ -928,6 +928,82 @@ def test_execute_tool_vault_append_dispatches_and_audits(runner):
     )
 
 
+# 2026-08-03: the audit log is the only durable record of what a persona
+# did to Edvard's vault, and it was lying in exactly the cases worth
+# reviewing -- every write branch passed before/after unconditionally, so
+# a call that wrote nothing still produced an entry carrying the new
+# content as the "after" side, which Agora's Activity feed renders as a
+# completed diff. Latent until #35 made vault_append's FAILED path
+# genuinely reachable (a marker matching no line now writes nothing).
+
+
+def test_execute_tool_vault_append_audit_claims_no_diff_when_write_failed(runner):
+    persona = {"name": "Gemini"}
+    failure = "FAILED(after_marker not found in journal.md: '## Missing' -- nothing written)"
+    with patch.object(runner.tools_dispatch, "vault_read_path", return_value="old content"), \
+         patch.object(runner.tools_dispatch, "vault_append_path", return_value=failure), \
+         patch.object(runner.tools_dispatch, "audit") as mock_audit:
+        result = runner.execute_tool(
+            "vault_append", {"path": "journal.md", "content": "new entry", "after_marker": "## Missing"},
+            persona, "c1",
+        )
+    assert result == failure
+    # The attempt is still audited -- that a persona tried to write is
+    # real -- but with the failure in the detail and no before/after.
+    mock_audit.assert_called_once()
+    args, kwargs = mock_audit.call_args
+    assert args[:3] == ("Gemini", "c1", "vault_append")
+    assert "journal.md" in args[3] and "FAILED" in args[3]
+    assert "before" not in kwargs and "after" not in kwargs
+
+
+def test_execute_tool_vault_write_audit_claims_no_diff_when_write_failed(runner):
+    persona = {"name": "Gemini"}
+    with patch.object(runner.tools_dispatch, "vault_read_path", return_value="old content"), \
+         patch.object(runner.tools_dispatch, "vault_write_path", return_value="FAILED(409)"), \
+         patch.object(runner.tools_dispatch, "audit") as mock_audit:
+        result = runner.execute_tool(
+            "vault_write", {"path": "notes.md", "content": "new body"}, persona, "c1",
+        )
+    assert result == "FAILED(409)"
+    args, kwargs = mock_audit.call_args
+    assert args[2] == "vault_write"
+    assert "FAILED(409)" in args[3]
+    assert "before" not in kwargs and "after" not in kwargs
+
+
+def test_execute_tool_scoped_write_audit_claims_no_diff_when_write_failed(runner):
+    persona = {"name": "Coder"}
+    step = {"filepath": "projects/notes.md"}
+    with patch.object(runner.tools_dispatch, "vault_read_path", return_value="old content"), \
+         patch.object(runner.tools_dispatch, "vault_write_path", return_value="FAILED(500)"), \
+         patch.object(runner.tools_dispatch, "audit") as mock_audit:
+        result = runner.execute_tool(
+            "scoped_write", {"content": "new body"}, persona, "c1", active_step=step,
+        )
+    assert result == "FAILED(500)"
+    args, kwargs = mock_audit.call_args
+    assert args[2] == "scoped_write"
+    assert "FAILED(500)" in args[3]
+    assert "before" not in kwargs and "after" not in kwargs
+
+
+def test_execute_tool_vault_write_still_audits_the_diff_on_success(runner):
+    """The success path is what the Activity feed is for -- the fix must
+    not cost it its before/after pair."""
+    persona = {"name": "Gemini"}
+    with patch.object(runner.tools_dispatch, "vault_read_path", return_value="old content"), \
+         patch.object(runner.tools_dispatch, "vault_write_path", return_value="written"), \
+         patch.object(runner.tools_dispatch, "audit") as mock_audit:
+        result = runner.execute_tool(
+            "vault_write", {"path": "notes.md", "content": "new body"}, persona, "c1",
+        )
+    assert result == "written"
+    mock_audit.assert_called_once_with(
+        "Gemini", "c1", "vault_write", "notes.md", before="old content", after="new body"
+    )
+
+
 def test_vault_append_tool_schema_present_only_with_vault_write_capability(runner):
     caps_on = {"webSearch": False, "vaultRead": False, "vaultWrite": True,
                "codeExecution": False, "kubectlRead": False, "githubRead": False}
