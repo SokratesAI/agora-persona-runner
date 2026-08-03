@@ -281,6 +281,47 @@ def workflow_bound_conversation_ids(heartbeats_list):
     }
 
 
+def cycle_bound_conversation_ids(heartbeats_list):
+    """Conversation ids that are the CURRENT cycle-transcript of an
+    enabled, rotating heartbeat. poll_once skips ordinary turn-taking
+    for these too (2026-08-03), for a different reason than the
+    workflow case above.
+
+    Edvard's own report: "I just replied in the Agora conversation 5...
+    that triggered a normal conversation run... that makes me not going
+    to write messages again in the conversation." Typing one sentence
+    into the live Evolve transcript fired an immediate, full,
+    PR-opening Claude Code cycle -- so the app he built to talk to this
+    loop is the one channel he'd stopped using, and he fell back to
+    vault files.
+
+    Skipping is only safe where his message is still guaranteed to be
+    read, and for a rotating heartbeat it is: the next scheduled run
+    rotates away from this conversation and run_heartbeat feeds its
+    trailing unanswered text into the trigger via pending_across_cycles
+    (#28/#30). So the message isn't dropped, it's deferred to the run
+    that was going to happen anyway.
+
+    Deliberately keyed on `rotateConversationEachRun`, not merely on
+    being heartbeat-bound. Rotation is the explicit signal that a
+    conversation is a per-cycle machine transcript rather than a
+    durable channel; a non-rotating heartbeat's conversation (K3s
+    Sentinel) is one Edvard may legitimately chat in and expect an
+    ordinary answer from, and silencing that was not asked for.
+
+    Only the id the heartbeat currently points at is skipped. Older
+    cycle-conversations keep ordinary turn-taking on purpose:
+    pending_across_cycles' lookback stops at the first conversation
+    where a persona already replied, so a message left in an older one
+    has no guaranteed pickup -- there, an ordinary reply is still the
+    only thing that answers him."""
+    return {
+        hb["conversationId"] for hb in heartbeats_list
+        if hb.get("enabled") and hb.get("rotateConversationEachRun")
+        and hb.get("conversationId")
+    }
+
+
 def run_due_heartbeats(heartbeats_list=None):
     if heartbeats_list is None:
         status, body = agora_internal("GET", "/heartbeats")
