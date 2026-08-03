@@ -2991,6 +2991,89 @@ def test_poll_once_skips_workflow_bound_conversations_but_still_runs_heartbeats(
     mock_run_due.assert_called_once_with(heartbeats_body["heartbeats"])
 
 
+def test_cycle_bound_conversation_ids_only_counts_enabled_rotating_heartbeats(runner):
+    """Keyed on rotateConversationEachRun, not on being heartbeat-bound
+    at all: a non-rotating heartbeat's conversation (K3s Sentinel) is a
+    durable channel Edvard may chat in and must keep ordinary
+    turn-taking."""
+    heartbeats_list = [
+        {"enabled": True, "rotateConversationEachRun": True, "conversationId": "c1"},
+        {"enabled": False, "rotateConversationEachRun": True, "conversationId": "c2"},  # disabled
+        {"enabled": True, "conversationId": "c3"},  # non-rotating -- K3s Sentinel
+        {"enabled": True, "rotateConversationEachRun": True},  # never bound
+        {"enabled": True, "rotateConversationEachRun": True, "conversationId": "c5"},
+    ]
+    assert runner.cycle_bound_conversation_ids(heartbeats_list) == {"c1", "c5"}
+
+
+def test_poll_once_skips_live_cycle_conversation_but_not_a_plain_heartbeats(runner):
+    """Edvard's report: replying in the live Evolve transcript fired an
+    immediate full cycle, so he stopped writing there. That conversation
+    must be skipped -- run_heartbeat carries his message forward on the
+    next scheduled run -- while an ordinary heartbeat's conversation and
+    a normal chat both still answer him right away."""
+    conversations_body = {"conversations": [
+        {"id": "cycle9", "name": "Nova — Cycle 9"},
+        {"id": "sentinel", "name": "K3s Sentinel"},
+        {"id": "chat", "name": "Normal Chat"},
+    ]}
+    heartbeats_body = {"heartbeats": [
+        {"enabled": True, "rotateConversationEachRun": True, "conversationId": "cycle9"},
+        {"enabled": True, "conversationId": "sentinel"},
+    ]}
+
+    def fake_agora_get(path):
+        if path == "/conversations":
+            return 200, conversations_body
+        return 404, {}
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "GET" and path == "/heartbeats":
+            return 200, heartbeats_body
+        return 200, {}
+
+    polled = []
+    with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "run_due_heartbeats") as mock_run_due:
+        runner.poll_once()
+
+    assert polled == ["sentinel", "chat"]
+    mock_run_due.assert_called_once_with(heartbeats_body["heartbeats"])
+
+
+def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(runner):
+    """The two halves of the deal, asserted together: poll_once must NOT
+    answer Edvard in the live cycle transcript, and run_heartbeat MUST
+    then carry what he wrote into the next scheduled run's trigger.
+
+    Skipping is only defensible because of the second half. If either
+    side is ever changed alone, his message is silently dropped -- which
+    is the exact bug #28/#30 were opened for -- so they are pinned in
+    one test rather than two that could drift apart."""
+    conversations_body = {"conversations": [{"id": "c-old", "name": "Nova — Cycle 9"}]}
+    heartbeats_body = {"heartbeats": [
+        {"enabled": True, "rotateConversationEachRun": True, "conversationId": "c-old"},
+    ]}
+
+    polled = []
+    with patch.object(runner.poll, "agora_get",
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+         patch.object(runner.poll, "agora_internal",
+                      side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
+         patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "run_due_heartbeats"):
+        runner.poll_once()
+
+    assert polled == []  # no immediate, expensive full run
+
+    history = _rotating_heartbeat_run(
+        runner, [{"sender": "Edvard", "text": "look at the PWA next", "id": "m1"}])
+
+    assert "look at the PWA next" in history[-1]["content"]
+
+
 def test_capabilities_for_step_empty_whitelist_is_unrestricted(runner):
     persona = {"capabilities": {
         "webSearch": True, "vaultRead": True, "vaultWrite": True,

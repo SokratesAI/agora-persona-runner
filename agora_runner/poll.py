@@ -4,7 +4,11 @@ from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.agora_api import clear_persona_cache
 from agora_runner.conversations import poll_conversation
-from agora_runner.heartbeats import run_due_heartbeats, workflow_bound_conversation_ids
+from agora_runner.heartbeats import (
+    run_due_heartbeats,
+    workflow_bound_conversation_ids,
+    cycle_bound_conversation_ids,
+)
 
 
 def poll_once():
@@ -21,18 +25,23 @@ def poll_once():
     conversations = body.get("conversations", [])
 
     # Fetched once per tick and handed to both this loop (to skip
-    # workflow-bound conversations below) and run_due_heartbeats (so it
-    # isn't fetched twice) -- see workflow_bound_conversation_ids' own
-    # docstring for why ordinary turn-taking must never touch these.
+    # heartbeat-driven conversations below) and run_due_heartbeats (so
+    # it isn't fetched twice) -- see each skip helper's own docstring
+    # for why ordinary turn-taking must never touch these. The two have
+    # separate rationales (a workflow's steps already decide who acts;
+    # a cycle transcript defers Edvard's message to the next scheduled
+    # run instead of firing an immediate one), so they stay separate
+    # functions rather than one merged predicate.
     hb_status, hb_body = agora_internal("GET", "/heartbeats")
     heartbeats_list = hb_body.get("heartbeats", []) if hb_status == 200 else []
-    skip_ids = workflow_bound_conversation_ids(heartbeats_list)
+    skip_ids = (workflow_bound_conversation_ids(heartbeats_list)
+                | cycle_bound_conversation_ids(heartbeats_list))
 
     debug_log(f"poll_once: {len(conversations)} conversations fetched, "
-              f"{len(skip_ids)} workflow-bound (skipped)")
+              f"{len(skip_ids)} heartbeat-driven (skipped)")
     for summary in conversations:
         if summary.get("id") in skip_ids:
-            debug_log(f"[{summary.get('name', summary.get('id'))}] skipped: workflow-bound conversation")
+            debug_log(f"[{summary.get('name', summary.get('id'))}] skipped: heartbeat-driven conversation")
             continue
         try:
             poll_conversation(summary)
