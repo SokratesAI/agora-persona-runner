@@ -152,14 +152,16 @@ def client_tool_schemas(caps, active_step=None):
                 "your new entry silently destroys every prior one. Give after_marker as a line "
                 "that already exists in the file (e.g. '## Entries') to insert content right "
                 "after it; omit after_marker to just add content at the end of the file. Fails "
-                "if the file doesn't exist yet -- use vault_write to create a new file."
+                "if the file doesn't exist yet -- use vault_write to create a new file -- and "
+                "fails without writing anything if after_marker matches no line, so check the "
+                "result and retry with a marker you have actually read in the file."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "content": {"type": "string"},
-                    "after_marker": {"type": "string", "description": "optional: an existing line to insert content directly after"},
+                    "after_marker": {"type": "string", "description": "optional: an existing line to insert content directly after; must match a real line or the call fails without writing"},
                 },
                 "required": ["path", "content"],
             },

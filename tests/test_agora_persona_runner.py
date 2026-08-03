@@ -870,11 +870,37 @@ def test_vault_append_path_appends_at_end_when_no_marker_given(runner):
     assert mock_write.call_args[0][1] == "line one\n\nline two\n"
 
 
-def test_vault_append_path_appends_at_end_when_marker_not_found(runner):
+# A marker that matches nothing used to append at the END of the file
+# instead -- silently, with no error. That is exactly how the identical
+# bug in the bridge's own vault tool (agora-claude-bridge#10) buried three
+# of Nova's journal entries at the bottom of a file whose header promises
+# newest-first; Edvard read it as the loop having stopped writing. The
+# old behaviour had a passing test asserting it, which is why it survived.
+# Asking for a position and quietly getting the opposite end of the file
+# is the same class of mistake as appending to a file that doesn't exist,
+# which this function already refuses to do.
+
+def test_vault_append_path_fails_and_writes_nothing_when_marker_not_found(runner):
+    # vault_write_path returns a real string here so that a fall-through to
+    # the end-of-file append is caught by the FAILED assertion too -- against
+    # a bare MagicMock, `result.startswith("FAILED")` is quietly truthy.
     with patch.object(runner.vault, "vault_read_path", return_value="no marker here"), \
          patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
-        runner.vault_append_path("notes.md", "addition", after_marker="## Missing")
-    assert mock_write.call_args[0][1] == "no marker here\n\naddition\n"
+        result = runner.vault_append_path("notes.md", "addition", after_marker="## Missing")
+    mock_write.assert_not_called()
+    assert result.startswith("FAILED")
+    assert "## Missing" in result
+
+
+def test_vault_append_path_still_appends_at_end_when_marker_is_empty(runner):
+    """Omitting the marker is the documented way to append at the end, and
+    must keep working -- the failure above is only for a marker that was
+    actually asked for."""
+    with patch.object(runner.vault, "vault_read_path", return_value="line one"), \
+         patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
+        result = runner.vault_append_path("notes.md", "line two", after_marker="")
+    assert result == "written"
+    assert mock_write.call_args[0][1] == "line one\n\nline two\n"
 
 
 def test_vault_append_path_fails_loudly_for_a_missing_file(runner):

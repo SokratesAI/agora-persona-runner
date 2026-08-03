@@ -119,11 +119,22 @@ def vault_append_path(path, content, after_marker=""):
 
     If `after_marker` is a line that exists verbatim in the current
     file, `content` is inserted directly after it (one blank line
-    between). Otherwise -- no marker given, or marker not found --
-    `content` is appended at the true end of the file. Fails loudly
-    (does not silently fall back to vault_write's create-new-file
-    behavior) if the file doesn't exist yet, since "append" implies
-    something to append to."""
+    between). With no marker given, `content` is appended at the true
+    end of the file. A marker that matches no line fails loudly and
+    writes nothing -- see below. Fails loudly (does not silently fall
+    back to vault_write's create-new-file behavior) if the file doesn't
+    exist yet, since "append" implies something to append to.
+
+    That marker-not-found case used to append at the end instead, which
+    is how the identical bug in the bridge's own vault tool buried three
+    of Nova's journal entries at the bottom of a file whose header
+    promises newest-first (SokratesAI/agora-claude-bridge#10). Edvard
+    read it as the loop having stopped writing entirely. Asking for a
+    position and silently getting the opposite end of the file is the
+    same class of mistake as appending to a file that doesn't exist,
+    which this function already refuses to do -- and here the caller is
+    a model, which can read the FAILED string and retry with a real
+    marker."""
     existing_content = vault_read_path(path)
     if existing_content is None:
         return f"FAILED(not found: {path} -- use vault_write to create a new file)"
@@ -133,6 +144,8 @@ def vault_append_path(path, content, after_marker=""):
             if line.strip() == after_marker.strip():
                 lines[i + 1:i + 1] = ["", content.strip("\n")]
                 return vault_write_path(path, "\n".join(lines))
+        return (f"FAILED(after_marker not found in {path}: {after_marker!r} "
+                f"-- nothing written; omit after_marker to append at the end)")
     sep = "" if existing_content.endswith("\n\n") else ("\n" if existing_content.endswith("\n") else "\n\n")
     return vault_write_path(path, existing_content + sep + content.strip("\n") + "\n")
 
