@@ -2891,8 +2891,17 @@ def test_pending_user_turn(runner):
 
 
 def test_run_heartbeat_skips_notify_when_sentinel_returned(runner):
+    # 2026-08-03: `task` now carries the sentinel instruction. That was
+    # always how a heartbeat opts in (see the section comment above --
+    # "a heartbeat's own prompt can ask for this exact string"), but the
+    # setup never modelled it because nothing read it. The chip is now
+    # posted at trigger time for everything EXCEPT heartbeats that opted
+    # in this way, so the opt-in has to be real for this to still be a
+    # test of the sentinel rather than of an unrelated default.
     heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
-                 "schedule": "every@1h", "name": "HB"}
+                 "schedule": "every@1h", "name": "HB",
+                 "task": f"Reply with exactly {runner.HEARTBEAT_NO_REPORT_SENTINEL} "
+                         "if the cluster is healthy."}
     persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
                "capabilities": dict(runner.NO_CAPS)}
     detail = {"personas": [], "messages": [], "stickyFallback": False}
@@ -2915,6 +2924,66 @@ def test_run_heartbeat_skips_notify_when_sentinel_returned(runner):
     mock_notify.assert_not_called()
     mock_audit.assert_not_called()
     assert "not posted" in heartbeat_updates[-1]["lastResult"]
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-03, Edvard: "Tool usage and heartbeats does show in the
+# conversations, but are displayed after the process is finished... They are
+# there to show that something is processing, but if its displayed after the
+# process is done they serve no purpose other than hindsight logging. I want
+# to see them immediately when they are triggered."
+# ---------------------------------------------------------------------------
+
+def _heartbeat_call_order(runner, *, task=None, reply="all done", raises=None):
+    """Runs a heartbeat, returning the order of the calls that reach the chat."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@6h", "name": "HB"}
+    if task:
+        heartbeat["task"] = task
+    persona = {"id": "p1", "name": "Test", "model": "claude-cli:claude-opus-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+
+    calls = []
+
+    def fake_generate_reply(*_args, **_kwargs):
+        calls.append("generate_reply")
+        if raises:
+            raise raises
+        return reply
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", side_effect=lambda *a, **k: calls.append("notify")), \
+         patch.object(runner.heartbeats, "audit", side_effect=lambda *a, **k: calls.append("audit")), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+    return calls
+
+
+def test_heartbeat_chip_is_posted_before_the_model_is_called(runner):
+    """The whole point of the chip is to show a run is in flight, so it has
+    to land before the slow part, not after it. For a claude-cli cycle
+    generate_reply is the ~45 minutes Edvard spends staring at nothing."""
+    assert _heartbeat_call_order(runner) == ["audit", "generate_reply", "notify"]
+
+
+def test_heartbeat_chip_survives_a_run_that_dies_midway(runner):
+    """A cycle killed or failed after it started used to leave NO trace in
+    the conversation at all -- the failure mode that made Edvard think the
+    loop had stopped. The up-front chip is now that trace."""
+    assert _heartbeat_call_order(runner, raises=RuntimeError("boom")) == \
+        ["audit", "generate_reply"]
+
+
+def test_sentinel_heartbeat_still_chips_only_at_the_end_and_only_once(runner):
+    """Monitoring heartbeats keep the old behaviour exactly: nothing is
+    posted up front (a clean run must leave the chat untouched), and a run
+    that does report posts one chip, after the reply -- not two."""
+    task = f"Reply with exactly {runner.HEARTBEAT_NO_REPORT_SENTINEL} if healthy."
+    assert _heartbeat_call_order(runner, task=task) == \
+        ["generate_reply", "notify", "audit"]
 
 
 def test_run_heartbeat_sentinel_match_is_whitespace_and_case_tolerant(runner):

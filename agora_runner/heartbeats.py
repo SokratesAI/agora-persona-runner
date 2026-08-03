@@ -222,6 +222,27 @@ def run_heartbeat(heartbeat):
                     f"answered yet, oldest first:\n{lines}")
     history.append({"role": "user", "content": trigger})
 
+    # 2026-08-03 (Edvard's ask): the "Ran heartbeat" chip is meant to show
+    # that something is *processing*, but it was posted after notify() at
+    # the very end of the run -- so it rendered BELOW the reply and only
+    # appeared once there was nothing left to wait for. On a claude-cli
+    # cycle that is up to 45 minutes late: "they serve no purpose other
+    # than hindsight logging. I want to see them immediately when they are
+    # triggered." So post it up front instead.
+    #
+    # Not for monitoring-style heartbeats, though. Those opt into
+    # HEARTBEAT_NO_REPORT_SENTINEL (config.py) precisely so a clean run
+    # leaves the chat untouched, and a chip every 10 minutes saying "Ran
+    # heartbeat" is exactly the noise that sentinel exists to prevent.
+    # Whether a run will go silent isn't knowable until the reply is in
+    # hand -- but opting in means *instructing the model*, and the only
+    # channel for that is the system prompt, so that is what we test.
+    # Those heartbeats keep the old end-of-run chip, unchanged.
+    may_go_silent = HEARTBEAT_NO_REPORT_SENTINEL in system
+    if not may_go_silent:
+        audit(persona["name"], conversation_id, "heartbeat",
+              f"{heartbeat['name']} ({heartbeat['schedule']})")
+
     result = ""
     try:
         # 2026-07-24: heartbeats always run non-sticky regardless of the
@@ -239,8 +260,12 @@ def run_heartbeat(heartbeat):
         else:
             notify(conversation_id, reply, persona["name"])
             result = f"replied {len(reply)} chars"
-            audit(persona["name"], conversation_id, "heartbeat",
-                  f"{heartbeat['name']} ({heartbeat['schedule']})")
+            if may_go_silent:
+                # Chip was withheld up front because this run might have
+                # ended in silence. It didn't, so post it now — exactly
+                # the old behaviour, for exactly the old reason.
+                audit(persona["name"], conversation_id, "heartbeat",
+                      f"{heartbeat['name']} ({heartbeat['schedule']})")
     except Exception as e:
         result = f"failed: {e}"[:200]
         log(f"heartbeat {heartbeat['name']} failed: {e}")
