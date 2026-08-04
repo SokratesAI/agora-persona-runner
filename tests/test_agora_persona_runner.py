@@ -1084,6 +1084,19 @@ def test_audit_includes_before_after_only_when_given(runner):
     assert "after" not in payload
 
 
+def test_audit_marks_only_narration_ephemeral(runner):
+    """Agora retains ephemeral entries on a budget of their own. An ordinary
+    capability call must never carry the flag, or the trail this store
+    exists to keep would evict itself."""
+    with patch.object(audit_module, "agora_internal", return_value=(200, {})) as mock_internal:
+        runner.audit("Gemini", "c1", "vault_write", "notes.md")
+    assert "ephemeral" not in mock_internal.call_args[0][2]
+
+    with patch.object(audit_module, "agora_internal", return_value=(200, {})) as mock_internal:
+        runner.audit("Nova", "c1", "Bash", "ls", ephemeral=True)
+    assert mock_internal.call_args[0][2]["ephemeral"] is True
+
+
 # ---------------------------------------------------------------------------
 # Defaults / capability plumbing
 # ---------------------------------------------------------------------------
@@ -4731,9 +4744,11 @@ def test_grant_returns_a_token_and_report_posts_a_chip(clean_grants):
     posted = []
     token = clean_grants.grant("Nova", "conv-1")
     assert token
-    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         assert clean_grants.report(token, "Bash", "pytest tests/") is True
-    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/")]
+    # ephemeral: narration is retained on its own budget in Agora, so a
+    # cycle's few hundred chips cannot evict the capability audit trail.
+    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/", {"ephemeral": True})]
 
 
 def test_grant_is_declined_when_there_is_no_conversation_to_post_into(clean_grants):
@@ -4749,14 +4764,14 @@ def test_report_is_refused_after_the_call_that_minted_the_token_ends(clean_grant
     posted = []
     token = clean_grants.grant("Nova", "conv-1")
     clean_grants.revoke(token)
-    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         assert clean_grants.report(token, "Bash", "rm -rf /") is False
     assert posted == []
 
 
 def test_report_is_refused_for_a_token_that_was_never_issued(clean_grants):
     posted = []
-    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         assert clean_grants.report("made-up-token", "Bash", "ls") is False
     assert posted == []
 
@@ -4766,7 +4781,7 @@ def test_a_grant_cannot_post_into_a_conversation_it_was_not_issued_for(clean_gra
     request -- a compromised or buggy bridge cannot address another chat."""
     posted = []
     token = clean_grants.grant("Nova", "conv-mine")
-    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         clean_grants.report(token, "Bash", "ls")
     assert posted[0][1] == "conv-mine"
 
@@ -4783,7 +4798,7 @@ def test_chips_stop_at_the_cap_and_the_cap_itself_is_announced(clean_grants):
     posted = []
     token = clean_grants.grant("Nova", "conv-1")
     with patch.object(clean_grants, "TOOL_ACTIVITY_MAX_PER_CALL", 3), \
-         patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+         patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         for i in range(10):
             assert clean_grants.report(token, "Bash", f"step-{i}") is True
 
@@ -4791,6 +4806,10 @@ def test_chips_stop_at_the_cap_and_the_cap_itself_is_announced(clean_grants):
     assert details[:3] == ["step-0", "step-1", "step-2"]
     assert len(details) == 4
     assert "capped at 3" in details[3]
+    # Everything this module posts is narration, the cap notice included --
+    # the conversation keeps it either way, so nothing is lost by not
+    # spending a capability-audit slot on it.
+    assert all(p[-1] == {"ephemeral": True} for p in posted)
 
 
 def test_claude_cli_generate_sends_an_activity_callback(runner):
@@ -4883,17 +4902,17 @@ def test_tool_activity_endpoint_records_a_chip(clean_grants):
     token = clean_grants.grant("Nova", "conv-1")
     handler, sent = _tool_activity_handler(
         {"token": token, "capability": "Bash", "detail": "pytest tests/"})
-    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         handler.do_POST()
     assert sent["status"] == 202
-    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/")]
+    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/", {"ephemeral": True})]
 
 
 def test_tool_activity_endpoint_rejects_an_unknown_token(clean_grants):
     posted = []
     handler, sent = _tool_activity_handler(
         {"token": "not-a-real-token", "capability": "Bash", "detail": "ls"})
-    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         handler.do_POST()
     assert sent["status"] == 401
     assert posted == []
@@ -4915,7 +4934,7 @@ def test_tool_activity_endpoint_does_not_require_the_agora_token(clean_grants):
     handler, sent = _tool_activity_handler({"token": token, "capability": "Read", "detail": "/x"})
     from agora_runner import invoke_server
     with patch.object(invoke_server, "AGORA_TOKEN", "a-real-secret"), \
-         patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+         patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         handler.do_POST()
     assert sent["status"] == 202
     assert len(posted) == 1
