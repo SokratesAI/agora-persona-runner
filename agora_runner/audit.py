@@ -3,6 +3,16 @@
 from agora_runner.log import log
 from agora_runner.http_util import agora_internal
 
+# `detail` is a one-line chip label -- "Read vault file · journal.md" -- and
+# 500 is generous for one. It is the wrong ceiling for exactly one capability:
+# NARRATION_TEXT, which is not a tool call at all but a passage the persona
+# wrote between two of them (agora-claude-bridge#12). That is prose, it is
+# rendered as prose, and it is routinely longer than this paragraph. Clipping
+# it here would end every second passage mid-sentence -- the same "block of
+# text" problem it exists to fix, moved one hop upstream.
+DETAIL_CHARS_MAX = 500
+NARRATION_TEXT = "assistant_text"
+
 
 def audit(persona_name, conversation_id, capability, detail, before=None, after=None,
           ephemeral=False, tool_use_id="", output=None, is_error=False):
@@ -11,7 +21,7 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
             "personaName": persona_name,
             "conversationId": conversation_id,
             "capability": capability,
-            "detail": detail[:500],
+            "detail": detail if capability == NARRATION_TEXT else detail[:DETAIL_CHARS_MAX],
         }
         # Live tool-use narration (tool_activity.py). Agora keeps these on a
         # budget of their own, because one cycle emits hundreds of them --

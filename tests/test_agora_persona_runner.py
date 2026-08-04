@@ -5015,3 +5015,30 @@ def test_invoke_endpoint_still_requires_the_agora_token(clean_grants):
     with patch.object(invoke_server, "AGORA_TOKEN", "a-real-secret"):
         handler.do_POST()
     assert sent["status"] == 401
+
+
+def test_audit_sends_a_written_passage_whole():
+    """A passage the persona wrote between two tool calls is prose, not a
+    chip label. Clipping it at DETAIL_CHARS_MAX would end every second one
+    mid-sentence -- the "block of text" complaint moved one hop upstream."""
+    import importlib
+    audit_mod = importlib.import_module("agora_runner.audit")
+    passage = "word " * 400
+    sent = {}
+    with patch.object(audit_mod, "agora_internal",
+                      lambda m, u, body: sent.update(body)):
+        audit_mod.audit("Nova", "c1", audit_mod.NARRATION_TEXT, passage, ephemeral=True)
+    assert sent["detail"] == passage
+    assert len(sent["detail"]) > audit_mod.DETAIL_CHARS_MAX
+
+
+def test_audit_still_clips_an_ordinary_chip_label():
+    """The ceiling only lifts for narration text. A `Bash` chip carrying a
+    3000-character heredoc is still a one-line label and still gets cut."""
+    import importlib
+    audit_mod = importlib.import_module("agora_runner.audit")
+    sent = {}
+    with patch.object(audit_mod, "agora_internal",
+                      lambda m, u, body: sent.update(body)):
+        audit_mod.audit("Nova", "c1", "Bash", "x" * 3000, ephemeral=True)
+    assert len(sent["detail"]) == audit_mod.DETAIL_CHARS_MAX
