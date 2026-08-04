@@ -104,8 +104,14 @@ def report(token, capability, detail):
                 f"after {TOOL_ACTIVITY_MAX_PER_CALL} chips")
             audit(persona_name, conversation_id, "tool activity",
                   f"capped at {TOOL_ACTIVITY_MAX_PER_CALL} chips for this run "
-                  f"-- further tool calls are still running, just not shown")
+                  f"-- further tool calls are still running, just not shown",
+                  ephemeral=True)
         return True
 
-    audit(persona_name, conversation_id, capability, detail)
+    # ephemeral: everything this module posts is narration, and Agora
+    # retains narration on a budget separate from the capability audit
+    # trail. Without it a single cycle's chips evict that trail wholesale.
+    # Nothing is lost -- Agora also appends every chip to the conversation
+    # itself, which is durable and is where these are actually read.
+    audit(persona_name, conversation_id, capability, detail, ephemeral=True)
     return True
