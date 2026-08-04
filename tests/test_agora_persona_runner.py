@@ -29,6 +29,7 @@ Covers the three Issues.md bugs fixed 2026-07-22:
      (RBAC read access + repo-read-token auth both confirmed in-cluster).
 """
 
+import io
 import json
 import os
 import signal
@@ -4709,3 +4710,222 @@ def test_sleep_between_ticks_returns_early_once_shutdown_is_requested(drainable_
     started = time.monotonic()
     drainable_main._sleep_between_ticks(30)
     assert time.monotonic() - started < 1.0
+
+
+# ---------------------------------------------------------------------------
+# tool_activity.py + /tool-activity -- live tool-use chips for claude-cli
+# personas (2026-08-03). Edvard, asked whether he wanted every tool call or
+# only the ones that change something: "All. I want to know whats going on.
+# It takes away my feeling of control if everything is hidden."
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def clean_grants():
+    from agora_runner import tool_activity
+    tool_activity._grants.clear()
+    yield tool_activity
+    tool_activity._grants.clear()
+
+
+def test_grant_returns_a_token_and_report_posts_a_chip(clean_grants):
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    assert token
+    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+        assert clean_grants.report(token, "Bash", "pytest tests/") is True
+    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/")]
+
+
+def test_grant_is_declined_when_there_is_no_conversation_to_post_into(clean_grants):
+    """The /invoke path builds a reply with conversation_id=None -- no chip
+    can render, so the bridge should not be asked to report at all."""
+    assert clean_grants.grant("Nova", None) is None
+    assert clean_grants.grant("Nova", "") is None
+
+
+def test_report_is_refused_after_the_call_that_minted_the_token_ends(clean_grants):
+    """The grant is the whole of this endpoint's auth: it must stop working
+    the moment the generate() call it belongs to returns."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    clean_grants.revoke(token)
+    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+        assert clean_grants.report(token, "Bash", "rm -rf /") is False
+    assert posted == []
+
+
+def test_report_is_refused_for_a_token_that_was_never_issued(clean_grants):
+    posted = []
+    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+        assert clean_grants.report("made-up-token", "Bash", "ls") is False
+    assert posted == []
+
+
+def test_a_grant_cannot_post_into_a_conversation_it_was_not_issued_for(clean_grants):
+    """The conversation is bound at grant time and never taken from the
+    request -- a compromised or buggy bridge cannot address another chat."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-mine")
+    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+        clean_grants.report(token, "Bash", "ls")
+    assert posted[0][1] == "conv-mine"
+
+
+def test_grants_are_unique_per_call(clean_grants):
+    tokens = {clean_grants.grant("Nova", "conv-1") for _ in range(20)}
+    assert len(tokens) == 20
+
+
+def test_chips_stop_at_the_cap_and_the_cap_itself_is_announced(clean_grants):
+    """Not a second-guess of "All" -- a stop on a runaway loop. It has to be
+    visible in the chat, or it becomes the same silent drop Edvard was
+    complaining about in the first place."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    with patch.object(clean_grants, "TOOL_ACTIVITY_MAX_PER_CALL", 3), \
+         patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+        for i in range(10):
+            assert clean_grants.report(token, "Bash", f"step-{i}") is True
+
+    details = [p[3] for p in posted]
+    assert details[:3] == ["step-0", "step-1", "step-2"]
+    assert len(details) == 4
+    assert "capped at 3" in details[3]
+
+
+def test_claude_cli_generate_sends_an_activity_callback(runner):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "the answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-opus-5", False, "sys", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Nova"}, "conv-1",
+        )
+    activity = captured["body"]["activity"]
+    assert activity["url"].endswith("/tool-activity")
+    assert activity["token"]
+
+
+def test_claude_cli_generate_revokes_the_grant_when_the_bridge_call_fails(runner):
+    """A failed or timed-out generate() must not leave a live token behind
+    for the rest of this process's life."""
+    from agora_runner import tool_activity
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        raise RuntimeError("bridge unreachable")
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        with pytest.raises(RuntimeError):
+            runner.claude_cli_generate(
+                "claude-opus-5", False, "sys", [{"role": "user", "content": "hi"}],
+                dict(runner.NO_CAPS), {"name": "Nova"}, "conv-1",
+            )
+    assert captured["body"]["activity"]["token"] not in tool_activity._grants
+
+
+def test_claude_cli_generate_revokes_the_grant_after_a_successful_call(runner):
+    from agora_runner import tool_activity
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "the answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-opus-5", False, "sys", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Nova"}, "conv-1",
+        )
+    assert captured["body"]["activity"]["token"] not in tool_activity._grants
+
+
+def test_claude_cli_generate_omits_the_callback_when_there_is_no_conversation(runner):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "the answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-opus-5", False, "sys", [{"role": "user", "content": "hi"}],
+            dict(runner.NO_CAPS), {"name": "Nova"}, None,
+        )
+    assert "activity" not in captured["body"]
+
+
+# --- the /tool-activity endpoint itself ---
+
+def _tool_activity_handler(body):
+    from agora_runner import invoke_server
+    handler = invoke_server.InvokeHandler.__new__(invoke_server.InvokeHandler)
+    handler.path = "/tool-activity"
+    raw = json.dumps(body).encode()
+    handler.rfile = io.BytesIO(raw)
+    handler.headers = {"Content-Length": str(len(raw))}
+    sent = {}
+
+    def fake_send(status, payload):
+        sent["status"] = status
+        sent["payload"] = payload
+    handler._send = fake_send
+    return handler, sent
+
+
+def test_tool_activity_endpoint_records_a_chip(clean_grants):
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    handler, sent = _tool_activity_handler(
+        {"token": token, "capability": "Bash", "detail": "pytest tests/"})
+    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+        handler.do_POST()
+    assert sent["status"] == 202
+    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/")]
+
+
+def test_tool_activity_endpoint_rejects_an_unknown_token(clean_grants):
+    posted = []
+    handler, sent = _tool_activity_handler(
+        {"token": "not-a-real-token", "capability": "Bash", "detail": "ls"})
+    with patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+        handler.do_POST()
+    assert sent["status"] == 401
+    assert posted == []
+
+
+def test_tool_activity_endpoint_requires_a_token_and_a_capability(clean_grants):
+    token = clean_grants.grant("Nova", "conv-1")
+    for body in ({"capability": "Bash"}, {"token": token}, {}):
+        handler, sent = _tool_activity_handler(body)
+        handler.do_POST()
+        assert sent["status"] == 400
+
+
+def test_tool_activity_endpoint_does_not_require_the_agora_token(clean_grants):
+    """This endpoint exists precisely so the bridge never needs AGORA_TOKEN
+    -- requiring it here would defeat the whole reason for the callback."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    handler, sent = _tool_activity_handler({"token": token, "capability": "Read", "detail": "/x"})
+    from agora_runner import invoke_server
+    with patch.object(invoke_server, "AGORA_TOKEN", "a-real-secret"), \
+         patch.object(clean_grants, "audit", lambda *a: posted.append(a)):
+        handler.do_POST()
+    assert sent["status"] == 202
+    assert len(posted) == 1
+
+
+def test_invoke_endpoint_still_requires_the_agora_token(clean_grants):
+    """The new route must not have opened up the old one."""
+    from agora_runner import invoke_server
+    handler, sent = _tool_activity_handler({"messages": []})
+    handler.path = "/invoke"
+    with patch.object(invoke_server, "AGORA_TOKEN", "a-real-secret"):
+        handler.do_POST()
+    assert sent["status"] == 401

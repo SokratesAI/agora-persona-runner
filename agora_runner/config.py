@@ -32,6 +32,26 @@ CLAUDE_BRIDGE_URL = os.environ.get(
 )
 CLAUDE_BRIDGE_TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
+# Where the bridge sends live tool-use reports back to -- this process's
+# own in-cluster address (tool_activity.py explains why the reports come
+# here rather than going straight to Agora's internal API). A default
+# rather than required config so the feature works without a manifest
+# change; override if the Service is renamed or moves off RUNNER_PORT.
+#
+# Load-bearing assumption: this points at the Service, so it only comes
+# back to the replica that issued the grant because this deployment runs
+# exactly one (strategy Recreate, one replica -- and the whole drain design
+# in main.py assumes that too). Scaling the runner out would route some
+# callbacks to a replica that never minted the token, which fails closed:
+# a 401 and a missing chip, not a chip in the wrong conversation.
+RUNNER_SELF_URL = os.environ.get(
+    "RUNNER_SELF_URL", "http://agora-persona-runner.agents.svc.cluster.local:8082"
+)
+# Ceiling on activity chips one claude-cli call may post. An Evolve cycle
+# makes tens to low hundreds of tool calls, and Edvard explicitly asked to
+# see all of them (2026-08-03); this exists only so a runaway loop cannot
+# post thousands of messages into one conversation.
+TOOL_ACTIVITY_MAX_PER_CALL = int(os.environ.get("TOOL_ACTIVITY_MAX_PER_CALL", "400"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "5"))
 COUCHDB_URL = os.environ.get("COUCHDB_URL", "http://couchdb.obsidian.svc.cluster.local:5984")
 COUCHDB_USER = os.environ.get("COUCHDB_USER", "")

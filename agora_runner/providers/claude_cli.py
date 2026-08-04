@@ -15,7 +15,9 @@ interface-compatibility with the other two providers but unused. Unlike
 Gemini/Anthropic-API personas (whose tools are enforced server-side from
 capability flags, Decisions/0007), this persona's tools -- if any -- live
 entirely inside the CLI's own session; Agora's capability checkboxes don't
-apply to it at all.
+apply to it at all. Those calls are therefore invisible to this process,
+which is why (2026-08-03) it hands the bridge a scoped callback to narrate
+them as they happen -- see tool_activity.py.
 
 2026-08-01 design call (reversed from the original "chat mode, no tools"
 v1 plan): unrestricted by default, same as an interactive Claude Code
@@ -38,9 +40,10 @@ why this stays opt-in.
 """
 import json
 
-from agora_runner.config import CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN
+from agora_runner.config import CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN, RUNNER_SELF_URL
 from agora_runner.log import log
 from agora_runner.http_util import http_json
+from agora_runner.tool_activity import grant as grant_tool_activity, revoke as revoke_tool_activity
 
 
 class ClaudeBridgeUsageLimited(Exception):
@@ -68,14 +71,32 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         "restricted": bool(persona.get("claudeCliRestricted")),
         "stateless": bool(persona.get("claudeCliStateless")),
     }
+    # Live tool-use chips (2026-08-03): this call is about to block for up
+    # to 45 minutes while the CLI does real work in another pod, and
+    # nothing about that work is visible to Edvard until it returns. The
+    # grant token lets the bridge narrate it as it happens, scoped to this
+    # conversation and revoked the moment the call ends -- tool_activity.py
+    # explains why it is a callback here rather than the bridge posting to
+    # Agora directly.
+    activity_token = grant_tool_activity(persona.get("name", ""), conversation_id)
+    if activity_token:
+        body["activity"] = {
+            "url": f"{RUNNER_SELF_URL}/tool-activity",
+            "token": activity_token,
+        }
+
     debug_status_log = f"claude_cli request: model={model_id} conversation={conversation_id}"
     log(debug_status_log)
-    # Must exceed the bridge's own CLI_TIMEOUT_SECONDS (2700s as of
-    # 2026-08-03 -- bumped from 900s after Cycle 8 hit that wall running
-    # the full v2 single-session arc: read state, decide, implement,
-    # review, merge, health-check, journal, all in one call) or this HTTP
-    # call gives up before the bridge itself would.
-    status, resp = http_json("POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers, timeout=2760)
+    try:
+        # Must exceed the bridge's own CLI_TIMEOUT_SECONDS (2700s as of
+        # 2026-08-03 -- bumped from 900s after Cycle 8 hit that wall running
+        # the full v2 single-session arc: read state, decide, implement,
+        # review, merge, health-check, journal, all in one call) or this HTTP
+        # call gives up before the bridge itself would.
+        status, resp = http_json(
+            "POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers, timeout=2760)
+    finally:
+        revoke_tool_activity(activity_token)
 
     if status == 429:
         detail = resp.get("detail", "usage limit")

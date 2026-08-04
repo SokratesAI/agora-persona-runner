@@ -1,4 +1,6 @@
-"""Sync /invoke HTTP server (Decisions/0005) -- tool-less by design, for Ask/Preview."""
+"""Sync HTTP server: /invoke (Decisions/0005 -- tool-less by design, for
+Ask/Preview) and /tool-activity (the bridge's live tool-use callback, see
+tool_activity.py)."""
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9,6 +11,7 @@ from agora_runner.log import log
 from agora_runner.agora_api import fetch_persona
 from agora_runner.turns import build_system
 from agora_runner.reply import generate_reply
+from agora_runner.tool_activity import report as report_tool_activity
 
 
 class InvokeHandler(BaseHTTPRequestHandler):
@@ -23,7 +26,36 @@ class InvokeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_tool_activity(self):
+        """One tool call, reported by the bridge mid-session, rendered as an
+        inline Activity chip.
+
+        Authenticated solely by the per-call grant token in the body --
+        that is the entire point (tool_activity.py has the reasoning): this
+        endpoint exists so the bridge never needs AGORA_TOKEN, so requiring
+        AGORA_TOKEN here would defeat it. An unknown or expired token is a
+        401 and writes nothing.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            self._send(400, {"error": "invalid json body"})
+            return
+        token = payload.get("token") or ""
+        capability = str(payload.get("capability", "")).strip()
+        if not token or not capability:
+            self._send(400, {"error": "token and capability are required"})
+            return
+        if not report_tool_activity(token, capability, str(payload.get("detail", ""))):
+            self._send(401, {"error": "unknown or expired activity token"})
+            return
+        self._send(202, {"status": "recorded"})
+
     def do_POST(self):
+        if self.path == "/tool-activity":
+            self._handle_tool_activity()
+            return
         if self.path != "/invoke":
             self._send(404, {"error": "not found"})
             return
