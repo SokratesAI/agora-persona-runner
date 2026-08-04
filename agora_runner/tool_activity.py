@@ -74,12 +74,21 @@ def revoke(token):
             _grants.pop(token, None)
 
 
-def report(token, capability, detail):
+def report(token, capability, detail, tool_use_id="", output=None, is_error=False):
     """Post one chip. Returns False if the token is unknown or expired,
     which is the whole of this endpoint's authentication.
 
     Runs on an invoke_server handler thread while the generate() call that
     minted the token is still blocked on the bridge.
+
+    A call is narrated twice: once when it starts (detail, no output) and
+    once when it returns (output, no detail), both under the same
+    tool_use_id. Two posts rather than one amended post, because the first
+    is already on Edvard's screen by the time the tool finishes -- a
+    `pytest` run takes minutes and he asked to see it start, not to see it
+    appear already-complete afterwards. Agora's client pairs them by
+    tool_use_id and renders one chip (public/app.js). If one half is lost,
+    the other still stands alone, which is why nothing here waits for a pair.
     """
     with _lock:
         entry = _grants.get(token)
@@ -114,5 +123,6 @@ def report(token, capability, detail):
     # trail. Without it a single cycle's chips evict that trail wholesale.
     # Nothing is lost -- Agora also appends every chip to the conversation
     # itself, which is durable and is where these are actually read.
-    audit(persona_name, conversation_id, capability, detail, ephemeral=True)
+    audit(persona_name, conversation_id, capability, detail, ephemeral=True,
+          tool_use_id=tool_use_id, output=output, is_error=is_error)
     return True

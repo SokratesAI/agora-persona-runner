@@ -4748,7 +4748,11 @@ def test_grant_returns_a_token_and_report_posts_a_chip(clean_grants):
         assert clean_grants.report(token, "Bash", "pytest tests/") is True
     # ephemeral: narration is retained on its own budget in Agora, so a
     # cycle's few hundred chips cannot evict the capability audit trail.
-    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/", {"ephemeral": True})]
+    # The output fields are inert for a call-start chip -- they carry the
+    # tool's return value, which does not exist yet when this one is sent.
+    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/",
+                       {"ephemeral": True, "tool_use_id": "", "output": None,
+                        "is_error": False})]
 
 
 def test_grant_is_declined_when_there_is_no_conversation_to_post_into(clean_grants):
@@ -4808,7 +4812,7 @@ def test_every_tool_call_is_reported_however_many_there_are(clean_grants):
     # Everything this module posts is narration: Agora retains it on a budget
     # separate from the capability audit trail, which is what stops 2000 of
     # these evicting it (agora#37).
-    assert all(p[-1] == {"ephemeral": True} for p in posted)
+    assert all(p[-1]["ephemeral"] is True for p in posted)
 
 
 def test_claude_cli_generate_sends_an_activity_callback(runner):
@@ -4904,7 +4908,71 @@ def test_tool_activity_endpoint_records_a_chip(clean_grants):
     with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
         handler.do_POST()
     assert sent["status"] == 202
-    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/", {"ephemeral": True})]
+    assert posted == [("Nova", "conv-1", "Bash", "pytest tests/",
+                       {"ephemeral": True, "tool_use_id": "", "output": None,
+                        "is_error": False})]
+
+
+def test_tool_activity_endpoint_records_what_a_tool_returned(clean_grants):
+    """Edvard's issue 1, asked three times: "I need to see the command with
+    all metadata and also the output from that command, such as the return
+    of a echo command". The output arrives as its own report, tagged with
+    the id of the call it belongs to."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    handler, sent = _tool_activity_handler({
+        "token": token, "capability": "Bash",
+        "toolUseId": "toolu_a", "output": "hi\n",
+    })
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
+        handler.do_POST()
+    assert sent["status"] == 202
+    assert posted[0][4]["tool_use_id"] == "toolu_a"
+    assert posted[0][4]["output"] == "hi\n"
+    assert posted[0][4]["is_error"] is False
+
+
+def test_tool_activity_endpoint_marks_a_failed_tool_call(clean_grants):
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    handler, sent = _tool_activity_handler({
+        "token": token, "capability": "Bash", "toolUseId": "toolu_b",
+        "output": "not found", "isError": True,
+    })
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
+        handler.do_POST()
+    assert posted[0][4]["is_error"] is True
+
+
+def test_audit_sends_output_as_its_own_field_not_folded_into_detail():
+    """detail is a one-line chip label truncated at 500; output is a
+    transcript. Folding output into detail would silently cut a test run's
+    result off at 500 characters."""
+    import importlib
+    audit_mod = importlib.import_module("agora_runner.audit")
+    sent = {}
+    with patch.object(audit_mod, "agora_internal",
+                      lambda m, u, body: sent.update(body)):
+        audit_mod.audit("Nova", "c1", "Bash", "", ephemeral=True,
+                        tool_use_id="toolu_a", output="x" * 4000)
+    assert sent["toolUseId"] == "toolu_a"
+    assert len(sent["output"]) == 4000
+    assert sent["detail"] == ""
+    assert "isError" not in sent
+
+
+def test_audit_omits_the_output_fields_for_an_ordinary_capability_call():
+    """Every other audit() caller in the runner passes none of this, and
+    their payloads must be byte-identical to before."""
+    import importlib
+    audit_mod = importlib.import_module("agora_runner.audit")
+    sent = {}
+    with patch.object(audit_mod, "agora_internal",
+                      lambda m, u, body: sent.update(body)):
+        audit_mod.audit("Nova", "c1", "vault_write", "notes.md", after="hello")
+    assert "toolUseId" not in sent
+    assert "output" not in sent
+    assert "isError" not in sent
 
 
 def test_tool_activity_endpoint_rejects_an_unknown_token(clean_grants):
@@ -4947,3 +5015,30 @@ def test_invoke_endpoint_still_requires_the_agora_token(clean_grants):
     with patch.object(invoke_server, "AGORA_TOKEN", "a-real-secret"):
         handler.do_POST()
     assert sent["status"] == 401
+
+
+def test_audit_sends_a_written_passage_whole():
+    """A passage the persona wrote between two tool calls is prose, not a
+    chip label. Clipping it at DETAIL_CHARS_MAX would end every second one
+    mid-sentence -- the "block of text" complaint moved one hop upstream."""
+    import importlib
+    audit_mod = importlib.import_module("agora_runner.audit")
+    passage = "word " * 400
+    sent = {}
+    with patch.object(audit_mod, "agora_internal",
+                      lambda m, u, body: sent.update(body)):
+        audit_mod.audit("Nova", "c1", audit_mod.NARRATION_TEXT, passage, ephemeral=True)
+    assert sent["detail"] == passage
+    assert len(sent["detail"]) > audit_mod.DETAIL_CHARS_MAX
+
+
+def test_audit_still_clips_an_ordinary_chip_label():
+    """The ceiling only lifts for narration text. A `Bash` chip carrying a
+    3000-character heredoc is still a one-line label and still gets cut."""
+    import importlib
+    audit_mod = importlib.import_module("agora_runner.audit")
+    sent = {}
+    with patch.object(audit_mod, "agora_internal",
+                      lambda m, u, body: sent.update(body)):
+        audit_mod.audit("Nova", "c1", "Bash", "x" * 3000, ephemeral=True)
+    assert len(sent["detail"]) == audit_mod.DETAIL_CHARS_MAX

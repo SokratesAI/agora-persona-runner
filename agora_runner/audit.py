@@ -3,15 +3,25 @@
 from agora_runner.log import log
 from agora_runner.http_util import agora_internal
 
+# `detail` is a one-line chip label -- "Read vault file · journal.md" -- and
+# 500 is generous for one. It is the wrong ceiling for exactly one capability:
+# NARRATION_TEXT, which is not a tool call at all but a passage the persona
+# wrote between two of them (agora-claude-bridge#12). That is prose, it is
+# rendered as prose, and it is routinely longer than this paragraph. Clipping
+# it here would end every second passage mid-sentence -- the same "block of
+# text" problem it exists to fix, moved one hop upstream.
+DETAIL_CHARS_MAX = 500
+NARRATION_TEXT = "assistant_text"
+
 
 def audit(persona_name, conversation_id, capability, detail, before=None, after=None,
-          ephemeral=False):
+          ephemeral=False, tool_use_id="", output=None, is_error=False):
     try:
         payload = {
             "personaName": persona_name,
             "conversationId": conversation_id,
             "capability": capability,
-            "detail": detail[:500],
+            "detail": detail if capability == NARRATION_TEXT else detail[:DETAIL_CHARS_MAX],
         }
         # Live tool-use narration (tool_activity.py). Agora keeps these on a
         # budget of their own, because one cycle emits hundreds of them --
@@ -26,6 +36,17 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
             payload["before"] = before
         if after is not None:
             payload["after"] = after
+        # What a tool returned, and the id that lets Agora's client pair it
+        # with the chip for the call itself. Deliberately NOT folded into
+        # `detail` above: detail is a one-line chip label truncated at 500,
+        # and output is a transcript -- Agora truncates it at
+        # AuditStore.CONTENT_CHARS_MAX (20_000), same as before/after.
+        if tool_use_id:
+            payload["toolUseId"] = tool_use_id
+        if output is not None:
+            payload["output"] = output
+            if is_error:
+                payload["isError"] = True
         agora_internal("POST", "/audit", payload)
     except Exception as e:  # audit must never break a turn
         log(f"audit post failed: {e}")
