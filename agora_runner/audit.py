@@ -14,8 +14,8 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
             "detail": detail[:500],
         }
         # Live tool-use narration (tool_activity.py). Agora keeps these on a
-        # budget of their own, because one cycle emits up to
-        # TOOL_ACTIVITY_MAX_PER_CALL of them and would otherwise evict every
+        # budget of their own, because one cycle emits hundreds of them --
+        # unbounded, since the cap came off -- and would otherwise evict every
         # vault_write and heartbeat entry in the store.
         if ephemeral:
             payload["ephemeral"] = True

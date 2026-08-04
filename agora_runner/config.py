@@ -47,11 +47,6 @@ RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
 RUNNER_SELF_URL = os.environ.get(
     "RUNNER_SELF_URL", "http://agora-persona-runner.agents.svc.cluster.local:8082"
 )
-# Ceiling on activity chips one claude-cli call may post. An Evolve cycle
-# makes tens to low hundreds of tool calls, and Edvard explicitly asked to
-# see all of them (2026-08-03); this exists only so a runaway loop cannot
-# post thousands of messages into one conversation.
-TOOL_ACTIVITY_MAX_PER_CALL = int(os.environ.get("TOOL_ACTIVITY_MAX_PER_CALL", "400"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "5"))
 COUCHDB_URL = os.environ.get("COUCHDB_URL", "http://couchdb.obsidian.svc.cluster.local:5984")
 COUCHDB_USER = os.environ.get("COUCHDB_USER", "")

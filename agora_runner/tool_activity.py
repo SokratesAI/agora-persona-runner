@@ -33,17 +33,14 @@ import secrets
 import threading
 
 from agora_runner.audit import audit
-from agora_runner.config import TOOL_ACTIVITY_MAX_PER_CALL
-from agora_runner.log import log
 
 
 class _Grant:
-    __slots__ = ("persona_name", "conversation_id", "count")
+    __slots__ = ("persona_name", "conversation_id")
 
     def __init__(self, persona_name, conversation_id):
         self.persona_name = persona_name
         self.conversation_id = conversation_id
-        self.count = 0
 
 
 # Guards _grants only. audit() (a blocking HTTP POST) is deliberately
@@ -88,25 +85,29 @@ def report(token, capability, detail):
         entry = _grants.get(token)
         if entry is None:
             return False
-        entry.count += 1
-        count = entry.count
         persona_name = entry.persona_name
         conversation_id = entry.conversation_id
 
-    if count > TOOL_ACTIVITY_MAX_PER_CALL:
-        # One chip announcing the cap, then silence. Not a second-guess of
-        # "All" -- it is a stop on a runaway loop posting thousands of
-        # messages into one conversation on a 4-core box, and it says so in
-        # the chat rather than quietly dropping calls the way the thing he
-        # complained about did.
-        if count == TOOL_ACTIVITY_MAX_PER_CALL + 1:
-            log(f"tool activity cap hit for conversation {conversation_id} "
-                f"after {TOOL_ACTIVITY_MAX_PER_CALL} chips")
-            audit(persona_name, conversation_id, "tool activity",
-                  f"capped at {TOOL_ACTIVITY_MAX_PER_CALL} chips for this run "
-                  f"-- further tool calls are still running, just not shown",
-                  ephemeral=True)
-        return True
+    # There is deliberately no ceiling here. There was one -- 400 chips per
+    # call, after which this went silent -- and Edvard struck it down on
+    # 2026-08-04: "limiting the tool calls (which limits your ability) just
+    # because you think it will improve the ui is against everything we stand
+    # for... If a cap is needed because of a buffer overflow or something
+    # more dangerous I completely understand."
+    #
+    # It wasn't. Measured on this box, an append to a conversation costs 6ms
+    # at 400 messages, so a whole cycle's narration is ~1s of I/O and under a
+    # megabyte -- the cap was guarding a cost that does not exist at the
+    # volume anything here actually runs at. It only became real at ~10k
+    # messages (50ms/append, 10GB written for one run), and that is a
+    # property of MessageStore.persist rewriting the entire conversation file
+    # on every append, which affects every chatty persona and is not fixed by
+    # silencing one of them. It's written down in issues.md as its own
+    # problem instead.
+    #
+    # The volume question the cap was really about is answered in the UI now:
+    # narration collapses into a drawer that is hidden by default (agora#38),
+    # so all of it is kept and none of it is in the way.
 
     # ephemeral: everything this module posts is narration, and Agora
     # retains narration on a budget separate from the capability audit
