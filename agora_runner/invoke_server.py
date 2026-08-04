@@ -47,7 +47,18 @@ class InvokeHandler(BaseHTTPRequestHandler):
         if not token or not capability:
             self._send(400, {"error": "token and capability are required"})
             return
-        if not report_tool_activity(token, capability, str(payload.get("detail", ""))):
+        # tool_use_id/output/is_error are the bridge's second report for a
+        # call -- what it returned, arriving after the chip for the call
+        # itself. Optional throughout: an older bridge sends neither, and a
+        # report carrying only detail still renders exactly as before.
+        if not report_tool_activity(
+            token,
+            capability,
+            str(payload.get("detail", "")),
+            tool_use_id=str(payload.get("toolUseId", "")),
+            output=payload.get("output"),
+            is_error=payload.get("isError") is True,
+        ):
             self._send(401, {"error": "unknown or expired activity token"})
             return
         self._send(202, {"status": "recorded"})
