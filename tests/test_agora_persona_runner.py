@@ -4791,24 +4791,23 @@ def test_grants_are_unique_per_call(clean_grants):
     assert len(tokens) == 20
 
 
-def test_chips_stop_at_the_cap_and_the_cap_itself_is_announced(clean_grants):
-    """Not a second-guess of "All" -- a stop on a runaway loop. It has to be
-    visible in the chat, or it becomes the same silent drop Edvard was
-    complaining about in the first place."""
+def test_every_tool_call_is_reported_however_many_there_are(clean_grants):
+    """There is no ceiling here, on purpose. This used to stop at 400 chips
+    and go silent; Edvard struck that down on 2026-08-04 -- "limiting the tool
+    calls (which limits your ability) just because you think it will improve
+    the ui is against everything we stand for". Volume is handled by
+    collapsing narration in the UI (agora#38), not by dropping it here."""
     posted = []
     token = clean_grants.grant("Nova", "conv-1")
-    with patch.object(clean_grants, "TOOL_ACTIVITY_MAX_PER_CALL", 3), \
-         patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
-        for i in range(10):
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
+        for i in range(2000):
             assert clean_grants.report(token, "Bash", f"step-{i}") is True
 
-    details = [p[3] for p in posted]
-    assert details[:3] == ["step-0", "step-1", "step-2"]
-    assert len(details) == 4
-    assert "capped at 3" in details[3]
-    # Everything this module posts is narration, the cap notice included --
-    # the conversation keeps it either way, so nothing is lost by not
-    # spending a capability-audit slot on it.
+    # No gap, no cap notice, nothing substituted for a real call.
+    assert [p[3] for p in posted] == [f"step-{i}" for i in range(2000)]
+    # Everything this module posts is narration: Agora retains it on a budget
+    # separate from the capability audit trail, which is what stops 2000 of
+    # these evicting it (agora#37).
     assert all(p[-1] == {"ephemeral": True} for p in posted)
 
 
