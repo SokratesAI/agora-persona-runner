@@ -2,6 +2,7 @@
 
 from agora_runner.log import log
 from agora_runner.http_util import agora_internal
+from agora_runner.redact import redact
 
 # `detail` is a one-line chip label -- "Read vault file · journal.md" -- and
 # 500 is generous for one. It is the wrong ceiling for exactly one capability:
@@ -17,6 +18,14 @@ NARRATION_TEXT = "assistant_text"
 def audit(persona_name, conversation_id, capability, detail, before=None, after=None,
           ephemeral=False, tool_use_id="", output=None, is_error=False):
     try:
+        # Every field below is text a human reads, assembled from whatever a
+        # tool was handed or returned, and this is the one point all of it
+        # leaves for Agora -- so the credential filter goes here rather than
+        # at ~30 call sites, one of which would eventually be added without
+        # it (redact.py). Before the truncation on the next line, not after:
+        # clipping first can cut a token in half, and half a token is still
+        # half a token in the feed.
+        detail = redact(detail)
         payload = {
             "personaName": persona_name,
             "conversationId": conversation_id,
@@ -33,9 +42,9 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
         # render a real diff for vault_write -- server-side truncated at
         # AuditStore.CONTENT_CHARS_MAX, not here.
         if before is not None:
-            payload["before"] = before
+            payload["before"] = redact(before)
         if after is not None:
-            payload["after"] = after
+            payload["after"] = redact(after)
         # What a tool returned, and the id that lets Agora's client pair it
         # with the chip for the call itself. Deliberately NOT folded into
         # `detail` above: detail is a one-line chip label truncated at 500,
@@ -44,7 +53,7 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
         if tool_use_id:
             payload["toolUseId"] = tool_use_id
         if output is not None:
-            payload["output"] = output
+            payload["output"] = redact(output)
             if is_error:
                 payload["isError"] = True
         agora_internal("POST", "/audit", payload)

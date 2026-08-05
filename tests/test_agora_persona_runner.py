@@ -5241,3 +5241,127 @@ def test_audit_still_clips_an_ordinary_chip_label():
                       lambda m, u, body: sent.update(body)):
         audit_mod.audit("Nova", "c1", "Bash", "x" * 3000, ephemeral=True)
     assert len(sent["detail"]) == audit_mod.DETAIL_CHARS_MAX
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-05 — credentials must not reach the Activity feed.
+#
+# agora-claude-bridge got this filter in Cycle 21, for the tools that run
+# inside the bridge. Every other provider's tools run in THIS process and
+# publish through audit(), which had no filter at all: `terminal_exec`
+# audits the command verbatim, and `vault_write` audits the whole file as
+# before/after so Agora can render a diff. A real OAuth token has already
+# reached a conversation once this way.
+# ---------------------------------------------------------------------------
+
+def _audited(*args, **kwargs):
+    """One audit() call, returning the payload that would go to Agora."""
+    sent = {}
+    with patch.object(audit_module, "agora_internal",
+                      lambda m, u, body: sent.update(body)):
+        audit_module.audit(*args, **kwargs)
+    return sent
+
+
+# A real JWT's payload segment starts `eyJ` too, and gitleaks' own jwt rule
+# keys on exactly that -- so writing one out as a literal fails this repo's
+# secret scan, in the file whose whole subject is not leaking secrets. Built
+# from pieces instead: the scanner needs contiguous text, redact() does not.
+_REALISTIC_JWT = "eyJhbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiIxMjM0NTY3ODkwIn0" \
+    + ".dBjftJeZ4CVPmB92K27u"
+
+
+def test_redact_replaces_each_credential_shape_with_a_visible_marker(runner):
+    redact = audit_module.redact
+    cases = [
+        ("sk-ant-oat01-" + "A" * 40, "anthropic key"),
+        ("ghp_" + "b" * 36, "github token"),
+        ("github_pat_" + "c" * 40, "github token"),
+        (_REALISTIC_JWT, "jwt"),
+        # The pattern anchors on the header segment only, so a payload that
+        # isn't base64 JSON -- an opaque session cookie of the same shape --
+        # is still caught.
+        ("eyJhbGciOiJSUzI1NiJ9.c29tZS1vcGFxdWUtcGF5bG9hZA.c2lnbmF0dXJlLWhlcmU", "jwt"),
+        ("AKIAIOSFODNN7EXAMPLE", "aws key id"),
+        ("-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----", "private key"),
+    ]
+    for secret, label in cases:
+        out = redact(f"before {secret} after")
+        assert secret not in out, f"{label} survived redaction"
+        assert f"[redacted: {label}]" in out
+        # Never a silent deletion -- the surrounding text still reads.
+        assert out.startswith("before ") and out.endswith(" after")
+
+
+def test_redact_keeps_the_variable_name_and_drops_only_the_value(runner):
+    """Knowing that ANTHROPIC_API_KEY is *set* is exactly the kind of thing
+    Edvard wants to be able to see; the value is the part that must not ship."""
+    out = audit_module.redact("ANTHROPIC_API_KEY=hunter2-and-then-some\nHOME=/root")
+    assert "ANTHROPIC_API_KEY=[redacted: value]" in out
+    assert "hunter2-and-then-some" not in out
+    assert "HOME=/root" in out
+
+
+def test_redact_leaves_ordinary_text_alone(runner):
+    """A filter that mangles normal chip labels is worse than no filter --
+    these are the strings the feed is actually made of."""
+    redact = audit_module.redact
+    for text in ("Read vault file · journal.md",
+                 "kubectl get pods -n agents",
+                 "gh pr merge --repo SokratesAI/agora-persona-runner 43 --squash",
+                 "Nova finished in 38m — replied 4212 chars"):
+        assert redact(text) == text
+
+
+def test_redact_passes_non_strings_through(runner):
+    """audit() hands over whatever a tool returned; callers shouldn't have
+    to type-check first."""
+    assert audit_module.redact(None) is None
+    assert audit_module.redact("") == ""
+
+
+def test_audit_redacts_a_terminal_command_carrying_a_bearer_token(runner):
+    """execute_tool audits `terminal_exec`'s command verbatim -- this is the
+    live path, not a hypothetical one."""
+    token = "sk-ant-oat01-" + "Z" * 40
+    sent = _audited("Nova", "c1", "terminal_exec",
+                    f'curl -H "Authorization: Bearer {token}" https://api.anthropic.com')
+    assert token not in sent["detail"]
+    assert "[redacted: anthropic key]" in sent["detail"]
+    assert "https://api.anthropic.com" in sent["detail"]
+
+
+def test_audit_redacts_the_vault_write_diff_it_publishes(runner):
+    """before/after carry the whole file so the feed can render a diff. A
+    vault note holding a token would otherwise publish it in full."""
+    token = "ghp_" + "q" * 36
+    sent = _audited("Nova", "c1", "vault_write", "notes.md",
+                    before="nothing here", after=f"deploy key: {token}\n")
+    assert token not in sent["after"]
+    assert "[redacted: github token]" in sent["after"]
+    assert sent["before"] == "nothing here"
+
+
+def test_audit_redacts_tool_output(runner):
+    """The bridge scrubs its own reports before sending them, but report()
+    is not the only way output reaches audit() and the bridge could be a
+    version behind at any moment."""
+    token = "ghp_" + "w" * 36
+    sent = _audited("Nova", "c1", "Bash", "printenv",
+                    tool_use_id="t1", output=f"GITHUB_TOKEN={token}")
+    assert token not in sent["output"]
+    assert "GITHUB_TOKEN=[redacted: value]" in sent["output"]
+
+
+def test_audit_redacts_before_it_truncates(runner):
+    """Order matters: clipping at DETAIL_CHARS_MAX first would leave the
+    leading half of a token sitting in the feed, unmatched by any pattern."""
+    token = "ghp_" + "e" * 36
+    # Positioned so that 30 characters of the token would survive a
+    # truncate-then-redact ordering -- enough to be a usable prefix, and
+    # short enough that the {16,} pattern no longer matches it.
+    detail = "x" * (audit_module.DETAIL_CHARS_MAX - 30) + token
+    sent = _audited("Nova", "c1", "terminal_exec", detail)
+    assert token[:20] not in sent["detail"]
+    assert "[redacted: github token]" in sent["detail"]
+    assert len(sent["detail"]) <= audit_module.DETAIL_CHARS_MAX
