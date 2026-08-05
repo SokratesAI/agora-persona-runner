@@ -36,46 +36,47 @@ def _elapsed(seconds):
     return f"{minutes}m" if minutes else f"{secs}s"
 
 
-def _unanswered_tail(detail, persona_name):
-    """Edvard's trailing, unanswered words in one conversation, or None
-    if it doesn't end on him.
+def _unread_from_edvard(detail, since=None):
+    """Everything Edvard wrote in one conversation that no run has read
+    yet, oldest first and joined, or None.
 
-    This used to also report whether a persona had ever replied here,
-    which pending_across_cycles used as its "already seen" boundary.
-    That boundary moved to a timestamp on 2026-08-05 (see
-    _arrived_after), and nothing read the flag afterwards, so it is
-    gone rather than left around looking load-bearing."""
-    participants = detail.get("personas") or []
-    history = merge_history(detail.get("messages", []), persona_name,
-                            len(participants) > 1)
-    return pending_user_turn(history)
+    This replaced a rule that only carried his words when the thread
+    ENDED on him (2026-08-05, later the same day). That rule dropped the
+    single most likely case there is: he watches a cycle run, types
+    something while it is working, and forty minutes later the cycle
+    posts its own report underneath him. The thread now ends on a
+    persona, so the next run saw nothing pending and his message was
+    gone -- silently, permanently, and specifically when he had been
+    paying the most attention.
+
+    "Ends on him" was standing in for "nobody has answered him", and in
+    a cycle transcript those are not the same thing at all: poll_once
+    skips these conversations, so the only persona message that can ever
+    land here is the cycle's own report, written from a trigger built
+    before he spoke. Nothing in this thread is ever a reply to him.
+
+    `since` is the previous run's `lastRunAt`, and it is the honest
+    boundary instead: a run reads its trigger at its start, so anything
+    older than that start was already offered to it, and anything newer
+    was not. That also bounds re-carrying without any new state -- the
+    conversation this run reads in full becomes, next run, an older one
+    filtered by a `since` that has moved past all of it. It is left at
+    None for the conversation we just rotated away from, because that
+    conversation was created by the previous run: everything in it
+    arrived after that run had already built its trigger."""
+    texts = []
+    for message in detail.get("messages") or []:
+        if message.get("sender") != "Edvard" or message.get("forgotten"):
+            continue
+        if since and str(message.get("ts") or "") <= since:
+            continue
+        text = (message.get("text") or "").strip()
+        if text:
+            texts.append(text)
+    return "\n\n".join(texts) or None
 
 
-def _arrived_after(detail, since):
-    """True if Edvard's newest message here landed after `since` (an ISO
-    timestamp, or None for "no previous run — take everything").
-
-    This is what makes walking an already-answered conversation safe.
-    A message folded into a trigger gets answered in the NEW cycle
-    conversation, so the old one keeps ending on Edvard forever and
-    would otherwise be re-carried every cycle for the rest of its life.
-    Comparing against the previous run's `lastRunAt` closes that without
-    any new state: anything older than the last run was already offered
-    to it.
-
-    Keyed on Edvard's own messages rather than simply the last one in
-    the conversation, because a cycle that died mid-run leaves activity
-    chips stamped after everything he said -- and those would otherwise
-    keep re-qualifying a note he wrote days ago."""
-    if not since:
-        return True
-    stamps = [str(m.get("ts") or "") for m in detail.get("messages") or []
-              if m.get("sender") == "Edvard"]
-    return bool(stamps) and max(stamps) > since
-
-
-def pending_across_cycles(heartbeat, previous_detail, persona_name, current_id=None,
-                          since=None):
+def pending_across_cycles(heartbeat, previous_detail, current_id=None, since=None):
     """Edvard's unanswered messages, walking back from the conversation
     we just rotated away from through older cycle-conversations. Returns
     [(source_label, text)], oldest first.
@@ -105,10 +106,18 @@ def pending_across_cycles(heartbeat, previous_detail, persona_name, current_id=N
 
     So the walk now covers every conversation in the lookback, and
     `since` (the PREVIOUS run's lastRunAt) is the boundary instead --
-    see _arrived_after for why a timestamp is the honest marker here and
-    a persona reply is not. That makes the set of conversations walked a
-    superset of the set poll_once skips, which is the invariant the two
-    functions have to keep between them.
+    see _unread_from_edvard for why a timestamp is the honest marker
+    here and a persona reply is not. That makes the set of conversations
+    walked a superset of the set poll_once skips, which is the invariant
+    the two functions have to keep between them.
+
+    2026-08-05, later still: what a conversation contributes is now
+    every unread thing he wrote in it, not only a trailing one. Until
+    then, typing into a cycle transcript *while that cycle was running*
+    was dropped outright -- the run's own report landed underneath his
+    message and made the thread stop ending on him. poll_once now posts
+    him a chip promising this walk will reach it (deferred.py), which is
+    only worth posting if it is true.
 
     The cost is that the older conversations are now always fetched
     (one listing plus up to CYCLE_LOOKBACK message fetches) rather than
@@ -116,12 +125,12 @@ def pending_across_cycles(heartbeat, previous_detail, persona_name, current_id=N
     in-cluster requests, four times a day, to stop firing whole cycles
     by accident."""
     collected = []
-    tail = _unanswered_tail(previous_detail, persona_name)
+    tail = _unread_from_edvard(previous_detail)
     if tail:
         collected.append(("the previous cycle's conversation", tail))
     for detail, label in _older_cycle_conversations(heartbeat, current_id):
-        tail = _unanswered_tail(detail, persona_name)
-        if tail and _arrived_after(detail, since):
+        tail = _unread_from_edvard(detail, since)
+        if tail:
             collected.append((label, tail))
     collected.reverse()  # oldest first -- read in the order he wrote them
     while len(collected) > 1 and sum(len(t) for _s, t in collected) > PENDING_CHARS_CAP:
@@ -282,7 +291,7 @@ def run_heartbeat(heartbeat):
     pending = pending_user_turn(history)
     carried = [("this conversation", pending)] if pending else []
     if not carried and rotated:
-        carried = pending_across_cycles(heartbeat, previous_detail, persona["name"],
+        carried = pending_across_cycles(heartbeat, previous_detail,
                                         conversation_id, since=previous_run_at)
     if len(carried) == 1:
         source, text = carried[0]
