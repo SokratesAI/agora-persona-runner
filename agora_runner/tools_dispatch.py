@@ -2,7 +2,6 @@
 
 import json
 
-from agora_runner.config import FAILURE_PAUSE_CAP
 from agora_runner.log import debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
@@ -221,7 +220,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
                 return "[create_heartbeat error: conversationId or newConversationName is required]"
             # Issues.md: "creating heartbeats using agent tool seems to
             # create two heartbeats instead of one" -- root cause is
-            # FAILURE_PAUSE_CAP's own retry path (see its comment above):
+            # the retry path FAILURE_BACKOFF_CAP guards (see config.py):
             # a turn that calls this tool successfully in one round and
             # then errors in a LATER round never appends a reply, so the
             # whole turn (including this tool call) is resent verbatim on

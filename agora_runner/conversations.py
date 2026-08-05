@@ -1,6 +1,11 @@
-"""notify/speak/auto_pause/poll_conversation -- one conversation's turn each tick."""
+"""notify/speak/poll_conversation -- one conversation's turn each tick."""
 
-from agora_runner.config import AI_TURN_CAP, FAILURE_PAUSE_CAP, FETCH_LIMIT, NO_CAPS, POLL_INTERVAL_SECONDS
+import time
+
+from agora_runner.config import (
+    FAILURE_BACKOFF_CAP, FAILURE_BACKOFF_MAX_SECONDS, FAILURE_BACKOFF_SECONDS,
+    FETCH_LIMIT, NO_CAPS, POLL_INTERVAL_SECONDS,
+)
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.agora_api import fetch_persona
@@ -12,6 +17,11 @@ from agora_runner.reply import generate_reply
 # poll_once() calls (per-conversation, not per-tick) so repeated failures
 # actually accumulate. Cleared on any successful reply.
 _conversation_failures = {}
+
+# conversation id -> monotonic time before which we don't retry it. Set
+# from _conversation_failures once a conversation crosses FAILURE_BACKOFF_CAP.
+# This replaced auto-pause on 2026-08-05 at Edvard's ask -- see config.py.
+_conversation_backoff = {}
 
 
 def notify(conversation_id, text, sender, system=False, push=True, thinking=False):
@@ -91,23 +101,37 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
     return reply
 
 
-def auto_pause(conversation_id, conversation_name, reason=None):
-    agora_internal("PATCH", f"/conversations/{conversation_id}", {"status": "paused"})
+def back_off(conversation_id, conversation_name, failures, reason, last_message_id=None):
+    """Stop retrying a persistently failing conversation for a while, without
+    touching its status. Replaced auto_pause() on 2026-08-05 -- Edvard:
+    *"Please turn off the auto pause of conversations as they are just
+    blocking now."* A paused conversation needs a manual resume from the
+    menu, so a transient outage left him locked out of a thread until he
+    noticed; backing off recovers on its own once the cause clears.
+
+    The runaway it still has to prevent is real and measured (2026-07-23:
+    two rate-limited conversations retried every poll tick for 8+ hours,
+    each retry cascading the whole Gemini fallback chain, which is what
+    actually exhausted every model's quota). Doubling the wait per failure
+    bounds that at a handful of attempts per hour instead of hundreds."""
+    delay = min(
+        FAILURE_BACKOFF_SECONDS * 2 ** (failures - FAILURE_BACKOFF_CAP),
+        FAILURE_BACKOFF_MAX_SECONDS,
+    )
+    _conversation_backoff[conversation_id] = (time.monotonic() + delay, last_message_id)
     # system=True (2026-07-24): found live that without this, a persona
-    # asked an unrelated question shortly after an auto-pause answered
-    # about the pause notice instead -- merge_history was feeding this
-    # control-plane message into the model's own context as if it were a
-    # real previous reply. See Message.system's docstring (agora repo).
+    # asked an unrelated question shortly after answered about this
+    # control-plane message instead -- merge_history was feeding it into
+    # the model's own context as if it were a real previous reply. See
+    # Message.system's docstring (agora repo).
     notify(
         conversation_id,
-        reason or (
-            f"⏸️ Paused automatically after {AI_TURN_CAP} consecutive automated turns. "
-            "Resume this conversation from its menu when you want the discussion to continue."
-        ),
+        f"⚠️ {failures} consecutive failed reply attempts. Last error: {reason}. "
+        f"Still active — retrying in {round(delay / 60)} min, and on any message you send.",
         "Agora",
         system=True,
     )
-    log(f"[{conversation_name}] auto-paused: {reason or 'AI turn cap'}")
+    log(f"[{conversation_name}] backing off {delay}s after {failures} failures: {reason}")
 
 
 def poll_conversation(summary):
@@ -136,7 +160,12 @@ def poll_conversation(summary):
         debug_log(f"[{name}] no turn needed (last sender not Edvard, or no @mention match)")
         return
     if speakers == [PAUSE_SENTINEL]:
-        auto_pause(summary["id"], detail.get("name"))
+        # The chain stops here; the conversation stays active. Pausing it
+        # was the old multi-persona architecture's backstop, and Edvard
+        # asked for it gone (2026-08-05) -- the cap's actual job is to stop
+        # personas @mentioning each other forever, and returning does that
+        # on its own. His next message starts a fresh chain, no menu.
+        debug_log(f"[{name}] AI turn cap reached: chain stopped, conversation left active")
         return
     debug_log(f"[{name}] turn decided: speakers={speakers}")
 
@@ -144,6 +173,29 @@ def poll_conversation(summary):
     override = None
     if visible and visible[-1].get("sender") == "Edvard":
         override = visible[-1].get("modelOverride")
+
+    # Backoff is checked here rather than at the top of the function on
+    # purpose: a message Edvard just sent clears it immediately, and we
+    # can't know who sent last without the fetch above. The fetch is one
+    # cheap GET -- the cost this guards is generate_reply() cascading the
+    # whole fallback chain, which is below this point.
+    state = _conversation_backoff.get(summary["id"])
+    if state is not None:
+        until, seen_last_id = state
+        last_id = visible[-1].get("id") if visible else None
+        # A *new* message from him clears it immediately -- but it has to be
+        # new. The common retry storm is "Edvard asked something and every
+        # reply attempt fails", where his message stays the last one in the
+        # thread forever, so testing sender alone would clear the backoff on
+        # every single tick and change nothing at all.
+        if visible and visible[-1].get("sender") == "Edvard" and last_id != seen_last_id:
+            _conversation_backoff.pop(summary["id"], None)
+            _conversation_failures.pop(summary["id"], None)
+        elif time.monotonic() < until:
+            debug_log(f"[{name}] skipped: backing off for {round(until - time.monotonic())}s more")
+            return
+        else:
+            _conversation_backoff.pop(summary["id"], None)
 
     local_thread = list(thread)
     try:
@@ -157,24 +209,18 @@ def poll_conversation(summary):
         # No reply got appended, so the turn-taking rule still sees the same
         # "needs a reply" state next tick — without this cap, a persistently
         # failing turn (rate limit, outage) retries every POLL_INTERVAL_SECONDS
-        # forever with zero backoff (see FAILURE_PAUSE_CAP above).
+        # forever with zero backoff (see FAILURE_BACKOFF_CAP in config.py).
         count = _conversation_failures.get(summary["id"], 0) + 1
         _conversation_failures[summary["id"]] = count
-        if count >= FAILURE_PAUSE_CAP:
+        if count >= FAILURE_BACKOFF_CAP:
             # The old label ("rate limit or outage") was a guess -- the real
             # exception only ever reached stdout via poll.py's own
             # try/except, never the conversation Edvard actually reads.
-            # Thread the real error into the visible pause message instead.
+            # Thread the real error into the visible message instead.
             detail_text = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-            auto_pause(
-                summary["id"], detail.get("name"),
-                reason=(
-                    f"⏸️ Paused automatically after {FAILURE_PAUSE_CAP} consecutive "
-                    f"failed reply attempts. Last error: {detail_text}. Resume from "
-                    "this conversation's menu once the underlying issue has cleared."
-                ),
-            )
-            _conversation_failures.pop(summary["id"], None)
+            back_off(summary["id"], detail.get("name"), count, detail_text,
+                     last_message_id=visible[-1].get("id") if visible else None)
         raise
     else:
         _conversation_failures.pop(summary["id"], None)
+        _conversation_backoff.pop(summary["id"], None)

@@ -297,7 +297,7 @@ def workflow_bound_conversation_ids(heartbeats_list):
     may never have a real Edvard message to anchor on (unlike one Edvard
     started himself) -- merge_history pops every leading non-user turn,
     so the history came back empty, speak() raised, and three such
-    crashes auto-paused the conversation via FAILURE_PAUSE_CAP. The
+    crashes auto-paused the conversation via what is now FAILURE_BACKOFF_CAP. The
     workflow engine's own turns are unaffected either way (run_workflow_steps
     already appends its own synthetic user turn every round)."""
     return {

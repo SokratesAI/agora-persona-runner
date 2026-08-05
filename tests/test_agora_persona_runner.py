@@ -1271,15 +1271,19 @@ def _make_poll_fixtures(runner, conversation_id="conv-1"):
     return summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn
 
 
-def test_repeated_speak_failures_auto_pause_after_cap(runner):
+def test_repeated_speak_failures_back_off_without_pausing(runner):
+    """Edvard, 2026-08-05: auto-pause is gone -- it blocked the conversation
+    until he resumed it by hand. The conversation must stay active and the
+    retry must simply be deferred."""
     runner._conversation_failures.clear()
+    runner._conversation_backoff.clear()
     summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
 
     with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn), \
          patch.object(runner.conversations, "speak", side_effect=RuntimeError("simulated rate limit")):
-        for _ in range(runner.FAILURE_PAUSE_CAP):
+        for _ in range(runner.FAILURE_BACKOFF_CAP):
             with pytest.raises(RuntimeError):
                 runner.poll_conversation(summary)
 
@@ -1287,22 +1291,24 @@ def test_repeated_speak_failures_auto_pause_after_cap(runner):
         c for c in calls["agora_internal"]
         if c[0] == "PATCH" and c[1] == f"/conversations/{summary['id']}" and c[2] == {"status": "paused"}
     ]
-    assert len(pause_calls) == 1, "conversation should be auto-paused exactly once at the failure cap"
-    assert summary["id"] not in runner._conversation_failures, "failure count should reset after pausing"
+    assert pause_calls == [], "nothing may pause a conversation any more"
+    assert summary["id"] in runner._conversation_backoff, "should be backing off at the cap"
+    assert runner._conversation_backoff[summary["id"]][0] > time.monotonic()
 
 
-def test_auto_pause_reason_surfaces_the_real_exception(runner):
-    # The pause label used to be a generic "(rate limit or outage)" guess,
-    # with the real exception only ever reaching stdout via poll.py's own
+def test_backoff_notice_surfaces_the_real_exception(runner):
+    # The label used to be a generic "(rate limit or outage)" guess, with
+    # the real exception only ever reaching stdout via poll.py's own
     # try/except -- never the conversation Edvard actually reads.
     runner._conversation_failures.clear()
+    runner._conversation_backoff.clear()
     summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
 
     with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn), \
          patch.object(runner.conversations, "speak", side_effect=RuntimeError("simulated 503 from provider")):
-        for _ in range(runner.FAILURE_PAUSE_CAP):
+        for _ in range(runner.FAILURE_BACKOFF_CAP):
             with pytest.raises(RuntimeError):
                 runner.poll_conversation(summary)
 
@@ -1310,38 +1316,42 @@ def test_auto_pause_reason_surfaces_the_real_exception(runner):
         c for c in calls["agora_internal"]
         if c[0] == "POST" and c[1] == f"/conversations/{summary['id']}/notify"
     ]
-    assert notify_calls, "auto_pause should have posted a system notice"
-    pause_text = notify_calls[-1][2]["text"]
-    assert "RuntimeError" in pause_text
-    assert "simulated 503 from provider" in pause_text
+    assert notify_calls, "back_off should have posted a system notice"
+    text = notify_calls[-1][2]["text"]
+    assert "RuntimeError" in text
+    assert "simulated 503 from provider" in text
+    assert "Paused" not in text and "menu" not in text, "must not tell him to resume anything"
 
 
-def test_failures_below_cap_do_not_pause(runner):
+def test_failures_below_cap_do_not_back_off(runner):
     runner._conversation_failures.clear()
+    runner._conversation_backoff.clear()
     summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
 
     with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn), \
          patch.object(runner.conversations, "speak", side_effect=RuntimeError("simulated rate limit")):
-        for _ in range(runner.FAILURE_PAUSE_CAP - 1):
+        for _ in range(runner.FAILURE_BACKOFF_CAP - 1):
             with pytest.raises(RuntimeError):
                 runner.poll_conversation(summary)
 
     pause_calls = [c for c in calls["agora_internal"] if c[0] == "PATCH"]
     assert len(pause_calls) == 0
-    assert runner._conversation_failures[summary["id"]] == runner.FAILURE_PAUSE_CAP - 1
+    assert summary["id"] not in runner._conversation_backoff
+    assert runner._conversation_failures[summary["id"]] == runner.FAILURE_BACKOFF_CAP - 1
 
 
 def test_failure_count_resets_on_success(runner):
     runner._conversation_failures.clear()
+    runner._conversation_backoff.clear()
     summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
 
     call_count = {"n": 0}
 
     def flaky_speak(*args, **kwargs):
         call_count["n"] += 1
-        if call_count["n"] <= runner.FAILURE_PAUSE_CAP - 1:
+        if call_count["n"] <= runner.FAILURE_BACKOFF_CAP - 1:
             raise RuntimeError("transient")
         return "recovered reply"
 
@@ -1349,12 +1359,13 @@ def test_failure_count_resets_on_success(runner):
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn), \
          patch.object(runner.conversations, "speak", side_effect=flaky_speak):
-        for _ in range(runner.FAILURE_PAUSE_CAP - 1):
+        for _ in range(runner.FAILURE_BACKOFF_CAP - 1):
             with pytest.raises(RuntimeError):
                 runner.poll_conversation(summary)
         runner.poll_conversation(summary)  # succeeds now
 
     assert summary["id"] not in runner._conversation_failures
+    assert summary["id"] not in runner._conversation_backoff
     pause_calls = [c for c in calls["agora_internal"] if c[0] == "PATCH"]
     assert len(pause_calls) == 0, "should never have paused -- recovered before hitting the cap"
 
@@ -1610,7 +1621,7 @@ def test_merge_history_system_message_does_not_break_role_merging(runner):
     assert merged[0]["content"] == "first\n\nsecond"
 
 
-def test_auto_pause_notifies_with_system_true(runner):
+def test_back_off_notifies_with_system_true(runner):
     captured = {}
 
     def fake_notify(conversation_id, text, sender, system=False):
@@ -1619,9 +1630,75 @@ def test_auto_pause_notifies_with_system_true(runner):
 
     with patch.object(runner.conversations, "agora_internal", return_value=(200, {})), \
          patch.object(runner.conversations, "notify", side_effect=fake_notify):
-        runner.auto_pause("conv-1", "Test")
+        runner.back_off("conv-1", "Test", runner.FAILURE_BACKOFF_CAP, "RuntimeError: x")
 
     assert captured["system"] is True
+    runner._conversation_backoff.pop("conv-1", None)
+
+
+def test_backoff_skips_the_poll_entirely_until_it_expires(runner):
+    """The whole point: while backing off, speak() must not be called at all
+    -- that's the fallback-chain cascade the retry storm was made of."""
+    runner._conversation_failures.clear()
+    runner._conversation_backoff.clear()
+    summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
+    detail["messages"] = [{"id": "m1", "sender": "Edvard", "text": "hi", "forgotten": False}]
+    speak_calls = {"n": 0}
+
+    def counting_speak(*args, **kwargs):
+        speak_calls["n"] += 1
+        raise RuntimeError("still down")
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn), \
+         patch.object(runner.conversations, "speak", side_effect=counting_speak):
+        for _ in range(runner.FAILURE_BACKOFF_CAP):
+            with pytest.raises(RuntimeError):
+                runner.poll_conversation(summary)
+        assert speak_calls["n"] == runner.FAILURE_BACKOFF_CAP
+        # Ten more ticks with his same message still last in the thread --
+        # without the id check this cleared the backoff every time.
+        for _ in range(10):
+            runner.poll_conversation(summary)
+        assert speak_calls["n"] == runner.FAILURE_BACKOFF_CAP, "backoff must suppress every retry"
+
+        # A genuinely new message from him resumes immediately.
+        detail["messages"].append({"id": "m2", "sender": "Edvard", "text": "still there?", "forgotten": False})
+        with pytest.raises(RuntimeError):
+            runner.poll_conversation(summary)
+        assert speak_calls["n"] == runner.FAILURE_BACKOFF_CAP + 1
+
+    runner._conversation_backoff.clear()
+    runner._conversation_failures.clear()
+
+
+def test_backoff_delay_doubles_and_is_capped(runner):
+    runner._conversation_backoff.clear()
+    seen = []
+    with patch.object(runner.conversations, "notify", return_value=(200, "m")):
+        for failures in range(runner.FAILURE_BACKOFF_CAP, runner.FAILURE_BACKOFF_CAP + 12):
+            runner.back_off("conv-x", "Test", failures, "RuntimeError: x")
+            seen.append(round(runner._conversation_backoff["conv-x"][0] - time.monotonic()))
+    assert seen[0] == runner.FAILURE_BACKOFF_SECONDS
+    assert seen[1] == runner.FAILURE_BACKOFF_SECONDS * 2
+    assert seen[2] == runner.FAILURE_BACKOFF_SECONDS * 4
+    assert max(seen) == runner.FAILURE_BACKOFF_MAX_SECONDS, "must stop doubling at the ceiling"
+    runner._conversation_backoff.clear()
+
+
+def test_turn_cap_stops_the_chain_without_pausing(runner):
+    """PAUSE_SENTINEL used to PATCH status=paused. Edvard asked for that gone;
+    the chain must just stop."""
+    summary, detail, calls, fake_agora_get, fake_agora_internal, _ = _make_poll_fixtures(runner)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(runner.conversations, "decide_turn", return_value=[runner.PAUSE_SENTINEL]), \
+         patch.object(runner.conversations, "speak", side_effect=AssertionError("must not speak")):
+        runner.poll_conversation(summary)
+
+    assert calls["agora_internal"] == [], "no PATCH and no pause notice -- just stop"
 
 
 def test_notify_sends_system_field_in_request_body(runner):
@@ -2196,7 +2273,7 @@ def test_decide_turn_ignores_activity_messages_for_last_sender(runner):
     assert runner.decide_turn(thread, personas) == ["Haiku"]
 
 
-def test_decide_turn_auto_pauses_at_cap_counting_handoffs_not_activity_chips(runner):
+def test_decide_turn_stops_chain_at_cap_counting_handoffs_not_activity_chips(runner):
     """Each handoff below carries an activity chip right after its text
     (matching how a real streamed turn looks) -- the cap must trip based on
     the AI_TURN_CAP-th real handoff, not be thrown off by the chips."""

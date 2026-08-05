@@ -29,7 +29,7 @@ from agora_runner.reply import *  # noqa: F401,F403
 from agora_runner.conversation_rotation import *  # noqa: F401,F403
 from agora_runner.workflows import *  # noqa: F401,F403
 from agora_runner.conversations import *  # noqa: F401,F403
-from agora_runner.conversations import _conversation_failures  # noqa: F401 -- underscore name, see above
+from agora_runner.conversations import _conversation_failures, _conversation_backoff  # noqa: F401 -- underscore names, see above
 from agora_runner.heartbeats import *  # noqa: F401,F403
 from agora_runner.poll import *  # noqa: F401,F403
 from agora_runner.invoke_server import *  # noqa: F401,F403
