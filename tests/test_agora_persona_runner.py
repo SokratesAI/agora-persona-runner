@@ -2994,16 +2994,39 @@ def test_run_heartbeat_carries_edvards_message_across_a_rotation(runner):
     assert "the previous cycle's conversation" in history[-1]["content"]
 
 
-def test_run_heartbeat_does_not_carry_an_already_answered_message_across_a_rotation(runner):
-    """Only a message nobody has answered yet gets carried forward -- if
-    the persona already replied in the old conversation, Edvard's earlier
-    line is done with, not pending."""
+def test_a_message_typed_while_the_cycle_was_running_is_still_carried(runner):
+    """This test used to assert the opposite, on the theory that a persona
+    message underneath Edvard's meant he had been answered. In a cycle
+    transcript that theory is wrong, and wrong in the most common case
+    there is: he watches a run work, types something at minute ten, and at
+    minute forty the run posts its own report -- built from a trigger
+    assembled before he spoke, so it cannot possibly be a reply to him.
+    The thread stops ending on him, and the old rule dropped his message
+    silently and permanently.
+
+    Nothing here is ever a reply to him: poll_once skips these
+    conversations precisely so that ordinary turn-taking never answers in
+    them, which is what makes "somebody replied below it" meaningless."""
     history = _rotating_heartbeat_run(runner, [
         {"sender": "Edvard", "text": "stop merging your own PRs", "id": "m1"},
-        {"sender": "Test", "text": "understood, leaving it open", "id": "m2"},
+        {"sender": "Test", "text": "Cycle 30 done — merged #40", "id": "m2"},
     ])
 
-    assert history[-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
+    assert "stop merging your own PRs" in history[-1]["content"]
+
+
+def test_everything_he_typed_in_the_previous_cycle_is_carried_oldest_first(runner):
+    """Not just his newest line. Two separate thoughts typed twenty
+    minutes apart during one run are two messages, and reading only the
+    last of them loses the first as completely as reading neither."""
+    history = _rotating_heartbeat_run(runner, [
+        {"sender": "Edvard", "text": "check the newspaper pod", "id": "m1"},
+        {"sender": "Test", "text": "Bash: kubectl get pods", "id": "m2", "activity": True},
+        {"sender": "Edvard", "text": "and the digest is stale", "id": "m3"},
+    ])
+
+    content = history[-1]["content"]
+    assert content.index("check the newspaper pod") < content.index("and the digest is stale")
 
 
 def test_run_heartbeat_carries_a_message_from_behind_a_dead_cycle(runner):
@@ -3094,8 +3117,10 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
     the fan-out stays bounded: one listing plus at most CYCLE_LOOKBACK
     message fetches, however many old conversations exist."""
     heartbeat = {"id": "hb1", "conversationId": "c-new"}
+    # Nothing from Edvard anywhere: this test is about the fan-out, and a
+    # carried message would only make the empty-result assertion below
+    # measure something it isn't trying to measure.
     previous = {"personas": [], "messages": [
-        {"sender": "Edvard", "text": "answered already", "id": "m1"},
         {"sender": "Test", "text": "cycle 4's report", "id": "m2"}]}
     listing = {"conversations": [
         {"id": f"c-old{n}", "name": f"old {n}", "tags": [runner.cycle_tag("hb1")],
@@ -3110,7 +3135,7 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
 
     with patch.object(runner.heartbeats, "agora_get",
                       side_effect=fake_agora_get) as mock_get:
-        carried = runner.pending_across_cycles(heartbeat, previous, "Test")
+        carried = runner.pending_across_cycles(heartbeat, previous)
 
     assert carried == []
     message_fetches = [c for c in mock_get.call_args_list
@@ -3136,7 +3161,7 @@ def test_pending_across_cycles_drops_the_oldest_when_over_the_char_cap(runner):
             {"sender": "Edvard", "text": "O" * 3000, "id": "m1"}]}
 
     with patch.object(runner.heartbeats, "agora_get", side_effect=fake_agora_get):
-        carried = runner.pending_across_cycles(heartbeat, previous, "Test")
+        carried = runner.pending_across_cycles(heartbeat, previous)
 
     assert [text[0] for _source, text in carried] == ["N"]
 
@@ -3417,6 +3442,7 @@ def test_poll_once_skips_workflow_bound_conversations_but_still_runs_heartbeats(
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "acknowledge_deferred"), \
          patch.object(runner.poll, "run_due_heartbeats") as mock_run_due:
         runner.poll_once()
 
@@ -3469,6 +3495,7 @@ def test_poll_once_skips_live_cycle_conversation_but_not_a_plain_heartbeats(runn
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "acknowledge_deferred"), \
          patch.object(runner.poll, "run_due_heartbeats") as mock_run_due:
         runner.poll_once()
 
@@ -3513,6 +3540,7 @@ def test_poll_once_skips_a_retired_cycle_conversation_too(runner):
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "acknowledge_deferred"), \
          patch.object(runner.poll, "run_due_heartbeats"):
         runner.poll_once()
 
@@ -3539,6 +3567,7 @@ def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "acknowledge_deferred"), \
          patch.object(runner.poll, "run_due_heartbeats"):
         runner.poll_once()
 
@@ -5457,3 +5486,200 @@ def test_audit_redacts_before_it_truncates(runner):
     assert token[:20] not in sent["detail"]
     assert "[redacted: github token]" in sent["detail"]
     assert len(sent["detail"]) <= audit_module.DETAIL_CHARS_MAX
+
+
+# --- the "seen, queued" chip (deferred.py) ---------------------------------
+
+
+def _ack(runner, messages, summary=None, status=200):
+    """Run acknowledge_deferred against one conversation tail, returning
+    the audit() calls it made. Clears the fetch-avoidance cache first --
+    it is module-level and would otherwise leak between tests."""
+    runner.deferred._last_message_at.clear()
+    summary = summary or {"id": "cycle9", "name": "Nova — Cycle 9",
+                          "lastMessageAt": "2026-08-05T15:40:00Z",
+                          "personas": [{"name": "Nova", "role": "curator"}]}
+    with patch.object(runner.deferred, "agora_get",
+                      return_value=(status, {"messages": messages})) as mock_get, \
+         patch.object(runner.deferred, "audit") as mock_audit:
+        runner.acknowledge_deferred(summary)
+    return mock_audit.call_args_list, mock_get.call_args_list
+
+
+def test_a_message_in_a_skipped_cycle_conversation_gets_acknowledged(runner):
+    """runner#45 replaced an expensive answer with no answer at all, and
+    on a phone "queued for six hours" and "ignored" look identical. One
+    chip, one HTTP call, and the run still happens on schedule."""
+    calls, _ = _ack(runner, [
+        {"sender": "Nova", "text": "Cycle 30 done", "ts": "2026-08-05T15:30:00Z"},
+        {"sender": "Edvard", "text": "quota is 50% left", "ts": "2026-08-05T15:40:00Z"},
+    ])
+
+    assert len(calls) == 1
+    persona, conversation_id, capability, detail = calls[0].args
+    assert (persona, conversation_id) == ("Nova", "cycle9")
+    assert capability == runner.deferred.QUEUED_CAPABILITY
+    assert "next run" in detail
+
+
+def test_the_acknowledgment_is_not_posted_twice(runner):
+    """Dedupe with no local state at all: the chip comes back in the
+    conversation's own messages, so "have I already said this?" is a
+    property of the thread, not of this process. An in-process memo would
+    re-post the chip after every pod restart."""
+    calls, _ = _ack(runner, [
+        {"sender": "Edvard", "text": "quota is 50% left", "ts": "2026-08-05T15:40:00Z"},
+        {"sender": "Nova", "text": "Queued: Noted", "ts": "2026-08-05T15:40:05Z",
+         "activity": {"capability": runner.deferred.QUEUED_CAPABILITY}},
+    ])
+
+    assert calls == []
+
+
+def test_a_second_message_after_an_acknowledgment_is_acknowledged_again(runner):
+    """The dedupe is keyed on his NEWEST message, not on the chip merely
+    existing somewhere in the thread -- otherwise the first acknowledgment
+    would silence every message he ever writes there afterwards."""
+    calls, _ = _ack(runner, [
+        {"sender": "Edvard", "text": "quota is 50% left", "ts": "2026-08-05T15:40:00Z"},
+        {"sender": "Nova", "text": "Queued: Noted", "ts": "2026-08-05T15:40:05Z",
+         "activity": {"capability": runner.deferred.QUEUED_CAPABILITY}},
+        {"sender": "Edvard", "text": "and one more thing", "ts": "2026-08-05T15:52:00Z"},
+    ])
+
+    assert len(calls) == 1
+
+
+def test_a_cycle_talking_to_itself_is_not_acknowledged(runner):
+    """A running cycle fills its own transcript with chips and passages.
+    None of that is Edvard, and acknowledging it would post a chip every
+    five seconds for forty-five minutes."""
+    calls, _ = _ack(runner, [
+        {"sender": "Nova", "text": "Bash: pytest", "ts": "2026-08-05T15:30:00Z",
+         "activity": {"capability": "Bash"}},
+        {"sender": "Nova", "text": "Tests are green.", "ts": "2026-08-05T15:31:00Z"},
+    ])
+
+    assert calls == []
+
+
+def test_a_forgotten_message_does_not_earn_an_acknowledgment(runner):
+    calls, _ = _ack(runner, [
+        {"sender": "Edvard", "text": "ignore this", "ts": "2026-08-05T15:40:00Z",
+         "forgotten": True},
+    ])
+
+    assert calls == []
+
+
+def test_an_activity_flag_that_is_not_a_dict_is_survivable(runner):
+    """decide_turn only ever tests `activity` for truthiness, so plenty of
+    callers and fixtures set it to a bare True. Reading `.capability` off
+    that would raise inside the poll loop."""
+    calls, _ = _ack(runner, [
+        {"sender": "Edvard", "text": "look at this", "ts": "2026-08-05T15:40:00Z"},
+        {"sender": "Nova", "text": "ran something", "ts": "2026-08-05T15:41:00Z",
+         "activity": True},
+    ])
+
+    assert len(calls) == 1
+
+
+def test_an_unchanged_conversation_is_never_re_fetched(runner):
+    """The whole cost of this feature is one message fetch, and poll_once
+    runs every five seconds. Without this gate, every skipped conversation
+    would be re-read twelve times a minute forever."""
+    summary = {"id": "cycle9", "name": "Nova — Cycle 9",
+               "lastMessageAt": "2026-08-05T15:40:00Z",
+               "personas": [{"name": "Nova", "role": "curator"}]}
+    messages = [{"sender": "Nova", "text": "quiet", "ts": "2026-08-05T15:40:00Z"}]
+
+    runner.deferred._last_message_at.clear()
+    with patch.object(runner.deferred, "agora_get",
+                      return_value=(200, {"messages": messages})) as mock_get, \
+         patch.object(runner.deferred, "audit"):
+        runner.acknowledge_deferred(summary)
+        runner.acknowledge_deferred(summary)
+        runner.acknowledge_deferred(summary)
+
+    assert mock_get.call_count == 1
+    # ...and a new message reopens it.
+    with patch.object(runner.deferred, "agora_get",
+                      return_value=(200, {"messages": messages})) as mock_get, \
+         patch.object(runner.deferred, "audit"):
+        runner.acknowledge_deferred(dict(summary, lastMessageAt="2026-08-05T15:45:00Z"))
+
+    assert mock_get.call_count == 1
+
+
+def test_a_failed_fetch_is_retried_rather_than_treated_as_handled(runner):
+    """A transient blip must not mark the conversation as seen -- that
+    would swallow his message until he happened to write again."""
+    summary = {"id": "cycle9", "lastMessageAt": "2026-08-05T15:40:00Z", "personas": []}
+    _calls, gets = _ack(runner, [], summary=summary, status=503)
+
+    assert len(gets) == 1
+    assert runner.deferred._last_message_at == {}
+
+
+def test_the_acknowledgment_reads_only_the_tail_of_the_conversation(runner):
+    """Measured 2026-08-05: a live cycle transcript is ~206 KB at the
+    general FETCH_LIMIT of 40 and ~22 KB at 10, because a tail of tool
+    chips carries its output verbatim -- and this runs on a five-second
+    tick for as long as the cycle lasts."""
+    _calls, gets = _ack(runner, [])
+
+    assert f"limit={runner.deferred.ACK_TAIL_LIMIT}" in gets[0].args[0]
+    assert runner.deferred.ACK_TAIL_LIMIT < runner.FETCH_LIMIT
+
+
+def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
+    """The two skip sets are kept apart on purpose. A cycle transcript
+    defers Edvard's message to the next scheduled run and can promise him
+    one; a workflow-bound conversation makes no such promise, and saying
+    it did would be a lie in the one place he already cannot see what
+    happened."""
+    conversations_body = {"conversations": [
+        {"id": "cycle9", "name": "Nova — Cycle 9"},
+        {"id": "wf1conv", "name": "Some Workflow"},
+        {"id": "chat", "name": "Normal Chat"},
+    ]}
+    heartbeats_body = {"heartbeats": [
+        {"enabled": True, "rotateConversationEachRun": True, "conversationId": "cycle9"},
+        {"enabled": True, "workflowId": "wf1", "conversationId": "wf1conv"},
+    ]}
+
+    acked = []
+    with patch.object(runner.poll, "agora_get",
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+         patch.object(runner.poll, "agora_internal",
+                      side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
+         patch.object(runner.poll, "poll_conversation"), \
+         patch.object(runner.poll, "acknowledge_deferred",
+                      side_effect=lambda s: acked.append(s["id"])), \
+         patch.object(runner.poll, "run_due_heartbeats"):
+        runner.poll_once()
+
+    assert acked == ["cycle9"]
+
+
+def test_an_archived_cycle_thread_is_not_acknowledged(runner):
+    conversations_body = {"conversations": [
+        {"id": "cycle9", "name": "Nova — Cycle 9", "archived": True},
+    ]}
+    heartbeats_body = {"heartbeats": [
+        {"enabled": True, "rotateConversationEachRun": True, "conversationId": "cycle9"},
+    ]}
+
+    acked = []
+    with patch.object(runner.poll, "agora_get",
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+         patch.object(runner.poll, "agora_internal",
+                      side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
+         patch.object(runner.poll, "poll_conversation"), \
+         patch.object(runner.poll, "acknowledge_deferred",
+                      side_effect=lambda s: acked.append(s["id"])), \
+         patch.object(runner.poll, "run_due_heartbeats"):
+        runner.poll_once()
+
+    assert acked == []
