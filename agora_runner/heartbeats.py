@@ -1,6 +1,7 @@
 """Heartbeat scheduling: due-check, vault-context injection, and the workflow-mode thread dispatch."""
 
 import threading
+import time
 from datetime import datetime, timezone
 
 from agora_runner.config import FETCH_LIMIT, HEARTBEAT_NO_REPORT_SENTINEL, NO_CAPS
@@ -23,6 +24,16 @@ from agora_runner.conversation_rotation import cycle_tag, rotate_cycle_conversat
 # quietly turn into megabytes of prompt every cycle.
 CYCLE_LOOKBACK = 5
 PENDING_CHARS_CAP = 4000
+
+
+def _elapsed(seconds):
+    """Wall-clock of one heartbeat run, as a chip label -- '9s', '2m 14s',
+    '38m'. Rounded to the second on purpose: this is the answer to "is it
+    still going", not a metric anyone measures against."""
+    minutes, secs = divmod(int(seconds), 60)
+    if minutes and secs:
+        return f"{minutes}m {secs}s"
+    return f"{minutes}m" if minutes else f"{secs}s"
 
 
 def _has_persona_reply(messages):
@@ -160,10 +171,26 @@ def run_heartbeat(heartbeat):
     if rotated:
         _status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
 
+    # 2026-08-05, Edvard: "The times when you start will not always be exactly
+    # 6 hours as I often manually trigger you to start when i see that we have
+    # a lot of token quota left. Maybe a good idea to you is to add to the
+    # agora manual trigger to let you know that you where triggered manually."
+    #
+    # `forceRun` is exactly that signal -- POST /heartbeats/:id/run sets it,
+    # and the claim PATCH above clears it server-side, so this local snapshot
+    # (fetched by run_due_heartbeats before the claim) is the last place it can
+    # be read at all. Without it a cycle silently assumes its own schedule
+    # elapsed since the previous run, which is how one of them ends up
+    # reasoning about "six hours of vault changes" over a twelve-minute gap.
+    manual = bool(heartbeat.get("forceRun"))
+    origin = ("a manual trigger — Edvard started this run himself just now "
+              f"rather than waiting for the {heartbeat['schedule']} schedule"
+              if manual else
+              f"an automatic scheduled turn ({heartbeat['schedule']})")
     extra_parts = [
         "## Heartbeat turn",
-        f"This message is an automatic scheduled turn ({heartbeat['schedule']}), "
-        "not a direct reply to Edvard. Write to Edvard proactively.",
+        f"This message is {origin}. It is not a direct reply to Edvard — "
+        "write to Edvard proactively.",
     ]
     if heartbeat.get("task"):
         extra_parts.append(f"Task for this turn: {heartbeat['task']}")
@@ -207,7 +234,12 @@ def run_heartbeat(heartbeat):
     # cycle that dies before replying leaves an empty conversation, and
     # the message from the cycle before it was still lost. See
     # pending_across_cycles.
-    trigger = "[Automatic heartbeat trigger — address Edvard directly.]"
+    # Said twice on purpose: claude-cli personas only ever see this last
+    # history entry (the comment above), so the system prompt's `origin`
+    # alone would not reach them.
+    trigger = ("[Manual heartbeat trigger — Edvard started this run himself. "
+               "Address Edvard directly.]" if manual else
+               "[Automatic heartbeat trigger — address Edvard directly.]")
     pending = pending_user_turn(history)
     carried = [("this conversation", pending)] if pending else []
     if not carried and rotated:
@@ -239,11 +271,15 @@ def run_heartbeat(heartbeat):
     # channel for that is the system prompt, so that is what we test.
     # Those heartbeats keep the old end-of-run chip, unchanged.
     may_go_silent = HEARTBEAT_NO_REPORT_SENTINEL in system
+    # The opening chip says which of the two started this run, so the thread
+    # itself records what Edvard did rather than only what the clock did.
+    started_chip = f"{heartbeat['name']} ({'manual trigger' if manual else heartbeat['schedule']})"
     if not may_go_silent:
-        audit(persona["name"], conversation_id, "heartbeat",
-              f"{heartbeat['name']} ({heartbeat['schedule']})")
+        audit(persona["name"], conversation_id, "heartbeat", started_chip)
 
     result = ""
+    silent = False
+    started_at = time.monotonic()
     try:
         # 2026-07-24: heartbeats always run non-sticky regardless of the
         # bound conversation's own stickyFallback setting -- a scheduled
@@ -257,6 +293,7 @@ def run_heartbeat(heartbeat):
         reply = generate_reply(persona, caps, system, history, conversation_id, sticky=False)
         if reply.strip().upper().startswith(HEARTBEAT_NO_REPORT_SENTINEL):
             result = "checked, nothing to report (not posted to chat)"
+            silent = True
         else:
             notify(conversation_id, reply, persona["name"])
             result = f"replied {len(reply)} chars"
@@ -264,11 +301,28 @@ def run_heartbeat(heartbeat):
                 # Chip was withheld up front because this run might have
                 # ended in silence. It didn't, so post it now — exactly
                 # the old behaviour, for exactly the old reason.
-                audit(persona["name"], conversation_id, "heartbeat",
-                      f"{heartbeat['name']} ({heartbeat['schedule']})")
+                audit(persona["name"], conversation_id, "heartbeat", started_chip)
     except Exception as e:
         result = f"failed: {e}"[:200]
         log(f"heartbeat {heartbeat['name']} failed: {e}")
+
+    # 2026-08-05, Edvard: "it is hard for me to know when you are done. I just
+    # assume you are done when you post the final response and the Journal."
+    # He was assuming correctly and had no way to confirm it. A cycle runs up
+    # to ~45 minutes, and until now the thread's last entry during all of it
+    # was the opening chip -- so "still working", "finished" and "died twenty
+    # minutes ago" were indistinguishable from his phone. This closes the run
+    # explicitly, and closes it on failure too, which is the case where he
+    # would otherwise wait forever for a reply that is never coming.
+    #
+    # Silent monitoring runs stay silent: HEARTBEAT_NO_REPORT_SENTINEL exists
+    # so a clean check leaves the chat untouched, and a "finished" chip every
+    # 10 minutes is precisely the noise it is there to prevent. A silent run
+    # posted no opening chip either, so there is nothing left dangling.
+    if not silent:
+        audit(persona["name"], conversation_id, "heartbeat",
+              f"{heartbeat['name']} finished in {_elapsed(time.monotonic() - started_at)} — {result}")
+
     agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
                    {"forceRun": False,
                     "lastRunAt": datetime.now(timezone.utc).isoformat(),

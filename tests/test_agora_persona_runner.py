@@ -2575,7 +2575,10 @@ def test_run_heartbeat_posts_a_real_report_and_records_success(runner):
         runner.run_heartbeat(heartbeat)
 
     assert notify_calls == ["found a CrashLoopBackOff in agents/foo"]
-    mock_audit.assert_called_once()
+    # Opening chip, then the closing one added 2026-08-05.
+    chips = [call.args[3] for call in mock_audit.call_args_list]
+    assert chips[0] == "HB (every@1h)"
+    assert chips[1].startswith("HB finished in ")
     assert "replied" in heartbeat_updates[-1]["lastResult"]
 
 
@@ -2805,6 +2808,121 @@ def test_run_heartbeat_trigger_stays_generic_when_last_message_is_from_persona(r
 
     assert "previous cycle's reply" not in captured["history"][-1]["content"]
     assert captured["history"][-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-05, Edvard's two asks in one message: tell the persona when *he*
+# started the run rather than the schedule, and give him a visible end to a
+# run he currently has to guess at.
+# ---------------------------------------------------------------------------
+
+def _heartbeat_run(runner, heartbeat, reply="did a thing", raises=None, system_extra=""):
+    """Drives run_heartbeat and returns (system prompt, last history entry,
+    chip labels) so a test can assert on what the persona saw and what
+    Edvard saw."""
+    persona = {"id": "p1", "name": "Nova", "model": "claude-cli:claude-opus-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, **kwargs):
+        captured["system"] = system
+        captured["history"] = history
+        if raises is not None:
+            raise raises
+        return reply
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "build_system",
+                      side_effect=lambda p, d, parts, extra: extra + system_extra), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "m1")), \
+         patch.object(runner.heartbeats, "audit") as mock_audit, \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+
+    return captured["system"], captured["history"][-1]["content"], \
+        [call.args[3] for call in mock_audit.call_args_list]
+
+
+def test_run_heartbeat_tells_the_persona_edvard_triggered_it_by_hand(runner):
+    """forceRun is the only trace of "Edvard pressed Run", and the claim
+    PATCH clears it server-side -- so if run_heartbeat doesn't read it from
+    its own snapshot, nothing downstream can ever know."""
+    system, trigger, chips = _heartbeat_run(runner, {
+        "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+        "schedule": "every@6h", "name": "Nova", "forceRun": True})
+
+    assert "manual trigger" in system
+    # The schedule is still named -- "he started this rather than waiting for
+    # every@6h" is the useful sentence, not "you have no schedule".
+    assert "rather than waiting for the every@6h schedule" in system
+    assert "It is not a direct reply to Edvard" in system
+    # claude-cli personas only ever see history[-1], so the system prompt
+    # alone would not reach the loop this was asked for.
+    assert trigger.startswith("[Manual heartbeat trigger")
+    assert chips[0] == "Nova (manual trigger)"
+
+
+def test_run_heartbeat_still_reads_as_scheduled_when_it_is(runner):
+    system, trigger, chips = _heartbeat_run(runner, {
+        "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+        "schedule": "every@6h", "name": "Nova"})
+
+    assert "an automatic scheduled turn (every@6h)" in system
+    assert "manual" not in system.lower()
+    assert trigger == "[Automatic heartbeat trigger — address Edvard directly.]"
+    assert chips[0] == "Nova (every@6h)"
+
+
+def test_run_heartbeat_closes_the_run_with_a_chip(runner):
+    _system, _trigger, chips = _heartbeat_run(runner, {
+        "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+        "schedule": "every@6h", "name": "Nova"}, reply="x" * 40)
+
+    assert len(chips) == 2
+    assert chips[1].startswith("Nova finished in ")
+    assert chips[1].endswith("replied 40 chars")
+
+
+def test_run_heartbeat_closes_the_run_even_when_it_fails(runner):
+    """The case Edvard actually loses time to: no reply is coming, and
+    without this the thread's last entry stays the opening chip forever."""
+    _system, _trigger, chips = _heartbeat_run(runner, {
+        "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+        "schedule": "every@6h", "name": "Nova"}, raises=RuntimeError("bridge 503"))
+
+    assert len(chips) == 2
+    assert chips[1].startswith("Nova finished in ")
+    assert "failed: bridge 503" in chips[1]
+
+
+def test_run_heartbeat_leaves_a_silent_monitoring_run_silent(runner):
+    """HEARTBEAT_NO_REPORT_SENTINEL exists so a clean check touches nothing.
+    A "finished" chip every 10 minutes would be exactly the noise it
+    prevents -- and there is no opening chip left dangling either."""
+    _system, _trigger, chips = _heartbeat_run(
+        runner,
+        {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+         "schedule": "every@10m", "name": "Watchdog"},
+        reply=runner.HEARTBEAT_NO_REPORT_SENTINEL,
+        system_extra=runner.HEARTBEAT_NO_REPORT_SENTINEL)
+
+    assert chips == []
+
+
+def test_run_heartbeat_reports_a_crashed_monitoring_run(runner):
+    """The sentinel buys silence for "nothing to report", not for a crash."""
+    _system, _trigger, chips = _heartbeat_run(
+        runner,
+        {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+         "schedule": "every@10m", "name": "Watchdog"},
+        raises=RuntimeError("boom"),
+        system_extra=runner.HEARTBEAT_NO_REPORT_SENTINEL)
+
+    assert len(chips) == 1
+    assert "failed: boom" in chips[0]
 
 
 def _rotating_heartbeat_run(runner, old_messages, persona_name="Test", older=None):
@@ -3057,24 +3175,28 @@ def test_heartbeat_chip_is_posted_before_the_model_is_called(runner):
     """The whole point of the chip is to show a run is in flight, so it has
     to land before the slow part, not after it. For a claude-cli cycle
     generate_reply is the ~45 minutes Edvard spends staring at nothing."""
-    assert _heartbeat_call_order(runner) == ["audit", "generate_reply", "notify"]
+    assert _heartbeat_call_order(runner) == \
+        ["audit", "generate_reply", "notify", "audit"]
 
 
 def test_heartbeat_chip_survives_a_run_that_dies_midway(runner):
     """A cycle killed or failed after it started used to leave NO trace in
     the conversation at all -- the failure mode that made Edvard think the
-    loop had stopped. The up-front chip is now that trace."""
+    loop had stopped. The up-front chip is now that trace -- and since
+    2026-08-05 a closing one says the run is over, not still going."""
     assert _heartbeat_call_order(runner, raises=RuntimeError("boom")) == \
-        ["audit", "generate_reply"]
+        ["audit", "generate_reply", "audit"]
 
 
-def test_sentinel_heartbeat_still_chips_only_at_the_end_and_only_once(runner):
-    """Monitoring heartbeats keep the old behaviour exactly: nothing is
-    posted up front (a clean run must leave the chat untouched), and a run
-    that does report posts one chip, after the reply -- not two."""
+def test_sentinel_heartbeat_posts_nothing_before_the_reply(runner):
+    """Monitoring heartbeats keep their defining property: nothing lands in
+    the chat until the reply is in hand, because a clean run must leave it
+    untouched. A run that does report then opens and closes like any other
+    -- the "only one chip" this test used to assert was about not
+    double-posting the opening one, not about withholding the closing one."""
     task = f"Reply with exactly {runner.HEARTBEAT_NO_REPORT_SENTINEL} if healthy."
     assert _heartbeat_call_order(runner, task=task) == \
-        ["generate_reply", "notify", "audit"]
+        ["generate_reply", "notify", "audit", "audit"]
 
 
 def test_run_heartbeat_sentinel_match_is_whitespace_and_case_tolerant(runner):
