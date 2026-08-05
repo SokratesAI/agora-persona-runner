@@ -82,17 +82,31 @@ ANTHROPIC_NO_THINKING_TOGGLE = {"claude-haiku-4-5-20251001", "claude-fable-5"}
 
 MAX_HISTORY = 20          # messages included in a generation context
 FETCH_LIMIT = 40          # ?limit for detail fetches (critique #5)
-AI_TURN_CAP = 6           # consecutive automated turns before auto-pause
-FAILURE_PAUSE_CAP = 3     # consecutive speak() failures before auto-pause -- a
-                          # failed turn doesn't append a reply, so without this
-                          # the same conversation gets retried every single poll
-                          # tick (POLL_INTERVAL_SECONDS) forever with zero
-                          # backoff (found live 2026-07-23: two rate-limited
-                          # Gemini conversations retried nonstop for 8+ hours,
-                          # each retry cascading through the entire
-                          # GEMINI_FALLBACK_CHAIN, which is what actually
-                          # exhausted every Gemini model's quota rather than
-                          # just the one each conversation was configured for)
+AI_TURN_CAP = 6           # consecutive automated turns before a persona-to-
+                          # persona @mention chain stops (it no longer pauses
+                          # the conversation -- see conversations.py)
+
+# Nothing auto-pauses a conversation any more. Edvard, 2026-08-05: *"Please
+# turn off the auto pause of conversations as they are just blocking now.
+# They belong to the previous architecture, outdated."* A pause needs a manual
+# resume from the conversation menu, so a transient provider outage locked him
+# out of a thread until he happened to notice the ⏸️ notice.
+#
+# What the old FAILURE_PAUSE_CAP was actually protecting against is still real:
+# a failed turn appends no reply, so the turn-taking rule sees the same "needs
+# a reply" state next tick and retries every POLL_INTERVAL_SECONDS forever with
+# zero backoff. Found live 2026-07-23 -- two rate-limited Gemini conversations
+# retried nonstop for 8+ hours, each retry cascading the entire
+# GEMINI_FALLBACK_CHAIN, which is what exhausted every Gemini model's quota
+# rather than just the one each conversation was configured for.
+#
+# Exponential backoff covers that without blocking: from the 3rd consecutive
+# failure the wait doubles (1, 2, 4 ... min) and caps at an hour, so a
+# conversation failing all day costs ~15 attempts instead of ~2900 -- and it
+# recovers by itself the moment the cause clears, with no menu.
+FAILURE_BACKOFF_CAP = 3            # consecutive speak() failures before backing off
+FAILURE_BACKOFF_SECONDS = 60       # wait after the first backing-off failure
+FAILURE_BACKOFF_MAX_SECONDS = 3600 # ceiling on the doubling
 TOOL_ROUNDS_MAX = 100     # client-side tool loop bound (Issues.md: bumped 50->100)
 VAULT_CONTEXT_CAP = 24000  # chars of injected vault content per heartbeat (critique #8)
 # 2026-07-25: a monitoring-style heartbeat (K3s Sentinel) should only post to

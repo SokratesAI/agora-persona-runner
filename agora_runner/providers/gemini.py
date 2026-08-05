@@ -87,7 +87,7 @@ def gemini_generate(model_id, thinking, system, history, caps, persona, conversa
     # "Please enable tool_config.include_server_side_tool_invocations to use
     # Built-in tools with Function calling." Found live: this 400 isn't a
     # GeminiRateLimited (only 429/500/503 are), so it skips the fallback
-    # cascade entirely and burns a FAILURE_PAUSE_CAP strike directly --
+    # cascade entirely and burns a FAILURE_BACKOFF_CAP strike directly --
     # explains why conversations paused with "(rate limit or outage)" even
     # while the 429 cascade itself was working fine model-to-model.
     has_builtin_tool = any("code_execution" in t for t in tools)
