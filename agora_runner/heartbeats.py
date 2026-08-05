@@ -36,31 +36,46 @@ def _elapsed(seconds):
     return f"{minutes}m" if minutes else f"{secs}s"
 
 
-def _has_persona_reply(messages):
-    """True if a persona actually said something in this conversation --
-    i.e. this is where "already answered" starts. Deliberately ignores
-    activity chips and thinking chunks (merge_history drops them too):
-    a cycle killed mid-run can leave those behind having never replied
-    to anyone, and treating that as an answer is exactly the bug this
-    lookback exists to fix."""
-    return any(
-        m.get("sender") != "Edvard"
-        and not (m.get("forgotten") or m.get("system")
-                 or m.get("activity") or m.get("thinking"))
-        for m in messages
-    )
-
-
 def _unanswered_tail(detail, persona_name):
-    """Edvard's trailing, unanswered words in one conversation (None if
-    it doesn't end on him), plus whether a persona ever replied there."""
+    """Edvard's trailing, unanswered words in one conversation, or None
+    if it doesn't end on him.
+
+    This used to also report whether a persona had ever replied here,
+    which pending_across_cycles used as its "already seen" boundary.
+    That boundary moved to a timestamp on 2026-08-05 (see
+    _arrived_after), and nothing read the flag afterwards, so it is
+    gone rather than left around looking load-bearing."""
     participants = detail.get("personas") or []
     history = merge_history(detail.get("messages", []), persona_name,
                             len(participants) > 1)
-    return pending_user_turn(history), _has_persona_reply(detail.get("messages", []))
+    return pending_user_turn(history)
 
 
-def pending_across_cycles(heartbeat, previous_detail, persona_name, current_id=None):
+def _arrived_after(detail, since):
+    """True if Edvard's newest message here landed after `since` (an ISO
+    timestamp, or None for "no previous run — take everything").
+
+    This is what makes walking an already-answered conversation safe.
+    A message folded into a trigger gets answered in the NEW cycle
+    conversation, so the old one keeps ending on Edvard forever and
+    would otherwise be re-carried every cycle for the rest of its life.
+    Comparing against the previous run's `lastRunAt` closes that without
+    any new state: anything older than the last run was already offered
+    to it.
+
+    Keyed on Edvard's own messages rather than simply the last one in
+    the conversation, because a cycle that died mid-run leaves activity
+    chips stamped after everything he said -- and those would otherwise
+    keep re-qualifying a note he wrote days ago."""
+    if not since:
+        return True
+    stamps = [str(m.get("ts") or "") for m in detail.get("messages") or []
+              if m.get("sender") == "Edvard"]
+    return bool(stamps) and max(stamps) > since
+
+
+def pending_across_cycles(heartbeat, previous_detail, persona_name, current_id=None,
+                          since=None):
     """Edvard's unanswered messages, walking back from the conversation
     we just rotated away from through older cycle-conversations. Returns
     [(source_label, text)], oldest first.
@@ -75,21 +90,39 @@ def pending_across_cycles(heartbeat, previous_detail, persona_name, current_id=N
     read"), and the whole reason he currently has to talk to this loop
     through vault files instead of the app he built for it.
 
-    The walk stops at the first conversation where a persona actually
-    replied -- that reply is the boundary of "already seen", so nothing
-    can be resurfaced and re-answered cycle after cycle. Its own trailing
-    unanswered messages still count (he may well have written after it)."""
+    2026-08-05: the walk used to STOP at the first conversation where a
+    persona had replied, using that reply as the boundary of "already
+    seen". That boundary was in the wrong place. A healthy loop replies
+    in every cycle conversation, so the walk stopped after one step
+    essentially always, and anything Edvard wrote in an older thread was
+    never reached. The system covered for it by letting ordinary
+    turn-taking answer those threads instead (see
+    cycle_bound_conversation_ids) -- which meant one sentence typed into
+    a week-old transcript fired a full, PR-opening Claude Code cycle.
+    That happened on 2026-08-05 to a note that read "if you ever need to
+    create a secret, use the sealed secrets in platform-config", and it
+    is the second time this shape of expensive-run has bitten him.
+
+    So the walk now covers every conversation in the lookback, and
+    `since` (the PREVIOUS run's lastRunAt) is the boundary instead --
+    see _arrived_after for why a timestamp is the honest marker here and
+    a persona reply is not. That makes the set of conversations walked a
+    superset of the set poll_once skips, which is the invariant the two
+    functions have to keep between them.
+
+    The cost is that the older conversations are now always fetched
+    (one listing plus up to CYCLE_LOOKBACK message fetches) rather than
+    only when the previous cycle died without replying. That is ~6
+    in-cluster requests, four times a day, to stop firing whole cycles
+    by accident."""
     collected = []
-    tail, replied = _unanswered_tail(previous_detail, persona_name)
+    tail = _unanswered_tail(previous_detail, persona_name)
     if tail:
         collected.append(("the previous cycle's conversation", tail))
-    if not replied:
-        for detail, label in _older_cycle_conversations(heartbeat, current_id):
-            tail, replied = _unanswered_tail(detail, persona_name)
-            if tail:
-                collected.append((label, tail))
-            if replied:
-                break
+    for detail, label in _older_cycle_conversations(heartbeat, current_id):
+        tail = _unanswered_tail(detail, persona_name)
+        if tail and _arrived_after(detail, since):
+            collected.append((label, tail))
     collected.reverse()  # oldest first -- read in the order he wrote them
     while len(collected) > 1 and sum(len(t) for _s, t in collected) > PENDING_CHARS_CAP:
         collected.pop(0)  # drop the oldest rather than truncate mid-sentence
@@ -100,9 +133,9 @@ def _older_cycle_conversations(heartbeat, current_id):
     """Details of this heartbeat's earlier cycle-conversations, newest
     first, excluding both the one already walked (the heartbeat's
     pre-rotation `conversationId`) and the empty one rotation just
-    created for this cycle. Lazily fetched: the common case (the previous
-    cycle replied) never gets here at all, and a healthy loop stops after
-    one."""
+    created for this cycle. Still a generator, but since 2026-08-05 the
+    caller drains it every run rather than stopping at the first reply,
+    so expect all of them to be fetched."""
     status, listing = agora_get("/conversations")
     if status != 200:
         return
@@ -123,6 +156,12 @@ def _older_cycle_conversations(heartbeat, current_id):
 
 
 def run_heartbeat(heartbeat):
+    # Read BEFORE the claim PATCH below overwrites it: this is the
+    # previous run's timestamp, and it is the boundary
+    # pending_across_cycles uses to tell "Edvard wrote this since I last
+    # ran" from "already offered to an earlier run". Taken from the local
+    # snapshot on purpose — the server-side value is gone one line later.
+    previous_run_at = heartbeat.get("lastRunAt")
     # Claim the run BEFORE running it (2026-08-02) — same claim, same
     # reasons, as run_workflow_heartbeat's (see its comment for the
     # measurements). #25 added it there and only there; a regular
@@ -244,7 +283,7 @@ def run_heartbeat(heartbeat):
     carried = [("this conversation", pending)] if pending else []
     if not carried and rotated:
         carried = pending_across_cycles(heartbeat, previous_detail, persona["name"],
-                                        conversation_id)
+                                        conversation_id, since=previous_run_at)
     if len(carried) == 1:
         source, text = carried[0]
         trigger += f" Edvard's most recent message in {source}: {text}"
@@ -360,10 +399,11 @@ def workflow_bound_conversation_ids(heartbeats_list):
     }
 
 
-def cycle_bound_conversation_ids(heartbeats_list):
-    """Conversation ids that are the CURRENT cycle-transcript of an
-    enabled, rotating heartbeat. poll_once skips ordinary turn-taking
-    for these too (2026-08-03), for a different reason than the
+def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
+    """Conversation ids that are a cycle-transcript of an enabled,
+    rotating heartbeat -- the one it currently points at, plus its
+    still-un-archived older ones. poll_once skips ordinary turn-taking
+    for all of these (2026-08-03), for a different reason than the
     workflow case above.
 
     Edvard's own report: "I just replied in the Agora conversation 5...
@@ -388,17 +428,44 @@ def cycle_bound_conversation_ids(heartbeats_list):
     Sentinel) is one Edvard may legitimately chat in and expect an
     ordinary answer from, and silencing that was not asked for.
 
-    Only the id the heartbeat currently points at is skipped. Older
-    cycle-conversations keep ordinary turn-taking on purpose:
-    pending_across_cycles' lookback stops at the first conversation
-    where a persona already replied, so a message left in an older one
-    has no guaranteed pickup -- there, an ordinary reply is still the
-    only thing that answers him."""
-    return {
-        hb["conversationId"] for hb in heartbeats_list
-        if hb.get("enabled") and hb.get("rotateConversationEachRun")
-        and hb.get("conversationId")
-    }
+    Older cycle-conversations used to keep ordinary turn-taking on
+    purpose, because pending_across_cycles stopped its lookback at the
+    first conversation where a persona had replied and so could not
+    promise to reach them. An ordinary reply was the only thing that
+    answered him there -- and for this loop an "ordinary reply" is a
+    full Claude Code cycle. On 2026-08-05 he typed a one-line note about
+    sealed secrets into a transcript from an earlier cycle and got
+    exactly that: the whole machine, nine seconds later, spending real
+    quota to answer something he had not asked to have answered now.
+
+    pending_across_cycles now walks the full lookback, so the promise it
+    could not make before it can make now, and these are skipped too.
+    The invariant between the two functions: **every id skipped here
+    must be one that walk reaches.** Both are bounded by
+    CYCLE_LOOKBACK-many un-archived conversations per heartbeat, which
+    is also conversation_rotation's retention, so the sets line up --
+    but if either bound moves, move it in both places or his messages
+    start vanishing again.
+
+    `conversations` is poll_once's existing listing, passed in rather
+    than re-fetched; without it this degrades to the current-id-only
+    behaviour."""
+    ids = set()
+    for hb in heartbeats_list:
+        if not (hb.get("enabled") and hb.get("rotateConversationEachRun")):
+            continue
+        if hb.get("conversationId"):
+            ids.add(hb["conversationId"])
+        if not hb.get("id"):
+            continue
+        tag = cycle_tag(hb["id"])
+        older = [
+            c for c in conversations
+            if c.get("id") and tag in (c.get("tags") or []) and not c.get("archived")
+        ]
+        older.sort(key=lambda c: c.get("createdAt", ""), reverse=True)
+        ids.update(c["id"] for c in older[:CYCLE_LOOKBACK])
+    return ids
 
 
 def run_due_heartbeats(heartbeats_list=None):

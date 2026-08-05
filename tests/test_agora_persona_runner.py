@@ -2925,12 +2925,19 @@ def test_run_heartbeat_reports_a_crashed_monitoring_run(runner):
     assert "failed: boom" in chips[0]
 
 
-def _rotating_heartbeat_run(runner, old_messages, persona_name="Test", older=None):
+def _rotating_heartbeat_run(runner, old_messages, persona_name="Test", older=None,
+                            last_run_at=None):
     """Drives run_heartbeat through a real rotation (c-old -> c-new, the
     new conversation genuinely empty, as a freshly created one always is)
-    and returns the history generate_reply was called with."""
+    and returns the history generate_reply was called with.
+
+    `last_run_at` is the heartbeat's PREVIOUS run time, which is the
+    boundary the cross-cycle lookback uses to tell a message written
+    since the last run from one already offered to it. Left None by
+    default -- "no previous run", so everything unanswered counts."""
     heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "c-old",
-                 "schedule": "every@6h", "name": "HB", "rotateConversationEachRun": True}
+                 "schedule": "every@6h", "name": "HB", "rotateConversationEachRun": True,
+                 "lastRunAt": last_run_at}
     persona = {"id": "p1", "name": persona_name, "model": "claude-cli:claude-opus-5",
                "capabilities": dict(runner.NO_CAPS)}
     personas = [{"personaId": "p1", "name": persona_name, "role": "curator"}]
@@ -3014,17 +3021,41 @@ def test_run_heartbeat_carries_a_message_from_behind_a_dead_cycle(runner):
     assert "look at the PWA next" in history[-1]["content"]
 
 
-def test_lookback_stops_at_the_conversation_where_a_persona_replied(runner):
-    """The reply is the boundary of "already seen". Without it, every
-    cycle would walk all the way back and re-surface the same old,
-    already-answered message forever."""
-    history = _rotating_heartbeat_run(runner, [], older={
-        "c-cycle2": [{"sender": "Edvard", "text": "ancient and long since answered", "id": "m1"},
-                     {"sender": "Test", "text": "cycle 2 answered it", "id": "m2"}],
-        "c-cycle1": [{"sender": "Edvard", "text": "even older, also answered", "id": "m0"}],
+def test_a_message_already_offered_to_an_earlier_run_is_not_carried_again(runner):
+    """The boundary of "already seen". An old cycle conversation ends on
+    Edvard forever -- it gets answered in the NEW conversation, never in
+    itself -- so without a boundary every cycle would re-surface the same
+    line for the rest of its life. Until 2026-08-05 that boundary was "a
+    persona replied here"; it is now "this arrived before my last run",
+    which is the same protection without also blinding the walk."""
+    history = _rotating_heartbeat_run(runner, [], last_run_at="2026-08-04T00:00:00+00:00", older={
+        "c-cycle2": [{"sender": "Edvard", "text": "ancient and long since answered",
+                      "id": "m1", "ts": "2026-08-03T09:00:00+00:00"}],
+        "c-cycle1": [{"sender": "Edvard", "text": "even older, also answered",
+                      "id": "m0", "ts": "2026-08-02T09:00:00+00:00"}],
     })
 
     assert history[-1]["content"] == "[Automatic heartbeat trigger — address Edvard directly.]"
+
+
+def test_a_message_written_into_an_older_thread_since_the_last_run_is_carried(runner):
+    """The regression that cost a whole cycle on 2026-08-05. Edvard typed
+    a one-line note into a transcript from an earlier cycle; the walk
+    stopped before reaching it (the previous cycle had replied, as a
+    healthy one always does), so ordinary turn-taking answered it instead
+    -- and for this loop that means a full, PR-opening Claude Code run.
+    Reaching it here is what earns the right to skip it in poll_once."""
+    history = _rotating_heartbeat_run(runner, [], last_run_at="2026-08-04T00:00:00+00:00", older={
+        "c-cycle2": [{"sender": "Edvard", "text": "old news",
+                      "id": "m1", "ts": "2026-08-03T09:00:00+00:00"},
+                     {"sender": "Test", "text": "cycle 2 answered it",
+                      "id": "m2", "ts": "2026-08-03T09:01:00+00:00"}],
+        "c-cycle1": [{"sender": "Edvard", "text": "use the sealed secrets in platform-config",
+                      "id": "m0", "ts": "2026-08-05T11:42:14+00:00"}],
+    })
+
+    assert "use the sealed secrets in platform-config" in history[-1]["content"]
+    assert "old news" not in history[-1]["content"]
 
 
 def test_every_unanswered_cycle_conversation_is_carried_oldest_first(runner):
@@ -3054,19 +3085,37 @@ def test_lookback_ignores_activity_chips_left_by_a_cycle_that_never_replied(runn
     assert "the one before" in history[-1]["content"]
 
 
-def test_lookback_is_skipped_entirely_when_the_previous_cycle_replied(runner):
-    """Cost control: the healthy case must not fan out into a listing
-    plus a fetch per old conversation on every single cycle."""
+def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
+    """Cost control, restated. The walk used to be lazy -- the healthy
+    case (previous cycle replied) fetched nothing at all. Since
+    2026-08-05 it runs every cycle, because being able to promise it
+    reaches every un-archived cycle conversation is what lets poll_once
+    stop firing whole runs at them. That trade is only defensible while
+    the fan-out stays bounded: one listing plus at most CYCLE_LOOKBACK
+    message fetches, however many old conversations exist."""
     heartbeat = {"id": "hb1", "conversationId": "c-new"}
     previous = {"personas": [], "messages": [
         {"sender": "Edvard", "text": "answered already", "id": "m1"},
         {"sender": "Test", "text": "cycle 4's report", "id": "m2"}]}
+    listing = {"conversations": [
+        {"id": f"c-old{n}", "name": f"old {n}", "tags": [runner.cycle_tag("hb1")],
+         "createdAt": f"2026-08-0{n}T01:00:00+00:00"}
+        for n in range(1, 9)  # eight, comfortably more than the lookback
+    ]}
 
-    with patch.object(runner.heartbeats, "agora_get") as mock_get:
+    def fake_agora_get(path):
+        if path == "/conversations":
+            return 200, listing
+        return 200, {"personas": [], "messages": []}
+
+    with patch.object(runner.heartbeats, "agora_get",
+                      side_effect=fake_agora_get) as mock_get:
         carried = runner.pending_across_cycles(heartbeat, previous, "Test")
 
     assert carried == []
-    mock_get.assert_not_called()
+    message_fetches = [c for c in mock_get.call_args_list
+                       if c.args[0] != "/conversations"]
+    assert len(message_fetches) == runner.heartbeats.CYCLE_LOOKBACK
 
 
 def test_pending_across_cycles_drops_the_oldest_when_over_the_char_cap(runner):
@@ -3425,6 +3474,49 @@ def test_poll_once_skips_live_cycle_conversation_but_not_a_plain_heartbeats(runn
 
     assert polled == ["sentinel", "chat"]
     mock_run_due.assert_called_once_with(heartbeats_body["heartbeats"])
+
+
+def test_poll_once_skips_a_retired_cycle_conversation_too(runner):
+    """2026-08-05: skipping only the CURRENT transcript left the back
+    door wide open. Edvard typed one line into a thread from an earlier
+    cycle and the runner answered it the ordinary way -- which for this
+    persona is a full Claude Code cycle, nine seconds later, on quota he
+    had not chosen to spend. The old threads carry the heartbeat's cycle
+    tag, so they are recognisable from the listing poll_once already
+    has; an archived one is genuinely gone and stays pollable."""
+    tag = runner.cycle_tag("hb1")
+    conversations_body = {"conversations": [
+        {"id": "cycle9", "name": "Nova — Cycle 9", "tags": [tag],
+         "createdAt": "2026-08-05T10:00:00+00:00"},
+        {"id": "cycle8", "name": "Nova — Cycle 8", "tags": [tag],
+         "createdAt": "2026-08-05T04:00:00+00:00"},
+        {"id": "cycle3", "name": "Nova — Cycle 3", "tags": [tag],
+         "createdAt": "2026-08-01T04:00:00+00:00", "archived": True},
+        {"id": "chat", "name": "Normal Chat"},
+    ]}
+    heartbeats_body = {"heartbeats": [
+        {"id": "hb1", "enabled": True, "rotateConversationEachRun": True,
+         "conversationId": "cycle9"},
+    ]}
+
+    def fake_agora_get(path):
+        if path == "/conversations":
+            return 200, conversations_body
+        return 404, {}
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "GET" and path == "/heartbeats":
+            return 200, heartbeats_body
+        return 200, {}
+
+    polled = []
+    with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
+         patch.object(runner.poll, "run_due_heartbeats"):
+        runner.poll_once()
+
+    assert polled == ["cycle3", "chat"]
 
 
 def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(runner):
