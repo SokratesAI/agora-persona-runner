@@ -35,7 +35,7 @@ def poll_once():
     hb_status, hb_body = agora_internal("GET", "/heartbeats")
     heartbeats_list = hb_body.get("heartbeats", []) if hb_status == 200 else []
     skip_ids = (workflow_bound_conversation_ids(heartbeats_list)
-                | cycle_bound_conversation_ids(heartbeats_list))
+                | cycle_bound_conversation_ids(heartbeats_list, conversations))
 
     debug_log(f"poll_once: {len(conversations)} conversations fetched, "
               f"{len(skip_ids)} heartbeat-driven (skipped)")
