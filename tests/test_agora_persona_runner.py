@@ -5686,3 +5686,272 @@ def test_an_archived_cycle_thread_is_not_acknowledged(runner):
         runner.poll_once()
 
     assert acked == []
+
+
+# ---------------------------------------------------------------------------
+# tools_mcp.py + /mcp -- one toolset for every agent (2026-08-06).
+# Edvard: "There are different tools for you and Gemini? That should not be
+# the case. Gemini and other agents should use the same custom tools as you
+# do." A claude-cli persona had none of Agora's capability tools while
+# build_system described all of them to it in prose; these serve the same
+# client_tool_schemas/execute_tool pair the other providers use, over MCP.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def clean_mcp_grants():
+    from agora_runner import tools_mcp
+    tools_mcp._grants.clear()
+    yield tools_mcp
+    tools_mcp._grants.clear()
+
+
+ALL_CAPS = {"vaultRead": True, "vaultWrite": True, "kubectlRead": True,
+            "githubRead": True, "githubWrite": True, "githubMerge": True,
+            "terminalExec": True, "manageAgora": True, "webSearch": True}
+
+
+def _mcp_handler(body, token):
+    from agora_runner import invoke_server
+    handler = invoke_server.InvokeHandler.__new__(invoke_server.InvokeHandler)
+    handler.path = "/mcp"
+    raw = json.dumps(body).encode()
+    handler.rfile = io.BytesIO(raw)
+    handler.headers = {"Content-Length": str(len(raw)),
+                       "Authorization": f"Bearer {token}"}
+    sent = {}
+
+    def fake_send(status, payload):
+        sent["status"] = status
+        sent["payload"] = payload
+    handler._send = fake_send
+    handler.send_response = lambda status: sent.setdefault("status", status)
+    handler.send_header = lambda *a: None
+    handler.end_headers = lambda: None
+    return handler, sent
+
+
+def test_mcp_grant_is_refused_when_the_persona_has_no_capabilities(clean_mcp_grants):
+    """An MCP server advertising nothing is strictly worse than no MCP
+    server: it costs the CLI a handshake to learn it is useless."""
+    assert clean_mcp_grants.grant({"name": "Chat"}, dict(agora_runner.NO_CAPS), "conv-1") is None
+    assert clean_mcp_grants._grants == {}
+
+
+def test_mcp_rejects_an_unknown_token(clean_mcp_grants):
+    status, payload = clean_mcp_grants.handle("not-a-real-token",
+                                              {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert status == 401
+    assert "expired" in payload["error"]
+
+
+def test_mcp_rejects_a_revoked_token(clean_mcp_grants):
+    """The turn is over; the bridge pod must not keep tool access."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    clean_mcp_grants.revoke(token)
+    status, _ = clean_mcp_grants.handle(token, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert status == 401
+
+
+def test_mcp_initialize_echoes_the_client_protocol_version(clean_mcp_grants):
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    status, payload = clean_mcp_grants.handle(token, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2099-01-01"},
+    })
+    assert status == 200
+    assert payload["result"]["protocolVersion"] == "2099-01-01"
+    assert payload["result"]["serverInfo"]["name"] == "agora"
+
+
+def test_mcp_initialize_falls_back_when_the_client_sends_no_version(clean_mcp_grants):
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    _, payload = clean_mcp_grants.handle(token, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {},
+    })
+    assert payload["result"]["protocolVersion"] == clean_mcp_grants.DEFAULT_PROTOCOL_VERSION
+
+
+def test_mcp_notification_gets_no_result_body(clean_mcp_grants):
+    """notifications/initialized carries no `id`, and JSON-RPC forbids
+    replying to it. The CLI sends exactly this between initialize and
+    tools/list (measured live, v2.1.197)."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    status, payload = clean_mcp_grants.handle(
+        token, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    assert status == 202
+    assert payload is None
+
+
+def test_mcp_tools_list_is_the_same_toolset_gemini_gets(clean_mcp_grants, runner):
+    """The point of the whole module: not a second definition of the tools,
+    the same one, translated at the edge (input_schema -> inputSchema)."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    _, payload = clean_mcp_grants.handle(token, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    served = payload["result"]["tools"]
+    expected = runner.tools_schemas.client_tool_schemas(ALL_CAPS)
+
+    assert [t["name"] for t in served] == [t["name"] for t in expected]
+    assert {"vault_read", "kubectl_read", "create_pr", "merge_pr",
+            "terminal_exec"} <= {t["name"] for t in served}
+    for tool, source in zip(served, expected):
+        assert tool["inputSchema"] == source["input_schema"]
+        assert "input_schema" not in tool
+
+
+def test_mcp_tools_list_respects_the_capability_gate(clean_mcp_grants):
+    """Same gate the other providers run under -- a read-only persona must
+    not be handed merge_pr just because it reached this endpoint."""
+    caps = dict(agora_runner.NO_CAPS)
+    caps["vaultRead"] = True
+    token = clean_mcp_grants.grant({"name": "Reader"}, caps, "conv-1")
+    _, payload = clean_mcp_grants.handle(token, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    names = {t["name"] for t in payload["result"]["tools"]}
+    assert "vault_read" in names
+    assert "vault_write" not in names
+    assert "merge_pr" not in names
+    assert "terminal_exec" not in names
+
+
+def test_mcp_grant_freezes_capabilities_for_the_turn(clean_mcp_grants):
+    """A persona edited mid-cycle must not widen its own reach in flight."""
+    caps = dict(agora_runner.NO_CAPS)
+    caps["vaultRead"] = True
+    token = clean_mcp_grants.grant({"name": "Reader"}, caps, "conv-1")
+    caps["terminalExec"] = True  # the caller's dict changes underneath us
+    _, payload = clean_mcp_grants.handle(token, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert "terminal_exec" not in {t["name"] for t in payload["result"]["tools"]}
+
+
+def test_mcp_tools_call_runs_the_shared_dispatcher(clean_mcp_grants):
+    persona = {"name": "Nova"}
+    token = clean_mcp_grants.grant(persona, ALL_CAPS, "conv-1")
+    seen = {}
+
+    def fake_execute(name, args, p, conversation_id, active_step=None):
+        seen.update(name=name, args=args, persona=p, conversation_id=conversation_id)
+        return "the file contents"
+
+    with patch.object(clean_mcp_grants, "execute_tool", side_effect=fake_execute):
+        _, payload = clean_mcp_grants.handle(token, {
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "vault_read", "arguments": {"path": "a.md"}},
+        })
+
+    assert seen == {"name": "vault_read", "args": {"path": "a.md"},
+                    "persona": persona, "conversation_id": "conv-1"}
+    assert payload["result"]["content"] == [{"type": "text", "text": "the file contents"}]
+    assert payload["result"]["isError"] is False
+
+
+def test_mcp_tools_call_reports_a_failure_as_a_result_not_a_jsonrpc_error(clean_mcp_grants):
+    """MCP draws this line deliberately and it matters here: a JSON-RPC
+    error is a broken server the CLI may stop talking to, while an isError
+    result reaches the model, which can read it and try something else."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    with patch.object(clean_mcp_grants, "execute_tool",
+                      side_effect=RuntimeError("couchdb is down")):
+        _, payload = clean_mcp_grants.handle(token, {
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "vault_read", "arguments": {"path": "a.md"}},
+        })
+    assert "error" not in payload
+    assert payload["result"]["isError"] is True
+    assert "couchdb is down" in payload["result"]["content"][0]["text"]
+
+
+def test_mcp_tools_call_tolerates_missing_or_malformed_arguments(clean_mcp_grants):
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    with patch.object(clean_mcp_grants, "execute_tool", side_effect=lambda n, a, *r, **k: repr(a)):
+        _, payload = clean_mcp_grants.handle(token, {
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "vault_read", "arguments": "not-a-dict"},
+        })
+    assert payload["result"]["content"][0]["text"] == "{}"
+
+
+def test_mcp_unknown_method_is_a_jsonrpc_error(clean_mcp_grants):
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    _, payload = clean_mcp_grants.handle(token, {"jsonrpc": "2.0", "id": 9, "method": "resources/list"})
+    assert payload["error"]["code"] == -32601
+
+
+# --- the /mcp endpoint itself ---
+
+def test_mcp_endpoint_reads_the_bearer_token_from_the_header(clean_mcp_grants):
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    handler, sent = _mcp_handler({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token)
+    handler.do_POST()
+    assert sent["status"] == 200
+    assert sent["payload"]["result"]["tools"]
+
+
+def test_mcp_endpoint_401s_without_a_valid_bearer_token(clean_mcp_grants):
+    clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    handler, sent = _mcp_handler({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "wrong")
+    handler.do_POST()
+    assert sent["status"] == 401
+
+
+def test_mcp_endpoint_sends_no_body_for_a_notification(clean_mcp_grants):
+    """A body here would be a protocol violation; the handler has to take
+    the send_response path rather than _send."""
+    token = clean_mcp_grants.grant({"name": "Nova"}, ALL_CAPS, "conv-1")
+    handler, sent = _mcp_handler({"jsonrpc": "2.0", "method": "notifications/initialized"}, token)
+    handler.do_POST()
+    assert sent["status"] == 202
+    assert "payload" not in sent
+
+
+# --- claude_cli hands the grant to the bridge ---
+
+def test_claude_cli_generate_sends_an_mcp_block_for_a_capable_persona(runner, clean_mcp_grants):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        # Still live while the bridge call is in flight -- that is the
+        # whole window in which the CLI can actually use it.
+        captured["live"] = body["mcp"]["token"] in clean_mcp_grants._grants
+        return 200, {"text": "the answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-opus-5", False, "sys", [{"role": "user", "content": "hi"}],
+            ALL_CAPS, {"name": "Nova"}, "conv-1",
+        )
+    assert captured["body"]["mcp"]["url"].endswith("/mcp")
+    assert captured["live"] is True
+    # ...and revoked the moment it returns.
+    assert captured["body"]["mcp"]["token"] not in clean_mcp_grants._grants
+
+
+def test_claude_cli_generate_revokes_the_mcp_grant_when_the_bridge_call_fails(runner,
+                                                                             clean_mcp_grants):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        raise RuntimeError("bridge unreachable")
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        with pytest.raises(RuntimeError):
+            runner.claude_cli_generate(
+                "claude-opus-5", False, "sys", [{"role": "user", "content": "hi"}],
+                ALL_CAPS, {"name": "Nova"}, "conv-1",
+            )
+    assert captured["body"]["mcp"]["token"] not in clean_mcp_grants._grants
+
+
+def test_claude_cli_generate_omits_the_mcp_block_for_a_persona_with_no_capabilities(runner):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "the answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-opus-5", False, "sys", [{"role": "user", "content": "hi"}],
+            dict(agora_runner.NO_CAPS), {"name": "Chat"}, "conv-1",
+        )
+    assert "mcp" not in captured["body"]
