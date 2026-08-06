@@ -10,14 +10,29 @@ message is sent as this turn's prompt; everything earlier already lives in
 that session. The bridge itself decides whether to prepend the system/
 persona prompt (only on a conversation's first-ever turn there).
 
-No client-side tool loop here -- caps/active_step are accepted for
-interface-compatibility with the other two providers but unused. Unlike
-Gemini/Anthropic-API personas (whose tools are enforced server-side from
-capability flags, Decisions/0007), this persona's tools -- if any -- live
-entirely inside the CLI's own session; Agora's capability checkboxes don't
-apply to it at all. Those calls are therefore invisible to this process,
-which is why (2026-08-03) it hands the bridge a scoped callback to narrate
-them as they happen -- see tool_activity.py.
+No client-side tool loop here, but as of 2026-08-06 that no longer means
+no capability tools. It used to: caps was accepted purely for
+interface-compatibility with the other two providers and then ignored, so
+a claude-cli persona had the CLI's own built-in tools (Bash, Read, Write,
+...) and none of Agora's -- no vault_read, no kubectl_read, no create_pr,
+no merge_pr -- while turns.py:build_system described every one of them to
+it in prose regardless. Edvard spotted the split from the outside:
+*"There are different tools for you and Gemini? That should not be the
+case. Gemini and other agents should use the same custom tools as you
+do."* They do now -- caps is handed to tools_mcp, which serves the very
+same client_tool_schemas/execute_tool pair the other two providers run
+in-process, over MCP, back into this process.
+
+What has NOT changed: Agora's capability checkboxes still don't bound
+this provider the way they bound the other two. The CLI's own built-in
+tools stay unrestricted by default (Edvard's explicit 2026-08-01 call,
+below), so caps widen what this persona can reach rather than limiting
+it. The calls also still happen in another pod and are invisible to this
+process while they run, which is why it hands the bridge a scoped
+callback to narrate them -- see tool_activity.py. A capability tool
+called through MCP is consequently narrated twice: once by the bridge as
+the CLI-side call (`mcp__agora__vault_write`) and once by execute_tool's
+own audit(), which is the half carrying the before/after diff.
 
 2026-08-01 design call (reversed from the original "chat mode, no tools"
 v1 plan): unrestricted by default, same as an interactive Claude Code
@@ -44,6 +59,7 @@ from agora_runner.config import CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN, RUNNER_S
 from agora_runner.log import log
 from agora_runner.http_util import http_json
 from agora_runner.tool_activity import grant as grant_tool_activity, revoke as revoke_tool_activity
+from agora_runner.tools_mcp import grant as grant_mcp, revoke as revoke_mcp
 
 
 class ClaudeBridgeUsageLimited(Exception):
@@ -85,6 +101,18 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
             "token": activity_token,
         }
 
+    # Agora's own capability tools, over MCP, for the length of this turn
+    # (tools_mcp.py). Same shape and same lifecycle as the activity grant
+    # above: a random per-turn token, revoked in the finally below. None
+    # when the persona has no capabilities at all, in which case no `mcp`
+    # block is sent and the bridge runs the CLI exactly as it did before.
+    mcp_token = grant_mcp(persona, caps or {}, conversation_id)
+    if mcp_token:
+        body["mcp"] = {
+            "url": f"{RUNNER_SELF_URL}/mcp",
+            "token": mcp_token,
+        }
+
     debug_status_log = f"claude_cli request: model={model_id} conversation={conversation_id}"
     log(debug_status_log)
     try:
@@ -97,6 +125,7 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
             "POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers, timeout=2760)
     finally:
         revoke_tool_activity(activity_token)
+        revoke_mcp(mcp_token)
 
     if status == 429:
         detail = resp.get("detail", "usage limit")

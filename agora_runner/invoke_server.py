@@ -1,6 +1,7 @@
 """Sync HTTP server: /invoke (Decisions/0005 -- tool-less by design, for
-Ask/Preview) and /tool-activity (the bridge's live tool-use callback, see
-tool_activity.py)."""
+Ask/Preview), /tool-activity (the bridge's live tool-use callback, see
+tool_activity.py) and /mcp (the same callback direction, carrying real
+tool calls instead of chips -- see tools_mcp.py)."""
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,6 +13,7 @@ from agora_runner.agora_api import fetch_persona
 from agora_runner.turns import build_system
 from agora_runner.reply import generate_reply
 from agora_runner.tool_activity import report as report_tool_activity
+from agora_runner.tools_mcp import handle as handle_mcp
 
 
 class InvokeHandler(BaseHTTPRequestHandler):
@@ -63,9 +65,50 @@ class InvokeHandler(BaseHTTPRequestHandler):
             return
         self._send(202, {"status": "recorded"})
 
+    def _handle_mcp(self):
+        """One MCP JSON-RPC request from a claude-cli session's own CLI.
+
+        Authenticated by the per-turn grant token in the Authorization
+        header rather than by AGORA_TOKEN, for the same reason
+        /tool-activity is (tools_mcp.py has the reasoning) -- and in the
+        header rather than the body because the token has to travel on
+        requests whose body shape is the MCP spec's, not ours.
+
+        A 202 with no body is the correct, required answer to a JSON-RPC
+        notification; tools_mcp.handle signals that by returning a None
+        payload. Everything else, including tool failures, comes back as
+        HTTP 200 with a JSON-RPC envelope.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            self._send(400, {"error": "invalid json body"})
+            return
+        if not isinstance(request, dict):
+            self._send(400, {"error": "jsonrpc request must be an object"})
+            return
+        auth = self.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        try:
+            status, payload = handle_mcp(token, request)
+        except Exception as e:
+            log(f"/mcp failed: {e}")
+            self._send(500, {"error": str(e)[:300]})
+            return
+        if payload is None:
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._send(status, payload)
+
     def do_POST(self):
         if self.path == "/tool-activity":
             self._handle_tool_activity()
+            return
+        if self.path == "/mcp":
+            self._handle_mcp()
             return
         if self.path != "/invoke":
             self._send(404, {"error": "not found"})
