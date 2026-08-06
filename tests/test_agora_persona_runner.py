@@ -819,7 +819,12 @@ def test_vault_write_path_lowercases_the_path_field_not_just_the_id(runner):
     assert captured["doc"]["path"] == "projects/sokrates/issues.md"
 
 
-def test_vault_write_path_backs_up_to_lowercase_agora_backups(runner):
+def test_vault_write_path_does_not_copy_previous_content_into_the_vault(runner):
+    """Every overwrite used to write a second document holding the old
+    content under agora/backups/. Edvard asked for it to stop
+    (2026-08-05) -- "since the switch to Nova, this is just noise" -- and
+    the folder was deleted. The daily GitHub snapshot is the recovery
+    path now."""
     put_paths = []
 
     def fake_couch_req(method, path, body=None):
@@ -835,9 +840,7 @@ def test_vault_write_path_backs_up_to_lowercase_agora_backups(runner):
         runner.vault_write_path("projects/sokrates/issues.md", "new content")
 
     decoded = [urllib.parse.unquote(p) for p in put_paths]
-    backup_paths = [p for p in decoded if "agora/backups/" in p]
-    assert len(backup_paths) == 1
-    assert all("Agora/Backups" not in p for p in decoded)
+    assert [p for p in decoded if "backups/" in p.lower()] == []
 
 
 # ---------------------------------------------------------------------------
