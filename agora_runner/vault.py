@@ -76,10 +76,16 @@ def _chunk_id_for(content_bytes):
 
 
 def vault_write_path(path, content):
-    """LiveSync v0.25+ chunked write, mirroring vault_tool.seed_file. The
-    platform's backup-before-overwrite rule is honored by snapshotting the
-    previous content into agora/backups/ *in the vault* (this pod has no
-    host backup dir).
+    """LiveSync v0.25+ chunked write, mirroring vault_tool.seed_file.
+
+    2026-08-06: this used to snapshot the previous content into
+    `agora/backups/<timestamp> <basename>` in the vault before every
+    overwrite. Edvard asked for that to stop -- it doubled the document
+    count of every edit and left 272 stray files behind, and the folder
+    has been deleted. Recovery comes from the daily snapshot of the
+    whole vault into the `SokratesAI/vault` GitHub repo (see
+    `vault_git_revision_history` below), which keeps every version in
+    git history instead of beside the original.
 
     2026-07-24: `path` is normalized to lowercase inside `_vault_put_raw`
     (the single place that actually persists a doc) for BOTH the CouchDB
@@ -94,14 +100,6 @@ def vault_write_path(path, content):
     identical by construction, closing this bug class for good."""
     lower_id = path.lower()
     status, existing = couch_get_doc(lower_id)
-    if status == 200:
-        previous = vault_assemble(existing)
-        if previous.strip():
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            base = path.rsplit("/", 1)[-1]
-            backup_path = f"agora/backups/{stamp} {base}"
-            _vault_put_raw(backup_path, previous)
-
     return _vault_put_raw(path, content, existing if status == 200 else None)
 
 
@@ -113,9 +111,11 @@ def vault_append_path(path, content, after_marker=""):
     Found live 2026-07-31: the Evolve-Coder persona's cycle journal
     entries were replacing each other one-for-one, run after run,
     because nothing enforced "combine with the old content" -- the
-    convention lived only in prompt text. Recoverable via vault_write_path's
-    own per-write backups, but the journal itself -- the one thing each
-    new run actually reads for cross-cycle memory -- never accumulated.
+    convention lived only in prompt text. At the time that was recoverable
+    from vault_write_path's own per-write backups; since 2026-08-06 those
+    are gone and the only fallback is the *daily* GitHub snapshot, so a
+    clobber-and-restore now loses up to a day rather than nothing. That
+    makes this function the real protection, not a convenience.
 
     If `after_marker` is a line that exists verbatim in the current
     file, `content` is inserted directly after it (one blank line
