@@ -199,18 +199,31 @@ def build_system(persona, conversation=None, participants=None, heartbeat_extra=
         )
     caps = persona.get("capabilities") or {}
     if caps.get("vaultRead") or caps.get("vaultWrite"):
-        parts.append(
+        vault = [
             "## Vault access\nYou have tools for Edvard's Obsidian vault. Paths are "
             "case-insensitive; folders end with '/'. save_memory REPLACES your entire "
-            "persistent memory — always include everything you still want to keep. "
-            "Beyond single-file read/write you also have vault_search (full-text), "
-            "vault_query_frontmatter, vault_validate_frontmatter_schema, "
-            "vault_find_stub_notes, vault_find_duplicate_titles, vault_get_token_metrics, "
-            "vault_git_revision_history and vault_summarize_recent_agent_work (both "
-            "against the daily backup mirror on GitHub)"
-            + (", and vault_update_frontmatter_batch for bulk metadata edits" if caps.get("vaultWrite") else "")
-            + "."
-        )
+            "persistent memory — always include everything you still want to keep."
+        ]
+        # The eight query tools below are gated on vaultRead in
+        # client_tool_schemas, while this whole section fires on either
+        # capability -- so naming them unconditionally promised a write-only
+        # persona eight tools it does not have. See
+        # tests/test_system_prompt_matches_tools.py.
+        if caps.get("vaultRead"):
+            vault.append(
+                "Beyond single-file read/write you also have vault_search (full-text), "
+                "vault_query_frontmatter, vault_validate_frontmatter_schema, "
+                "vault_find_stub_notes, vault_find_duplicate_titles, vault_get_token_metrics, "
+                "vault_git_revision_history and vault_summarize_recent_agent_work (both "
+                "against the daily backup mirror on GitHub)"
+                + (", and vault_update_frontmatter_batch for bulk metadata edits" if caps.get("vaultWrite") else "")
+                + "."
+            )
+        elif caps.get("vaultWrite"):
+            vault.append(
+                "You also have vault_update_frontmatter_batch for bulk metadata edits."
+            )
+        parts.append(" ".join(vault))
     if caps.get("kubectlRead"):
         parts.append(
             "## Cluster access (read-only)\nYou have kubectl_read for cluster "
