@@ -70,6 +70,15 @@ def _vault_file_docs(prefix=""):
             "POST", f"{COUCHDB_DB}/_all_docs?include_docs=true", {"keys": batch}
         )
         if status != 200:
+            # Dropping the batch silently would make live files vanish from
+            # vault_list and vault_search with no signal at all, and "that
+            # file does not exist" is a conclusion an agent writes into its
+            # permanent memory. Skipping is still the safer half of the
+            # choice -- failing open would serve tombstones, which is the
+            # bug this function exists to fix -- but it does not get to be
+            # quiet about it.
+            log(f"vault: _all_docs include_docs batch failed ({status}); "
+                f"{len(batch)} file(s) under {prefix!r} omitted from this listing")
             continue
         for row in res.get("rows", []):
             doc = row.get("doc")
