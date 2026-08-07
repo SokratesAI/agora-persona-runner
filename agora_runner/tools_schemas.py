@@ -131,8 +131,11 @@ def client_tool_schemas(caps, active_step=None):
         tools.append({
             "name": "vault_write",
             "description": (
-                "Create or overwrite one vault file. The previous version is automatically backed "
-                "up to agora/backups/ first. Paths are always lowercase -- use exactly the casing "
+                "Create or overwrite one vault file. This REPLACES the whole file and there is no "
+                "per-write backup -- to add to a file that already has content, use vault_append "
+                "instead. The only restore point is the daily snapshot of the vault to the "
+                "SokratesAI/vault repo on GitHub, so a clobber costs up to 24h of history. "
+                "Paths are always lowercase -- use exactly the casing "
                 "an existing file already has (check with vault_list/vault_read first), and use "
                 "all-lowercase for a brand new file. Never write a different-cased variant of an "
                 "existing path, e.g. 'Issues.md' vs 'issues.md' -- the backend normalizes to "
@@ -171,8 +174,9 @@ def client_tool_schemas(caps, active_step=None):
             "description": (
                 "Bulk-set one frontmatter field to one value across every vault file under prefix "
                 "(optionally only files where match_field currently contains match_value). Rewrites "
-                "only that key's line, preserving everything else in each file untouched. Same "
-                "automatic per-file backup as vault_write."
+                "only that key's line, preserving everything else in each file untouched. Like "
+                "vault_write, there is no per-file backup -- the only restore point is the daily "
+                "GitHub snapshot."
             ),
             "input_schema": {
                 "type": "object",
