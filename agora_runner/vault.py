@@ -29,6 +29,55 @@ def couch_get_doc(doc_id):
     return couch_req("GET", f"{COUCHDB_DB}/{urllib.parse.quote(doc_id, safe='')}")
 
 
+def _couch_batched(items, n):
+    for i in range(0, len(items), n):
+        yield items[i:i + n]
+
+
+def _vault_file_docs(prefix=""):
+    """{doc_id: doc} for every file under `prefix` that still exists.
+
+    Obsidian LiveSync does not delete a document when you delete the note
+    — it keeps the doc and sets `deleted: true`, which is how peers learn
+    to remove their local copy. So a deleted note stays in `_all_docs`
+    forever, and any tool that reads ids without reading the flag serves
+    files Edvard has thrown away. On 2026-08-07 that was 309 of 897
+    documents, a third of the vault, including a `kanban.md` last touched
+    2026-07-29 that Nova's own prompt still told every cycle to read as
+    "the real backlog".
+
+    `_all_docs` alone cannot tell — it returns ids and revs, not fields —
+    so the ids are re-fetched with `include_docs=true` in batches. That is
+    the same first phase `vault_bulk_fetch` already ran, so the seven
+    tools built on it pay nothing new, and the cost scales with the prefix
+    asked for (measured: 0.46s for a project folder, 5.0s for the whole
+    vault). A Mango `_find` on the flag was the obvious alternative and is
+    worse — unindexed, it scans all 10939 docs in 8.5s no matter how small
+    the prefix.
+    """
+    status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs")
+    if status != 200:
+        return {}
+    skip = ("_", "h:", "f:", "i:", "v:")
+    prefix = prefix.lower()
+    keys = [
+        row["id"] for row in data.get("rows", [])
+        if not row["id"].startswith(skip) and row["id"].lower().startswith(prefix)
+    ]
+    out = {}
+    for batch in _couch_batched(keys, 500):
+        status, res = couch_req(
+            "POST", f"{COUCHDB_DB}/_all_docs?include_docs=true", {"keys": batch}
+        )
+        if status != 200:
+            continue
+        for row in res.get("rows", []):
+            doc = row.get("doc")
+            if doc and not doc.get("deleted"):
+                out[row["id"]] = doc
+    return out
+
+
 def vault_assemble(doc):
     kids = doc.get("children") or []
     if kids:
@@ -44,22 +93,16 @@ def vault_read_path(path):
     status, doc = couch_get_doc(path.lower())
     if status != 200:
         return None
+    # A LiveSync tombstone still has its content chunks attached, so this
+    # returns the old text unless the flag is checked — see _vault_file_docs.
+    # Deleted means gone; vault_git_revision_history is the way back.
+    if doc.get("deleted"):
+        return None
     return vault_assemble(doc)
 
 
 def vault_list_prefix(prefix=""):
-    status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs")
-    if status != 200:
-        return []
-    skip = ("_", "h:", "f:", "i:", "v:")
-    out = []
-    for row in data.get("rows", []):
-        doc_id = row["id"]
-        if doc_id.startswith(skip):
-            continue
-        if doc_id.lower().startswith(prefix.lower()):
-            out.append(doc_id)
-    return sorted(out)
+    return sorted(_vault_file_docs(prefix))
 
 
 def _chunk_id_for(content_bytes):
@@ -220,25 +263,11 @@ def fetch_vault_context(paths):
 # fetching hundreds of files one at a time is exactly what the vault's
 # own CLAUDE.md says never to do.
 # --------------------------------------------------------------------------
-def _couch_batched(items, n):
-    for i in range(0, len(items), n):
-        yield items[i:i + n]
-
-
 def vault_bulk_fetch(prefix=""):
     """{path: content} for every vault file under `prefix`, assembled
     from batched bulk _all_docs POSTs (file docs, then their content
     chunks) instead of per-file couch_get_doc calls."""
-    paths = vault_list_prefix(prefix)
-    filedocs = {}
-    for batch in _couch_batched(paths, 500):
-        status, res = couch_req("POST", f"{COUCHDB_DB}/_all_docs?include_docs=true", {"keys": batch})
-        if status != 200:
-            continue
-        for row in res.get("rows", []):
-            doc = row.get("doc")
-            if doc:
-                filedocs[row["id"]] = doc
+    filedocs = _vault_file_docs(prefix)
     chunk_ids = sorted({c for doc in filedocs.values() for c in (doc.get("children") or [])})
     chunks = {}
     for batch in _couch_batched(chunk_ids, 1000):
