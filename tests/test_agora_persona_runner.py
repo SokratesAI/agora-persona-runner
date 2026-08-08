@@ -6228,6 +6228,24 @@ def test_the_cron_occurrence_never_moves_backwards():
     assert seen == sorted(seen)
 
 
+def test_a_cron_slot_is_never_in_the_future():
+    # Two slots inside the SAME hour is the case the minute-level guard exists
+    # for: asked at 08:30, the last occurrence is 08:00, not the 08:45 that has
+    # not happened yet. Without it the heartbeat fires fifteen minutes early
+    # and keeps doing so for every slot after. Found by mutation -- the
+    # weekday/twice-a-day tests all have one minute per hour, so none of them
+    # could see it.
+    assert last_cron_occurrence("0,45 8 * * *", _oslo("2026-08-10T08:30:00")) == _oslo("2026-08-10T08:00:00")
+    assert last_cron_occurrence("0,45 8 * * *", _oslo("2026-08-10T08:45:00")) == _oslo("2026-08-10T08:45:00")
+    assert last_cron_occurrence("0,45 8 * * *", _oslo("2026-08-10T08:00:00")) == _oslo("2026-08-10T08:00:00")
+    # And structurally, across a whole day at the finest granularity anyone
+    # would pick: the slot reported may never be later than the instant asked
+    # about, or schedule_due fires ahead of the clock.
+    for m in range(60 * 24):
+        now = _oslo("2026-08-10T00:00:00") + timedelta(minutes=m)
+        assert last_cron_occurrence("*/15 * * * *", now) <= now
+
+
 def test_a_cron_slot_does_not_refire_within_itself():
     on_the_dot = _oslo("2026-08-10T08:00:00").isoformat()
     assert not schedule_due("cron@0 8 * * *", on_the_dot, on_the_dot, _oslo("2026-08-10T08:00:05"))
