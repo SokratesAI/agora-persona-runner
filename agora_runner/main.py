@@ -5,6 +5,7 @@ import time
 
 from agora_runner.config import AGORA_URL, POLL_INTERVAL_SECONDS
 from agora_runner.log import log
+from agora_runner.heartbeats import join_running_heartbeats
 from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
 
@@ -37,9 +38,11 @@ def _request_shutdown(signum, _frame):
     enough to cover a real cycle -- it was 10s, which is nowhere near;
     raised alongside this in agora-persona-runner-config.
 
-    Known gap: this drains the MAIN thread only. Workflow-mode heartbeats
-    run on daemon threads (heartbeats._workflow_threads) and are still
-    killed at exit."""
+    Every heartbeat run is on its own thread as of 2026-08-08, so
+    "finish the in-flight tick" is no longer enough on its own — the
+    tick returns in milliseconds now. main() joins the running heartbeat
+    threads too (heartbeats.join_running_heartbeats), which closes the
+    gap this docstring used to record for workflow-mode heartbeats."""
     global _shutdown_requested
     _shutdown_requested = True
     log(f"received signal {signum}, draining: finishing the in-flight tick, then exiting")
@@ -67,10 +70,17 @@ def main():
             poll_once()
         except Exception as e:
             log(f"poll failed: {e}")
+        # Checked before the sleep as well as after it, so a signal
+        # arriving while idle doesn't buy one more tick on the way out.
+        # That tick used to be harmless; now it could START a fresh
+        # heartbeat run (claiming it, then having it killed part-way)
+        # during the shutdown we are already committed to.
+        if not _shutdown_requested:
+            _sleep_between_ticks(POLL_INTERVAL_SECONDS)
         if _shutdown_requested:
+            join_running_heartbeats()
             log("drain complete, exiting")
             return
-        _sleep_between_ticks(POLL_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":
