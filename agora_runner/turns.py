@@ -123,12 +123,122 @@ def last_anchored_occurrence(anchor, delta, now_utc):
     return occurrence.replace(tzinfo=OSLO).astimezone(timezone.utc)
 
 
+# Day-of-week runs to 7, not 6: 0 and 7 both mean Sunday in every cron
+# implementation, and 7 is folded back to 0 once the range is expanded, so
+# "1-7" reads as Mon-Sun the way anyone writing it expects.
+CRON_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
+# How far back last_cron_occurrence will walk before giving up. A day-of-month
+# plus month restriction can legitimately be years apart -- "0 0 29 2 *" is
+# Feb 29, which 2100 skips, so the true worst-case gap is 8 years. Walking that
+# is a few thousand set lookups and only ever happens for an expression that
+# rare; the alternative (a smaller bound) would silently report "never ran".
+CRON_LOOKBACK_DAYS = 8 * 366
+
+
+def parse_cron_field(field, index):
+    """One cron field -> the set of values it matches. Supports `*`, `N`,
+    `a-b`, and a `/step` suffix on any of those (`*/15`, `8-22/2`), plus
+    comma-separated lists of all of them. Day-of-week takes 7 as Sunday as
+    well as 0, which is what every cron implementation does and what anyone
+    hand-writing `1-7` expects.
+
+    Raises ValueError on anything else rather than guessing -- Agora's
+    isValidSchedule rejects the same strings at the route, so a bad
+    expression should not reach here at all, and if one does we would much
+    rather see it than run a schedule nobody asked for."""
+    low, high = CRON_RANGES[index]
+    matched = set()
+    for part in field.split(","):
+        spec, _, step_text = part.partition("/")
+        step = int(step_text) if step_text else 1
+        if step < 1:
+            raise ValueError(f"cron step must be >= 1: {part!r}")
+        if spec == "*":
+            start, end = low, high
+        elif "-" in spec:
+            start_text, _, end_text = spec.partition("-")
+            start, end = int(start_text), int(end_text)
+        else:
+            start = end = int(spec)
+            if step_text:  # "5/15" is meaningless -- a bare value has no range
+                raise ValueError(f"cron step needs a range or *: {part!r}")
+        if not (low <= start <= high and low <= end <= high) or start > end:
+            raise ValueError(f"cron field out of range: {part!r}")
+        matched.update(range(start, end + 1, step))
+    if index == 4 and 7 in matched:
+        matched.discard(7)
+        matched.add(0)
+    return matched
+
+
+def parse_cron(expr):
+    """`minute hour day-of-month month day-of-week` -> five value sets."""
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError(f"cron needs exactly 5 fields, got {len(fields)}: {expr!r}")
+    return [parse_cron_field(f, i) for i, f in enumerate(fields)], fields
+
+
+def cron_day_matches(day, doms, months, dows, dom_restricted, dow_restricted):
+    """Vixie cron's day rule, deliberately reproduced rather than simplified:
+    when BOTH day-of-month and day-of-week are restricted the day matches if
+    EITHER does (so `0 0 1 * 1` is the 1st *and* every Monday), but when only
+    one is restricted the other is ignored. Getting this "wrong but sensible"
+    -- ANDing them -- is the classic cron bug, and someone reading `0 8 1 * 1`
+    in the raw-expression box will be expecting the standard meaning."""
+    if day.month not in months:
+        return False
+    dow = (day.weekday() + 1) % 7  # Python Mon=0 -> cron Sun=0
+    if dom_restricted and dow_restricted:
+        return day.day in doms or dow in dows
+    return day.day in doms and dow in dows
+
+
+def last_cron_occurrence(expr, now_utc):
+    """The most recent slot at or before now, as UTC, for a cron expression
+    read in Oslo wall-clock time. Returns None if there is no such slot
+    within CRON_LOOKBACK_DAYS.
+
+    Same naive-then-localise shape as last_anchored_occurrence, and for the
+    same reason: `0 8 * * *` means 08:00 local on both sides of a DST shift,
+    not a fixed number of elapsed hours apart. Walking days backwards rather
+    than solving for the slot keeps the day rule below readable; the cost is
+    one iteration per day since the last match, which for any schedule a
+    person would actually pick is zero or one."""
+    (minutes, hours, doms, months, dows), fields = parse_cron(expr)
+    dom_restricted, dow_restricted = fields[2] != "*", fields[4] != "*"
+    naive_now = now_utc.astimezone(OSLO).replace(tzinfo=None, second=0, microsecond=0)
+    day = naive_now.date()
+    for offset in range(CRON_LOOKBACK_DAYS):
+        if cron_day_matches(day, doms, months, dows, dom_restricted, dow_restricted):
+            today = offset == 0
+            for hour in sorted(hours, reverse=True):
+                if today and hour > naive_now.hour:
+                    continue
+                for minute in sorted(minutes, reverse=True):
+                    if today and hour == naive_now.hour and minute > naive_now.minute:
+                        continue
+                    slot = datetime(day.year, day.month, day.day, hour, minute)
+                    return slot.replace(tzinfo=OSLO).astimezone(timezone.utc)
+        day -= timedelta(days=1)
+    return None
+
+
 def schedule_due(schedule, last_run_iso, created_iso, now_utc):
     """Idempotent due computation — no in-memory scheduler state, so a
     runner restart can never double-fire (critique on Decisions/0006).
     createdAt floors the first run: a daily@08:00 heartbeat created at
     14:00 waits for tomorrow instead of surprise-firing at creation."""
     floor = parse_iso(last_run_iso or created_iso)
+    if schedule.startswith("cron@"):
+        try:
+            occurrence = last_cron_occurrence(schedule[len("cron@"):], now_utc)
+        except ValueError:
+            # Agora validates at the route, so this is unreachable through the
+            # API -- but a hand-edited heartbeat file must not take the whole
+            # poll loop down with it and stop every OTHER heartbeat running.
+            return False
+        return occurrence is not None and occurrence > floor
     if schedule.startswith("every@"):
         amount, _, anchor = schedule[len("every@"):].partition("@")
         value, unit = int(amount[:-1]), amount[-1]

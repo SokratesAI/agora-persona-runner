@@ -6183,3 +6183,118 @@ def test_anchored_minutes_work_too():
     ran_at = _oslo("2026-08-08T12:07:00").isoformat()
     assert not schedule_due("every@30m@00:00", ran_at, ran_at, _oslo("2026-08-08T12:29:00"))
     assert schedule_due("every@30m@00:00", ran_at, ran_at, _oslo("2026-08-08T12:30:00"))
+
+
+# ---------------------------------------------------------------------------
+# cron schedules -- Edvard's issues.md #37, second half: "Maybe have it so we
+# can tweak it as cronjobs or just as advanced timesetting. But it has to be
+# user friendly." Cron is the storage format; the picker in the heartbeat form
+# is the user-friendly half. These pin the three things the anchored interval
+# could not say: weekdays only, two fixed times a day, and a daytime-only
+# window.
+# ---------------------------------------------------------------------------
+
+from agora_runner.turns import last_cron_occurrence, parse_cron_field
+
+
+def test_weekdays_only_skips_the_weekend():
+    # 2026-08-08 is a Saturday, 2026-08-10 a Monday.
+    ran = _oslo("2026-08-07T08:00:01").isoformat()
+    assert not schedule_due("cron@0 8 * * 1-5", ran, ran, _oslo("2026-08-08T08:00:00"))
+    assert not schedule_due("cron@0 8 * * 1-5", ran, ran, _oslo("2026-08-09T23:00:00"))
+    assert schedule_due("cron@0 8 * * 1-5", ran, ran, _oslo("2026-08-10T08:00:00"))
+
+
+def test_two_fixed_times_a_day():
+    slots = {last_cron_occurrence("0 8,20 * * *", _oslo(f"2026-08-10T{h:02d}:30:00"))
+             .astimezone(OSLO).strftime("%m-%d %H:%M") for h in range(24)}
+    assert slots == {"08-09 20:00", "08-10 08:00", "08-10 20:00"}
+
+
+def test_a_daytime_only_window():
+    # "not at night" as an hour range with a step -- 08:00 to 22:00, every 2h.
+    slots = sorted({last_cron_occurrence("0 8-22/2 * * *", _oslo(f"2026-08-10T{h:02d}:30:00"))
+                    .astimezone(OSLO).strftime("%H:%M") for h in range(24)})
+    assert slots == ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00", "22:00"]
+
+
+def test_the_cron_occurrence_never_moves_backwards():
+    # Same soundness requirement as the anchored grid: schedule_due compares
+    # the reported slot against a floor, so a slot that ever goes backwards
+    # would let a heartbeat re-fire.
+    start = _oslo("2026-08-08T00:00:00")
+    seen = [last_cron_occurrence("0 8,20 * * 1-5", start + timedelta(minutes=m))
+            for m in range(60 * 24 * 5)]
+    assert seen == sorted(seen)
+
+
+def test_a_cron_slot_does_not_refire_within_itself():
+    on_the_dot = _oslo("2026-08-10T08:00:00").isoformat()
+    assert not schedule_due("cron@0 8 * * *", on_the_dot, on_the_dot, _oslo("2026-08-10T08:00:05"))
+    assert schedule_due("cron@0 8 * * *", on_the_dot, on_the_dot, _oslo("2026-08-11T08:00:00"))
+
+
+def test_cron_keeps_its_clock_time_across_a_dst_shift():
+    # 2026-10-25 is the Oslo autumn shift. 08:00 stays 08:00 local, so the two
+    # instants are 25 hours apart, not 24.
+    before = last_cron_occurrence("0 8 * * *", _oslo("2026-10-24T09:00:00"))
+    after = last_cron_occurrence("0 8 * * *", _oslo("2026-10-25T09:00:00"))
+    assert before.astimezone(OSLO).strftime("%H:%M") == "08:00"
+    assert after.astimezone(OSLO).strftime("%H:%M") == "08:00"
+    assert (after - before) == timedelta(hours=25)
+
+
+def test_day_of_month_and_day_of_week_are_ORed_not_ANDed():
+    # Vixie cron's rule, and the one people get wrong. "1 * 1" is the 1st of
+    # the month AND every Monday. 2026-09-01 is a Tuesday, so it matches on
+    # day-of-month alone; 2026-09-07 is a Monday that is not the 1st.
+    both = "0 8 1 * 1"
+    assert last_cron_occurrence(both, _oslo("2026-09-01T09:00:00")) == _oslo("2026-09-01T08:00:00")
+    assert last_cron_occurrence(both, _oslo("2026-09-07T09:00:00")) == _oslo("2026-09-07T08:00:00")
+    # With only day-of-month restricted, day-of-week is ignored entirely.
+    assert last_cron_occurrence("0 8 1 * *", _oslo("2026-09-07T09:00:00")) == _oslo("2026-09-01T08:00:00")
+
+
+def test_sunday_is_both_0_and_7():
+    assert parse_cron_field("0", 4) == parse_cron_field("7", 4) == {0}
+    assert parse_cron_field("1-7", 4) == {0, 1, 2, 3, 4, 5, 6}
+    assert parse_cron_field("*", 4) == {0, 1, 2, 3, 4, 5, 6}
+
+
+def test_cron_fields_reject_what_they_cannot_mean():
+    # index 1 is the hour field, 0-23.
+    for bad in ["24", "5-2", "*/0", "5/15", "", "abc", "-1"]:
+        with pytest.raises(ValueError):
+            parse_cron_field(bad, 1)
+    with pytest.raises(ValueError):
+        parse_cron_field("60", 0)  # minutes are 0-59
+
+
+def test_a_malformed_cron_never_fires_and_never_raises():
+    # A hand-edited heartbeat file must not take down the poll loop for every
+    # other heartbeat -- schedule_due swallows the parse error and says "no".
+    ran = _oslo("2026-08-08T12:00:00").isoformat()
+    for bad in ["cron@not a cron at all", "cron@0 8 * *", "cron@99 8 * * *", "cron@"]:
+        assert schedule_due(bad, ran, ran, _oslo("2026-08-10T08:00:00")) is False
+
+
+def test_createdat_still_floors_the_first_run_of_a_cron_heartbeat():
+    created = _oslo("2026-08-10T09:00:00").isoformat()
+    assert not schedule_due("cron@0 8 * * *", None, created, _oslo("2026-08-10T12:00:00"))
+    assert schedule_due("cron@0 8 * * *", None, created, _oslo("2026-08-11T08:00:00"))
+
+
+def test_an_unreachable_cron_never_fires_rather_than_guessing():
+    # 30 February: parseable, valid per-field, and matches no day that exists.
+    # The walk gives up after CRON_LOOKBACK_DAYS and returns None; the
+    # heartbeat simply never becomes due, which is the safe direction.
+    assert last_cron_occurrence("0 8 30 2 *", _oslo("2026-08-10T09:00:00")) is None
+    ran = _oslo("2026-08-08T12:00:00").isoformat()
+    assert not schedule_due("cron@0 8 30 2 *", ran, ran, _oslo("2026-08-10T08:00:00"))
+
+
+def test_the_older_schedule_syntaxes_are_untouched_by_cron():
+    ran = _oslo("2026-08-08T12:41:00").isoformat()
+    assert schedule_due("every@6h", ran, ran, _oslo("2026-08-08T18:41:00"))
+    assert schedule_due("every@6h@12:00", ran, ran, _oslo("2026-08-08T18:00:00"))
+    assert schedule_due("daily@08:00", ran, ran, _oslo("2026-08-09T08:00:00"))
