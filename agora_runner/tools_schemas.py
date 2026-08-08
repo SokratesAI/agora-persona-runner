@@ -391,8 +391,10 @@ def client_tool_schemas(caps, active_step=None):
         tools.append({
             "name": "create_heartbeat",
             "description": (
-                "Create a new scheduled heartbeat. schedule is 'daily@HH:MM' (Europe/Oslo) or "
-                "'every@N[m|h]'. Give conversationId for an existing channel, or "
+                "Create a new scheduled heartbeat. schedule is 'daily@HH:MM' (Europe/Oslo), "
+                "'every@N[m|h]' (N after the last run started), or 'every@N[m|h]@HH:MM' "
+                "(anchored to a clock time — 'every@6h@12:00' fires 12:00, 18:00, 00:00, 06:00 "
+                "every day). Give conversationId for an existing channel, or "
                 "newConversationName to create a fresh empty one just for this heartbeat."
             ),
             "input_schema": {
