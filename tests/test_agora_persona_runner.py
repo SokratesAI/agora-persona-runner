@@ -35,6 +35,7 @@ import os
 import signal
 import time
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -5955,3 +5956,118 @@ def test_claude_cli_generate_omits_the_mcp_block_for_a_persona_with_no_capabilit
             dict(agora_runner.NO_CAPS), {"name": "Chat"}, "conv-1",
         )
     assert "mcp" not in captured["body"]
+
+
+# ---------------------------------------------------------------------------
+# Anchored interval schedules — Edvard's issues.md capture, 2026-08-08:
+# "run every 6 hours from 12:00, so it runs 12:00 the first time, then 18:00,
+# then 24:00. Currently it runs 6 hours after the previous job was finished.
+# So all Nova heartbeats starts at somewhat random timestamps."
+# ---------------------------------------------------------------------------
+
+from agora_runner.config import OSLO
+from agora_runner.turns import last_anchored_occurrence, schedule_due
+
+
+def _oslo(text):
+    """A wall-clock Oslo instant, as UTC — the shape schedule_due takes."""
+    return datetime.fromisoformat(text).replace(tzinfo=OSLO).astimezone(timezone.utc)
+
+
+def test_anchored_interval_fires_on_the_clock_not_after_the_last_run():
+    # Last run started 12:04 and ran long; the next slot is 18:00 sharp, not
+    # 18:04 and not 18:20-something. This is the whole point of the anchor.
+    late_finish = _oslo("2026-08-08T12:41:00").isoformat()
+    assert not schedule_due("every@6h@12:00", late_finish, late_finish, _oslo("2026-08-08T17:59:00"))
+    assert schedule_due("every@6h@12:00", late_finish, late_finish, _oslo("2026-08-08T18:00:00"))
+
+
+def test_anchored_interval_does_not_refire_within_the_same_slot():
+    ran_at = _oslo("2026-08-08T18:00:03").isoformat()
+    assert not schedule_due("every@6h@12:00", ran_at, ran_at, _oslo("2026-08-08T23:59:00"))
+    assert schedule_due("every@6h@12:00", ran_at, ran_at, _oslo("2026-08-09T00:00:00"))
+
+
+def test_a_run_claimed_exactly_on_the_slot_does_not_immediately_refire():
+    # lastRunAt landing on the slot instant to the microsecond is the case
+    # that separates > from >=; with >= the heartbeat re-fires on the very
+    # next poll tick, in a loop, for the whole slot. daily@ uses > for the
+    # same reason.
+    on_the_dot = _oslo("2026-08-08T18:00:00").isoformat()
+    assert not schedule_due("every@6h@12:00", on_the_dot, on_the_dot, _oslo("2026-08-08T18:00:05"))
+    assert schedule_due("every@6h@12:00", on_the_dot, on_the_dot, _oslo("2026-08-09T00:00:00"))
+
+
+def test_anchored_interval_slots_wrap_past_midnight():
+    # 12:00 + 6h twice lands on 00:00 the NEXT day, and the grid keeps going
+    # from there — 06:00 is a slot too, not a 12:00-to-18:00-only window.
+    assert last_anchored_occurrence("12:00", timedelta(hours=6),
+                                    _oslo("2026-08-09T07:30:00")) == _oslo("2026-08-09T06:00:00")
+    assert last_anchored_occurrence("12:00", timedelta(hours=6),
+                                    _oslo("2026-08-09T02:00:00")) == _oslo("2026-08-09T00:00:00")
+
+
+def test_anchored_slots_are_the_same_clock_times_every_day():
+    day_one = {last_anchored_occurrence("12:00", timedelta(hours=6),
+                                        _oslo(f"2026-08-08T{h:02d}:30:00")).astimezone(OSLO).strftime("%H:%M")
+               for h in range(24)}
+    day_two = {last_anchored_occurrence("12:00", timedelta(hours=6),
+                                        _oslo(f"2026-08-09T{h:02d}:30:00")).astimezone(OSLO).strftime("%H:%M")
+               for h in range(24)}
+    assert day_one == day_two == {"00:00", "06:00", "12:00", "18:00"}
+
+
+def test_the_occurrence_never_moves_backwards():
+    # The floor comparison in schedule_due is only sound if the slot the grid
+    # reports is monotone in time. Minute by minute across two days, over a
+    # midnight boundary, it must never go back.
+    start = _oslo("2026-08-08T00:00:00")
+    seen = [last_anchored_occurrence("13:00", timedelta(hours=4), start + timedelta(minutes=m))
+            for m in range(60 * 48)]
+    assert seen == sorted(seen)
+
+
+def test_a_non_dividing_interval_is_why_agora_rejects_one():
+    # 7h doesn't divide 24h, so each day's grid disagrees with the previous
+    # day's across midnight: 19:00 is the last slot when you ask at 23:30,
+    # but at 00:30 the answer is 22:00 — later, so schedule_due fires again.
+    # Agora's isValidSchedule refuses to create this; the assertion is here
+    # so anyone relaxing that rule sees exactly what it was holding back.
+    late = last_anchored_occurrence("12:00", timedelta(hours=7), _oslo("2026-08-08T23:30:00"))
+    after_midnight = last_anchored_occurrence("12:00", timedelta(hours=7), _oslo("2026-08-09T00:30:00"))
+    assert late.astimezone(OSLO).strftime("%m-%d %H:%M") == "08-08 19:00"
+    assert after_midnight.astimezone(OSLO).strftime("%m-%d %H:%M") == "08-08 22:00"
+    assert after_midnight > late  # a slot that did not exist an hour earlier
+
+
+def test_anchored_interval_keeps_its_clock_time_across_a_dst_shift():
+    # 2026-10-25 is the Oslo autumn shift (CEST +02:00 -> CET +01:00). The
+    # 12:00 slot must still be 12:00 local, i.e. a different UTC instant than
+    # the day before, which is what naive-then-localise buys us.
+    before = last_anchored_occurrence("12:00", timedelta(hours=6), _oslo("2026-10-24T12:30:00"))
+    after = last_anchored_occurrence("12:00", timedelta(hours=6), _oslo("2026-10-25T12:30:00"))
+    assert before.astimezone(OSLO).strftime("%H:%M") == "12:00"
+    assert after.astimezone(OSLO).strftime("%H:%M") == "12:00"
+    assert before.utcoffset() == after.utcoffset() == timedelta(0)
+    assert (after - before) == timedelta(hours=25)
+
+
+def test_createdat_still_floors_the_first_run_of_an_anchored_heartbeat():
+    created = _oslo("2026-08-08T13:00:00").isoformat()
+    assert not schedule_due("every@6h@12:00", None, created, _oslo("2026-08-08T14:00:00"))
+    assert schedule_due("every@6h@12:00", None, created, _oslo("2026-08-08T18:00:00"))
+
+
+def test_unanchored_and_daily_schedules_are_untouched():
+    ran_at = _oslo("2026-08-08T12:41:00").isoformat()
+    assert not schedule_due("every@6h", ran_at, ran_at, _oslo("2026-08-08T18:00:00"))
+    assert schedule_due("every@6h", ran_at, ran_at, _oslo("2026-08-08T18:41:00"))
+    assert schedule_due("every@30m", ran_at, ran_at, _oslo("2026-08-08T13:11:00"))
+    assert schedule_due("daily@08:00", ran_at, ran_at, _oslo("2026-08-09T08:00:00"))
+    assert not schedule_due("daily@08:00", ran_at, ran_at, _oslo("2026-08-09T07:00:00"))
+
+
+def test_anchored_minutes_work_too():
+    ran_at = _oslo("2026-08-08T12:07:00").isoformat()
+    assert not schedule_due("every@30m@00:00", ran_at, ran_at, _oslo("2026-08-08T12:29:00"))
+    assert schedule_due("every@30m@00:00", ran_at, ran_at, _oslo("2026-08-08T12:30:00"))

@@ -93,6 +93,36 @@ def parse_iso(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def last_anchored_occurrence(anchor, delta, now_utc):
+    """The most recent slot at or before now, for an interval pinned to an
+    Oslo wall-clock time — `every@6h@12:00` means 12:00, 18:00, 00:00,
+    06:00, the same times every day, instead of `interval` after whenever
+    the last run happened to be.
+
+    Each Oslo day lays its own grid out from the anchor, which only holds
+    together when the interval divides 24h — and Agora rejects an anchored
+    schedule where it doesn't (isValidSchedule, heartbeat-store.ts). With
+    `every@7h@12:00` the slots are 05:00/12:00/19:00, but at 00:30 the walk
+    back from *today's* 12:00 lands on 22:00 the night before, a slot that
+    did not exist when you asked at 23:30 — so it fires an extra time every
+    midnight. That discontinuity is the reason for the divisibility rule;
+    test_a_non_dividing_interval_is_why_agora_rejects_one pins it.
+
+    Arithmetic is done on naive wall-clock and localised afterwards. Doing it
+    on aware datetimes gives the same answers (subtracting two datetimes that
+    share a tzinfo is defined as wall-clock, and zoneinfo recomputes the
+    offset on the way out) — the naive round-trip is here so the reader
+    doesn't have to know that rule to see the times are wall-clock, not
+    elapsed. Either way they survive a DST shift; on the spring-forward day a
+    slot landing in the missing hour resolves forward, which is standard
+    zoneinfo behaviour and not worth a special case."""
+    hh, mm = (int(part) for part in anchor.split(":"))
+    naive_now = now_utc.astimezone(OSLO).replace(tzinfo=None)
+    base = naive_now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    occurrence = base + ((naive_now - base) // delta) * delta
+    return occurrence.replace(tzinfo=OSLO).astimezone(timezone.utc)
+
+
 def schedule_due(schedule, last_run_iso, created_iso, now_utc):
     """Idempotent due computation — no in-memory scheduler state, so a
     runner restart can never double-fire (critique on Decisions/0006).
@@ -100,9 +130,11 @@ def schedule_due(schedule, last_run_iso, created_iso, now_utc):
     14:00 waits for tomorrow instead of surprise-firing at creation."""
     floor = parse_iso(last_run_iso or created_iso)
     if schedule.startswith("every@"):
-        amount = schedule[len("every@"):]
+        amount, _, anchor = schedule[len("every@"):].partition("@")
         value, unit = int(amount[:-1]), amount[-1]
         delta = timedelta(minutes=value) if unit == "m" else timedelta(hours=value)
+        if anchor:
+            return last_anchored_occurrence(anchor, delta, now_utc) > floor
         return now_utc >= floor + delta
     if schedule.startswith("daily@"):
         hh, mm = schedule[len("daily@"):].split(":")
