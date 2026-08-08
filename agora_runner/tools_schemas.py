@@ -392,9 +392,12 @@ def client_tool_schemas(caps, active_step=None):
             "name": "create_heartbeat",
             "description": (
                 "Create a new scheduled heartbeat. schedule is 'daily@HH:MM' (Europe/Oslo), "
-                "'every@N[m|h]' (N after the last run started), or 'every@N[m|h]@HH:MM' "
+                "'every@N[m|h]' (N after the last run started), 'every@N[m|h]@HH:MM' "
                 "(anchored to a clock time — 'every@6h@12:00' fires 12:00, 18:00, 00:00, 06:00 "
-                "every day). Give conversationId for an existing channel, or "
+                "every day), or 'cron@<5-field expression>' read in Europe/Oslo — "
+                "'cron@0 8 * * 1-5' is 08:00 on weekdays, 'cron@0 8,20 * * *' is twice a day, "
+                "'cron@0 8-22/2 * * *' is every two hours from 08:00 to 22:00. "
+                "Give conversationId for an existing channel, or "
                 "newConversationName to create a fresh empty one just for this heartbeat."
             ),
             "input_schema": {
