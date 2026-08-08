@@ -381,10 +381,47 @@ def run_heartbeat(heartbeat):
 # Decisions/0009 — heartbeat id -> Thread, module-level so it survives
 # across ticks. The poll loop (poll_once/main) is otherwise fully
 # sequential and blocking (one urllib call after another, no asyncio,
-# no thread pool); a multi-step, multi-round workflow can run for
-# minutes and must not stall every other conversation's turn-taking
-# and every other heartbeat's schedule for that whole time.
-_workflow_threads = {}
+# no thread pool); a run that takes minutes must not stall every other
+# conversation's turn-taking and every other heartbeat's schedule for
+# that whole time.
+#
+# 2026-08-08: this now holds EVERY heartbeat's thread, not just
+# workflow-mode ones. It was workflow-only because a workflow was the
+# only thing expected to outlive a tick — but the Nova cycle is an
+# ordinary heartbeat that runs the Claude CLI, and seven measured runs
+# took 9m29s–21m44s (mean ~15m) each, all of it on the main thread with
+# every other conversation frozen behind it. At the 6-hourly schedule
+# that was ~4% of the day and nobody noticed. Edvard moved to a plan
+# with 5x the limits and asked for the cycle rate to match, so the
+# schedule went to every@72m@22:00 — 20 runs a day, which is ~21% of
+# the day blocked, and up to 22 minutes of silence for anyone chatting
+# with any other persona. Same fix as the workflow one, same guard,
+# now applied to both paths.
+_heartbeat_threads = {}
+
+
+def join_running_heartbeats():
+    """Block until every in-flight heartbeat run has finished.
+
+    The drain in main.py protected the reply a cycle was in the middle
+    of producing — but only while runs were synchronous, because "the
+    tick in flight" and "the run in flight" were the same thing. Now
+    that a run has its own thread, the tick returns immediately and the
+    process would exit out from under a cycle that is minutes from
+    posting. That is exactly the regression the drain was built for
+    (issue #15, Cycles 3/20/21/22/23 each lost their reply to it), so
+    the drain has to follow the work onto the thread.
+
+    No timeout on purpose. The one real bound on a drain is
+    terminationGracePeriodSeconds (2880s, agora-persona-runner-config),
+    which k8s enforces with SIGKILL whatever we do here; a second,
+    shorter bound invented in this file could only ever kill a cycle
+    the platform was still willing to wait for. The synchronous drain
+    this replaces had no timeout either, for the same reason."""
+    for hb_id, thread in list(_heartbeat_threads.items()):
+        if thread.is_alive():
+            log(f"draining: waiting for heartbeat {hb_id} to finish")
+            thread.join()
 
 
 def workflow_bound_conversation_ids(heartbeats_list):
@@ -496,21 +533,23 @@ def run_due_heartbeats(heartbeats_list=None):
             )
             if not due:
                 continue
-            if heartbeat.get("workflowId"):
-                # Runs off the main thread — see _workflow_threads'
-                # comment above. In-flight guard: skip re-spawning if a
-                # prior run of the SAME heartbeat hasn't finished yet (a
-                # workflow can legitimately outlive its own schedule
-                # interval, e.g. a 5-minute "every@1m" workflow).
-                hb_id = heartbeat["id"]
-                existing = _workflow_threads.get(hb_id)
-                if existing is not None and existing.is_alive():
-                    debug_log(f"workflow heartbeat {hb_id} still running, skipping this tick")
-                    continue
-                thread = threading.Thread(target=run_workflow_heartbeat, args=(heartbeat,), daemon=True)
-                _workflow_threads[hb_id] = thread
-                thread.start()
-            else:
-                run_heartbeat(heartbeat)  # unchanged, existing synchronous path
+            # Runs off the main thread — see _heartbeat_threads' comment
+            # above. In-flight guard: skip re-spawning if a prior run of
+            # the SAME heartbeat hasn't finished yet. A run can
+            # legitimately outlive its own schedule interval (a 5-minute
+            # "every@1m" workflow; a Nova cycle that overruns its 72
+            # minutes), and without this the claim PATCH is no defence —
+            # it moves lastRunAt to the run's START, so an anchored
+            # schedule's next slot reads as due while the run is still
+            # going and would spawn a second one on top of it.
+            hb_id = heartbeat["id"]
+            existing = _heartbeat_threads.get(hb_id)
+            if existing is not None and existing.is_alive():
+                debug_log(f"heartbeat {hb_id} still running, skipping this tick")
+                continue
+            target = run_workflow_heartbeat if heartbeat.get("workflowId") else run_heartbeat
+            thread = threading.Thread(target=target, args=(heartbeat,), daemon=True)
+            _heartbeat_threads[hb_id] = thread
+            thread.start()
         except Exception as e:
             log(f"heartbeat {heartbeat.get('name')} scheduling error: {e}")

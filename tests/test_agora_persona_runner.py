@@ -33,6 +33,7 @@ import io
 import json
 import os
 import signal
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -3336,7 +3337,7 @@ def test_run_due_heartbeats_spawns_thread_for_workflow_heartbeat(runner):
         created.append(t)
         return t
 
-    with patch.object(runner.heartbeats, "_workflow_threads", {}), \
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
          patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
          patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb:
@@ -3362,7 +3363,7 @@ def test_run_due_heartbeats_skips_already_running_workflow(runner):
         def is_alive(self):
             return True
 
-    with patch.object(runner.heartbeats, "_workflow_threads", {"hb1": _AliveThread()}), \
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": _AliveThread()}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor:
         runner.run_due_heartbeats()
@@ -3370,20 +3371,63 @@ def test_run_due_heartbeats_skips_already_running_workflow(runner):
     mock_thread_ctor.assert_not_called()
 
 
-def test_run_due_heartbeats_non_workflow_heartbeat_still_runs_synchronously(runner):
+def test_run_due_heartbeats_spawns_thread_for_plain_heartbeat_too(runner):
+    """2026-08-08: an ordinary heartbeat used to run inline on the poll
+    loop, freezing every conversation for the length of the run. That was
+    tolerable while the only long one was the 6-hourly Nova cycle (~15m
+    measured, ~4% of the day); at every@72m it is ~21% of the day, so
+    both paths now go to a thread."""
     heartbeat = {
         "id": "hb2", "name": "Plain HB", "enabled": True, "forceRun": True,
         "schedule": "every@1h", "createdAt": "2026-01-01T00:00:00+00:00",
         "lastRunAt": None, "conversationId": "c1", "personaId": "p1",
     }
-    with patch.object(runner.heartbeats, "_workflow_threads", {}), \
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
-         patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb, \
-         patch.object(runner.threading, "Thread") as mock_thread_ctor:
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb:
         runner.run_due_heartbeats()
 
-    mock_run_hb.assert_called_once_with(heartbeat)
+    assert len(created) == 1
+    assert created[0].target is mock_run_hb
+    assert created[0].args == (heartbeat,)
+    assert created[0].daemon is True
+    assert created[0].started is True
+    # Dispatched, not executed inline — the poll loop must be free again
+    # before the run finishes.
+    mock_run_hb.assert_not_called()
+
+
+def test_run_due_heartbeats_skips_a_plain_heartbeat_already_running(runner):
+    """The claim PATCH is not enough on its own here. It sets lastRunAt to
+    the run's START, so an anchored schedule whose next slot arrives while
+    the run is still going reads as due — and before the runs were
+    threaded, that could not happen because the loop was blocked."""
+    heartbeat = {
+        "id": "hb2", "name": "Plain HB", "enabled": True, "forceRun": True,
+        "schedule": "every@72m@22:00", "createdAt": "2026-01-01T00:00:00+00:00",
+        "lastRunAt": None, "conversationId": "c1", "personaId": "p1",
+    }
+
+    class _AliveThread:
+        def is_alive(self):
+            return True
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb2": _AliveThread()}), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread") as mock_thread_ctor, \
+         patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb:
+        runner.run_due_heartbeats()
+
     mock_thread_ctor.assert_not_called()
+    mock_run_hb.assert_not_called()
 
 
 def test_run_due_heartbeats_force_run_bypasses_disabled(runner):
@@ -3392,14 +3436,21 @@ def test_run_due_heartbeats_force_run_bypasses_disabled(runner):
         "schedule": "every@1h", "createdAt": "2026-01-01T00:00:00+00:00",
         "lastRunAt": None, "conversationId": "c1", "personaId": "p1",
     }
-    with patch.object(runner.heartbeats, "_workflow_threads", {}), \
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
-         patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb, \
-         patch.object(runner.threading, "Thread") as mock_thread_ctor:
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "run_heartbeat"):
         runner.run_due_heartbeats()
 
-    mock_run_hb.assert_called_once_with(heartbeat)
-    mock_thread_ctor.assert_not_called()
+    assert len(created) == 1
+    assert created[0].started is True
 
 
 def test_run_due_heartbeats_disabled_without_force_run_is_skipped(runner):
@@ -3408,7 +3459,7 @@ def test_run_due_heartbeats_disabled_without_force_run_is_skipped(runner):
         "schedule": "every@1h", "createdAt": "2026-01-01T00:00:00+00:00",
         "lastRunAt": None, "conversationId": "c1", "personaId": "p1",
     }
-    with patch.object(runner.heartbeats, "_workflow_threads", {}), \
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
          patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb, \
          patch.object(runner.threading, "Thread") as mock_thread_ctor:
@@ -3888,7 +3939,7 @@ def test_run_workflow_heartbeat_claims_run_before_executing(runner):
     after it finishes. A workflow run takes minutes; while it was in
     flight the persisted state still said "still forced, never ran", so
     a pod restart (which drops heartbeats.py's in-process
-    `_workflow_threads` guard) re-ran the same cycle and produced
+    `_heartbeat_threads` guard) re-ran the same cycle and produced
     duplicate work."""
     heartbeat = {"id": "hb1", "name": "WF HB", "schedule": "every@1h",
                  "conversationId": "c1", "workflowId": "wf1", "forceRun": True}
@@ -5019,6 +5070,67 @@ def test_main_finishes_the_in_flight_tick_after_sigterm(drainable_main):
     assert events == ["tick", "reply-posted"], \
         "the tick in flight when SIGTERM arrived did not run to completion"
     assert drainable_main.shutdown_requested() is True
+
+
+def test_main_waits_for_an_in_flight_heartbeat_thread_before_exiting(drainable_main):
+    """Issue #15, re-fought. The drain protected the reply a cycle was
+    producing only while runs were synchronous — "the tick in flight" and
+    "the run in flight" were the same object. Now that a run has its own
+    thread the tick returns in milliseconds, and exiting on that would
+    kill the cycle exactly as the pre-drain code did (Cycles 3, 20, 21,
+    22, 23 each lost a reply this way)."""
+    from agora_runner import heartbeats as hb_module
+    events = []
+
+    def slow_run():
+        time.sleep(0.3)
+        events.append("reply-posted")  # stands in for notify() + the PATCH
+
+    thread = threading.Thread(target=slow_run, daemon=True)
+
+    def fake_poll_once():
+        events.append("tick")
+        if events.count("tick") == 1:
+            thread.start()  # a heartbeat run is now in flight
+            os.kill(os.getpid(), signal.SIGTERM)  # the pod is rolled mid-cycle
+
+    with patch.object(hb_module, "_heartbeat_threads", {"hb1": thread}), \
+         patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
+         patch.object(drainable_main, "start_invoke_server", lambda: None), \
+         patch.object(drainable_main, "log", lambda *a, **k: None), \
+         patch.object(hb_module, "log", lambda *a, **k: None):
+        drainable_main.main()
+        events.append("exited")
+
+    assert events == ["tick", "reply-posted", "exited"], \
+        "main exited before the in-flight heartbeat thread had posted its reply"
+
+
+def test_main_starts_no_new_tick_when_the_signal_lands_while_idle(drainable_main):
+    """A signal arriving during the sleep used to buy one more full tick
+    on the way out. Harmless when a tick only ever finished work; now it
+    could CLAIM a fresh heartbeat run (moving lastRunAt, marking it
+    "running") moments before the process goes away, which is precisely
+    the half-started cycle the claim exists to prevent."""
+    ticks = []
+
+    def fake_poll_once():
+        ticks.append(len(ticks))
+        if len(ticks) > 3:
+            raise KeyboardInterrupt("main kept polling after SIGTERM")
+
+    def fake_sleep(_seconds):
+        # The signal lands while the loop is idle between ticks, not
+        # during one.
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    with patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
+         patch.object(drainable_main, "_sleep_between_ticks", side_effect=fake_sleep), \
+         patch.object(drainable_main, "start_invoke_server", lambda: None), \
+         patch.object(drainable_main, "log", lambda *a, **k: None):
+        drainable_main.main()
+
+    assert ticks == [0], f"expected exactly one tick, got {len(ticks)}"
 
 
 def test_main_keeps_polling_when_no_signal_arrives(drainable_main):

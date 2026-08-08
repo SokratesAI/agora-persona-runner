@@ -137,7 +137,7 @@ def run_workflow_heartbeat(heartbeat):
     # take many minutes (an Evolve cycle is ~11); until this PATCH
     # existed, the heartbeat's PERSISTED state said "never ran, still
     # forced" for that whole window, and the only thing preventing a
-    # second, duplicate run was `_workflow_threads` in heartbeats.py —
+    # second, duplicate run was `_heartbeat_threads` in heartbeats.py —
     # an in-process dict that doesn't survive a pod restart and doesn't
     # exist for any other replica or caller. Measured: 7 of the 19 PRs
     # opened on this repo since #6 were same-work duplicates.
