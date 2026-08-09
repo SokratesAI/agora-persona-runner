@@ -109,10 +109,13 @@
 
   var nextBodyId = 0;
 
-  /** The first paragraph of the entry, for cycles the digest never got a
-   * line for -- 8 of the 57 live entries, plus every future cycle until
-   * its digest line is written. A collapsed card with no summary at all
-   * would be a row of dates. */
+  /** The first paragraph of the entry, for cycles with no digest line.
+   *
+   * That is not the corner case it sounds like: measured against the live
+   * files, 40 of 57 entries have none, because the digest is rewritten
+   * every cycle and its older lines have been dropped over time. So this
+   * is the summary for most of the feed, not a fallback for a few. Without
+   * it those 40 cards collapse to a row of dates. */
   function firstParagraph(blocks) {
     var found = (blocks || []).filter(function (block) { return block.type === "p"; })[0];
     if (!found) return "";
