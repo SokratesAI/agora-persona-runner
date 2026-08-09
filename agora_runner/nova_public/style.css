@@ -86,6 +86,14 @@ pre code { background: none; padding: 0; }
   padding: 0.7rem 0.8rem;
   font: inherit;
   resize: vertical;
+  /* app.js grows this to fit the text. The ceiling is the one number here
+   * and it has a measured failure behind it: the Issue/Idea buttons sit
+   * below the box, so a box free to fill the viewport pushes the only way
+   * to submit off the bottom of the screen. At 60vh the buttons stay
+   * visible on a phone and the overflow scrolls -- no text is lost, it is
+   * only the box that stops growing. */
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
 .capture textarea:focus {
@@ -154,12 +162,80 @@ pre code { background: none; padding: 0; }
   margin-bottom: 1.1rem;
 }
 
+/* Collapsed by default (Edvard, issues.md 2026-08-09): the median entry is
+ * 4830 characters, which is about 115 lines on a phone, and there are 57 of
+ * them. The whole header row is the tap target. */
 .entry-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.3rem;
+  margin-bottom: 0.5rem;
+}
+
+.entry-toggle {
+  flex: 1;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.55rem;
-  margin-bottom: 0.5rem;
+  /* Reset the button back to the header row it replaced. */
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  /* 44px is the iOS touch-target minimum, same as the capture buttons. */
+  min-height: 44px;
+}
+
+.entry-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.entry-emoji {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.chevron {
+  margin-left: auto;
+  color: var(--dim);
+  transition: transform 0.15s ease;
+}
+
+.entry.is-expanded .chevron { transform: rotate(180deg); }
+
+.entry-permalink {
+  color: var(--dim);
+  text-decoration: none;
+  /* Its own touch target, so tapping it never means "collapse the card". */
+  padding: 0.6rem 0.5rem;
+  line-height: 1;
+}
+
+.entry-permalink:hover { color: var(--accent); }
+
+.entry.is-collapsed .entry-body { display: none; }
+
+/* The 2-3 lines Edvard asked for. Clamped, never truncated: the full text
+ * is in the DOM either way, so expanding is a class change and find-in-page
+ * still reaches it. */
+.entry.is-collapsed .entry-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+
+.entry.is-collapsed .entry-title {
+  margin-bottom: 0.35rem;
 }
 
 .entry-head h2 { margin: 0; font-size: 1.05rem; }
