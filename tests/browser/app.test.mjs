@@ -165,6 +165,23 @@ describe("two entries for one cycle are two different cards", () => {
     assert.equal(addendum.querySelector(".entry-summary").textContent, text);
   });
 
+  test("the digest summary renders its bold instead of showing asterisks", () => {
+    // The digest line was the only text on the page rendering its own
+    // markup, and it is the line Edvard called hard to read.
+    const run = cards(window)[1];
+    const summary = run.querySelector(".entry-summary");
+    assert.equal(summary.querySelectorAll("strong").length, 1);
+    assert.equal(summary.querySelector("strong").textContent, "The digest line for cycle 57");
+    assert.ok(!summary.textContent.includes("**"), summary.textContent);
+  });
+
+  test("no summary anywhere in the feed leaks a markdown asterisk", () => {
+    for (const card of cards(window)) {
+      const summary = card.querySelector(".entry-summary");
+      if (summary) assert.ok(!summary.textContent.includes("**"), summary.textContent);
+    }
+  });
+
   test("the addendum is still labelled as one", () => {
     assert.equal(cards(window)[0].querySelector(".entry-title").textContent, "verification");
   });

@@ -383,11 +383,18 @@ def parse_digest(markdown):
             continue
         match = _DIGEST_LINE_RE.match(paragraph)
         if match:
+            text = " ".join(match.group("text").split())
             lines.append(
                 {
                     "cycle": int(match.group("cycle")),
                     "at": match.group("at").strip(),
-                    "text": " ".join(match.group("text").split()),
+                    "text": text,
+                    # Nearly every digest line opens with a bolded sentence
+                    # saying what changed, and the card showed the asterisks
+                    # -- the one line Edvard was already calling hard to read
+                    # was also the only text on the page rendering its own
+                    # markup. `text` stays for anything wanting it flat.
+                    "spans": render_inline(text),
                 }
             )
     return {

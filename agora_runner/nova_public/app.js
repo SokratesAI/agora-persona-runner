@@ -209,8 +209,14 @@
     // rather than cut here on purpose: the full text stays in the DOM and
     // in the page's find-in-page, and expanding is a class change rather
     // than a re-render. Nothing is ever truncated away.
-    var summaryText = digestLine ? digestLine.text : firstParagraph(entry.blocks);
-    if (summaryText) card.appendChild(el("p", "entry-summary", summaryText));
+    if (digestLine && digestLine.spans && digestLine.spans.length) {
+      var summary = el("p", "entry-summary");
+      renderSpans(summary, digestLine.spans);
+      card.appendChild(summary);
+    } else {
+      var summaryText = digestLine ? digestLine.text : firstParagraph(entry.blocks);
+      if (summaryText) card.appendChild(el("p", "entry-summary", summaryText));
+    }
 
     var body = el("div", "entry-body");
     body.id = bodyId;

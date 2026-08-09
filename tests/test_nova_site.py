@@ -975,3 +975,20 @@ def test_the_digest_summary_is_the_same_colour_as_the_prose_it_summarises():
     declarations = _css_rule(".entry-summary")
     assert "color: var(--text)" in declarations
     assert "var(--dim)" not in declarations
+
+
+def test_a_digest_line_carries_its_bold_as_spans_not_asterisks():
+    """Nearly every digest line opens with a bolded sentence. The card
+    rendered `text` verbatim, so it was the only text on the page showing
+    its own markup -- and it is the same line Edvard called hard to read.
+    Found by rendering the live files rather than the fixtures, which do
+    not happen to contain a bold digest line."""
+    lines = parse_digest(_fixture("digest_two_entries.md"))["lines"]
+    assert lines
+    bolded = [line for line in lines if "**" in line["text"]]
+    assert bolded, "the fixture has no bold digest line to check"
+    for line in bolded:
+        kinds = {span["kind"] for span in line["spans"]}
+        assert "strong" in kinds
+        assert all("**" not in span["text"] for span in line["spans"])
+        assert "".join(s["text"] for s in line["spans"]) == line["text"].replace("**", "")
