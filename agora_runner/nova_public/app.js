@@ -188,6 +188,62 @@
       });
   }
 
+  /* The capture box (item 6). Two buttons rather than a target toggle plus
+   * a submit: it is one tap fewer on a phone, which is the whole point of
+   * the feature. The text is only cleared once the server confirms the
+   * write -- a failed capture that wiped the box would lose the thought it
+   * exists to catch. */
+  (function captureBox() {
+    var form = document.getElementById("capture-form");
+    if (!form) return;
+    var textEl = document.getElementById("capture-text");
+    var captureStatus = document.getElementById("capture-status");
+    var buttons = Array.prototype.slice.call(form.querySelectorAll(".capture-btn"));
+
+    function setStatus(text, isError) {
+      captureStatus.textContent = text;
+      captureStatus.className = isError ? "capture-status is-error" : "capture-status";
+    }
+
+    function send(target) {
+      var text = textEl.value.trim();
+      if (!text) {
+        textEl.focus();
+        return;
+      }
+      buttons.forEach(function (b) { b.disabled = true; });
+      setStatus("saving…", false);
+      fetch("/api/capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: target, text: text }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+          textEl.value = "";
+          setStatus("saved to " + target, false);
+          // The capture may be the top bullet of a file the feed shows.
+          load();
+        })
+        .catch(function (err) { setStatus(String(err.message || err), true); })
+        .then(function () { buttons.forEach(function (b) { b.disabled = false; }); });
+    }
+
+    buttons.forEach(function (button) {
+      button.addEventListener("click", function () { send(button.getAttribute("data-target")); });
+    });
+    form.addEventListener("submit", function (event) { event.preventDefault(); });
+    // Enter sends as an issue; Shift+Enter keeps the newline, since several
+    // lines become several bullets server-side.
+    textEl.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        send("issues");
+      }
+    });
+  })();
+
   // Back/forward between /cycle/N and / without a round trip.
   window.addEventListener("popstate", load);
   document.addEventListener("click", function (event) {

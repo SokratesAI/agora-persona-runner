@@ -16,6 +16,19 @@
   <p class="status-line">loading…</p>
 </header>
 
+<section id="capture" class="capture">
+  <form id="capture-form">
+    <label class="visually-hidden" for="capture-text">Capture an issue or an idea</label>
+    <textarea id="capture-text" rows="2" placeholder="One line — issue or idea…"
+              autocapitalize="sentences" autocomplete="off"></textarea>
+    <div class="capture-actions">
+      <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
+      <button type="button" class="capture-btn" data-target="issues">Issue</button>
+      <button type="button" class="capture-btn" data-target="ideas">Idea</button>
+    </div>
+  </form>
+</section>
+
 <section id="needs" class="needs" hidden aria-labelledby="needs-title">
   <h2 id="needs-title">Needs Edvard</h2>
   <div class="needs-body"></div>
