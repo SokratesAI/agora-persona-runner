@@ -1,4 +1,11 @@
-"""Entrypoint: starts the /invoke server, then polls forever."""
+"""Entrypoint: starts the /invoke server, then polls forever.
+
+Nova's site is deliberately NOT started here. It was until 2026-08-09,
+and it has its own process and its own Deployment now, because this one
+is `Recreate` with a 2880s drain -- so the site went down for the whole
+length of every cycle. `run_nova_site.py` is its entrypoint; the
+reasoning is in agora_runner/nova_site_main.py.
+"""
 
 import signal
 import time
@@ -8,7 +15,6 @@ from agora_runner.log import log
 from agora_runner.heartbeats import join_running_heartbeats
 from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
-from agora_runner.nova_site import start_nova_site
 
 # Set by the SIGTERM/SIGINT handler, read by the poll loop between ticks.
 # A plain module flag rather than a threading.Event on purpose: a signal
@@ -65,7 +71,6 @@ def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
     start_invoke_server()
-    start_nova_site()
     log(f"polling {AGORA_URL}/conversations every {POLL_INTERVAL_SECONDS}s")
     while True:
         try:

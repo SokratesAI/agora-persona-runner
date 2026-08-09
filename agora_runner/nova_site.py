@@ -30,13 +30,20 @@ trusted, because whether this Ingress forwards them has not been
 measured. If a future cycle confirms they arrive, they are the basis for
 tightening this further -- see the audit call in do_POST.
 
-**Why this lives in the runner rather than in its own repo.** Idea #34
+**Why this lives in the runner's repo rather than in its own.** Idea #34
 sketched a separate `nova-pwa` service, and named the thing that makes
 that expensive: the vault client already exists twice (here and in the
 bridge) with nothing detecting drift between them, so a third service
 reading CouchDB would mean a third copy -- a bug knowingly introduced.
-The runner already holds a vault client and an HTTP server, so serving
-the site from here costs neither.
+Staying in this repo keeps it at two.
+
+**But it no longer runs in the runner's process.** As of 2026-08-09 it
+has its own entrypoint (`run_nova_site.py`) and its own Deployment,
+built from this same image. The reasoning is in nova_site_main.py; the
+short version is that the runner's `Recreate` + 2880s drain exists to
+protect a cycle's reply, and the site inherited it, so the site was down
+for the length of every cycle. Sharing the repo was always the point;
+sharing the process was incidental.
 
 **Why a second port instead of a second path on 8082.** The /invoke
 Service is documented as having no public-facing surface at all, and it
@@ -47,13 +54,14 @@ Ingress and a NetworkPolicy scoped to this port only -- exactly the
 shape platform-config already uses to expose Agora's 8080 while leaving
 its 8081 unreachable.
 
-**Known limitation, recorded rather than papered over.** This
+**The limitation this used to record is fixed.** It read: "this
 deployment is `Recreate` with a 2880s grace period, so while a cycle is
 draining the pod is Terminating and out of the Service's endpoints --
-the site is unreachable for that window. That is honest (Nova really is
-being replaced) but it is the one argument for splitting this out
-later, and it is why the split is worth reconsidering rather than
-settled.
+the site is unreachable for that window", and called that the one
+argument for splitting the site out later. The capture box turned it
+from cosmetic into functional, and the split happened. The site's own
+Deployment is `RollingUpdate` with `maxUnavailable: 0`, so a Nova cycle
+no longer takes it down and neither does a deploy.
 
 No caching layer: the full 204KB journal assembles from CouchDB in
 285ms measured end-to-end (2026-08-09), which is cheaper than the

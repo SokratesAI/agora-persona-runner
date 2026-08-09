@@ -18,11 +18,14 @@ let the real entry point run. A loopback request is not an option here:
 tests/conftest.py blocks `socket.connect` outright, deliberately.
 """
 
+import ast
 import importlib
+import inspect
 import io
 import json
 import os
 import re
+import signal
 from unittest.mock import patch
 
 import pytest
@@ -596,26 +599,120 @@ def test_start_nova_site_binds_and_serves_the_real_handler():
         server.server_close()
 
 
-def test_main_actually_starts_the_site():
-    """Runs the real `main()`. Asserting the import binding instead would
-    pass just as well with the call deleted from main, which is exactly
-    the class of gap this suite exists to stop shipping.
+@pytest.fixture
+def site_main():
+    """`agora_runner.nova_site_main`, with its module flag and this
+    process's signal handlers restored afterwards. main() installs real
+    handlers and the tests below deliver a real SIGTERM, so leaking either
+    would break whatever test ran next."""
+    module = importlib.import_module("agora_runner.nova_site_main")
+    previous_flag = module._shutdown_requested
+    previous_term = signal.getsignal(signal.SIGTERM)
+    previous_int = signal.getsignal(signal.SIGINT)
+    module._shutdown_requested = False
+    try:
+        yield module
+    finally:
+        module._shutdown_requested = previous_flag
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
 
-    `_Stop` derives from BaseException on purpose: main's poll loop
-    catches `Exception` and keeps going, so anything narrower would spin
-    forever instead of ending the test. `agora_runner.main` the module is
-    shadowed by `main` the function on the package, hence the explicit
-    import.
+
+def test_site_main_serves_until_sigterm_then_releases_the_port(site_main):
+    """The real `main()`, the real server, a real SIGTERM.
+
+    Two things have to hold and they fail independently. main() must
+    *return* rather than keep sleeping -- that is the drain -- and it must
+    close the listening socket on the way out. A ThreadingHTTPServer that
+    is shut down but not closed keeps 8083 bound, so the next process to
+    start would fail to bind while the pod's readiness probe was still
+    being answered by a server nobody is driving.
+
+    The signal is delivered from inside the sleep the loop is actually
+    sitting in, which is where it arrives in the pod too.
     """
+    served = []
 
-    class _Stop(BaseException):
-        pass
+    def capture_server():
+        with patch.object(nova_site, "NOVA_PORT", 0):
+            server = nova_site.start_nova_site()
+        served.append(server)
+        return server
 
+    def sleep_then_sigterm(_seconds):
+        os.kill(os.getpid(), signal.SIGTERM)  # ArgoCD rolls the nova-site pod
+
+    with patch.object(site_main, "start_nova_site", side_effect=capture_server), \
+            patch.object(site_main, "time") as clock, \
+            patch.object(site_main, "log", lambda *a, **k: None):
+        clock.sleep.side_effect = sleep_then_sigterm
+        site_main.main()
+
+    assert site_main.shutdown_requested() is True
+    assert clock.sleep.call_count == 1, "main slept again after SIGTERM"
+    assert served[0].socket.fileno() == -1, "the listening socket was left open"
+
+
+def test_site_main_closes_the_port_even_if_the_loop_raises(site_main):
+    """The `finally` is load-bearing, not decoration. If the sleep loop
+    dies for any reason the pod is going away regardless, and a half-shut
+    server is the one state that leaves the port bound with nothing
+    serving it."""
+    served = []
+
+    def capture_server():
+        with patch.object(nova_site, "NOVA_PORT", 0):
+            server = nova_site.start_nova_site()
+        served.append(server)
+        return server
+
+    with patch.object(site_main, "start_nova_site", side_effect=capture_server), \
+            patch.object(site_main, "time") as clock, \
+            patch.object(site_main, "log", lambda *a, **k: None):
+        clock.sleep.side_effect = KeyboardInterrupt("kubelet gave up waiting")
+        with pytest.raises(KeyboardInterrupt):
+            site_main.main()
+
+    assert served[0].socket.fileno() == -1
+
+
+def test_the_runner_process_no_longer_serves_the_site():
+    """The site moved to its own Deployment on 2026-08-09. If the runner
+    started it as well, both pods would serve 8083 and the Service would
+    round-robin between a live site and one that disappears for the length
+    of every cycle -- which is worse than either alone, and would look
+    like the site working intermittently rather than like a bug.
+
+    Asserting on the module rather than on a mock on purpose: this is a
+    claim about something *not* happening, and a test that patches
+    `start_nova_site` to prove it isn't called would pass just as happily
+    if the import were still there and the call moved elsewhere.
+
+    Over the parsed tree rather than over the text, for the same reason
+    Cycle 51's `innerHTML` test strips comments first: main.py's docstring
+    explains at length why the site is *not* started here, and a substring
+    search cannot tell that sentence apart from the thing it forbids.
+    """
     main_module = importlib.import_module("agora_runner.main")
-    started = []
-    with patch.object(main_module, "start_invoke_server"), patch.object(
-        main_module, "start_nova_site", side_effect=lambda: started.append(True)
-    ), patch.object(main_module, "poll_once", side_effect=_Stop):
-        with pytest.raises(_Stop):
-            main_module.main()
-    assert started == [True]
+    assert not hasattr(main_module, "start_nova_site")
+    tree = ast.parse(inspect.getsource(main_module))
+    imported = {
+        node.module for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert "agora_runner.nova_site" not in imported
+    called = {
+        node.func.id for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "start_nova_site" not in called
+
+
+def test_the_site_entrypoint_script_reaches_site_main():
+    """`run_nova_site.py` is what the nova-site Deployment's `command`
+    runs, and it is the one file in this chain that no other test imports.
+    A typo in it is a CrashLoopBackOff that the whole suite goes green
+    through."""
+    entrypoint = importlib.import_module("run_nova_site")
+    site_main_module = importlib.import_module("agora_runner.nova_site_main")
+    assert entrypoint.main is site_main_module.main

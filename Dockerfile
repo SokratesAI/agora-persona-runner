@@ -20,7 +20,12 @@ RUN curl -fsSL \
 WORKDIR /app
 # No requirements.txt -- agora_runner is stdlib-only at runtime.
 COPY agora_runner/ agora_runner/
-COPY run.py .
+# Two entrypoints out of one image: run.py is the runner (poll loop,
+# heartbeats, /invoke), run_nova_site.py is Nova's site. They deploy as
+# separate pods with different lifecycles, but share this image so the
+# vault client stays a single copy -- see agora_runner/nova_site_main.py.
+# The CMD below is the runner; the nova-site Deployment overrides `command`.
+COPY run.py run_nova_site.py ./
 
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin runner
 USER runner
