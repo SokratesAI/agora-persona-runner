@@ -426,3 +426,36 @@ describe("a drawer within a drawer", () => {
     assert.ok(!reading(card), "reopening the card does not reopen the journal");
   });
 });
+
+describe("a payload cached before the brief existed", () => {
+  /* sw.js is network-first and caches /api responses, so opening the app with
+   * the tailnet down after this deploy pairs the new app.js with the last
+   * payload the old build served. The card must still say something, and must
+   * degrade to what it showed before rather than to a worse thing. */
+  test("still renders a brief, clamped, from the unsplit text", async () => {
+    const stale = JSON.parse(JSON.stringify(payload));
+    for (const line of stale.digest.lines) { delete line.briefSpans; delete line.restSpans; }
+    for (const entry of stale.journal.entries) delete entry.briefSpans;
+
+    const html = readFileSync(join(publicDir, "index.html"), "utf8");
+    const dom = new JSDOM(html, { url: "https://nova.example/", runScripts: "outside-only", pretendToBeVisual: true });
+    const { window } = dom;
+    window.fetch = (url) => Promise.resolve({
+      json: () => Promise.resolve(url.includes("/api/digest") ? stale.digest : stale.journal),
+    });
+    window.scrollTo = () => {};
+    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    const shown = [...window.document.querySelectorAll(".entry")];
+    assert.ok(shown.length);
+    for (const card of shown) {
+      const brief = card.querySelector(".entry-brief");
+      assert.ok(brief && brief.textContent.trim(), "a stale payload still gets a summary");
+      assert.ok(brief.classList.contains("is-unsplit"), "and it is marked for clamping");
+    }
+    // The digest drawer has nothing to show, so the card opens onto the button.
+    assert.equal(window.document.querySelector(".entry-digest"), null);
+    assert.ok(shown.every((c) => c.querySelector(".journal-toggle")));
+  });
+});

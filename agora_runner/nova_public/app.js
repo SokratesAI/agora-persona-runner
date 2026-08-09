@@ -223,11 +223,18 @@
       renderSpans(brief, briefSpans);
       card.appendChild(brief);
     } else {
-      // A payload from an older build has no briefSpans. Falling back to
-      // the previous behaviour keeps a stale service-worker cache showing
-      // what it showed before rather than a card with no summary at all.
+      /* A payload with no briefSpans, which is reachable rather than
+       * theoretical: sw.js is network-first and caches /api responses, so
+       * opening the app with the tailnet down after this deploy pairs the
+       * new app.js with the last payload the old build served.
+       *
+       * `is-unsplit` restores the CSS line clamp for that card only. Without
+       * it the fallback degrades to something worse than what it replaced --
+       * a whole 2000-character digest line as an unclamped card title -- and
+       * "degrades to exactly what it showed before" is the only thing that
+       * makes a fallback worth keeping. */
       var summaryText = digestLine ? digestLine.text : firstParagraph(entry.blocks);
-      if (summaryText) card.appendChild(el("p", "entry-brief", summaryText));
+      if (summaryText) card.appendChild(el("p", "entry-brief is-unsplit", summaryText));
     }
 
     // Drawer one: the rest of the digest line. Absent for the 55 entries

@@ -255,6 +255,18 @@ pre code { background: none; padding: 0; }
 
 .entry.is-collapsed .entry-brief { margin-bottom: 0; }
 
+/* The one card that still needs a clamp: a brief the server did not split,
+ * which only happens on a payload cached by sw.js before this shipped. It
+ * holds the whole digest line, so clamping is what makes the fallback
+ * degrade to the previous behaviour instead of to a worse one. */
+.entry.is-collapsed .entry-brief.is-unsplit {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Dimmer rule than the brief's, so the two drawers read as a hierarchy
  * rather than two things shouting equally. */
 .entry-digest {

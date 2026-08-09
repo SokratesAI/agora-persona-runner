@@ -808,7 +808,11 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
     ).read()
     assert ".entry.is-expanded.is-reading .entry-body { display: block; }" in css
     assert ".entry.is-expanded .journal-toggle" in css
-    assert "line-clamp" not in css
+    # The clamp survives on exactly one selector -- the unsplit fallback for a
+    # payload sw.js cached before this shipped -- and nowhere else.
+    assert re.findall(r"(?m)^([^\n{]*)\{[^}]*line-clamp", css) == [
+        ".entry.is-collapsed .entry-brief.is-unsplit ",
+    ]
 
     source = open(
         os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "app.js"),
