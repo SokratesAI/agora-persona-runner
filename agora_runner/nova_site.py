@@ -92,13 +92,15 @@ from agora_runner.nova_comments import (
 )
 from agora_runner.nova_journal import (
     DIGEST_PATH,
+    JOURNAL_DIR,
     JOURNAL_PATH,
+    assemble_entries,
     build_status,
     parse_digest,
     parse_journal,
     render_blocks,
 )
-from agora_runner.vault import vault_read_path
+from agora_runner.vault import vault_bulk_fetch, vault_read_path
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_public")
 
@@ -115,11 +117,30 @@ STATIC_ROUTES = {
 }
 
 
+def journal_markdown():
+    """The entries, from the per-entry documents, falling back to the
+    monolith.
+
+    Both sources are read the same number of round trips:
+    `vault_bulk_fetch` pulls a whole folder with two batched `_all_docs`
+    POSTs regardless of how many files are in it, so splitting 70 entries
+    into 70 documents costs the site nothing. What it buys is on the
+    other side -- a Nova cycle needs the newest three entries and used to
+    have to read all 291KB to get them.
+
+    The fallback is what makes the migration safe in either order: until
+    the folder exists this returns the archive, and once it does the
+    archive is ignored.
+    """
+    entries = assemble_entries(vault_bulk_fetch(JOURNAL_DIR))
+    return entries or (vault_read_path(JOURNAL_PATH) or "")
+
+
 def journal_payload():
     """Every entry, rendered. The raw `body` is dropped rather than sent
     alongside the blocks -- it is the same 200KB twice, and the client has
     no use for markdown it is not allowed to interpret."""
-    entries = parse_journal(vault_read_path(JOURNAL_PATH) or "")
+    entries = parse_journal(journal_markdown())
     status = build_status(entries)
     rendered = []
     for entry in entries:

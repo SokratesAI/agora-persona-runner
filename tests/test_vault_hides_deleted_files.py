@@ -35,6 +35,9 @@ a tombstone is only correct if writing to that path still *works* --
 otherwise a deleted note would become a permanently unusable filename.
 So: append refuses (it needs something to append to), write resurrects.
 """
+import json
+import urllib.parse
+
 import pytest
 
 from agora_runner import vault
@@ -68,6 +71,24 @@ DOCS = {
 }
 
 
+def _all_docs_rows(path, ids):
+    """What a real `_all_docs` returns for this query, honouring
+    `startkey`/`endkey`.
+
+    The fakes used to answer every `_all_docs` GET with the whole
+    dictionary, which meant a listing scoped to one folder and a listing
+    of the entire vault were indistinguishable to them. `_vault_file_docs`
+    now asks CouchDB for a key range instead of filtering client-side, so
+    a wrong range would be invisible to a fake that ignores it -- and the
+    failure mode is files silently missing from a listing, which is the
+    exact bug tests/test_vault_hides_deleted_files.py exists about.
+    """
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+    start = json.loads(query.get("startkey", ['""'])[0])
+    end = json.loads(query.get("endkey", ['"\U0010FFFF"'])[0])
+    return [{"id": i} for i in sorted(ids) if start <= i <= end]
+
+
 @pytest.fixture
 def couch(monkeypatch):
     """A CouchDB stand-in that serves tombstones exactly like the real one
@@ -78,8 +99,8 @@ def couch(monkeypatch):
         if method == "PUT":
             puts.append(body)
             return 201, {"ok": True}
-        if path.endswith("_all_docs") and method == "GET":
-            return 200, {"rows": [{"id": i} for i in sorted(DOCS)]}
+        if "_all_docs" in path and method == "GET":
+            return 200, {"rows": _all_docs_rows(path, DOCS)}
         if "_all_docs?include_docs=true" in path and method == "POST":
             return 200, {
                 "rows": [
@@ -144,3 +165,29 @@ def test_writing_to_a_deleted_path_recreates_the_file(couch):
         "the rewritten document is still flagged deleted, so the file "
         f"stays invisible in Obsidian: {filedoc[0]}"
     )
+
+
+def test_the_key_range_covers_a_filename_that_starts_with_an_emoji():
+    """`_all_docs` collates ids by raw UTF-8 bytes, so the endkey sentinel
+    has to sort above every character a filename can start with.
+
+    The common CouchDB idiom is `\\ufff0`, and it is wrong here: it
+    encodes to EF BF B0, while an emoji encodes to F0 9F ... and would
+    sort *above* it. A note called `🔥.md` would then be missing from
+    every listing of its folder, which reads exactly like a deleted file
+    -- the failure this whole module exists to prevent.
+    """
+    query = urllib.parse.parse_qs(vault._id_range("notes/"))
+    start = json.loads(query["startkey"][0])
+    end = json.loads(query["endkey"][0])
+    assert start <= "notes/🔥.md" <= end
+    assert start <= "notes/plain.md" <= end
+    # ...and stops short of the folders either side of it. The endkey is
+    # what excludes the one after; the startkey is the only thing
+    # excluding the one before, and without that assertion a startkey of
+    # `""` passes every other test in this suite -- the client-side
+    # prefix filter still returns the right answer, it just makes CouchDB
+    # read the whole database first, which is the entire point of the
+    # range.
+    assert not start <= "notesx/other.md" <= end
+    assert not start <= "diary/other.md" <= end
