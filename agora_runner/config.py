@@ -32,6 +32,12 @@ CLAUDE_BRIDGE_URL = os.environ.get(
 )
 CLAUDE_BRIDGE_TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
+# Nova's read-only site (nova_site.py). Deliberately a different port from
+# RUNNER_PORT rather than another path on it: this one is reachable from
+# the tailnet, and RUNNER_PORT -- which carries /invoke, /mcp and
+# /tool-activity -- must stay cluster-internal. The split is what lets the
+# Service, Ingress and NetworkPolicy each name one port and mean it.
+NOVA_PORT = int(os.environ.get("NOVA_PORT", "8083"))
 # Where the bridge sends live tool-use reports back to -- this process's
 # own in-cluster address (tool_activity.py explains why the reports come
 # here rather than going straight to Agora's internal API). A default

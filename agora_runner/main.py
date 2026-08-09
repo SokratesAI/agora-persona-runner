@@ -8,6 +8,7 @@ from agora_runner.log import log
 from agora_runner.heartbeats import join_running_heartbeats
 from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
+from agora_runner.nova_site import start_nova_site
 
 # Set by the SIGTERM/SIGINT handler, read by the poll loop between ticks.
 # A plain module flag rather than a threading.Event on purpose: a signal
@@ -64,6 +65,7 @@ def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
     start_invoke_server()
+    start_nova_site()
     log(f"polling {AGORA_URL}/conversations every {POLL_INTERVAL_SECONDS}s")
     while True:
         try:
