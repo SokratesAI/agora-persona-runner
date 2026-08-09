@@ -31,7 +31,17 @@
     (spans || []).forEach(function (span) {
       if (span.kind === "code") parent.appendChild(el("code", null, span.text));
       else if (span.kind === "strong") parent.appendChild(el("strong", null, span.text));
-      else parent.appendChild(document.createTextNode(span.text));
+      else if (span.kind === "link") {
+        // The href is a separate field from the server, never parsed out of
+        // the text here -- same reason nothing in this file touches
+        // innerHTML. New tab because leaving the PWA for GitHub and having
+        // to navigate back is the worse of the two on a phone.
+        var anchor = el("a", "pr-link", span.text);
+        anchor.href = span.url;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        parent.appendChild(anchor);
+      } else parent.appendChild(document.createTextNode(span.text));
     });
   }
 
@@ -122,14 +132,23 @@
     return (found.spans || []).map(function (span) { return span.text; }).join("");
   }
 
-  function renderEntry(entry, digestLine, expanded) {
+  function renderEntry(entry, digestLine, expanded, anchored) {
     var card = el("article", "entry");
-    if (entry.cycle !== null && entry.cycle !== undefined) card.id = "cycle-" + entry.cycle;
+    // Only the first card for a cycle takes the anchor id. Six cycles have
+    // written more than one entry, and giving each the same element id made
+    // the document invalid and getElementById reachable to only one of them.
+    if (anchored && entry.cycle !== null && entry.cycle !== undefined) {
+      card.id = "cycle-" + entry.cycle;
+    }
 
     var bodyId = "entry-body-" + nextBodyId++;
 
-    // The whole header row is the tap target, per Edvard's "expanded/closed
-    // with a tap" -- a chevron alone is a ~20px target on a phone.
+    // The button holds the title row only. Everything that used to sit
+    // inside it -- stamp, outcome, PR references -- moved out to the meta
+    // row below, because the PR references are now links and an <a> inside
+    // a <button> is invalid, the same reason the permalink was already
+    // outside. Nothing is lost by moving them: the whole card is the tap
+    // target now, so the button no longer has to be large to be reachable.
     var toggle = el("button", "entry-toggle");
     toggle.type = "button";
     toggle.setAttribute("aria-controls", bodyId);
@@ -148,15 +167,6 @@
       : entry.title || "Note"));
     toggle.appendChild(heading);
 
-    var stamp = [entry.date, entry.time].filter(Boolean).join(" ");
-    if (stamp) toggle.appendChild(el("time", "stamp", stamp + " Oslo"));
-    if (entry.outcome) {
-      toggle.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
-    }
-    if (entry.pr) toggle.appendChild(el("span", "pr", entry.pr));
-    // The qualifier five entries carry ("stuck — CI outage, merged nothing")
-    // goes beside the pill, not inside it. Nothing is dropped.
-    if (entry.outcomeDetail) toggle.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
     toggle.appendChild(el("span", "chevron", "▾"));
 
     var head = el("header", "entry-head");
@@ -170,6 +180,26 @@
       head.appendChild(link);
     }
     card.appendChild(head);
+
+    var meta = el("div", "entry-meta");
+    var stamp = [entry.date, entry.time].filter(Boolean).join(" ");
+    if (stamp) meta.appendChild(el("time", "stamp", stamp + " Oslo"));
+    if (entry.outcome) {
+      meta.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
+    }
+    if (entry.pr) {
+      var pr = el("span", "pr");
+      // prSpans carries the same text with each reference linkified. The
+      // plain string is the fallback for a payload served by an older
+      // build, so a stale cache degrades to exactly what it showed before.
+      if (entry.prSpans && entry.prSpans.length) renderSpans(pr, entry.prSpans);
+      else pr.textContent = entry.pr;
+      meta.appendChild(pr);
+    }
+    // The qualifier five entries carry ("stuck — CI outage, merged nothing")
+    // goes beside the pill, not inside it. Nothing is dropped.
+    if (entry.outcomeDetail) meta.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
+    if (meta.childNodes.length) card.appendChild(meta);
 
     if (entry.title && entry.cycle !== null && entry.cycle !== undefined) {
       card.appendChild(el("p", "entry-title", entry.title));
@@ -192,7 +222,24 @@
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
     }
     setExpanded(!!expanded);
-    toggle.addEventListener("click", function () {
+
+    /* Edvard, issues.md 2026-08-09: "i want to click anywhere on it to
+     * expand/close it, not just the header."
+     *
+     * The listener sits on the card and the button has none of its own. A
+     * button's click bubbles to here, including the synthetic one it fires
+     * for Enter and Space, so keyboard support keeps working through the
+     * same path rather than a second one that could drift.
+     *
+     * Two clicks are deliberately not a toggle. A tap on a link has
+     * somewhere else to go -- the permalink and the PR references. And the
+     * click that ends a drag-select would otherwise collapse the card out
+     * from under the text just selected, which on a long entry means
+     * losing your place to copy a sentence. */
+    card.addEventListener("click", function (event) {
+      if (event.target.closest("a")) return;
+      var selection = window.getSelection();
+      if (selection && !selection.isCollapsed && String(selection)) return;
       setExpanded(toggle.getAttribute("aria-expanded") !== "true");
     });
     return card;
@@ -215,6 +262,32 @@
       });
     }
 
+    /* Edvard, issues.md 2026-08-09: "Why are the journals for cycles 55-57
+     * listed twice in the Nova app?" They are not duplicates -- each of
+     * those cycles wrote a second entry when it went back to verify its own
+     * deploy. What made them look identical is that a digest line was
+     * looked up by cycle number, so both cards showed the same heading and
+     * byte-identical summary text.
+     *
+     * 55, 56 and 57 are exactly the cycles that have both a second entry
+     * and a digest line. Cycles 6, 12 and 30 also have addenda and never
+     * looked wrong, because they have no digest line to hand out twice --
+     * which is why he named three and not six.
+     *
+     * A digest line describes the work of the cycle, so it belongs to that
+     * cycle's own run: its earliest entry, which is its last one in this
+     * newest-first feed. Every addendum then summarises itself out of its
+     * own first paragraph, and the two cards say different things. The
+     * first card of a cycle also takes the anchor id, for the same reason
+     * an id can only belong to one element. */
+    var digestOwner = {};
+    var anchorOwner = {};
+    entries.forEach(function (entry, index) {
+      if (entry.cycle === null || entry.cycle === undefined) return;
+      digestOwner[entry.cycle] = index;
+      if (!(entry.cycle in anchorOwner)) anchorOwner[entry.cycle] = index;
+    });
+
     feed.textContent = "";
     if (wanted !== null) {
       var back = el("a", "back", "← all cycles");
@@ -224,8 +297,9 @@
     }
     // A single cycle you navigated to deliberately opens expanded; there is
     // nothing to scan past on that page, which is the only reason to collapse.
-    entries.forEach(function (entry) {
-      feed.appendChild(renderEntry(entry, byCycle[entry.cycle], wanted !== null));
+    entries.forEach(function (entry, index) {
+      var line = digestOwner[entry.cycle] === index ? byCycle[entry.cycle] : null;
+      feed.appendChild(renderEntry(entry, line, wanted !== null, anchorOwner[entry.cycle] === index));
     });
   }
 

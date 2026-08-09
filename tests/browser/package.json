@@ -1,0 +1,13 @@
+{
+  "name": "nova-site-browser-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "jsdom tests that drive agora_runner/nova_public/app.js for real.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

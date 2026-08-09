@@ -56,7 +56,22 @@ _DIGEST_LINE_RE = re.compile(
 # What "Needs Edvard" says when it has nothing in it. Item 3 of idea #34
 # wants that section completely invisible rather than showing the word
 # "Nothing", so the emptiness test lives here next to the parsing.
-_EMPTY_NEEDS = ("", "nothing", "nothing.", "none", "none.")
+#
+# Emphasis is stripped before the comparison, and that is the whole of the
+# bug Edvard reported on 2026-08-09 -- "the 'needs Edvard' box should not
+# show when nothing is expected". The section was compared literally, so
+# `Nothing.` counted as empty and `**Nothing.**` counted as a live claim
+# on his attention. Every cycle writes the bold one, because bold is the
+# house style for that section, so the box had never once been correctly
+# hidden since it shipped.
+_EMPTY_NEEDS = ("", "nothing", "none")
+_EMPHASIS_RE = re.compile(r"[*_`]")
+
+
+def is_empty_needs(text):
+    """True if the `Needs Edvard` section is asking for nothing."""
+    plain = _EMPHASIS_RE.sub("", text or "").strip().lower()
+    return plain.rstrip(".").strip() in _EMPTY_NEEDS
 
 
 def _is_metadata_only(segment):
@@ -123,6 +138,97 @@ def split_outcome(outcome):
     label = match.group("label").strip()
     detail = (match.group("detail") or "").strip().lstrip("(,—- ").rstrip(")").strip()
     return label, detail
+
+
+# Edvard, ideas.md 2026-08-09: "I actually see that The hashtag to the prs
+# are listed, but they are not clickable. Maybe leave it as is, but make
+# the listed prs be clickable links."
+#
+# "Leave it as is" is the constraint that shapes this. The `PR:` footer is
+# free text and the live file holds 47 distinct shapes of it -- `#28`,
+# `agora#45`, `runner#58, runner-config#6, platform-config#490`,
+# `#38 (runner) + bridge#11`, `#40 (SokratesAI/agora)`, `#49, #50 (both
+# merged)`. So this linkifies the references it recognises and leaves
+# every other character exactly where it stood; it never reformats,
+# reorders or drops any of the field. A reference it cannot place stays
+# plain text rather than becoming a confidently wrong link.
+_ORG = "SokratesAI"
+# A bare `#12` is the runner: it is this repo, and it is what every entry
+# written before the loop touched a second repo meant.
+_DEFAULT_REPO = "agora-persona-runner"
+_REPO_ALIASES = {
+    "runner": "agora-persona-runner",
+    "bridge": "agora-claude-bridge",
+    "agora": "agora",
+    # Bare `config` appears once, in Cycle 6's `#32, #31, config#2`, and
+    # the runner's config repo is what it meant.
+    "config": "agora-persona-runner-config",
+    "runner-config": "agora-persona-runner-config",
+    "bridge-config": "agora-claude-bridge-config",
+    "platform-config": "platform-config",
+    "agora-config": "agora-config",
+    "agora-persona-runner": "agora-persona-runner",
+    "agora-persona-runner-config": "agora-persona-runner-config",
+    "agora-claude-bridge": "agora-claude-bridge",
+    "agora-claude-bridge-config": "agora-claude-bridge-config",
+}
+_PR_REF_RE = re.compile(r"(?P<repo>[A-Za-z][A-Za-z0-9-]*)?#(?P<num>\d+)")
+# A parenthetical naming the repo, which three entries use instead of a
+# prefix: `#38 (runner)`, `#40 (SokratesAI/agora)`. It is only ever
+# consumed when it resolves to a real repo, so `#51 (merged)` and
+# `#49 (open)` keep their qualifier as text and fall back to the default.
+_PR_QUALIFIER_RE = re.compile(r"^[ \t]*\((?P<name>[A-Za-z][A-Za-z0-9._/-]*)\)")
+
+
+def _repo_url(name):
+    """An alias or an `Owner/Repo` -> the GitHub path, or None if unknown."""
+    if not name:
+        return None
+    if "/" in name:
+        return name
+    alias = _REPO_ALIASES.get(name.lower())
+    return f"{_ORG}/{alias}" if alias else None
+
+
+def parse_pr_refs(pr):
+    """The `PR:` field -> spans, every `repo#123` in it carrying a url.
+
+    Same span shape as `render_inline`, for the same reason: app.js builds
+    every node with textContent, so a link has to arrive as structured data
+    with its href already separated out. There is no path by which the
+    vault's text can become markup.
+    """
+    text = pr or ""
+    spans = []
+    cursor = 0
+    for match in _PR_REF_RE.finditer(text):
+        if match.start() < cursor:  # already inside a consumed qualifier
+            continue
+        prefix = match.group("repo")
+        repo = _repo_url(prefix)
+        if prefix and repo is None:
+            continue  # an unrecognised prefix: leave the whole thing as text
+        end = match.end()
+        if repo is None:
+            qualifier = _PR_QUALIFIER_RE.match(text[end:])
+            retarget = _repo_url(qualifier.group("name")) if qualifier else None
+            if retarget:
+                repo, end = retarget, end + qualifier.end()
+            else:
+                repo = f"{_ORG}/{_DEFAULT_REPO}"
+        if match.start() > cursor:
+            spans.append({"kind": "text", "text": text[cursor:match.start()]})
+        spans.append(
+            {
+                "kind": "link",
+                "text": text[match.start():end],
+                "url": f"https://github.com/{repo}/pull/{match.group('num')}",
+            }
+        )
+        cursor = end
+    if cursor < len(text):
+        spans.append({"kind": "text", "text": text[cursor:]})
+    return spans
 
 
 # Edvard, issues.md 2026-08-09: "Would be fun to use some emojis to
@@ -248,6 +354,7 @@ def parse_journal(markdown):
         label, detail = split_outcome(outcome)
         entry["body"] = raw_body
         entry["pr"] = pr
+        entry["prSpans"] = parse_pr_refs(pr)
         entry["outcome"] = label
         entry["outcomeDetail"] = detail
         entries.append(entry)
@@ -285,7 +392,7 @@ def parse_digest(markdown):
             )
     return {
         "needsEdvard": needs,
-        "hasNeedsEdvard": needs.strip().lower() not in _EMPTY_NEEDS,
+        "hasNeedsEdvard": not is_empty_needs(needs),
         "nextCycle": sections.get("next cycle", ""),
         "lines": lines,
     }

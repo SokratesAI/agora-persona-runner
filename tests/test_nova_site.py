@@ -26,6 +26,7 @@ import json
 import os
 import re
 import signal
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -34,9 +35,11 @@ from agora_runner import nova_capture, nova_site
 from agora_runner.nova_journal import (
     assign_emoji,
     build_status,
+    is_empty_needs,
     parse_digest,
     parse_heading,
     parse_journal,
+    parse_pr_refs,
     render_blocks,
     render_inline,
     split_outcome,
@@ -806,3 +809,144 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
     ).read()
     code = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
     assert "substring(" not in code and "slice(0," not in code
+
+
+# --- The `Needs Edvard` box, and the emphasis that kept it on screen -------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["**Nothing.**", "*Nothing*", "__none__", "`nothing`", "**None**", "Nothing.", "  ", ""],
+)
+def test_a_bolded_nothing_is_still_nothing(text):
+    """Edvard, issues.md 2026-08-09: "The 'needs Edvard' box should not show
+    when nothing is expected."
+
+    The section was compared literally, so `Nothing.` was empty and
+    `**Nothing.**` was a live claim on his attention. Every cycle writes the
+    bold one -- it is the house style for that section, and the live digest
+    has read `**Nothing.**` continuously -- so the box had never once been
+    correctly hidden since it shipped."""
+    assert is_empty_needs(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "**Decide whether to buy a node.**",
+        "Nothing has been decided about the node yet.",
+        "- Nothing works. Please look.",
+        "none of the three options is obviously right",
+    ],
+)
+def test_a_real_ask_is_not_mistaken_for_an_empty_one(text):
+    """The stripping must not swallow a section that happens to start with
+    the word. Only a section that is *nothing but* some spelling of
+    "nothing" counts as empty."""
+    assert is_empty_needs(text) is False
+
+
+def test_the_live_digests_needs_section_is_hidden():
+    """The bug as Edvard actually met it, against the committed fixture of
+    the file he reads."""
+    assert parse_digest(_fixture("digest_two_entries.md"))["hasNeedsEdvard"] is False
+
+
+# --- PR references become links -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field, expected",
+    [
+        ("#28", [("#28", "agora-persona-runner/pull/28")]),
+        ("agora#45", [("agora#45", "agora/pull/45")]),
+        ("bridge#9", [("bridge#9", "agora-claude-bridge/pull/9")]),
+        ("platform-config#485", [("platform-config#485", "platform-config/pull/485")]),
+        ("runner-config#6", [("runner-config#6", "agora-persona-runner-config/pull/6")]),
+        ("bridge-config#8", [("bridge-config#8", "agora-claude-bridge-config/pull/8")]),
+        # Cycle 6's bare `config`, which meant the runner's config repo.
+        ("config#2", [("config#2", "agora-persona-runner-config/pull/2")]),
+        # A parenthetical naming the repo instead of a prefix.
+        ("#38 (runner)", [("#38 (runner)", "agora-persona-runner/pull/38")]),
+        ("#40 (SokratesAI/agora)", [("#40 (SokratesAI/agora)", "agora/pull/40")]),
+    ],
+)
+def test_a_reference_resolves_to_the_repo_it_names(field, expected):
+    links = [(s["text"], s["url"]) for s in parse_pr_refs(field) if s["kind"] == "link"]
+    assert links == [(text, "https://github.com/SokratesAI/" + path) for text, path in expected]
+
+
+@pytest.mark.parametrize(
+    "field, count",
+    [
+        ("runner#58, runner-config#6, platform-config#490", 3),
+        ("#38 (runner) + bridge#11", 2),
+        ("#32, #31, config#2", 3),
+        ("#49, #50 (both merged)", 2),
+        ("none", 0),
+        ("none (status note)", 0),
+        ("", 0),
+    ],
+)
+def test_every_reference_in_a_field_is_found_and_nothing_else_is(field, count):
+    assert sum(1 for s in parse_pr_refs(field) if s["kind"] == "link") == count
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["#51 (merged)", "#49 (open)", "bridge#19 (merged)"],
+)
+def test_a_parenthetical_that_names_no_repo_is_left_alone(field):
+    """`(merged)` and `(open)` sit in the same position as `(runner)` and
+    must not be swallowed into the link text, or the card stops saying what
+    happened to the PR."""
+    spans = parse_pr_refs(field)
+    assert [s["text"] for s in spans if s["kind"] == "link"] == [field.split(" ")[0]]
+    assert "".join(s["text"] for s in spans) == field
+
+
+def test_an_unrecognised_prefix_becomes_no_link_at_all():
+    """A confidently wrong link is worse than plain text: it looks
+    authoritative and goes to another project's PR of the same number."""
+    spans = parse_pr_refs("someothersystem#12")
+    assert not [s for s in spans if s["kind"] == "link"]
+    assert "".join(s["text"] for s in spans) == "someothersystem#12"
+
+
+def test_no_pr_field_in_the_live_journal_loses_a_character(journal_md):
+    """The spans must reassemble the field exactly. This is the invariant
+    that makes "leave it as is" (Edvard's words) checkable rather than
+    asserted -- linkifying is allowed to add structure and never to edit."""
+    fields = {e["pr"] for e in parse_journal(journal_md) if e["pr"]}
+    assert fields
+    for field in fields:
+        assert "".join(s["text"] for s in parse_pr_refs(field)) == field
+
+
+def test_the_payload_carries_the_pr_spans_the_client_reads():
+    with patch.object(nova_site, "vault_read_path", return_value=_fixture("journal_sample.md")):
+        payload = nova_site.journal_payload()
+    assert payload["entries"]
+    assert all("prSpans" in entry for entry in payload["entries"])
+
+
+# --- The contract with the browser tests ----------------------------------
+
+
+def test_the_browser_fixture_is_what_the_server_would_send():
+    """tests/browser/ runs under node and cannot import any of this, so the
+    two halves meet at a committed JSON file. Without this test that file is
+    a hand-written mock that is free to drift away from the server it claims
+    to imitate -- which is the whole reason those tests would stop meaning
+    anything, quietly. Regenerate with `python3 tests/browser/regen.py`."""
+    import json
+
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser"))
+    import regen
+
+    with open(regen.PAYLOAD_PATH, encoding="utf-8") as handle:
+        committed = json.load(handle)
+    assert regen.build_payload() == committed, (
+        "tests/browser/fixtures/payload.json no longer matches what nova_site "
+        "would send. Re-run: python3 tests/browser/regen.py"
+    )
