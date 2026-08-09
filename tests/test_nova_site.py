@@ -115,6 +115,19 @@ def test_preamble_above_the_entries_marker_is_not_an_entry(entries):
     assert [e["cycle"] for e in entries] == [49, 29, 19, 6, None]
 
 
+def test_a_heading_in_the_preamble_does_not_become_an_entry():
+    """The version of this that only used the fixture pinned nothing: the
+    live preamble contains no `###`, so dropping the split changed no
+    behaviour and the test still passed (mutation run, 2026-08-09). The
+    preamble documents the journal's own heading format, which is exactly
+    the text most likely to grow one."""
+    markdown = (
+        "# Journal\n\nWrite entries like:\n\n### 2026-01-01 00:00 (Oslo) — Cycle 0\n\n"
+        "## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\nReal entry."
+    )
+    assert [e["cycle"] for e in parse_journal(markdown)] == [1]
+
+
 def test_footer_is_lifted_out_of_the_body(entries):
     latest = entries[0]
     assert latest["pr"] == "bridge#22"

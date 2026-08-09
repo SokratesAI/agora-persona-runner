@@ -34,8 +34,15 @@ _CYCLE_RE = re.compile(r"\bCycle[ \t]+(\d+)", re.IGNORECASE)
 _TZ_TOKEN_RE = re.compile(r"\boslo\b|\bZ\b", re.IGNORECASE)
 _SEGMENT_SPLIT_RE = re.compile(r"[ \t]+—[ \t]+")
 # The one rigid part of an entry (personality.md): a `---` rule, then the
-# PR and outcome on one line. Anchored to the end so a `---` used as a
-# rule mid-entry can never be mistaken for it.
+# PR and outcome on one line.
+#
+# Two things keep this off a `---` used as an ordinary rule mid-entry, and
+# it is worth being precise about which does what, because a mutation run
+# (2026-08-09) showed one of them carrying all the weight. The literal
+# `\n---\nPR:` is what rejects a rule not followed by a PR line -- adding
+# re.DOTALL here changes nothing at all. The `$` is what stops `outcome`
+# from matching a single character, since `.+?` is non-greedy: without it
+# `Outcome: merged` parses as `m`.
 _FOOTER_RE = re.compile(
     r"\n-{3,}[ \t]*\nPR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*Outcome:[ \t]*(?P<outcome>.+?)[ \t]*$",
     re.IGNORECASE,
