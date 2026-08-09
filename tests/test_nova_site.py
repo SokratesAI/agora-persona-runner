@@ -42,7 +42,9 @@ from agora_runner.nova_journal import (
     parse_pr_refs,
     render_blocks,
     render_inline,
+    split_brief,
     split_outcome,
+    split_sentences,
 )
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -792,16 +794,25 @@ def test_the_payload_carries_the_emoji_the_client_reads():
 
 
 def test_a_collapsed_card_hides_the_body_without_dropping_it():
-    """Edvard asked for cards that collapse to 2-3 lines. The summary is
-    clamped in CSS and the body hidden by a class -- both still in the DOM.
-    A server-side truncation would have been the easy version and would
-    have put the prose out of reach of find-in-page for good."""
+    """Edvard asked for cards that collapse to 2-3 lines, then for a drawer
+    within a drawer. Every level is hidden by a class and none of them is cut
+    -- all the text stays in the DOM. A server-side truncation would have been
+    the easy version and would have put the prose out of reach of find-in-page.
+
+    The line clamp this used to assert is deliberately gone. The brief now
+    arrives already cut on a sentence boundary, so a clamp could only break it
+    again in the middle, which is the thing Edvard reported on 2026-08-09."""
     css = open(
         os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "style.css"),
         encoding="utf-8",
     ).read()
-    assert ".entry.is-collapsed .entry-body" in css
-    assert "-webkit-line-clamp: 3" in css
+    assert ".entry.is-expanded.is-reading .entry-body { display: block; }" in css
+    assert ".entry.is-expanded .journal-toggle" in css
+    # The clamp survives on exactly one selector -- the unsplit fallback for a
+    # payload sw.js cached before this shipped -- and nowhere else.
+    assert re.findall(r"(?m)^([^\n{]*)\{[^}]*line-clamp", css) == [
+        ".entry.is-collapsed .entry-brief.is-unsplit ",
+    ]
 
     source = open(
         os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "app.js"),
@@ -971,8 +982,10 @@ def test_the_digest_summary_is_the_same_colour_as_the_prose_it_summarises():
     Worth a test rather than a look, because this is the one change of the
     four that a green suite said nothing about: reverting it left all 1049
     other tests passing. A styling fix nothing pins is a styling fix the
-    next refactor silently undoes."""
-    declarations = _css_rule(".entry-summary")
+    next refactor silently undoes -- and the element it was written for has
+    since been renamed to `.entry-brief`, which is exactly the kind of quiet
+    undoing it exists to catch."""
+    declarations = _css_rule(".entry-brief")
     assert "color: var(--text)" in declarations
     assert "var(--dim)" not in declarations
 
@@ -992,3 +1005,122 @@ def test_a_digest_line_carries_its_bold_as_spans_not_asterisks():
         assert "strong" in kinds
         assert all("**" not in span["text"] for span in line["spans"])
         assert "".join(s["text"] for s in line["spans"]) == line["text"].replace("**", "")
+
+
+# --- The brief, and the drawer within a drawer ----------------------------
+#
+# Edvard, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
+# each cycle as a title for each journey card ... As short as possible, max 3
+# sentences ... Then, when a journey card is opened, the Digest is revealed.
+# Below that, a 'read the full journal' button to expand the full journal ...
+# So its a drawer within a drawer."
+
+
+def test_a_brief_ends_on_a_sentence_never_mid_word():
+    """The whole point of the change. The card used to clamp the digest line
+    in CSS, which cuts wherever the third line box happens to end -- so every
+    card trailed off mid-sentence, which is what he was reporting."""
+    text = (
+        "The site stopped going down every time I run. It has its own pod now, "
+        "which matters because the capture box was dead at exactly the moment "
+        "you would have been reading about a cycle in progress. Three PRs. "
+        "The hard part was already done by an earlier cycle that got killed."
+    )
+    brief, rest = split_brief(text)
+    assert brief.endswith(".")
+    assert text.startswith(brief)
+    # Without this the test survives a mutant that never splits at all: the
+    # whole summary also "ends on a sentence" and is also a prefix of itself.
+    # A mutation run on 2026-08-09 caught exactly that.
+    assert len(brief) < len(text)
+    assert rest
+
+
+def test_brief_and_rest_reconstruct_the_whole_summary():
+    """Nothing is thrown away -- the remainder is the next drawer down, not a
+    truncation. Asserted over the shapes the live files actually contain."""
+    for text in [
+        "**One bold headline sentence.** Then the long explanation follows here.",
+        "A plain first sentence. A second one. A third one. A fourth one.",
+        "Only one sentence and no more.",
+        "**Bold that does not end the sentence** — and then it continues. More.",
+    ]:
+        brief, rest = split_brief(text)
+        assert ((brief + " " + rest).strip() if rest else brief) == text
+
+
+def test_a_bold_opening_sentence_is_the_whole_brief():
+    """The house style for a digest line is a bolded opening sentence saying
+    what changed for Edvard -- all 9 live lines have one. That sentence was
+    written to be the headline, so pulling a second sentence in after it
+    whenever the headline was short is the opposite of "as short as possible"."""
+    text = "**Short headline.** A second sentence that the budget would otherwise have room for."
+    brief, rest = split_brief(text)
+    assert brief == "**Short headline.**"
+    assert rest.startswith("A second sentence")
+
+
+def test_a_brief_takes_at_most_three_sentences():
+    text = " ".join(f"Sentence number {n}." for n in range(1, 8))
+    brief, rest = split_brief(text)
+    assert brief == "Sentence number 1. Sentence number 2. Sentence number 3."
+    assert rest == "Sentence number 4. Sentence number 5. Sentence number 6. Sentence number 7."
+
+
+def test_a_long_first_sentence_is_kept_whole_rather_than_dropped():
+    """The budget never produces an empty brief. Cycle 42's entry opens with a
+    single 300-character sentence; a card showing nothing would be worse than
+    a card showing a long line, and there is nowhere shorter to cut it that is
+    still a sentence."""
+    long_sentence = "A single sentence of " + "considerable length " * 20 + "indeed."
+    brief, rest = split_brief(long_sentence + " A short one.")
+    assert brief == long_sentence
+    assert rest == "A short one."
+
+
+def test_a_full_stop_inside_backticks_does_not_end_a_sentence():
+    """The journal quotes shell and paths constantly -- 591 inline code spans
+    across the live file, and `vault_tool.py get 'a.md'` holds two full stops
+    that end nothing."""
+    text = "Run `vault_tool.py get 'x.md'` before anything else. Then read it."
+    assert split_sentences(text) == [
+        "Run `vault_tool.py get 'x.md'` before anything else.",
+        "Then read it.",
+    ]
+
+
+def test_a_sentence_ends_after_its_closing_emphasis_not_before_it():
+    """`...plainly.** Every cycle` must break after the `**`. Breaking between
+    the full stop and it would split one bold span across both drawers and
+    leave the markers unbalanced, so the brief would render a stray `**`."""
+    sentences = split_sentences("**Done at last.** And here is why it took so long.")
+    assert sentences[0] == "**Done at last.**"
+    assert all(part.count("**") % 2 == 0 for part in sentences)
+
+
+def test_every_digest_line_carries_both_drawers():
+    lines = parse_digest(_fixture("digest_two_entries.md"))["lines"]
+    assert lines
+    for line in lines:
+        rendered = "".join(s["text"] for s in line["briefSpans"])
+        assert rendered, "every digest line needs a brief"
+        assert "**" not in rendered, "the brief renders its bold as spans"
+        joined = rendered + "".join(s["text"] for s in line["restSpans"])
+        # Both drawers together are the whole line. Compared with the inline
+        # markers gone, because `render_inline` lifts `**` and backticks into
+        # span kinds rather than leaving them in the text.
+        flat = re.sub(r"[*`]", "", line["text"])
+        assert joined.replace(" ", "") == flat.replace(" ", "")
+
+
+def test_every_entry_briefs_itself_for_the_cycles_with_no_digest_line():
+    """The digest is rewritten every cycle and its older lines are dropped, so
+    55 of the 68 live entries have none. Without an entry-level brief that is
+    most of the feed collapsing to a row of dates, not a rare fallback."""
+    entries = parse_journal(_fixture("journal_two_entries.md"))
+    assert entries
+    for entry in entries:
+        assert entry["briefSpans"], "every entry needs a brief of its own"
+        rendered = "".join(s["text"] for s in entry["briefSpans"])
+        assert "**" not in rendered
+        assert len(rendered) <= 700  # a headline, not a paragraph

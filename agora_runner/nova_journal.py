@@ -325,6 +325,22 @@ def assign_emoji(entries):
     return entries
 
 
+def _first_paragraph(body):
+    """An entry body -> its opening paragraph as one unwrapped line.
+
+    Skips a leading bullet or fenced block so an entry that opens with a
+    list still briefs from its first real prose. Lines are joined with a
+    space for the same reason `render_blocks` does it: the journal is
+    hard-wrapped, and the wrap is not a sentence boundary.
+    """
+    for chunk in re.split(r"\n[ \t]*\n", body or ""):
+        lines = [line.strip() for line in chunk.strip().split("\n") if line.strip()]
+        if not lines or _BULLET_RE.match(lines[0]) or _FENCE_RE.match(lines[0]):
+            continue
+        return " ".join(lines)
+    return ""
+
+
 def parse_journal(markdown):
     """`journal.md` -> a list of entries in the order they appear (newest first).
 
@@ -353,6 +369,12 @@ def parse_journal(markdown):
         entry = parse_heading(match.group(1))
         label, detail = split_outcome(outcome)
         entry["body"] = raw_body
+        # The card's brief for the 55 entries that have no digest line --
+        # the digest is rewritten every cycle and its older lines are
+        # dropped, so that is most of the feed rather than a corner case.
+        # Only the brief: their remainder is the journal entry itself, and
+        # showing it in both drawers would print the same paragraph twice.
+        entry["briefSpans"] = render_inline(split_brief(_first_paragraph(raw_body))[0])
         entry["pr"] = pr
         entry["prSpans"] = parse_pr_refs(pr)
         entry["outcome"] = label
@@ -384,11 +406,16 @@ def parse_digest(markdown):
         match = _DIGEST_LINE_RE.match(paragraph)
         if match:
             text = " ".join(match.group("text").split())
+            brief, rest = split_brief(text)
             lines.append(
                 {
                     "cycle": int(match.group("cycle")),
                     "at": match.group("at").strip(),
                     "text": text,
+                    # The two drawers: the headline on the collapsed card,
+                    # and the rest of the digest revealed when it opens.
+                    "briefSpans": render_inline(brief),
+                    "restSpans": render_inline(rest),
                     # Nearly every digest line opens with a bolded sentence
                     # saying what changed, and the card showed the asterisks
                     # -- the one line Edvard was already calling hard to read
@@ -431,6 +458,108 @@ def render_inline(text):
     if cursor < len(text):
         spans.append({"kind": "text", "text": text[cursor:]})
     return spans
+
+
+# Edvard, issues.md 2026-08-09: "I need a 2-3 line short precise Digest
+# for each cycle as a title for each journey card ... As short as
+# possible, max 3 sentences. It should cover everything important ...
+# Then, when a journey card is opened, the Digest is revealed."
+#
+# So a card carries two summaries, not one, and this is the split. Until
+# now the collapsed card showed the *whole* digest line clamped by CSS to
+# three lines, which is why he asked: a clamp cuts wherever the line box
+# ends, so every card trailed off mid-sentence. A brief that ends on a
+# sentence is the actual difference.
+#
+# Derived from the text rather than authored into each entry, for the
+# same reason `assign_emoji` is: `## Entries` is append-only (rule 3), so
+# the 68 entries that already exist can never be given a new field. A
+# `Summary:` footer would only ever brief the future.
+#
+# The derivation is not a guess, though, which is the part worth knowing.
+# The house style for a digest line is a bolded opening sentence saying
+# what changed for him -- all 9 live lines have one, every one of them a
+# single sentence of 48-179 chars. That sentence *is* the brief, already
+# written to be exactly this. Taking whole sentences from the front finds
+# it exactly, because a sentence ends after its closing `**`.
+#
+# `MAX_BRIEF_CHARS` is the one number here, and it is his second
+# constraint ("as short as possible") rather than a defensive cap.
+# Measured over the 55 entries with no digest line, whose prose was never
+# written to be a headline: three unbudgeted sentences run to 633 chars,
+# median 349, against 48-179 for the authored ones. 240 sits above every
+# authored brief and well under the unbudgeted median. Nothing is
+# discarded -- the remainder is the next drawer down, one tap away.
+MAX_BRIEF_SENTENCES = 3
+MAX_BRIEF_CHARS = 240
+# A sentence ends at `.`/`!`/`?`, then any closing emphasis, then space.
+# The emphasis run is what makes `...plainly.** Every cycle` break after
+# the `**` instead of between the `.` and it, which would split a bold
+# span across both drawers and leave the markers unbalanced.
+_SENTENCE_END_RE = re.compile(r"[.!?][*_`]*(?=\s|$)")
+
+
+def split_sentences(text):
+    """Text -> sentences, never breaking inside an inline code span.
+
+    Backticks are tracked because the journal quotes shell and paths
+    constantly -- `vault_tool.py get 'a.md'` holds two full stops that
+    end nothing, and 591 inline code spans across the live file give that
+    plenty of chances to happen.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    sentences = []
+    start = 0
+    in_code = False
+    for index, char in enumerate(text):
+        if char == "`":
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        match = _SENTENCE_END_RE.match(text, index)
+        if not match:
+            continue
+        if match.end() <= start:  # inside emphasis already consumed
+            continue
+        sentences.append(text[start:match.end()].strip())
+        start = match.end()
+    tail = text[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def split_brief(text):
+    """A summary -> `(brief, rest)`, split on a sentence boundary.
+
+    The brief is what a collapsed card shows; the rest is revealed when
+    it opens. `rest` is empty when the whole summary already fits, so a
+    short digest line does not open onto a blank drawer.
+    """
+    sentences = split_sentences(text)
+    if not sentences:
+        return "", ""
+    # A digest line whose first sentence is entirely bold has already been
+    # written as the headline, so that sentence alone is the brief -- the
+    # budget below would otherwise pull a second sentence in after it
+    # whenever the headline was short, which is the opposite of "as short
+    # as possible". All 9 live digest lines are shaped this way; entries
+    # briefed from their own prose have no such marker and fall through.
+    if sentences[0].startswith("**") and sentences[0].rstrip().endswith("**"):
+        return sentences[0], " ".join(sentences[1:])
+    taken = []
+    length = 0
+    for sentence in sentences[:MAX_BRIEF_SENTENCES]:
+        # Always take the first, however long: a brief that is empty
+        # because one sentence ran over budget is worse than a long one.
+        if taken and length + 1 + len(sentence) > MAX_BRIEF_CHARS:
+            break
+        taken.append(sentence)
+        length += (1 if length else 0) + len(sentence)
+    return " ".join(taken), " ".join(sentences[len(taken):])
 
 
 def render_blocks(text):

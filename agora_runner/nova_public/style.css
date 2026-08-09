@@ -224,18 +224,73 @@ pre code { background: none; padding: 0; }
 
 .entry-permalink:hover { color: var(--accent); }
 
-.entry.is-collapsed .entry-body { display: none; }
+/* A drawer within a drawer. The card opens onto the rest of the digest and
+ * the button; the button opens onto the journal entry. Every level is in the
+ * DOM at all times -- these are class changes, not re-renders, so
+ * find-in-page still reaches a drawer that is shut. */
+.entry .entry-digest,
+.entry .journal-toggle,
+.entry .entry-body { display: none; }
+.entry.is-expanded .entry-digest,
+.entry.is-expanded .journal-toggle { display: block; }
+.entry.is-expanded.is-reading .entry-body { display: block; }
 
-/* The 2-3 lines Edvard asked for. Clamped, never truncated: the full text
- * is in the DOM either way, so expanding is a class change and find-in-page
- * still reaches it. */
-.entry.is-collapsed .entry-summary {
+/* No line clamp any more. The brief arrives already cut on a sentence
+ * boundary, so a clamp has nothing left to do except break it again in the
+ * middle -- which is the thing Edvard was reporting.
+ *
+ * The colour is inherited from the `.entry-summary` this replaces, and the
+ * reason it is not var(--dim) still holds -- Edvard, issues.md 2026-08-09:
+ * "the Digest is hard to read with grey against the blue background. White
+ * is better like the actual journal." #8b90a0 on the card's #191b24 is
+ * about 4.3:1, which passes a contrast checker and was still the hardest
+ * thing on the page to read, because it is the line every card asks you to
+ * read first. That is more true of the brief than it was of the summary. */
+.entry-brief {
+  margin: 0 0 0.9rem;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--accent);
+  color: var(--text);
+}
+
+.entry.is-collapsed .entry-brief { margin-bottom: 0; }
+
+/* The one card that still needs a clamp: a brief the server did not split,
+ * which only happens on a payload cached by sw.js before this shipped. It
+ * holds the whole digest line, so clamping is what makes the fallback
+ * degrade to the previous behaviour instead of to a worse one. */
+.entry.is-collapsed .entry-brief.is-unsplit {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin-bottom: 0;
+}
+
+/* Dimmer rule than the brief's, so the two drawers read as a hierarchy
+ * rather than two things shouting equally. */
+.entry-digest {
+  margin: 0 0 0.6rem;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--line);
+  color: var(--text);
+}
+
+.journal-toggle {
+  background: none;
+  border: 0;
+  padding: 0.5rem 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+  text-align: left;
+}
+
+.journal-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
 }
 
 .entry.is-collapsed .entry-title {
@@ -288,19 +343,6 @@ pre code { background: none; padding: 0; }
 .badge-warn { color: var(--warn); border-color: #6b552f; }
 
 .entry-title { margin: 0 0 0.5rem; font-weight: 600; }
-
-/* Edvard, issues.md 2026-08-09: "the Digest is hard to read with grey
- * against the blue background. White is better like the actual journal."
- * It was var(--dim) #8b90a0 on the card's #191b24 -- about 4.3:1, which
- * passes a contrast checker and is still the hardest thing on the page to
- * read, because it is the one line every card asks you to read first. It
- * now uses the same colour as the body prose it summarises. */
-.entry-summary {
-  margin: 0 0 0.9rem;
-  padding-left: 0.8rem;
-  border-left: 2px solid var(--accent);
-  color: var(--text);
-}
 
 .entry-body p { margin: 0 0 0.9rem; }
 .entry-body p:last-child { margin-bottom: 0; }

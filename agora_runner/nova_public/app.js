@@ -205,28 +205,74 @@
       card.appendChild(el("p", "entry-title", entry.title));
     }
 
-    // Collapsed, this is the 2-3 line description. It is clamped in CSS
-    // rather than cut here on purpose: the full text stays in the DOM and
-    // in the page's find-in-page, and expanding is a class change rather
-    // than a re-render. Nothing is ever truncated away.
-    if (digestLine && digestLine.spans && digestLine.spans.length) {
-      var summary = el("p", "entry-summary");
-      renderSpans(summary, digestLine.spans);
-      card.appendChild(summary);
+    /* Edvard, issues.md 2026-08-09: "a 2-3 line short precise Digest for
+     * each cycle as a title for each journey card ... Then, when a journey
+     * card is opened, the Digest is revealed. Below that, a 'read the full
+     * journal' button to expand the full journal ... So its a drawer within
+     * a drawer."
+     *
+     * Three levels, and the brief is the one that was missing. Until now
+     * the collapsed card carried the whole digest line clamped to three
+     * lines by CSS, so it always broke off mid-sentence -- the clamp is
+     * why he asked. The brief comes from the server already cut on a
+     * sentence boundary (nova_journal.split_brief), and the remainder is
+     * this first drawer rather than something thrown away. */
+    var briefSpans = (digestLine && digestLine.briefSpans) || entry.briefSpans;
+    if (briefSpans && briefSpans.length) {
+      var brief = el("p", "entry-brief");
+      renderSpans(brief, briefSpans);
+      card.appendChild(brief);
     } else {
+      /* A payload with no briefSpans, which is reachable rather than
+       * theoretical: sw.js is network-first and caches /api responses, so
+       * opening the app with the tailnet down after this deploy pairs the
+       * new app.js with the last payload the old build served.
+       *
+       * `is-unsplit` restores the CSS line clamp for that card only. Without
+       * it the fallback degrades to something worse than what it replaced --
+       * a whole 2000-character digest line as an unclamped card title -- and
+       * "degrades to exactly what it showed before" is the only thing that
+       * makes a fallback worth keeping. */
       var summaryText = digestLine ? digestLine.text : firstParagraph(entry.blocks);
-      if (summaryText) card.appendChild(el("p", "entry-summary", summaryText));
+      if (summaryText) card.appendChild(el("p", "entry-brief is-unsplit", summaryText));
     }
+
+    // Drawer one: the rest of the digest line. Absent for the 55 entries
+    // that have no digest line -- their remainder is the journal entry
+    // itself, and printing the same paragraph in both drawers is worse
+    // than opening straight onto the button.
+    var restSpans = digestLine && digestLine.restSpans;
+    if (restSpans && restSpans.length) {
+      var rest = el("p", "entry-digest");
+      renderSpans(rest, restSpans);
+      card.appendChild(rest);
+    }
+
+    // Drawer two.
+    var journalToggle = el("button", "journal-toggle", "Read the full journal");
+    journalToggle.type = "button";
+    journalToggle.setAttribute("aria-controls", bodyId);
+    card.appendChild(journalToggle);
 
     var body = el("div", "entry-body");
     body.id = bodyId;
     renderBlocks(body, entry.blocks);
     card.appendChild(body);
 
+    function setJournalOpen(open) {
+      card.classList.toggle("is-reading", open);
+      journalToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      journalToggle.textContent = open ? "Close the full journal" : "Read the full journal";
+    }
+
     function setExpanded(open) {
       card.className = open ? "entry is-expanded" : "entry is-collapsed";
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      // Closing the card closes the drawer inside it, so reopening never
+      // lands you back in the middle of a 115-line entry you had left open.
+      setJournalOpen(open && journalToggle.getAttribute("aria-expanded") === "true");
     }
+    setJournalOpen(false);
     setExpanded(!!expanded);
 
     /* Edvard, issues.md 2026-08-09: "i want to click anywhere on it to
@@ -246,6 +292,19 @@
       if (event.target.closest("a")) return;
       var selection = window.getSelection();
       if (selection && !selection.isCollapsed && String(selection)) return;
+      /* "If the full journal text is clicked or the button, the full
+       * journal is closed again." Both land here rather than on their own
+       * listeners, because the card's listener would otherwise fire too and
+       * collapse the whole card out from under the tap. One listener, one
+       * decision about what the tap meant. */
+      if (event.target.closest(".journal-toggle")) {
+        setJournalOpen(journalToggle.getAttribute("aria-expanded") !== "true");
+        return;
+      }
+      if (event.target.closest(".entry-body")) {
+        setJournalOpen(false);
+        return;
+      }
       setExpanded(toggle.getAttribute("aria-expanded") !== "true");
     });
     return card;
