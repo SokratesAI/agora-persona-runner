@@ -1019,11 +1019,17 @@ def test_a_brief_ends_on_a_sentence_never_mid_word():
     text = (
         "The site stopped going down every time I run. It has its own pod now, "
         "which matters because the capture box was dead at exactly the moment "
-        "you would have been reading about a cycle in progress. Three PRs."
+        "you would have been reading about a cycle in progress. Three PRs. "
+        "The hard part was already done by an earlier cycle that got killed."
     )
-    brief, _ = split_brief(text)
+    brief, rest = split_brief(text)
     assert brief.endswith(".")
-    assert brief in text
+    assert text.startswith(brief)
+    # Without this the test survives a mutant that never splits at all: the
+    # whole summary also "ends on a sentence" and is also a prefix of itself.
+    # A mutation run on 2026-08-09 caught exactly that.
+    assert len(brief) < len(text)
+    assert rest
 
 
 def test_brief_and_rest_reconstruct_the_whole_summary():
