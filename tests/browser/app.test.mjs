@@ -39,6 +39,7 @@ async function loadSite(path = "/") {
       json: () =>
         Promise.resolve(url.includes("/api/digest") ? payload.digest : payload.journal),
     });
+  window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from two resolved promises; let the microtasks drain.
   await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -51,6 +52,9 @@ function click(window, node) {
 }
 
 const cards = (window) => [...window.document.querySelectorAll(".entry")];
+/** A digest line as the card renders it -- spans joined, so the `**` the
+ *  raw `text` field still carries is not compared against the DOM. */
+const lineText = (line) => line.spans.map((s) => s.text).join("");
 const expanded = (card) => card.classList.contains("is-expanded");
 
 describe("cards expand and collapse", () => {
@@ -152,7 +156,7 @@ describe("two entries for one cycle are two different cards", () => {
   });
 
   test("the digest line goes to the cycle's own run, not to its addendum", () => {
-    const line = payload.digest.lines.find((l) => l.cycle === 57).text;
+    const line = lineText(payload.digest.lines.find((l) => l.cycle === 57));
     const [addendum, run] = cards(window);
     assert.equal(run.querySelector(".entry-summary").textContent, line);
     assert.notEqual(addendum.querySelector(".entry-summary").textContent, line);
@@ -295,7 +299,7 @@ describe("a deep-linked cycle", () => {
 
   test("still gives the digest line to only one of them", async () => {
     const window = await loadSite("/cycle/57");
-    const line = payload.digest.lines.find((l) => l.cycle === 57).text;
+    const line = lineText(payload.digest.lines.find((l) => l.cycle === 57));
     const summaries = cards(window).map((c) => c.querySelector(".entry-summary").textContent);
     assert.equal(summaries.filter((s) => s === line).length, 1);
   });
