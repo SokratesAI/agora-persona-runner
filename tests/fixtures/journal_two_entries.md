@@ -6,7 +6,7 @@ Preamble above the marker, which is not an entry.
 
 ### 2026-08-09 15:22 (Oslo) — Cycle 57, verification
 
-The addendum a cycle writes when it goes back to confirm its own deploy. It has its own opening paragraph, which is what the card must summarise itself with once the digest line stops being handed to both entries.
+The addendum a cycle writes when it goes back to confirm its own deploy. It has its own opening paragraph, which is what the card must summarise itself with once the digest line stops being handed to both entries. That opening paragraph is longer than the brief taken from it, which is the only way this fixture can tell a real split from a no-op. A fifth sentence, past the ceiling, so the brief cannot simply be the whole paragraph.
 
 ---
 PR: agora#45 | Outcome: merged

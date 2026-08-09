@@ -6,6 +6,12 @@
         "date": "2026-08-09",
         "time": "15:22",
         "title": "verification",
+        "briefSpans": [
+          {
+            "kind": "text",
+            "text": "The addendum a cycle writes when it goes back to confirm its own deploy. It has its own opening paragraph, which is what the card must summarise itself with once the digest line stops being handed to both entries."
+          }
+        ],
         "pr": "agora#45",
         "prSpans": [
           {
@@ -23,7 +29,7 @@
             "spans": [
               {
                 "kind": "text",
-                "text": "The addendum a cycle writes when it goes back to confirm its own deploy. It has its own opening paragraph, which is what the card must summarise itself with once the digest line stops being handed to both entries."
+                "text": "The addendum a cycle writes when it goes back to confirm its own deploy. It has its own opening paragraph, which is what the card must summarise itself with once the digest line stops being handed to both entries. That opening paragraph is longer than the brief taken from it, which is the only way this fixture can tell a real split from a no-op. A fifth sentence, past the ceiling, so the brief cannot simply be the whole paragraph."
               }
             ]
           }
@@ -34,6 +40,12 @@
         "date": "2026-08-09",
         "time": "15:05",
         "title": "",
+        "briefSpans": [
+          {
+            "kind": "text",
+            "text": "The cycle's own run. This is the entry the digest line describes, so this is the card that should carry it."
+          }
+        ],
         "pr": "agora#45",
         "prSpans": [
           {
@@ -62,6 +74,12 @@
         "date": "2026-08-09",
         "time": "12:33",
         "title": "",
+        "briefSpans": [
+          {
+            "kind": "text",
+            "text": "A cycle with one entry and several PR references across different repos."
+          }
+        ],
         "pr": "runner#58, runner-config#6, platform-config#490",
         "prSpans": [
           {
@@ -108,6 +126,12 @@
         "date": "2026-08-02",
         "time": "",
         "title": "Edvard's first message (not a cycle)",
+        "briefSpans": [
+          {
+            "kind": "text",
+            "text": "An entry carrying no cycle number at all, which must still render."
+          }
+        ],
         "pr": "none",
         "prSpans": [
           {
@@ -150,22 +174,54 @@
       {
         "cycle": 57,
         "at": "2026-08-09 15:05",
-        "text": "**The digest line for cycle 57**, which exactly one of its two entries may show, and which opens with a bolded sentence the way nearly every real one does.",
+        "text": "**The digest line for cycle 57, which opens with a bolded headline sentence the way every live one does.** Only one of its two entries may show it. The remainder is several sentences long, which is what makes it the first drawer rather than the whole card. A live digest line runs to between 900 and 2000 characters, so a card that showed all of it was never scannable.",
+        "briefSpans": [
+          {
+            "kind": "strong",
+            "text": "The digest line for cycle 57, which opens with a bolded headline sentence the way every live one does."
+          }
+        ],
+        "restSpans": [
+          {
+            "kind": "text",
+            "text": "Only one of its two entries may show it. The remainder is several sentences long, which is what makes it the first drawer rather than the whole card. A live digest line runs to between 900 and 2000 characters, so a card that showed all of it was never scannable."
+          }
+        ],
         "spans": [
           {
             "kind": "strong",
-            "text": "The digest line for cycle 57"
+            "text": "The digest line for cycle 57, which opens with a bolded headline sentence the way every live one does."
           },
           {
             "kind": "text",
-            "text": ", which exactly one of its two entries may show, and which opens with a bolded sentence the way nearly every real one does."
+            "text": " Only one of its two entries may show it. The remainder is several sentences long, which is what makes it the first drawer rather than the whole card. A live digest line runs to between 900 and 2000 characters, so a card that showed all of it was never scannable."
           }
         ]
       },
       {
         "cycle": 55,
         "at": "2026-08-09 12:33",
-        "text": "The digest line for cycle 55, with `inline code` in it.",
+        "text": "The digest line for cycle 55, with `inline code` in it. It carries no bolded headline, so its brief is budgeted from whole sentences instead. This third sentence is where the three-sentence ceiling bites. And this fourth one must fall into the remainder.",
+        "briefSpans": [
+          {
+            "kind": "text",
+            "text": "The digest line for cycle 55, with "
+          },
+          {
+            "kind": "code",
+            "text": "inline code"
+          },
+          {
+            "kind": "text",
+            "text": " in it. It carries no bolded headline, so its brief is budgeted from whole sentences instead. This third sentence is where the three-sentence ceiling bites."
+          }
+        ],
+        "restSpans": [
+          {
+            "kind": "text",
+            "text": "And this fourth one must fall into the remainder."
+          }
+        ],
         "spans": [
           {
             "kind": "text",
@@ -177,7 +233,7 @@
           },
           {
             "kind": "text",
-            "text": " in it."
+            "text": " in it. It carries no bolded headline, so its brief is budgeted from whole sentences instead. This third sentence is where the three-sentence ceiling bites. And this fourth one must fall into the remainder."
           }
         ]
       }

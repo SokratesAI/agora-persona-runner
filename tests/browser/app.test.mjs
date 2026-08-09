@@ -55,6 +55,11 @@ const cards = (window) => [...window.document.querySelectorAll(".entry")];
 /** A digest line as the card renders it -- spans joined, so the `**` the
  *  raw `text` field still carries is not compared against the DOM. */
 const lineText = (line) => line.spans.map((s) => s.text).join("");
+/** The headline a collapsed card shows for a digest line -- its first drawer.
+ *  Distinct from `lineText`: the rest of the line is revealed on open, so
+ *  comparing a card against the whole line would have been comparing it
+ *  against text the card is not supposed to be showing. */
+const lineBrief = (line) => line.briefSpans.map((s) => s.text).join("");
 const expanded = (card) => card.classList.contains("is-expanded");
 
 describe("cards expand and collapse", () => {
@@ -72,9 +77,12 @@ describe("cards expand and collapse", () => {
   });
 
   test("a click anywhere on the card expands it, not just the header", () => {
-    // The body is the furthest thing from the header that is still the card,
-    // and before this change it was the one place clicking did nothing.
-    for (const selector of [".entry-body", ".entry-summary", ".entry-meta", ".entry-toggle"]) {
+    // `.entry-body` used to be in this list -- it was the furthest thing from
+    // the header that is still the card. It is deliberately not any more:
+    // Edvard asked for the full journal to close when its own text is
+    // clicked, so inside the body a click means "shut this drawer" rather
+    // than "collapse the card". That is pinned below instead.
+    for (const selector of [".entry-brief", ".entry-meta", ".entry-toggle"]) {
       const card = cards(window)[0];
       const target = card.querySelector(selector);
       assert.ok(target, "expected " + selector + " to exist");
@@ -151,37 +159,50 @@ describe("two entries for one cycle are two different cards", () => {
     // listed twice in the Nova app?" They were not duplicates; both cards
     // rendered the same digest line as their summary.
     const [first, second] = cards(window);
-    const summary = (card) => card.querySelector(".entry-summary").textContent;
+    const summary = (card) => card.querySelector(".entry-brief").textContent;
     assert.notEqual(summary(first), summary(second));
   });
 
   test("the digest line goes to the cycle's own run, not to its addendum", () => {
-    const line = lineText(payload.digest.lines.find((l) => l.cycle === 57));
+    const line = payload.digest.lines.find((l) => l.cycle === 57);
     const [addendum, run] = cards(window);
-    assert.equal(run.querySelector(".entry-summary").textContent, line);
-    assert.notEqual(addendum.querySelector(".entry-summary").textContent, line);
+    assert.equal(run.querySelector(".entry-brief").textContent, lineBrief(line));
+    assert.notEqual(addendum.querySelector(".entry-brief").textContent, lineBrief(line));
+    // And the remainder is the drawer inside it, on that card only.
+    assert.equal(run.querySelector(".entry-digest").textContent.trim(),
+      line.restSpans.map((s) => s.text).join("").trim());
+    assert.equal(addendum.querySelector(".entry-digest"), null);
+    assert.ok(lineBrief(line).length < lineText(line).length,
+      "the fixture must actually split, or this test cannot fail");
   });
 
   test("the addendum summarises itself from its own first paragraph", () => {
     const addendum = cards(window)[0];
+    const brief = payload.journal.entries[0].briefSpans.map((s) => s.text).join("");
     const opening = payload.journal.entries[0].blocks.find((b) => b.type === "p");
     const text = opening.spans.map((s) => s.text).join("");
-    assert.equal(addendum.querySelector(".entry-summary").textContent, text);
+    assert.equal(addendum.querySelector(".entry-brief").textContent, brief);
+    assert.ok(text.startsWith(brief), "the brief is the front of that paragraph");
+    assert.ok(brief.length < text.length, "and shorter than it, or nothing is being tested");
   });
 
   test("the digest summary renders its bold instead of showing asterisks", () => {
     // The digest line was the only text on the page rendering its own
     // markup, and it is the line Edvard called hard to read.
     const run = cards(window)[1];
-    const summary = run.querySelector(".entry-summary");
+    const summary = run.querySelector(".entry-brief");
     assert.equal(summary.querySelectorAll("strong").length, 1);
-    assert.equal(summary.querySelector("strong").textContent, "The digest line for cycle 57");
+    assert.equal(
+      summary.querySelector("strong").textContent,
+      "The digest line for cycle 57, which opens with a bolded headline sentence "
+        + "the way every live one does."
+    );
     assert.ok(!summary.textContent.includes("**"), summary.textContent);
   });
 
   test("no summary anywhere in the feed leaks a markdown asterisk", () => {
     for (const card of cards(window)) {
-      const summary = card.querySelector(".entry-summary");
+      const summary = card.querySelector(".entry-brief");
       if (summary) assert.ok(!summary.textContent.includes("**"), summary.textContent);
     }
   });
@@ -299,9 +320,9 @@ describe("a deep-linked cycle", () => {
 
   test("still gives the digest line to only one of them", async () => {
     const window = await loadSite("/cycle/57");
-    const line = lineText(payload.digest.lines.find((l) => l.cycle === 57));
-    const summaries = cards(window).map((c) => c.querySelector(".entry-summary").textContent);
-    assert.equal(summaries.filter((s) => s === line).length, 1);
+    const brief = lineBrief(payload.digest.lines.find((l) => l.cycle === 57));
+    const summaries = cards(window).map((c) => c.querySelector(".entry-brief").textContent);
+    assert.equal(summaries.filter((s) => s === brief).length, 1);
   });
 });
 
@@ -326,5 +347,82 @@ describe("the vault cannot inject markup", () => {
     assert.equal(window.document.querySelectorAll("script:not([src])").length, 0);
     assert.equal(window.document.querySelectorAll("img").length, 0);
     assert.match(cards(window)[0].textContent, /<script>/);
+  });
+});
+
+/* Edvard, issues.md 2026-08-09: "when a journey card is opened, the Digest is
+ * revealed. Below that, a 'read the full journal' button to expand the full
+ * journal. If the full journal text is clicked or the button, the full journal
+ * is closed again. So its a drawer within a drawer."
+ *
+ * Three levels, and each transition is a separate assertion below, because the
+ * bug this shape invites is one click doing two things -- a tap on the inner
+ * button also collapsing the outer card, since both listeners see it. */
+describe("a drawer within a drawer", () => {
+  let window;
+  before(async () => {
+    window = await loadSite();
+  });
+
+  const reading = (card) => card.classList.contains("is-reading");
+  const journalButton = (card) => card.querySelector(".journal-toggle");
+  const firstCard = () => cards(window)[0];
+
+  test("a collapsed card shows only the brief", () => {
+    const card = firstCard();
+    assert.ok(card.querySelector(".entry-brief"), "the brief is always present");
+    assert.ok(!expanded(card));
+    assert.ok(!reading(card));
+  });
+
+  test("opening the card reveals the rest of the digest and the button", () => {
+    const card = firstCard();
+    click(window, card.querySelector(".entry-brief"));
+    assert.ok(expanded(card));
+    assert.ok(journalButton(card), "the button exists");
+    assert.ok(!reading(card), "the journal itself stays shut at this level");
+  });
+
+  test("the button opens the full journal without collapsing the card", () => {
+    const card = firstCard();
+    click(window, journalButton(card));
+    assert.ok(reading(card), "the journal opened");
+    assert.ok(expanded(card), "and the card it sits inside did not collapse");
+  });
+
+  test("the button says what it will do next", () => {
+    const card = firstCard();
+    assert.equal(journalButton(card).textContent, "Close the full journal");
+  });
+
+  test("clicking the journal text closes the journal, not the card", () => {
+    const card = firstCard();
+    assert.ok(reading(card));
+    click(window, card.querySelector(".entry-body"));
+    assert.ok(!reading(card), "the journal closed");
+    assert.ok(expanded(card), "the card stayed open");
+    assert.equal(journalButton(card).textContent, "Read the full journal");
+  });
+
+  test("the button closes it again too", () => {
+    const card = firstCard();
+    click(window, journalButton(card));
+    assert.ok(reading(card));
+    click(window, journalButton(card));
+    assert.ok(!reading(card));
+    assert.ok(expanded(card));
+  });
+
+  test("collapsing the card shuts the drawer inside it", async () => {
+    // Otherwise reopening a card drops you back into the middle of a 115-line
+    // entry you had already closed.
+    const card = firstCard();
+    click(window, journalButton(card));
+    assert.ok(reading(card));
+    click(window, card.querySelector(".entry-brief"));
+    assert.ok(!expanded(card));
+    click(window, card.querySelector(".entry-brief"));
+    assert.ok(expanded(card));
+    assert.ok(!reading(card), "reopening the card does not reopen the journal");
   });
 });
