@@ -182,5 +182,12 @@ def test_the_key_range_covers_a_filename_that_starts_with_an_emoji():
     end = json.loads(query["endkey"][0])
     assert start <= "notes/🔥.md" <= end
     assert start <= "notes/plain.md" <= end
-    # ...and stops short of the next folder along.
+    # ...and stops short of the folders either side of it. The endkey is
+    # what excludes the one after; the startkey is the only thing
+    # excluding the one before, and without that assertion a startkey of
+    # `""` passes every other test in this suite -- the client-side
+    # prefix filter still returns the right answer, it just makes CouchDB
+    # read the whole database first, which is the entire point of the
+    # range.
     assert not start <= "notesx/other.md" <= end
+    assert not start <= "diary/other.md" <= end
