@@ -5064,7 +5064,6 @@ def test_main_finishes_the_in_flight_tick_after_sigterm(drainable_main):
 
     with patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
          patch.object(drainable_main, "start_invoke_server", lambda: None), \
-         patch.object(drainable_main, "start_nova_site", lambda: None), \
          patch.object(drainable_main, "log", lambda *a, **k: None):
         drainable_main.main()
 
@@ -5098,7 +5097,6 @@ def test_main_waits_for_an_in_flight_heartbeat_thread_before_exiting(drainable_m
     with patch.object(hb_module, "_heartbeat_threads", {"hb1": thread}), \
          patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
          patch.object(drainable_main, "start_invoke_server", lambda: None), \
-         patch.object(drainable_main, "start_nova_site", lambda: None), \
          patch.object(drainable_main, "log", lambda *a, **k: None), \
          patch.object(hb_module, "log", lambda *a, **k: None):
         drainable_main.main()
@@ -5129,7 +5127,6 @@ def test_main_starts_no_new_tick_when_the_signal_lands_while_idle(drainable_main
     with patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
          patch.object(drainable_main, "_sleep_between_ticks", side_effect=fake_sleep), \
          patch.object(drainable_main, "start_invoke_server", lambda: None), \
-         patch.object(drainable_main, "start_nova_site", lambda: None), \
          patch.object(drainable_main, "log", lambda *a, **k: None):
         drainable_main.main()
 
@@ -5147,7 +5144,6 @@ def test_main_keeps_polling_when_no_signal_arrives(drainable_main):
 
     with patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
          patch.object(drainable_main, "start_invoke_server", lambda: None), \
-         patch.object(drainable_main, "start_nova_site", lambda: None), \
          patch.object(drainable_main, "log", lambda *a, **k: None):
         with pytest.raises(KeyboardInterrupt):
             drainable_main.main()
