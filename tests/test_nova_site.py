@@ -1,4 +1,7 @@
-"""Nova's read-only site: the parsers, and the real request path.
+"""Nova's site: the parsers, and the real request path.
+
+The write half -- what a capture does to a file -- lives in
+test_nova_capture.py; what reaches it over HTTP is here.
 
 The fixtures are real. `journal_sample.md` is five entries lifted
 verbatim out of the live journal, chosen because between them they
@@ -19,11 +22,12 @@ import importlib
 import io
 import json
 import os
+import re
 from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_site
+from agora_runner import nova_capture, nova_site
 from agora_runner.nova_journal import (
     build_status,
     parse_digest,
@@ -341,6 +345,20 @@ def _get(path):
     return status, head.decode("latin-1"), body
 
 
+def _post(path, payload, content_type="application/json"):
+    body = json.dumps(payload).encode()
+    request = (
+        f"POST {path} HTTP/1.1\r\nHost: nova\r\n"
+        f"Content-Type: {content_type}\r\nContent-Length: {len(body)}\r\n\r\n"
+    ).encode() + body
+    sock = _FakeSocket(request)
+    nova_site.NovaSiteHandler(sock, ("127.0.0.1", 50000), _FakeServer())
+    raw = sock.sent.getvalue()
+    head, _, response_body = raw.partition(b"\r\n\r\n")
+    status = int(head.split(b" ", 2)[1])
+    return status, head.decode("latin-1"), response_body
+
+
 def test_root_serves_the_shell():
     status, head, body = _get("/")
     assert status == 200
@@ -412,11 +430,156 @@ def test_a_vault_failure_is_reported_as_502():
     assert "couchdb down" in json.loads(body)["error"]
 
 
-def test_the_site_is_read_only():
-    """No write verb is implemented at all -- not refused at runtime,
-    simply absent, so adding one has to be a deliberate act."""
-    for verb in ("do_POST", "do_PUT", "do_PATCH", "do_DELETE"):
+def test_app_js_builds_no_html_from_strings():
+    """app.js's header declares that it contains no innerHTML and never
+    should -- the reason markup is something it cannot produce rather than
+    something it must remember to escape. Until now that was a comment
+    enforced by nothing, which is the same shape as the sw.js cache comment
+    Cycle 50 found describing a behaviour the code did not have.
+
+    Comments are stripped first: the header says the word "innerHTML" twice
+    while forbidding it, so a naive scan reports the file as violating its
+    own rule.
+    """
+    source = open(
+        os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "app.js"),
+        encoding="utf-8",
+    ).read()
+    code = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    code = re.sub(r"^\s*//.*$", "", code, flags=re.MULTILINE)
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+        assert sink not in code, f"{sink} reached app.js"
+
+
+def test_the_only_write_verb_is_post():
+    """This replaces Cycle 50's `test_the_site_is_read_only`, which asserted
+    no write verb existed at all so that adding one had to be a deliberate
+    act. Adding the capture box is that act. The invariant it was really
+    protecting -- that the write surface stays one verb wide and visible in
+    a test -- is what is pinned here instead."""
+    assert hasattr(nova_site.NovaSiteHandler, "do_POST")
+    for verb in ("do_PUT", "do_PATCH", "do_DELETE"):
         assert not hasattr(nova_site.NovaSiteHandler, verb)
+
+
+def test_post_to_anything_but_capture_is_404():
+    for path in ["/", "/api/journal", "/api/digest", "/app.js", "/api/capture/issues"]:
+        status, _, _ = _post(path, {"target": "issues", "text": "x"})
+        assert status == 404, path
+
+
+def test_a_capture_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "capture", return_value=(True, "captured to issues")) as cap:
+        status, _, body = _post("/api/capture", {"target": "issues", "text": "the app needs a restart"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    cap.assert_called_once_with("issues", "the app needs a restart")
+
+
+@pytest.mark.parametrize("target", ["issues", "ideas"])
+def test_both_targets_are_accepted(target):
+    with patch.object(nova_site, "capture", return_value=(True, "ok")) as cap:
+        status, _, _ = _post("/api/capture", {"target": target, "text": "x"})
+    assert status == 200
+    assert cap.call_args[0][0] == target
+
+
+@pytest.mark.parametrize("payload", [
+    {"target": "journal", "text": "x"},
+    {"target": "../../etc/passwd", "text": "x"},
+    {"target": "projects/sokrates/projects/agora/issues.md", "text": "x"},
+    {"text": "x"},
+    {"target": "issues"},
+    {"target": "issues", "text": 42},
+])
+def test_a_bad_payload_is_rejected_before_the_vault_is_touched(payload):
+    """Notably a `target` that is a path: nothing a client sends is ever
+    used to address a vault document."""
+    with patch.object(nova_site, "capture") as cap:
+        status, _, _ = _post("/api/capture", payload)
+    assert status == 400
+    cap.assert_not_called()
+
+
+def test_an_oversized_body_is_refused_without_being_read():
+    """Content-Length is attacker-controlled and `rfile.read(n)` allocates
+    it; this pod's memory limit is 256Mi. The body is deliberately never
+    sent -- if the handler read it, the test would hang or mis-parse."""
+    oversized = nova_capture.MAX_BODY_BYTES + 1
+    request = (
+        f"POST /api/capture HTTP/1.1\r\nHost: nova\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {oversized}\r\n\r\n"
+    ).encode()
+    sock = _FakeSocket(request)
+    with patch.object(nova_site, "capture") as cap:
+        nova_site.NovaSiteHandler(sock, ("127.0.0.1", 50000), _FakeServer())
+    status = int(sock.sent.getvalue().split(b" ", 2)[1])
+    assert status == 413
+    cap.assert_not_called()
+
+
+def test_a_body_at_the_limit_is_still_accepted():
+    """The cap is a memory bound, not an opinion about how much Edvard may
+    type, so the boundary itself has to pass."""
+    text = "x" * (nova_capture.MAX_BODY_BYTES - 200)
+    with patch.object(nova_site, "capture", return_value=(True, "ok")) as cap:
+        status, _, _ = _post("/api/capture", {"target": "ideas", "text": text})
+    assert status == 200
+    assert len(cap.call_args[0][1]) == len(text)
+
+
+def test_a_form_content_type_is_refused():
+    """The CSRF property: requiring application/json makes this a
+    preflighted request, and the server answers no OPTIONS and sends no
+    CORS headers, so a page on another origin cannot post here."""
+    with patch.object(nova_site, "capture") as cap:
+        status, _, _ = _post(
+            "/api/capture", {"target": "issues", "text": "x"},
+            content_type="application/x-www-form-urlencoded",
+        )
+    assert status == 415
+    cap.assert_not_called()
+
+
+def test_the_site_sends_no_cors_headers():
+    """Without these the preflight above cannot succeed. If a future change
+    adds them, this write endpoint stops being same-origin-only."""
+    for path in ["/", "/api/journal"]:
+        _, head, _ = _get(path)
+        assert "access-control-allow-origin" not in head.lower(), path
+
+
+def test_malformed_json_is_a_400_not_a_500():
+    sock = _FakeSocket(
+        b"POST /api/capture HTTP/1.1\r\nHost: nova\r\n"
+        b"Content-Type: application/json\r\nContent-Length: 5\r\n\r\n{not!"
+    )
+    nova_site.NovaSiteHandler(sock, ("127.0.0.1", 50000), _FakeServer())
+    assert int(sock.sent.getvalue().split(b" ", 2)[1]) == 400
+
+
+def test_a_failed_capture_is_reported_as_502_so_the_client_keeps_the_text():
+    """app.js only clears the box on ok:true -- a failure that looked like a
+    success would silently eat the thought the box exists to catch."""
+    with patch.object(nova_site, "capture", return_value=(False, "could not write")):
+        status, _, body = _post("/api/capture", {"target": "issues", "text": "x"})
+    assert status == 502
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_capture_that_raises_is_a_502_not_a_traceback():
+    with patch.object(nova_site, "capture", side_effect=RuntimeError("couchdb down")):
+        status, _, body = _post("/api/capture", {"target": "issues", "text": "x"})
+    assert status == 502
+    assert "couchdb down" in json.loads(body)["error"]
+
+
+def test_every_capture_attempt_is_audited_including_the_failures():
+    with patch.object(nova_site, "capture", return_value=(False, "could not write")), \
+            patch.object(nova_site, "audit") as audited:
+        _post("/api/capture", {"target": "issues", "text": "x"})
+    assert audited.call_count == 1
+    assert audited.call_args.kwargs["is_error"] is True
 
 
 def test_start_nova_site_binds_and_serves_the_real_handler():
