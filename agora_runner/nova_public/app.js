@@ -87,6 +87,9 @@
       var line = el("p", "status-sub");
       line.appendChild(el("span", outcomeClass(status.lastOutcome), status.lastOutcome));
       if (status.lastPr) line.appendChild(el("span", "status-pr", status.lastPr));
+      if (status.lastOutcomeDetail) {
+        line.appendChild(el("span", "status-pr", status.lastOutcomeDetail));
+      }
       statusEl.appendChild(line);
     }
   }
@@ -125,6 +128,9 @@
       head.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
     }
     if (entry.pr) head.appendChild(el("span", "pr", entry.pr));
+    // The qualifier five entries carry ("stuck — CI outage, merged nothing")
+    // goes beside the pill, not inside it. Nothing is dropped.
+    if (entry.outcomeDetail) head.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
     card.appendChild(head);
 
     if (entry.title && entry.cycle !== null && entry.cycle !== undefined) {

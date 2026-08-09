@@ -100,6 +100,30 @@ def parse_heading(heading):
     }
 
 
+_OUTCOME_SPLIT_RE = re.compile(r"^(?P<label>[A-Za-z-]+(?:[ \t]+[A-Za-z-]+)?)[ \t]*(?P<detail>[(,—-].*)?$", re.DOTALL)
+
+
+def split_outcome(outcome):
+    """`Outcome:` -> the word for the badge, and the rest as detail.
+
+    Five of the 51 live entries qualify their outcome in prose --
+    `stuck — CI outage, merged nothing`, `shipped (vault-only: issues #34
+    boarded and done, ...)`. All of it is true and none of it fits in an
+    uppercase pill, so the qualifier is separated out rather than
+    truncated away: the badge shows the word, the detail sits beside it.
+    Nothing is dropped, which is the whole point.
+    """
+    outcome = (outcome or "").strip()
+    if not outcome:
+        return "", ""
+    match = _OUTCOME_SPLIT_RE.match(outcome)
+    if not match:
+        return outcome, ""
+    label = match.group("label").strip()
+    detail = (match.group("detail") or "").strip().lstrip("(,—- ").rstrip(")").strip()
+    return label, detail
+
+
 def parse_journal(markdown):
     """`journal.md` -> a list of entries in the order they appear (newest first).
 
@@ -126,9 +150,11 @@ def parse_journal(markdown):
             raw_body = raw_body[: footer.start()].rstrip()
 
         entry = parse_heading(match.group(1))
+        label, detail = split_outcome(outcome)
         entry["body"] = raw_body
         entry["pr"] = pr
-        entry["outcome"] = outcome
+        entry["outcome"] = label
+        entry["outcomeDetail"] = detail
         entries.append(entry)
     return entries
 
@@ -275,6 +301,7 @@ def build_status(entries):
         "lastWokeTime": latest["time"] if latest else "",
         "lastPr": latest["pr"] if latest else "",
         "lastOutcome": latest["outcome"] if latest else "",
+        "lastOutcomeDetail": latest.get("outcomeDetail", "") if latest else "",
         "runningDays": running_days,
         "entryCount": len(entries),
     }

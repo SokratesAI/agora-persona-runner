@@ -31,6 +31,7 @@ from agora_runner.nova_journal import (
     parse_journal,
     render_blocks,
     render_inline,
+    split_outcome,
 )
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -152,6 +153,47 @@ def test_an_entry_with_no_footer_still_parses():
     assert entry["pr"] == ""
     assert entry["outcome"] == ""
     assert entry["body"] == "Just prose."
+
+
+# --- outcomes -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "outcome,label,detail",
+    [
+        ("merged", "merged", ""),
+        ("no-op", "no-op", ""),
+        ("stuck — CI outage, merged nothing", "stuck", "CI outage, merged nothing"),
+        ("shipped (vault-only)", "shipped", "vault-only"),
+        (
+            "no-op (verification: bridge#14 already covers Next-cycle item 1)",
+            "no-op",
+            "verification: bridge#14 already covers Next-cycle item 1",
+        ),
+        ("merged — but see the incident above", "merged", "but see the incident above"),
+        ("", "", ""),
+    ],
+)
+def test_a_qualified_outcome_splits_into_a_badge_and_its_detail(outcome, label, detail):
+    assert split_outcome(outcome) == (label, detail)
+
+
+def test_no_qualifier_is_ever_dropped(entries):
+    """The badge is a rendering choice; losing the sentence beside it
+    would be a truncation, and this file does not truncate."""
+    for entry in entries:
+        assert entry["outcome"] == entry["outcome"].strip()
+        assert "(" not in entry["outcome"]
+
+
+def test_the_live_journals_qualified_outcomes_survive_the_round_trip():
+    label, detail = split_outcome(
+        "shipped (vault-only: issues #34 boarded and done, digest reformatted, "
+        "identity.md + prompt.md path fixed)"
+    )
+    assert label == "shipped"
+    assert detail.startswith("vault-only: issues #34 boarded")
+    assert detail.endswith("path fixed")
 
 
 # --- rendering ------------------------------------------------------------

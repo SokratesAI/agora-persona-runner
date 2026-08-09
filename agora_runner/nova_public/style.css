@@ -107,6 +107,7 @@ pre code { background: none; padding: 0; }
 
 .stamp { color: var(--dim); font-size: 0.82rem; }
 .pr { color: var(--dim); font-size: 0.82rem; }
+.outcome-detail { color: var(--dim); font-size: 0.82rem; font-style: italic; }
 
 .badge {
   font-size: 0.72rem;
