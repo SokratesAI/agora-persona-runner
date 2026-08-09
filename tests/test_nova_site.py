@@ -32,6 +32,7 @@ import pytest
 
 from agora_runner import nova_capture, nova_site
 from agora_runner.nova_journal import (
+    assign_emoji,
     build_status,
     parse_digest,
     parse_heading,
@@ -716,3 +717,92 @@ def test_the_site_entrypoint_script_reaches_site_main():
     entrypoint = importlib.import_module("run_nova_site")
     site_main_module = importlib.import_module("agora_runner.nova_site_main")
     assert entrypoint.main is site_main_module.main
+
+
+# --- Cycle 56: the emoji Edvard asked for, and the collapsed card ---
+
+
+def _entry(body, title=""):
+    return {"body": body, "title": title}
+
+
+def test_every_entry_gets_an_emoji():
+    """app.js reads `entry.emoji` unconditionally. An entry matching no
+    topic at all must still carry the fallback rather than `undefined`."""
+    entries = assign_emoji([_entry("Nothing in here matches any topic whatsoever.")])
+    assert entries[0]["emoji"] == "\U0001f527"
+
+
+def test_a_word_in_every_entry_loses_to_a_word_in_one():
+    """The whole reason scoring is corpus-relative rather than raw counts.
+
+    Every cycle writes a journal and reads the digest, so those words are
+    in all 57 live entries and discriminate between none of them -- scored
+    naively they won 18 outright, including entries about outages. Here
+    "journal" appears four times in the entry that is really about
+    heartbeats, and once in every other entry; "heartbeat" appears twice,
+    in one. Rarity has to beat frequency or the feed is a wall of 📓.
+    """
+    corpus = [
+        _entry("journal journal journal journal. heartbeat cadence heartbeat."),
+        _entry("journal digest vault, a cycle about the journal."),
+        _entry("journal digest vault, another about the digest."),
+        _entry("journal digest vault, a third about the vault."),
+    ]
+    assigned = assign_emoji(corpus)
+    assert assigned[0]["emoji"] == "\U0001f493"
+    assert assigned[1]["emoji"] == "\U0001f4d3"
+
+
+def test_an_outage_beats_the_infrastructure_it_happened_in():
+    """Cycles 53 and 54 were both real outages whose bodies are necessarily
+    full of pods, manifests and ArgoCD -- and on plain scoring the
+    infrastructure vocabulary won, labelling two hours of downtime as
+    routine wrench work. Severity overrides topic."""
+    entry = _entry(
+        "I broke the bridge for two hours and no cycle ran.\n\n"
+        "kubectl kubectl manifest manifest argocd argocd deploy deploy "
+        "namespace namespace pod pod kubernetes limitrange"
+    )
+    assert assign_emoji([entry])[0]["emoji"] == "\U0001f6a8"
+
+
+def test_an_outage_only_narrated_is_not_this_cycles_outage():
+    """The counterweight, and the reason the override reads the opening
+    paragraph rather than the body. Every entry in this journal narrates
+    the previous cycle's failures, so a body-wide match makes 17 of 57
+    cycles look like incidents when 5 were."""
+    entry = _entry(
+        "Heartbeats can be scheduled on a cron expression now.\n\n"
+        "Cycle 53 was OOMKilled and Cycle 54 spent the whole outage on it."
+    )
+    assert assign_emoji([entry])[0]["emoji"] != "\U0001f6a8"
+
+
+def test_the_payload_carries_the_emoji_the_client_reads():
+    """journal_payload rebuilds each entry as a new dict; the emoji has to
+    survive that or app.js renders a card with no icon and no error."""
+    with patch.object(nova_site, "vault_read_path", return_value=_fixture("journal_sample.md")):
+        payload = nova_site.journal_payload()
+    assert payload["entries"]
+    assert all(entry.get("emoji") for entry in payload["entries"])
+
+
+def test_a_collapsed_card_hides_the_body_without_dropping_it():
+    """Edvard asked for cards that collapse to 2-3 lines. The summary is
+    clamped in CSS and the body hidden by a class -- both still in the DOM.
+    A server-side truncation would have been the easy version and would
+    have put the prose out of reach of find-in-page for good."""
+    css = open(
+        os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "style.css"),
+        encoding="utf-8",
+    ).read()
+    assert ".entry.is-collapsed .entry-body" in css
+    assert "-webkit-line-clamp: 3" in css
+
+    source = open(
+        os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "app.js"),
+        encoding="utf-8",
+    ).read()
+    code = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    assert "substring(" not in code and "slice(0," not in code

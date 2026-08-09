@@ -107,43 +107,94 @@
     needsEl.hidden = false;
   }
 
-  function renderEntry(entry, digestLine) {
+  var nextBodyId = 0;
+
+  /** The first paragraph of the entry, for cycles with no digest line.
+   *
+   * That is not the corner case it sounds like: measured against the live
+   * files, 40 of 57 entries have none, because the digest is rewritten
+   * every cycle and its older lines have been dropped over time. So this
+   * is the summary for most of the feed, not a fallback for a few. Without
+   * it those 40 cards collapse to a row of dates. */
+  function firstParagraph(blocks) {
+    var found = (blocks || []).filter(function (block) { return block.type === "p"; })[0];
+    if (!found) return "";
+    return (found.spans || []).map(function (span) { return span.text; }).join("");
+  }
+
+  function renderEntry(entry, digestLine, expanded) {
     var card = el("article", "entry");
     if (entry.cycle !== null && entry.cycle !== undefined) card.id = "cycle-" + entry.cycle;
 
-    var head = el("header", "entry-head");
-    var heading = el("h2");
-    if (entry.cycle !== null && entry.cycle !== undefined) {
-      var link = el("a", "cycle-link", "Cycle " + entry.cycle);
-      link.href = "/cycle/" + entry.cycle;
-      heading.appendChild(link);
-    } else {
-      heading.appendChild(el("span", "cycle-link", entry.title || "Note"));
+    var bodyId = "entry-body-" + nextBodyId++;
+
+    // The whole header row is the tap target, per Edvard's "expanded/closed
+    // with a tap" -- a chevron alone is a ~20px target on a phone.
+    var toggle = el("button", "entry-toggle");
+    toggle.type = "button";
+    toggle.setAttribute("aria-controls", bodyId);
+
+    if (entry.emoji) {
+      var emoji = el("span", "entry-emoji", entry.emoji);
+      // Decorative: the text beside it already says what the cycle did, and
+      // a screen reader announcing "police car light" helps nobody.
+      emoji.setAttribute("aria-hidden", "true");
+      toggle.appendChild(emoji);
     }
-    head.appendChild(heading);
+
+    var heading = el("h2");
+    heading.appendChild(el("span", "cycle-link", entry.cycle !== null && entry.cycle !== undefined
+      ? "Cycle " + entry.cycle
+      : entry.title || "Note"));
+    toggle.appendChild(heading);
 
     var stamp = [entry.date, entry.time].filter(Boolean).join(" ");
-    if (stamp) head.appendChild(el("time", "stamp", stamp + " Oslo"));
+    if (stamp) toggle.appendChild(el("time", "stamp", stamp + " Oslo"));
     if (entry.outcome) {
-      head.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
+      toggle.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
     }
-    if (entry.pr) head.appendChild(el("span", "pr", entry.pr));
+    if (entry.pr) toggle.appendChild(el("span", "pr", entry.pr));
     // The qualifier five entries carry ("stuck — CI outage, merged nothing")
     // goes beside the pill, not inside it. Nothing is dropped.
-    if (entry.outcomeDetail) head.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
+    if (entry.outcomeDetail) toggle.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
+    toggle.appendChild(el("span", "chevron", "▾"));
+
+    var head = el("header", "entry-head");
+    head.appendChild(toggle);
+    // The permalink cannot live inside the button -- an <a> nested in a
+    // <button> is invalid and phones disagree about which one a tap hits.
+    if (entry.cycle !== null && entry.cycle !== undefined) {
+      var link = el("a", "entry-permalink", "#");
+      link.href = "/cycle/" + entry.cycle;
+      link.setAttribute("aria-label", "Permalink to cycle " + entry.cycle);
+      head.appendChild(link);
+    }
     card.appendChild(head);
 
     if (entry.title && entry.cycle !== null && entry.cycle !== undefined) {
       card.appendChild(el("p", "entry-title", entry.title));
     }
-    // The digest line is what Edvard was told at the time, in his own
-    // terms; the entry below it is the full account. Showing both makes
-    // the card readable without opening the prose.
-    if (digestLine) card.appendChild(el("p", "entry-summary", digestLine.text));
+
+    // Collapsed, this is the 2-3 line description. It is clamped in CSS
+    // rather than cut here on purpose: the full text stays in the DOM and
+    // in the page's find-in-page, and expanding is a class change rather
+    // than a re-render. Nothing is ever truncated away.
+    var summaryText = digestLine ? digestLine.text : firstParagraph(entry.blocks);
+    if (summaryText) card.appendChild(el("p", "entry-summary", summaryText));
 
     var body = el("div", "entry-body");
+    body.id = bodyId;
     renderBlocks(body, entry.blocks);
     card.appendChild(body);
+
+    function setExpanded(open) {
+      card.className = open ? "entry is-expanded" : "entry is-collapsed";
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    setExpanded(!!expanded);
+    toggle.addEventListener("click", function () {
+      setExpanded(toggle.getAttribute("aria-expanded") !== "true");
+    });
     return card;
   }
 
@@ -171,8 +222,10 @@
       feed.appendChild(back);
       if (!entries.length) feed.appendChild(el("p", "empty", "No entry for cycle " + wanted + "."));
     }
+    // A single cycle you navigated to deliberately opens expanded; there is
+    // nothing to scan past on that page, which is the only reason to collapse.
     entries.forEach(function (entry) {
-      feed.appendChild(renderEntry(entry, byCycle[entry.cycle]));
+      feed.appendChild(renderEntry(entry, byCycle[entry.cycle], wanted !== null));
     });
   }
 
@@ -200,6 +253,21 @@
     var captureStatus = document.getElementById("capture-status");
     var buttons = Array.prototype.slice.call(form.querySelectorAll(".capture-btn"));
 
+    /* Edvard, issues.md 2026-08-09: "the input box for the Nova pwa is too
+     * small and not rescalable so i can't see my entire input text if its
+     * more than 3 lines." CSS `resize: vertical` was already there and does
+     * nothing on iOS -- mobile browsers render no resize handle at all, so
+     * the box could only ever be dragged on a desktop he does not use it
+     * from. Growing it as he types removes the gesture instead of fixing it.
+     *
+     * The height is cleared before it is read: scrollHeight of a fixed-height
+     * box is its content height *or* its current height, whichever is larger,
+     * so without this the box grows and never shrinks back. */
+    function fit() {
+      textEl.style.height = "auto";
+      textEl.style.height = textEl.scrollHeight + "px";
+    }
+
     function setStatus(text, isError) {
       captureStatus.textContent = text;
       captureStatus.className = isError ? "capture-status is-error" : "capture-status";
@@ -222,6 +290,7 @@
         .then(function (result) {
           if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
           textEl.value = "";
+          fit();
           setStatus("saved to " + target, false);
           // The capture may be the top bullet of a file the feed shows.
           load();
@@ -242,6 +311,8 @@
         send("issues");
       }
     });
+    textEl.addEventListener("input", fit);
+    fit();
   })();
 
   // Back/forward between /cycle/N and / without a round trip.

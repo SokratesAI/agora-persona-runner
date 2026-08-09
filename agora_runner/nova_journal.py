@@ -20,6 +20,7 @@ all (`### 2026-08-02 — Edvard's first message (not a cycle)`) still
 parses into a renderable entry instead of being dropped.
 """
 
+import math
 import re
 
 JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
@@ -124,6 +125,100 @@ def split_outcome(outcome):
     return label, detail
 
 
+# Edvard, issues.md 2026-08-09: "Would be fun to use some emojis to
+# represent what was done that cycle."
+#
+# Derived from the text rather than written into each entry's footer,
+# because the ask covers the 57 entries that already exist and none of
+# them can be rewritten -- `## Entries` is append-only, which is rule 3.
+# A footer field would only ever emoji the future.
+#
+# This is a scanning aid, not a classifier. There is no ground truth for
+# "what cycle 43 was about", so it was tuned by reading its output over
+# all 57 live entries until nothing was misleading -- which is a weaker
+# claim than correct, and worth saying out loud rather than implying.
+#
+# The siren is deliberately not in the table below. An outage is a
+# severity, not a topic: a cycle that spent two hours down also talks
+# about pods and manifests, and on plain scoring the infrastructure
+# vocabulary wins -- Cycles 53 and 54 both came out as routine wrench
+# work, which is a materially misleading thing to show someone scanning
+# for what went wrong. So it overrides instead.
+#
+# It matches the opening paragraph only, and deliberately omits the
+# obvious words "incident", "down for" and "killed mid". This corpus is
+# relentlessly self-referential -- every entry narrates the previous
+# cycle's failures -- so "mentions an outage" and "was an outage" share
+# a vocabulary entirely. Over whole bodies, 17 of 57 entries fire; over
+# the opening, where a cycle says what *it* did, 5 do.
+_INCIDENT_RE = re.compile(
+    r"outage|oomkill|crashloop|admission rejected|broke the bridge"
+    r"|no cycle ran|was already dying"
+)
+_INCIDENT_EMOJI = "🚨"
+_TOPIC_EMOJI = (
+    ("🔒", r"\brbac\b|clusterrole|networkpolicy|forbidden|credential|secret|tailnet|gitleaks"),
+    ("🌐", r"\bsite\b|\bpwa\b|website|frontend|browser|capture box|app\.js|service worker"),
+    ("💓", r"heartbeat|cron|schedule|cadence|poll loop"),
+    ("⚙️", r"kubernetes|kubectl|manifest|argocd|deploy|namespace|limitrange|\bpod\b"),
+    ("🧠", r"identity\.md|personality\.md|prompt\.md|playbook|constitution|how to work"),
+    ("📊", r"quota|token cost|cost table|memory\.peak|measured|metrics|percent"),
+    ("📓", r"journal|digest|vault|obsidian|issues\.md|ideas\.md"),
+    ("🧪", r"mutation|pytest|test suite|\bci\b"),
+)
+_DEFAULT_EMOJI = "🔧"
+
+
+def _haystack(body, title=""):
+    """The text an entry is scored against, opening paragraph weighted x3.
+
+    This journal's voice always leads with the outcome ("The site stops
+    going down every time I run"), so the opening is a far better signal
+    than a keyword mentioned once in passing four paragraphs down.
+    """
+    opening = (body or "").split("\n\n", 1)[0]
+    return "\n".join([title or "", opening, opening, body or ""]).lower()
+
+
+def assign_emoji(entries):
+    """Give every entry an `emoji`, scoring topics against the whole corpus.
+
+    Raw keyword frequency does not work here, and the way it fails is the
+    lesson from Cycle 54 wearing a different costume. Every cycle writes a
+    journal, reads the digest and touches the vault -- so "journal",
+    "digest" and "vault" appear in all 57 entries and discriminate between
+    exactly none of them. Scored naively they won 18 entries outright,
+    including ones about outages and heartbeats. A term that matches
+    everything tells you nothing about which thing you are looking at.
+
+    So each topic is weighted by how rare it is across the corpus:
+    `log(1 + N/df)`. A topic present in every entry keeps a small weight
+    rather than zero (with one entry, df == N, and zeroing would leave
+    every corpus of one undecidable), while a topic appearing in three
+    entries counts for several times as much per match.
+    """
+    entries = list(entries)
+    haystacks = [_haystack(e.get("body", ""), e.get("title", "")) for e in entries]
+    total = len(entries)
+    weights = []
+    for _, pattern in _TOPIC_EMOJI:
+        found = sum(1 for text in haystacks if re.search(pattern, text))
+        weights.append(math.log(1 + total / found) if found else 0.0)
+
+    for entry, text in zip(entries, haystacks):
+        opening = (entry.get("body", "") or "").split("\n\n", 1)[0].lower()
+        if _INCIDENT_RE.search(opening):
+            entry["emoji"] = _INCIDENT_EMOJI
+            continue
+        best, best_score = _DEFAULT_EMOJI, 0.0
+        for (emoji, pattern), weight in zip(_TOPIC_EMOJI, weights):
+            score = len(re.findall(pattern, text)) * weight
+            if score > best_score:
+                best, best_score = emoji, score
+        entry["emoji"] = best
+    return entries
+
+
 def parse_journal(markdown):
     """`journal.md` -> a list of entries in the order they appear (newest first).
 
@@ -156,7 +251,7 @@ def parse_journal(markdown):
         entry["outcome"] = label
         entry["outcomeDetail"] = detail
         entries.append(entry)
-    return entries
+    return assign_emoji(entries)
 
 
 def _sections(markdown):
