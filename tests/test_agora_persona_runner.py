@@ -4131,9 +4131,27 @@ _VAULT_TOOLS_CHUNKS = {
 }
 
 
+def _all_docs_rows(path, ids):
+    """What a real `_all_docs` returns for this query, honouring
+    `startkey`/`endkey`.
+
+    The fakes used to answer every `_all_docs` GET with the whole
+    dictionary, which meant a listing scoped to one folder and a listing
+    of the entire vault were indistinguishable to them. `_vault_file_docs`
+    now asks CouchDB for a key range instead of filtering client-side, so
+    a wrong range would be invisible to a fake that ignores it -- and the
+    failure mode is files silently missing from a listing, which is the
+    exact bug tests/test_vault_hides_deleted_files.py exists about.
+    """
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+    start = json.loads(query.get("startkey", ['""'])[0])
+    end = json.loads(query.get("endkey", ['"\U0010FFFF"'])[0])
+    return [{"id": i} for i in sorted(ids) if start <= i <= end]
+
+
 def _fake_vault_couch_req(method, path, body=None):
-    if method == "GET" and path.endswith("_all_docs"):
-        return 200, {"rows": [{"id": k} for k in _VAULT_TOOLS_FILEDOCS]}
+    if method == "GET" and "_all_docs" in path:
+        return 200, {"rows": _all_docs_rows(path, _VAULT_TOOLS_FILEDOCS)}
     if method == "POST" and "_all_docs" in path:
         rows = []
         for key in body["keys"]:
@@ -4220,8 +4238,8 @@ def test_vault_find_duplicate_titles_detects_collision(runner):
     chunks = {"chunk:a": "# Same Title\nbody", "chunk:b": "# Same Title\nother body"}
 
     def fake(method, path, body=None):
-        if method == "GET" and path.endswith("_all_docs"):
-            return 200, {"rows": [{"id": k} for k in filedocs]}
+        if method == "GET" and "_all_docs" in path:
+            return 200, {"rows": _all_docs_rows(path, filedocs)}
         if method == "POST" and "_all_docs" in path:
             rows = []
             for key in body["keys"]:

@@ -34,6 +34,34 @@ def _couch_batched(items, n):
         yield items[i:i + n]
 
 
+# The largest code point there is, so `prefix + _ID_MAX` sorts above every
+# id that starts with `prefix` and below the next one that doesn't.
+# `_all_docs` collates ids by raw UTF-8 bytes, and U+10FFFF encodes to
+# F4 8F BF BF -- the maximum any valid UTF-8 sequence can begin with. The
+# obvious `￰` is the common idiom and is wrong here: it encodes to
+# EF BF B0, so a filename starting with an emoji (F0 9F ...) would sort
+# above it and be silently dropped from the listing.
+_ID_MAX = "\U0010FFFF"
+
+
+def _id_range(prefix):
+    """`startkey`/`endkey` restricting `_all_docs` to one folder.
+
+    Doc ids in a LiveSync vault are the lowercased file paths, so a folder
+    is a contiguous key range and CouchDB can seek straight to it instead
+    of returning the whole database for the caller to filter. Measured on
+    the live vault 2026-08-09: the unrestricted scan is 12174 rows in
+    1905ms; the same 70 rows by range is 11ms.
+
+    An empty prefix keeps the old behaviour -- `""` to U+10FFFF is every
+    document there is.
+    """
+    return urllib.parse.urlencode({
+        "startkey": json.dumps(prefix),
+        "endkey": json.dumps(prefix + _ID_MAX),
+    })
+
+
 def _vault_file_docs(prefix=""):
     """{doc_id: doc} for every file under `prefix` that still exists.
 
@@ -55,11 +83,11 @@ def _vault_file_docs(prefix=""):
     worse — unindexed, it scans all 10939 docs in 8.5s no matter how small
     the prefix.
     """
-    status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs")
+    prefix = prefix.lower()
+    status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs?{_id_range(prefix)}")
     if status != 200:
         return {}
     skip = ("_", "h:", "f:", "i:", "v:")
-    prefix = prefix.lower()
     keys = [
         row["id"] for row in data.get("rows", [])
         if not row["id"].startswith(skip) and row["id"].lower().startswith(prefix)
