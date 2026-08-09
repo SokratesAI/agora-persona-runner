@@ -1,0 +1,321 @@
+"""Comments on a cycle: where one lands, what survives the round trip.
+
+The write half is here; what reaches it over HTTP is in test_nova_site.py,
+the same split `test_nova_capture.py` already uses.
+
+The property most of these tests are really defending is that Edvard's
+text comes back **byte for byte**. A comment is prose he typed at a
+particular cycle, and the whole value of the channel is that a future
+cycle reads what he actually said rather than a reformatted version of
+it. So the round-trip tests below assert equality against the original
+string, not that it "contains" it -- a test that only checks containment
+would pass while the writer quietly escaped, wrapped or re-indented him.
+"""
+
+from datetime import datetime, timezone
+from unittest.mock import patch
+
+import pytest
+
+from agora_runner import nova_comments
+from agora_runner.nova_comments import (
+    COMMENTS_PATH,
+    add_comment,
+    clean_comment_text,
+    comments_by_cycle,
+    format_stamp,
+    insert_comment,
+    parse_comments,
+)
+
+# The shape the live file is created with -- frontmatter, both sections,
+# nothing else. Written out rather than imported so a change to the real
+# file cannot silently rewrite what these tests think they are testing.
+EMPTY = """---
+type: log
+tags: [agora, nova, comments, agent-context]
+status: built
+---
+
+# Comments
+
+## New
+
+## Acknowledged
+"""
+
+ONE_COMMENT = """---
+type: log
+---
+
+# Comments
+
+## New
+
+### Cycle 63 · 2026-08-09 22:40
+
+great research, keep it up!
+
+## Acknowledged
+
+### Cycle 60 · 2026-08-09 18:50
+
+the heartbeat measurement was the useful bit
+
+Cycle 61 acted on this.
+"""
+
+
+# --- text as typed -> text as stored --------------------------------------
+
+
+def test_a_typed_line_is_stored_exactly():
+    assert clean_comment_text("great research, keep it up!") == "great research, keep it up!"
+
+
+def test_paragraph_breaks_are_his_and_are_kept():
+    """The capture box splits lines into separate bullets. A comment must
+    not: it is one thought, and its shape is part of what he said."""
+    text = "great research.\n\nkeep it up!"
+    assert clean_comment_text(text) == "great research.\n\nkeep it up!"
+
+
+def test_a_single_newline_is_not_joined_into_the_line_above():
+    assert clean_comment_text("one\ntwo") == "one\ntwo"
+
+
+def test_surrounding_blank_lines_go_but_interior_ones_stay():
+    assert clean_comment_text("\n\nfirst\n\n\nlast\n\n") == "first\n\n\nlast"
+
+
+def test_crlf_from_a_phone_keyboard_is_normalised():
+    assert clean_comment_text("one\r\ntwo\r\n") == "one\ntwo"
+
+
+def test_trailing_spaces_go_but_leading_indentation_stays():
+    """Leading whitespace could be him quoting or indenting deliberately;
+    trailing whitespace is never intentional and is invisible either way."""
+    assert clean_comment_text("  indented   \nplain  ") == "  indented\nplain"
+
+
+def test_whitespace_only_text_is_nothing_to_store():
+    assert clean_comment_text("   \n\n  ") == ""
+    assert clean_comment_text("") == ""
+    assert clean_comment_text(None) == ""
+
+
+# --- where a comment lands ------------------------------------------------
+
+
+def test_a_comment_lands_under_new_not_acknowledged():
+    out = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    new, _, ack = out.partition("## Acknowledged")
+    assert "Cycle 63" in new
+    assert "Cycle 63" not in ack
+
+
+def test_the_newest_comment_is_first():
+    once = insert_comment(EMPTY, 63, "first", "2026-08-09 22:40")
+    twice = insert_comment(once, 64, "second", "2026-08-09 23:10")
+    assert twice.index("second") < twice.index("first")
+
+
+def test_an_existing_comment_is_never_lost():
+    out = insert_comment(ONE_COMMENT, 64, "a new one", "2026-08-09 23:10")
+    assert "great research, keep it up!" in out
+    assert "the heartbeat measurement was the useful bit" in out
+    assert "Cycle 61 acted on this." in out
+
+
+def test_the_frontmatter_is_untouched():
+    out = insert_comment(ONE_COMMENT, 64, "a new one", "2026-08-09 23:10")
+    assert out.startswith("---\ntype: log\n---\n")
+
+
+def test_an_acknowledged_comment_is_not_reopened():
+    """Inserting must not drag anything back up into `## New` -- that would
+    hand a future cycle work it has already done."""
+    out = insert_comment(ONE_COMMENT, 64, "a new one", "2026-08-09 23:10")
+    new = out.split("## Acknowledged")[0]
+    assert "Cycle 60" not in new
+
+
+def test_a_missing_new_section_is_created_above_acknowledged():
+    without = "---\ntype: log\n---\n\n# Comments\n\n## Acknowledged\n"
+    out = insert_comment(without, 63, "keep it up", "2026-08-09 22:40")
+    assert out.index("## New") < out.index("## Acknowledged")
+    assert "keep it up" in out
+
+
+def test_a_comment_survives_a_file_with_no_sections_at_all():
+    """A comment is never dropped for want of a heading the file did not
+    have -- losing what he typed is strictly worse than an odd-looking file."""
+    out = insert_comment("---\ntype: log\n---\n", 63, "keep it up", "2026-08-09 22:40")
+    assert "## New" in out
+    assert "keep it up" in out
+    assert parse_comments(out)[0]["text"] == "keep it up"
+
+
+def test_a_comment_survives_an_entirely_empty_file():
+    out = insert_comment("", 63, "keep it up", "2026-08-09 22:40")
+    assert parse_comments(out)[0]["text"] == "keep it up"
+
+
+# --- reading it back ------------------------------------------------------
+
+
+def test_a_comment_round_trips_byte_for_byte():
+    text = "great research, keep it up!\n\nDo more research to make yourself\nmore token efficient"
+    out = insert_comment(EMPTY, 63, clean_comment_text(text), "2026-08-09 22:40")
+    assert parse_comments(out)[0]["text"] == text
+
+
+def test_markdown_in_his_text_is_stored_raw_not_escaped():
+    """Nothing renders a comment as markdown, so nothing may rewrite it to
+    survive a renderer that does not exist."""
+    text = "the `pace` field is **good** -- see [[cycle-economics]] and #44"
+    out = insert_comment(EMPTY, 63, text, "2026-08-09 22:40")
+    assert text in out
+    assert parse_comments(out)[0]["text"] == text
+
+
+def test_a_heading_inside_his_text_does_not_split_the_comment():
+    """A `#` line in his prose is his prose. Only `### Cycle <n>` and the
+    two section headings are structure -- everything else is content."""
+    text = "look at:\n# not a heading\n#### also not one"
+    out = insert_comment(EMPTY, 63, text, "2026-08-09 22:40")
+    parsed = parse_comments(out)
+    assert len(parsed) == 1
+    assert parsed[0]["text"] == text
+
+
+def test_parse_reads_the_cycle_the_stamp_and_the_section():
+    parsed = parse_comments(ONE_COMMENT)
+    assert [(c["cycle"], c["acknowledged"]) for c in parsed] == [(63, False), (60, True)]
+    assert parsed[0]["stamp"] == "2026-08-09 22:40"
+    assert parsed[0]["text"] == "great research, keep it up!"
+
+
+def test_a_comment_outside_both_sections_is_not_picked_up():
+    """Prose above `## New` is the file explaining itself, not a comment."""
+    stray = "---\ntype: log\n---\n\n### Cycle 12 · x\n\nnot a comment\n\n## New\n\n"
+    assert parse_comments(stray) == []
+
+
+def test_comments_group_by_cycle():
+    two = insert_comment(ONE_COMMENT, 63, "and another thing", "2026-08-09 23:10")
+    grouped = comments_by_cycle(two)
+    assert sorted(grouped) == [60, 63]
+    assert [c["text"] for c in grouped[63]] == ["and another thing", "great research, keep it up!"]
+
+
+def test_an_empty_file_has_no_comments():
+    assert parse_comments("") == []
+    assert comments_by_cycle("") == {}
+
+
+# --- the stamp ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "utc, expected",
+    [
+        # Rule 7: he reads Oslo time, never UTC. Midwinter is UTC+1...
+        (datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc), "2026-01-15 13:00"),
+        # ...and midsummer is UTC+2.
+        (datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc), "2026-07-15 14:00"),
+        # The two switch-overs themselves: last Sunday of March, 01:00 UTC.
+        (datetime(2026, 3, 29, 0, 59, tzinfo=timezone.utc), "2026-03-29 01:59"),
+        (datetime(2026, 3, 29, 1, 0, tzinfo=timezone.utc), "2026-03-29 03:00"),
+        # ...and the last Sunday of October.
+        (datetime(2026, 10, 25, 0, 59, tzinfo=timezone.utc), "2026-10-25 02:59"),
+        (datetime(2026, 10, 25, 1, 0, tzinfo=timezone.utc), "2026-10-25 02:00"),
+    ],
+)
+def test_the_stamp_is_oslo_time(utc, expected):
+    with patch.object(nova_comments, "datetime") as fake:
+        fake.now.return_value = utc
+        # `datetime` is also used to build the DST boundaries, so the real
+        # constructor has to keep working underneath the patched `now`.
+        fake.side_effect = datetime
+        assert format_stamp() == expected
+
+
+# --- the write ------------------------------------------------------------
+
+
+def test_a_comment_is_written_to_the_comments_file():
+    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, message = add_comment(63, "keep it up", stamp="2026-08-09 22:40")
+    assert ok, message
+    path, content = write.call_args[0]
+    assert path == COMMENTS_PATH
+    assert parse_comments(content)[0] == {
+        "cycle": 63,
+        "stamp": "2026-08-09 22:40",
+        "text": "keep it up",
+        "acknowledged": False,
+    }
+
+
+def test_a_conflict_is_retried_against_a_re_read_file():
+    """409 is the good case: someone else wrote between the read and the
+    PUT. The retry must re-read rather than resend, or it would clobber
+    exactly the write that just beat it."""
+    reads = [EMPTY, insert_comment(EMPTY, 64, "landed first", "2026-08-09 23:00")]
+    with patch.object(nova_comments, "vault_read_path", side_effect=reads) as read, \
+            patch.object(nova_comments, "vault_write_path",
+                         side_effect=["409 conflict", "written"]) as write:
+        ok, _ = add_comment(63, "mine", stamp="2026-08-09 23:10")
+    assert ok
+    assert read.call_count == 2
+    # The winning write carries both comments, not just the retried one.
+    final = write.call_args[0][1]
+    assert [c["text"] for c in parse_comments(final)] == ["mine", "landed first"]
+
+
+def test_a_non_conflict_failure_is_not_retried():
+    """Anything that is not a 409 will fail identically next time, so
+    retrying it only spins."""
+    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+            patch.object(nova_comments, "vault_write_path", return_value="500 boom") as write:
+        ok, message = add_comment(63, "keep it up")
+    assert not ok
+    assert write.call_count == 1
+    assert "500 boom" in message
+
+
+def test_a_missing_file_is_created_rather_than_refused():
+    with patch.object(nova_comments, "vault_read_path", return_value=None), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, _ = add_comment(63, "keep it up", stamp="2026-08-09 22:40")
+    assert ok
+    assert parse_comments(write.call_args[0][1])[0]["text"] == "keep it up"
+
+
+def test_an_empty_comment_never_reaches_the_vault():
+    with patch.object(nova_comments, "vault_read_path") as read, \
+            patch.object(nova_comments, "vault_write_path") as write:
+        ok, message = add_comment(63, "   \n  ")
+    assert not ok
+    assert message == "nothing to comment"
+    assert not read.called and not write.called
+
+
+@pytest.mark.parametrize("cycle", ["sixty-three", None, "", -1])
+def test_a_cycle_that_is_not_a_number_never_reaches_the_vault(cycle):
+    with patch.object(nova_comments, "vault_read_path") as read, \
+            patch.object(nova_comments, "vault_write_path") as write:
+        ok, _ = add_comment(cycle, "keep it up")
+    assert not ok
+    assert not read.called and not write.called
+
+
+def test_a_numeric_string_cycle_is_accepted():
+    """The client sends JSON and a phone keyboard can produce either."""
+    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, _ = add_comment("63", "keep it up", stamp="2026-08-09 22:40")
+    assert ok
+    assert parse_comments(write.call_args[0][1])[0]["cycle"] == 63
