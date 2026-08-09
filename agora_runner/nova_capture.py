@@ -103,6 +103,7 @@ def insert_captures(markdown, bullets):
     # frontmatter and the first heading. Scanning stops at the heading so
     # a bullet inside the Board or Details sections can never be mistaken
     # for it.
+    first = None
     end = start
     i = start
     while i < len(lines):
@@ -110,18 +111,26 @@ def insert_captures(markdown, bullets):
         if stripped.startswith("#"):
             break
         if stripped == "-" or stripped.startswith("- "):
+            if first is None:
+                first = i
             end = i + 1
         i += 1
 
-    if end == start:
+    if first is None:
         # No capture list at all. Put one where the contract says it goes,
         # rather than dropping the capture or appending it somewhere the
         # next cycle would not look.
         block = [""] + [f"- {b}" for b in bullets] + ["- ", ""]
         return "\n".join(lines[:start] + block + lines[start:])
 
-    existing = [line for line in lines[start:end] if line.strip() not in ("", "-")]
-    block = existing + [f"- {b}" for b in bullets] + ["- "]
+    # Everything from the frontmatter down to the first bullet is kept
+    # verbatim: `issues.md` has a blank line there and `ideas.md` does not,
+    # and normalising them to match would be me quietly reformatting a file
+    # that is his. Only the empty bullet is removed, because exactly one is
+    # re-added at the end of the list below.
+    lead = lines[start:first]
+    existing = [line for line in lines[first:end] if line.strip() != "-"]
+    block = lead + existing + [f"- {b}" for b in bullets] + ["- "]
     return "\n".join(lines[:start] + block + lines[end:])
 
 

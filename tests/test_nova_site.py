@@ -1,4 +1,7 @@
-"""Nova's read-only site: the parsers, and the real request path.
+"""Nova's site: the parsers, and the real request path.
+
+The write half -- what a capture does to a file -- lives in
+test_nova_capture.py; what reaches it over HTTP is here.
 
 The fixtures are real. `journal_sample.md` is five entries lifted
 verbatim out of the live journal, chosen because between them they
@@ -19,6 +22,7 @@ import importlib
 import io
 import json
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -424,6 +428,27 @@ def test_a_vault_failure_is_reported_as_502():
         status, _, body = _get("/api/journal")
     assert status == 502
     assert "couchdb down" in json.loads(body)["error"]
+
+
+def test_app_js_builds_no_html_from_strings():
+    """app.js's header declares that it contains no innerHTML and never
+    should -- the reason markup is something it cannot produce rather than
+    something it must remember to escape. Until now that was a comment
+    enforced by nothing, which is the same shape as the sw.js cache comment
+    Cycle 50 found describing a behaviour the code did not have.
+
+    Comments are stripped first: the header says the word "innerHTML" twice
+    while forbidding it, so a naive scan reports the file as violating its
+    own rule.
+    """
+    source = open(
+        os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "app.js"),
+        encoding="utf-8",
+    ).read()
+    code = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    code = re.sub(r"^\s*//.*$", "", code, flags=re.MULTILINE)
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+        assert sink not in code, f"{sink} reached app.js"
 
 
 def test_the_only_write_verb_is_post():

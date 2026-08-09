@@ -10,6 +10,7 @@ has a blank line between the frontmatter and the capture bullet and
 offset-based insertion correct on one file and wrong on the other.
 """
 
+import difflib
 import os
 from unittest.mock import patch
 
@@ -99,6 +100,26 @@ def test_the_frontmatter_is_untouched(fixture):
     original = _fixture(fixture)
     out = insert_captures(original, ["something"])
     assert out.split("---")[1] == original.split("---")[1]
+
+
+@pytest.mark.parametrize("fixture", ["issues_capture_sample.md", "ideas_capture_sample.md"])
+def test_a_capture_changes_exactly_one_line_of_the_file(fixture):
+    """Caught by a dry run against the live 35KB files, not by the tests
+    above: the first version filtered blank lines out of the capture list
+    region, which deleted the blank line `issues.md` keeps between its
+    frontmatter and its bullet -- `ideas.md` has none. Both files rendered
+    the same afterwards, so nothing would have failed; it was simply me
+    reformatting a file that is his. Asserting on the diff rather than on
+    the bullets is what makes that visible.
+    """
+    original = _fixture(fixture)
+    out = insert_captures(original, ["one new thought"])
+    changed = [
+        line for line in difflib.unified_diff(
+            original.split("\n"), out.split("\n"), lineterm="", n=0)
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    ]
+    assert changed == ["+- one new thought"]
 
 
 def test_exactly_one_empty_bullet_survives_and_it_is_last(issues_md):
