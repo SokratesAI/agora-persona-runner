@@ -356,3 +356,117 @@ pre code { background: none; padding: 0; }
 }
 
 .empty { color: var(--dim); }
+
+/* The comment drawer (ideas.md #44). Its show condition is deliberately
+ * not `.is-expanded`: the bubble opens it on a collapsed card too, because
+ * he asked to comment on a cycle rather than to read one first. */
+.entry .comment-drawer { display: none; }
+.entry.is-commenting .comment-drawer { display: block; margin-top: 0.9rem; }
+
+/* Sits beside the permalink in the head, so it is reachable without
+ * opening the card. Its own touch target, at the iOS 44px minimum, for the
+ * same reason the permalink has one -- a tap here must never read as
+ * "collapse the card". */
+.comment-toggle {
+  background: none;
+  border: 0;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.95rem;
+  min-height: 44px;
+  padding: 0 0.4rem;
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.comment-toggle:hover { color: var(--accent); }
+.comment-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.comment-list { margin-bottom: 0.7rem; }
+
+.comment {
+  border-left: 2px solid var(--good);
+  padding-left: 0.8rem;
+  margin-bottom: 0.7rem;
+}
+
+/* Acknowledged means a cycle has read it and acted. Dimmed rather than
+ * hidden -- what he said stays visible, it just stops being the thing
+ * asking for attention. */
+.comment.is-acknowledged { border-left-color: var(--line); }
+.comment.is-acknowledged .comment-body { color: var(--dim); }
+
+.comment-meta {
+  margin: 0 0 0.2rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
+.comment-ack {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 0.45rem;
+}
+
+.comment-body { margin: 0 0 0.5rem; color: var(--text); }
+.comment-body:last-child { margin-bottom: 0; }
+
+/* Same box as the capture textarea, including the 60vh ceiling and why it
+ * is there: the Comment button sits below it, and a box free to fill the
+ * viewport would push the only way to submit off the bottom of a phone. */
+.comment-text {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  font: inherit;
+  resize: vertical;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.comment-text:focus { outline: none; border-color: var(--accent); }
+
+.comment-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.comment-status {
+  flex: 1;
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.82rem;
+}
+
+.comment-status.is-error { color: var(--warn); }
+
+.comment-send {
+  background: none;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  min-height: 44px;
+  padding: 0 1.1rem;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.comment-send:hover:not(:disabled) { border-color: var(--accent); }
+.comment-send:disabled { color: var(--dim); cursor: default; }

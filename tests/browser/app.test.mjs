@@ -25,8 +25,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(here, "..", "..", "agora_runner", "nova_public");
 const payload = JSON.parse(readFileSync(join(here, "fixtures", "payload.json"), "utf8"));
 
-/** Load the site at `path` with fetch stubbed to serve the fixture. */
-async function loadSite(path = "/") {
+/** Load the site at `path` with fetch stubbed to serve the fixture.
+ *
+ * `failComments` rejects only `/api/comments`, which is how the "a broken
+ * endpoint costs the bubbles, not the feed" test reaches the catch that
+ * app.js's Promise.all relies on. */
+async function loadSite(path = "/", { failComments = false } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = new JSDOM(html, {
     url: "https://nova.example" + path,
@@ -34,14 +38,27 @@ async function loadSite(path = "/") {
     pretendToBeVisual: true,
   });
   const { window } = dom;
-  window.fetch = (url) =>
-    Promise.resolve({
-      json: () =>
-        Promise.resolve(url.includes("/api/digest") ? payload.digest : payload.journal),
-    });
+  /* Every POST is recorded and answered, so a test can assert what the
+   * page actually sent rather than only what it then displayed -- the
+   * difference between checking the wire and checking the DOM. */
+  window.posted = [];
+  window.postReply = { ok: true, message: "ok" };
+  window.fetch = (url, init) => {
+    if (init && init.method === "POST") {
+      window.posted.push({ url, headers: init.headers, body: JSON.parse(init.body) });
+      return Promise.resolve({ json: () => Promise.resolve(window.postReply) });
+    }
+    if (url.includes("/api/comments")) {
+      return failComments
+        ? Promise.reject(new Error("comments are down"))
+        : Promise.resolve({ json: () => Promise.resolve(payload.comments) });
+    }
+    const body = url.includes("/api/digest") ? payload.digest : payload.journal;
+    return Promise.resolve({ json: () => Promise.resolve(body) });
+  };
   window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
-  // app.js renders from two resolved promises; let the microtasks drain.
+  // app.js renders from three resolved promises; let the microtasks drain.
   await new Promise((resolve) => window.setTimeout(resolve, 0));
   return window;
 }
@@ -457,5 +474,159 @@ describe("a payload cached before the brief existed", () => {
     // The digest drawer has nothing to show, so the card opens onto the button.
     assert.equal(window.document.querySelector(".entry-digest"), null);
     assert.ok(shown.every((c) => c.querySelector(".journal-toggle")));
+  });
+});
+
+/* The comment drawer (ideas.md #44): "add a button with a chat bubble icon
+ * that opens a multiline text input so that i can add a comment more
+ * directly towards your cycles."
+ *
+ * The fixture is built for this: cycle 57 has two entries and two comments
+ * (one already acknowledged), cycle 55 has one comment spanning two
+ * paragraphs, and the fourth entry has no cycle number at all. Those are
+ * the four cases the rules below actually turn on, and none of them is
+ * hypothetical -- six live cycles have a second entry.
+ */
+describe("commenting on a cycle", () => {
+  let window;
+  const cardFor = (w, cycle) =>
+    cards(w).find((c) => c.querySelector("h2").textContent === "Cycle " + cycle);
+  const bubble = (card) => card.querySelector(".comment-toggle");
+  const drawerOpen = (card) => card.classList.contains("is-commenting");
+
+  before(async () => {
+    window = await loadSite();
+  });
+
+  test("a numbered cycle gets a chat bubble", () => {
+    assert.ok(bubble(cardFor(window, 57)));
+    assert.ok(bubble(cardFor(window, 55)));
+  });
+
+  test("an entry with no cycle number gets none", () => {
+    // There is nothing to key a comment to, so a box there would swallow it.
+    const orphan = cards(window).find((c) => !/^Cycle /.test(c.querySelector("h2").textContent));
+    assert.ok(orphan, "the fixture must contain an entry with no cycle");
+    assert.equal(bubble(orphan), null);
+  });
+
+  test("a cycle with two entries has exactly one bubble", () => {
+    // Two would be two places to look for the same conversation.
+    const both = cards(window).filter((c) => c.querySelector("h2").textContent === "Cycle 57");
+    assert.equal(both.length, 2, "the fixture must contain a cycle with an addendum");
+    assert.equal(both.filter((c) => bubble(c)).length, 1);
+  });
+
+  test("the bubble carries the number of comments on that cycle", () => {
+    assert.equal(bubble(cardFor(window, 57)).textContent, "💬 2");
+    assert.equal(bubble(cardFor(window, 55)).textContent, "💬 1");
+  });
+
+  test("the drawer starts shut", () => {
+    assert.ok(!drawerOpen(cardFor(window, 57)));
+  });
+
+  test("tapping the bubble opens the drawer without expanding the card", () => {
+    // He asked to comment on a cycle, not to read one first.
+    const card = cardFor(window, 55);
+    click(window, bubble(card));
+    assert.ok(drawerOpen(card));
+    assert.ok(!expanded(card), "the card itself must stay collapsed");
+    click(window, bubble(card));
+    assert.ok(!drawerOpen(card));
+  });
+
+  test("existing comments are shown, newest first, with the read ones marked", () => {
+    const card = cardFor(window, 57);
+    const shown = [...card.querySelectorAll(".comment")];
+    assert.deepEqual(
+      shown.map((c) => c.querySelector(".comment-body").textContent),
+      payload.comments.byCycle["57"].map((c) => c.text.split("\n\n")[0]),
+    );
+    assert.ok(!shown[0].classList.contains("is-acknowledged"));
+    assert.ok(shown[1].classList.contains("is-acknowledged"));
+  });
+
+  test("a comment's paragraph breaks survive to the page", () => {
+    // A comment is prose. Joining its paragraphs would be rewriting him.
+    const card = cardFor(window, 55);
+    const paragraphs = [...card.querySelectorAll(".comment-body")].map((p) => p.textContent);
+    assert.deepEqual(paragraphs, payload.comments.byCycle["55"][0].text.split("\n\n"));
+  });
+
+  test("typing in the box does not collapse the card out from under it", () => {
+    const card = cardFor(window, 57);
+    click(window, bubble(card));
+    const wasExpanded = expanded(card);
+    click(window, card.querySelector(".comment-text"));
+    assert.equal(expanded(card), wasExpanded);
+    assert.ok(drawerOpen(card), "and the drawer stays open");
+  });
+
+  test("Comment posts the cycle it belongs to, as JSON", async () => {
+    const card = cardFor(window, 55);
+    click(window, bubble(card));
+    card.querySelector(".comment-text").value = "  do more research  ";
+    click(window, card.querySelector(".comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+
+    const sent = window.posted.at(-1);
+    assert.equal(sent.url, "/api/comment");
+    assert.equal(sent.headers["Content-Type"], "application/json");
+    assert.deepEqual(sent.body, { cycle: 55, text: "do more research" });
+  });
+
+  test("the box clears only once the server confirms the write", async () => {
+    const card = cardFor(window, 57);
+    click(window, bubble(card));
+    const box = card.querySelector(".comment-text");
+
+    window.postReply = { ok: false, message: "409 conflict" };
+    box.value = "a thought worth keeping";
+    click(window, card.querySelector(".comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(box.value, "a thought worth keeping", "a failed write must not eat the text");
+    assert.match(card.querySelector(".comment-status").textContent, /409/);
+    assert.ok(card.querySelector(".comment-status").classList.contains("is-error"));
+
+    window.postReply = { ok: true, message: "ok" };
+    click(window, card.querySelector(".comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(box.value, "");
+  });
+
+  test("Enter is a newline here, not a send", async () => {
+    /* The capture box sends on Enter; this box must not. He asked for "a
+     * multiline text input" and his own example is two sentences long, so
+     * Enter meaning "send" would put a modifier key between him and every
+     * paragraph break -- on a phone keyboard he does not have one. Pinned
+     * because the two boxes look alike enough that making them "consistent"
+     * is an obvious-looking change that would break this one. */
+    const card = cardFor(window, 55);
+    click(window, bubble(card));
+    const box = card.querySelector(".comment-text");
+    box.value = "first line";
+    const before = window.posted.length;
+    box.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, before, "Enter posted the comment");
+  });
+
+  test("an empty comment is never sent", async () => {
+    const card = cardFor(window, 55);
+    click(window, bubble(card));
+    card.querySelector(".comment-text").value = "   \n  ";
+    const before = window.posted.length;
+    click(window, card.querySelector(".comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, before);
+  });
+
+  test("a comments endpoint that fails costs the bubbles, not the feed", async () => {
+    const w = await loadSite("/", { failComments: true });
+    assert.equal(cards(w).length, payload.journal.entries.length);
+    assert.equal(bubble(cardFor(w, 57)).textContent, "💬");
   });
 });

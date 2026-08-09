@@ -132,7 +132,130 @@
     return (found.spans || []).map(function (span) { return span.text; }).join("");
   }
 
-  function renderEntry(entry, digestLine, expanded, anchored) {
+  /* The comment drawer (ideas.md #44): "add a button with a chat bubble
+   * icon that opens a multiline text input so that i can add a comment
+   * more directly towards your cycles".
+   *
+   * It hangs off the card rather than the page because the cycle it is
+   * about is the whole point -- the capture box at the top already exists
+   * for anything that isn't about a particular cycle, and the difference
+   * between the two is exactly what he was describing.
+   *
+   * Existing comments are shown above the box. He did not ask for that,
+   * and it is here for one concrete reason rather than completeness: with
+   * a write-only box there is no way to tell a saved comment from a lost
+   * one except by opening Obsidian, which is the thing this feature exists
+   * to avoid.
+   *
+   * The icon is an emoji rather than an SVG because this file may not
+   * produce markup -- see the header. A glyph is textContent; an <svg>
+   * would need innerHTML or createElementNS, and the first is banned here
+   * for a good reason and the second buys nothing at this size. */
+  function renderComments(card, cycle, comments) {
+    var drawer = el("div", "comment-drawer");
+
+    var list = el("div", "comment-list");
+    drawer.appendChild(list);
+
+    var box = el("textarea", "comment-text");
+    box.rows = 3;
+    box.placeholder = "Say something about cycle " + cycle + "…";
+    box.setAttribute("autocapitalize", "sentences");
+    drawer.appendChild(box);
+
+    var actions = el("div", "comment-actions");
+    var status = el("p", "comment-status");
+    status.setAttribute("role", "status");
+    actions.appendChild(status);
+    var send = el("button", "comment-send", "Comment");
+    send.type = "button";
+    actions.appendChild(send);
+    drawer.appendChild(actions);
+
+    var toggle = el("button", "comment-toggle");
+    toggle.type = "button";
+    toggle.setAttribute("aria-label", "Comment on cycle " + cycle);
+
+    function paint(items) {
+      list.textContent = "";
+      (items || []).forEach(function (comment) {
+        var item = el("div", comment.acknowledged ? "comment is-acknowledged" : "comment");
+        var head = el("p", "comment-meta");
+        head.appendChild(el("span", "comment-stamp", comment.stamp || ""));
+        if (comment.acknowledged) head.appendChild(el("span", "comment-ack", "read"));
+        item.appendChild(head);
+        // The text is Edvard's own prose and the server sends it as plain
+        // text, so each blank-line-separated paragraph becomes its own <p>.
+        // Nothing here interprets it as markdown.
+        String(comment.text || "").split(/\n{2,}/).forEach(function (para) {
+          if (para.trim()) item.appendChild(el("p", "comment-body", para));
+        });
+        list.appendChild(item);
+      });
+      var count = (items || []).length;
+      toggle.textContent = count ? "💬 " + count : "💬";
+      list.hidden = !count;
+    }
+    paint(comments);
+
+    function fit() {
+      box.style.height = "auto";
+      box.style.height = box.scrollHeight + "px";
+    }
+
+    function submit() {
+      var text = box.value.trim();
+      if (!text) {
+        box.focus();
+        return;
+      }
+      send.disabled = true;
+      status.textContent = "saving…";
+      status.className = "comment-status";
+      fetch("/api/comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cycle: cycle, text: text }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+          // Only cleared once the server confirms the write -- the same
+          // rule the capture box follows, for the same reason: a box that
+          // wiped itself on a failure would lose what it exists to catch.
+          box.value = "";
+          fit();
+          status.textContent = "saved";
+          return fetch("/api/comments")
+            .then(function (r) { return r.json(); })
+            .then(function (payload) {
+              paint((payload.byCycle || {})[String(cycle)]);
+            });
+        })
+        .catch(function (err) {
+          status.textContent = String(err.message || err);
+          status.className = "comment-status is-error";
+        })
+        .then(function () { send.disabled = false; });
+    }
+
+    send.addEventListener("click", submit);
+    box.addEventListener("input", fit);
+    /* Deliberately no Enter-to-send here, unlike the capture box.
+     *
+     * The two boxes look alike and are not: a capture is one line per item,
+     * so Enter meaning "file it" costs nothing. Edvard asked for this one
+     * to be "a multiline text input", and his own example runs to two
+     * sentences -- so Enter has to be a newline, or every paragraph break
+     * in the thing he asked to be able to write would need a modifier he
+     * does not have on a phone keyboard. Consistency between the two boxes
+     * would be consistency against what each is for. */
+
+    card.appendChild(drawer);
+    return { toggle: toggle, drawer: drawer };
+  }
+
+  function renderEntry(entry, digestLine, expanded, anchored, comments) {
     var card = el("article", "entry");
     // Only the first card for a cycle takes the anchor id. Six cycles have
     // written more than one entry, and giving each the same element id made
@@ -259,6 +382,27 @@
     renderBlocks(body, entry.blocks);
     card.appendChild(body);
 
+    /* One comment button per cycle, on the card that owns the anchor.
+     *
+     * A comment is stored keyed by cycle number, so an entry with no number
+     * has nowhere for one to land -- offering the button there would be a
+     * box that silently drops what he typed. And the six cycles that wrote
+     * a second entry are still one cycle: two buttons would be two places
+     * to look for the same conversation, which is the confusion the
+     * duplicate-looking cards caused before Cycle 64 split them. */
+    var commenting = null;
+    if (anchored && entry.cycle !== null && entry.cycle !== undefined) {
+      commenting = renderComments(card, entry.cycle, comments);
+      head.appendChild(commenting.toggle);
+    }
+
+    function setCommentsOpen(open) {
+      if (!commenting) return;
+      card.classList.toggle("is-commenting", open);
+      commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    setCommentsOpen(false);
+
     function setJournalOpen(open) {
       card.classList.toggle("is-reading", open);
       journalToggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -271,6 +415,11 @@
       // Closing the card closes the drawer inside it, so reopening never
       // lands you back in the middle of a 115-line entry you had left open.
       setJournalOpen(open && journalToggle.getAttribute("aria-expanded") === "true");
+      // Assigning className above drops every other state class, so the
+      // comment drawer has to be re-asserted rather than left to survive.
+      // Unlike the journal drawer it is *not* closed by collapsing the
+      // card: half-typed text would go with it.
+      setCommentsOpen(!!commenting && commenting.toggle.getAttribute("aria-expanded") === "true");
     }
     setJournalOpen(false);
     setExpanded(!!expanded);
@@ -297,6 +446,18 @@
        * listeners, because the card's listener would otherwise fire too and
        * collapse the whole card out from under the tap. One listener, one
        * decision about what the tap meant. */
+      /* The chat bubble opens its drawer without expanding the card: he
+       * asked for a way to comment on a cycle, not to read it first. Both
+       * this and the drawer below return before the collapse at the end,
+       * for the same reason the journal toggle does. */
+      if (commenting && event.target.closest(".comment-toggle")) {
+        setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true");
+        return;
+      }
+      // A tap in the box, on Comment, or on an existing comment is not a
+      // tap on the card. Without this, focusing the textarea would collapse
+      // the card out from under it.
+      if (event.target.closest(".comment-drawer")) return;
       if (event.target.closest(".journal-toggle")) {
         setJournalOpen(journalToggle.getAttribute("aria-expanded") !== "true");
         return;
@@ -310,9 +471,11 @@
     return card;
   }
 
-  function render(journal, digest) {
+  function render(journal, digest, comments) {
     renderStatus(journal.status || {});
     renderNeeds(digest);
+
+    var commentsByCycle = (comments && comments.byCycle) || {};
 
     var byCycle = {};
     ((digest && digest.lines) || []).forEach(function (line) {
@@ -364,7 +527,13 @@
     // nothing to scan past on that page, which is the only reason to collapse.
     entries.forEach(function (entry, index) {
       var line = digestOwner[entry.cycle] === index ? byCycle[entry.cycle] : null;
-      feed.appendChild(renderEntry(entry, line, wanted !== null, anchorOwner[entry.cycle] === index));
+      // A cycle's comments belong to the card that owns its anchor, so a
+      // cycle with an addendum shows them once rather than on both cards --
+      // the same ownership rule the digest line follows just above.
+      var own = anchorOwner[entry.cycle] === index;
+      feed.appendChild(renderEntry(
+        entry, line, wanted !== null, own, commentsByCycle[String(entry.cycle)]
+      ));
     });
   }
 
@@ -372,8 +541,11 @@
     Promise.all([
       fetch("/api/journal").then(function (r) { return r.json(); }),
       fetch("/api/digest").then(function (r) { return r.json(); }).catch(function () { return null; }),
+      // Tolerated the same way the digest is: the journal is the page, and
+      // a comments read that fails should cost the bubbles, not the feed.
+      fetch("/api/comments").then(function (r) { return r.json(); }).catch(function () { return null; }),
     ])
-      .then(function (results) { render(results[0], results[1]); })
+      .then(function (results) { render(results[0], results[1], results[2]); })
       .catch(function (err) {
         feed.textContent = "";
         feed.appendChild(el("p", "empty", "Could not load the journal: " + err));

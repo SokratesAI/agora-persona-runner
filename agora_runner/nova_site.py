@@ -3,11 +3,11 @@
 Agora ideas.md #34 -- items 1-4 (journal timeline, status header, digest
 strip, per-cycle deep links) and item 6, the capture box.
 
-**The one write, and where its boundary actually is.** Everything here
-was GET until the capture box; `POST /api/capture` is the single
-exception and the only route in this module that changes anything. Its
-safety is not the tailnet alone -- it is that the endpoint is too narrow
-to misuse:
+**The two writes, and where their boundary actually is.** Everything here
+was GET until the capture box; `POST /api/capture` and `POST /api/comment`
+(ideas.md #44) are the only routes in this module that change anything.
+Their safety is not the tailnet alone -- it is that both endpoints are too
+narrow to misuse:
 
 - The tailnet is the *authentication* boundary. Reaching this port at all
   means being on Edvard's tailnet, which in practice means his own
@@ -15,10 +15,12 @@ to misuse:
   be typed on a phone, so it would add real friction and no real secrecy.
 - The endpoint's shape is the *authorization* boundary, and it is what is
   actually load-bearing. `target` indexes a two-entry dict of literal
-  paths (nova_capture.CAPTURE_TARGETS); no path, no marker and no
-  position ever comes from the client. The worst a request can do is add
-  a bullet to a list Edvard reads and can delete, and the vault's daily
-  git snapshot holds the prior version regardless.
+  paths (nova_capture.CAPTURE_TARGETS); `/api/comment` does not even take
+  one, writing only to nova_comments.COMMENTS_PATH. No path, no marker and
+  no position ever comes from the client in either. The worst a request
+  can do is add a bullet or a comment to a file Edvard reads and can
+  delete, and the vault's daily git snapshot holds the prior version
+  regardless.
 - `Content-Type: application/json` is required, which is a CSRF defence
   rather than a formality: it is not a CORS "simple request", so a
   browser must preflight it, and this server answers no OPTIONS and sends
@@ -82,6 +84,12 @@ from agora_runner.nova_capture import (
     MAX_BODY_BYTES,
     capture,
 )
+from agora_runner.nova_comments import (
+    COMMENTS_PATH,
+    add_comment,
+    clean_comment_text,
+    comments_by_cycle,
+)
 from agora_runner.nova_journal import (
     DIGEST_PATH,
     JOURNAL_PATH,
@@ -125,6 +133,19 @@ def digest_payload():
     payload = parse_digest(vault_read_path(DIGEST_PATH) or "")
     payload["needsEdvardBlocks"] = render_blocks(payload["needsEdvard"])
     return payload
+
+
+def comments_payload():
+    """Every comment, grouped by the cycle it is about.
+
+    Keyed by cycle number as a string because that is what JSON object keys
+    are; the client looks up `byCycle[String(entry.cycle)]`. The comment
+    text is sent as plain text rather than rendered blocks -- unlike the
+    journal, this is Edvard's own prose and nothing here interprets it as
+    markdown, so there is no markup for the client to be unable to build.
+    """
+    grouped = comments_by_cycle(vault_read_path(COMMENTS_PATH) or "")
+    return {"byCycle": {str(cycle): items for cycle, items in grouped.items()}}
 
 
 class NovaSiteHandler(BaseHTTPRequestHandler):
@@ -179,6 +200,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             if path == "/api/digest":
                 self._send_json(200, digest_payload())
                 return
+            if path == "/api/comments":
+                self._send_json(200, comments_payload())
+                return
         except Exception as e:
             log(f"nova-site {path} failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
@@ -220,14 +244,71 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return None
         return payload
 
+    def _post_comment(self, payload):
+        """`/api/comment` -- Edvard replying to one cycle (ideas.md #44).
+
+        The same two boundaries as the capture box, and the same reason
+        they hold: the tailnet authenticates, and the endpoint's shape
+        authorizes. `cycle` is coerced to an int and `text` must be a
+        string, so nothing a client sends addresses a document -- the path
+        is the module-level COMMENTS_PATH constant and there is no target
+        to choose. The worst a request can do is add a comment to a file
+        Nova reads and Edvard can delete.
+        """
+        cycle = payload.get("cycle")
+        text = payload.get("text")
+        if not isinstance(text, str):
+            self._send_json(400, {"error": "text must be a string"})
+            return
+        # `True` is an int in Python and would silently become cycle 1.
+        if isinstance(cycle, bool) or not isinstance(cycle, (int, str)):
+            self._send_json(400, {"error": "cycle must be a number"})
+            return
+        try:
+            cycle = int(cycle)
+        except ValueError:
+            self._send_json(400, {"error": f"cycle must be a number, got {cycle!r}"})
+            return
+        if cycle < 0:
+            self._send_json(400, {"error": "cycle must not be negative"})
+            return
+        if not clean_comment_text(text):
+            self._send_json(400, {"error": "nothing to comment"})
+            return
+
+        # Every bad request is answered above, so anything add_comment
+        # rejects from here is the vault failing rather than the client
+        # asking for something wrong -- which is what makes 502 correct
+        # below without having to read the failure message to decide.
+        try:
+            ok, message = add_comment(cycle, text)
+        except Exception as e:
+            log(f"nova-site comment failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        audit(
+            "Nova",
+            "",
+            "nova_comment",
+            f"Comment on cycle {cycle} · {'ok' if ok else message}",
+            after=text[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
-        if path != "/api/capture":
+        if path not in ("/api/capture", "/api/comment"):
             self._send_json(404, {"error": "not found"})
             return
 
         payload = self._read_json_body()
         if payload is None:
+            return
+        if path == "/api/comment":
+            self._post_comment(payload)
             return
         target = payload.get("target")
         text = payload.get("text")

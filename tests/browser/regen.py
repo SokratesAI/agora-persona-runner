@@ -25,6 +25,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from agora_runner import nova_site  # noqa: E402
+from agora_runner.nova_comments import COMMENTS_PATH  # noqa: E402
 from agora_runner.nova_journal import JOURNAL_PATH  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures")
@@ -37,15 +38,22 @@ def _read(name):
 
 
 def build_payload():
-    """The two API responses app.js loads, from the two-entry fixtures."""
-    journal_md = _read("journal_two_entries.md")
+    """The three API responses app.js loads, from the committed fixtures."""
+    by_path = {
+        JOURNAL_PATH: _read("journal_two_entries.md"),
+        COMMENTS_PATH: _read("comments_sample.md"),
+    }
     digest_md = _read("digest_two_entries.md")
 
     def fake_read(path):
-        return journal_md if path == JOURNAL_PATH else digest_md
+        return by_path.get(path, digest_md)
 
     with patch.object(nova_site, "vault_read_path", side_effect=fake_read):
-        return {"journal": nova_site.journal_payload(), "digest": nova_site.digest_payload()}
+        return {
+            "journal": nova_site.journal_payload(),
+            "digest": nova_site.digest_payload(),
+            "comments": nova_site.comments_payload(),
+        }
 
 
 if __name__ == "__main__":

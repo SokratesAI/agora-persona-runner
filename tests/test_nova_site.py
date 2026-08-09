@@ -1124,3 +1124,105 @@ def test_every_entry_briefs_itself_for_the_cycles_with_no_digest_line():
         rendered = "".join(s["text"] for s in entry["briefSpans"])
         assert "**" not in rendered
         assert len(rendered) <= 700  # a headline, not a paragraph
+
+
+# --- comments on a cycle (ideas.md #44) -----------------------------------
+#
+# The storage half is in test_nova_comments.py; what a request may do is
+# here. The boundary being defended is the one in the module docstring:
+# nothing a client sends addresses a vault document, and every bad request
+# is answered before the vault is touched at all.
+
+
+def test_the_comments_endpoint_groups_by_cycle():
+    stored = "## New\n\n### Cycle 63 · 2026-08-09 22:40\n\nkeep it up\n\n## Acknowledged\n"
+    with patch.object(nova_site, "vault_read_path", return_value=stored):
+        status, head, body = _get("/api/comments")
+    assert status == 200
+    assert "application/json" in head
+    payload = json.loads(body)
+    # String keys, because the client looks them up as `String(entry.cycle)`.
+    assert list(payload["byCycle"]) == ["63"]
+    assert payload["byCycle"]["63"][0]["text"] == "keep it up"
+
+
+def test_a_comment_reaches_the_vault_with_the_cycle_it_names():
+    with patch.object(nova_site, "add_comment", return_value=(True, "commented on cycle 63")) as add, \
+            patch.object(nova_site, "audit"):
+        status, _, body = _post("/api/comment", {"cycle": 63, "text": "keep it up"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    assert add.call_args[0] == (63, "keep it up")
+
+
+def test_a_comment_is_audited_with_what_was_typed():
+    with patch.object(nova_site, "add_comment", return_value=(True, "ok")), \
+            patch.object(nova_site, "audit") as audit_call:
+        _post("/api/comment", {"cycle": 63, "text": "keep it up"})
+    assert audit_call.called
+    assert audit_call.call_args[1]["after"] == "keep it up"
+    assert audit_call.call_args[1]["is_error"] is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"cycle": 63},                        # no text at all
+        {"cycle": 63, "text": 12},            # text that is not a string
+        {"cycle": 63, "text": "   \n  "},     # nothing but whitespace
+        {"text": "keep it up"},               # no cycle
+        {"cycle": "sixty-three", "text": "x"},
+        {"cycle": None, "text": "x"},
+        {"cycle": -1, "text": "x"},
+        {"cycle": {"n": 63}, "text": "x"},
+    ],
+)
+def test_a_malformed_comment_is_400_and_never_touches_the_vault(payload):
+    """400 rather than 502: these are the client asking for something
+    wrong, not the vault failing, and the difference is what tells Edvard
+    whether retrying is worth anything."""
+    with patch.object(nova_site, "add_comment") as add:
+        status, _, _ = _post("/api/comment", payload)
+    assert status == 400
+    assert not add.called
+
+
+def test_true_is_not_a_cycle_number():
+    """`True` is an int in Python, so an unguarded int() would file a
+    comment against cycle 1 -- a real entry, silently the wrong one."""
+    with patch.object(nova_site, "add_comment") as add:
+        status, _, _ = _post("/api/comment", {"cycle": True, "text": "x"})
+    assert status == 400
+    assert not add.called
+
+
+def test_a_vault_failure_is_502_not_400():
+    with patch.object(nova_site, "add_comment", return_value=(False, "could not write comment: 500")), \
+            patch.object(nova_site, "audit"):
+        status, _, body = _post("/api/comment", {"cycle": 63, "text": "keep it up"})
+    assert status == 502
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_failed_comment_is_still_audited_as_an_error():
+    with patch.object(nova_site, "add_comment", return_value=(False, "boom")), \
+            patch.object(nova_site, "audit") as audit_call:
+        _post("/api/comment", {"cycle": 63, "text": "keep it up"})
+    assert audit_call.call_args[1]["is_error"] is True
+
+
+def test_a_comment_must_be_json_like_a_capture():
+    """The Content-Type requirement is this endpoint's CSRF defence, not a
+    formality -- see the module docstring. It has to hold on every write
+    route, not just the first one that documented it."""
+    status, _, _ = _post(
+        "/api/comment", {"cycle": 63, "text": "x"}, content_type="text/plain"
+    )
+    assert status == 415
+
+
+def test_an_oversized_comment_is_refused_before_it_is_read():
+    with patch.object(nova_site, "add_comment") as add:
+        status, _, _ = _post("/api/comment", {"cycle": 63, "text": "x" * (nova_capture.MAX_BODY_BYTES + 100)})
+    assert status == 413
+    assert not add.called
