@@ -160,6 +160,10 @@ pre code { background: none; padding: 0; }
   border-radius: 12px;
   padding: 1rem 1.1rem;
   margin-bottom: 1.1rem;
+  /* The whole card toggles (Edvard, issues.md 2026-08-09), so the whole
+   * card says so -- including the body, where a click really does collapse
+   * it. Anchors keep the pointer they already had. */
+  cursor: pointer;
 }
 
 /* Collapsed by default (Edvard, issues.md 2026-08-09): the median entry is
@@ -243,9 +247,32 @@ pre code { background: none; padding: 0; }
 .cycle-link { color: var(--text); text-decoration: none; }
 .cycle-link:hover { color: var(--accent); }
 
+/* Stamp, outcome and PR references, on their own row under the title.
+ * They used to sit inside the toggle button and wrapped to roughly this
+ * position on a phone anyway; they had to come out of it once the PR
+ * references became links. */
+.entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.55rem;
+  margin-bottom: 0.5rem;
+}
+
 .stamp { color: var(--dim); font-size: 0.82rem; }
 .pr { color: var(--dim); font-size: 0.82rem; }
 .outcome-detail { color: var(--dim); font-size: 0.82rem; font-style: italic; }
+
+/* Its own touch target, so tapping a PR never also means "collapse the
+ * card" -- same 44px reasoning as the permalink, minus the padding that
+ * would break the baseline row, so it is padded on one axis only. */
+.pr-link {
+  color: var(--accent);
+  text-decoration: none;
+  padding: 0.5rem 0;
+}
+
+.pr-link:hover { text-decoration: underline; }
 
 .badge {
   font-size: 0.72rem;
@@ -262,11 +289,17 @@ pre code { background: none; padding: 0; }
 
 .entry-title { margin: 0 0 0.5rem; font-weight: 600; }
 
+/* Edvard, issues.md 2026-08-09: "the Digest is hard to read with grey
+ * against the blue background. White is better like the actual journal."
+ * It was var(--dim) #8b90a0 on the card's #191b24 -- about 4.3:1, which
+ * passes a contrast checker and is still the hardest thing on the page to
+ * read, because it is the one line every card asks you to read first. It
+ * now uses the same colour as the body prose it summarises. */
 .entry-summary {
   margin: 0 0 0.9rem;
   padding-left: 0.8rem;
   border-left: 2px solid var(--accent);
-  color: var(--dim);
+  color: var(--text);
 }
 
 .entry-body p { margin: 0 0 0.9rem; }

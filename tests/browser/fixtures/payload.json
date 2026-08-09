@@ -1,0 +1,197 @@
+{
+  "journal": {
+    "entries": [
+      {
+        "cycle": 57,
+        "date": "2026-08-09",
+        "time": "15:22",
+        "title": "verification",
+        "pr": "agora#45",
+        "prSpans": [
+          {
+            "kind": "link",
+            "text": "agora#45",
+            "url": "https://github.com/SokratesAI/agora/pull/45"
+          }
+        ],
+        "outcome": "merged",
+        "outcomeDetail": "",
+        "emoji": "⚙️",
+        "blocks": [
+          {
+            "type": "p",
+            "spans": [
+              {
+                "kind": "text",
+                "text": "The addendum a cycle writes when it goes back to confirm its own deploy. It has its own opening paragraph, which is what the card must summarise itself with once the digest line stops being handed to both entries."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cycle": 57,
+        "date": "2026-08-09",
+        "time": "15:05",
+        "title": "",
+        "pr": "agora#45",
+        "prSpans": [
+          {
+            "kind": "link",
+            "text": "agora#45",
+            "url": "https://github.com/SokratesAI/agora/pull/45"
+          }
+        ],
+        "outcome": "merged",
+        "outcomeDetail": "",
+        "emoji": "📓",
+        "blocks": [
+          {
+            "type": "p",
+            "spans": [
+              {
+                "kind": "text",
+                "text": "The cycle's own run. This is the entry the digest line describes, so this is the card that should carry it."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cycle": 55,
+        "date": "2026-08-09",
+        "time": "12:33",
+        "title": "",
+        "pr": "runner#58, runner-config#6, platform-config#490",
+        "prSpans": [
+          {
+            "kind": "link",
+            "text": "runner#58",
+            "url": "https://github.com/SokratesAI/agora-persona-runner/pull/58"
+          },
+          {
+            "kind": "text",
+            "text": ", "
+          },
+          {
+            "kind": "link",
+            "text": "runner-config#6",
+            "url": "https://github.com/SokratesAI/agora-persona-runner-config/pull/6"
+          },
+          {
+            "kind": "text",
+            "text": ", "
+          },
+          {
+            "kind": "link",
+            "text": "platform-config#490",
+            "url": "https://github.com/SokratesAI/platform-config/pull/490"
+          }
+        ],
+        "outcome": "merged",
+        "outcomeDetail": "",
+        "emoji": "🔧",
+        "blocks": [
+          {
+            "type": "p",
+            "spans": [
+              {
+                "kind": "text",
+                "text": "A cycle with one entry and several PR references across different repos."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cycle": null,
+        "date": "2026-08-02",
+        "time": "",
+        "title": "Edvard's first message (not a cycle)",
+        "pr": "none",
+        "prSpans": [
+          {
+            "kind": "text",
+            "text": "none"
+          }
+        ],
+        "outcome": "no-op",
+        "outcomeDetail": "",
+        "emoji": "🔧",
+        "blocks": [
+          {
+            "type": "p",
+            "spans": [
+              {
+                "kind": "text",
+                "text": "An entry carrying no cycle number at all, which must still render."
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "status": {
+      "cycle": 57,
+      "lastWokeDate": "2026-08-09",
+      "lastWokeTime": "15:22",
+      "lastPr": "agora#45",
+      "lastOutcome": "merged",
+      "lastOutcomeDetail": "",
+      "runningDays": 7,
+      "entryCount": 4
+    }
+  },
+  "digest": {
+    "needsEdvard": "**Nothing.**",
+    "hasNeedsEdvard": false,
+    "nextCycle": "Whatever the last cycle left.",
+    "lines": [
+      {
+        "cycle": 57,
+        "at": "2026-08-09 15:05",
+        "text": "**The digest line for cycle 57**, which exactly one of its two entries may show, and which opens with a bolded sentence the way nearly every real one does.",
+        "spans": [
+          {
+            "kind": "strong",
+            "text": "The digest line for cycle 57"
+          },
+          {
+            "kind": "text",
+            "text": ", which exactly one of its two entries may show, and which opens with a bolded sentence the way nearly every real one does."
+          }
+        ]
+      },
+      {
+        "cycle": 55,
+        "at": "2026-08-09 12:33",
+        "text": "The digest line for cycle 55, with `inline code` in it.",
+        "spans": [
+          {
+            "kind": "text",
+            "text": "The digest line for cycle 55, with "
+          },
+          {
+            "kind": "code",
+            "text": "inline code"
+          },
+          {
+            "kind": "text",
+            "text": " in it."
+          }
+        ]
+      }
+    ],
+    "needsEdvardBlocks": [
+      {
+        "type": "p",
+        "spans": [
+          {
+            "kind": "strong",
+            "text": "Nothing."
+          }
+        ]
+      }
+    ]
+  }
+}
