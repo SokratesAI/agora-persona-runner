@@ -24,6 +24,11 @@ import math
 import re
 
 JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
+# One document per entry, which is where entries live as of 2026-08-09.
+# JOURNAL_PATH is the frozen archive it was split out of, and is still
+# read as a fallback so the two orderings of "migrate" and "deploy" both
+# work -- see `journal_markdown` in nova_site.py.
+JOURNAL_DIR = "projects/sokrates/projects/agora/nova/journal/"
 DIGEST_PATH = "projects/sokrates/projects/agora/journal-digest.md"
 
 _ENTRY_HEADING_RE = re.compile(r"^###[ \t]+(.+?)[ \t]*$", re.MULTILINE)
@@ -381,6 +386,75 @@ def parse_journal(markdown):
         entry["outcomeDetail"] = detail
         entries.append(entry)
     return assign_emoji(entries)
+
+
+def entries_body(markdown):
+    """The entries half of `journal.md` -- everything below `## Entries`.
+
+    Same split `parse_journal` does, factored out because the migration
+    needs it too and the two must not drift: whatever the parser treats
+    as content is exactly what gets written out as per-entry documents.
+    """
+    _, marker, body = (markdown or "").partition("\n## Entries")
+    return body if marker else (markdown or "")
+
+
+def split_entries(markdown):
+    """`journal.md` -> [{heading, text}], newest first, in file order.
+
+    `text` starts at the `### ` line and is the entry *verbatim* -- no
+    frontmatter, no rewriting. That is what makes the migration provably
+    lossless: joining every `text` back together in order reproduces the
+    original `## Entries` body byte for byte (modulo the blank lines
+    between them), so the split can always be undone from the split
+    files alone.
+    """
+    text = entries_body(markdown)
+    headings = list(_ENTRY_HEADING_RE.finditer(text))
+    out = []
+    for index, match in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
+        out.append({
+            "heading": match.group(1).strip(),
+            "text": text[match.start():end].strip(),
+        })
+    return out
+
+
+def entry_filename(seq, heading):
+    """`(70, "2026-08-09 22:42 (Oslo) — Cycle 65")` -> `070-cycle-65.md`.
+
+    The sequence number leads because it is the only total order that
+    survives: three headings carry no cycle number at all, six cycles
+    wrote a second entry, and the dates repeat. Zero-padded so a plain
+    lexical sort of the folder is chronological, which is what lets a
+    cycle read the newest three without fetching the other sixty-seven.
+    """
+    cycle = _CYCLE_RE.search(heading or "")
+    if cycle:
+        slug = f"cycle-{int(cycle.group(1))}"
+    else:
+        slug = re.sub(r"[^a-z0-9]+", "-", (heading or "").lower()).strip("-")
+        # Stripped again after truncating: cutting at 40 characters lands
+        # mid-word about as often as not, and `...-not-a-.md` is uglier
+        # than the word it saved.
+        slug = slug[:40].strip("-") or "entry"
+    return f"{seq:03d}-{slug}.md"
+
+
+def _entry_seq(path):
+    match = re.match(r"(\d+)", path.rsplit("/", 1)[-1])
+    # An unnumbered file sorts oldest rather than being dropped: a
+    # hand-added entry should still render, just not jump the queue.
+    return int(match.group(1)) if match else -1
+
+
+def assemble_entries(files):
+    """`{path: content}` from `JOURNAL_DIR` -> one newest-first markdown
+    blob, shaped exactly like `journal.md`'s entries half so that
+    `parse_journal` cannot tell the two sources apart."""
+    ordered = sorted(files.items(), key=lambda kv: (-_entry_seq(kv[0]), kv[0]))
+    return "\n\n".join(content.strip() for _, content in ordered if content.strip())
 
 
 def _sections(markdown):

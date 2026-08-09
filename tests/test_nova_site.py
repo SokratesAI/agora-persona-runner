@@ -33,7 +33,10 @@ import pytest
 
 from agora_runner import nova_capture, nova_site
 from agora_runner.nova_journal import (
+    JOURNAL_DIR,
+    assemble_entries,
     assign_emoji,
+    entry_filename,
     build_status,
     is_empty_needs,
     parse_digest,
@@ -43,6 +46,7 @@ from agora_runner.nova_journal import (
     render_blocks,
     render_inline,
     split_brief,
+    split_entries,
     split_outcome,
     split_sentences,
 )
@@ -53,6 +57,18 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 def _fixture(name):
     with open(os.path.join(FIXTURES, name), encoding="utf-8") as handle:
         return handle.read()
+
+
+@pytest.fixture(autouse=True)
+def _no_split_journal_by_default():
+    """Every test that sets up a journal does it by patching
+    `vault_read_path` with a whole-file fixture, which describes a vault
+    that has not been split yet. Saying so once here keeps those tests
+    about what they were about, and stops an unmocked `vault_bulk_fetch`
+    reaching for the network -- conftest blocks that outright. The split
+    tests below override this explicitly."""
+    with patch.object(nova_site, "vault_bulk_fetch", return_value={}):
+        yield
 
 
 @pytest.fixture(scope="module")
@@ -1226,3 +1242,123 @@ def test_an_oversized_comment_is_refused_before_it_is_read():
         status, _, _ = _post("/api/comment", {"cycle": 63, "text": "x" * (nova_capture.MAX_BODY_BYTES + 100)})
     assert status == 413
     assert not add.called
+
+
+# --- one document per entry (issues.md: "stop writing to a huge file") ----
+#
+# Edvard asked for the journal to stop being one 291KB vault document, so
+# entries now live one-per-document under `JOURNAL_DIR`. The invariant the
+# whole migration rests on is that the split is *lossless*: joining the
+# per-entry documents back together must parse to exactly what the
+# monolith parsed to. These tests pin that, the filename scheme that makes
+# the ordering recoverable, and the fallback that lets the migration and
+# the deploy land in either order.
+
+
+def _plan(markdown):
+    from tools.split_journal import plan
+
+    return plan(markdown)
+
+
+def test_splitting_the_journal_finds_exactly_the_entries_the_parser_does(journal_md):
+    assert len(split_entries(journal_md)) == len(parse_journal(journal_md))
+
+
+def test_a_heading_in_the_preamble_is_not_split_out_as_an_entry():
+    markdown = "# Journal\n\n### Not an entry\n\n## Entries\n\n### Cycle 5\n\nBody.\n"
+    assert [e["heading"] for e in split_entries(markdown)] == ["Cycle 5"]
+
+
+def test_each_split_entry_is_the_original_text_verbatim(journal_md):
+    # No frontmatter, no rewriting, no normalising -- every split entry
+    # must appear character for character inside the file it came from.
+    # This is what makes the split reversible from the split files alone.
+    for entry in split_entries(journal_md):
+        assert entry["text"] in journal_md
+
+
+def test_the_split_reassembles_into_an_identical_entry_list(journal_md):
+    assert parse_journal(assemble_entries(_plan(journal_md))) == parse_journal(journal_md)
+
+
+def test_the_oldest_entry_gets_sequence_one_so_numbers_never_shift(journal_md):
+    # Entries are newest-first in the file, so sequences are assigned from
+    # the back. If they were assigned from the front, every existing
+    # document would have to be renamed each time a cycle wrote an entry.
+    paths = sorted(_plan(journal_md))
+    assert paths[0].endswith("001-2026-08-02-edvard-s-first-message-not-a.md")
+    assert paths[-1].endswith("005-cycle-49.md")
+
+
+def test_filenames_are_zero_padded_so_a_lexical_sort_is_chronological():
+    assert entry_filename(9, "Cycle 9") == "009-cycle-9.md"
+    assert entry_filename(70, "Cycle 65") == "070-cycle-65.md"
+    assert sorted([entry_filename(9, "Cycle 9"), entry_filename(70, "Cycle 65")]) == [
+        "009-cycle-9.md",
+        "070-cycle-65.md",
+    ]
+
+
+def test_an_entry_with_no_cycle_number_still_gets_a_filename():
+    # Three live headings carry no cycle number. Falling back to the
+    # sequence alone would be enough to be unique, but the slug is what
+    # makes the folder readable in Obsidian.
+    assert entry_filename(1, "2026-08-02 — Edvard's first message (not a cycle)") == (
+        "001-2026-08-02-edvard-s-first-message-not-a.md"
+    )
+
+
+def test_entries_are_assembled_newest_first_by_sequence_not_by_path():
+    files = {
+        JOURNAL_DIR + "009-cycle-9.md": "### Cycle 9\n\nOlder.",
+        JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nNewer.",
+    }
+    assert [e["cycle"] for e in parse_journal(assemble_entries(files))] == [65, 9]
+
+
+def test_an_unnumbered_file_sorts_oldest_rather_than_being_dropped():
+    files = {
+        JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nNewer.",
+        JOURNAL_DIR + "hand-written.md": "### Cycle 1\n\nNo sequence prefix.",
+    }
+    assert [e["cycle"] for e in parse_journal(assemble_entries(files))] == [65, 1]
+
+
+def test_the_migration_refuses_to_write_when_two_entries_collide():
+    from tools.split_journal import verify
+
+    markdown = "## Entries\n\n### Cycle 5\n\nOne.\n\n### Cycle 5\n\nTwo.\n"
+    files = {JOURNAL_DIR + "001-cycle-5.md": "### Cycle 5\n\nOne."}
+    with pytest.raises(SystemExit, match="share a filename"):
+        verify(markdown, files)
+
+
+def test_the_migration_refuses_to_write_when_an_entry_would_render_differently():
+    from tools.split_journal import verify
+
+    markdown = "## Entries\n\n### Cycle 5\n\nOne.\n\n### Cycle 4\n\nTwo.\n"
+    files = dict(_plan(markdown))
+    # Losing the footer is the kind of silent corruption the check exists
+    # for: same entry count, same headings, different rendered entry.
+    files[JOURNAL_DIR + "002-cycle-5.md"] = "### Cycle 5\n\nSomething else."
+    with pytest.raises(SystemExit, match="renders differently"):
+        verify(markdown, files)
+
+
+def test_the_site_reads_the_per_entry_documents_when_they_exist():
+    with patch.object(nova_site, "vault_bulk_fetch") as bulk, \
+            patch.object(nova_site, "vault_read_path") as monolith:
+        bulk.return_value = {JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nSplit."}
+        assert "Split." in nova_site.journal_markdown()
+        bulk.assert_called_once_with(JOURNAL_DIR)
+        monolith.assert_not_called()
+
+
+def test_the_site_falls_back_to_the_archive_before_the_migration_runs():
+    # The deploy and the migration are two separate acts and either can
+    # land first. Until the folder has anything in it, the monolith is
+    # still the journal.
+    with patch.object(nova_site, "vault_bulk_fetch", return_value={}), \
+            patch.object(nova_site, "vault_read_path", return_value="### Cycle 1\n\nArchive."):
+        assert "Archive." in nova_site.journal_markdown()
