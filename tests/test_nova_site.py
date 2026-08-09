@@ -950,3 +950,28 @@ def test_the_browser_fixture_is_what_the_server_would_send():
         "tests/browser/fixtures/payload.json no longer matches what nova_site "
         "would send. Re-run: python3 tests/browser/regen.py"
     )
+
+
+def _css_rule(selector):
+    """The declarations of one CSS rule, by exact selector.
+
+    Substring-matching the whole stylesheet would pass on the same property
+    set in some other rule, which for a colour is exactly the mistake worth
+    not making."""
+    css = open(os.path.join(nova_site.PUBLIC_DIR, "style.css"), encoding="utf-8").read()
+    match = re.search(r"(?m)^" + re.escape(selector) + r"[ \t]*\{([^}]*)\}", css)
+    assert match, f"no rule for {selector!r} in style.css"
+    return match.group(1)
+
+
+def test_the_digest_summary_is_the_same_colour_as_the_prose_it_summarises():
+    """Edvard, issues.md 2026-08-09: "the Digest is hard to read with grey
+    against the blue background. White is better like the actual journal."
+
+    Worth a test rather than a look, because this is the one change of the
+    four that a green suite said nothing about: reverting it left all 1049
+    other tests passing. A styling fix nothing pins is a styling fix the
+    next refactor silently undoes."""
+    declarations = _css_rule(".entry-summary")
+    assert "color: var(--text)" in declarations
+    assert "var(--dim)" not in declarations
