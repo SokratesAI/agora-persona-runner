@@ -1,11 +1,18 @@
 /* Enough service worker to make this installable and survive a dead
  * tailnet link, and no more.
  *
- * Network-first for /api, so an open tab never shows a stale journal
- * while the network is fine -- the cache is a fallback, not a layer.
- * Cache-first for the shell, which changes only when the image is
- * rebuilt. CACHE is version-suffixed and old versions are dropped on
- * activate, so a shell change actually reaches an installed copy.
+ * Network-first for everything, cache as the fallback -- not a layer in
+ * front of the network. The shell gets the same treatment as /api even
+ * though it changes far less often, because the obvious alternative is
+ * a trap: cache-first for the shell only reaches an installed copy
+ * again if the cache name changes, and `CACHE` below is a constant in a
+ * file that is rebuilt without editing it. A cache-first shell keyed on
+ * a hardcoded version is a PWA that pins itself to the first build it
+ * ever saw. Network-first costs one conditional request on a tailnet
+ * and cannot do that.
+ *
+ * The install-time precache is still worth having: it is what makes a
+ * genuinely offline first load work.
  */
 var CACHE = "nova-v1";
 var SHELL = ["/", "/app.js", "/style.css", "/icon.svg", "/manifest.webmanifest"];
@@ -38,25 +45,19 @@ self.addEventListener("fetch", function (event) {
   var url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  if (url.pathname.indexOf("/api/") === 0) {
-    event.respondWith(
-      fetch(request).then(function (response) {
+  // /cycle/49 is served by the same shell as / -- fall back to the shell
+  // rather than the URL, or a deep link opened offline misses the cache.
+  var fallback = url.pathname.indexOf("/cycle/") === 0 ? "/" : request;
+
+  event.respondWith(
+    fetch(request).then(function (response) {
+      if (response && response.ok) {
         var copy = response.clone();
         caches.open(CACHE).then(function (cache) { cache.put(request, copy); });
-        return response;
-      }).catch(function () {
-        return caches.match(request);
-      })
-    );
-    return;
-  }
-
-  // /cycle/49 is served by the same shell as / -- match the shell rather
-  // than the URL, or a deep link opened offline misses the cache.
-  var shellRequest = url.pathname.indexOf("/cycle/") === 0 ? "/" : request;
-  event.respondWith(
-    caches.match(shellRequest).then(function (hit) {
-      return hit || fetch(request);
+      }
+      return response;
+    }).catch(function () {
+      return caches.match(fallback);
     })
   );
 });
