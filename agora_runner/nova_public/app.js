@@ -594,6 +594,10 @@
 
   function render(journal, digest, comments) {
     stopPolling();
+    // What the page is now showing, so the poll below can tell "nothing
+    // changed" from "changed while he was typing".
+    renderedVersion = (journal && journal.version) || null;
+    renderedComments = JSON.stringify(comments);
     renderStatus(journal.status || {});
     renderNeeds(digest, comments);
 
@@ -659,20 +663,94 @@
     });
   }
 
-  function load() {
-    Promise.all([
+  function fetchAll() {
+    return Promise.all([
       fetch("/api/journal").then(function (r) { return r.json(); }),
       fetch("/api/digest").then(function (r) { return r.json(); }).catch(function () { return null; }),
       // Tolerated the same way the digest is: the journal is the page, and
       // a comments read that fails should cost the bubbles, not the feed.
       fetch("/api/comments").then(function (r) { return r.json(); }).catch(function () { return null; }),
-    ])
+    ]);
+  }
+
+  function load() {
+    fetchAll()
       .then(function (results) { render(results[0], results[1], results[2]); })
       .catch(function (err) {
         feed.textContent = "";
         feed.appendChild(el("p", "empty", "Could not load the journal: " + err));
       });
   }
+
+  /* Edvard, issues.md 2026-08-10: "Nova takes a long time to load when i
+   * refresh it. And i have to refresh it to see new messages."
+   *
+   * The second half. A cycle writes an entry every hour and the page had
+   * no way to find out -- the only poll in this file belongs to a comment
+   * drawer waiting on its own reply, so an open tab showed whatever was
+   * true when it loaded.
+   *
+   * Three things keep this from being a page that fidgets:
+   *
+   * - It re-renders only when something actually changed. `version` is the
+   *   server's etag, carried inside the payload because the service worker
+   *   can serve this response from its cache and the header would be lost
+   *   with it. Comments have no cache to key on, so they are compared as
+   *   text; they are 6KB.
+   * - It never interrupts. A render throws every card away and builds new
+   *   ones, so typing into a comment box mid-poll would lose what was
+   *   typed. Anything with text in it defers the update to the next round
+   *   rather than dropping it -- the version comparison is against what was
+   *   rendered, so the change is still pending next time.
+   * - It stops while the tab is hidden and catches up the moment it is
+   *   looked at again, which is the phone case: the app is opened, not
+   *   refreshed. That is the actual shape of his complaint.
+   */
+  var POLL_MS = 30000;
+  var renderedVersion = null;
+  var renderedComments = null;
+  var pollTimer = null;
+
+  function typing() {
+    var boxes = document.querySelectorAll("textarea");
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].value.trim()) return true;
+    }
+    return false;
+  }
+
+  function poll() {
+    if (document.hidden || typing()) return schedulePoll();
+    fetchAll()
+      .then(function (results) {
+        var journal = results[0];
+        var comments = JSON.stringify(results[2]);
+        var changed = (journal && journal.version) !== renderedVersion || comments !== renderedComments;
+        // Re-checked after the fetch as well as before it: a request takes
+        // long enough for him to have started typing during one.
+        if (changed && !typing()) {
+          /* New entries land at the top, so a naive re-render shoves
+           * whatever he was reading down the page by exactly the height
+           * that was added. Holding the offset by that delta keeps the
+           * card under his thumb where it was. */
+          var before = document.body.scrollHeight;
+          var top = window.scrollY;
+          render(journal, results[1], results[2]);
+          if (top > 0) window.scrollTo(0, top + (document.body.scrollHeight - before));
+        }
+      })
+      .catch(function () { /* a failed poll is the previous page, not an error */ })
+      .then(schedulePoll);
+  }
+
+  function schedulePoll() {
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, POLL_MS);
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) poll();
+  });
 
   /* The capture box (item 6). Two buttons rather than a target toggle plus
    * a submit: it is one tap fewer on a phone, which is the whole point of
@@ -764,4 +842,5 @@
   }
 
   load();
+  schedulePoll();
 })();

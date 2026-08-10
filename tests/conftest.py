@@ -22,6 +22,7 @@ Installed via pytest_configure (not an autouse fixture) so it also
 covers anything that would reach the network at import/collection time,
 before the first test runs.
 """
+import pytest
 import socket
 
 BLOCKED_MESSAGE = (
@@ -62,3 +63,14 @@ def pytest_unconfigure(config):
     socket.getaddrinfo = _real_getaddrinfo
     socket.socket.connect = _real_connect
     socket.socket.connect_ex = _real_connect_ex
+
+
+@pytest.fixture(autouse=True)
+def _clear_nova_site_cache():
+    """`/api/journal` and `/api/digest` are served stale-while-revalidate,
+    and the cache is module state shared by every test in this process."""
+    from agora_runner.nova_site import reset_cache
+
+    reset_cache()
+    yield
+    reset_cache()
