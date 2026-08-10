@@ -93,6 +93,7 @@ import json
 import mimetypes
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
@@ -117,7 +118,12 @@ from agora_runner.nova_journal import (
     parse_journal,
     render_blocks,
 )
-from agora_runner.nova_replies import enqueue as enqueue_reply, pending as pending_replies
+from agora_runner.nova_replies import (
+    WAITING_AFTER_SECONDS,
+    enqueue as enqueue_reply,
+    failed as failed_replies,
+    pending_since,
+)
 from agora_runner.nova_sources import comments_markdown, digest_markdown, journal_markdown
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_public")
@@ -228,10 +234,25 @@ def comments_payload():
     # server rather than remembered by the client, so the "replying…" line
     # survives a reload, a second device, and the minutes this can take
     # while a Nova cycle holds the bridge's lock -- see nova_replies.
-    queued = pending_replies()
+    queued = pending_since()
+    gave_up = failed_replies()
+    now = time.time()
     for cycle, items in grouped.items():
         for comment in items:
-            comment["replyPending"] = (cycle, comment.get("stamp")) in queued
+            key = (cycle, comment.get("stamp"))
+            asked_at = queued.get(key)
+            comment["replyPending"] = asked_at is not None
+            # Two different waits, and the card must not call the second one
+            # the first: under the threshold a reply is genuinely being
+            # written, over it the bridge is busy with a cycle and this is a
+            # queue. Saying "Nova is replying…" for forty minutes is what
+            # Edvard reported as the conversation not working at all.
+            comment["replyWaiting"] = (
+                asked_at is not None and (now - asked_at) >= WAITING_AFTER_SECONDS
+            )
+            # And when it is not coming at all, say so rather than letting
+            # the line disappear as if the answer had arrived.
+            comment["replyFailed"] = asked_at is None and key in gave_up
     return {
         "byCycle": {str(cycle): items for cycle, items in grouped.items()},
         # Replies to the digest's Needs Edvard block, which belong to no

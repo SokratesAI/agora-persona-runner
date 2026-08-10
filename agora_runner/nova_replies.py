@@ -50,6 +50,7 @@ the model defaults to Sonnet rather than to whatever a cycle runs on.
 
 import queue
 import threading
+import time
 
 from agora_runner.config import (
     CLAUDE_BRIDGE_TOKEN,
@@ -153,16 +154,42 @@ def reply_to(cycle, stamp):
 
 
 _queue = queue.Queue()
-_pending = set()
+# (cycle, stamp) -> the epoch second it was asked for. The time is what
+# lets the card stop claiming a reply is being written when it is really
+# sitting behind a cycle's 45-minute hold on the bridge lock.
+_pending = {}
+# (cycle, stamp) -> why the last attempt gave up. Kept after the pending
+# entry is gone, because "the line just vanished" is the failure Edvard
+# actually saw: the card has to say a reply is not coming.
+_failed = {}
 _pending_lock = threading.Lock()
 _worker = None
 _worker_lock = threading.Lock()
+
+# Past this many seconds a reply is not being written -- it is waiting for
+# the bridge, which serialises every CLI call behind a running cycle. A
+# real answer is two or three sentences from Sonnet; nothing about this
+# threshold is measured against generation time, it is set well above any
+# plausible one so that crossing it means "queued", not "slow".
+WAITING_AFTER_SECONDS = 25
 
 
 def pending():
     """`{(cycle, stamp), ...}` -- queued or in flight, for the site to show."""
     with _pending_lock:
         return set(_pending)
+
+
+def pending_since():
+    """`{(cycle, stamp): asked_at_epoch}` -- same set, with the clock."""
+    with _pending_lock:
+        return dict(_pending)
+
+
+def failed():
+    """`{(cycle, stamp): message}` -- attempts that gave up, not retried."""
+    with _pending_lock:
+        return dict(_failed)
 
 
 def enqueue(cycle, stamp):
@@ -172,7 +199,9 @@ def enqueue(cycle, stamp):
     with _pending_lock:
         if (cycle, stamp) in _pending:
             return False
-        _pending.add((cycle, stamp))
+        _pending[(cycle, stamp)] = time.time()
+        # A fresh attempt supersedes whatever the last one said.
+        _failed.pop((cycle, stamp), None)
     _ensure_worker()
     _queue.put((cycle, stamp))
     log(f"nova-reply queued for cycle {cycle} at {stamp}")
@@ -206,14 +235,17 @@ def run_once():
     pinning nothing at all.
     """
     cycle, stamp = _queue.get()
+    failure = None
     try:
         ok, message = reply_to(cycle, stamp)
         if not ok:
+            failure = message
             log(f"nova-reply gave up on cycle {cycle}: {message}")
     except Exception as e:
         # Never let one bad comment kill the worker -- that would take
         # every later reply with it, silently, which is the failure this
         # loop keeps writing down.
+        failure = str(e)
         log(f"nova-reply failed on cycle {cycle}: {e}")
     finally:
         # `replyPending` is what puts "Nova is replying…" on his screen and
@@ -222,7 +254,9 @@ def run_once():
         # `except` above is what actually guarantees that; the `finally` is
         # here for the paths it does not catch and costs nothing.
         with _pending_lock:
-            _pending.discard((cycle, stamp))
+            _pending.pop((cycle, stamp), None)
+            if failure:
+                _failed[(cycle, stamp)] = failure
         _queue.task_done()
 
 

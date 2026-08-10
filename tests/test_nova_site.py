@@ -24,6 +24,7 @@ import importlib
 import inspect
 import io
 import json
+import time
 import os
 import re
 import signal
@@ -1723,7 +1724,8 @@ def test_the_comments_endpoint_says_which_replies_are_still_coming():
         "#### Nova · 2026-08-09 13:12\n\nhere you go\n"
     )
     with patch.object(nova_sources, "vault_read_path", return_value=stored), \
-            patch.object(nova_site, "pending_replies", return_value={(57, "2026-08-09 16:02")}):
+            patch.object(nova_site, "pending_since", return_value={(57, "2026-08-09 16:02"): time.time()}), \
+            patch.object(nova_site, "failed_replies", return_value={}):
         status, _, body = _get("/api/comments")
     assert status == 200
     payload = json.loads(body)
@@ -1732,3 +1734,40 @@ def test_the_comments_endpoint_says_which_replies_are_still_coming():
     answered = payload["byCycle"]["55"][0]
     assert answered["replyPending"] is False
     assert answered["reply"] == "here you go"
+
+
+def test_a_long_wait_is_shown_as_queued_not_as_a_reply_being_written():
+    """Edvard, on cycle 81: "Nova is replying..." should only be visible if
+    its actually working on replying". Past the threshold it is not working
+    on it -- it is behind a cycle's hold on the bridge's single CLI lock."""
+    stored = (
+        "## New\n\n"
+        "### Cycle 57 \u00b7 2026-08-09 16:02\n\nwaiting on this one\n\n"
+        "### Cycle 55 \u00b7 2026-08-09 13:10\n\njust asked\n"
+    )
+    old = time.time() - nova_site.WAITING_AFTER_SECONDS - 1
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={
+                (57, "2026-08-09 16:02"): old,
+                (55, "2026-08-09 13:10"): time.time(),
+            }), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    payload = json.loads(body)
+    queued = payload["byCycle"]["57"][0]
+    assert queued["replyPending"] is True and queued["replyWaiting"] is True
+    fresh = payload["byCycle"]["55"][0]
+    assert fresh["replyPending"] is True and fresh["replyWaiting"] is False
+
+
+def test_a_reply_that_failed_says_so_instead_of_vanishing():
+    stored = "## New\n\n### Cycle 57 \u00b7 2026-08-09 16:02\n\nno answer coming\n"
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={}), \
+            patch.object(nova_site, "failed_replies", return_value={(57, "2026-08-09 16:02"): "bridge down"}):
+        status, _, body = _get("/api/comments")
+    payload = json.loads(body)
+    item = payload["byCycle"]["57"][0]
+    assert item["replyPending"] is False
+    assert item["replyFailed"] is True
