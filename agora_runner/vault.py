@@ -115,13 +115,50 @@ def _vault_file_docs(prefix=""):
     return out
 
 
-def vault_assemble(doc):
+class VaultIncompleteDocument(RuntimeError):
+    """A file doc references content chunks that are not in the database.
+
+    Raised rather than returned because the text this would otherwise
+    produce is *plausible*: LiveSync stores a note as an ordered list of
+    content chunks, so a missing one drops a span out of the middle and
+    splices the surviving neighbours together mid-word. There is no
+    marker at the seam and the result parses fine.
+
+    Measured, 2026-08-10: `projects/sokrates/projects/agora/ideas.md` was
+    re-chunked by a LiveSync client into 184 chunks, 6 of which never
+    reached CouchDB. Every reader silently served the other 178 — 1238
+    characters gone, including Edvard's `## Board` heading, its table
+    header, and rows #57 to #50. Nothing reported an error, and one of
+    the casualties was the tail of the capture sentence he had just
+    typed. A scan of all 686 file docs found exactly that one damaged,
+    so this is rare; it is also unsurvivable when it happens, because
+    several callers read-modify-write, and an append onto a silently
+    truncated read persists the truncation.
+
+    `RuntimeError` is the base class deliberately: `nova_site` already
+    turns a RuntimeError out of `vault_read_path` into a 502 carrying
+    the message, so the site reports the damage instead of rendering it.
+    """
+
+
+def vault_assemble(doc, path=None):
     kids = doc.get("children") or []
     if kids:
         out = []
+        missing = []
         for chunk_id in kids:
             status, chunk = couch_get_doc(chunk_id)
+            if status != 200:
+                missing.append(chunk_id)
             out.append(chunk.get("data", "") if status == 200 else "")
+        if missing:
+            raise VaultIncompleteDocument(
+                f"{path or doc.get('path') or doc.get('_id')}: {len(missing)} of "
+                f"{len(kids)} content chunks missing from the vault "
+                f"({', '.join(missing[:5])}"
+                f"{', …' if len(missing) > 5 else ''}) — refusing to serve a "
+                f"partial document; recover with vault_git_revision_history"
+            )
         return "".join(out)
     return doc.get("data", "")
 
@@ -135,7 +172,7 @@ def vault_read_path(path):
     # Deleted means gone; vault_git_revision_history is the way back.
     if doc.get("deleted"):
         return None
-    return vault_assemble(doc)
+    return vault_assemble(doc, path.lower())
 
 
 def vault_list_prefix(prefix=""):
@@ -278,7 +315,20 @@ def fetch_vault_context(paths):
             if total >= VAULT_CONTEXT_CAP:
                 sections.append("[...vault context truncated at cap...]")
                 return "\n\n".join(sections)
-            content = vault_read_path(target)
+            try:
+                content = vault_read_path(target)
+            except VaultIncompleteDocument as e:
+                # One damaged file must not kill the run. This function
+                # builds the prompt for every heartbeat -- including Nova's
+                # own cycle -- and it is called before run_heartbeat's try
+                # block, on a bare daemon thread. An exception escaping here
+                # takes the thread down with no reply posted, no audit chip,
+                # and the heartbeat's lastResult stuck on "running" forever.
+                # That is a worse silence than the splice this exception
+                # exists to prevent, so it degrades the same way a missing
+                # file already does -- one visible marker, keep going.
+                sections.append(f"### {target}\n[unreadable: {e}]")
+                continue
             if content is None:
                 sections.append(f"### {target}\n[not found]")
                 continue
@@ -317,10 +367,23 @@ def vault_bulk_fetch(prefix=""):
                 chunks[row["id"]] = doc.get("data", "")
     out = {}
     for doc_id, doc in filedocs.items():
-        content = (
-            "".join(chunks.get(c, "") for c in doc["children"])
-            if doc.get("children") else doc.get("data", "")
-        )
+        kids = doc.get("children")
+        if kids:
+            missing = [c for c in kids if c not in chunks]
+            if missing:
+                # Omitted rather than raised: this feeds the journal page and
+                # the whole search/stub/duplicate suite, and one damaged file
+                # should not take down a listing of several hundred. That is
+                # the same call the failed-batch branch above makes, and it
+                # gets the same condition attached — silence is what let a
+                # spliced ideas.md read as intact all morning.
+                log(f"vault: {doc.get('path') or doc_id} omitted from bulk "
+                    f"fetch — {len(missing)} of {len(kids)} content chunks "
+                    f"missing from the vault ({', '.join(missing[:5])})")
+                continue
+            content = "".join(chunks[c] for c in kids)
+        else:
+            content = doc.get("data", "")
         if isinstance(content, str):
             out[doc.get("path") or doc_id] = content
     return out
