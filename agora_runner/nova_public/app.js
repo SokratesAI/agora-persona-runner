@@ -500,8 +500,17 @@
      * duplicate-looking cards caused before Cycle 64 split them. */
     var commenting = null;
     if (anchored && entry.cycle !== null && entry.cycle !== undefined) {
+      /* Bottom right of the card rather than beside the permalink in the
+       * head -- Edvard, ideas.md 2026-08-10: "Move the Journal chat bubble
+       * icon to the bottom right of the Journal cards."
+       *
+       * The foot is appended *before* renderComments, because renderComments
+       * appends the drawer to the same container: build it after and the
+       * drawer opens above the button that opened it. */
+      var foot = el("div", "entry-foot");
+      card.appendChild(foot);
       commenting = renderComments(card, cycleTarget(entry.cycle), comments);
-      head.appendChild(commenting.toggle);
+      foot.appendChild(commenting.toggle);
     }
 
     function setCommentsOpen(open) {

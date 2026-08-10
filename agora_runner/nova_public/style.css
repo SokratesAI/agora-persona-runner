@@ -375,10 +375,17 @@ pre code { background: none; padding: 0; }
 .entry .comment-drawer { display: none; }
 .entry.is-commenting .comment-drawer { display: block; margin-top: 0.9rem; }
 
-/* Sits beside the permalink in the head, so it is reachable without
- * opening the card. Its own touch target, at the iOS 44px minimum, for the
- * same reason the permalink has one -- a tap here must never read as
- * "collapse the card". */
+/* Bottom right of the card (Edvard, ideas.md 2026-08-10). The foot is not
+ * in the collapse rules above, so the bubble stays reachable on a collapsed
+ * card -- which is the whole point of it: comment on a cycle without
+ * reading it first. */
+.entry-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Its own touch target, at the iOS 44px minimum, for the same reason the
+ * permalink has one -- a tap here must never read as "collapse the card". */
 .comment-toggle {
   background: none;
   border: 0;

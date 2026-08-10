@@ -608,6 +608,27 @@ describe("commenting on a cycle", () => {
     assert.ok(bubble(cardFor(window, 55)));
   });
 
+  test("the bubble sits in the card's foot, below the drawer's opener, not in the head", () => {
+    /* Edvard, ideas.md 2026-08-10: "Move the Journal chat bubble icon to the
+     * bottom right of the Journal cards." Two separate things have to hold,
+     * because each breaks on its own:
+     *   - it is out of `.entry-head` and inside `.entry-foot` (the move), and
+     *   - the foot is before the drawer in document order, so tapping it
+     *     opens the drawer *underneath* it. renderComments appends the drawer
+     *     to the same container, so building the foot after the call passes
+     *     the first assertion and fails this one. */
+    const card = cardFor(window, 55);
+    const b = bubble(card);
+    assert.equal(b.parentNode.className, "entry-foot");
+    assert.equal(card.querySelector(".entry-head .comment-toggle"), null);
+
+    const kids = Array.from(card.children);
+    const foot = kids.indexOf(b.parentNode);
+    const drawer = kids.indexOf(card.querySelector(".comment-drawer"));
+    assert.ok(foot > -1 && drawer > -1, "both the foot and the drawer are children of the card");
+    assert.ok(foot < drawer, "the drawer opens below the bubble, not above it");
+  });
+
   test("an entry with no cycle number gets none", () => {
     // There is nothing to key a comment to, so a box there would swallow it.
     const orphan = cards(window).find((c) => !/^Cycle /.test(c.querySelector("h2").textContent));
