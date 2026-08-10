@@ -104,7 +104,7 @@
     }
   }
 
-  function renderNeeds(digest) {
+  function renderNeeds(digest, comments) {
     // Item 3: pinned when it has something, completely absent when it
     // doesn't -- not a box saying "Nothing".
     if (!digest || !digest.hasNeedsEdvard) {
@@ -114,6 +114,27 @@
     var body = needsEl.querySelector(".needs-body");
     body.textContent = "";
     renderBlocks(body, digest.needsEdvardBlocks);
+
+    /* Edvard, 2026-08-10: "the 'needs Edvard' is still missing a comment
+     * block, so its hard for me to answer it. [...] Where did you intend
+     * me to answer it? [...] I want a reply button on it."
+     *
+     * Idea #56 sat in this block unanswered for eight cycles. Reading that
+     * as him not getting to it was wrong: the block asked a question and
+     * gave him nowhere to type, and the capture box below it files
+     * backlog bullets, which is not what an answer is.
+     *
+     * Unlike a journal card the box is open rather than behind the 💬
+     * toggle, and that is the one deliberate difference. A card's drawer
+     * is folded because there are seventy-odd cards and almost none of
+     * them want a comment. This section exists *only* when I am asking him
+     * something -- it is `hidden` otherwise -- so there is no state in
+     * which an always-visible answer field is noise, and a fold is exactly
+     * the thing that hid the problem for eight cycles. */
+    var old = needsEl.querySelector(".comment-drawer");
+    if (old) needsEl.removeChild(old);
+    renderComments(needsEl, needsTarget(), (comments && comments.needs) || []);
+
     needsEl.hidden = false;
   }
 
@@ -151,7 +172,14 @@
    * produce markup -- see the header. A glyph is textContent; an <svg>
    * would need innerHTML or createElementNS, and the first is banned here
    * for a good reason and the second buys nothing at this size. */
-  function renderComments(card, cycle, comments) {
+  /* `target` is what the drawer is attached to, so the same drawer serves
+   * both a journal card and the Needs Edvard block:
+   *   body(text)  -> the /api/comment payload naming that target
+   *   pick(data)  -> that target's comments out of /api/comments
+   *   placeholder, ariaLabel -> the words for it
+   * Everything below is target-agnostic on purpose; the two differ only in
+   * which four things they hand in. */
+  function renderComments(container, target, comments) {
     var drawer = el("div", "comment-drawer");
 
     var list = el("div", "comment-list");
@@ -159,7 +187,7 @@
 
     var box = el("textarea", "comment-text");
     box.rows = 3;
-    box.placeholder = "Say something about cycle " + cycle + "…";
+    box.placeholder = target.placeholder;
     box.setAttribute("autocapitalize", "sentences");
     drawer.appendChild(box);
 
@@ -174,7 +202,7 @@
 
     var toggle = el("button", "comment-toggle");
     toggle.type = "button";
-    toggle.setAttribute("aria-label", "Comment on cycle " + cycle);
+    toggle.setAttribute("aria-label", target.ariaLabel);
 
     function paint(items) {
       list.textContent = "";
@@ -215,7 +243,7 @@
       fetch("/api/comment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cycle: cycle, text: text }),
+        body: JSON.stringify(target.body(text)),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
@@ -229,7 +257,7 @@
           return fetch("/api/comments")
             .then(function (r) { return r.json(); })
             .then(function (payload) {
-              paint((payload.byCycle || {})[String(cycle)]);
+              paint(target.pick(payload));
             });
         })
         .catch(function (err) {
@@ -251,8 +279,26 @@
      * does not have on a phone keyboard. Consistency between the two boxes
      * would be consistency against what each is for. */
 
-    card.appendChild(drawer);
+    container.appendChild(drawer);
     return { toggle: toggle, drawer: drawer };
+  }
+
+  function cycleTarget(cycle) {
+    return {
+      placeholder: "Say something about cycle " + cycle + "…",
+      ariaLabel: "Comment on cycle " + cycle,
+      body: function (text) { return { cycle: cycle, text: text }; },
+      pick: function (data) { return ((data && data.byCycle) || {})[String(cycle)]; },
+    };
+  }
+
+  function needsTarget() {
+    return {
+      placeholder: "Answer…",
+      ariaLabel: "Reply to Needs Edvard",
+      body: function (text) { return { target: "needs", text: text }; },
+      pick: function (data) { return (data && data.needs) || []; },
+    };
   }
 
   function renderEntry(entry, digestLine, expanded, anchored, comments) {
@@ -392,7 +438,7 @@
      * duplicate-looking cards caused before Cycle 64 split them. */
     var commenting = null;
     if (anchored && entry.cycle !== null && entry.cycle !== undefined) {
-      commenting = renderComments(card, entry.cycle, comments);
+      commenting = renderComments(card, cycleTarget(entry.cycle), comments);
       head.appendChild(commenting.toggle);
     }
 
@@ -473,7 +519,7 @@
 
   function render(journal, digest, comments) {
     renderStatus(journal.status || {});
-    renderNeeds(digest);
+    renderNeeds(digest, comments);
 
     var commentsByCycle = (comments && comments.byCycle) || {};
 

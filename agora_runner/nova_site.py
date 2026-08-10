@@ -106,8 +106,10 @@ from agora_runner.nova_capture import (
 from agora_runner.nova_comments import (
     COMMENTS_PATH,
     add_comment,
+    add_needs_comment,
     clean_comment_text,
     comments_by_cycle,
+    needs_comments,
 )
 from agora_runner.nova_journal import (
     DIGEST_PATH,
@@ -242,8 +244,14 @@ def comments_payload():
     journal, this is Edvard's own prose and nothing here interprets it as
     markdown, so there is no markup for the client to be unable to build.
     """
-    grouped = comments_by_cycle(vault_read_path(COMMENTS_PATH) or "")
-    return {"byCycle": {str(cycle): items for cycle, items in grouped.items()}}
+    markdown = vault_read_path(COMMENTS_PATH) or ""
+    grouped = comments_by_cycle(markdown)
+    return {
+        "byCycle": {str(cycle): items for cycle, items in grouped.items()},
+        # Replies to the digest's Needs Edvard block, which belong to no
+        # cycle and so cannot ride in `byCycle`.
+        "needs": needs_comments(markdown),
+    }
 
 
 class NovaSiteHandler(BaseHTTPRequestHandler):
@@ -367,18 +375,32 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
     def _post_comment(self, payload):
         """`/api/comment` -- Edvard replying to one cycle (ideas.md #44).
 
+        `{"target": "needs"}` instead of a `cycle` answers the digest's
+        Needs Edvard block (2026-08-10) -- see `nova_comments`.
+
         The same two boundaries as the capture box, and the same reason
         they hold: the tailnet authenticates, and the endpoint's shape
-        authorizes. `cycle` is coerced to an int and `text` must be a
-        string, so nothing a client sends addresses a document -- the path
-        is the module-level COMMENTS_PATH constant and there is no target
-        to choose. The worst a request can do is add a comment to a file
-        Nova reads and Edvard can delete.
+        authorizes. `cycle` is coerced to an int, `target` is checked
+        against a one-value allow-list, and `text` must be a string, so
+        nothing a client sends addresses a document -- the path is the
+        module-level COMMENTS_PATH constant and there is no target to
+        choose. The worst a request can do is add a comment to a file Nova
+        reads and Edvard can delete.
         """
         cycle = payload.get("cycle")
+        target = payload.get("target")
         text = payload.get("text")
         if not isinstance(text, str):
             self._send_json(400, {"error": "text must be a string"})
+            return
+        if target is not None:
+            if target != "needs":
+                self._send_json(400, {"error": "target must be 'needs'"})
+                return
+            if not clean_comment_text(text):
+                self._send_json(400, {"error": "nothing to comment"})
+                return
+            self._store_comment(lambda: add_needs_comment(text), text, "Needs Edvard")
             return
         # `True` is an int in Python and would silently become cycle 1.
         if isinstance(cycle, bool) or not isinstance(cycle, (int, str)):
@@ -396,12 +418,23 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "nothing to comment"})
             return
 
-        # Every bad request is answered above, so anything add_comment
-        # rejects from here is the vault failing rather than the client
-        # asking for something wrong -- which is what makes 502 correct
-        # below without having to read the failure message to decide.
+        self._store_comment(lambda: add_comment(cycle, text), text, f"cycle {cycle}")
+
+    def _store_comment(self, store, text, label):
+        """Write one comment and audit it, whichever target it names.
+
+        `store` is a no-argument callable so this stays ignorant of which
+        writer it is driving and what that writer's signature looks like;
+        `text` and `label` are only ever used to describe the write in the
+        audit trail.
+
+        Every bad request is answered by the caller, so anything `store`
+        rejects from here is the vault failing rather than the client
+        asking for something wrong -- which is what makes 502 correct
+        below without having to read the failure message to decide.
+        """
         try:
-            ok, message = add_comment(cycle, text)
+            ok, message = store()
         except Exception as e:
             log(f"nova-site comment failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
@@ -411,7 +444,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "Nova",
             "",
             "nova_comment",
-            f"Comment on cycle {cycle} · {'ok' if ok else message}",
+            f"Comment on {label} · {'ok' if ok else message}",
             after=text[:MAX_BODY_BYTES],
             output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
             is_error=not ok,

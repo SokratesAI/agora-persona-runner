@@ -29,8 +29,12 @@ const payload = JSON.parse(readFileSync(join(here, "fixtures", "payload.json"), 
  *
  * `failComments` rejects only `/api/comments`, which is how the "a broken
  * endpoint costs the bubbles, not the feed" test reaches the catch that
- * app.js's Promise.all relies on. */
-async function loadSite(path = "/", { failComments = false } = {}) {
+ * app.js's Promise.all relies on.
+ *
+ * `digest` and `comments` override those two responses. The Needs Edvard
+ * tests need both: the live fixture's digest asks for nothing (so the
+ * section is hidden), and its comments carry no reply to it. */
+async function loadSite(path = "/", { failComments = false, digest, comments } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = new JSDOM(html, {
     url: "https://nova.example" + path,
@@ -51,9 +55,9 @@ async function loadSite(path = "/", { failComments = false } = {}) {
     if (url.includes("/api/comments")) {
       return failComments
         ? Promise.reject(new Error("comments are down"))
-        : Promise.resolve({ json: () => Promise.resolve(payload.comments) });
+        : Promise.resolve({ json: () => Promise.resolve(comments || payload.comments) });
     }
-    const body = url.includes("/api/digest") ? payload.digest : payload.journal;
+    const body = url.includes("/api/digest") ? (digest || payload.digest) : payload.journal;
     return Promise.resolve({ json: () => Promise.resolve(body) });
   };
   window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
@@ -628,5 +632,108 @@ describe("commenting on a cycle", () => {
     const w = await loadSite("/", { failComments: true });
     assert.equal(cards(w).length, payload.journal.entries.length);
     assert.equal(bubble(cardFor(w, 57)).textContent, "💬");
+  });
+});
+
+/* Replying to Needs Edvard (2026-08-10). Edvard: "the 'needs Edvard' is
+ * still missing a comment block, so its hard for me to answer it. [...]
+ * Where did you intend me to answer it? [...] I want a reply button on it."
+ *
+ * The section had been asking him a question for eight cycles with nowhere
+ * to type an answer. These tests pin the two things that makes it fixed:
+ * the box is reachable without a click, and what it sends names the block
+ * rather than a cycle. */
+describe("replying to Needs Edvard", () => {
+  const asking = {
+    ...payload.digest,
+    hasNeedsEdvard: true,
+    needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about idea #56." }] }],
+  };
+  const withReply = {
+    byCycle: payload.comments.byCycle,
+    needs: [{ cycle: null, stamp: "2026-08-10 08:20", text: "go ahead and do it", acknowledged: false }],
+  };
+  const needsEl = (window) => window.document.getElementById("needs");
+  const box = (window) => needsEl(window).querySelector(".comment-text");
+
+  test("the box is there without a click, unlike a card's", async () => {
+    /* The one deliberate difference from a journal card. A fold is what
+     * hid this for eight cycles, and the section only exists at all when
+     * something is being asked -- so there is no state where an open box
+     * is noise. */
+    const window = await loadSite("/", { digest: asking });
+    assert.ok(!needsEl(window).hidden);
+    assert.ok(box(window), "the answer field is in the DOM with no interaction");
+    assert.ok(needsEl(window).querySelector(".comment-send"));
+  });
+
+  test("no box at all when nothing is being asked", async () => {
+    // The section is hidden; a reply field inside a hidden section would be
+    // a box he can never reach, which is the bug this feature is fixing.
+    const window = await loadSite();
+    assert.ok(needsEl(window).hidden);
+  });
+
+  test("the reply posts the block, not a cycle", async () => {
+    const window = await loadSite("/", { digest: asking });
+    box(window).value = "  go ahead and do it  ";
+    click(window, needsEl(window).querySelector(".comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+
+    const sent = window.posted.at(-1);
+    assert.equal(sent.url, "/api/comment");
+    assert.deepEqual(sent.body, { target: "needs", text: "go ahead and do it" });
+    assert.ok(!("cycle" in sent.body), "a cycle would file his answer on a random card");
+  });
+
+  test("answers already given are shown, so a saved one is tellable from a lost one", async () => {
+    const window = await loadSite("/", { digest: asking, comments: withReply });
+    assert.match(needsEl(window).textContent, /go ahead and do it/);
+    assert.equal(needsEl(window).querySelectorAll(".comment").length, 1);
+  });
+
+  test("a needs reply never paints onto a journal card", async () => {
+    const window = await loadSite("/", { digest: asking, comments: withReply });
+    const feed = window.document.getElementById("feed");
+    assert.ok(!feed.textContent.includes("go ahead and do it"));
+  });
+
+  test("a failed write keeps what he typed", async () => {
+    const window = await loadSite("/", { digest: asking });
+    window.postReply = { ok: false, message: "409 conflict" };
+    box(window).value = "go ahead and do it";
+    click(window, needsEl(window).querySelector(".comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(box(window).value, "go ahead and do it");
+    assert.match(needsEl(window).querySelector(".comment-status").textContent, /409/);
+  });
+
+  test("the question and the answer box are still one section", async () => {
+    // Reading the ask and answering it should not be two places to look.
+    const window = await loadSite("/", { digest: asking });
+    assert.match(needsEl(window).textContent, /Decide about idea #56/);
+    assert.ok(needsEl(window).contains(box(window)));
+  });
+});
+
+describe("the Needs Edvard reply box survives a re-render", () => {
+  /* `load()` runs again on popstate and after a capture, so renderNeeds is
+   * not a once-per-page-load function. Without clearing the old drawer the
+   * section would grow a second answer box on every navigation -- two
+   * places to type one answer, and only one of them holding what he wrote. */
+  test("navigating back does not leave two boxes", async () => {
+    const asking = {
+      ...payload.digest,
+      hasNeedsEdvard: true,
+      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about idea #56." }] }],
+    };
+    const window = await loadSite("/", { digest: asking });
+    const needs = window.document.getElementById("needs");
+    assert.equal(needs.querySelectorAll(".comment-text").length, 1);
+
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(needs.querySelectorAll(".comment-text").length, 1, "a second box appeared");
+    assert.equal(needs.querySelectorAll(".comment-drawer").length, 1);
   });
 });

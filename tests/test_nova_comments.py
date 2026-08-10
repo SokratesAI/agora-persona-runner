@@ -20,9 +20,12 @@ import pytest
 from agora_runner import nova_comments
 from agora_runner.nova_comments import (
     COMMENTS_PATH,
+    ACKNOWLEDGED_HEADING,
     add_comment,
+    add_needs_comment,
     clean_comment_text,
     comments_by_cycle,
+    needs_comments,
     format_stamp,
     insert_comment,
     parse_comments,
@@ -319,3 +322,78 @@ def test_a_numeric_string_cycle_is_accepted():
         ok, _ = add_comment("63", "keep it up", stamp="2026-08-09 22:40")
     assert ok
     assert parse_comments(write.call_args[0][1])[0]["cycle"] == 63
+
+
+# --- Replies to the Needs Edvard block (2026-08-10) -------------------------
+#
+# Edvard: *"the 'needs Edvard' is still missing a comment block, so its hard
+# for me to answer it. [...] I want a reply button on it."* These defend the
+# one property that makes such a reply different from a comment on a cycle:
+# it belongs to no cycle, so it must never be filed under one -- the digest
+# is rewritten every cycle and the card it landed on would be arbitrary.
+
+
+def test_a_needs_reply_is_headed_by_the_block_not_a_cycle():
+    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, message = add_needs_comment("go ahead and do it", stamp="2026-08-10 08:20")
+    assert ok
+    written = write.call_args[0][1]
+    assert "### Needs Edvard · 2026-08-10 08:20" in written
+    assert "### Cycle" not in written
+    assert message == "commented on needs edvard"
+
+
+def test_a_needs_reply_parses_back_with_no_cycle():
+    stored = insert_comment(EMPTY, None, "go ahead and do it", "2026-08-10 08:20")
+    parsed = parse_comments(stored)
+    assert len(parsed) == 1
+    assert parsed[0]["cycle"] is None
+    assert parsed[0]["text"] == "go ahead and do it"
+    assert parsed[0]["acknowledged"] is False
+
+
+def test_a_needs_reply_never_lands_on_a_card():
+    """`comments_by_cycle` is what the site hangs off each journal card. A
+    `None` key leaking into it would render as a card for cycle "None"."""
+    stored = insert_comment(EMPTY, None, "go ahead and do it", "2026-08-10 08:20")
+    stored = insert_comment(stored, 63, "keep it up", "2026-08-09 22:40")
+    assert list(comments_by_cycle(stored)) == [63]
+    assert [c["text"] for c in needs_comments(stored)] == ["go ahead and do it"]
+
+
+def test_needs_replies_and_cycle_comments_share_one_new_section():
+    """Both are things Edvard said that no cycle has answered yet, and
+    `prompt.md` step 1a reads `## New` whole -- so a reply that landed in a
+    section of its own would be invisible to the step built to collect it."""
+    stored = insert_comment(EMPTY, None, "go ahead and do it", "2026-08-10 08:20")
+    stored = insert_comment(stored, 63, "keep it up", "2026-08-09 22:40")
+    new_section = stored.split(ACKNOWLEDGED_HEADING)[0]
+    assert "### Needs Edvard" in new_section
+    assert "### Cycle 63" in new_section
+
+
+def test_a_needs_reply_is_stored_verbatim():
+    typed = "Go ahead and do it.\n\nYou do not need permission from me.\n  indented"
+    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        add_needs_comment(typed, stamp="2026-08-10 08:20")
+    assert parse_comments(write.call_args[0][1])[0]["text"] == typed
+
+
+def test_an_empty_needs_reply_never_reaches_the_vault():
+    with patch.object(nova_comments, "vault_read_path") as read, \
+            patch.object(nova_comments, "vault_write_path") as write:
+        ok, message = add_needs_comment("   \n  ")
+    assert not ok
+    assert message == "nothing to comment"
+    assert not read.called and not write.called
+
+
+def test_an_acknowledged_needs_reply_is_marked_read():
+    """A cycle retires one by moving it down, exactly as it does a comment."""
+    stored = (
+        "## New\n\n## Acknowledged\n\n"
+        "### Needs Edvard · 2026-08-10 08:20\n\ngo ahead and do it\n"
+    )
+    assert needs_comments(stored)[0]["acknowledged"] is True

@@ -12,6 +12,15 @@ is not a backlog item -- it is a reply *about cycle 63*, and stripped of
 which cycle it answers it loses most of its meaning. So a comment is
 stored keyed by cycle number, and the number is the whole point.
 
+**The second target is the digest's `Needs Edvard` block** (2026-08-10, his
+words in the `add_needs_comment` docstring). That block is the one place
+Nova asks *him* a direct question, and until now it was the one place with
+no way to answer -- idea #56 sat in it unanswered for eight cycles, which
+is not him ignoring it but a box with no reply field. Such a reply is
+stored here under `### Needs Edvard · <stamp>` rather than under a cycle,
+because the digest is rewritten every cycle and filing his answer under
+whichever cycle last touched the text would attach it to a card at random.
+
 **The channel only exists if a cycle reads it.** A comment nobody collects
 is Cycle 58's "Needs Edvard" box all over again: built, tested, shipped
 and dead. So the file has two sections and a comment is not done when it
@@ -51,13 +60,27 @@ ACKNOWLEDGED_HEADING = "## Acknowledged"
 
 WRITE_ATTEMPTS = 3
 
-# `### Cycle 63 · 2026-08-09 22:40`. The separator is matched loosely so a
-# heading hand-edited in Obsidian still parses; the cycle number is the
-# only part anything depends on.
+# The heading a reply to the `Needs Edvard` block carries instead of a
+# cycle number. Such a reply answers a question the *digest* is asking, and
+# the digest is rewritten every cycle -- so there is no cycle it belongs
+# to, and filing it under whichever cycle happened to write the current
+# text would attach his answer to a card at random.
+NEEDS_LABEL = "Needs Edvard"
+
+# `### Cycle 63 · 2026-08-09 22:40`, or `### Needs Edvard · 2026-08-10 08:20`.
+# The separator is matched loosely so a heading hand-edited in Obsidian
+# still parses; which of the two targets it names is the only part anything
+# depends on.
 _COMMENT_HEADING_RE = re.compile(
-    r"^###[ \t]+Cycle[ \t]+(?P<cycle>\d+)[ \t]*(?:[·\-—][ \t]*(?P<stamp>.*?))?[ \t]*$",
+    r"^###[ \t]+(?:Cycle[ \t]+(?P<cycle>\d+)|(?P<needs>Needs[ \t]+Edvard))"
+    r"[ \t]*(?:[·\-—][ \t]*(?P<stamp>.*?))?[ \t]*$",
     re.IGNORECASE,
 )
+
+
+def _heading_label(cycle):
+    """`None` -> the Needs Edvard block, an int -> that cycle."""
+    return NEEDS_LABEL if cycle is None else f"Cycle {cycle}"
 
 _SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
 
@@ -128,13 +151,15 @@ def _section_bounds(lines, heading):
 def insert_comment(markdown, cycle, text, stamp):
     """Add one comment to the top of `## New`, newest first.
 
+    `cycle` is an int, or `None` for a reply to the Needs Edvard block.
+
     Newest first matches every other file this loop maintains and means a
     cycle reads the freshest thing Edvard said without scrolling. If the
     section is missing entirely it is created, so a comment can never be
     dropped for want of a heading it did not have.
     """
     lines = markdown.split("\n") if markdown else []
-    block = [f"### Cycle {cycle} · {stamp}", ""] + text.split("\n") + [""]
+    block = [f"### {_heading_label(cycle)} · {stamp}", ""] + text.split("\n") + [""]
 
     bounds = _section_bounds(lines, NEW_HEADING)
     if bounds is None:
@@ -186,7 +211,7 @@ def parse_comments(markdown):
         if heading and section is not None:
             flush()
             current = {
-                "cycle": int(heading.group("cycle")),
+                "cycle": int(heading.group("cycle")) if heading.group("cycle") else None,
                 "stamp": (heading.group("stamp") or "").strip(),
                 "acknowledged": section == "acknowledged",
                 "lines": [],
@@ -211,11 +236,34 @@ def parse_comments(markdown):
 
 
 def comments_by_cycle(markdown):
-    """`{cycle: [comment, ...]}` -- what the site hangs off each card."""
+    """`{cycle: [comment, ...]}` -- what the site hangs off each card.
+
+    Needs Edvard replies are deliberately absent: they belong to no cycle,
+    and letting `None` through would key a card on it.
+    """
     grouped = {}
     for comment in parse_comments(markdown):
+        if comment["cycle"] is None:
+            continue
         grouped.setdefault(comment["cycle"], []).append(comment)
     return grouped
+
+
+def needs_comments(markdown):
+    """`[comment, ...]` -- replies to the Needs Edvard block, newest first."""
+    return [c for c in parse_comments(markdown) if c["cycle"] is None]
+
+
+def add_needs_comment(text, stamp=None):
+    """Store one reply to the Needs Edvard block. Returns (ok, message).
+
+    Edvard, 2026-08-10: *"the 'needs Edvard' is still missing a comment
+    block, so its hard for me to answer it. [...] Where did you intend me
+    to answer it? [...] I want a reply button on it."* Idea #56 had been
+    sitting in that block unanswered for eight cycles, and the reason was
+    this: the box asked a question and offered nowhere to type.
+    """
+    return _store(None, text, stamp)
 
 
 def add_comment(cycle, text, stamp=None):
@@ -226,6 +274,12 @@ def add_comment(cycle, text, stamp=None):
         return False, f"cycle must be a number, got {cycle!r}"
     if cycle < 0:
         return False, "cycle must not be negative"
+    return _store(cycle, text, stamp)
+
+
+def _store(cycle, text, stamp=None):
+    """The shared read-modify-write. `cycle` is an int, or None for Needs Edvard."""
+    target = _heading_label(cycle).lower()
     body = clean_comment_text(text)
     if not body:
         return False, "nothing to comment"
@@ -241,9 +295,9 @@ def add_comment(cycle, text, stamp=None):
             current = ""
         result = vault_write_path(COMMENTS_PATH, insert_comment(current, cycle, body, stamp))
         if result == "written":
-            log(f"nova-comment stored on cycle {cycle}")
-            return True, f"commented on cycle {cycle}"
+            log(f"nova-comment stored on {target}")
+            return True, f"commented on {target}"
         if "409" not in result:
             break
-    log(f"nova-comment failed writing cycle {cycle}: {result}")
+    log(f"nova-comment failed writing {target}: {result}")
     return False, f"could not write comment: {result}"

@@ -1522,3 +1522,87 @@ def test_the_same_content_compresses_to_the_same_bytes(journal_md):
 )
 def test_accept_encoding_is_parsed_not_pattern_matched(header, expected):
     assert nova_site.accepts_gzip(header) is expected
+
+
+# --- Replying to Needs Edvard over HTTP (2026-08-10) ------------------------
+#
+# `{"target": "needs"}` instead of a `cycle`. The boundary is the same one
+# the rest of this endpoint holds: `target` is checked against a one-value
+# allow-list, so it selects a heading and never a document.
+
+
+def test_the_comments_endpoint_serves_needs_replies_separately():
+    stored = (
+        "## New\n\n"
+        "### Needs Edvard · 2026-08-10 08:20\n\ngo ahead and do it\n\n"
+        "### Cycle 63 · 2026-08-09 22:40\n\nkeep it up\n\n"
+        "## Acknowledged\n"
+    )
+    with patch.object(nova_site, "vault_read_path", return_value=stored):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    payload = json.loads(body)
+    # The needs reply must not be filed under a cycle, or the client would
+    # paint it onto whichever journal card that key names.
+    assert list(payload["byCycle"]) == ["63"]
+    assert [c["text"] for c in payload["needs"]] == ["go ahead and do it"]
+
+
+def test_a_needs_reply_reaches_the_vault_without_a_cycle():
+    with patch.object(nova_site, "add_needs_comment", return_value=(True, "commented on needs edvard")) as add, \
+            patch.object(nova_site, "add_comment") as add_cycle, \
+            patch.object(nova_site, "audit"):
+        status, _, body = _post("/api/comment", {"target": "needs", "text": "go ahead and do it"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    assert add.call_args[0] == ("go ahead and do it",)
+    assert not add_cycle.called
+
+
+def test_a_needs_reply_is_audited_with_what_was_typed():
+    with patch.object(nova_site, "add_needs_comment", return_value=(True, "ok")), \
+            patch.object(nova_site, "audit") as audit_call:
+        _post("/api/comment", {"target": "needs", "text": "go ahead and do it"})
+    assert audit_call.called
+    assert audit_call.call_args[1]["after"] == "go ahead and do it"
+    assert "Needs Edvard" in audit_call.call_args[0][3]
+    assert audit_call.call_args[1]["is_error"] is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"target": "needs"},                       # no text at all
+        {"target": "needs", "text": 12},           # text that is not a string
+        {"target": "needs", "text": "   \n  "},    # nothing but whitespace
+        {"target": "issues", "text": "x"},         # a capture target, not a comment one
+        {"target": "../../etc/passwd", "text": "x"},
+        {"target": 1, "text": "x"},
+    ],
+)
+def test_a_malformed_needs_reply_is_400_and_never_touches_the_vault(payload):
+    with patch.object(nova_site, "add_needs_comment") as add, \
+            patch.object(nova_site, "add_comment") as add_cycle:
+        status, _, _ = _post("/api/comment", payload)
+    assert status == 400
+    assert not add.called and not add_cycle.called
+
+
+def test_a_needs_target_wins_over_a_cycle_in_the_same_payload():
+    """Only one of the two can be honoured. `target` is the explicit one,
+    and silently filing his answer under a stray cycle number is the exact
+    failure the separate heading exists to prevent."""
+    with patch.object(nova_site, "add_needs_comment", return_value=(True, "ok")) as add, \
+            patch.object(nova_site, "add_comment") as add_cycle, \
+            patch.object(nova_site, "audit"):
+        status, _, _ = _post("/api/comment", {"target": "needs", "cycle": 63, "text": "x"})
+    assert status == 200
+    assert add.called and not add_cycle.called
+
+
+def test_a_failed_needs_reply_is_still_audited_as_an_error():
+    with patch.object(nova_site, "add_needs_comment", return_value=(False, "409 conflict")), \
+            patch.object(nova_site, "audit") as audit_call:
+        status, _, _ = _post("/api/comment", {"target": "needs", "text": "go ahead"})
+    assert status == 502
+    assert audit_call.call_args[1]["is_error"] is True
