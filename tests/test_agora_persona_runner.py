@@ -29,6 +29,7 @@ Covers the three Issues.md bugs fixed 2026-07-22:
      (RBAC read access + repo-read-token auth both confirmed in-cluster).
 """
 
+import base64
 import io
 import json
 import os
@@ -2220,6 +2221,104 @@ def test_claude_cli_generate_raises_on_empty_history(runner):
             "claude-haiku-4-5-20251001", False, "system", [],
             dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
         )
+
+
+# ---------------------------------------------------------------------------
+# claude_cli attachments -- 2026-08-10. anthropic/gemini built real image
+# blocks from 2026-07-24 and this provider built nothing, so an image sent to
+# a claude-cli persona reached the model as if it had never been attached.
+# ---------------------------------------------------------------------------
+
+def _cli_body(runner, history, fetch=b"\x89PNG-bytes"):
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "ok", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "fetch_attachment_bytes",
+                      return_value=fetch), \
+         patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system", history,
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+    return captured["body"]
+
+
+def test_claude_cli_generate_sends_an_image_attachment_as_base64(runner):
+    body = _cli_body(runner, [{"role": "user", "content": "what is this?", "attachments": [
+        {"id": "att-1", "filename": "photo.png", "mimeType": "image/png"}]}])
+    assert body["prompt"] == "what is this?"
+    assert body["attachments"] == [{
+        "filename": "photo.png",
+        "mimeType": "image/png",
+        "data": base64.b64encode(b"\x89PNG-bytes").decode(),
+    }]
+
+
+def test_claude_cli_generate_omits_the_attachments_key_when_there_are_none(runner):
+    """The bridge treats an absent key as "invoke the CLI exactly as
+    before", so every ordinary text turn -- including every Nova cycle --
+    must keep looking identical on the wire."""
+    body = _cli_body(runner, [{"role": "user", "content": "hi"}])
+    assert "attachments" not in body
+
+
+def test_claude_cli_generate_sends_a_non_image_attachment_without_data(runner):
+    """Mirrors _anthropic_content/_gemini_parts: the bytes are never
+    fetched for a non-image, and the bridge renders the "[attached file:
+    ...]" note from the entry that has no `data`."""
+    body = _cli_body(runner, [{"role": "user", "content": "read this", "attachments": [
+        {"id": "att-2", "filename": "notes.pdf", "mimeType": "application/pdf"}]}])
+    assert body["attachments"] == [{"filename": "notes.pdf", "mimeType": "application/pdf"}]
+
+
+def test_claude_cli_generate_sends_an_image_whose_fetch_failed_without_data(runner):
+    body = _cli_body(runner, [{"role": "user", "content": "look", "attachments": [
+        {"id": "att-3", "filename": "gone.png", "mimeType": "image/png"}]}], fetch=None)
+    assert body["attachments"] == [{"filename": "gone.png", "mimeType": "image/png"}]
+
+
+def test_claude_cli_generate_accepts_an_image_only_message_with_no_caption(runner):
+    """An image with no caption used to raise "no content to send" -- the
+    same empty-turn crash _gemini_parts documents on the other side."""
+    body = _cli_body(runner, [{"role": "user", "content": "", "attachments": [
+        {"id": "att-4", "filename": "photo.png", "mimeType": "image/png"}]}])
+    assert body["prompt"] == ""
+    assert len(body["attachments"]) == 1
+
+
+def test_claude_cli_generate_normalises_a_null_caption_to_empty_string(runner):
+    """merge_history copies `text` through unnormalised, and the bridge
+    crashes on a None prompt (`message[:120]` -- TypeError, HTTP 500, one
+    per retry). Agora coerces today, so this pins the boundary, not a bug."""
+    body = _cli_body(runner, [{"role": "user", "content": None, "attachments": [
+        {"id": "att-5", "filename": "photo.png", "mimeType": "image/png"}]}])
+    assert body["prompt"] == ""
+
+
+def test_claude_cli_generate_still_raises_when_there_is_no_content_at_all(runner):
+    with pytest.raises(RuntimeError, match="no content to send"):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system",
+            [{"role": "user", "content": "", "attachments": []}],
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+
+
+def test_claude_cli_generate_only_sends_the_newest_messages_attachments(runner):
+    """Unlike the stateless APIs this provider sends only this turn; an
+    older message's image already reached the CLI session when it was the
+    newest one, and resending it would duplicate it."""
+    body = _cli_body(runner, [
+        {"role": "user", "content": "older", "attachments": [
+            {"id": "old", "filename": "old.png", "mimeType": "image/png"}]},
+        {"role": "assistant", "content": "a reply"},
+        {"role": "user", "content": "newest", "attachments": [
+            {"id": "new", "filename": "new.png", "mimeType": "image/png"}]},
+    ])
+    assert [a["filename"] for a in body["attachments"]] == ["new.png"]
 
 
 def test_claude_cli_generate_sends_bridge_token_header_when_configured(runner):
