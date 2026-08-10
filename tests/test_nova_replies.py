@@ -140,6 +140,36 @@ def test_the_system_prompt_says_it_is_not_the_session_that_did_the_work():
     assert "NOT the session" in body["system"]
 
 
+def test_the_system_prompt_names_the_pod_the_turn_actually_runs_in():
+    """Measured 2026-08-11: asked which pod it ran in, the reply turn said
+    `agora-persona-runner`, and reasoned its way there from "a reply turn is
+    the same session as the build cycle" -- which the prompt already tells it
+    is false. It runs in `nova-site` (that deployment's command is
+    `run_nova_site.py`). Nothing in the prompt said so, so the model filled
+    the gap and stated the guess as fact.
+    """
+    system = _prompt_for()[2]["system"]
+    assert "`nova-site` pod" in system
+    assert "not the `agora-persona-runner` pod" in system
+
+
+def test_the_prompts_denial_of_pod_and_repo_tools_matches_the_grant():
+    """Both sides of one claim, because either alone passes on its own.
+
+    The prompt tells him there are no pod or repository tools *because this
+    pod holds no credentials*. That is only honest while the capabilities are
+    genuinely ungranted, so this reads the real system prompt and the real
+    grant and requires them to agree -- grant either capability without
+    moving the turn to a pod that has them, or drop the sentence while they
+    are still absent, and this fails.
+    """
+    system = _prompt_for()[2]["system"]
+    denied_in_prompt = "no pod or repository tools" in system
+    granted = {"kubectlRead", "githubRead"} & set(nova_replies.REPLY_CAPS)
+    assert denied_in_prompt, "the prompt no longer explains why those tools are missing"
+    assert not granted, f"prompt denies pod/repo tools the turn is actually granted: {granted}"
+
+
 # --- how the call goes out -------------------------------------------------
 
 
