@@ -725,7 +725,13 @@
       .then(function (results) {
         var journal = results[0];
         var comments = JSON.stringify(results[2]);
-        var changed = (journal && journal.version) !== renderedVersion || comments !== renderedComments;
+        // Normalised the same way `render` stores it. A payload with no
+        // `version` at all -- an older server, or the tailnet serving the
+        // last build's response to this build's app.js -- would otherwise
+        // compare `undefined` against `null` and count as changed on every
+        // single poll, throwing away every open drawer twice a minute.
+        var version = (journal && journal.version) || null;
+        var changed = version !== renderedVersion || comments !== renderedComments;
         // Re-checked after the fetch as well as before it: a request takes
         // long enough for him to have started typing during one.
         if (changed && !typing()) {

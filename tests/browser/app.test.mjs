@@ -14,7 +14,7 @@
  * against a payload generated from the real server functions
  * (tests/browser/regen.py), and click on things.
  */
-import { test, before, describe } from "node:test";
+import { test, before, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,19 @@ import { JSDOM } from "jsdom";
 const here = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(here, "..", "..", "agora_runner", "nova_public");
 const payload = JSON.parse(readFileSync(join(here, "fixtures", "payload.json"), "utf8"));
+
+/* Every window a test opens, closed the moment that test ends.
+ *
+ * jsdom runs real timers on the Node event loop, and app.js now schedules a
+ * poll that reschedules itself forever. Leave one window open and `node
+ * --test` never exits -- it ran for 14 minutes on this suite before anyone
+ * noticed it was not slow, it was hung. Closing per test rather than at the
+ * end of the file also keeps a poll in a finished test's window from
+ * re-rendering underneath the test that is still running. */
+const openWindows = [];
+afterEach(() => {
+  for (const window of openWindows.splice(0)) window.close();
+});
 
 /** Load the site at `path` with fetch stubbed to serve the fixture.
  *
@@ -46,6 +59,7 @@ async function loadSite(path = "/", { failComments = false, digest, comments, in
     pretendToBeVisual: true,
   });
   const { window } = dom;
+  openWindows.push(window);
   /* Every POST is recorded and answered, so a test can assert what the
    * page actually sent rather than only what it then displayed -- the
    * difference between checking the wire and checking the DOM. */
@@ -99,6 +113,13 @@ function withPending(cycle) {
   return copy;
 }
 
+/** app.js's page-wide entry poll interval. Held apart from the comment-drawer
+ *  polls `captureTimers` was written for: `fire()` would otherwise re-render
+ *  the whole page underneath a test that is stepping one drawer, and every
+ *  existing `queued.length` assertion would be counting a poll it never meant
+ *  to count. */
+const PAGE_POLL_MS = 30000;
+
 /** Take `window.setTimeout` over so a poll can be stepped rather than waited
  *  out. jsdom runs real timers, and the reply poll is on an 8-second cycle;
  *  a test that slept through two of them would be a 16-second test. The real
@@ -107,30 +128,45 @@ function captureTimers(window) {
   const real = window.setTimeout.bind(window);
   const scheduled = new Map();
   let nextId = 1;
-  window.setTimeout = (fn) => {
+  window.setTimeout = (fn, ms) => {
     const id = nextId++;
-    scheduled.set(id, fn);
+    scheduled.set(id, { fn, ms });
     return id;
   };
   /* Modelled rather than stubbed out: whether a discarded poll is actually
    * cancelled is one of the things under test, and a no-op clearTimeout
    * would make that unobservable. */
   window.clearTimeout = (id) => scheduled.delete(id);
+  const drain = async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => real(resolve, 0));
+    }
+  };
+  const pending = (isPagePoll) =>
+    [...scheduled.entries()].filter(([, e]) => (e.ms === PAGE_POLL_MS) === isPagePoll);
+  const fireThese = async (isPagePoll) => {
+    const due = pending(isPagePoll);
+    due.forEach(([id, e]) => {
+      scheduled.delete(id);
+      e.fn();
+    });
+    await drain();
+    return due.length;
+  };
   return {
     get queued() {
-      return [...scheduled.values()];
+      return pending(false).map(([, e]) => e.fn);
     },
-    /** Run everything scheduled so far, then let the fetches settle. */
+    get queuedPagePolls() {
+      return pending(true).map(([, e]) => e.fn);
+    },
+    /** Run every drawer poll scheduled so far, then let the fetches settle. */
     async fire() {
-      const due = [...scheduled.entries()];
-      due.forEach(([id, fn]) => {
-        scheduled.delete(id);
-        fn();
-      });
-      for (let i = 0; i < 5; i += 1) {
-        await new Promise((resolve) => real(resolve, 0));
-      }
-      return due.length;
+      return fireThese(false);
+    },
+    /** The same, for the page-wide entry poll only. */
+    async firePagePoll() {
+      return fireThese(true);
     },
   };
 }
@@ -513,6 +549,7 @@ describe("a payload cached before the brief existed", () => {
     const html = readFileSync(join(publicDir, "index.html"), "utf8");
     const dom = new JSDOM(html, { url: "https://nova.example/", runScripts: "outside-only", pretendToBeVisual: true });
     const { window } = dom;
+    openWindows.push(window);
     window.fetch = (url) => Promise.resolve({
       json: () => Promise.resolve(url.includes("/api/digest") ? stale.digest : stale.journal),
     });
@@ -904,5 +941,102 @@ describe("the Needs Edvard reply box survives a re-render", () => {
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(needs.querySelectorAll(".comment-text").length, 1, "a second box appeared");
     assert.equal(needs.querySelectorAll(".comment-drawer").length, 1);
+  });
+});
+
+/* Edvard, issues.md 2026-08-10: "i have to refresh it to see new messages."
+ *
+ * The page poll that answers it. None of this was pinned when it shipped --
+ * the suite it shipped with could not even finish, because these windows keep
+ * a rescheduling timer alive and nothing closed them. */
+describe("the page notices new entries on its own", () => {
+  /** The site, with its timers under the test's control. */
+  async function pollable(options = {}) {
+    let timers;
+    const window = await loadSite("/", {
+      ...options,
+      install: (win) => { timers = captureTimers(win); },
+    });
+    return { window, timers };
+  }
+
+  /** Serve `journal` from here on, leaving the other two endpoints alone. */
+  function serve(window, journal) {
+    window.fetch = (url) => Promise.resolve({
+      json: () => Promise.resolve(
+        String(url).includes("/api/digest") ? payload.digest
+          : String(url).includes("/api/comments") ? payload.comments
+            : journal,
+      ),
+    });
+  }
+
+  /** The fixture with one more entry at the top, and a new server version. */
+  function grown(version) {
+    const copy = JSON.parse(JSON.stringify(payload.journal));
+    const first = JSON.parse(JSON.stringify(copy.entries[0]));
+    first.cycle = 999;
+    copy.entries.unshift(first);
+    copy.version = version;
+    return copy;
+  }
+
+  test("it polls on its own, and keeps polling", async () => {
+    const { timers } = await pollable();
+    assert.equal(timers.queuedPagePolls.length, 1, "one poll scheduled at load");
+    await timers.firePagePoll();
+    assert.equal(timers.queuedPagePolls.length, 1, "and another after it ran");
+  });
+
+  test("a new entry lands on the page without a refresh", async () => {
+    const { window, timers } = await pollable();
+    const before = cards(window).length;
+    serve(window, grown('W/"newer"'));
+
+    await timers.firePagePoll();
+    assert.equal(cards(window).length, before + 1, "the new card is on the page");
+  });
+
+  /* The half that is easy to get wrong, because a page that re-renders when
+   * nothing changed still looks correct in a screenshot. It is not: a render
+   * builds every card new, so an open drawer closes and the position he was
+   * reading at moves. Twice a minute. */
+  test("an unchanged payload leaves the page alone", async () => {
+    const { window, timers } = await pollable();
+    const card = cards(window)[0];
+    assert.ok(window.document.contains(card));
+
+    await timers.firePagePoll();
+    assert.ok(window.document.contains(card), "the page was rebuilt for no reason");
+  });
+
+  /* And the same when the server does not send a version at all -- the
+   * fixture above is exactly that payload, so this asserts the comparison is
+   * normalised rather than that the fixture happens to match. */
+  test("a payload with no version is not mistaken for a changed one", async () => {
+    const { window, timers } = await pollable();
+    assert.equal(payload.journal.version, undefined, "the fixture predates versions");
+    const card = cards(window)[0];
+
+    await timers.firePagePoll();
+    await timers.firePagePoll();
+    assert.ok(window.document.contains(card), "an absent version read as a change");
+  });
+
+  test("it does not throw away what he is typing", async () => {
+    const { window, timers } = await pollable();
+    const card = cards(window)[0];
+    const box = window.document.querySelector("textarea");
+    assert.ok(box, "the page has somewhere to type");
+    box.value = "half a sentence";
+    serve(window, grown('W/"newer"'));
+
+    await timers.firePagePoll();
+    assert.ok(window.document.contains(card), "his card was rebuilt while he typed");
+    assert.equal(box.value, "half a sentence");
+
+    box.value = "";
+    await timers.firePagePoll();
+    assert.ok(!window.document.contains(card), "the deferred update never arrived");
   });
 });
