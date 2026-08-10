@@ -140,6 +140,30 @@ def test_the_system_prompt_says_it_is_not_the_session_that_did_the_work():
     assert "NOT the session" in body["system"]
 
 
+def test_the_system_prompt_names_the_pod_the_turn_actually_runs_in():
+    """Measured 2026-08-11: asked which pod it ran in, the reply turn said
+    `agora-persona-runner`, and reasoned its way there from "a reply turn is
+    the same session as the build cycle" -- which the prompt already tells it
+    is false. It runs in `nova-site` (that deployment's command is
+    `run_nova_site.py`). Nothing in the prompt said so, so the model filled
+    the gap and stated the guess as fact.
+    """
+    system = _prompt_for()[2]["system"]
+    assert "`nova-site` pod" in system
+    assert "not the `agora-persona-runner` pod" in system
+
+
+def test_the_prompt_only_denies_pod_and_repo_tools_while_they_are_absent():
+    """The prompt tells him those tools are missing because this pod holds no
+    ServiceAccount token and no GitHub credentials. Grant either capability
+    without moving the turn to a pod that has them and that sentence becomes
+    a lie the model will repeat -- so the claim and the grant move together.
+    """
+    assert "kubectlRead" not in nova_replies.REPLY_CAPS
+    assert "githubRead" not in nova_replies.REPLY_CAPS
+    assert set(nova_replies.REPLY_CAPS) == {"vaultRead", "novaCapture"}
+
+
 # --- how the call goes out -------------------------------------------------
 
 
