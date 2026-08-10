@@ -592,15 +592,21 @@ describe("commenting on a cycle", () => {
     assert.ok(!drawerOpen(card));
   });
 
-  test("existing comments are shown, newest first, with the read ones marked", () => {
+  test("existing comments are shown in the server's order, with the read ones marked", () => {
+    // Oldest at the top, newest just above the box he types in: "the
+    // conversation goes downwards" (Edvard, 2026-08-10). The order is the
+    // server's -- `comments_by_cycle` sorts by stamp across both sections --
+    // and this file renders it as given rather than sorting again.
     const card = cardFor(window, 57);
     const shown = [...card.querySelectorAll(".comment")];
     assert.deepEqual(
       shown.map((c) => c.querySelector(".comment-body").textContent),
       payload.comments.byCycle["57"].map((c) => c.text.split("\n\n")[0]),
     );
-    assert.ok(!shown[0].classList.contains("is-acknowledged"));
-    assert.ok(shown[1].classList.contains("is-acknowledged"));
+    // The older of these two is the one a cycle already retired, so "read"
+    // is above "unread" here -- which is the case reversing would get wrong.
+    assert.ok(shown[0].classList.contains("is-acknowledged"));
+    assert.ok(!shown[1].classList.contains("is-acknowledged"));
   });
 
   test("a comment's paragraph breaks survive to the page", () => {
