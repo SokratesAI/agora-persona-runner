@@ -232,8 +232,18 @@
             if (para.trim()) reply.appendChild(el("p", "comment-body", para));
           });
           item.appendChild(reply);
+        } else if (comment.replyWaiting) {
+          /* Past the server's threshold this is a queue, not a reply being
+           * written -- a cycle holds the bridge's single CLI lock for up to
+           * 45 minutes. Say that instead of a spinner that looks stuck. */
+          item.appendChild(el("p", "comment-waiting", "Queued behind a running cycle — the answer appears here on its own."));
         } else if (comment.replyPending) {
           item.appendChild(el("p", "comment-waiting", "Nova is replying…"));
+        } else if (comment.replyFailed) {
+          /* The line used to just vanish, which reads exactly like an
+           * answer that never came. A comment that got no reply is still in
+           * `## New`, so the next cycle does read it. */
+          item.appendChild(el("p", "comment-waiting", "Couldn't answer this one — the next cycle will read it."));
         }
         list.appendChild(item);
       });

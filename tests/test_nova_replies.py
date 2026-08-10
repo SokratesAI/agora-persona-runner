@@ -19,6 +19,7 @@ stays on the card forever and the poll never stops.
 """
 
 import queue
+import time
 from unittest.mock import patch
 
 import pytest
@@ -31,7 +32,8 @@ def _fresh_queue():
     """The queue and the pending set are module state, so a test that left
     something in either would silently change the next one."""
     nova_replies._queue = queue.Queue()
-    nova_replies._pending = set()
+    nova_replies._pending = {}
+    nova_replies._failed = {}
     yield
 
 ENTRY_MD = """## Entries
@@ -264,7 +266,7 @@ def _drain_pending():
     while not nova_replies._queue.empty():
         cycle, stamp = nova_replies._queue.get()
         with nova_replies._pending_lock:
-            nova_replies._pending.discard((cycle, stamp))
+            nova_replies._pending.pop((cycle, stamp), None)
         nova_replies._queue.task_done()
 
 
@@ -273,4 +275,39 @@ def test_two_different_comments_both_queue():
         assert nova_replies.enqueue(80, "2026-08-10 13:54")
         assert nova_replies.enqueue(80, "2026-08-10 13:47")
         assert len(nova_replies.pending()) == 2
+        _drain_pending()
+
+
+def test_a_failed_reply_is_recorded_so_the_card_can_say_so():
+    """Clearing `pending` is not enough on its own: the line simply
+    disappearing is indistinguishable from an answer that never came, which
+    is what Edvard reported. The failure has to survive the clear."""
+    with patch.object(nova_replies, "_ensure_worker"):
+        nova_replies.enqueue(80, "2026-08-10 13:54")
+        journal, comments = _sources()
+        with journal, comments, \
+                patch.object(nova_replies, "http_json", side_effect=RuntimeError("bridge down")):
+            _drain()
+        assert nova_replies.pending() == set()
+        assert "bridge down" in nova_replies.failed()[(80, "2026-08-10 13:54")]
+
+
+def test_a_new_attempt_clears_the_old_failure():
+    """Otherwise a card that failed once shows "couldn't answer" underneath
+    a reply that did arrive on the retry."""
+    with patch.object(nova_replies, "_ensure_worker"):
+        nova_replies._failed[(80, "2026-08-10 13:54")] = "bridge down"
+        nova_replies.enqueue(80, "2026-08-10 13:54")
+        assert nova_replies.failed() == {}
+        _drain_pending()
+
+
+def test_pending_carries_the_time_it_was_asked_for():
+    """The site needs the clock to tell "being written" from "queued behind
+    a cycle" -- without it there is only one state and it lies."""
+    before = time.time()
+    with patch.object(nova_replies, "_ensure_worker"):
+        nova_replies.enqueue(80, "2026-08-10 13:54")
+        asked_at = nova_replies.pending_since()[(80, "2026-08-10 13:54")]
+        assert before <= asked_at <= time.time()
         _drain_pending()
