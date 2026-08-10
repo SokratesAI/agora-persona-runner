@@ -191,7 +191,20 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
                 f"Capture to {target} · {'ok' if ok else message}",
                 after=text, is_error=not ok,
             )
-            return message
+            # `FAILED` is what makes the failure visible to the *model*, not
+            # just to the audit trail. `execute_tool` returns one string and
+            # has no channel for "this did not work", so a 409 or a missing
+            # target file came back indistinguishable from success -- and
+            # the reply turn's system prompt tells it to file the thing and
+            # then tell Edvard it filed it. He would have been told a bug
+            # was captured when nothing was written.
+            #
+            # The prefix rather than a new return shape because the vault
+            # writers already answer this way (`vault_write_path` returns
+            # "FAILED(...)", and `_audit_vault_write` above keys on it), so
+            # this is the existing convention reused rather than a second
+            # one invented next to it. tools_mcp maps it to MCP's isError.
+            return message if ok else f"FAILED: {message}"
         if name == "save_memory":
             memory = str(args.get("memory", ""))
             persona_id = persona.get("id")

@@ -269,6 +269,17 @@ def handle(token, request):
             is_error = True
         if not isinstance(output, str):
             output = json.dumps(output) if output is not None else ""
+        # A tool that failed *logically* rather than by raising was reported
+        # to the model as a success: `isError` was only ever set by the
+        # `except` above, so a 409 from a vault write, a missing target file
+        # or a refused capture all arrived looking like they worked. The
+        # writers in tools_dispatch already say so in their return string
+        # ("FAILED(...)" from vault_write_path, "FAILED: ..." from the
+        # capture), so the information was there and the protocol was
+        # throwing it away. Matching on the prefix keeps one convention
+        # rather than adding a second return shape to every tool.
+        if not is_error and output.startswith("FAILED"):
+            is_error = True
         return _result(request_id, {
             "content": [{"type": "text", "text": output}],
             "isError": is_error,
