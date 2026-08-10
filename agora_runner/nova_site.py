@@ -104,24 +104,21 @@ from agora_runner.nova_capture import (
     capture,
 )
 from agora_runner.nova_comments import (
-    COMMENTS_PATH,
     add_comment,
     add_needs_comment,
     clean_comment_text,
     comments_by_cycle,
+    format_stamp,
     needs_comments,
 )
 from agora_runner.nova_journal import (
-    DIGEST_PATH,
-    JOURNAL_DIR,
-    JOURNAL_PATH,
-    assemble_entries,
     build_status,
     parse_digest,
     parse_journal,
     render_blocks,
 )
-from agora_runner.vault import vault_bulk_fetch, vault_read_path
+from agora_runner.nova_replies import enqueue as enqueue_reply, pending as pending_replies
+from agora_runner.nova_sources import comments_markdown, digest_markdown, journal_markdown
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_public")
 
@@ -196,25 +193,6 @@ def accepts_gzip(header):
     return wildcard
 
 
-def journal_markdown():
-    """The entries, from the per-entry documents, falling back to the
-    monolith.
-
-    Both sources are read the same number of round trips:
-    `vault_bulk_fetch` pulls a whole folder with two batched `_all_docs`
-    POSTs regardless of how many files are in it, so splitting 70 entries
-    into 70 documents costs the site nothing. What it buys is on the
-    other side -- a Nova cycle needs the newest three entries and used to
-    have to read all 291KB to get them.
-
-    The fallback is what makes the migration safe in either order: until
-    the folder exists this returns the archive, and once it does the
-    archive is ignored.
-    """
-    entries = assemble_entries(vault_bulk_fetch(JOURNAL_DIR))
-    return entries or (vault_read_path(JOURNAL_PATH) or "")
-
-
 def journal_payload():
     """Every entry, rendered. The raw `body` is dropped rather than sent
     alongside the blocks -- it is the same 200KB twice, and the client has
@@ -230,7 +208,7 @@ def journal_payload():
 
 
 def digest_payload():
-    payload = parse_digest(vault_read_path(DIGEST_PATH) or "")
+    payload = parse_digest(digest_markdown())
     payload["needsEdvardBlocks"] = render_blocks(payload["needsEdvard"])
     return payload
 
@@ -244,8 +222,16 @@ def comments_payload():
     journal, this is Edvard's own prose and nothing here interprets it as
     markdown, so there is no markup for the client to be unable to build.
     """
-    markdown = vault_read_path(COMMENTS_PATH) or ""
+    markdown = comments_markdown()
     grouped = comments_by_cycle(markdown)
+    # A reply the worker is still waiting on the bridge for. Sent from the
+    # server rather than remembered by the client, so the "replying…" line
+    # survives a reload, a second device, and the minutes this can take
+    # while a Nova cycle holds the bridge's lock -- see nova_replies.
+    queued = pending_replies()
+    for cycle, items in grouped.items():
+        for comment in items:
+            comment["replyPending"] = (cycle, comment.get("stamp")) in queued
     return {
         "byCycle": {str(cycle): items for cycle, items in grouped.items()},
         # Replies to the digest's Needs Edvard block, which belong to no
@@ -418,10 +404,19 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "nothing to comment"})
             return
 
-        self._store_comment(lambda: add_comment(cycle, text), text, f"cycle {cycle}")
+        # The stamp is minted here rather than inside `add_comment` because
+        # it is this comment's identity: it is what the reply worker uses
+        # to find the comment again, and a second call to `format_stamp`
+        # can land in the next minute.
+        stamp = format_stamp()
+        if self._store_comment(lambda: add_comment(cycle, text, stamp), text, f"cycle {cycle}"):
+            # Only cycle comments get a reply. A `Needs Edvard` answer is a
+            # decision for a cycle to act on, not a conversation -- replying
+            # to it would put a paragraph where a piece of work belongs.
+            enqueue_reply(cycle, stamp)
 
     def _store_comment(self, store, text, label):
-        """Write one comment and audit it, whichever target it names.
+        """Write one comment and audit it, whichever target it names. -> ok.
 
         `store` is a no-argument callable so this stays ignorant of which
         writer it is driving and what that writer's signature looks like;
@@ -438,7 +433,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         except Exception as e:
             log(f"nova-site comment failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
-            return
+            return False
 
         audit(
             "Nova",
@@ -450,6 +445,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             is_error=not ok,
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+        return ok
 
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"

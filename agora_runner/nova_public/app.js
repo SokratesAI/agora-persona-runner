@@ -218,12 +218,56 @@
         String(comment.text || "").split(/\n{2,}/).forEach(function (para) {
           if (para.trim()) item.appendChild(el("p", "comment-body", para));
         });
+        /* Nova's answer to this comment, or the fact that one is coming.
+         * The bridge serialises every CLI call, so a reply posted while a
+         * cycle is running can be forty minutes behind -- saying nothing
+         * would read as broken. */
+        if (comment.reply) {
+          var reply = el("div", "comment-reply");
+          var meta = el("p", "comment-meta");
+          meta.appendChild(el("span", "comment-who", "Nova"));
+          meta.appendChild(el("span", "comment-stamp", comment.replyStamp || ""));
+          reply.appendChild(meta);
+          String(comment.reply).split(/\n{2,}/).forEach(function (para) {
+            if (para.trim()) reply.appendChild(el("p", "comment-body", para));
+          });
+          item.appendChild(reply);
+        } else if (comment.replyPending) {
+          item.appendChild(el("p", "comment-waiting", "Nova is replying…"));
+        }
         list.appendChild(item);
       });
       var count = (items || []).length;
       toggle.textContent = count ? "💬 " + count : "💬";
       list.hidden = !count;
+      watch((items || []).some(function (c) { return c.replyPending; }));
     }
+
+    /* Poll only while the server says a reply is still coming, and stop the
+     * moment it isn't. No cap and no give-up: the wait is bounded by the
+     * bridge finishing, `replyPending` goes false either way (the worker
+     * clears it even when the reply fails), and a timer that expired early
+     * would leave a "replying…" line that never resolves. One handle, so a
+     * repaint from the journal refresh cannot stack a second timer. */
+    var timer = null;
+    function watch(pendingNow) {
+      if (!pendingNow) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        return;
+      }
+      if (timer) return;
+      timer = setTimeout(function () {
+        timer = null;
+        // See stopPolling: a render discards this drawer, and this is how
+        // its poll is discarded with it.
+        fetch("/api/comments")
+          .then(function (r) { return r.json(); })
+          .then(function (payload) { paint(target.pick(payload)); })
+          .catch(function () { watch(true); });
+      }, 8000);
+      livePolls.push(timer);
+    }
+
     paint(comments);
 
     function fit() {
@@ -517,7 +561,21 @@
     return card;
   }
 
+  /* Every drawer that is waiting on a reply schedules its own poll, and a
+   * render throws every drawer away and builds new ones. Without this the
+   * discarded drawers keep polling into detached DOM -- one more immortal
+   * poller per tap for as long as the reply takes. The new drawers pick the
+   * poll straight back up if it is still pending, so cancelling here loses
+   * nothing. */
+  var livePolls = [];
+
+  function stopPolling() {
+    livePolls.forEach(function (handle) { clearTimeout(handle); });
+    livePolls = [];
+  }
+
   function render(journal, digest, comments) {
+    stopPolling();
     renderStatus(journal.status || {});
     renderNeeds(digest, comments);
 

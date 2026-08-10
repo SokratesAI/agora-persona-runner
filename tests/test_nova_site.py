@@ -32,7 +32,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_capture, nova_site
+from agora_runner import nova_capture, nova_site, nova_sources
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.nova_journal import (
     JOURNAL_DIR,
@@ -69,7 +69,7 @@ def _no_split_journal_by_default():
     about what they were about, and stops an unmocked `vault_bulk_fetch`
     reaching for the network -- conftest blocks that outright. The split
     tests below override this explicitly."""
-    with patch.object(nova_site, "vault_bulk_fetch", return_value={}):
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value={}):
         yield
 
 
@@ -432,7 +432,7 @@ def test_unknown_paths_are_404_not_a_file_read():
 
 
 def test_api_journal_returns_rendered_entries_without_the_raw_body(journal_md):
-    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
         status, head, body = _get("/api/journal")
     assert status == 200
     assert "application/json" in head
@@ -444,7 +444,7 @@ def test_api_journal_returns_rendered_entries_without_the_raw_body(journal_md):
 
 
 def test_api_digest_returns_the_needs_section_rendered(digest_md):
-    with patch.object(nova_site, "vault_read_path", return_value=digest_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=digest_md):
         status, _, body = _get("/api/digest")
     payload = json.loads(body)
     assert status == 200
@@ -454,14 +454,14 @@ def test_api_digest_returns_the_needs_section_rendered(digest_md):
 
 
 def test_a_missing_vault_file_is_an_empty_journal_not_a_500():
-    with patch.object(nova_site, "vault_read_path", return_value=None):
+    with patch.object(nova_sources, "vault_read_path", return_value=None):
         status, _, body = _get("/api/journal")
     assert status == 200
     assert json.loads(body)["entries"] == []
 
 
 def test_a_vault_failure_is_reported_as_502():
-    with patch.object(nova_site, "vault_read_path", side_effect=RuntimeError("couchdb down")):
+    with patch.object(nova_sources, "vault_read_path", side_effect=RuntimeError("couchdb down")):
         status, _, body = _get("/api/journal")
     assert status == 502
     assert "couchdb down" in json.loads(body)["error"]
@@ -815,7 +815,7 @@ def test_an_outage_only_narrated_is_not_this_cycles_outage():
 def test_the_payload_carries_the_emoji_the_client_reads():
     """journal_payload rebuilds each entry as a new dict; the emoji has to
     survive that or app.js renders a card with no icon and no error."""
-    with patch.object(nova_site, "vault_read_path", return_value=_fixture("journal_sample.md")):
+    with patch.object(nova_sources, "vault_read_path", return_value=_fixture("journal_sample.md")):
         payload = nova_site.journal_payload()
     assert payload["entries"]
     assert all(entry.get("emoji") for entry in payload["entries"])
@@ -963,7 +963,7 @@ def test_no_pr_field_in_the_live_journal_loses_a_character(journal_md):
 
 
 def test_the_payload_carries_the_pr_spans_the_client_reads():
-    with patch.object(nova_site, "vault_read_path", return_value=_fixture("journal_sample.md")):
+    with patch.object(nova_sources, "vault_read_path", return_value=_fixture("journal_sample.md")):
         payload = nova_site.journal_payload()
     assert payload["entries"]
     assert all("prSpans" in entry for entry in payload["entries"])
@@ -1213,7 +1213,7 @@ def test_every_entry_briefs_itself_for_the_cycles_with_no_digest_line():
 
 def test_the_comments_endpoint_groups_by_cycle():
     stored = "## New\n\n### Cycle 63 · 2026-08-09 22:40\n\nkeep it up\n\n## Acknowledged\n"
-    with patch.object(nova_site, "vault_read_path", return_value=stored):
+    with patch.object(nova_sources, "vault_read_path", return_value=stored):
         status, head, body = _get("/api/comments")
     assert status == 200
     assert "application/json" in head
@@ -1225,11 +1225,16 @@ def test_the_comments_endpoint_groups_by_cycle():
 
 def test_a_comment_reaches_the_vault_with_the_cycle_it_names():
     with patch.object(nova_site, "add_comment", return_value=(True, "commented on cycle 63")) as add, \
+            patch.object(nova_site, "enqueue_reply"), \
             patch.object(nova_site, "audit"):
         status, _, body = _post("/api/comment", {"cycle": 63, "text": "keep it up"})
     assert status == 200
     assert json.loads(body)["ok"] is True
-    assert add.call_args[0] == (63, "keep it up")
+    cycle, text, stamp = add.call_args[0]
+    assert (cycle, text) == (63, "keep it up")
+    # The stamp is the comment's identity, not decoration: the reply worker
+    # finds the comment again by it. See the next test.
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", stamp)
 
 
 def test_a_comment_is_audited_with_what_was_typed():
@@ -1408,8 +1413,8 @@ def test_the_migration_refuses_to_write_when_an_entry_would_render_differently()
 
 
 def test_the_site_reads_the_per_entry_documents_when_they_exist():
-    with patch.object(nova_site, "vault_bulk_fetch") as bulk, \
-            patch.object(nova_site, "vault_read_path") as monolith:
+    with patch.object(nova_sources, "vault_bulk_fetch") as bulk, \
+            patch.object(nova_sources, "vault_read_path") as monolith:
         bulk.return_value = {JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nSplit."}
         assert "Split." in nova_site.journal_markdown()
         bulk.assert_called_once_with(JOURNAL_DIR)
@@ -1420,8 +1425,8 @@ def test_the_site_falls_back_to_the_archive_before_the_migration_runs():
     # The deploy and the migration are two separate acts and either can
     # land first. Until the folder has anything in it, the monolith is
     # still the journal.
-    with patch.object(nova_site, "vault_bulk_fetch", return_value={}), \
-            patch.object(nova_site, "vault_read_path", return_value="### Cycle 1\n\nArchive."):
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value={}), \
+            patch.object(nova_sources, "vault_read_path", return_value="### Cycle 1\n\nArchive."):
         assert "Archive." in nova_site.journal_markdown()
 
 
@@ -1443,7 +1448,7 @@ def test_a_real_browsers_header_gets_gzip_and_the_same_json_back(journal_md):
     so that particular gap cannot open -- but the test that would have
     caught it costs one line, so it is the one written.
     """
-    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
         status, head, body = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
     assert status == 200
     assert "Content-Encoding: gzip" in head
@@ -1459,7 +1464,7 @@ def test_a_real_browsers_header_gets_gzip_and_the_same_json_back(journal_md):
 def test_the_compressed_body_is_byte_for_byte_what_the_plain_one_says(journal_md):
     """A compression bug that loses or reorders content would still parse.
     This pins the two responses to the same bytes, not the same shape."""
-    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
         _, _, plain = _get("/api/journal")
         _, _, compressed = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
     assert gzip.decompress(compressed) == plain
@@ -1469,7 +1474,7 @@ def test_a_client_that_does_not_ask_still_gets_plain_bytes(journal_md):
     """This is the runner's own urllib path and every non-browser caller:
     urllib sends no `Accept-Encoding` at all. Breaking it would break
     every future cycle, which is the failure mode worth a named test."""
-    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
         status, head, body = _get("/api/journal")
     assert status == 200
     assert "Content-Encoding" not in head
@@ -1479,7 +1484,7 @@ def test_a_client_that_does_not_ask_still_gets_plain_bytes(journal_md):
 def test_gzip_with_q_nought_means_no_gzip(journal_md):
     """`gzip;q=0` contains the string "gzip" and forbids it. A substring
     check would read this header as consent."""
-    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
         status, head, body = _get("/api/journal", "Accept-Encoding: gzip;q=0, identity\r\n")
     assert status == 200
     assert "Content-Encoding" not in head
@@ -1500,7 +1505,7 @@ def test_a_body_too_small_to_be_worth_it_is_left_alone():
 def test_vary_is_sent_even_when_the_response_came_back_plain(journal_md):
     """Without this a shared cache can hand a gzipped body to a client
     that never asked for one. It describes the endpoint, not the reply."""
-    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
         _, head, _ = _get("/api/journal")
     assert "Vary: Accept-Encoding" in head
 
@@ -1518,7 +1523,7 @@ def test_the_static_shell_compresses_too():
 def test_head_reports_the_length_of_the_body_a_get_would_send(journal_md):
     """`do_HEAD` runs the whole of `do_GET` and drops the body, so the
     Content-Length it advertises has to be the compressed one."""
-    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
         _, get_head, get_body = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
         _, head_head, head_body = _get("/api/journal", BROWSER_ACCEPT_ENCODING, method="HEAD")
     assert head_body == b""
@@ -1538,7 +1543,7 @@ def test_the_same_content_compresses_to_the_same_bytes(journal_md):
     deliberately broken build. A control that agrees with you four times
     out of five is not a control.
     """
-    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
         _, _, first = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
         _, _, second = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
     assert first == second
@@ -1587,7 +1592,7 @@ def test_the_comments_endpoint_serves_needs_replies_separately():
         "### Cycle 63 · 2026-08-09 22:40\n\nkeep it up\n\n"
         "## Acknowledged\n"
     )
-    with patch.object(nova_site, "vault_read_path", return_value=stored):
+    with patch.object(nova_sources, "vault_read_path", return_value=stored):
         status, _, body = _get("/api/comments")
     assert status == 200
     payload = json.loads(body)
@@ -1655,3 +1660,75 @@ def test_a_failed_needs_reply_is_still_audited_as_an_error():
         status, _, _ = _post("/api/comment", {"target": "needs", "text": "go ahead"})
     assert status == 502
     assert audit_call.call_args[1]["is_error"] is True
+
+
+# --- the instant reply (2026-08-10) ---------------------------------------
+#
+# The endpoint's job here is small and the two halves of it are worth
+# pinning separately: a comment on a cycle asks for a reply, and everything
+# else does not. The generation itself is tested in test_nova_replies.py --
+# what these defend is that the request never blocks on it and that the
+# stamp the reply is keyed on is the stamp the comment was stored with.
+
+
+def test_a_comment_on_a_cycle_asks_for_a_reply_with_the_stamp_it_was_stored_with():
+    """The stamp is the join between the two: store it under one and queue
+    the reply under another and the worker finds nothing to reply to."""
+    with patch.object(nova_site, "add_comment", return_value=(True, "ok")) as add, \
+            patch.object(nova_site, "enqueue_reply") as enqueue, \
+            patch.object(nova_site, "audit"):
+        _post("/api/comment", {"cycle": 63, "text": "keep it up"})
+    assert enqueue.call_args[0] == (63, add.call_args[0][2])
+
+
+def test_a_needs_edvard_answer_is_not_replied_to():
+    """That block is Nova asking him a question. His answer is a decision
+    for a cycle to act on, and a paragraph back would sit where the work
+    belongs."""
+    with patch.object(nova_site, "add_needs_comment", return_value=(True, "ok")), \
+            patch.object(nova_site, "enqueue_reply") as enqueue, \
+            patch.object(nova_site, "audit"):
+        _post("/api/comment", {"target": "needs", "text": "yes, do it"})
+    assert not enqueue.called
+
+
+def test_a_comment_that_did_not_reach_the_vault_is_not_replied_to():
+    """Replying to a comment that was never stored would key on a stamp no
+    comment carries -- a guaranteed-wasted CLI turn."""
+    with patch.object(nova_site, "add_comment", return_value=(False, "couchdb down")), \
+            patch.object(nova_site, "enqueue_reply") as enqueue, \
+            patch.object(nova_site, "audit"):
+        status, _, _ = _post("/api/comment", {"cycle": 63, "text": "keep it up"})
+    assert status == 502
+    assert not enqueue.called
+
+
+def test_a_rejected_comment_is_not_replied_to():
+    with patch.object(nova_site, "enqueue_reply") as enqueue, \
+            patch.object(nova_site, "audit"):
+        status, _, _ = _post("/api/comment", {"cycle": 63, "text": "   "})
+    assert status == 400
+    assert not enqueue.called
+
+
+def test_the_comments_endpoint_says_which_replies_are_still_coming():
+    """`replyPending` is what puts "Nova is replying…" on the card. It comes
+    from the server rather than being remembered by the client, so the line
+    survives a reload and shows on a second device -- the wait can be the
+    length of a whole cycle, because the bridge runs one CLI call at a time."""
+    stored = (
+        "## New\n\n"
+        "### Cycle 57 · 2026-08-09 16:02\n\nwaiting on this one\n\n"
+        "### Cycle 55 · 2026-08-09 13:10\n\nalready answered\n\n"
+        "#### Nova · 2026-08-09 13:12\n\nhere you go\n"
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_replies", return_value={(57, "2026-08-09 16:02")}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["byCycle"]["57"][0]["replyPending"] is True
+    assert payload["byCycle"]["57"][0]["reply"] == ""
+    answered = payload["byCycle"]["55"][0]
+    assert answered["replyPending"] is False
+    assert answered["reply"] == "here you go"

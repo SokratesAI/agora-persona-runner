@@ -33,8 +33,12 @@ const payload = JSON.parse(readFileSync(join(here, "fixtures", "payload.json"), 
  *
  * `digest` and `comments` override those two responses. The Needs Edvard
  * tests need both: the live fixture's digest asks for nothing (so the
- * section is hidden), and its comments carry no reply to it. */
-async function loadSite(path = "/", { failComments = false, digest, comments } = {}) {
+ * section is hidden), and its comments carry no reply to it.
+ *
+ * `install` runs against the window just before app.js is evaluated, for a
+ * test that has to be in place before the page's first render -- the reply
+ * poll schedules its first timer there. */
+async function loadSite(path = "/", { failComments = false, digest, comments, install } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = new JSDOM(html, {
     url: "https://nova.example" + path,
@@ -61,9 +65,14 @@ async function loadSite(path = "/", { failComments = false, digest, comments } =
     return Promise.resolve({ json: () => Promise.resolve(body) });
   };
   window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
+  /* Kept before `install` can replace it: a test that takes setTimeout over
+   * to step a poll would otherwise also take over the drain below, and this
+   * function would never return. */
+  const realTimeout = window.setTimeout.bind(window);
+  if (install) install(window);
   window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
   // app.js renders from three resolved promises; let the microtasks drain.
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
+  await new Promise((resolve) => realTimeout(resolve, 0));
   return window;
 }
 
@@ -82,6 +91,49 @@ const lineText = (line) => line.spans.map((s) => s.text).join("");
  *  against text the card is not supposed to be showing. */
 const lineBrief = (line) => line.briefSpans.map((s) => s.text).join("");
 const expanded = (card) => card.classList.contains("is-expanded");
+
+/** The comments payload with one cycle's newest comment awaiting a reply. */
+function withPending(cycle) {
+  const copy = JSON.parse(JSON.stringify(payload.comments));
+  copy.byCycle[String(cycle)][0].replyPending = true;
+  return copy;
+}
+
+/** Take `window.setTimeout` over so a poll can be stepped rather than waited
+ *  out. jsdom runs real timers, and the reply poll is on an 8-second cycle;
+ *  a test that slept through two of them would be a 16-second test. The real
+ *  timer is kept for draining microtasks. */
+function captureTimers(window) {
+  const real = window.setTimeout.bind(window);
+  const scheduled = new Map();
+  let nextId = 1;
+  window.setTimeout = (fn) => {
+    const id = nextId++;
+    scheduled.set(id, fn);
+    return id;
+  };
+  /* Modelled rather than stubbed out: whether a discarded poll is actually
+   * cancelled is one of the things under test, and a no-op clearTimeout
+   * would make that unobservable. */
+  window.clearTimeout = (id) => scheduled.delete(id);
+  return {
+    get queued() {
+      return [...scheduled.values()];
+    },
+    /** Run everything scheduled so far, then let the fetches settle. */
+    async fire() {
+      const due = [...scheduled.entries()];
+      due.forEach(([id, fn]) => {
+        scheduled.delete(id);
+        fn();
+      });
+      for (let i = 0; i < 5; i += 1) {
+        await new Promise((resolve) => real(resolve, 0));
+      }
+      return due.length;
+    },
+  };
+}
 
 describe("cards expand and collapse", () => {
   let window;
@@ -553,9 +605,111 @@ describe("commenting on a cycle", () => {
 
   test("a comment's paragraph breaks survive to the page", () => {
     // A comment is prose. Joining its paragraphs would be rewriting him.
+    // Scoped to the direct children, because Nova's reply lives inside the
+    // comment it answers and its paragraphs are not his.
     const card = cardFor(window, 55);
-    const paragraphs = [...card.querySelectorAll(".comment-body")].map((p) => p.textContent);
+    const paragraphs = [...card.querySelectorAll(".comment > .comment-body")].map((p) => p.textContent);
     assert.deepEqual(paragraphs, payload.comments.byCycle["55"][0].text.split("\n\n"));
+  });
+
+  /* Answering a comment on the card (2026-08-10): "A good idea is to have
+   * the session that created the Journal instantly reply to my comments on
+   * the Journal! That would be so cool, to have a conversation with
+   * comments on the Journal entry."
+   *
+   * The fixture gives cycle 55's comment a reply and cycle 57's none. */
+
+  test("Nova's reply is shown under the comment it answers", () => {
+    const card = cardFor(window, 55);
+    const reply = card.querySelector(".comment .comment-reply");
+    assert.ok(reply, "the reply is rendered");
+    assert.equal(
+      reply.querySelector(".comment-body").textContent,
+      payload.comments.byCycle["55"][0].reply,
+    );
+    assert.equal(reply.querySelector(".comment-stamp").textContent, "2026-08-09 13:12");
+  });
+
+  test("a comment with no reply gets no empty reply block", () => {
+    const card = cardFor(window, 57);
+    assert.equal(card.querySelector(".comment-reply"), null);
+    assert.equal(card.querySelector(".comment-waiting"), null);
+  });
+
+  test("a reply still coming says so, because it can be a cycle away", async () => {
+    /* The bridge runs one CLI call at a time and a Nova cycle can hold it
+     * for the better part of an hour. Silence for that long reads as
+     * broken, so the wait is stated. */
+    /* Timers captured even though this test never steps one: a pending
+     * comment schedules a poll that reschedules itself, and a real one left
+     * running in a window nobody closes keeps node's event loop alive after
+     * the last assertion. */
+    const w = await loadSite("/", {
+      comments: withPending(57),
+      install: captureTimers,
+    });
+    const card = cardFor(w, 57);
+    assert.equal(card.querySelector(".comment-waiting").textContent, "Nova is replying…");
+  });
+
+  test("the page polls until the reply lands, then lets go", async () => {
+    /* The poll is the only thing that turns "replying…" into the reply
+     * without him reloading, and the only thing that stops. Both halves are
+     * asserted here: a poll that never fired and a poll that never stopped
+     * would each pass a test that only checked the other. */
+    let timers;
+    const w = await loadSite("/", {
+      comments: withPending(57),
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const card = cardFor(w, 57);
+    assert.ok(card.querySelector(".comment-waiting"), "waiting to begin with");
+
+    const answered = JSON.parse(JSON.stringify(payload.comments));
+    answered.byCycle["57"][0].reply = "Thanks — here is what I found.";
+    answered.byCycle["57"][0].replyPending = false;
+    let served = 0;
+    w.fetch = (url) => {
+      if (String(url).includes("/api/comments")) {
+        served += 1;
+        return Promise.resolve({ json: () => Promise.resolve(served === 1 ? withPending(57) : answered) });
+      }
+      return Promise.resolve({ json: () => Promise.resolve({}) });
+    };
+
+    await timers.fire();
+    assert.equal(served, 1, "it re-fetched on its own");
+    assert.ok(card.querySelector(".comment-waiting"), "still waiting, so still polling");
+
+    await timers.fire();
+    assert.equal(served, 2);
+    assert.equal(card.querySelector(".comment-waiting"), null);
+    assert.equal(
+      card.querySelector(".comment-reply .comment-body").textContent,
+      "Thanks — here is what I found.",
+    );
+    assert.equal(timers.queued.length, 0, "nothing left scheduled once the reply is in");
+  });
+
+  test("navigating while a reply is coming does not leave two pollers", async () => {
+    /* A render throws every drawer away and builds new ones. The discarded
+     * drawer's poll has to go with it, or every tap he makes while waiting
+     * adds another poller hitting his own site for as long as the reply
+     * takes -- and a reply can take the length of a cycle. */
+    let timers;
+    const w = await loadSite("/", {
+      comments: withPending(57),
+      install: (win) => { timers = captureTimers(win); },
+    });
+    assert.equal(timers.queued.length, 1, "one poll for the one pending reply");
+
+    const link = w.document.querySelector("a[href^='/cycle/']");
+    assert.ok(link, "the fixture has a per-cycle link to navigate with");
+    click(w, link);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(timers.queued.length, 1, "still one, not one per navigation");
   });
 
   test("typing in the box does not collapse the card out from under it", () => {
