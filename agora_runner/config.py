@@ -21,6 +21,12 @@ except Exception:  # pragma: no cover — image without tzdata
 # quota block from a request-routing bug from an account-wide throttle.
 DEBUG_LOGGING = os.environ.get("DEBUG_LOGGING", "").strip().lower() in ("1", "true", "yes")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+# Escape hatch for the metered-provider guard in reply.py. Off by default:
+# an unattended turn (heartbeat, workflow step) may not spend the prepaid
+# Anthropic balance. See reply.py's METERED_PROVIDERS comment for Edvard's
+# rule and why attended turns are deliberately still allowed.
+ALLOW_METERED_UNATTENDED = os.environ.get(
+    "ALLOW_METERED_UNATTENDED", "").strip().lower() in ("1", "true", "yes")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 AGORA_URL = os.environ.get("AGORA_URL", "http://agora.agents.svc.cluster.local:8080")
 AGORA_INTERNAL_URL = os.environ.get(

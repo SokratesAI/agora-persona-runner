@@ -1544,7 +1544,7 @@ def test_heartbeat_always_non_sticky_even_if_bound_conversation_is_sticky(runner
     detail = {"personas": [], "messages": [], "stickyFallback": True}
     captured = {}
 
-    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None):
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None, unattended=False):
         captured["sticky"] = sticky
         return "heartbeat reply"
 
@@ -2537,7 +2537,7 @@ def test_run_heartbeat_is_not_streamed(runner):
     captured = {}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=False):
         captured["on_text"] = on_text
         return "a real report"
 
@@ -6563,3 +6563,151 @@ def test_pruning_drops_windows_for_conversations_that_are_gone(runner):
     runner.prune_message_window_cache(["still-here", "brand-new"])
 
     assert set(runner.conversations._message_window_cache) == {"still-here"}
+
+
+# --- Metered-provider guard (2026-08-10, Edvard's "hard rule" capture in
+# issues.md: the prepaid Anthropic balance had $16 left and will not be
+# refilled, so no scheduled thing may spend it). Two halves, tested apart:
+# reply.py must refuse, AND the unattended call sites must actually ask it
+# to. A guard nobody passes `unattended=True` to is worth nothing, and a
+# test of only the first half passes either way.
+
+def test_unattended_turn_on_metered_provider_is_refused_before_any_spend(runner):
+    """The refusal must happen in dispatch, not in the provider -- the point
+    is that no request reaches api.anthropic.com at all."""
+    persona = {"name": "Test", "model": "anthropic:claude-haiku-4-5-20251001"}
+
+    with patch.object(runner.reply, "anthropic_generate") as mock_gen:
+        with pytest.raises(runner.reply.MeteredProviderBlocked) as excinfo:
+            runner.generate_reply(
+                persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}],
+                "conv-1", unattended=True,
+            )
+    mock_gen.assert_not_called()
+    # Names the twin to move to, so the fix is in the error rather than in
+    # someone's memory of this rule.
+    assert "claude-cli:claude-haiku-4-5-20251001" in str(excinfo.value)
+
+
+def test_attended_turn_on_metered_provider_still_runs(runner):
+    """Edvard kept testing and research allowed -- a person typing in the app
+    is bounded by the person. Blocking this would be over-reading the rule."""
+    persona = {"name": "Test", "model": "anthropic:claude-haiku-4-5-20251001"}
+
+    with patch.object(runner.reply, "anthropic_generate", return_value="billed reply") as mock_gen:
+        result = runner.generate_reply(
+            persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}], "conv-1",
+        )
+    assert result == "billed reply"
+    mock_gen.assert_called_once()
+
+
+def test_unattended_turn_on_subscription_provider_is_untouched(runner):
+    """The guard is provider-scoped, not a blanket ban on unattended turns --
+    Nova's own hourly cycle is exactly this call and must keep working."""
+    persona = {"name": "Nova", "model": "claude-cli:claude-opus-5"}
+
+    with patch.object(runner.reply, "claude_cli_generate", return_value="cycle reply") as mock_gen:
+        result = runner.generate_reply(
+            persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}],
+            "conv-1", unattended=True,
+        )
+    assert result == "cycle reply"
+    mock_gen.assert_called_once()
+
+
+def test_allow_metered_unattended_env_flag_reopens_the_path(runner):
+    """A deliberate override Edvard can set in one config line, so this is a
+    guarded capability rather than a deleted one."""
+    persona = {"name": "Test", "model": "anthropic:claude-sonnet-5"}
+
+    with patch.object(runner.reply, "ALLOW_METERED_UNATTENDED", True), \
+         patch.object(runner.reply, "anthropic_generate", return_value="overridden") as mock_gen:
+        result = runner.generate_reply(
+            persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}],
+            "conv-1", unattended=True,
+        )
+    assert result == "overridden"
+    mock_gen.assert_called_once()
+
+
+def test_run_heartbeat_declares_itself_unattended(runner):
+    """Second half: the call site. Without this the guard above is dead code."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@1h", "name": "HB"}
+    persona = {"id": "p1", "name": "Test", "model": "claude-cli:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
+                             sticky=False, on_text=None, on_thinking=None, unattended=False):
+        captured["unattended"] = unattended
+        return "a real report"
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+
+    assert captured["unattended"] is True
+
+
+def test_blocked_heartbeat_records_the_refusal_as_its_result(runner):
+    """End to end through the real call site: a scheduled anthropic persona
+    must fail loudly into lastResult (which the app shows) rather than
+    silently spending or silently doing nothing."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@1h", "name": "HB"}
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    updates = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == "/heartbeats/hb1":
+            updates.append(payload)
+        return 200, {}
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.reply, "anthropic_generate") as mock_gen, \
+         patch.object(runner.heartbeats, "notify") as mock_notify, \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
+        runner.run_heartbeat(heartbeat)
+
+    mock_gen.assert_not_called()
+    mock_notify.assert_not_called()
+    assert "metered" in updates[-1]["lastResult"]
+
+
+def test_workflow_round_declares_itself_unattended(runner):
+    """The other unattended call site -- workflows are heartbeat-triggered
+    only, so they drain exactly the same way."""
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
+                             sticky=False, on_text=None, on_thinking=None, active_step=None,
+                             unattended=False):
+        captured["unattended"] = unattended
+        return "step reply"
+
+    steps = [{"prompt": "go", "loopCount": 1, "personaIds": ["p1"], "toolWhitelist": []}]
+    persona = {"id": "p1", "name": "Step", "model": "claude-cli:claude-sonnet-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    participants = [{"personaId": "p1"}]
+
+    with patch.object(runner.workflows, "fetch_persona_uncached", return_value=persona), \
+         patch.object(runner.workflows, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.workflows, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.workflows, "audit"), \
+         patch.object(runner.workflows, "agora_get", return_value=(200, {"messages": []})):
+        runner.workflows.run_workflow_steps(
+            steps, "conv-1", {"personas": participants, "messages": []}, participants,
+        )
+
+    assert captured["unattended"] is True
