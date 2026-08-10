@@ -70,7 +70,7 @@ def _no_split_journal_by_default():
     about what they were about, and stops an unmocked `vault_bulk_fetch`
     reaching for the network -- conftest blocks that outright. The split
     tests below override this explicitly."""
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value={}):
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})):
         yield
 
 
@@ -1416,9 +1416,9 @@ def test_the_migration_refuses_to_write_when_an_entry_would_render_differently()
 def test_the_site_reads_the_per_entry_documents_when_they_exist():
     with patch.object(nova_sources, "vault_bulk_fetch") as bulk, \
             patch.object(nova_sources, "vault_read_path") as monolith:
-        bulk.return_value = {JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nSplit."}
+        bulk.return_value = ({JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nSplit."}, {})
         assert "Split." in nova_site.journal_markdown()
-        bulk.assert_called_once_with(JOURNAL_DIR)
+        bulk.assert_called_once_with(JOURNAL_DIR, with_mtimes=True)
         monolith.assert_not_called()
 
 
@@ -1426,7 +1426,7 @@ def test_the_site_falls_back_to_the_archive_before_the_migration_runs():
     # The deploy and the migration are two separate acts and either can
     # land first. Until the folder has anything in it, the monolith is
     # still the journal.
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value={}), \
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})), \
             patch.object(nova_sources, "vault_read_path", return_value="### Cycle 1\n\nArchive."):
         assert "Archive." in nova_site.journal_markdown()
 
@@ -1771,3 +1771,76 @@ def test_a_reply_that_failed_says_so_instead_of_vanishing():
     item = payload["byCycle"]["57"][0]
     assert item["replyPending"] is False
     assert item["replyFailed"] is True
+
+
+# --- the card's time, measured instead of typed --------------------------
+#
+# Edvard, issues.md 2026-08-10: "I actually see in Agora that the cycle 86
+# did start precisely at 19:00 at only ran for 7 minutes. But the Journal
+# said 19:30. Thats wierd."
+#
+# It was: the stamp came straight out of the `### ` heading, which a cycle
+# types by hand at the end of its run, so it was a guess at a finish time
+# and it was always ahead. The vault document's own mtime is the one thing
+# here that was measured.
+
+
+def test_the_entry_time_comes_from_the_documents_mtime_not_the_typed_heading():
+    from agora_runner.nova_journal import entry_times
+
+    # 2026-08-10 19:06:12 Oslo, the minute Cycle 86 actually wrote.
+    mtimes = {JOURNAL_DIR + "093-cycle-86.md": 1786381560000}
+    times = entry_times(mtimes)
+    assert times == {86: [("2026-08-10", "19:06")]}
+
+    entry = parse_journal(
+        "### 2026-08-10 19:30 (Oslo) — Cycle 86 — Comments read downwards\n\nProse.",
+        times,
+    )[0]
+    assert (entry["date"], entry["time"]) == ("2026-08-10", "19:06")
+    assert entry["title"] == "Comments read downwards"
+
+
+def test_a_heading_with_no_cycle_number_keeps_its_typed_stamp():
+    # Edvard's own messages and the odd addendum carry no cycle number, so
+    # there is no file to join them to. Borrowing another entry's time
+    # would be worse than the guess it replaced.
+    times = {86: [("2026-08-10", "19:06")]}
+    entry = parse_journal("### 2026-08-02 — Edvard's first message\n\nProse.", times)[0]
+    assert (entry["date"], entry["time"]) == ("2026-08-02", "")
+
+
+def test_a_cycle_that_wrote_twice_gets_two_times_in_file_order():
+    # Cycle 81 wrote an entry and then an addendum: two documents, two
+    # entries, one cycle number. Newest-first on both sides, so the nth
+    # entry takes the nth write time rather than both collapsing onto one.
+    from agora_runner.nova_journal import entry_times
+
+    times = entry_times({
+        JOURNAL_DIR + "087-cycle-81.md": 1786365960000,          # 14:46
+        JOURNAL_DIR + "088-cycle-81-addendum.md": 1786366080000,  # 14:48
+    })
+    assert times == {81: [("2026-08-10", "14:48"), ("2026-08-10", "14:46")]}
+
+    markdown = (
+        "### 2026-08-10 14:40 (Oslo) — Cycle 81, addendum\n\nSecond.\n\n"
+        "### 2026-08-10 14:30 (Oslo) — Cycle 81\n\nFirst."
+    )
+    assert [e["time"] for e in parse_journal(markdown, times)] == ["14:48", "14:46"]
+
+
+def test_an_entry_with_no_mtime_keeps_the_heading_it_typed():
+    # The pre-split archive is one file with no per-entry documents, and a
+    # damaged doc is omitted from the bulk fetch entirely. Either way the
+    # typed stamp is all the site has ever had for those.
+    entry = parse_journal("### 2026-08-09 04:20 (Oslo) — Cycle 49\n\nProse.", {})[0]
+    assert (entry["date"], entry["time"]) == ("2026-08-09", "04:20")
+
+
+def test_a_document_with_no_mtime_is_skipped_rather_than_crashing():
+    # `mtime` is read off the vault doc and a doc is free not to have one.
+    # Without the guard this is a TypeError on None / 1000, which takes the
+    # whole journal page down for one malformed file.
+    from agora_runner.nova_journal import entry_times
+
+    assert entry_times({JOURNAL_DIR + "093-cycle-86.md": None}) == {}

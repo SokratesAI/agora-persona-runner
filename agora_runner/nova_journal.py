@@ -22,6 +22,9 @@ parses into a renderable entry instead of being dropped.
 
 import math
 import re
+from datetime import datetime
+
+from agora_runner.config import OSLO
 
 JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
 # One document per entry, which is where entries live as of 2026-08-09.
@@ -362,11 +365,20 @@ def _first_paragraph(body):
     return ""
 
 
-def parse_journal(markdown):
+def parse_journal(markdown, times_by_cycle=None):
     """`journal.md` -> a list of entries in the order they appear (newest first).
 
     Everything above `## Entries` is the file's own instructions to the
     next cycle, not content, so it is dropped.
+
+    `times_by_cycle` (from `entry_times`) overrides the date and time a
+    cycle typed into its own `### ` heading with the vault's write time
+    for the entry document. Edvard hit this twice: Cycle 86 woke at
+    19:00:14, ran seven minutes, and the card said 19:30, because the
+    stamp was never measured from anything -- it was a cycle guessing at
+    when it expected to finish. The write time is measured, and a heading
+    with no cycle number (his own messages, an addendum) keeps its typed
+    stamp rather than borrowing someone else's.
     """
     if not markdown:
         return []
@@ -375,6 +387,7 @@ def parse_journal(markdown):
 
     headings = list(_ENTRY_HEADING_RE.finditer(text))
     entries = []
+    seen_per_cycle = {}
     for index, match in enumerate(headings):
         start = match.end()
         end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
@@ -388,6 +401,18 @@ def parse_journal(markdown):
             raw_body = raw_body[: footer.start()].rstrip()
 
         entry = parse_heading(match.group(1))
+        cycle = entry["cycle"]
+        if times_by_cycle and cycle is not None:
+            # A cycle that wrote twice (081 + its addendum) has two files
+            # and two entries, both carrying the same cycle number. Both
+            # lists are ordered newest-first, so the nth entry for a cycle
+            # takes the nth write time rather than all of them collapsing
+            # onto one.
+            stamps = times_by_cycle.get(cycle) or []
+            nth = seen_per_cycle.get(cycle, 0)
+            seen_per_cycle[cycle] = nth + 1
+            if nth < len(stamps):
+                entry["date"], entry["time"] = stamps[nth]
         label, detail = split_outcome(outcome)
         entry["body"] = raw_body
         # The card's brief for the 55 entries that have no digest line --
@@ -471,6 +496,30 @@ def assemble_entries(files):
     `parse_journal` cannot tell the two sources apart."""
     ordered = sorted(files.items(), key=lambda kv: (-_entry_seq(kv[0]), kv[0]))
     return "\n\n".join(content.strip() for _, content in ordered if content.strip())
+
+
+_FILE_CYCLE_RE = re.compile(r"-cycle-(\d+)")
+
+
+def entry_times(mtimes):
+    """`{path: mtime_ms}` from `JOURNAL_DIR` -> `{cycle: [(date, time), ...]}`.
+
+    Oslo time, because that is what Edvard reads and what the headings
+    have always claimed to be. Ordered newest-first per cycle, matching
+    the order `assemble_entries` puts the entries in, so `parse_journal`
+    can join the two on nothing more than the cycle number both the
+    filename (`NNN-cycle-M.md`) and the heading already carry.
+    """
+    out = {}
+    for path, ms in sorted(mtimes.items(), key=lambda kv: (-_entry_seq(kv[0]), kv[0])):
+        match = _FILE_CYCLE_RE.search(path.rsplit("/", 1)[-1])
+        if not match or not ms:
+            continue
+        stamp = datetime.fromtimestamp(ms / 1000, tz=OSLO)
+        out.setdefault(int(match.group(1)), []).append(
+            (stamp.strftime("%Y-%m-%d"), stamp.strftime("%H:%M"))
+        )
+    return out
 
 
 def _sections(markdown):

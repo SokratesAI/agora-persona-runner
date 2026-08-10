@@ -611,10 +611,11 @@ describe("commenting on a cycle", () => {
 
   test("a comment's paragraph breaks survive to the page", () => {
     // A comment is prose. Joining its paragraphs would be rewriting him.
-    // Scoped to the direct children, because Nova's reply lives inside the
-    // comment it answers and its paragraphs are not his.
+    // Nova's reply is a `.comment` too now (a sibling, same indentation),
+    // so it is excluded by class rather than by nesting -- its paragraphs
+    // are not his.
     const card = cardFor(window, 55);
-    const paragraphs = [...card.querySelectorAll(".comment > .comment-body")].map((p) => p.textContent);
+    const paragraphs = [...card.querySelectorAll(".comment:not(.comment-reply) > .comment-body")].map((p) => p.textContent);
     assert.deepEqual(paragraphs, payload.comments.byCycle["55"][0].text.split("\n\n"));
   });
 
@@ -627,8 +628,16 @@ describe("commenting on a cycle", () => {
 
   test("Nova's reply is shown under the comment it answers", () => {
     const card = cardFor(window, 55);
-    const reply = card.querySelector(".comment .comment-reply");
+    const reply = card.querySelector(".comment-reply");
     assert.ok(reply, "the reply is rendered");
+    /* Edvard, issues.md 2026-08-10: "they should be below each other on the
+     * same indentation. So the comments alternates between blue and green
+     * downwards." So the reply is the comment's next sibling in the list,
+     * not a child of it, and it carries `.comment` for the same box. */
+    const answered = card.querySelector(".comment:not(.comment-reply)");
+    assert.equal(answered.nextElementSibling, reply);
+    assert.ok(reply.classList.contains("comment"));
+    assert.equal(reply.parentElement, answered.parentElement);
     assert.equal(
       reply.querySelector(".comment-body").textContent,
       payload.comments.byCycle["55"][0].reply,

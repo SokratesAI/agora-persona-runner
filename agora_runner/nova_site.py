@@ -203,7 +203,8 @@ def journal_payload():
     """Every entry, rendered. The raw `body` is dropped rather than sent
     alongside the blocks -- it is the same 200KB twice, and the client has
     no use for markdown it is not allowed to interpret."""
-    entries = parse_journal(journal_markdown())
+    markdown, times = journal_markdown(with_times=True)
+    entries = parse_journal(markdown, times)
     status = build_status(entries)
     rendered = []
     for entry in entries:
