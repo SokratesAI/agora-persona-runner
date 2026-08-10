@@ -24,6 +24,7 @@ import importlib
 import inspect
 import io
 import json
+import queue
 import time
 import os
 import re
@@ -86,6 +87,14 @@ def _no_split_journal_by_default():
             patch.object(nova_sources, "vault_list_ids", return_value=[]), \
             patch.object(nova_replies, "_ensure_worker"):
         yield
+        # With no worker, a test that posted a real comment leaves its item
+        # in the module-level queue for the rest of the session. Nothing
+        # asserts on that state today, so this is housekeeping rather than a
+        # fix -- but it is module state shared with test_nova_replies.py,
+        # and "inert" is a property of the current tests, not of the file.
+        nova_replies._queue = queue.Queue()
+        nova_replies._pending = {}
+        nova_replies._failed = {}
 
 
 @pytest.fixture(scope="module")

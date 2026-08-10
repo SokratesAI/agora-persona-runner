@@ -76,12 +76,19 @@ def test_a_second_entry_for_the_same_cycle_wins_over_the_first():
 
 
 def test_sequence_numbers_are_compared_as_numbers_not_as_text():
-    """`99` sorts after `100` as a string, and the folder crossed that
-    boundary on 2026-08-11. A lexical max would have started serving a
-    week-old entry at exactly the point nobody was looking for it."""
-    ids = _ids("99-cycle-90.md", "100-cycle-90.md")
+    """Not a bug in today's folder, and the honest version of this claim is
+    narrower than it first looked. `entry_filename` zero-pads to three
+    digits and all 103 real files are padded, so lexical and numeric order
+    agree right up to `999` -> `1000`, where they stop: `"1000-" < "999-"`.
+    That is the real boundary, and it is what this uses.
+
+    Two things reach the padding-free case sooner. `entry_seq` deliberately
+    accepts an unnumbered file rather than dropping it, so a hand-added
+    entry is already outside the convention; and nothing enforces the
+    padding on a file written by anything other than `entry_filename`."""
+    ids = _ids("999-cycle-990.md", "1000-cycle-990.md")
     docs = {ids[0]: "the old one", ids[1]: "the new one"}
-    content, _ = _lookup(90, ids, docs)
+    content, _ = _lookup(990, ids, docs)
     assert content == "the new one"
 
 

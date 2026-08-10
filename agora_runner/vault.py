@@ -43,6 +43,13 @@ def _couch_batched(items, n):
 # above it and be silently dropped from the listing.
 _ID_MAX = "\U0010FFFF"
 
+# Obsidian LiveSync's own bookkeeping docs -- chunks, file/index/version
+# entries -- plus CouchDB's `_design`. Never files a human wrote. One
+# definition rather than two: the two listing functions below sit twenty
+# lines apart and look almost identical, which is exactly the distance at
+# which a new prefix gets added to one of them.
+_INTERNAL_PREFIXES = ("_", "h:", "f:", "i:", "v:")
+
 
 def _id_range(prefix):
     """`startkey`/`endkey` restricting `_all_docs` to one folder.
@@ -87,10 +94,10 @@ def _vault_file_docs(prefix=""):
     status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs?{_id_range(prefix)}")
     if status != 200:
         return {}
-    skip = ("_", "h:", "f:", "i:", "v:")
     keys = [
         row["id"] for row in data.get("rows", [])
-        if not row["id"].startswith(skip) and row["id"].lower().startswith(prefix)
+        if not row["id"].startswith(_INTERNAL_PREFIXES)
+        and row["id"].lower().startswith(prefix)
     ]
     out = {}
     for batch in _couch_batched(keys, 500):
@@ -200,10 +207,10 @@ def vault_list_ids(prefix=""):
     status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs?{_id_range(prefix)}")
     if status != 200:
         return []
-    skip = ("_", "h:", "f:", "i:", "v:")
     return sorted(
         row["id"] for row in data.get("rows", [])
-        if not row["id"].startswith(skip) and row["id"].lower().startswith(prefix)
+        if not row["id"].startswith(_INTERNAL_PREFIXES)
+        and row["id"].lower().startswith(prefix)
     )
 
 

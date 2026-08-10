@@ -191,3 +191,77 @@ def test_the_key_range_covers_a_filename_that_starts_with_an_emoji():
     # range.
     assert not start <= "notesx/other.md" <= end
     assert not start <= "diary/other.md" <= end
+
+
+# ---------------------------------------------------------------------------
+# `vault_list_ids` is the one listing here that deliberately does NOT hide a
+# tombstone, and that exception is the whole reason it is fast: it never
+# fetches a document, so it never sees the flag. It is safe only because its
+# single caller (`journal_entry_markdown`) immediately reads the one path it
+# picked through `vault_read_path`, which does check.
+#
+# That argument is load-bearing and nothing pinned it. The plausible future
+# mistake is someone "fixing" this function to match `_vault_file_docs`
+# twenty lines above -- which would be correct for a listing and would cost
+# exactly the 0.65s the function exists to save. These tests are what make
+# that a failing test rather than a silent regression.
+# ---------------------------------------------------------------------------
+
+
+def test_the_id_listing_returns_a_tombstone_and_the_file_listing_does_not(couch):
+    """Both halves in one test, because either alone passes on a fake that
+    simply serves nothing: the fast listing must still be able to name a
+    deleted file, and the listing anyone is shown must not."""
+    assert vault.vault_list_ids("notes/") == [GONE, LIVE]
+    assert vault.vault_list_prefix("notes/") == [LIVE]
+
+
+def test_reading_the_id_a_tombstone_left_behind_gives_nothing(couch):
+    """The other end of that trade. A stale id costs the caller a miss it
+    already has to handle -- `journal_entry_markdown` falls back to the full
+    journal -- rather than serving deleted text as a live entry."""
+    assert GONE in vault.vault_list_ids("notes/")
+    assert vault.vault_read_path(GONE) is None
+
+
+def test_the_id_listing_asks_couchdb_for_the_prefix(couch, monkeypatch):
+    """Asserting the *result* is not enough and a mutation proved it: drop
+    the key range entirely and this still returns the right ids, because the
+    `startswith` below re-filters client-side. That is the whole bug -- the
+    answer is correct and CouchDB read the entire database to produce it, in
+    the one function whose only reason to exist is not doing that.
+
+    So this reads the request, not the reply."""
+    paths = []
+    real = vault.couch_req
+    monkeypatch.setattr(
+        vault, "couch_req",
+        lambda method, path, body=None: (paths.append(path), real(method, path, body))[1],
+    )
+    assert vault.vault_list_ids("notes/") == [GONE, LIVE]
+    assert vault.vault_list_ids("diary/") == []
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(paths[0]).query)
+    assert json.loads(query["startkey"][0]) == "notes/"
+    assert json.loads(query["endkey"][0]) == "notes/" + "\U0010FFFF"
+
+
+def test_an_empty_prefix_still_lists_the_whole_vault(couch):
+    """`""` to U+10FFFF is every document there is, which is what a caller
+    asking for everything means."""
+    assert vault.vault_list_ids("") == [GONE, LIVE]
+
+
+def test_the_id_listing_omits_livesync_internals(couch):
+    """Chunk documents share the key space with files and outnumber them.
+    An empty prefix puts every one of them inside the requested range."""
+    ids = vault.vault_list_ids("")
+    assert not [i for i in ids if i.startswith(("h:", "_", "f:", "i:", "v:"))]
+
+
+def test_the_id_listing_returns_empty_rather_than_raising_when_couch_says_no(couch, monkeypatch):
+    """Same silence as `_vault_file_docs` above it. The consequence here is
+    bounded and worth knowing: every reply quietly pays the slow full-journal
+    path instead of failing, which is why this is a listing that returns
+    nothing rather than an exception."""
+    monkeypatch.setattr(vault, "couch_req", lambda *a, **k: (500, {"error": "boom"}))
+    assert vault.vault_list_ids("notes/") == []
