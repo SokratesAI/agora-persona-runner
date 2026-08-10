@@ -629,6 +629,41 @@ describe("commenting on a cycle", () => {
     assert.ok(foot < drawer, "the drawer opens below the bubble, not above it");
   });
 
+  test("the foot does not sit flush against the brief on a collapsed card", () => {
+    /* The reviewer caught this and nothing here could have: every other test
+     * in this file asserts class names and DOM order, so the whole stylesheet
+     * is untested and a layout regression ships green.
+     *
+     * The specific trap: `.entry.is-collapsed .entry-brief` zeroes its own
+     * bottom margin, which was correct when the brief was the last visible
+     * element on a collapsed card -- the digest, the journal toggle and the
+     * body are all `display: none` there. The foot is now below it and is
+     * deliberately not in those hide rules, so with no margin of its own the
+     * brief's last line and the bubble touch on all ~57 collapsed cards.
+     *
+     * This is the real cascade, not a re-statement of it: jsdom resolves the
+     * shipped style.css, so deleting `margin-top` from `.entry-foot` fails
+     * this test. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const { window: w } = openWindow(
+      "<html><head><style>" + css + "</style></head><body>" +
+        '<article class="entry is-collapsed">' +
+        '<p class="entry-brief">brief</p>' +
+        '<div class="entry-foot"><button class="comment-toggle">💬</button></div>' +
+        "</article></body></html>"
+    );
+    const brief = w.document.querySelector(".entry-brief");
+    const foot = w.document.querySelector(".entry-foot");
+    assert.equal(
+      w.getComputedStyle(brief).marginBottom,
+      "0px",
+      "the rule this guards against must still be there, or the test is guarding nothing"
+    );
+    const gap = w.getComputedStyle(foot).marginTop;
+    assert.ok(gap && gap !== "0px" && gap !== "", "the foot needs a top margin of its own, got " + JSON.stringify(gap));
+    assert.equal(w.getComputedStyle(foot).justifyContent, "flex-end", "bottom *right*");
+  });
+
   test("an entry with no cycle number gets none", () => {
     // There is nothing to key a comment to, so a box there would swallow it.
     const orphan = cards(window).find((c) => !/^Cycle /.test(c.querySelector("h2").textContent));

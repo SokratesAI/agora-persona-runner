@@ -382,6 +382,12 @@ pre code { background: none; padding: 0; }
 .entry-foot {
   display: flex;
   justify-content: flex-end;
+  /* `.entry.is-collapsed .entry-brief` zeroes its own bottom margin, because
+   * when that rule was written the brief was the last visible thing on a
+   * collapsed card. The foot now sits under it, so without this the brief's
+   * last line and the bubble touch with no gap at all -- on every collapsed
+   * card, which is the state he sees first. */
+  margin-top: 0.4rem;
 }
 
 /* Its own touch target, at the iOS 44px minimum, for the same reason the
