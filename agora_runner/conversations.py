@@ -1,6 +1,7 @@
 """notify/speak/poll_conversation -- one conversation's turn each tick."""
 
 import time
+from urllib.parse import quote
 
 from agora_runner.config import (
     FAILURE_BACKOFF_CAP, FAILURE_BACKOFF_MAX_SECONDS, FAILURE_BACKOFF_SECONDS,
@@ -22,6 +23,37 @@ _conversation_failures = {}
 # from _conversation_failures once a conversation crosses FAILURE_BACKOFF_CAP.
 # This replaced auto-pause on 2026-08-05 at Edvard's ask -- see config.py.
 _conversation_backoff = {}
+
+# conversation id -> (last_message_id, rev, messages). The poll loop re-read
+# the whole FETCH_LIMIT window for every conversation every tick, and almost
+# every tick it had not changed. Measured against the live pod 2026-08-10:
+# five polled conversations, 247,890 bytes per tick at POLL_INTERVAL_SECONDS=5,
+# i.e. 4.28 GB/day to learn nothing. The server has answered ?after+?rev since
+# agora#51 (built for the drawer) and this is the busier consumer of the two.
+#
+# We keep the messages, not just the fingerprint, because decide_turn and
+# merge_history both want the window rather than the delta -- so an
+# incremental answer is appended to what we already hold and re-trimmed to
+# FETCH_LIMIT, which leaves the window this function passes on byte-identical
+# to what a full fetch would have returned.
+#
+# Correctness rests entirely on the server's `incremental` flag, never on us
+# guessing: `rev` fingerprints id+forgotten+text of every message up to
+# `after`, so an edit, a delete or a forget anywhere in the prefix comes back
+# incremental=False with the full window, and we replace instead of appending.
+# A server that has never heard of ?after (or any response without a rev)
+# lands on the same path -- we send no after/rev, and get the window.
+_message_window_cache = {}
+
+
+def prune_message_window_cache(known_ids):
+    """Drop cached windows for conversations that no longer exist. Called
+    once per tick from poll_once with the ids in that tick's listing, so
+    the cache is bounded by the conversation list rather than by process
+    uptime -- the heartbeat rotates Nova into a new conversation every
+    cycle, so without this it would grow ~24 windows a day forever."""
+    for conversation_id in set(_message_window_cache) - set(known_ids):
+        del _message_window_cache[conversation_id]
 
 
 def notify(conversation_id, text, sender, system=False, push=True, thinking=False):
@@ -147,11 +179,29 @@ def poll_conversation(summary):
     if summary.get("status", "active") != "active":
         debug_log(f"[{name}] skipped: status={summary.get('status')}")
         return
-    status, detail = agora_get(f"/conversations/{summary['id']}/messages?limit={FETCH_LIMIT}")
+    path = f"/conversations/{summary['id']}/messages?limit={FETCH_LIMIT}"
+    cached = _message_window_cache.get(summary["id"])
+    if cached:
+        path += f"&after={quote(cached[0])}&rev={quote(cached[1])}"
+    status, detail = agora_get(path)
     if status != 200:
         debug_log(f"[{name}] skipped: conversation fetch returned {status}")
         return
     thread = detail.get("messages", [])
+    if cached and detail.get("incremental"):
+        # Only what arrived since we last looked, so re-attach our copy of
+        # the rest. Normally this delta is empty.
+        thread = (cached[2] + thread)[-FETCH_LIMIT:]
+        debug_log(f"[{name}] incremental: {len(detail.get('messages', []))} new message(s)")
+    rev = detail.get("rev")
+    # Deliberately not named last_id: the backoff block below already has one
+    # meaning something else (the last *visible* message), and these are not
+    # the same message whenever the newest one is forgotten.
+    newest_id = thread[-1].get("id") if thread else None
+    if rev and newest_id:
+        _message_window_cache[summary["id"]] = (newest_id, rev, thread)
+    else:
+        _message_window_cache.pop(summary["id"], None)
     personas = detail.get("personas") or [
         {"name": detail.get("name", ""), "role": "curator", "personaId": None}
     ]

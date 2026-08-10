@@ -3,7 +3,7 @@
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.agora_api import clear_persona_cache
-from agora_runner.conversations import poll_conversation
+from agora_runner.conversations import poll_conversation, prune_message_window_cache
 from agora_runner.deferred import acknowledge_deferred
 from agora_runner.heartbeats import (
     run_due_heartbeats,
@@ -24,6 +24,7 @@ def poll_once():
         log(f"poll_once: GET /conversations returned {status}, skipping this tick entirely")
         return
     conversations = body.get("conversations", [])
+    prune_message_window_cache(c.get("id") for c in conversations)
 
     # Fetched once per tick and handed to both this loop (to skip
     # heartbeat-driven conversations below) and run_due_heartbeats (so
