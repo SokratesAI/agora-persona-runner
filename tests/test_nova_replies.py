@@ -153,15 +153,21 @@ def test_the_system_prompt_names_the_pod_the_turn_actually_runs_in():
     assert "not the `agora-persona-runner` pod" in system
 
 
-def test_the_prompt_only_denies_pod_and_repo_tools_while_they_are_absent():
-    """The prompt tells him those tools are missing because this pod holds no
-    ServiceAccount token and no GitHub credentials. Grant either capability
-    without moving the turn to a pod that has them and that sentence becomes
-    a lie the model will repeat -- so the claim and the grant move together.
+def test_the_prompts_denial_of_pod_and_repo_tools_matches_the_grant():
+    """Both sides of one claim, because either alone passes on its own.
+
+    The prompt tells him there are no pod or repository tools *because this
+    pod holds no credentials*. That is only honest while the capabilities are
+    genuinely ungranted, so this reads the real system prompt and the real
+    grant and requires them to agree -- grant either capability without
+    moving the turn to a pod that has them, or drop the sentence while they
+    are still absent, and this fails.
     """
-    assert "kubectlRead" not in nova_replies.REPLY_CAPS
-    assert "githubRead" not in nova_replies.REPLY_CAPS
-    assert set(nova_replies.REPLY_CAPS) == {"vaultRead", "novaCapture"}
+    system = _prompt_for()[2]["system"]
+    denied_in_prompt = "no pod or repository tools" in system
+    granted = {"kubectlRead", "githubRead"} & set(nova_replies.REPLY_CAPS)
+    assert denied_in_prompt, "the prompt no longer explains why those tools are missing"
+    assert not granted, f"prompt denies pod/repo tools the turn is actually granted: {granted}"
 
 
 # --- how the call goes out -------------------------------------------------
