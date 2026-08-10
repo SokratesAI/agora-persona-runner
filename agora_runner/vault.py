@@ -179,6 +179,34 @@ def vault_list_prefix(prefix=""):
     return sorted(_vault_file_docs(prefix))
 
 
+def vault_list_ids(prefix=""):
+    """Paths under `prefix`, from ids alone -- no document bodies at all.
+
+    `vault_list_prefix` above fetches every file doc with
+    `include_docs=true` so it can drop tombstones, which is what a
+    *listing* has to do: a deleted file reappearing in `vault_list` or
+    `vault_search` is how an agent writes "that file exists" into its
+    permanent memory. Measured on the journal folder 2026-08-11: 0.701s
+    for 103 docs, against **0.045s** for the same 103 ids by key range.
+
+    That 0.65s is worth paying for a listing and is pure waste for a
+    lookup, which is the only thing this is for: when the caller is about
+    to `vault_read_path` exactly one of these paths, the tombstone check
+    happens there instead -- that function returns None for a deleted doc
+    -- so the id being stale costs a miss the caller already has to
+    handle, not a wrong answer. Do not use it to *show* anyone a list.
+    """
+    prefix = prefix.lower()
+    status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs?{_id_range(prefix)}")
+    if status != 200:
+        return []
+    skip = ("_", "h:", "f:", "i:", "v:")
+    return sorted(
+        row["id"] for row in data.get("rows", [])
+        if not row["id"].startswith(skip) and row["id"].lower().startswith(prefix)
+    )
+
+
 def _chunk_id_for(content_bytes):
     # LiveSync uses xxhash64 chunk ids; the vault-bridge image ships it for
     # the vault CronJobs. If it's ever missing, a sha-derived id still

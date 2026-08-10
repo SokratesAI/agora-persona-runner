@@ -81,7 +81,11 @@ from agora_runner.http_util import http_json
 from agora_runner.log import log
 from agora_runner.nova_comments import add_reply, comments_by_cycle
 from agora_runner.nova_journal import parse_journal
-from agora_runner.nova_sources import comments_markdown, journal_markdown
+from agora_runner.nova_sources import (
+    comments_markdown,
+    journal_entry_markdown,
+    journal_markdown,
+)
 from agora_runner.tools_mcp import grant as grant_mcp, revoke as revoke_mcp
 
 # One stable id, used for both the bridge's stateless call and the audit
@@ -177,8 +181,22 @@ def _entry_for(cycle):
     """The journal entry for `cycle`, or None.
 
     Newest wins: six cycles wrote a second entry, and the later one is the
-    one whose card he is commenting on.
+    one whose card he is commenting on. Both paths below honour that --
+    the targeted fetch by taking the highest `NNN-`, the fallback because
+    `journal_markdown` assembles newest-first and this takes the first
+    match.
+
+    The fallback is not dead code and must stay: it is the only path for
+    the pre-2026-08-09 archive (`journal.md`, no per-entry documents), and
+    it is what covers every way the filename can disagree with the
+    document -- a tombstone, a heading that parses to a different cycle,
+    a file added by hand without the `NNN-cycle-M` shape.
     """
+    single = journal_entry_markdown(cycle)
+    if single:
+        for entry in parse_journal(single):
+            if entry.get("cycle") == cycle:
+                return entry
     for entry in parse_journal(journal_markdown()):
         if entry.get("cycle") == cycle:
             return entry
@@ -234,16 +252,49 @@ def _generate(system, prompt):
 
 
 def reply_to(cycle, stamp):
-    """Generate and store one reply. Returns (ok, message). Blocking."""
-    entry = _entry_for(cycle)
-    if entry is None:
-        return False, f"no journal entry for cycle {cycle}"
-    thread = comments_by_cycle(comments_markdown()).get(cycle) or []
-    if not any(c.get("stamp") == stamp for c in thread):
-        return False, f"no comment on cycle {cycle} at {stamp}"
+    """Generate and store one reply. Returns (ok, message). Blocking.
 
-    text = _generate(SYSTEM, build_prompt(entry, thread, stamp))
-    return add_reply(cycle, stamp, text)
+    Times each phase and logs one line. Edvard asked for a reply "within
+    10 seconds" and the honest answer on 2026-08-11 was 10 to 15, spread
+    unmeasured between the vault, the bridge and however many tools the
+    model decided to call -- a spread nobody could see, because nothing
+    recorded it. A probe from a shell can decompose the fixed parts (and
+    did: 1.6s vault, ~5s bridge floor with no tools) but it cannot see a
+    real reply's tool calls, which are exactly the part that varies. So
+    the measurement lives here, where the real ones run, rather than
+    being re-derived by hand every time someone wonders.
+
+    Logged on the failure paths too. A reply that gave up after 45
+    minutes queued behind a cycle is the case where the timings matter
+    most, and it is the one an "on success" log would never print.
+    """
+    phases = {}
+    started = time.monotonic()
+
+    def _mark(name, since):
+        phases[name] = time.monotonic() - since
+        return time.monotonic()
+
+    try:
+        at = started
+        entry = _entry_for(cycle)
+        at = _mark("entry", at)
+        if entry is None:
+            return False, f"no journal entry for cycle {cycle}"
+        thread = comments_by_cycle(comments_markdown()).get(cycle) or []
+        at = _mark("thread", at)
+        if not any(c.get("stamp") == stamp for c in thread):
+            return False, f"no comment on cycle {cycle} at {stamp}"
+
+        text = _generate(SYSTEM, build_prompt(entry, thread, stamp))
+        at = _mark("bridge", at)
+        result = add_reply(cycle, stamp, text)
+        _mark("store", at)
+        return result
+    finally:
+        timings = " ".join(f"{k}={v:.2f}s" for k, v in phases.items())
+        log(f"nova-reply timings cycle={cycle} {timings} "
+            f"total={time.monotonic() - started:.2f}s")
 
 
 _queue = queue.Queue()
