@@ -373,8 +373,28 @@ def parse_comments(markdown):
     return out
 
 
+def _oldest_first(comments):
+    """A thread in the order it was said, not the order the file stores it.
+
+    Edvard, 2026-08-10: *"Journal comments must be sorted with the newest
+    message at the bottom, so that the conversation goes downwards. That
+    feels most natural."* The file stays newest-first -- that is how every
+    board in this vault reads and how a cycle wants to find what it has not
+    answered yet -- so the flip belongs here, at the boundary where a
+    section of a file becomes a conversation on a card.
+
+    A card mixes both sections: what a cycle has retired sits under
+    `## Acknowledged` and what it has not sits under `## New`, so file order
+    is not chronological across the two and reversing it would interleave
+    them wrongly. The stamp is `%Y-%m-%d %H:%M`, which sorts lexically, and
+    the sort is stable so two comments in the same minute -- or any missing
+    stamp -- keep the order the file gave them.
+    """
+    return sorted(comments, key=lambda c: c.get("stamp") or "")
+
+
 def comments_by_cycle(markdown):
-    """`{cycle: [comment, ...]}` -- what the site hangs off each card.
+    """`{cycle: [comment, ...]}` -- what the site hangs off each card, oldest first.
 
     Needs Edvard replies are deliberately absent: they belong to no cycle,
     and letting `None` through would key a card on it.
@@ -384,12 +404,12 @@ def comments_by_cycle(markdown):
         if comment["cycle"] is None:
             continue
         grouped.setdefault(comment["cycle"], []).append(comment)
-    return grouped
+    return {cycle: _oldest_first(items) for cycle, items in grouped.items()}
 
 
 def needs_comments(markdown):
-    """`[comment, ...]` -- replies to the Needs Edvard block, newest first."""
-    return [c for c in parse_comments(markdown) if c["cycle"] is None]
+    """`[comment, ...]` -- replies to the Needs Edvard block, oldest first."""
+    return _oldest_first([c for c in parse_comments(markdown) if c["cycle"] is None])
 
 
 def add_needs_comment(text, stamp=None):

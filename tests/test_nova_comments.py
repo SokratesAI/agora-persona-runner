@@ -209,7 +209,49 @@ def test_comments_group_by_cycle():
     two = insert_comment(ONE_COMMENT, 63, "and another thing", "2026-08-09 23:10")
     grouped = comments_by_cycle(two)
     assert sorted(grouped) == [60, 63]
-    assert [c["text"] for c in grouped[63]] == ["and another thing", "great research, keep it up!"]
+    assert [c["text"] for c in grouped[63]] == ["great research, keep it up!", "and another thing"]
+
+
+def test_a_card_reads_downwards_oldest_first():
+    """Edvard, 2026-08-10: *"Journal comments must be sorted with the newest
+    message at the bottom, so that the conversation goes downwards."* The
+    file is still written newest-first; the flip is at this boundary."""
+    stored = insert_comment(ONE_COMMENT, 63, "second", "2026-08-09 23:10")
+    stored = insert_comment(stored, 63, "third", "2026-08-09 23:40")
+    assert [c["stamp"] for c in comments_by_cycle(stored)[63]] == [
+        "2026-08-09 22:40", "2026-08-09 23:10", "2026-08-09 23:40",
+    ]
+
+
+def test_an_acknowledged_comment_sorts_by_when_it_was_said_not_which_section():
+    """A card mixes both sections, and `## Acknowledged` holds the *older*
+    half. Reversing file order would put the retired ones after the new
+    ones; only the stamp gets this right."""
+    stored = (
+        "## New\n\n"
+        "### Cycle 63 · 2026-08-09 23:10\n\nstill unanswered\n\n"
+        "## Acknowledged\n\n"
+        "### Cycle 63 · 2026-08-09 22:40\n\nthe first thing he said\n"
+    )
+    thread = comments_by_cycle(stored)[63]
+    assert [c["text"] for c in thread] == ["the first thing he said", "still unanswered"]
+    assert [c["acknowledged"] for c in thread] == [True, False]
+
+
+def test_two_comments_in_the_same_minute_keep_the_order_the_file_gave_them():
+    """The stamp is minute-resolution, so it cannot order these -- the sort
+    is stable rather than arbitrary, and newest-first storage means the
+    later-inserted one is the one at the top of the file."""
+    stored = insert_comment(EMPTY, 63, "first", "2026-08-09 22:40")
+    stored = insert_comment(stored, 63, "second", "2026-08-09 22:40")
+    assert [c["text"] for c in comments_by_cycle(stored)[63]] == ["second", "first"]
+
+
+def test_the_needs_edvard_thread_reads_downwards_too():
+    """It renders through the same drawer, so it gets the same order."""
+    stored = insert_comment(EMPTY, None, "first", "2026-08-10 08:20")
+    stored = insert_comment(stored, None, "second", "2026-08-10 09:05")
+    assert [c["text"] for c in needs_comments(stored)] == ["first", "second"]
 
 
 def test_an_empty_file_has_no_comments():
