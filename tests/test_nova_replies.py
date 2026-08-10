@@ -111,6 +111,24 @@ def test_the_prompt_carries_the_rest_of_the_thread_including_earlier_replies():
     assert "No -- it came back verbatim." in body["prompt"]
 
 
+def test_the_earlier_thread_is_ordered_oldest_first_as_the_prompt_claims():
+    """The prompt says "oldest first" in so many words, so the model reads
+    the exchange in that order. `comments_by_cycle` now hands the thread
+    over oldest-first; it used to be newest-first and this was a `reversed`.
+    Two earlier comments are the minimum that can tell the two apart."""
+    thread = THREAD_MD.replace(
+        "### Cycle 80 · 2026-08-10 13:47",
+        "### Cycle 80 · 2026-08-10 13:50\n\nand another thing\n\n### Cycle 80 · 2026-08-10 13:47",
+    )
+    journal, comments = _sources(comments=thread)
+    with journal, comments, \
+            patch.object(nova_replies, "http_json", return_value=(200, {"text": "sure"})) as post, \
+            patch.object(nova_replies, "add_reply", return_value=(True, "replied")):
+        nova_replies.reply_to(80, "2026-08-10 13:54")
+    prompt = post.call_args[0][2]["prompt"]
+    assert prompt.index("did we lose any ideas?") < prompt.index("and another thing")
+
+
 def test_the_comment_being_answered_is_not_repeated_as_earlier_context():
     body = _prompt_for()[2]
     assert body["prompt"].count("instant replies would be cool") == 1

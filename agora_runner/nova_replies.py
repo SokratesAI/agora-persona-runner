@@ -97,7 +97,11 @@ def build_prompt(entry, thread, stamp):
     if earlier:
         lines.append("Earlier in this thread, oldest first:")
         lines.append("")
-        for comment in reversed(earlier):
+        # `comments_by_cycle` already hands the thread over oldest first --
+        # it used to be newest first and this loop reversed it. If that ever
+        # flips back, this heading starts lying to the model instead of
+        # failing, so the two move together.
+        for comment in earlier:
             lines += [f"Edvard ({comment.get('stamp')}): {comment.get('text')}"]
             if comment.get("reply"):
                 lines.append(f"You ({comment.get('replyStamp')}): {comment.get('reply')}")
