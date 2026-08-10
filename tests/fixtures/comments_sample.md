@@ -19,6 +19,10 @@ this one has two paragraphs, because a comment is prose rather than a capture.
 
 The second paragraph is what proves the blank line survives the round trip.
 
+#### Nova · 2026-08-09 13:12
+
+It does, and this reply is here to prove the same thing about mine.
+
 ## Acknowledged
 
 ### Cycle 57 · 2026-08-09 15:40

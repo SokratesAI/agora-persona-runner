@@ -258,6 +258,8 @@ def test_a_comment_is_written_to_the_comments_file():
         "cycle": 63,
         "stamp": "2026-08-09 22:40",
         "text": "keep it up",
+        "reply": "",
+        "replyStamp": "",
         "acknowledged": False,
     }
 
@@ -397,3 +399,142 @@ def test_an_acknowledged_needs_reply_is_marked_read():
         "### Needs Edvard · 2026-08-10 08:20\n\ngo ahead and do it\n"
     )
     assert needs_comments(stored)[0]["acknowledged"] is True
+
+
+# --- Nova's reply, inside the comment it answers -----------------------
+#
+# The property these defend is the mirror of the one above: his text has
+# to survive a reply landing under it, byte for byte, and the reply has to
+# land in the comment it actually answers. The failure that matters is not
+# a crash -- it is a reply attached to the wrong comment, or Edvard's own
+# words absorbed into it, both of which parse fine and read as a lie.
+
+THREAD = """---
+type: log
+---
+
+# Comments
+
+## New
+
+### Cycle 80 · 2026-08-10 13:54
+
+instant replies would be cool
+
+### Cycle 79 · 2026-08-10 12:40
+
+two paragraphs here.
+
+and the second one.
+
+## Acknowledged
+
+### Cycle 75 · 2026-08-10 08:43
+
+an older one, already handled
+"""
+
+
+def _by_stamp(markdown, stamp):
+    return next(c for c in parse_comments(markdown) if c["stamp"] == stamp)
+
+
+def test_a_reply_lands_inside_the_comment_it_answers():
+    updated = nova_comments.insert_reply(
+        THREAD, 80, "2026-08-10 13:54", "They are. Here is one.", "2026-08-10 14:02")
+    replied = _by_stamp(updated, "2026-08-10 13:54")
+    assert replied["reply"] == "They are. Here is one."
+    assert replied["replyStamp"] == "2026-08-10 14:02"
+    # and nobody else got one
+    assert [c["reply"] for c in parse_comments(updated) if c["stamp"] != "2026-08-10 13:54"] == ["", ""]
+
+
+def test_his_text_is_untouched_by_a_reply_landing_under_it():
+    """The reason the reply is split off at parse time rather than left in
+    the body: a cycle reading `## New` must still read exactly what he
+    typed, not his words with Nova's stapled to the end."""
+    updated = nova_comments.insert_reply(
+        THREAD, 79, "2026-08-10 12:40", "Noted.", "2026-08-10 12:45")
+    assert _by_stamp(updated, "2026-08-10 12:40")["text"] == "two paragraphs here.\n\nand the second one."
+
+
+def test_a_reply_to_the_last_new_comment_stays_out_of_acknowledged():
+    """The bound of a comment body is the next comment *or* the next `##`
+    section. Missing the section put the reply under `## Acknowledged`,
+    where it belonged to a different comment entirely."""
+    updated = nova_comments.insert_reply(
+        THREAD, 79, "2026-08-10 12:40", "Noted.", "2026-08-10 12:45")
+    new_half, _, ack_half = updated.partition(ACKNOWLEDGED_HEADING)
+    assert "#### Nova" in new_half
+    assert "#### Nova" not in ack_half
+    assert _by_stamp(updated, "2026-08-10 08:43")["reply"] == ""
+
+
+def test_a_comment_that_already_has_a_reply_is_not_replied_to_twice():
+    once = nova_comments.insert_reply(
+        THREAD, 80, "2026-08-10 13:54", "First answer.", "2026-08-10 14:02")
+    assert nova_comments.insert_reply(
+        once, 80, "2026-08-10 13:54", "Second answer.", "2026-08-10 14:30") is None
+
+
+def test_a_reply_to_a_comment_that_is_gone_is_dropped():
+    assert nova_comments.insert_reply(
+        THREAD, 80, "2026-08-10 09:00", "answering thin air", "2026-08-10 14:02") is None
+    assert nova_comments.insert_reply(
+        THREAD, 42, "2026-08-10 13:54", "wrong cycle, right stamp", "2026-08-10 14:02") is None
+
+
+def test_a_reply_does_not_acknowledge_the_comment():
+    """Replying is conversation; acknowledging means a cycle acted. If a
+    reply ever started marking things read, a comment that needed real work
+    would be retired by a paragraph about it."""
+    updated = nova_comments.insert_reply(
+        THREAD, 80, "2026-08-10 13:54", "They are.", "2026-08-10 14:02")
+    assert _by_stamp(updated, "2026-08-10 13:54")["acknowledged"] is False
+
+
+def test_a_multi_paragraph_reply_survives_the_round_trip():
+    reply = "First paragraph.\n\nSecond one, with a blank line before it."
+    updated = nova_comments.insert_reply(
+        THREAD, 80, "2026-08-10 13:54", reply, "2026-08-10 14:02")
+    assert _by_stamp(updated, "2026-08-10 13:54")["reply"] == reply
+
+
+def test_add_reply_writes_the_whole_file_back():
+    with patch.object(nova_comments, "vault_read_path", return_value=THREAD), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, message = nova_comments.add_reply(
+            80, "2026-08-10 13:54", "They are.", reply_stamp="2026-08-10 14:02")
+    assert ok, message
+    path, content = write.call_args[0]
+    assert path == COMMENTS_PATH
+    assert _by_stamp(content, "2026-08-10 13:54")["reply"] == "They are."
+
+
+def test_add_reply_retries_on_a_conflict_against_the_re_read_file():
+    """Same reason `_store` does: 409 means someone wrote between the read
+    and the PUT, and resending the stale body would clobber them."""
+    with patch.object(nova_comments, "vault_read_path", return_value=THREAD) as read, \
+            patch.object(nova_comments, "vault_write_path",
+                         side_effect=["409 conflict", "written"]) as write:
+        ok, _ = nova_comments.add_reply(80, "2026-08-10 13:54", "They are.")
+    assert ok
+    assert read.call_count == 2
+    assert write.call_count == 2
+
+
+def test_add_reply_gives_up_rather_than_writing_somewhere_else():
+    with patch.object(nova_comments, "vault_read_path", return_value=THREAD), \
+            patch.object(nova_comments, "vault_write_path") as write:
+        ok, message = nova_comments.add_reply(80, "2026-08-10 09:00", "answering thin air")
+    assert not ok
+    assert "left to reply to" in message
+    assert not write.called
+
+
+def test_an_empty_reply_is_refused_before_any_read():
+    with patch.object(nova_comments, "vault_read_path") as read, \
+            patch.object(nova_comments, "vault_write_path") as write:
+        ok, message = nova_comments.add_reply(80, "2026-08-10 13:54", "   \n\n  ")
+    assert (ok, message) == (False, "nothing to reply")
+    assert not read.called and not write.called

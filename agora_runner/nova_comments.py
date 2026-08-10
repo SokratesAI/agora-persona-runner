@@ -41,6 +41,27 @@ body contains a line reading exactly `## Acknowledged` -- would mis-split
 the *display*, never the file, and no text is lost either way. Escaping
 his prose to defend against that would cost more than it buys.
 
+**A comment can carry one reply from Nova** (2026-08-10, his words on the
+card for cycle 80 -- *"A good idea is to have the session that created the
+Journal instantly reply to my comments on the Journal! That would be so
+cool, to have a conversation with comments on the Journal entry."*). It is
+stored inside the comment it answers, under a `#### Nova · <stamp>`
+heading -- one level below the comment's own heading, because it belongs
+to that comment rather than standing beside it. Structural again: the
+marker is a heading shape, not a position, and Edvard's text above it is
+still stored exactly as typed.
+
+**A reply is written once and never rewritten,** the same rule a journal
+entry follows: `insert_reply` refuses a comment that already has one
+rather than replacing it. Two different sessions answering the same
+comment would be two different answers, and silently keeping the second
+would lose the first.
+
+**Replying is not acknowledging.** A reply is conversation; `##
+Acknowledged` means a cycle *did* something about it. The two are
+deliberately independent, so a comment Nova has chatted about still sits
+in `## New` for the next cycle to act on -- see `nova_replies`.
+
 **The write is a read-modify-write against a live vault and can lose,**
 so it retries on 409 exactly as `nova_capture.capture` does, re-reading
 each time rather than resending. Any non-409 failure is not a conflict
@@ -83,6 +104,14 @@ def _heading_label(cycle):
     return NEEDS_LABEL if cycle is None else f"Cycle {cycle}"
 
 _SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
+
+# `#### Nova · 2026-08-10 14:12` -- Nova's reply, inside the comment it
+# answers. Four hashes rather than three so it can never be mistaken for a
+# comment heading by `_COMMENT_HEADING_RE`, which anchors on exactly three.
+_REPLY_HEADING_RE = re.compile(
+    r"^####[ \t]+Nova[ \t]*(?:[·\-—][ \t]*(?P<stamp>.*?))?[ \t]*$",
+    re.IGNORECASE,
+)
 
 # He lives in Oslo and asked for Oslo time in anything he reads
 # (identity.md rule 7). CET/CEST without pulling in a tz database: Norway
@@ -184,12 +213,119 @@ def insert_comment(markdown, cycle, text, stamp):
     return "\n".join(lines[:start] + block + lines[start:])
 
 
-def parse_comments(markdown):
-    """Markdown -> [{cycle, stamp, text, acknowledged}], newest-first per section.
+def split_reply(lines):
+    """A comment's raw lines -> (his text, Nova's reply, the reply's stamp).
 
-    Order within the file is preserved rather than sorted: `## New` is
-    written newest-first and `## Acknowledged` accumulates in the order
-    cycles retired things, and both are information.
+    The reply is everything below the first `#### Nova` heading. Split on
+    the first rather than the last so a reply that itself contains such a
+    line stays inside the reply, where it is Nova's own text, instead of
+    swallowing part of it into Edvard's.
+    """
+    for i, line in enumerate(lines):
+        heading = _REPLY_HEADING_RE.match(line)
+        if heading:
+            return (
+                "\n".join(lines[:i]).strip("\n"),
+                "\n".join(lines[i + 1:]).strip("\n"),
+                (heading.group("stamp") or "").strip(),
+            )
+    return "\n".join(lines).strip("\n"), "", ""
+
+
+def insert_reply(markdown, cycle, stamp, reply, reply_stamp):
+    """Put one reply inside the comment `(cycle, stamp)` names. Returns the
+    new markdown, or `None` if there is nothing to write it into.
+
+    `None` covers both misses and it is deliberate that the caller cannot
+    tell them apart: the comment is gone (Edvard deleted it in Obsidian),
+    or it already carries a reply. Either way the only correct action is
+    to drop this reply and log it -- there is no version of "write it
+    somewhere else" that is better than not writing it.
+
+    The reply lands at the end of the comment's body, above whatever
+    heading follows, so the file keeps reading top to bottom as the
+    conversation happened.
+
+    `(cycle, stamp)` is a minute-resolution key, so two comments typed on
+    the same cycle inside one minute collide: the second gets no reply,
+    because the first match already has one. Nothing is lost or
+    misattributed -- the comment still sits in `## New` for the next cycle,
+    which is the fallback the whole design rests on -- and a
+    second-resolution stamp would change the shape of every heading Edvard
+    reads to defend against a minute he is unlikely to spend typing twice.
+    """
+    lines = (markdown or "").split("\n")
+    start = None
+    for i, line in enumerate(lines):
+        heading = _COMMENT_HEADING_RE.match(line)
+        # A body ends at the next comment *or* at the next `##` section --
+        # the last comment in `## New` is bounded by `## Acknowledged`, and
+        # missing that would file the reply under the wrong section.
+        if start is not None and (heading or _SECTION_RE.match(line)):
+            end = i
+            break
+        if not heading:
+            continue
+        found = int(heading.group("cycle")) if heading.group("cycle") else None
+        if found == cycle and (heading.group("stamp") or "").strip() == stamp:
+            start = i + 1
+    else:
+        end = len(lines)
+
+    if start is None:
+        return None
+    body = lines[start:end]
+    if any(_REPLY_HEADING_RE.match(line) for line in body):
+        return None
+
+    # Trailing blank lines belong to the gap before the next heading, not
+    # to the body, so the reply goes above them rather than after.
+    while body and not body[-1].strip():
+        body.pop()
+        end -= 1
+    block = ["", f"#### Nova · {reply_stamp}", ""] + reply.split("\n")
+    return "\n".join(lines[:end] + block + lines[end:])
+
+
+def add_reply(cycle, stamp, text, reply_stamp=None):
+    """Store Nova's reply to the comment `(cycle, stamp)`. Returns (ok, message).
+
+    Same read-modify-write and same 409 retry as `_store`, and for the same
+    reason -- but it cannot share the code, because this one has to give up
+    when the target comment is missing rather than create anything. A
+    comment can vanish between being commented on and being replied to;
+    that is a dropped reply, not a file to build.
+    """
+    body = clean_comment_text(text)
+    if not body:
+        return False, "nothing to reply"
+
+    reply_stamp = reply_stamp or format_stamp()
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current = vault_read_path(COMMENTS_PATH)
+        if current is None:
+            return False, "could not read comments"
+        updated = insert_reply(current, cycle, stamp, body, reply_stamp)
+        if updated is None:
+            return False, f"no comment on cycle {cycle} at {stamp} left to reply to"
+        result = vault_write_path(COMMENTS_PATH, updated)
+        if result == "written":
+            log(f"nova-comment replied to cycle {cycle} at {stamp}")
+            return True, "replied"
+        if "409" not in result:
+            break
+    log(f"nova-comment failed replying to cycle {cycle}: {result}")
+    return False, f"could not write reply: {result}"
+
+
+def parse_comments(markdown):
+    """Markdown -> [{cycle, stamp, text, reply, replyStamp, acknowledged}].
+
+    Newest-first per section. Order within the file is preserved rather
+    than sorted: `## New` is written newest-first and `## Acknowledged`
+    accumulates in the order cycles retired things, and both are
+    information.
     """
     out = []
     section = None
@@ -198,11 +334,13 @@ def parse_comments(markdown):
     def flush():
         if current is None:
             return
-        body = "\n".join(current["lines"]).strip("\n")
+        body, reply, reply_stamp = split_reply(current["lines"])
         out.append({
             "cycle": current["cycle"],
             "stamp": current["stamp"],
             "text": body,
+            "reply": reply,
+            "replyStamp": reply_stamp,
             "acknowledged": current["acknowledged"],
         })
 

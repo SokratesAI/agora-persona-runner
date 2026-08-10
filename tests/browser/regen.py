@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
-from agora_runner import nova_site  # noqa: E402
+from agora_runner import nova_site, nova_sources  # noqa: E402
 from agora_runner.nova_comments import COMMENTS_PATH  # noqa: E402
 from agora_runner.nova_journal import JOURNAL_PATH  # noqa: E402
 
@@ -48,7 +48,8 @@ def build_payload():
     def fake_read(path):
         return by_path.get(path, digest_md)
 
-    with patch.object(nova_site, "vault_read_path", side_effect=fake_read):
+    with patch.object(nova_sources, "vault_read_path", side_effect=fake_read), \
+            patch.object(nova_sources, "vault_bulk_fetch", return_value={}):
         return {
             "journal": nova_site.journal_payload(),
             "digest": nova_site.digest_payload(),

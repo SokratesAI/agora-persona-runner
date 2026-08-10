@@ -44,6 +44,13 @@ RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
 # /tool-activity -- must stay cluster-internal. The split is what lets the
 # Service, Ingress and NetworkPolicy each name one port and mean it.
 NOVA_PORT = int(os.environ.get("NOVA_PORT", "8083"))
+# The model that answers a comment on a journal card (nova_replies.py).
+# Sonnet rather than whatever a cycle runs on: the turn is one short,
+# tool-less reply written from an entry it is handed, and it draws on the
+# same subscription quota the cycles do. No provider prefix -- this goes
+# straight to the bridge, so the subscription is the only thing it can
+# spend (identity.md rule 9).
+NOVA_REPLY_MODEL = os.environ.get("NOVA_REPLY_MODEL", "claude-sonnet-5")
 # Where the bridge sends live tool-use reports back to -- this process's
 # own in-cluster address (tool_activity.py explains why the reports come
 # here rather than going straight to Agora's internal API). A default
