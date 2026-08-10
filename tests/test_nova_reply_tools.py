@@ -36,12 +36,20 @@ def test_the_reply_turn_can_read_the_vault_and_file_a_capture():
     "terminal_exec", "create_pr", "merge_pr", "github_comment",
     "vault_write", "vault_append", "kubectl_read", "github_read",
 ])
-def test_the_reply_turn_cannot_reach_anything_that_changes_the_world(forbidden):
-    """Named one by one rather than as a count.
+def test_the_reply_turn_is_not_offered_anything_that_changes_the_world(forbidden):
+    """Advertisement only -- *offered*, not *reachable*, and the name has to
+    say which.
 
-    A count passes the moment someone adds a tool and removes another, and
-    the whole point of this list is that each entry is a specific thing a
-    comment must not be able to do.
+    It used to be called `..._cannot_reach_...`, and that name was false at
+    the commit that introduced it: `tools/call` dispatched on the tool name
+    with no capability check, so the reply grant could call `terminal_exec`
+    despite this test passing. Reachability is pinned by
+    `test_a_tool_that_was_not_granted_cannot_be_called_by_name` below, which
+    is a different assertion against a different layer.
+
+    Named one by one rather than as a count: a count passes the moment
+    someone adds a tool and removes another, and the whole point of this
+    list is that each entry is a specific thing a comment must not do.
     """
     assert forbidden not in _tool_names(nova_replies.REPLY_CAPS)
 
@@ -235,3 +243,58 @@ def test_a_granted_tool_still_runs():
         tools_mcp.revoke(token)
     assert payload["result"]["isError"] is False
     assert payload["result"]["content"][0]["text"] == "We are Nova."
+
+
+def test_a_capture_that_did_not_write_is_reported_as_an_error():
+    """A failed capture must not read as a filed one.
+
+    `execute_tool` returns one string and has no channel for "this did not
+    work", so a 409 or a missing target file arrived at the model looking
+    exactly like a success -- while the system prompt tells it to file the
+    thing and then tell Edvard it filed it. The reviewer subagent found
+    this; it is the one finding of four that was not already fixed.
+    """
+    token = tools_mcp.grant(
+        nova_replies.REPLY_PERSONA, nova_replies.REPLY_CAPS, nova_replies.CONVERSATION_ID
+    )
+    try:
+        with patch("agora_runner.tools_dispatch.capture_to_backlog",
+                   return_value=(False, "could not write to issues: 409")), \
+                patch("agora_runner.tools_dispatch.audit"):
+            _, payload = tools_mcp.handle_http(
+                f"Bearer {token}",
+                json.dumps({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "nova_capture",
+                               "arguments": {"target": "issues", "text": "x"}},
+                }).encode(),
+            )
+    finally:
+        tools_mcp.revoke(token)
+    result = payload["result"]
+    assert result["isError"] is True
+    assert "409" in result["content"][0]["text"]
+
+
+def test_a_capture_that_did_write_is_not_reported_as_an_error():
+    """The other direction: marking everything an error would pass the test
+    above and make the flag useless."""
+    token = tools_mcp.grant(
+        nova_replies.REPLY_PERSONA, nova_replies.REPLY_CAPS, nova_replies.CONVERSATION_ID
+    )
+    try:
+        with patch("agora_runner.tools_dispatch.capture_to_backlog",
+                   return_value=(True, "captured to issues")), \
+                patch("agora_runner.tools_dispatch.audit"):
+            _, payload = tools_mcp.handle_http(
+                f"Bearer {token}",
+                json.dumps({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "nova_capture",
+                               "arguments": {"target": "issues", "text": "x"}},
+                }).encode(),
+            )
+    finally:
+        tools_mcp.revoke(token)
+    assert payload["result"]["isError"] is False
+    assert payload["result"]["content"][0]["text"] == "captured to issues"
