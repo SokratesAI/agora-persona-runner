@@ -6334,3 +6334,232 @@ def test_the_older_schedule_syntaxes_are_untouched_by_cron():
     assert schedule_due("every@6h", ran, ran, _oslo("2026-08-08T18:41:00"))
     assert schedule_due("every@6h@12:00", ran, ran, _oslo("2026-08-08T18:00:00"))
     assert schedule_due("daily@08:00", ran, ran, _oslo("2026-08-09T08:00:00"))
+
+
+# ---------------------------------------------------------------------------
+# Incremental conversation polling (agora#51's ?after+?rev, runner side)
+#
+# The poll loop re-read the whole FETCH_LIMIT window for every conversation
+# every POLL_INTERVAL_SECONDS, and almost every tick nothing had changed.
+# Measured against the live pod 2026-08-10: five polled conversations,
+# 247,890 bytes per tick, 4.28 GB/day to learn nothing.
+#
+# Every test below drives a fake server that reimplements the real contract
+# from agora's src/server.ts -- the same prefix fingerprint over
+# (id, forgotten, text), the same "both params or neither" rule, the same
+# incremental flag. The point is to pin that the client agrees with the
+# *server*, not merely with whatever this file expects it to send.
+# ---------------------------------------------------------------------------
+
+import hashlib
+from urllib.parse import parse_qsl, urlparse
+
+
+def _fake_messages_server(runner, all_messages):
+    """Mirrors GET /conversations/:id/messages. `all_messages` is mutated by
+    the test to simulate what happened in the conversation between ticks."""
+    requests = []
+
+    def prefix_rev(end_index):
+        h = hashlib.sha1()
+        for m in all_messages[: end_index + 1]:
+            h.update(json.dumps([m["id"], m.get("forgotten") is True, m["text"]]).encode())
+        return h.hexdigest()[:16]
+
+    def fake_agora_get(path):
+        query = dict(parse_qsl(urlparse(path).query))
+        requests.append(query)
+        limit = int(query.get("limit", 0))
+        after, client_rev = query.get("after", ""), query.get("rev", "")
+        window = all_messages[-limit:] if limit > 0 else list(all_messages)
+
+        after_index = -1
+        if after and client_rev:
+            after_index = next(
+                (i for i, m in enumerate(all_messages) if m["id"] == after), -1)
+        incremental = after_index >= 0 and prefix_rev(after_index) == client_rev
+        messages = all_messages[after_index + 1:] if incremental else window
+
+        return 200, {
+            "name": "Test",
+            "personas": None,
+            "incremental": incremental,
+            "rev": prefix_rev(len(all_messages) - 1),
+            "totalMessages": len(all_messages),
+            "messages": [dict(m) for m in messages],
+        }
+
+    return fake_agora_get, requests
+
+
+def _msg(n, sender="Edvard", text=None):
+    return {"id": f"m{n}", "sender": sender, "text": text or f"message {n}", "forgotten": False}
+
+
+@pytest.fixture
+def polling(runner):
+    """poll_conversation with turn-taking stubbed out -- these tests are
+    about what it fetches and what window it hands on, not about replying.
+    Records the thread decide_turn actually saw on each tick."""
+    runner.conversations._message_window_cache.clear()
+    summary = {"id": "conv-1", "name": "Test", "archived": False, "status": "active"}
+    seen = []
+
+    def fake_decide_turn(thread, personas):
+        seen.append([dict(m) for m in thread])
+        return []          # no turn -> poll_conversation returns right after
+
+    try:
+        yield summary, seen, fake_decide_turn
+    finally:
+        runner.conversations._message_window_cache.clear()
+
+
+def test_the_first_poll_asks_for_a_window_and_the_next_one_asks_for_the_delta(runner, polling):
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(1), _msg(2)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        runner.poll_conversation(summary)
+
+    assert "after" not in requests[0] and "rev" not in requests[0], \
+        "nothing is cached yet, so the first tick must ask for the plain window"
+    assert requests[1]["after"] == "m2", "should stand on the last message it holds"
+    assert requests[1]["rev"], "after without rev is ignored by the server"
+    assert seen[1] == seen[0], "an unchanged conversation must yield an unchanged window"
+
+
+def test_a_delta_is_appended_to_the_window_rather_than_replacing_it(runner, polling):
+    """The whole risk of this change: decide_turn and merge_history want the
+    window, and an incremental response carries only what is new. If the
+    delta were passed straight through, every turn decision after the first
+    tick would be made on a one-message history."""
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(1), _msg(2)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        messages.append(_msg(3, sender="Nova"))
+        runner.poll_conversation(summary)
+
+    assert [m["id"] for m in seen[0]] == ["m1", "m2"]
+    assert [m["id"] for m in seen[1]] == ["m1", "m2", "m3"], \
+        "the new message must arrive on top of the window we already held"
+
+
+def test_an_edit_behind_us_replaces_the_window_instead_of_appending(runner, polling):
+    """Edvard edits or deletes an older message: the server's fingerprint of
+    the prefix stops matching, it answers incremental=False with the whole
+    window, and we must replace. Appending here would duplicate history."""
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(1), _msg(2)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        messages[0]["text"] = "edited after the fact"
+        runner.poll_conversation(summary)
+
+    assert [m["id"] for m in seen[1]] == ["m1", "m2"], "no duplication"
+    assert seen[1][0]["text"] == "edited after the fact", "must show the edit, not our stale copy"
+
+
+def test_a_forget_behind_us_also_replaces_the_window(runner, polling):
+    """`forgotten` is in the server's fingerprint precisely so this path
+    works without the client having to notice it happened."""
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(1), _msg(2)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        messages[0]["forgotten"] = True
+        runner.poll_conversation(summary)
+
+    assert [m["id"] for m in seen[1]] == ["m1", "m2"]
+    assert seen[1][0]["forgotten"] is True
+
+
+def test_the_window_never_grows_past_fetch_limit(runner, polling):
+    """Appending deltas forever would turn the cache into the whole
+    conversation, which is the unbounded response ?limit exists to prevent."""
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(n) for n in range(runner.FETCH_LIMIT)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        for n in range(runner.FETCH_LIMIT, runner.FETCH_LIMIT + 5):
+            messages.append(_msg(n))
+            runner.poll_conversation(summary)
+
+    assert len(seen[-1]) == runner.FETCH_LIMIT
+    assert [m["id"] for m in seen[-1]] == [f"m{n}" for n in range(5, runner.FETCH_LIMIT + 5)], \
+        "the window must be the newest FETCH_LIMIT, exactly as a full fetch would return"
+
+
+def test_the_incremental_window_matches_what_a_full_fetch_would_have_returned(runner, polling):
+    """The strongest form of the claim: after a run of mixed appends and
+    edits, the window built incrementally is identical to the one the server
+    would hand a client that had never cached anything."""
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(n) for n in range(3)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        for n in range(3, 12):
+            messages.append(_msg(n))
+            if n == 7:
+                messages[1]["text"] = "edited mid-run"
+            runner.poll_conversation(summary)
+        incremental_window = seen[-1]
+
+        runner.conversations._message_window_cache.clear()   # a client with no cache
+        runner.poll_conversation(summary)
+        full_window = seen[-1]
+
+    assert incremental_window == full_window
+
+
+def test_a_server_that_never_heard_of_rev_still_works(runner, polling):
+    """Deploy ordering: the runner may roll before agora does. No rev in the
+    response means nothing is cached, so every tick asks for a plain window --
+    exactly the old behaviour, no error path."""
+    summary, seen, fake_decide_turn = polling
+
+    def old_server(path):
+        assert "after=" not in path, "must not send after to a server that gave us no rev"
+        return 200, {"name": "Test", "personas": None, "messages": [_msg(1), _msg(2)]}
+
+    with patch.object(runner.conversations, "agora_get", side_effect=old_server), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        runner.poll_conversation(summary)
+
+    assert [m["id"] for m in seen[1]] == ["m1", "m2"]
+    assert runner.conversations._message_window_cache == {}
+
+
+def test_pruning_drops_windows_for_conversations_that_are_gone(runner):
+    """The Nova heartbeat rotates into a new conversation every cycle, so an
+    unpruned cache grows by a 40-message window a cycle for as long as the
+    pod lives."""
+    runner.conversations._message_window_cache.clear()
+    runner.conversations._message_window_cache.update({
+        "still-here": ("m1", "rev1", [_msg(1)]),
+        "long-gone": ("m9", "rev9", [_msg(9)]),
+    })
+
+    runner.prune_message_window_cache(["still-here", "brand-new"])
+
+    assert set(runner.conversations._message_window_cache) == {"still-here"}
