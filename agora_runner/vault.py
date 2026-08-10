@@ -350,10 +350,14 @@ def fetch_vault_context(paths):
 # fetching hundreds of files one at a time is exactly what the vault's
 # own CLAUDE.md says never to do.
 # --------------------------------------------------------------------------
-def vault_bulk_fetch(prefix=""):
+def vault_bulk_fetch(prefix="", with_mtimes=False):
     """{path: content} for every vault file under `prefix`, assembled
     from batched bulk _all_docs POSTs (file docs, then their content
-    chunks) instead of per-file couch_get_doc calls."""
+    chunks) instead of per-file couch_get_doc calls.
+
+    With `with_mtimes`, returns `(contents, {path: mtime_ms})` instead --
+    the file docs are already in hand here, so the caller gets the write
+    times for free rather than paying a second listing for them."""
     filedocs = _vault_file_docs(prefix)
     chunk_ids = sorted({c for doc in filedocs.values() for c in (doc.get("children") or [])})
     chunks = {}
@@ -366,6 +370,7 @@ def vault_bulk_fetch(prefix=""):
             if doc:
                 chunks[row["id"]] = doc.get("data", "")
     out = {}
+    mtimes = {}
     for doc_id, doc in filedocs.items():
         kids = doc.get("children")
         if kids:
@@ -385,8 +390,10 @@ def vault_bulk_fetch(prefix=""):
         else:
             content = doc.get("data", "")
         if isinstance(content, str):
-            out[doc.get("path") or doc_id] = content
-    return out
+            path = doc.get("path") or doc_id
+            out[path] = content
+            mtimes[path] = doc.get("mtime")
+    return (out, mtimes) if with_mtimes else out
 
 
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)

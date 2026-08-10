@@ -221,9 +221,16 @@
         /* Nova's answer to this comment, or the fact that one is coming.
          * The bridge serialises every CLI call, so a reply posted while a
          * cycle is running can be forty minutes behind -- saying nothing
-         * would read as broken. */
+         * would read as broken.
+         *
+         * It is a sibling of the comment it answers, not a child of it:
+         * Edvard, issues.md 2026-08-10, "they should be below each other
+         * on the same indentation. So the comments alternates between blue
+         * and green downwards." Which comment a reply belongs to is now
+         * carried by the order alone, and the order is the conversation. */
+        var after = null;
         if (comment.reply) {
-          var reply = el("div", "comment-reply");
+          var reply = el("div", "comment comment-reply");
           var meta = el("p", "comment-meta");
           meta.appendChild(el("span", "comment-who", "Nova"));
           meta.appendChild(el("span", "comment-stamp", comment.replyStamp || ""));
@@ -231,21 +238,22 @@
           String(comment.reply).split(/\n{2,}/).forEach(function (para) {
             if (para.trim()) reply.appendChild(el("p", "comment-body", para));
           });
-          item.appendChild(reply);
+          after = reply;
         } else if (comment.replyWaiting) {
           /* Past the server's threshold this is a queue, not a reply being
            * written -- a cycle holds the bridge's single CLI lock for up to
            * 45 minutes. Say that instead of a spinner that looks stuck. */
-          item.appendChild(el("p", "comment-waiting", "Queued behind a running cycle — the answer appears here on its own."));
+          after = el("p", "comment-waiting", "Queued behind a running cycle — the answer appears here on its own.");
         } else if (comment.replyPending) {
-          item.appendChild(el("p", "comment-waiting", "Nova is replying…"));
+          after = el("p", "comment-waiting", "Nova is replying…");
         } else if (comment.replyFailed) {
           /* The line used to just vanish, which reads exactly like an
            * answer that never came. A comment that got no reply is still in
            * `## New`, so the next cycle does read it. */
-          item.appendChild(el("p", "comment-waiting", "Couldn't answer this one — the next cycle will read it."));
+          after = el("p", "comment-waiting", "Couldn't answer this one — the next cycle will read it.");
         }
         list.appendChild(item);
+        if (after) list.appendChild(after);
       });
       var count = (items || []).length;
       toggle.textContent = count ? "💬 " + count : "💬";
