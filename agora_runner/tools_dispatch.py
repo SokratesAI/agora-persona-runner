@@ -7,6 +7,7 @@ from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
 from agora_runner.vault import (
     vault_read_path, vault_write_path, vault_append_path, vault_list_prefix, vault_search,
+    VaultIncompleteDocument,
     vault_query_frontmatter, vault_validate_frontmatter_schema, vault_find_stub_notes,
     vault_find_duplicate_titles, vault_get_token_metrics, vault_git_revision_history,
     vault_summarize_recent_agent_work, vault_update_frontmatter_batch,
@@ -38,6 +39,25 @@ def _resolve_scoped_target(active_step, args):
     locked = filepath + filename
     active_step["_locked_path"] = locked
     return locked
+
+
+def _before_snapshot(path):
+    """The pre-write content, for the audit diff only -- never a gate.
+
+    `vault_read_path` raises VaultIncompleteDocument when a file's content
+    chunks are partly missing from CouchDB. Letting that escape here would
+    block `vault_write`, and a full overwrite is exactly how a damaged file
+    gets *repaired* -- so the audit read, which this function's callers have
+    always treated as best effort, would have become the one thing standing
+    between a persona and the fix. `vault_append` is unaffected: it is
+    blocked by `vault_append_path`'s own read, which is the read that
+    actually matters, because appending onto a truncated file is what makes
+    the truncation permanent.
+    """
+    try:
+        return vault_read_path(path) or ""
+    except VaultIncompleteDocument as e:
+        return f"[unreadable before this write: {e}]"
 
 
 def _audit_vault_write(persona_name, conversation_id, capability, path, result, before, after):
@@ -88,7 +108,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # real before/after pair for the Activity diff view. Best
             # effort -- a failed read (e.g. new file) just means "" as
             # the before side, same as the file not existing.
-            before = vault_read_path(path) or ""
+            before = _before_snapshot(path)
             result = vault_write_path(path, content)
             _audit_vault_write(persona_name, conversation_id, "vault_write", path, result, before, content)
             return result
@@ -96,7 +116,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             path = str(args.get("path", ""))
             content = str(args.get("content", ""))
             after_marker = str(args.get("after_marker", ""))
-            before = vault_read_path(path) or ""
+            before = _before_snapshot(path)
             result = vault_append_path(path, content, after_marker)
             _audit_vault_write(persona_name, conversation_id, "vault_append", path, result, before, content)
             return result
@@ -281,7 +301,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             if target is None:
                 return "[scoped_write error: folder target requires a valid filename on the first call]"
             content = str(args.get("content", ""))
-            before = vault_read_path(target) or ""
+            before = _before_snapshot(target)
             result = vault_write_path(target, content)
             _audit_vault_write(persona_name, conversation_id, "scoped_write", target, result, before, content)
             return result
