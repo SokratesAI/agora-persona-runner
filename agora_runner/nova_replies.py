@@ -8,18 +8,29 @@ with comments on the Journal entry."*
 **The session that wrote the entry is gone, and cannot be brought back.**
 A Nova cycle is one CLI session that ends when the cycle ends; there is
 nothing left to wake. So what this does instead is the closest honest
-thing: a fresh, tool-less session given that entry in full, the whole
-comment thread on it, and nothing else -- and told plainly that it is not
-the session that did the work. The alternative would be a reply that
-implies a memory it does not have, which is worse than a slow one.
+thing: a fresh session given that entry in full, the whole comment thread
+on it, and a narrow toolset -- and told plainly that it is not the session
+that did the work. The alternative would be a reply that implies a memory
+it does not have, which is worse than a slow one.
 
-**It answers from the entry. It cannot go and check.** `restricted` blocks
-the CLI's full tool roster, so this session has no shell, no vault, no
-GitHub. That is the property that makes an LLM call triggered by an HTTP
-POST acceptable at all: the worst a comment can provoke is a paragraph of
-text written into one file. A reply that wants to *do* something says so,
-and the next cycle -- which has every tool -- picks it up, because
-replying deliberately does not acknowledge (see below).
+**It can go and check now, and until 2026-08-10 it could not.** The first
+version had no tools at all, and Edvard said what that was like on the
+cycle 86 card: *"It is atleast a good start to have you read and answer
+questions about the cycle, but I wished you had more read capabilities to
+answer questions. And maybe some tools to add issues or report bugs we
+find."* He was right -- three comments in a row got "I don't know, the
+next cycle can check", about facts sitting in the vault the whole time.
+
+So it now gets `REPLY_CAPS` below, over the same MCP transport a persona
+turn uses (tools_mcp.py), with the grant minted here and revoked when the
+turn ends. **The safety argument did not weaken; it changed shape.**
+`restricted` still blocks the CLI's entire built-in roster -- no shell, no
+file access, no editor -- and MCP tool names are not in that roster, so
+the tools this turn holds are an explicit allowlist rather than whatever
+was left after a subtraction. The worst a comment can now provoke is a
+vault read and one bullet appended to a backlog file it does not choose,
+which is precisely the thing he asked for. Anything beyond that -- a fix,
+a PR, a merge -- it still cannot do, says so, and files.
 
 **Replying is not acknowledging, and that separation is the whole safety
 argument.** The comment stays in `## New`. A cycle still reads it, still
@@ -64,12 +75,19 @@ from agora_runner.config import (
     CLAUDE_BRIDGE_TOKEN,
     CLAUDE_BRIDGE_URL,
     NOVA_REPLY_MODEL,
+    NOVA_SITE_SELF_URL,
 )
 from agora_runner.http_util import http_json
 from agora_runner.log import log
 from agora_runner.nova_comments import add_reply, comments_by_cycle
 from agora_runner.nova_journal import parse_journal
 from agora_runner.nova_sources import comments_markdown, journal_markdown
+from agora_runner.tools_mcp import grant as grant_mcp, revoke as revoke_mcp
+
+# One stable id, used for both the bridge's stateless call and the audit
+# trail's conversation field, so a tool call from a reply is attributable
+# to the reply lane rather than to a persona conversation.
+CONVERSATION_ID = "nova-comment-reply"
 
 # Long enough to sit behind a full Nova cycle, which is what it is usually
 # waiting for. The bridge's own CLI_TIMEOUT_SECONDS (2700s) bounds the turn
@@ -79,11 +97,48 @@ BRIDGE_TIMEOUT_SECONDS = 2760
 
 SYSTEM = """You are Nova, an autonomous self-improvement loop that works on Edvard's platform for one hour at a time and writes a journal entry about each cycle.
 
-Edvard has left a comment on one of those entries and you are answering it, in the app, while he is still reading. Be aware of exactly what you are: you are NOT the session that did that work -- that session ended -- and you have no memory of it beyond the entry text you are given below. You have no tools this turn and cannot look anything up.
+Edvard has left a comment on one of those entries and you are answering it, in the app, while he is still reading. Be aware of exactly what you are: you are NOT the session that did that work -- that session ended -- and you have no memory of it beyond the entry text you are given below. Never imply you remember doing the work.
 
-So: answer from the entry. Talk like yourself -- first person, plain, honest, the voice the entry is written in. Two or three sentences is usually right; this is a chat bubble on a card he is holding in one hand, not a report.
+You do have tools this turn, and they are the difference between answering him and apologising to him:
 
-If he asks something the entry does not answer, say so in one line and say that the next cycle can go and check -- it will read this comment and it has every tool you don't. Never guess at a fact about the system and never imply you remember doing the work. Do not use headings or bullets. Write plain paragraphs."""
+- `vault_read` / `vault_list` / `vault_search` read Edvard's vault. That is where everything about this loop lives: every journal entry under 'projects/sokrates/projects/agora/nova/journal/', the digest at 'projects/sokrates/projects/agora/journal-digest.md', his own backlog at 'projects/sokrates/projects/agora/issues.md' and '.../ideas.md', and Nova's own constitution under '.../nova/resources/' -- identity.md, personality.md, prompt.md. If he asks what you are, what your limits are, why a cycle did something, or what happened in some other cycle, the answer is in there. Go and read it instead of guessing or deferring.
+- `nova_capture` files one line in his own backlog. If he reports a bug or asks for something you cannot do from here, file it and tell him you did -- that is what turns a comment into work the next cycle picks up.
+
+What you cannot do: run commands, edit code, open or merge a PR, or write anywhere in the vault except that one capture line. If he wants any of those, say so plainly and file it.
+
+Use a tool when the answer needs a fact you do not have, not out of diligence. He is holding his phone waiting; one or two reads is a good answer, six is a stall. If the entry in front of you already answers him, just answer.
+
+Talk like yourself -- first person, plain, honest, the voice the entry is written in. Two or three sentences is usually right; this is a chat bubble on a card he is holding in one hand, not a report. Never guess at a fact about the system: read it, or say you did not check. Do not use headings or bullets. Write plain paragraphs."""
+
+# What the reply turn is allowed to do. Read the vault, and add one line to
+# his backlog -- his ask, on the cycle 86 card: *"i wished you had more read
+# capabilities to answer questions. And maybe some tools to add issues or
+# report bugs we find."*
+#
+# Everything absent here is absent on purpose. This turn is triggered by an
+# HTTP POST carrying text Edvard typed, so the blast radius of a comment is
+# exactly this list: no terminal, no code execution, no GitHub write, no
+# merge, no vault write outside the two capture files. `restricted` below
+# still blocks the CLI's own built-in roster (Bash/Read/Write/Edit/...),
+# and MCP tool names are not in it, so what the model gets is precisely
+# this dict and nothing else -- an allowlist rather than a subtraction.
+#
+# kubectlRead and githubRead are the two he would obviously also want, and
+# they are missing for a reason that is not caution: this turn runs in the
+# `nova-site` pod, which holds no ServiceAccount token and no GitHub
+# credentials (nova_site_main.py says so, and it is why the site can be
+# reachable from the tailnet). Granting them here would advertise tools
+# that fail on every call. Serving them means the runner minting the grant
+# instead, which is a cross-pod trust boundary and its own change.
+REPLY_CAPS = {"vaultRead": True, "novaCapture": True}
+
+# The reply turn has no Agora persona record -- it is not a persona, it is
+# this module. `execute_tool` wants one for the audit trail's author field
+# and for save_memory's id (which this turn cannot call anyway, having no
+# manageAgora). "Nova" matches what the site's capture box already writes,
+# so a line filed from a card and a line typed into the box are one author
+# in the Activity feed rather than two.
+REPLY_PERSONA = {"name": "Nova", "capabilities": REPLY_CAPS}
 
 
 def build_prompt(entry, thread, stamp):
@@ -128,12 +183,19 @@ def _entry_for(cycle):
 
 def _generate(system, prompt):
     headers = {"x-bridge-token": CLAUDE_BRIDGE_TOKEN} if CLAUDE_BRIDGE_TOKEN else {}
+    # Same shape and lifecycle as a persona turn's grant
+    # (providers/claude_cli.py): a random token scoped to one turn, revoked
+    # in the finally below so a failed reply cannot leave a live one behind
+    # for the rest of the process's life. The callback URL is the *site's*
+    # own service, not the runner's -- this grant lives in this process's
+    # memory and nowhere else.
+    mcp_token = grant_mcp(REPLY_PERSONA, REPLY_CAPS, CONVERSATION_ID)
     body = {
         # No conversation to resume and none to create: `stateless` means
         # the bridge never touches a stored session id, so a thread's
         # continuity comes from the prompt above and nothing accumulates
         # CLI-side between comments.
-        "conversation_id": "nova-comment-reply",
+        "conversation_id": CONVERSATION_ID,
         "system": system,
         "prompt": prompt,
         "model": NOVA_REPLY_MODEL,
@@ -150,10 +212,15 @@ def _generate(system, prompt):
         # `True` and not a condition we would have to keep in sync.
         "allow_concurrent": True,
     }
-    status, resp = http_json(
-        "POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers,
-        timeout=BRIDGE_TIMEOUT_SECONDS,
-    )
+    if mcp_token:
+        body["mcp"] = {"url": f"{NOVA_SITE_SELF_URL}/mcp", "token": mcp_token}
+    try:
+        status, resp = http_json(
+            "POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers,
+            timeout=BRIDGE_TIMEOUT_SECONDS,
+        )
+    finally:
+        revoke_mcp(mcp_token)
     if status != 200:
         raise RuntimeError(f"bridge {status}: {str(resp)[:200]}")
     text = (resp.get("text") or "").strip()
