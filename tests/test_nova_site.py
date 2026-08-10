@@ -19,6 +19,7 @@ tests/conftest.py blocks `socket.connect` outright, deliberately.
 """
 
 import ast
+import gzip
 import importlib
 import inspect
 import io
@@ -32,6 +33,7 @@ from unittest.mock import patch
 import pytest
 
 from agora_runner import nova_capture, nova_site
+from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.nova_journal import (
     JOURNAL_DIR,
     assemble_entries,
@@ -361,13 +363,23 @@ class _FakeServer:
     server_port = 8083
 
 
-def _get(path):
-    sock = _FakeSocket(f"GET {path} HTTP/1.1\r\nHost: nova\r\n\r\n".encode())
+def _get(path, headers="", method="GET"):
+    """`headers` is raw request-header text, each line CRLF-terminated.
+
+    Defaulted to none so every test written before compression keeps
+    describing a client that sends no `Accept-Encoding` -- which is a real
+    client, not a simplification: that is exactly what urllib does.
+    """
+    sock = _FakeSocket(f"{method} {path} HTTP/1.1\r\nHost: nova\r\n{headers}\r\n".encode())
     nova_site.NovaSiteHandler(sock, ("127.0.0.1", 50000), _FakeServer())
     raw = sock.sent.getvalue()
     head, _, body = raw.partition(b"\r\n\r\n")
     status = int(head.split(b" ", 2)[1])
     return status, head.decode("latin-1"), body
+
+
+# What Chrome, Firefox and Safari actually put on the wire in 2026.
+BROWSER_ACCEPT_ENCODING = "Accept-Encoding: gzip, deflate, br, zstd\r\n"
 
 
 def _post(path, payload, content_type="application/json"):
@@ -1362,3 +1374,139 @@ def test_the_site_falls_back_to_the_archive_before_the_migration_runs():
     with patch.object(nova_site, "vault_bulk_fetch", return_value={}), \
             patch.object(nova_site, "vault_read_path", return_value="### Cycle 1\n\nArchive."):
         assert "Archive." in nova_site.journal_markdown()
+
+
+# --- compression -----------------------------------------------------------
+#
+# Measured against the live pod on 2026-08-10, before any of this existed:
+# a cold load was 588,998 bytes with no `Content-Encoding` on any of the
+# six responses, while the browser asking for them was already sending
+# `Accept-Encoding: gzip, deflate, br, zstd`.
+
+
+def test_a_real_browsers_header_gets_gzip_and_the_same_json_back(journal_md):
+    """The whole point, and deliberately asserted through the *browser's*
+    header rather than a bare `gzip`.
+
+    Cycle 70 shipped four green gzip tests for a path production never
+    took: Express's `compression` picked Brotli out of exactly this header
+    and every test covered the fallback. This server offers one encoding,
+    so that particular gap cannot open -- but the test that would have
+    caught it costs one line, so it is the one written.
+    """
+    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+        status, head, body = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
+    assert status == 200
+    assert "Content-Encoding: gzip" in head
+    assert "Vary: Accept-Encoding" in head
+
+    inflated = gzip.decompress(body)
+    assert len(body) < len(inflated)
+    payload = json.loads(inflated)
+    assert len(payload["entries"]) == 5
+    assert payload["status"]["cycle"] == 49
+
+
+def test_the_compressed_body_is_byte_for_byte_what_the_plain_one_says(journal_md):
+    """A compression bug that loses or reorders content would still parse.
+    This pins the two responses to the same bytes, not the same shape."""
+    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+        _, _, plain = _get("/api/journal")
+        _, _, compressed = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
+    assert gzip.decompress(compressed) == plain
+
+
+def test_a_client_that_does_not_ask_still_gets_plain_bytes(journal_md):
+    """This is the runner's own urllib path and every non-browser caller:
+    urllib sends no `Accept-Encoding` at all. Breaking it would break
+    every future cycle, which is the failure mode worth a named test."""
+    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+        status, head, body = _get("/api/journal")
+    assert status == 200
+    assert "Content-Encoding" not in head
+    json.loads(body)  # plain, parseable, no inflate step
+
+
+def test_gzip_with_q_nought_means_no_gzip(journal_md):
+    """`gzip;q=0` contains the string "gzip" and forbids it. A substring
+    check would read this header as consent."""
+    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+        status, head, body = _get("/api/journal", "Accept-Encoding: gzip;q=0, identity\r\n")
+    assert status == 200
+    assert "Content-Encoding" not in head
+    json.loads(body)
+
+
+def test_a_body_too_small_to_be_worth_it_is_left_alone():
+    """`/api/comments` is 15 bytes on the live pod and gzips to 35.
+    Compression is not free below the threshold, it is negative."""
+    with patch.object(nova_site, "comments_payload", return_value={}):
+        status, head, body = _get("/api/comments", BROWSER_ACCEPT_ENCODING)
+    assert status == 200
+    assert "Content-Encoding" not in head
+    assert len(body) < MIN_COMPRESS_BYTES
+    assert json.loads(body) == {}
+
+
+def test_vary_is_sent_even_when_the_response_came_back_plain(journal_md):
+    """Without this a shared cache can hand a gzipped body to a client
+    that never asked for one. It describes the endpoint, not the reply."""
+    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+        _, head, _ = _get("/api/journal")
+    assert "Vary: Accept-Encoding" in head
+
+
+def test_the_static_shell_compresses_too():
+    """app.js and style.css are 28KB and 12KB of text served on every
+    cold load; they were as uncompressed as the journal was."""
+    for path in ("/app.js", "/style.css", "/"):
+        status, head, body = _get(path, BROWSER_ACCEPT_ENCODING)
+        assert status == 200, path
+        assert "Content-Encoding: gzip" in head, path
+        assert len(gzip.decompress(body)) > len(body), path
+
+
+def test_head_reports_the_length_of_the_body_a_get_would_send(journal_md):
+    """`do_HEAD` runs the whole of `do_GET` and drops the body, so the
+    Content-Length it advertises has to be the compressed one."""
+    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+        _, get_head, get_body = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
+        _, head_head, head_body = _get("/api/journal", BROWSER_ACCEPT_ENCODING, method="HEAD")
+    assert head_body == b""
+    assert "Content-Encoding: gzip" in head_head
+    advertised = re.search(r"Content-Length: (\d+)", head_head).group(1)
+    assert int(advertised) == len(get_body)
+
+
+def test_the_same_content_compresses_to_the_same_bytes(journal_md):
+    """gzip stamps the current time into its header unless told not to,
+    which would make an unchanged journal a different responsea second."""
+    with patch.object(nova_site, "vault_read_path", return_value=journal_md):
+        _, _, first = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
+        _, _, second = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
+    assert first == second
+
+
+@pytest.mark.parametrize(
+    "header,expected",
+    [
+        ("gzip, deflate, br, zstd", True),   # Chrome / Firefox / Safari
+        ("deflate, gzip", True),             # curl --compressed
+        ("gzip;q=1.0, identity;q=0.5", True),
+        ("GZIP", True),                      # tokens are case-insensitive
+        ("  gzip  ", True),
+        ("*", True),
+        ("br, *;q=0.1", True),
+        (None, False),                       # urllib: no header at all
+        ("", False),
+        ("identity", False),
+        ("br, zstd", False),
+        ("gzip;q=0", False),
+        ("gzip;q=0.0", False),
+        ("*;q=0", False),
+        ("br;q=1.0, gzip;q=0", False),       # names it only to refuse it
+        ("gzipped", False),                  # not the gzip token
+    ],
+)
+def test_accept_encoding_is_parsed_not_pattern_matched(header, expected):
+    assert nova_site.accepts_gzip(header) is expected
