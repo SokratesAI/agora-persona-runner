@@ -131,6 +131,7 @@ from agora_runner.nova_replies import (
     pending_since,
 )
 from agora_runner.nova_sources import comments_markdown, digest_markdown, journal_markdown
+from agora_runner.tools_mcp import handle_http as handle_mcp_http
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_public")
 
@@ -595,8 +596,48 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
         return ok
 
+    def _handle_mcp(self):
+        """One MCP JSON-RPC request from the reply turn's own CLI session.
+
+        The runner serves the identical endpoint (invoke_server.py) for
+        persona turns; both delegate to tools_mcp.handle_http so there is
+        one implementation of the auth and envelope rules rather than two
+        that can drift.
+
+        This is *not* covered by `_read_json_body`: that helper enforces
+        `Content-Type: application/json` as a CSRF defence for the browser
+        endpoints, and the caller here is the Claude CLI in another pod,
+        not a browser. What guards it instead is the bearer token, which
+        is minted per turn and revoked when the turn ends -- a request
+        without a live grant gets a 401 and reaches no tool.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length <= 0 or length > MAX_BODY_BYTES:
+            self._send_json(400, {"error": "bad content-length"})
+            return
+        try:
+            status, payload = handle_mcp_http(
+                self.headers.get("Authorization", ""), self.rfile.read(length)
+            )
+        except Exception as e:
+            log(f"nova-site /mcp failed: {e}")
+            self._send_json(500, {"error": str(e)[:300]})
+            return
+        if payload is None:
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._send_json(status, payload)
+
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if path == "/mcp":
+            self._handle_mcp()
+            return
         if path not in ("/api/capture", "/api/comment"):
             self._send_json(404, {"error": "not found"})
             return

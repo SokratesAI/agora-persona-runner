@@ -13,7 +13,7 @@ from agora_runner.agora_api import fetch_persona
 from agora_runner.turns import build_system
 from agora_runner.reply import generate_reply
 from agora_runner.tool_activity import report as report_tool_activity
-from agora_runner.tools_mcp import handle as handle_mcp
+from agora_runner.tools_mcp import handle_http as handle_mcp
 
 
 class InvokeHandler(BaseHTTPRequestHandler):
@@ -81,17 +81,12 @@ class InvokeHandler(BaseHTTPRequestHandler):
         """
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            request = json.loads(self.rfile.read(length) or b"{}")
+            body = self.rfile.read(length)
         except Exception:
             self._send(400, {"error": "invalid json body"})
             return
-        if not isinstance(request, dict):
-            self._send(400, {"error": "jsonrpc request must be an object"})
-            return
-        auth = self.headers.get("Authorization", "")
-        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         try:
-            status, payload = handle_mcp(token, request)
+            status, payload = handle_mcp(self.headers.get("Authorization", ""), body)
         except Exception as e:
             log(f"/mcp failed: {e}")
             self._send(500, {"error": str(e)[:300]})

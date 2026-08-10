@@ -16,6 +16,7 @@ from agora_runner.tools_kubectl import kubectl_read
 from agora_runner.tools_github import github_read, create_pr, github_comment, merge_pr
 from agora_runner.tools_terminal import terminal_exec
 from agora_runner.tools_search import web_search_tinyfish
+from agora_runner.nova_capture import capture as capture_to_backlog
 
 
 def _resolve_scoped_target(active_step, args):
@@ -176,6 +177,21 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             command = str(args.get("command", ""))
             audit(persona_name, conversation_id, "terminal_exec", command[:500])
             return terminal_exec(args)
+        if name == "nova_capture":
+            target = str(args.get("target", ""))
+            text = str(args.get("text", ""))
+            ok, message = capture_to_backlog(target, text)
+            # Audited with the text on the `after` side, the same shape the
+            # site's own capture box uses (nova_site.py), so a line filed by
+            # a reply and a line typed into the box read identically in the
+            # Activity feed. `capture` refuses any target outside its own
+            # two-entry map, so nothing here needs to validate the path.
+            audit(
+                persona_name, conversation_id, "nova_capture",
+                f"Capture to {target} · {'ok' if ok else message}",
+                after=text, is_error=not ok,
+            )
+            return message
         if name == "save_memory":
             memory = str(args.get("memory", ""))
             persona_id = persona.get("id")

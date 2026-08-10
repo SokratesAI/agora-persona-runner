@@ -333,6 +333,28 @@ def client_tool_schemas(caps, active_step=None):
                 "required": ["repo", "pr_number"],
             },
         })
+    if caps.get("novaCapture"):
+        tools.append({
+            "name": "nova_capture",
+            "description": (
+                "File one line in Edvard's own backlog -- an issue he should know about, "
+                "or an idea worth keeping. It lands as a bare bullet at the top of "
+                "issues.md or ideas.md, indistinguishable from a line he typed himself, "
+                "and the next Nova cycle reads it as his strongest signal. Use it when he "
+                "reports a bug or asks for something in conversation and you cannot fix it "
+                "yourself -- that is the difference between a complaint that gets acted on "
+                "and one that scrolls away. Tell him you filed it. Do not use it to record "
+                "your own reasoning: one line, in his words where you can."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "enum": ["issues", "ideas"]},
+                    "text": {"type": "string"},
+                },
+                "required": ["target", "text"],
+            },
+        })
     if caps.get("manageAgora"):
         tools.append({
             "name": "list_personas",
@@ -506,6 +528,7 @@ TOOL_TO_CAPABILITY = {
     "create_pr": "githubWrite",
     "github_comment": "githubWrite",
     "merge_pr": "githubMerge",
+    "nova_capture": "novaCapture",
 }
 
 
