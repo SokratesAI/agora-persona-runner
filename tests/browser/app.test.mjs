@@ -608,6 +608,62 @@ describe("commenting on a cycle", () => {
     assert.ok(bubble(cardFor(window, 55)));
   });
 
+  test("the bubble sits in the card's foot, below the drawer's opener, not in the head", () => {
+    /* Edvard, ideas.md 2026-08-10: "Move the Journal chat bubble icon to the
+     * bottom right of the Journal cards." Two separate things have to hold,
+     * because each breaks on its own:
+     *   - it is out of `.entry-head` and inside `.entry-foot` (the move), and
+     *   - the foot is before the drawer in document order, so tapping it
+     *     opens the drawer *underneath* it. renderComments appends the drawer
+     *     to the same container, so building the foot after the call passes
+     *     the first assertion and fails this one. */
+    const card = cardFor(window, 55);
+    const b = bubble(card);
+    assert.equal(b.parentNode.className, "entry-foot");
+    assert.equal(card.querySelector(".entry-head .comment-toggle"), null);
+
+    const kids = Array.from(card.children);
+    const foot = kids.indexOf(b.parentNode);
+    const drawer = kids.indexOf(card.querySelector(".comment-drawer"));
+    assert.ok(foot > -1 && drawer > -1, "both the foot and the drawer are children of the card");
+    assert.ok(foot < drawer, "the drawer opens below the bubble, not above it");
+  });
+
+  test("the foot does not sit flush against the brief on a collapsed card", () => {
+    /* The reviewer caught this and nothing here could have: every other test
+     * in this file asserts class names and DOM order, so the whole stylesheet
+     * is untested and a layout regression ships green.
+     *
+     * The specific trap: `.entry.is-collapsed .entry-brief` zeroes its own
+     * bottom margin, which was correct when the brief was the last visible
+     * element on a collapsed card -- the digest, the journal toggle and the
+     * body are all `display: none` there. The foot is now below it and is
+     * deliberately not in those hide rules, so with no margin of its own the
+     * brief's last line and the bubble touch on all ~57 collapsed cards.
+     *
+     * This is the real cascade, not a re-statement of it: jsdom resolves the
+     * shipped style.css, so deleting `margin-top` from `.entry-foot` fails
+     * this test. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const { window: w } = openWindow(
+      "<html><head><style>" + css + "</style></head><body>" +
+        '<article class="entry is-collapsed">' +
+        '<p class="entry-brief">brief</p>' +
+        '<div class="entry-foot"><button class="comment-toggle">💬</button></div>' +
+        "</article></body></html>"
+    );
+    const brief = w.document.querySelector(".entry-brief");
+    const foot = w.document.querySelector(".entry-foot");
+    assert.equal(
+      w.getComputedStyle(brief).marginBottom,
+      "0px",
+      "the rule this guards against must still be there, or the test is guarding nothing"
+    );
+    const gap = w.getComputedStyle(foot).marginTop;
+    assert.ok(gap && gap !== "0px" && gap !== "", "the foot needs a top margin of its own, got " + JSON.stringify(gap));
+    assert.equal(w.getComputedStyle(foot).justifyContent, "flex-end", "bottom *right*");
+  });
+
   test("an entry with no cycle number gets none", () => {
     // There is nothing to key a comment to, so a box there would swallow it.
     const orphan = cards(window).find((c) => !/^Cycle /.test(c.querySelector("h2").textContent));
