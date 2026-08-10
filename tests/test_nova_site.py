@@ -1067,6 +1067,23 @@ def test_the_digest_section_prose_is_still_split_on_blank_lines():
     assert lines[0]["text"] == "What cycle 66 did."
 
 
+def test_a_cycle_line_glued_under_prose_still_gets_its_own_card():
+    """The case the lookahead actually exists for, and the worse half of
+    the bug: with prose above it and no blank line, the whole block used
+    to fail `_DIGEST_LINE_RE` outright, so the card was not merged into
+    its neighbour -- it was dropped without trace. Raised by the reviewer
+    subagent against the first version of this change, which pinned the
+    blank-line half and left this one untested."""
+    glued_to_prose = (
+        "## Digest\n\n"
+        "A note somebody left at the top of the section.\n"
+        "**Cycle 66** (2026-08-09 23:22) — What cycle 66 did.\n"
+    )
+    lines = parse_digest(glued_to_prose)["lines"]
+    assert [line["cycle"] for line in lines] == [66]
+    assert lines[0]["text"] == "What cycle 66 did."
+
+
 # --- The brief, and the drawer within a drawer ----------------------------
 #
 # Edvard, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
