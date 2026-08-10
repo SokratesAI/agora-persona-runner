@@ -194,9 +194,12 @@ def poll_conversation(summary):
         thread = (cached[2] + thread)[-FETCH_LIMIT:]
         debug_log(f"[{name}] incremental: {len(detail.get('messages', []))} new message(s)")
     rev = detail.get("rev")
-    last_id = thread[-1].get("id") if thread else None
-    if rev and last_id:
-        _message_window_cache[summary["id"]] = (last_id, rev, thread)
+    # Deliberately not named last_id: the backoff block below already has one
+    # meaning something else (the last *visible* message), and these are not
+    # the same message whenever the newest one is forgotten.
+    newest_id = thread[-1].get("id") if thread else None
+    if rev and newest_id:
+        _message_window_cache[summary["id"]] = (newest_id, rev, thread)
     else:
         _message_window_cache.pop(summary["id"], None)
     personas = detail.get("personas") or [
