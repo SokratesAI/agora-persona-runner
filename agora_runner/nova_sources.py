@@ -18,9 +18,11 @@ from agora_runner.nova_journal import (
     JOURNAL_DIR,
     JOURNAL_PATH,
     assemble_entries,
+    entry_seq,
     entry_times,
+    file_cycle,
 )
-from agora_runner.vault import vault_bulk_fetch, vault_read_path
+from agora_runner.vault import vault_bulk_fetch, vault_list_ids, vault_read_path
 
 
 def journal_markdown(with_times=False):
@@ -49,6 +51,39 @@ def journal_markdown(with_times=False):
     times = entry_times(mtimes) if entries else {}
     markdown = entries or (vault_read_path(JOURNAL_PATH) or "")
     return (markdown, times) if with_times else markdown
+
+
+def journal_entry_markdown(cycle):
+    """Just the newest entry document for one cycle, or None.
+
+    `journal_markdown` above pulls the whole folder because the site's
+    journal page renders the whole folder. The reply worker wants one
+    entry and was calling the same function to get it: 437KB and 103
+    documents assembled and parsed to answer "what did cycle 95 say",
+    on every comment Edvard leaves, growing by one entry an hour.
+
+    Measured against the live vault 2026-08-11, which is why this exists:
+    the folder fetch is **1.496s**, the id listing plus one document is
+    **0.057s**. Against a reply that takes 10-15s end to end that is not
+    the headline, but it is the only part of it that is pure waste and
+    the only part that gets worse every cycle.
+
+    Newest wins, same as the full-journal path it replaces: six cycles
+    have written a second entry for one cycle number, and the later one
+    is the one whose card he is commenting on. `NNN-cycle-M.md` sorts by
+    NNN, so the highest sequence number is the later document.
+
+    Returns None rather than guessing whenever the shape is not exactly
+    what it expects -- no folder, no file for that cycle, a tombstone, or
+    a document whose heading does not parse to the cycle its filename
+    claims. Every one of those falls the caller back to the full journal,
+    which is slow and right.
+    """
+    paths = [p for p in vault_list_ids(JOURNAL_DIR) if file_cycle(p) == cycle]
+    if not paths:
+        return None
+    newest = max(paths, key=lambda p: (entry_seq(p), p))
+    return vault_read_path(newest)
 
 
 def comments_markdown():

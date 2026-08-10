@@ -43,6 +43,13 @@ def _couch_batched(items, n):
 # above it and be silently dropped from the listing.
 _ID_MAX = "\U0010FFFF"
 
+# Obsidian LiveSync's own bookkeeping docs -- chunks, file/index/version
+# entries -- plus CouchDB's `_design`. Never files a human wrote. One
+# definition rather than two: the two listing functions below sit twenty
+# lines apart and look almost identical, which is exactly the distance at
+# which a new prefix gets added to one of them.
+_INTERNAL_PREFIXES = ("_", "h:", "f:", "i:", "v:")
+
 
 def _id_range(prefix):
     """`startkey`/`endkey` restricting `_all_docs` to one folder.
@@ -87,10 +94,10 @@ def _vault_file_docs(prefix=""):
     status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs?{_id_range(prefix)}")
     if status != 200:
         return {}
-    skip = ("_", "h:", "f:", "i:", "v:")
     keys = [
         row["id"] for row in data.get("rows", [])
-        if not row["id"].startswith(skip) and row["id"].lower().startswith(prefix)
+        if not row["id"].startswith(_INTERNAL_PREFIXES)
+        and row["id"].lower().startswith(prefix)
     ]
     out = {}
     for batch in _couch_batched(keys, 500):
@@ -177,6 +184,34 @@ def vault_read_path(path):
 
 def vault_list_prefix(prefix=""):
     return sorted(_vault_file_docs(prefix))
+
+
+def vault_list_ids(prefix=""):
+    """Paths under `prefix`, from ids alone -- no document bodies at all.
+
+    `vault_list_prefix` above fetches every file doc with
+    `include_docs=true` so it can drop tombstones, which is what a
+    *listing* has to do: a deleted file reappearing in `vault_list` or
+    `vault_search` is how an agent writes "that file exists" into its
+    permanent memory. Measured on the journal folder 2026-08-11: 0.701s
+    for 103 docs, against **0.045s** for the same 103 ids by key range.
+
+    That 0.65s is worth paying for a listing and is pure waste for a
+    lookup, which is the only thing this is for: when the caller is about
+    to `vault_read_path` exactly one of these paths, the tombstone check
+    happens there instead -- that function returns None for a deleted doc
+    -- so the id being stale costs a miss the caller already has to
+    handle, not a wrong answer. Do not use it to *show* anyone a list.
+    """
+    prefix = prefix.lower()
+    status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs?{_id_range(prefix)}")
+    if status != 200:
+        return []
+    return sorted(
+        row["id"] for row in data.get("rows", [])
+        if not row["id"].startswith(_INTERNAL_PREFIXES)
+        and row["id"].lower().startswith(prefix)
+    )
 
 
 def _chunk_id_for(content_bytes):

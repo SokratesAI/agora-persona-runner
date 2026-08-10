@@ -70,16 +70,31 @@ No -- it came back verbatim.
 """
 
 
-def _sources(journal=ENTRY_MD, comments=THREAD_MD):
+_SAME = object()
+
+
+def _sources(journal=ENTRY_MD, comments=THREAD_MD, single=_SAME):
+    """The two vault reads behind a reply, stubbed.
+
+    `journal_entry_markdown` is the path production actually takes, so it
+    carries the entry by default and `journal_markdown` is the fallback.
+    Passing `single=None` is how a test forces the fallback: that is what
+    the pre-split archive looks like, and what any disagreement between a
+    filename and its document looks like.
+    """
     return (
+        patch.object(
+            nova_replies, "journal_entry_markdown",
+            return_value=journal if single is _SAME else single,
+        ),
         patch.object(nova_replies, "journal_markdown", return_value=journal),
         patch.object(nova_replies, "comments_markdown", return_value=comments),
     )
 
 
 def _prompt_for(stamp="2026-08-10 13:54"):
-    journal, comments = _sources()
-    with journal, comments, \
+    entry, journal, comments = _sources()
+    with entry, journal, comments, \
             patch.object(nova_replies, "http_json", return_value=(200, {"text": "sure"})) as post, \
             patch.object(nova_replies, "add_reply", return_value=(True, "replied")):
         nova_replies.reply_to(80, stamp)
@@ -120,8 +135,8 @@ def test_the_earlier_thread_is_ordered_oldest_first_as_the_prompt_claims():
         "### Cycle 80 · 2026-08-10 13:47",
         "### Cycle 80 · 2026-08-10 13:50\n\nand another thing\n\n### Cycle 80 · 2026-08-10 13:47",
     )
-    journal, comments = _sources(comments=thread)
-    with journal, comments, \
+    entry, journal, comments = _sources(comments=thread)
+    with entry, journal, comments, \
             patch.object(nova_replies, "http_json", return_value=(200, {"text": "sure"})) as post, \
             patch.object(nova_replies, "add_reply", return_value=(True, "replied")):
         nova_replies.reply_to(80, "2026-08-10 13:54")
@@ -210,8 +225,8 @@ def test_the_model_is_the_configured_one():
 
 
 def test_the_answer_is_stored_against_the_comment_it_answers():
-    journal, comments = _sources()
-    with journal, comments, \
+    entry, journal, comments = _sources()
+    with entry, journal, comments, \
             patch.object(nova_replies, "http_json", return_value=(200, {"text": "  Yes. Here it is.  "})), \
             patch.object(nova_replies, "add_reply", return_value=(True, "replied")) as store:
         ok, _ = nova_replies.reply_to(80, "2026-08-10 13:54")
@@ -223,8 +238,8 @@ def test_a_missing_entry_gives_up_before_calling_the_model():
     """A card can be commented on and the entry edited away underneath it.
     Spending a CLI turn to write a reply about nothing is worse than
     silence."""
-    journal, comments = _sources(journal="")
-    with journal, comments, \
+    entry, journal, comments = _sources(journal="")
+    with entry, journal, comments, \
             patch.object(nova_replies, "http_json") as post, \
             patch.object(nova_replies, "add_reply") as store:
         ok, message = nova_replies.reply_to(80, "2026-08-10 13:54")
@@ -233,8 +248,8 @@ def test_a_missing_entry_gives_up_before_calling_the_model():
 
 
 def test_a_missing_comment_gives_up_before_calling_the_model():
-    journal, comments = _sources()
-    with journal, comments, \
+    entry, journal, comments = _sources()
+    with entry, journal, comments, \
             patch.object(nova_replies, "http_json") as post, \
             patch.object(nova_replies, "add_reply") as store:
         ok, message = nova_replies.reply_to(80, "2026-08-10 09:00")
@@ -243,8 +258,8 @@ def test_a_missing_comment_gives_up_before_calling_the_model():
 
 
 def test_a_bridge_error_never_reaches_the_vault():
-    journal, comments = _sources()
-    with journal, comments, \
+    entry, journal, comments = _sources()
+    with entry, journal, comments, \
             patch.object(nova_replies, "http_json", return_value=(500, {"error": "boom"})), \
             patch.object(nova_replies, "add_reply") as store:
         try:
@@ -259,8 +274,8 @@ def test_a_bridge_error_never_reaches_the_vault():
 def test_an_empty_answer_is_not_stored_as_a_reply():
     """An empty `#### Nova` block would read as a reply that said nothing,
     and being written once it could never be replaced by a real one."""
-    journal, comments = _sources()
-    with journal, comments, \
+    entry, journal, comments = _sources()
+    with entry, journal, comments, \
             patch.object(nova_replies, "http_json", return_value=(200, {"text": "   "})), \
             patch.object(nova_replies, "add_reply") as store:
         try:
@@ -289,8 +304,8 @@ def test_a_queued_comment_shows_as_pending_until_it_is_answered():
     with patch.object(nova_replies, "_ensure_worker"):
         assert nova_replies.enqueue(80, "2026-08-10 13:54")
         assert (80, "2026-08-10 13:54") in nova_replies.pending()
-        journal, comments = _sources()
-        with journal, comments, \
+        entry, journal, comments = _sources()
+        with entry, journal, comments, \
                 patch.object(nova_replies, "http_json", return_value=(200, {"text": "yes"})), \
                 patch.object(nova_replies, "add_reply", return_value=(True, "replied")):
             _drain()
@@ -303,8 +318,8 @@ def test_pending_clears_even_when_the_reply_fails():
     never stop -- so the failure path is the one that matters."""
     with patch.object(nova_replies, "_ensure_worker"):
         nova_replies.enqueue(80, "2026-08-10 13:54")
-        journal, comments = _sources()
-        with journal, comments, \
+        entry, journal, comments = _sources()
+        with entry, journal, comments, \
                 patch.object(nova_replies, "http_json", side_effect=RuntimeError("bridge down")):
             _drain()
         assert nova_replies.pending() == set()
@@ -342,8 +357,8 @@ def test_a_failed_reply_is_recorded_so_the_card_can_say_so():
     is what Edvard reported. The failure has to survive the clear."""
     with patch.object(nova_replies, "_ensure_worker"):
         nova_replies.enqueue(80, "2026-08-10 13:54")
-        journal, comments = _sources()
-        with journal, comments, \
+        entry, journal, comments = _sources()
+        with entry, journal, comments, \
                 patch.object(nova_replies, "http_json", side_effect=RuntimeError("bridge down")):
             _drain()
         assert nova_replies.pending() == set()
@@ -369,3 +384,79 @@ def test_pending_carries_the_time_it_was_asked_for():
         asked_at = nova_replies.pending_since()[(80, "2026-08-10 13:54")]
         assert before <= asked_at <= time.time()
         _drain_pending()
+
+
+# --- what the lookup costs, and where the seconds go -----------------------
+
+
+def _reply_with(single=_SAME, journal=ENTRY_MD, bridge=None):
+    """One `reply_to(80, ...)`, with both journal sources and the bridge
+    stubbed. Returns the two source mocks and the log lines it emitted."""
+    entry_src, journal_src, comments = _sources(journal=journal, single=single)
+    logged = []
+    bridge = bridge or {"return_value": (200, {"text": "sure"})}
+    with entry_src as entry_mock, journal_src as journal_mock, comments, \
+            patch.object(nova_replies, "http_json", **bridge), \
+            patch.object(nova_replies, "add_reply", return_value=(True, "replied")), \
+            patch.object(nova_replies, "log", side_effect=logged.append):
+        result = nova_replies.reply_to(80, "2026-08-10 13:54")
+    return entry_mock, journal_mock, logged, result
+
+
+def test_finding_the_entry_reads_one_document_not_the_whole_folder():
+    """The reply worker wants one entry out of 103 and used to assemble and
+    parse all of them to get it. Measured on the live vault 2026-08-11:
+    1.496s for the folder against 0.057s for the listing plus one document,
+    on every comment, growing by one entry an hour."""
+    entry_mock, journal_mock, _, _ = _reply_with()
+    entry_mock.assert_called_once_with(80)
+    assert not journal_mock.called, "the whole journal was fetched anyway"
+
+
+def test_the_whole_journal_is_still_read_when_there_is_no_entry_document():
+    """The pre-2026-08-09 archive has no per-entry documents at all, and a
+    tombstone or a hand-added file looks the same from here. Slow and right
+    beats fast and empty -- without this the card would answer "no journal
+    entry for cycle 80" for every entry written before the split."""
+    entry_mock, journal_mock, _, result = _reply_with(single=None)
+    entry_mock.assert_called_once_with(80)
+    assert journal_mock.called
+    assert result == (True, "replied")
+
+
+def test_the_whole_journal_is_read_when_the_document_is_for_another_cycle():
+    """The filename says `-cycle-80` and the heading inside says 79: the
+    two are independent claims and only the document is authoritative.
+    Answering from whatever the file happened to contain would put another
+    cycle's entry in front of the model with no signal that it had."""
+    wrong = ENTRY_MD.replace("Cycle 80", "Cycle 79")
+    entry_mock, journal_mock, _, result = _reply_with(single=wrong)
+    assert journal_mock.called
+    assert result == (True, "replied")
+
+
+def test_a_reply_logs_where_its_seconds_went():
+    """Edvard asked for an answer within ten seconds and the honest figure
+    was ten to fifteen, spread across the vault, the bridge and however many
+    tools the model chose to call. A shell probe can decompose the fixed
+    parts; only the real thing can see the tool calls."""
+    _, _, logged, _ = _reply_with()
+    line = next(l for l in logged if l.startswith("nova-reply timings"))
+    for phase in ("entry=", "thread=", "bridge=", "store=", "total="):
+        assert phase in line, f"{phase} missing from {line!r}"
+
+
+def test_the_timings_are_logged_even_when_the_reply_fails():
+    """The slow reply is the one worth measuring, and it is exactly the one
+    an on-success log never prints: a bridge that gave up after queueing
+    behind a 45-minute cycle emits nothing at all."""
+    logged = []
+    entry_src, journal_src, comments = _sources()
+    with entry_src, journal_src, comments, \
+            patch.object(nova_replies, "http_json", side_effect=RuntimeError("bridge down")), \
+            patch.object(nova_replies, "log", side_effect=logged.append), \
+            pytest.raises(RuntimeError):
+        nova_replies.reply_to(80, "2026-08-10 13:54")
+    line = next(l for l in logged if l.startswith("nova-reply timings"))
+    assert "entry=" in line and "total=" in line
+    assert "store=" not in line, "a phase that never ran should not be timed"

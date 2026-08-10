@@ -483,7 +483,7 @@ def entry_filename(seq, heading):
     return f"{seq:03d}-{slug}.md"
 
 
-def _entry_seq(path):
+def entry_seq(path):
     match = re.match(r"(\d+)", path.rsplit("/", 1)[-1])
     # An unnumbered file sorts oldest rather than being dropped: a
     # hand-added entry should still render, just not jump the queue.
@@ -494,11 +494,23 @@ def assemble_entries(files):
     """`{path: content}` from `JOURNAL_DIR` -> one newest-first markdown
     blob, shaped exactly like `journal.md`'s entries half so that
     `parse_journal` cannot tell the two sources apart."""
-    ordered = sorted(files.items(), key=lambda kv: (-_entry_seq(kv[0]), kv[0]))
+    ordered = sorted(files.items(), key=lambda kv: (-entry_seq(kv[0]), kv[0]))
     return "\n\n".join(content.strip() for _, content in ordered if content.strip())
 
 
 _FILE_CYCLE_RE = re.compile(r"-cycle-(\d+)")
+
+
+def file_cycle(path):
+    """The cycle number a `NNN-cycle-M.md` filename claims, or None.
+
+    The filename's claim, never the heading's -- they are two independent
+    statements of the same fact and a caller that wants the authoritative
+    one has to parse the document. This is only good enough to decide
+    *which document to fetch*.
+    """
+    match = _FILE_CYCLE_RE.search(path.rsplit("/", 1)[-1])
+    return int(match.group(1)) if match else None
 
 
 def entry_times(mtimes):
@@ -511,7 +523,7 @@ def entry_times(mtimes):
     filename (`NNN-cycle-M.md`) and the heading already carry.
     """
     out = {}
-    for path, ms in sorted(mtimes.items(), key=lambda kv: (-_entry_seq(kv[0]), kv[0])):
+    for path, ms in sorted(mtimes.items(), key=lambda kv: (-entry_seq(kv[0]), kv[0])):
         match = _FILE_CYCLE_RE.search(path.rsplit("/", 1)[-1])
         if not match or not ms:
             continue

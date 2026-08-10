@@ -24,6 +24,7 @@ import importlib
 import inspect
 import io
 import json
+import queue
 import time
 import os
 import re
@@ -33,7 +34,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_capture, nova_site, nova_sources
+from agora_runner import nova_capture, nova_replies, nova_site, nova_sources
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.nova_journal import (
     JOURNAL_DIR,
@@ -69,9 +70,31 @@ def _no_split_journal_by_default():
     that has not been split yet. Saying so once here keeps those tests
     about what they were about, and stops an unmocked `vault_bulk_fetch`
     reaching for the network -- conftest blocks that outright. The split
-    tests below override this explicitly."""
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})):
+    tests below override this explicitly.
+
+    `vault_list_ids` is here for the same reason -- it is the other half of
+    the same lookup -- and `_ensure_worker` is here because patching the
+    reads alone is not actually enough. A few tests below POST a real
+    comment, which starts the real reply worker on a *background thread*,
+    which then answers whenever it gets round to it. That is usually after
+    the test has finished and taken its patches with it, so the vault read
+    escapes to the network in maybe one run in three: a flake that would
+    have been blamed on whatever test happened to be running at the time.
+    Not starting the thread is the only version of this that is not a
+    race. Tests that care what `enqueue_reply` was called with patch it
+    themselves, which wins over this."""
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})), \
+            patch.object(nova_sources, "vault_list_ids", return_value=[]), \
+            patch.object(nova_replies, "_ensure_worker"):
         yield
+        # With no worker, a test that posted a real comment leaves its item
+        # in the module-level queue for the rest of the session. Nothing
+        # asserts on that state today, so this is housekeeping rather than a
+        # fix -- but it is module state shared with test_nova_replies.py,
+        # and "inert" is a property of the current tests, not of the file.
+        nova_replies._queue = queue.Queue()
+        nova_replies._pending = {}
+        nova_replies._failed = {}
 
 
 @pytest.fixture(scope="module")
