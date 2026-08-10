@@ -28,16 +28,24 @@ conversation on top of that loop; it does not stand in for it. If it ever
 starts marking things read, a comment that needed real work becomes a
 comment that got a nice paragraph.
 
-**Why a queue and one worker.** The bridge serialises *every* CLI
+**Why a queue and one worker.** The bridge used to serialise *every* CLI
 invocation system-wide on a single lock (agora-claude-bridge cli.py,
 `_invocation_lock`), because the CLI's OAuth refresh is a side effect of
 any invocation and two concurrent ones could race it. A Nova cycle holds
-that lock for up to 45 minutes. So a reply cannot be fast on demand and
-must never be inline: the POST that stores the comment returns
-immediately, and the reply appears whenever the bridge is free. One
-worker rather than a thread per comment because the bridge serialises
-anyway -- N threads would only queue in a different place, in arrival
-order lost.
+that lock for up to 45 minutes, so a reply could not be fast on demand
+and this queue existed to make the waiting honest rather than inline.
+
+Since 2026-08-10 the request below sets `allow_concurrent`, and the
+bridge runs this turn *alongside* a cycle whenever the shared OAuth
+token is more than 15 minutes from expiry -- which, the token being
+8-hourly, is about 97% of the time. So the usual reply is now seconds
+rather than tens of minutes. The queue stays, for the other 3%: when the
+refresh window is close the bridge silently falls back to the lock and
+the old 45-minute wait is back, and a caller that had gone inline on
+that assumption would block the request thread instead. The POST that
+stores the comment still returns immediately. One worker rather than a
+thread per comment because arrival order is worth more here than
+parallelism across two comments Edvard typed seconds apart.
 
 **This spends the subscription, not the metered API** (identity.md rule
 9). It does not call `reply.generate_reply` and so is not covered by that
@@ -127,6 +135,16 @@ def _generate(system, prompt):
         "model": NOVA_REPLY_MODEL,
         "restricted": True,
         "stateless": True,
+        # Skip the bridge's process-wide invocation lock rather than
+        # queueing behind a Nova cycle that may hold it for 45 minutes.
+        # This is the whole reason the lane exists: Edvard asked for an
+        # answer "immediately. Or within 10 seconds", and a reply that
+        # arrives after the cycle finishes is not a conversation. The
+        # bridge decides, not us -- it opens the lane only while the
+        # shared OAuth token is clear of its refresh window, and falls
+        # back to the lock otherwise, which is why this stays a plain
+        # `True` and not a condition we would have to keep in sync.
+        "allow_concurrent": True,
     }
     status, resp = http_json(
         "POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers,
@@ -167,7 +185,8 @@ _worker = None
 _worker_lock = threading.Lock()
 
 # Past this many seconds a reply is not being written -- it is waiting for
-# the bridge, which serialises every CLI call behind a running cycle. A
+# the bridge, which falls back to serialising behind a running cycle
+# whenever the OAuth refresh window is close (see `allow_concurrent`). A
 # real answer is two or three sentences from Sonnet; nothing about this
 # threshold is measured against generation time, it is set well above any
 # plausible one so that crossing it means "queued", not "slow".
