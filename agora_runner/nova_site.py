@@ -68,8 +68,27 @@ no longer takes it down and neither does a deploy.
 No caching layer: the full 204KB journal assembles from CouchDB in
 285ms measured end-to-end (2026-08-09), which is cheaper than the
 staleness a cache would buy.
+
+**Responses are gzipped when the client asks.** Measured against the
+live pod on 2026-08-10, a cold load of this site was 588,998 bytes and
+none of it was compressed -- `/api/journal` alone was 453,239 -- while
+every browser that fetched it was already sending
+`Accept-Encoding: gzip, deflate, br, zstd` and getting nothing back.
+Compressed, the same load is 154,726 bytes. This is the largest payload
+anywhere in this system and it is the page Edvard reads on a phone.
+
+Only gzip: the runtime has no brotli or zstd binding (checked), and the
+stdlib gives gzip and raw deflate. That is a smaller ceiling than the
+Brotli that agora#50 negotiates via Express, and it is also why this is
+less likely to go wrong here -- the encoding this serves is the encoding
+its tests exercise. Cycle 70 shipped four passing gzip tests for a path
+production never took, because `compression` handed real browsers
+Brotli. There is no such gap to fall into with one encoding, but the
+test asserting a real browser's header gets `gzip` back is there so the
+claim stays checked rather than argued.
 """
 
+import gzip
 import json
 import mimetypes
 import os
@@ -115,6 +134,64 @@ STATIC_ROUTES = {
     "/sw.js": "sw.js",
     "/icon.svg": "icon.svg",
 }
+
+# gzip's header and trailer are a fixed 18 bytes, so a short body comes
+# back *bigger*: `/api/comments` is 15 bytes on the live pod and gzips to
+# 35. Measured crossover on realistic JSON is around 100 bytes. The
+# threshold is 1024 because that is what Express's `compression` uses by
+# default, which is the same compressor now sitting in front of Agora
+# (agora#50) -- one number for both halves of this system beats two
+# defensible ones. This is a limit with a measurement behind it, not a
+# tidiness cap: below it, compressing costs bytes rather than saving them.
+MIN_COMPRESS_BYTES = 1024
+
+# zlib's default. Measured on the live 453,239-byte journal: level 1 is
+# 3.0x in 5.9ms, level 6 is 3.6x in 13.8ms, level 9 is 3.6x in 20.9ms.
+# Level 9 buys 880 more bytes for 7ms more CPU, and level 6's 13.8ms sits
+# against the ~285ms this endpoint already spends assembling itself out
+# of CouchDB.
+COMPRESS_LEVEL = 6
+
+# Everything this server sends is text except the SVG, which is also
+# text. Listed explicitly rather than compressing whatever is not on a
+# deny-list, so a future binary route has to opt in rather than silently
+# getting spent CPU for nothing.
+COMPRESSIBLE_TYPES = (
+    "application/json",
+    "application/manifest+json",
+    "image/svg+xml",
+    "text/",
+)
+
+
+def accepts_gzip(header):
+    """Does this `Accept-Encoding` value permit gzip?
+
+    Parsed rather than substring-matched because `gzip;q=0` is how the
+    header spells *"not this one"* -- it contains the string "gzip" and
+    means the opposite. `*` stands in for anything not otherwise named,
+    and carries a q-value of its own for the same reason.
+    """
+    if not header:
+        return False
+    wildcard = False
+    for part in header.split(","):
+        token, _, params = part.strip().partition(";")
+        token = token.strip().lower()
+        if token not in ("gzip", "*"):
+            continue
+        quality = 1.0
+        for param in params.split(";"):
+            name, _, value = param.partition("=")
+            if name.strip().lower() == "q":
+                try:
+                    quality = float(value.strip())
+                except ValueError:
+                    quality = 0.0
+        if token == "gzip":
+            return quality > 0
+        wildcard = quality > 0
+    return wildcard
 
 
 def journal_markdown():
@@ -178,8 +255,30 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
     def _send(self, status, body, content_type):
         if isinstance(body, str):
             body = body.encode("utf-8")
+
+        compressible = content_type.startswith(COMPRESSIBLE_TYPES)
+        encoded = None
+        if compressible and len(body) >= MIN_COMPRESS_BYTES:
+            if accepts_gzip(self.headers.get("Accept-Encoding")):
+                # mtime=0 rather than the default: gzip stamps the current
+                # time into its header, so the same bytes would otherwise
+                # produce a different response every second.
+                encoded = gzip.compress(body, COMPRESS_LEVEL, mtime=0)
+
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if compressible:
+            # Sent whether or not this particular response was compressed:
+            # it is a statement that the body *varies* by the request
+            # header, which is what stops a shared cache handing a gzipped
+            # body to a client that never asked for one.
+            self.send_header("Vary", "Accept-Encoding")
+        if encoded is not None:
+            self.send_header("Content-Encoding", "gzip")
+            body = encoded
+        # After the swap, so this is the length of what actually goes on
+        # the wire -- including for HEAD, which sends the header and no
+        # body and must still describe the GET it stands in for.
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
