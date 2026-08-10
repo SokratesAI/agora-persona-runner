@@ -226,6 +226,36 @@ def handle(token, request):
             args = {}
         if not name:
             return _error(request_id, -32602, "tools/call requires a tool name")
+        # The grant is a gate, not a menu. `execute_tool` dispatches purely
+        # on the tool name and has never checked a capability -- until now
+        # the only thing standing between a caps dict and the full toolset
+        # was that unlisted tools were merely not *advertised*. Measured
+        # live 2026-08-10 against a real server on this handler: a grant of
+        # {vaultRead, novaCapture} ran `terminal_exec` and got back
+        # `uid=10001(bridge)`. Nothing in the roster was violated because
+        # nothing was ever enforced.
+        #
+        # That was survivable while every grant belonged to a persona whose
+        # own caps were the thing being widened. It stopped being
+        # survivable when the journal-card reply turn got a grant
+        # (nova_replies.py): that turn is triggered by an HTTP POST
+        # carrying text from a comment box, and an unenforced allowlist
+        # there means a comment can reach a shell.
+        #
+        # Rebuilt per call rather than frozen alongside the grant so it
+        # cannot drift from what `tools/list` actually advertised -- the
+        # same caps produce both, which is the property that makes "the
+        # model can only call what it was shown" true rather than intended.
+        allowed = {tool["name"] for tool in _mcp_tools(entry.caps)}
+        if name not in allowed:
+            log(f"mcp tools/call refused {name}: not granted to {entry.persona.get('name', '?')}")
+            return _result(request_id, {
+                "content": [{
+                    "type": "text",
+                    "text": f"[{name} is not available to this turn]",
+                }],
+                "isError": True,
+            })
         try:
             output = execute_tool(name, args, entry.persona, entry.conversation_id)
             is_error = False

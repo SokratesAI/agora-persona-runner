@@ -177,3 +177,61 @@ def test_the_site_refuses_an_mcp_call_with_no_live_grant():
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "Bearer nope"
     )
     assert status == 401
+
+
+def test_a_tool_that_was_not_granted_cannot_be_called_by_name():
+    """The grant has to be a gate, not a menu.
+
+    `execute_tool` dispatches on the tool name alone and checks no
+    capability, so for as long as `tools/call` trusted the name it was
+    handed, filtering `tools/list` was decoration. Measured against a real
+    server on this handler before the fix: a {vaultRead, novaCapture} grant
+    ran `terminal_exec` and returned `uid=10001(bridge)`.
+
+    Parametrised over the two that matter most differently -- one runs a
+    shell, one changes a repo -- because a single case would let a fix that
+    special-cased `terminal_exec` pass.
+    """
+    token = tools_mcp.grant(
+        nova_replies.REPLY_PERSONA, nova_replies.REPLY_CAPS, nova_replies.CONVERSATION_ID
+    )
+    try:
+        for forbidden, args in (
+            ("terminal_exec", {"command": "id"}),
+            ("merge_pr", {"repo": "SokratesAI/agora-persona-runner", "pr_number": 1}),
+        ):
+            status, payload = tools_mcp.handle_http(
+                f"Bearer {token}",
+                json.dumps({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": forbidden, "arguments": args},
+                }).encode(),
+            )
+            assert status == 200
+            result = payload["result"]
+            assert result["isError"] is True, f"{forbidden} was executed"
+            assert "not available" in result["content"][0]["text"]
+    finally:
+        tools_mcp.revoke(token)
+
+
+def test_a_granted_tool_still_runs():
+    """The gate above must not be a wall. Without this, refusing
+    everything would pass the test that matters most."""
+    token = tools_mcp.grant(
+        nova_replies.REPLY_PERSONA, nova_replies.REPLY_CAPS, nova_replies.CONVERSATION_ID
+    )
+    try:
+        with patch("agora_runner.tools_dispatch.vault_read_path", return_value="We are Nova."), \
+                patch("agora_runner.tools_dispatch.audit"):
+            status, payload = tools_mcp.handle_http(
+                f"Bearer {token}",
+                json.dumps({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "vault_read", "arguments": {"path": "a.md"}},
+                }).encode(),
+            )
+    finally:
+        tools_mcp.revoke(token)
+    assert payload["result"]["isError"] is False
+    assert payload["result"]["content"][0]["text"] == "We are Nova."
