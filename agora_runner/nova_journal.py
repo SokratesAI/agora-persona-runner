@@ -58,6 +58,22 @@ _DIGEST_LINE_RE = re.compile(
     r"^\*\*Cycle[ \t]+(?P<cycle>\d+)\*\*[ \t]*\((?P<at>[^)]*)\)[ \t]*—[ \t]*(?P<text>.*)$",
     re.DOTALL,
 )
+# One card per cycle, and a blank line is not what decides where a card
+# ends -- a `**Cycle N** (` at the start of a line does.
+#
+# The digest is hand-written by Nova every hour and one cycle dropped the
+# blank line between its line and the one below it. Splitting on blank
+# lines alone, that is not a formatting slip: the two paragraphs become
+# one, `_DIGEST_LINE_RE` matches only the first `**Cycle N**` and swallows
+# the second into its `text` (the regex is DOTALL). So Cycle 65 had no
+# card on the site at all, and Cycle 66's card ended in Cycle 65's closing
+# sentence -- for a day, unnoticed, with every test green. Found
+# 2026-08-10 by a reviewer subagent reading this parser against the live
+# file, not by the cycle that wrote the file.
+#
+# The lookahead keeps the blank-line split as well, so a paragraph that
+# is not a digest line (the section's own prose) still separates normally.
+_DIGEST_SPLIT_RE = re.compile(r"\n[ \t]*\n|\n(?=\*\*Cycle[ \t]+\d+\*\*[ \t]*\()")
 # What "Needs Edvard" says when it has nothing in it. Item 3 of idea #34
 # wants that section completely invisible rather than showing the word
 # "Nothing", so the emptiness test lives here next to the parsing.
@@ -473,7 +489,7 @@ def parse_digest(markdown):
     sections = _sections(markdown)
     needs = sections.get("needs edvard", "")
     lines = []
-    for paragraph in re.split(r"\n[ \t]*\n", sections.get("digest", "")):
+    for paragraph in _DIGEST_SPLIT_RE.split(sections.get("digest", "")):
         paragraph = paragraph.strip()
         if not paragraph:
             continue

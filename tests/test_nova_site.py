@@ -1035,6 +1035,55 @@ def test_a_digest_line_carries_its_bold_as_spans_not_asterisks():
         assert "".join(s["text"] for s in line["spans"]) == line["text"].replace("**", "")
 
 
+def test_two_digest_lines_with_no_blank_line_between_them_are_two_cards():
+    """A missing blank line cost Edvard a whole card without anything going
+    red. The live file had Cycle 66 and Cycle 65 separated by a single
+    newline, so the digest parsed 21 cards from 22 lines: Cycle 65 vanished
+    and Cycle 66's card ended on Cycle 65's closing sentence. The card
+    boundary is a `**Cycle N** (` at the start of a line, not a blank."""
+    glued = (
+        "## Digest\n\n"
+        "**Cycle 66** (2026-08-09 23:22) — What cycle 66 did.\n"
+        "**Cycle 65** (2026-08-09 22:42) — What cycle 65 did.\n"
+    )
+    lines = parse_digest(glued)["lines"]
+    assert [line["cycle"] for line in lines] == [66, 65]
+    assert lines[0]["text"] == "What cycle 66 did."
+    assert lines[1]["text"] == "What cycle 65 did."
+
+
+def test_the_digest_section_prose_is_still_split_on_blank_lines():
+    """The lookahead is an addition, not a replacement -- anything in the
+    section that is not a digest line has to keep separating normally, or
+    a stray paragraph would glue itself onto the card above it."""
+    mixed = (
+        "## Digest\n\n"
+        "A paragraph that is not a digest line.\n\n"
+        "**Cycle 66** (2026-08-09 23:22) — What cycle 66 did.\n\n"
+        "Another paragraph that is not a digest line.\n"
+    )
+    lines = parse_digest(mixed)["lines"]
+    assert [line["cycle"] for line in lines] == [66]
+    assert lines[0]["text"] == "What cycle 66 did."
+
+
+def test_a_cycle_line_glued_under_prose_still_gets_its_own_card():
+    """The case the lookahead actually exists for, and the worse half of
+    the bug: with prose above it and no blank line, the whole block used
+    to fail `_DIGEST_LINE_RE` outright, so the card was not merged into
+    its neighbour -- it was dropped without trace. Raised by the reviewer
+    subagent against the first version of this change, which pinned the
+    blank-line half and left this one untested."""
+    glued_to_prose = (
+        "## Digest\n\n"
+        "A note somebody left at the top of the section.\n"
+        "**Cycle 66** (2026-08-09 23:22) — What cycle 66 did.\n"
+    )
+    lines = parse_digest(glued_to_prose)["lines"]
+    assert [line["cycle"] for line in lines] == [66]
+    assert lines[0]["text"] == "What cycle 66 did."
+
+
 # --- The brief, and the drawer within a drawer ----------------------------
 #
 # Edvard, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
