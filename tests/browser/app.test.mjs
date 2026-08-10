@@ -14,7 +14,7 @@
  * against a payload generated from the real server functions
  * (tests/browser/regen.py), and click on things.
  */
-import { test, before, describe, afterEach } from "node:test";
+import { test, before, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -25,18 +25,32 @@ const here = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(here, "..", "..", "agora_runner", "nova_public");
 const payload = JSON.parse(readFileSync(join(here, "fixtures", "payload.json"), "utf8"));
 
-/* Every window a test opens, closed the moment that test ends.
+/* Every window this file opens, closed once the whole file is done.
  *
  * jsdom runs real timers on the Node event loop, and app.js now schedules a
  * poll that reschedules itself forever. Leave one window open and `node
- * --test` never exits -- it ran for 14 minutes on this suite before anyone
- * noticed it was not slow, it was hung. Closing per test rather than at the
- * end of the file also keeps a poll in a finished test's window from
- * re-rendering underneath the test that is still running. */
+ * --test` never exits -- it ran for 33 minutes on this suite before anyone
+ * noticed it was not slow, it was hung.
+ *
+ * This was an `afterEach` for exactly one push, and that was wrong twice over
+ * (cycle 92). Five suites open one window in `before` and share it across
+ * their tests; an `afterEach` closed it after the first of them and left the
+ * rest asserting against a window with no `document` -- 45 failures. And it
+ * did not even fix the hang, because two tests below built their own `JSDOM`
+ * without registering it, so `node --test` still never exited. Hence
+ * `openWindow` as the single door: a raw `new JSDOM` in this file is a leak,
+ * and the last test in this file is what says so. */
 const openWindows = [];
-afterEach(() => {
+after(() => {
   for (const window of openWindows.splice(0)) window.close();
 });
+
+/** The only place this file may construct a window. See `openWindows`. */
+function openWindow(html, options) {
+  const dom = new JSDOM(html, options);
+  openWindows.push(dom.window);
+  return dom;
+}
 
 /** Load the site at `path` with fetch stubbed to serve the fixture.
  *
@@ -53,13 +67,12 @@ afterEach(() => {
  * poll schedules its first timer there. */
 async function loadSite(path = "/", { failComments = false, digest, comments, install } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
-  const dom = new JSDOM(html, {
+  const dom = openWindow(html, {
     url: "https://nova.example" + path,
     runScripts: "outside-only",
     pretendToBeVisual: true,
   });
   const { window } = dom;
-  openWindows.push(window);
   /* Every POST is recorded and answered, so a test can assert what the
    * page actually sent rather than only what it then displayed -- the
    * difference between checking the wire and checking the DOM. */
@@ -400,7 +413,7 @@ describe("the Needs Edvard box", () => {
 
   test("appears when the section actually asks for something", async () => {
     const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const dom = new JSDOM(html, { url: "https://nova.example/", runScripts: "outside-only" });
+    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
     const { window } = dom;
     const asking = {
       ...payload.digest,
@@ -445,7 +458,7 @@ describe("the vault cannot inject markup", () => {
       },
     ];
     const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const { window } = new JSDOM(html, { url: "https://nova.example/", runScripts: "outside-only" });
+    const { window } = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
     window.fetch = (url) =>
       Promise.resolve({
         json: () => Promise.resolve(url.includes("/api/digest") ? payload.digest : hostile),
@@ -547,9 +560,8 @@ describe("a payload cached before the brief existed", () => {
     for (const entry of stale.journal.entries) delete entry.briefSpans;
 
     const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const dom = new JSDOM(html, { url: "https://nova.example/", runScripts: "outside-only", pretendToBeVisual: true });
+    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only", pretendToBeVisual: true });
     const { window } = dom;
-    openWindows.push(window);
     window.fetch = (url) => Promise.resolve({
       json: () => Promise.resolve(url.includes("/api/digest") ? stale.digest : stale.journal),
     });
@@ -1038,5 +1050,32 @@ describe("the page notices new entries on its own", () => {
     box.value = "";
     await timers.firePagePoll();
     assert.ok(!window.document.contains(card), "the deferred update never arrived");
+  });
+});
+
+/* The suite this file cannot run on itself.
+ *
+ * A window that outlives the run keeps `node --test` alive forever, and the
+ * symptom is a CI job that sits at 33 minutes rather than a red test -- there
+ * is no assertion that fires, because every test has already passed. So the
+ * check is on the source instead: one door in, and `openWindow` is it. */
+describe("no window escapes the registry", () => {
+  const source = readFileSync(join(here, "app.test.mjs"), "utf8");
+
+  test("only openWindow constructs a JSDOM", () => {
+    const constructions = source.match(/new JSDOM\(/g) || [];
+    assert.equal(
+      constructions.length,
+      1,
+      "a raw `new JSDOM` was added -- its window is never closed, and the " +
+        "whole suite will hang after the last test passes. Use openWindow.",
+    );
+  });
+
+  test("the registry is emptied after the file, not after each test", () => {
+    /* Five suites below open one window in `before` and share it. An
+     * `afterEach` closed it after the first test in each and cost 45
+     * failures; this is the line that would have to change again. */
+    assert.match(source, /\nafter\(\(\) => \{\n\s+for \(const window of openWindows\.splice\(0\)\)/);
   });
 });

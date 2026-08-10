@@ -52,8 +52,15 @@ jobs:
           cache-dependency-path: tests/browser/package-lock.json
       - run: npm ci
         working-directory: tests/browser
+      # Bounded because the failure this suite is most prone to is not a red
+      # test but a hung process: a jsdom window left open keeps a rescheduling
+      # poll on the event loop, every test passes, and `node --test` simply
+      # never returns. Two runs sat at 33 and 52 minutes before anyone read
+      # them as hung rather than slow. The suite takes ~3s, so 5 minutes turns
+      # that into a red X inside the hour it happened.
       - run: node --test
         working-directory: tests/browser
+        timeout-minutes: 5
 
   build-push:
     if: github.ref == 'refs/heads/main'
