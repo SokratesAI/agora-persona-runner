@@ -118,7 +118,7 @@ def run_workflow_steps(steps, conversation_id, detail, participants,
             rounds_run += 1
             try:
                 reply = generate_reply(persona, caps, system, history, conversation_id,
-                                        sticky=False, active_step=active_step)
+                                        sticky=False, active_step=active_step, unattended=True)
             except Exception as e:
                 log(f"workflow round failed (step {step_index + 1}, round {_round + 1}): {e}")
                 continue

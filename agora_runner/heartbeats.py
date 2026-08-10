@@ -338,7 +338,8 @@ def run_heartbeat(heartbeat):
         # silent HEARTBEAT_NO_REPORT_SENTINEL reply when there's nothing
         # worth Edvard's attention, and that decision can only be made
         # once the full reply is in hand, before anything is posted.
-        reply = generate_reply(persona, caps, system, history, conversation_id, sticky=False)
+        reply = generate_reply(persona, caps, system, history, conversation_id, sticky=False,
+                                unattended=True)
         if reply.strip().upper().startswith(HEARTBEAT_NO_REPORT_SENTINEL):
             result = "checked, nothing to report (not posted to chat)"
             silent = True
