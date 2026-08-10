@@ -1480,11 +1480,23 @@ def test_head_reports_the_length_of_the_body_a_get_would_send(journal_md):
 
 def test_the_same_content_compresses_to_the_same_bytes(journal_md):
     """gzip stamps the current time into its header unless told not to,
-    which would make an unchanged journal a different responsea second."""
+    so an unchanged journal would be a different response every second.
+
+    This asserts the MTIME field rather than only comparing two
+    responses, which is what the first version did: two requests inside
+    the same wall-clock second produce identical bytes *even with the
+    bug*, so that version went red only 1 run in 5 against a
+    deliberately broken build. A control that agrees with you four times
+    out of five is not a control.
+    """
     with patch.object(nova_site, "vault_read_path", return_value=journal_md):
         _, _, first = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
         _, _, second = _get("/api/journal", BROWSER_ACCEPT_ENCODING)
     assert first == second
+    # Bytes 4-8 of a gzip member are MTIME, little-endian. Zero means "no
+    # timestamp", and is the only value that is stable across rebuilds.
+    assert first[:2] == b"\x1f\x8b"
+    assert int.from_bytes(first[4:8], "little") == 0
 
 
 @pytest.mark.parametrize(
