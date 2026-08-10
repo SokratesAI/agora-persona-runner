@@ -153,6 +153,18 @@ pre code { background: none; padding: 0; }
 
 .needs-body p:last-child { margin-bottom: 0; }
 
+/* The reply box (2026-08-10). Always shown -- see renderNeeds in app.js;
+ * the `display: none` on a comment drawer is scoped to `.entry`, so this
+ * one is visible without needing to override anything. The rule to hold
+ * onto is the separator: the question above and the answer below are two
+ * different things and should not read as one block of warning-coloured
+ * text. */
+.needs .comment-drawer {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #5c4a1e;
+}
+
 /* Journal timeline (item 1) */
 .entry {
   background: var(--card);
