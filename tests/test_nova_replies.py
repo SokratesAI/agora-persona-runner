@@ -134,6 +134,16 @@ def test_the_call_is_restricted_and_stateless():
     assert body["stateless"] is True
 
 
+def test_the_call_asks_to_run_alongside_a_cycle():
+    """Without this the reply queues behind the bridge's invocation lock,
+    which a Nova cycle holds for up to 45 minutes -- Edvard asked for an
+    answer within ten seconds and got one forty minutes later. The bridge
+    still decides: it falls back to the lock near an OAuth refresh, so
+    asking is always safe and never asking is the bug."""
+    body = _prompt_for()[2]
+    assert body["allow_concurrent"] is True
+
+
 def test_it_goes_to_the_bridge_and_so_can_only_spend_the_subscription():
     """identity.md rule 9. There is no provider to pick here and that is
     deliberate -- the bridge is the subscription, so this path cannot reach
