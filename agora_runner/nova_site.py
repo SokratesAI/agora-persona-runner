@@ -65,9 +65,14 @@ from cosmetic into functional, and the split happened. The site's own
 Deployment is `RollingUpdate` with `maxUnavailable: 0`, so a Nova cycle
 no longer takes it down and neither does a deploy.
 
-No caching layer: the full 204KB journal assembles from CouchDB in
-285ms measured end-to-end (2026-08-09), which is cheaper than the
-staleness a cache would buy.
+**There is a caching layer now, and the note that used to sit here was
+out of date by an order of magnitude.** It read "the full 204KB journal
+assembles from CouchDB in 285ms, which is cheaper than the staleness a
+cache would buy". Measured against the live pod on 2026-08-10, with 95
+entries rather than 70: `/api/journal` takes 3.0-3.5s -- 1.9s of vault
+bulk fetch, 1.5s of parsing -- and it was recomputed identically on
+every load. Edvard reported it as the app taking a long time to load.
+See `cached_payload`.
 
 **Responses are gzipped when the client asks.** Measured against the
 live pod on 2026-08-10, a cold load of this site was 588,998 bytes and
@@ -89,6 +94,7 @@ claim stays checked rather than argued.
 """
 
 import gzip
+import hashlib
 import json
 import mimetypes
 import os
@@ -262,13 +268,107 @@ def comments_payload():
     }
 
 
+# How long a served payload may be before the next request kicks a
+# refresh behind itself. Not a staleness budget for Edvard -- the client
+# polls, so what he sees is bounded by the poll interval plus one rebuild
+# -- it is how often an *active* reader makes the site rebuild. At 15s a
+# session polling every 30s rebuilds once per poll and never waits for one.
+CACHE_FRESH_SECONDS = 15
+
+_cache = {}
+_cache_lock = threading.Lock()
+_refreshing = set()
+
+
+def _versioned(payload):
+    """`(body, etag)` for a payload, with the etag also inside it.
+
+    The client cannot read the ETag header when a response comes back out
+    of the service worker's cache, so the version has to be in the
+    document as well. Hashing the payload *before* the version is added
+    keeps that non-circular, and the hash still covers everything the
+    client renders.
+
+    Weak, because gzip and identity are different bytes for the same
+    payload and `_send` chooses between them per request. A weak etag
+    claims semantic equivalence, which is exactly what is true here and
+    all a conditional GET needs.
+    """
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    etag = 'W/"' + digest + '"'
+    payload = dict(payload, version=etag)
+    return json.dumps(payload), etag
+
+
+def cached_payload(name, build):
+    """Serve the last build immediately; rebuild behind the request.
+
+    `/api/journal` costs 3.0-3.5s every time it is asked (measured against
+    the live pod, 2026-08-10: 1.9s of vault bulk fetch, 1.5s of parsing,
+    95 entries) and it was recomputed identically on every load. That is
+    what Edvard reported as "Nova takes a long time to load when i
+    refresh it".
+
+    Stale-while-revalidate rather than a TTL, because a TTL only moves
+    the 3.5s to whoever arrives first after it expires -- with 24 cycles
+    a day writing one entry each, almost every visit is that visitor. The
+    refresh is request-driven rather than a timer, so a site nobody is
+    looking at costs nothing.
+
+    The first request of a process still pays the full build: there is
+    nothing stale to serve, and serving empty would be worse than slow.
+    """
+    now = time.time()
+    with _cache_lock:
+        entry = _cache.get(name)
+        if entry is not None and now - entry[2] >= CACHE_FRESH_SECONDS and name not in _refreshing:
+            _refreshing.add(name)
+            thread = threading.Thread(
+                target=_refresh, args=(name, build), name=f"nova-site-{name}", daemon=True
+            )
+        else:
+            thread = None
+    if thread is not None:
+        thread.start()
+    if entry is not None:
+        return entry[0], entry[1]
+    return _refresh(name, build)
+
+
+def reset_cache():
+    """Drop every cached payload. For tests, which share one process: a
+    payload warmed by one test is exactly the stale copy the next one
+    would be served, and two tests asserting a vault failure is a 502 got
+    a 200 instead."""
+    with _cache_lock:
+        _cache.clear()
+        _refreshing.clear()
+
+
+def _refresh(name, build):
+    try:
+        body, etag = _versioned(build())
+    except Exception as e:
+        with _cache_lock:
+            _refreshing.discard(name)
+        # A background refresh that raises must not take the thread's
+        # process down or poison the cache -- the last good payload keeps
+        # being served, which is the whole point of serving it stale.
+        log(f"nova-site {name} refresh failed: {e}")
+        raise
+    with _cache_lock:
+        _cache[name] = (body, etag, time.time())
+        _refreshing.discard(name)
+    return body, etag
+
+
 class NovaSiteHandler(BaseHTTPRequestHandler):
     server_version = "nova-site"
 
     def log_message(self, *args):  # quiet default request logging
         pass
 
-    def _send(self, status, body, content_type):
+    def _send(self, status, body, content_type, etag=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
 
@@ -283,6 +383,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if etag:
+            self.send_header("ETag", etag)
         if compressible:
             # Sent whether or not this particular response was compressed:
             # it is a statement that the body *varies* by the request
@@ -302,6 +404,24 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status, payload):
         self._send(status, json.dumps(payload), "application/json")
+
+    def _send_cached_json(self, name, build):
+        """A cached payload, as a 304 when the client already has it.
+
+        The client polls for new entries, so most of these requests are a
+        reader asking whether anything changed. Answering that with 160KB
+        is what makes polling expensive enough to talk yourself out of.
+        """
+        body, etag = cached_payload(name, build)
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            # A 304 must carry the headers that would decide which cached
+            # representation it validates, and the body varies by encoding.
+            self.send_header("Vary", "Accept-Encoding")
+            self.end_headers()
+            return
+        self._send(200, body, "application/json", etag=etag)
 
     def _send_static(self, filename):
         path = os.path.join(PUBLIC_DIR, filename)
@@ -331,12 +451,18 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         try:
             if path == "/api/journal":
-                self._send_json(200, journal_payload())
+                self._send_cached_json("journal", journal_payload)
                 return
             if path == "/api/digest":
-                self._send_json(200, digest_payload())
+                self._send_cached_json("digest", digest_payload)
                 return
             if path == "/api/comments":
+                # Deliberately not cached. It is 6KB and 20-78ms against
+                # the live pod, so there is nothing here to save -- and it
+                # is the one payload that changes underneath itself, from
+                # the reply worker in this same process and from the box
+                # that has just posted. A stale window on this endpoint
+                # would buy nothing and cost a comment looking lost.
                 self._send_json(200, comments_payload())
                 return
         except Exception as e:

@@ -1844,3 +1844,66 @@ def test_a_document_with_no_mtime_is_skipped_rather_than_crashing():
     from agora_runner.nova_journal import entry_times
 
     assert entry_times({JOURNAL_DIR + "093-cycle-86.md": None}) == {}
+
+
+# Edvard, issues.md 2026-08-10: "Nova takes a long time to load when i
+# refresh it." /api/journal cost 3.0-3.5s on the live pod and was rebuilt,
+# identically, on every request. It is served from cache now -- and none of
+# that was pinned by a test when it shipped.
+
+
+def test_the_journal_is_served_from_cache_rather_than_rebuilt(journal_md):
+    """The second reader gets the first reader's build, immediately."""
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md) as read:
+        _get("/api/journal")
+        first = read.call_count
+        assert first, "the first request builds"
+        for _ in range(5):
+            status, _, body = _get("/api/journal")
+            assert status == 200
+        assert read.call_count == first, "the vault was read again for an identical answer"
+    assert json.loads(body)["entries"], "and the cached answer is the real one"
+
+
+def test_a_stale_payload_is_refreshed_behind_the_request_that_got_it(journal_md):
+    """Stale-while-revalidate: the reader is never the one who waits.
+
+    The refresh runs on its own thread, so this asserts the vault was read
+    again *after* a served response, not that the response itself was slow.
+    """
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md) as read:
+        _get("/api/journal")
+        served = read.call_count
+        with patch.object(nova_site, "CACHE_FRESH_SECONDS", 0):
+            _get("/api/journal")
+        for _ in range(50):
+            if read.call_count > served:
+                break
+            time.sleep(0.05)
+    assert read.call_count > served, "a stale payload was served and never refreshed"
+
+
+def test_an_unchanged_journal_answers_a_returning_client_with_304(journal_md):
+    """The page polls every 30 seconds. Answering "nothing new" with 160KB
+    is what makes polling expensive enough to talk yourself out of."""
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        _, head, body = _get("/api/journal")
+        etag = re.search(r"ETag: (\S+)", head).group(1)
+        assert json.loads(body)["version"] == etag, "the client cannot read the header from a SW cache"
+
+        status, head, body = _get("/api/journal", f"If-None-Match: {etag}\r\n")
+    assert status == 304
+    assert body == b""
+    assert "Vary: Accept-Encoding" in head
+
+
+def test_a_journal_that_changed_gets_a_new_version(journal_md):
+    """The client re-renders on this string and nothing else, so an etag
+    that does not move is a page that never updates."""
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        _, head, _ = _get("/api/journal")
+    first = re.search(r"ETag: (\S+)", head).group(1)
+    nova_site.reset_cache()
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md + "\n\n### Cycle 999 (2026-08-10 21:00)\n\nA new entry.\n\n---\nPR: none | Outcome: no-op\n"):
+        _, head, _ = _get("/api/journal")
+    assert re.search(r"ETag: (\S+)", head).group(1) != first
