@@ -317,7 +317,7 @@ def costs_payload():
     deserves saying out loud on a page that plots a growing series.
 
     Measured against the live ledger, 2026-08-11: 96,853 bytes of vault
-    document shape to 12,663 bytes of payload, ~3.4KB gzipped, for 110
+    document shape to 35,769 bytes of payload, 9,272 gzipped, for 110
     cycles and 728 quota readings. Dropping the keys is what does that
     (`nova_costs` explains the row format), and it holds because both
     series grow by a bounded amount per cycle -- one cycle row, a handful

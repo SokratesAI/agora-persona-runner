@@ -140,7 +140,12 @@ def test_the_summary_keeps_what_the_page_shows_and_drops_the_rest(payload):
 def test_the_shaping_is_what_makes_this_endpoint_small():
     """The compaction, asserted as a ratio rather than described in a
     comment. Measured against the live ledger on 2026-08-11: 96,853 bytes
-    in, 12,663 out.
+    in, 35,769 out, 9,272 of those on the wire.
+
+    That is a correction, and worth keeping as one: the handoff this page
+    was built from said 12,663, which is what the shaping produces with
+    compact JSON separators. The server calls plain `json.dumps`, so the
+    number a reader can check is the larger one.
 
     Asserted against a ledger grown to the live one's proportions rather
     than against the small fixture above, and that is not padding: at
