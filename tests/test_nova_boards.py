@@ -52,9 +52,17 @@ def _clean_cache():
     nova_site.reset_cache()
 
 
-def _serve(board_md, notes_md):
-    """Patch the two vault reads a board page makes, by path."""
+def _serve(board_md, notes_md, archive_md=""):
+    """Patch the three vault reads a board page makes, by path.
+
+    The archive defaults to empty, which is the state of the live vault
+    until `tools/roll_captures.py` is first pointed at these files -- and
+    is the case that has to keep behaving exactly as it did before the
+    archive existed. Pass `archive_md` for the other one.
+    """
     def read(path):
+        if path.endswith("-archive.md"):
+            return archive_md
         return notes_md if "/nova/resources/" in path else board_md
     return patch.object(nova_sources, "vault_read_path", side_effect=read)
 
@@ -258,3 +266,50 @@ def test_a_capture_that_wrapped_keeps_its_second_half_and_his_cursor_stays_empty
         "## Board\n"
     )
     assert board["captures"] == ["the first half of what he typed and the second half, wrapped."]
+
+
+def test_the_rolled_off_captures_still_reach_the_page(board_md, notes_md):
+    """The blocker Cycle 112 refused to roll around.
+
+    `roll_captures.py` moves everything past the newest 60 into an
+    archive beside the live file. This page is what Edvard opens, so if
+    it reads only the live path, the first roll silently deletes two
+    thirds of it. Live notes first, archived ones after, because both
+    files are newest-first and the archive holds only what is older.
+    """
+    archive_md = (
+        "---\ntype: log\nstatus: built\n"
+        "maintenance: Captures rolled off Nova's live capture file, newest first.\n"
+        "---\n\n"
+        "# Nova — Issues Archive\n\n"
+        "## Entries\n\n"
+        "- 2026-08-05 (Cycle 24) — an old capture that was rolled off\n"
+    )
+    with _serve(board_md, notes_md, archive_md):
+        _, _, body = _get("/api/board?name=issues&limit=10")
+    payload = json.loads(body)
+    assert payload["notesTotal"] == 4
+    assert [note["cycle"] for note in payload["notes"]] == [63, 62, None, 24]
+    # The archive's own frontmatter is not a capture and must not be
+    # glued onto the note above it, which is exactly what concatenating
+    # the two files before parsing would have done.
+    text = json.dumps(payload["notes"])
+    assert "maintenance:" not in text
+    assert "rolled off" in text
+
+
+def test_a_board_reads_the_archive_beside_the_live_file(board_md, notes_md):
+    """The archive path is derived from nothing the request carries, and
+    it is the sibling of the live file rather than some other folder."""
+    seen = []
+
+    def read(path):
+        seen.append(path)
+        return "" if path.endswith("-archive.md") else board_md
+
+    with patch.object(nova_sources, "vault_read_path", side_effect=read):
+        _get("/api/board?name=ideas&limit=1")
+    assert BOARD_PATHS["ideas"]["nova_archive"] in seen
+    assert BOARD_PATHS["ideas"]["nova_archive"].endswith(
+        "nova/resources/ideas-archive.md"
+    )

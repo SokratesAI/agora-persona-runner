@@ -139,19 +139,32 @@ def cost_ledger_json():
 
 
 def board_markdown(name):
-    """`(edvard, nova)` markdown for one board -- issues, or ideas.
+    """`(edvard, nova, nova_archive)` markdown for one board.
 
-    Two reads rather than one because they are two files by two authors,
-    and the page shows them as two tabs for exactly that reason. Both are
-    fetched together so the payload is built from one consistent moment
-    rather than from whichever the client asked for first.
+    Three reads rather than one because they are three files: two by two
+    authors, which is why the page shows them as two tabs, plus the
+    archive that `tools/roll_captures.py` moves my older captures into.
+    All fetched together so the payload is built from one consistent
+    moment rather than from whichever the client asked for first.
+
+    **The archive is returned separately rather than concatenated**,
+    which is where this differs from `digest_markdown` above. That one
+    can join two files into one string because `parse_digest` reads a
+    named section and the archive deliberately has no rival heading.
+    These two both have a real `## Entries` heading of their own *and*
+    frontmatter, and `parse_notes` joins any non-bullet line onto the
+    note above it -- so concatenating would silently glue
+    `maintenance: Captures rolled off ...` onto the end of my oldest live
+    capture. Two parses, appended, cannot do that.
 
     A missing file comes back as `""` and parses to an empty board. That
-    is deliberate: `nova/resources/ideas.md` existing is not something
-    this site should require, and half a page beats a 502.
+    is deliberate and it is what makes this safe to deploy before the
+    first roll ever runs: no archive exists yet, so this is exactly the
+    old behaviour until one does.
     """
     paths = BOARD_PATHS[name]
     return (
         vault_read_path(paths["edvard"]) or "",
         vault_read_path(paths["nova"]) or "",
+        vault_read_path(paths["nova_archive"]) or "",
     )
