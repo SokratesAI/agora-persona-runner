@@ -601,6 +601,30 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.equal(cards(window)[0].querySelectorAll(".comment-toggle").length, 1);
   });
 
+  /* 26 single-entry cycles carry a real title. The first version of this
+   * page rendered titles only as part subheadings, and a single part gets
+   * none, so all 26 lost theirs -- invisible in the fixture, which is why
+   * this asserts on a literal rather than on "a title element exists". */
+  test("a one-part cycle's title is shown, since it has no subheading to live in", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const solo = journal.entries.find(
+      (e) => e.cycle !== null && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+    );
+    solo.title = "The heartbeat was never late; the clock on the card was invented";
+    const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal });
+    assert.equal(cards(window)[0].querySelector(".entry-title").textContent, solo.title);
+  });
+
+  test("a title that is only its own timestamp renders as nothing", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const solo = journal.entries.find(
+      (e) => e.cycle !== null && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+    );
+    solo.title = "(2026-08-11 02:00)";
+    const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal });
+    assert.equal(cards(window)[0].querySelector(".entry-title"), null);
+  });
+
   test("a single-entry cycle gets no part subheadings at all", async () => {
     const solo = payload.journal.entries.find(
       (e) => e.cycle !== null && payload.journal.entries.filter((o) => o.cycle === e.cycle).length === 1

@@ -764,7 +764,7 @@
    * to a plain word when nothing is left. Cycle 6 has three entries, which
    * is why anything past the first is "Addendum" rather than the pair-shaped
    * "The second half". */
-  function partLabel(title, index) {
+  function cleanTitle(title) {
     var text = String(title || "")
       .replace(/^[\s·—–-]+/, "")
       .replace(/\(\s*\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2})?\s*\)/g, "")
@@ -773,8 +773,11 @@
     // loses them, `a fix (and the bug under it)` keeps them.
     if (/^\([^()]*\)$/.test(text)) text = text.slice(1, -1).trim();
     text = text.replace(/^[\s·—–-]+/, "").trim();
-    if (!text) return index === 0 ? "The cycle" : "Addendum";
-    return text.charAt(0).toUpperCase() + text.slice(1);
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
+  }
+
+  function partLabel(title, index) {
+    return cleanTitle(title) || (index === 0 ? "The cycle" : "Addendum");
   }
 
   function renderCyclePage(cycleNumber, entries, digestLine, comments) {
@@ -794,6 +797,20 @@
     // `h1`, not the feed's `h2`: on this page the cycle is the document.
     head.appendChild(el("h1", "cycle-link", "Cycle " + cycleNumber));
     card.appendChild(head);
+
+    /* A one-part cycle's title has nowhere else to go. Twenty-six of them
+     * carry a real one -- "The heartbeat was never late; the clock on the
+     * card was invented" -- and the first version of this page dropped every
+     * one, because titles were only rendered as part subheadings and a
+     * single part gets none. A multi-part cycle keeps them in the
+     * subheadings, where they say which half you are in.
+     *
+     * `cleanTitle` rather than the raw string: eleven entries have a title
+     * that is only their own timestamp, and it renders as nothing rather
+     * than as a date printed twice. */
+    if (parts.length === 1 && cleanTitle(first.title)) {
+      card.appendChild(el("p", "entry-title", cleanTitle(first.title)));
+    }
 
     /* The meta row belongs to the cycle, so it is built from its earliest
      * part and drawn once. An addendum repeats its parent's PR and outcome
