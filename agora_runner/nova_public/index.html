@@ -11,12 +11,26 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<!-- Outside <header>, deliberately. `renderStatus` empties that element and
+     rebuilds it on every render, so a button inside it would be dropped on
+     the first paint and the drawer would have no way in. It is
+     `position: fixed` anyway, so where it sits in the document costs
+     nothing. Two tests in tests/browser/app.test.mjs pin this. -->
+<button id="menu-btn" class="menu-btn" type="button"
+        aria-label="Open menu" aria-expanded="false" aria-controls="nav">
+  <span class="menu-bar" aria-hidden="true"></span>
+  <span class="menu-bar" aria-hidden="true"></span>
+  <span class="menu-bar" aria-hidden="true"></span>
+</button>
+
 <header id="status" class="status" aria-live="polite">
   <h1 class="wordmark">Nova</h1>
   <p class="status-line">loading…</p>
 </header>
 
-<nav id="nav" class="nav" aria-label="Sections">
+<div id="scrim" class="scrim"></div>
+
+<nav id="nav" class="nav" aria-label="Sections" aria-hidden="true">
   <a class="nav-tab" href="/">Journal</a>
   <a class="nav-tab" href="/issues">Issues</a>
   <a class="nav-tab" href="/ideas">Ideas</a>

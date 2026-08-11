@@ -15,6 +15,34 @@
   var needsEl = document.getElementById("needs");
 
   var navEl = document.getElementById("nav");
+  var menuBtn = document.getElementById("menu-btn");
+  var scrim = document.getElementById("scrim");
+
+  /* The sidebar (Edvard, issues.md 2026-08-11: "Move the Journal, issues
+   * & ideas tabs buttons to a sidebar that opens from a hamburger button
+   * ... Add slide animations").
+   *
+   * Deliberately the whole of the feature's JavaScript: the three links
+   * are the same anchors they always were, so `markNav` and the delegated
+   * click handler at the bottom of this file still route them without
+   * knowing they moved. The slide itself is CSS. All that is new is one
+   * boolean, mirrored onto the four elements that have to agree about it. */
+  function menuOpen() {
+    return !!navEl && navEl.classList.contains("open");
+  }
+
+  function setMenu(open) {
+    if (!navEl) return;
+    navEl.classList.toggle("open", open);
+    navEl.setAttribute("aria-hidden", open ? "false" : "true");
+    if (scrim) scrim.classList.toggle("open", open);
+    if (document.body) document.body.classList.toggle("nav-open", open);
+    if (menuBtn) {
+      menuBtn.classList.toggle("open", open);
+      menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      menuBtn.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+    }
+  }
 
   /* Which page the URL asks for. Three views over four URLs:
    * `/` and `/cycle/49` are the journal, `/issues` and `/ideas` are the
@@ -1285,12 +1313,27 @@
     fit();
   })();
 
+  if (menuBtn) {
+    menuBtn.addEventListener("click", function () { setMenu(!menuOpen()); });
+  }
+  if (scrim) {
+    scrim.addEventListener("click", function () { setMenu(false); });
+  }
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && menuOpen()) setMenu(false);
+  });
+
   // Back/forward between /cycle/N and / without a round trip.
   window.addEventListener("popstate", load);
   document.addEventListener("click", function (event) {
     var anchor = event.target.closest && event.target.closest("a[href^='/']");
     if (!anchor || event.metaKey || event.ctrlKey || event.shiftKey) return;
     event.preventDefault();
+    // Whatever was tapped, the page underneath is about to change, so the
+    // drawer has done its job. This covers the three links inside it and
+    // also a per-cycle link in the feed, which cannot be reached with it
+    // open but costs nothing to be right about.
+    setMenu(false);
     history.pushState(null, "", anchor.getAttribute("href"));
     load();
     window.scrollTo(0, 0);
