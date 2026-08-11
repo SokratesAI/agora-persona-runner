@@ -102,13 +102,43 @@
    * entry arriving simply lands at the top of it.
    *
    * It is not free of state, and the first review of this said so. Widening
-   * the window re-renders the whole feed, which discards every drawer and
-   * every card's expanded/collapsed state along with it. Unsent text is
-   * carried across (see `drafts`); the folds are not, and a tap on the
-   * pager still closes anything the reader had opened.
+   * the window re-renders the whole feed, which builds every card again
+   * from scratch. Unsent text is carried across (see `drafts`) and since
+   * 2026-08-11 so is every card's expanded/collapsed state (see `folds`
+   * below), so a tap on the pager no longer closes what was open.
    */
   var PAGE = 20;
   var windowSize = PAGE;
+
+  /* Which cards were open, so that rebuilding the feed puts them back.
+   *
+   * Edvard, issues.md 2026-08-11: "The Nova site closes all drawers on what
+   * seems like every 30 sec or so. Is this a refresh bug?"
+   *
+   * A card's open/closed state lived only in the DOM, so every path that
+   * rebuilds the feed -- the 30-second poll when an entry really did
+   * arrive, the pager above, a tap on Journal from a board -- silently
+   * closed whatever he was reading. The comment above says so in as many
+   * words and treated it as the price of one window; it is not, and this is
+   * the state the drafts store already keeps for half-typed text.
+   *
+   * Keyed by cycle number rather than by position, because a new entry
+   * arriving at the top is exactly when this matters -- keyed by index, the
+   * card he had open would hand its state to the one that pushed it down.
+   * An entry with no cycle number gets no memory: there is one (Edvard's
+   * first message), nothing else can address it either, and inventing a key
+   * from its title would make two untitled notes share one.
+   */
+  var folds = {};
+
+  function foldFor(cycle) {
+    if (cycle === null || cycle === undefined) {
+      return { expanded: false, journal: false, comments: false };
+    }
+    var key = "cycle-" + cycle;
+    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false };
+    return folds[key];
+  }
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -648,20 +678,29 @@
       foot.appendChild(commenting.toggle);
     }
 
+    /* The three setters are the only places a card changes state, so they
+     * are also the only places that have to remember it -- a tap goes
+     * through one of these whether it came from the card's own listener or
+     * from `setExpanded` re-asserting a drawer. See `folds`. */
+    var fold = foldFor(entry.cycle);
+
     function setCommentsOpen(open) {
       if (!commenting) return;
+      fold.comments = open;
       card.classList.toggle("is-commenting", open);
       commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
     }
-    setCommentsOpen(false);
+    setCommentsOpen(fold.comments);
 
     function setJournalOpen(open) {
+      fold.journal = open;
       card.classList.toggle("is-reading", open);
       journalToggle.setAttribute("aria-expanded", open ? "true" : "false");
       journalToggle.textContent = open ? "Close the full journal" : openLabel;
     }
 
     function setExpanded(open) {
+      fold.expanded = open;
       card.className = open ? "entry is-expanded" : "entry is-collapsed";
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
       // Closing the card closes the drawer inside it, so reopening never
@@ -673,8 +712,11 @@
       // card: half-typed text would go with it.
       setCommentsOpen(!!commenting && commenting.toggle.getAttribute("aria-expanded") === "true");
     }
-    setJournalOpen(false);
-    setExpanded(false);
+    /* Order matters: `setExpanded` re-derives the journal drawer from the
+     * button it has just been given, so the drawer has to be put back
+     * before the card is, or a card restored open would restore shut. */
+    setJournalOpen(fold.journal);
+    setExpanded(fold.expanded);
 
     /* Edvard, issues.md 2026-08-09: "i want to click anywhere on it to
      * expand/close it, not just the header."

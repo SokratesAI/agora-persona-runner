@@ -1490,6 +1490,56 @@ describe("the page notices new entries on its own", () => {
     assert.ok(window.document.contains(card), "an absent version read as a change");
   });
 
+  /* Edvard, issues.md 2026-08-11: "The Nova site closes all drawers on what
+   * seems like every 30 sec or so. Is this a refresh bug?"
+   *
+   * The two tests above cover the half where the page rebuilt for nothing.
+   * This is the half that stays true even when the rebuild is earned: a new
+   * entry arrives every hour, and the card he had open closed with it. The
+   * card object itself is replaced -- that is what a render does -- so these
+   * assert on the card at that position being open, not on the old node. */
+  test("a card he had opened is still open after a new entry lands", async () => {
+    const { window, timers } = await pollable();
+    const before = cards(window).length;
+    click(window, cards(window)[0]);
+    assert.ok(expanded(cards(window)[0]), "the tap opened it");
+    serve(window, grown('W/"newer"'));
+
+    await timers.firePagePoll();
+    const after = cards(window);
+    assert.equal(after.length, before + 1, "the new card landed, so this is a real rebuild");
+    assert.ok(expanded(after[1]), "his card closed when the new entry arrived");
+    assert.ok(!expanded(after[0]), "and the new one opened itself");
+  });
+
+  test("the drawer inside the card is restored with it", async () => {
+    const { window, timers } = await pollable();
+    const card = cards(window)[0];
+    click(window, card);
+    click(window, card.querySelector(".journal-toggle"));
+    assert.ok(card.classList.contains("is-reading"), "the journal drawer opened");
+    serve(window, grown('W/"newer"'));
+
+    await timers.firePagePoll();
+    const restored = cards(window)[1];
+    assert.ok(expanded(restored), "the card came back collapsed");
+    assert.ok(restored.classList.contains("is-reading"), "the drawer inside it came back shut");
+  });
+
+  test("the card that was open is the one that reopens, not the one in its place", async () => {
+    /* Keyed by cycle rather than by position. A new entry pushes every card
+     * down by one, so an index-keyed store hands the open state to whichever
+     * cycle inherited the slot -- which is precisely the moment this runs. */
+    const { window, timers } = await pollable();
+    const opened = cards(window)[0].id;
+    click(window, cards(window)[0]);
+    serve(window, grown('W/"newer"'));
+
+    await timers.firePagePoll();
+    const open = cards(window).filter(expanded).map((card) => card.id);
+    assert.deepEqual(open, [opened], "the open card moved to a different cycle");
+  });
+
   test("it does not throw away what he is typing", async () => {
     const { window, timers } = await pollable();
     const card = cards(window)[0];
