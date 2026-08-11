@@ -216,3 +216,15 @@ def test_entries_without_a_cycle_number_do_not_trip_the_guard():
     )
     new_live, new_archive = plan(live, ARCHIVE, keep=2)
     verify(live, ARCHIVE, new_live, new_archive)
+
+
+def test_a_cycle_named_inside_a_note_is_not_read_as_its_marker():
+    """30 live captures mention some other `(Cycle N)` in their body while
+    carrying no marker of their own. Reading one as the entry's own date
+    would refuse the file for a reason that is not true."""
+    live = LIVE.replace(
+        "- 2026-08-11 (Cycle 3) — Third.",
+        "- A note with no marker that discusses (Cycle 99) at length.",
+    )
+    new_live, new_archive = plan(live, ARCHIVE, keep=2)
+    verify(live, ARCHIVE, new_live, new_archive)

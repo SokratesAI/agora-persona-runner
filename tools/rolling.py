@@ -256,8 +256,13 @@ def run(spec, argv=None, description=None):
         print(f"nothing to roll: {args.live} is already at or under {args.keep} {spec.noun}")
         return 0
     moved = len(spec.split_entries(_body(live, spec)[1])) - args.keep
+    # `noun` is plural; the original printed `line(s)` and losing that to
+    # the extraction would have made a single-entry roll say "1 digest
+    # lines". Naive de-pluralisation is fine for the nouns that exist
+    # here and there is no third one waiting.
+    moved_noun = spec.noun[:-1] if moved == 1 and spec.noun.endswith("s") else spec.noun
     print(
-        f"verified: {moved} {spec.noun} roll off, "
+        f"verified: {moved} {moved_noun} roll off, "
         f"{len(live)} -> {len(new_live)} bytes live, "
         f"{len(archive)} -> {len(new_archive)} bytes archived"
     )

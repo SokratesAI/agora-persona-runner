@@ -2,9 +2,11 @@
 
 These are Nova's own crude-capture files -- one bullet per thing noticed
 and not fixed, appended by `prompt.md` step 6 at a floor of two per
-cycle, never pruned. At Cycle 111 they were **158,635 and 99,617 bytes**,
-319 and 204 entries, and they are read by the opening subagent of every
-cycle. That read now fails: Cycle 112's own opening report said, under
+cycle, never pruned. At Cycle 112 they were **158,635 and 99,617 bytes**,
+320 and 205 entries as `split_bullets` counts them -- one more each than
+a bare `grep -c '^- '`, which misses the stray `### Cycle 94` heading
+that is its own entry -- and they are read by the opening subagent of
+every cycle. That read now fails: Cycle 112's own opening report said, under
 "What I could not read", that both files "exceeded what I could read in
 full" and that everything older than roughly Cycle 60 was "sampled, not
 individually reviewed". A backlog nobody can read is not a backlog.
@@ -99,11 +101,12 @@ def _check_entry(entry):
     """Entries are bullets; a stray heading is tolerated, prose is not.
 
     Both files hold one `### Cycle 94` heading from a cycle that used a
-    different shape, and `split_bullets` keeps such a line attached to
-    the bullet above it rather than dropping it. What must not pass is a
-    block that is neither -- an explanatory paragraph under `## Entries`
-    would mean the split point is guesswork, exactly as a non-cycle
-    paragraph does in the digest.
+    different shape. `split_bullets` gives such a line an entry of its
+    own, so it travels rather than being swallowed or dropped -- which is
+    why this check tolerates a leading `#`. What must not pass is a block
+    that is neither: an explanatory paragraph under `## Entries` would
+    mean the split point is guesswork, exactly as a non-cycle paragraph
+    does in the digest.
     """
     if not entry.startswith("- ") and not entry.startswith("#"):
         raise RollError(
@@ -112,7 +115,17 @@ def _check_entry(entry):
         )
 
 
-_CYCLE_RE = re.compile(r"\(Cycle[ \t]+(\d+)\)")
+# `- 2026-08-09 (Cycle 63) — the note itself`, and the date is optional.
+# Anchored to the entry's own marker rather than searched for anywhere in
+# it, because a capture's *body* very often names some other cycle: 30
+# entries in the live `issues.md` and 17 in `ideas.md` mention a
+# `(Cycle N)` while carrying no marker of their own. Searching would read
+# those as the entry's date and refuse the file for a reason that is not
+# true -- and a guard that can lie about why is one a future cycle will
+# learn to route around. The anchored form still sees 85 and 50 markers
+# respectively, and still finds 19 and 11 real ascents, so nothing is
+# lost by being strict here.
+_CYCLE_RE = re.compile(r"^- (?:\d{4}-\d{2}-\d{2}[ \t]*)?\(Cycle[ \t]+(\d+)")
 
 
 def check_newest_first(entries):
@@ -138,7 +151,7 @@ def check_newest_first(entries):
     `parse_notes` refuses to sort -- it would rank a third of the file
     and dump the other two thirds in arbitrary order.
     """
-    seen = [int(m.group(1)) for e in entries if (m := _CYCLE_RE.search(e))]
+    seen = [int(m.group(1)) for e in entries if (m := _CYCLE_RE.match(e))]
     for older, newer in zip(seen, seen[1:]):
         if newer > older:
             raise RollError(
