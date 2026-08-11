@@ -111,7 +111,7 @@ def test_an_archive_that_could_hide_needs_edvard_is_refused():
 def test_losing_a_line_the_parser_can_see_is_refused():
     live, archive = plan(LIVE, ARCHIVE, keep=2)
     lost = archive.replace("**Cycle 1** (2026-08-11 13:00) — First.\n\n", "")
-    with pytest.raises(SystemExit, match="changes 'lines'"):
+    with pytest.raises(SystemExit, match="digest lines in"):
         verify(LIVE, ARCHIVE, live, lost)
 
 
@@ -147,3 +147,51 @@ def test_a_first_roll_with_no_archive_yet_builds_one_the_site_can_read():
     live, archive = plan(LIVE, "", keep=2)
     assert ARCHIVE_TITLE in archive
     assert [l["cycle"] for l in parse_digest(f"{live}\n\n{archive}")["lines"]] == [5, 4, 3, 2, 1]
+
+
+# --- recovering from a half-applied run -----------------------------------
+#
+# The two vault writes are not atomic and the archive goes first, so a
+# cycle killed between them leaves the same lines in both files. Reviewer
+# finding on runner#93: nothing detected that, and the next run rolled
+# them again, so a cycle rendered twice on Edvard's phone forever.
+
+
+def _crashed_between_the_two_writes(keep=2):
+    """The state a cycle killed after the archive write leaves behind:
+    the new archive, and the live file still un-rolled."""
+    _, new_archive = plan(LIVE, ARCHIVE, keep=keep)
+    return LIVE, new_archive
+
+
+def test_a_run_after_a_crash_does_not_file_the_same_line_twice():
+    live, archive = _crashed_between_the_two_writes()
+    recovered_live, recovered_archive = plan(live, archive, keep=2)
+    cycles = [l["cycle"] for l in parse_digest(f"{recovered_live}\n\n{recovered_archive}")["lines"]]
+    assert cycles == [5, 4, 3, 2, 1, 0], "every line once, newest first"
+    assert len(cycles) == len(set(cycles))
+
+
+def test_the_crash_state_really_is_a_duplicate_before_the_recovery():
+    # Without this the test above could pass against a plan() that never
+    # rolls at all: it pins that the state being recovered from is
+    # genuinely broken, so the recovery has something to do.
+    live, archive = _crashed_between_the_two_writes()
+    cycles = [l["cycle"] for l in parse_digest(f"{live}\n\n{archive}")["lines"]]
+    assert cycles.count(3) == 2 and cycles.count(2) == 2
+
+
+def test_recovery_still_refuses_if_it_would_drop_something_new():
+    live, archive = _crashed_between_the_two_writes()
+    new_live, new_archive = plan(live, archive, keep=2)
+    lost = new_archive.replace("**Cycle 1** (2026-08-11 13:00) — First.\n\n", "")
+    with pytest.raises(SystemExit, match="digest lines in"):
+        verify(live, archive, new_live, lost)
+
+
+def test_a_recovery_run_actually_passes_its_own_verification():
+    # `main` runs plan then verify, so a recovery that plan handles but
+    # verify rejects is a tool that cannot recover. Caught by mutation:
+    # dropping `_dedup` from verify breaks nothing else in this file.
+    live, archive = _crashed_between_the_two_writes()
+    verify(live, archive, *plan(live, archive, keep=2))

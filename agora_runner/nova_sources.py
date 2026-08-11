@@ -99,7 +99,11 @@ def digest_markdown():
     `parse_digest` reads `## Digest` as everything from that heading to
     the next `##` one -- and the archive deliberately has no `##`
     heading, so its lines land inside the live file's digest section
-    rather than starting a rival one. Order is preserved: both files are
+    rather than starting a rival one -- which would not hide **Needs
+    Edvard** or **Next cycle**, as this comment used to claim, but would
+    silently replace the live file's own newest digest lines with the
+    archive's older ones, `_sections` keeping the last heading of each
+    name. Order is preserved: both files are
     newest-first and the archive holds only lines older than the live
     file's oldest.
 
