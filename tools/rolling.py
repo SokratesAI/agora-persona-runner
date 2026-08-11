@@ -65,9 +65,11 @@ class RollSpec:
         keep,
         noun="entries",
         check_entry=None,
+        check_entries=None,
         check_archive=None,
         check_render=None,
     ):
+        self.check_entries = check_entries
         self.noun = noun
         self.marker = marker
         self.archive_title = archive_title
@@ -180,6 +182,12 @@ def plan(live, archive, spec, keep=None):
     if spec.check_entry:
         for entry in entries:
             spec.check_entry(entry)
+    # Whole-list checks come after the per-entry ones and before the
+    # early return, so a file that is too short to roll is still told it
+    # is mis-ordered rather than being quietly waved through until the
+    # day it grows past `keep` and rolls the wrong end.
+    if spec.check_entries:
+        spec.check_entries(entries)
     if len(entries) <= keep:
         return live, archive
 

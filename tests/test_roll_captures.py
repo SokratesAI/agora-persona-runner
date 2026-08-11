@@ -168,3 +168,51 @@ def test_a_stray_heading_travels_as_its_own_capture():
 def test_spec_noun_reaches_the_failure_message():
     spec = spec_for(LIVE)
     assert spec.noun == "captures"
+
+
+def test_a_file_that_is_not_newest_first_is_refused():
+    """The defect that stopped this tool being pointed at the live files.
+
+    `plan` keeps the top `keep` entries, which is "keep the newest" only
+    if the file is newest-first. The live `issues.md` is not: its top
+    half descends from the prepend era and its bottom half ascends from
+    the append era, so the newest captures are at the bottom.
+    """
+    live = LIVE.replace(
+        "- 2026-08-11 (Cycle 1) — First.",
+        "- 2026-08-11 (Cycle 1) — First.\n\n- 2026-08-11 (Cycle 9) — Appended at the bottom.",
+    )
+    with pytest.raises(SystemExit, match=r"not newest-first"):
+        plan(live, ARCHIVE, keep=2)
+
+
+def test_the_order_guard_fires_even_when_nothing_would_roll():
+    """A short file is still told it is mis-ordered.
+
+    Otherwise the refusal only appears on the day the file grows past
+    `keep` -- which is the day it would silently roll the wrong end.
+    """
+    live = LIVE.replace(
+        "- 2026-08-11 (Cycle 1) — First.",
+        "- 2026-08-11 (Cycle 1) — First.\n\n- 2026-08-11 (Cycle 9) — Appended at the bottom.",
+    )
+    with pytest.raises(SystemExit, match=r"not newest-first"):
+        plan(live, ARCHIVE, keep=KEEP)
+
+
+def test_a_descending_file_passes_the_order_guard():
+    """The guard must not refuse the shape it is meant to allow."""
+    new_live, new_archive = plan(LIVE, ARCHIVE, keep=2)
+    verify(LIVE, ARCHIVE, new_live, new_archive)
+    assert "Cycle 5" in new_live
+
+
+def test_entries_without_a_cycle_number_do_not_trip_the_guard():
+    """Only ~a third of real captures carry `(Cycle N)`; the rest must be
+    ignored rather than treated as out of order."""
+    live = LIVE.replace(
+        "- 2026-08-11 (Cycle 3) — Third.",
+        "- 2026-08-11 — no cycle number here at all.",
+    )
+    new_live, new_archive = plan(live, ARCHIVE, keep=2)
+    verify(live, ARCHIVE, new_live, new_archive)
