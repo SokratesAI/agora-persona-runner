@@ -57,9 +57,16 @@ _SEGMENT_SPLIT_RE = re.compile(r"[ \t]+—[ \t]+")
 # is the `$`, not the rule: with no re.MULTILINE it anchors to the end of
 # the entry, so the only `PR: ... | Outcome: ...` line that can match is
 # the last one. That anchor was always doing the work -- a mutation run
-# (2026-08-09) showed as much, and adding re.DOTALL here changes nothing.
-# It also stops `outcome` from matching a single character, since `.+?`
-# is non-greedy: without it `Outcome: merged` parses as `m`.
+# (2026-08-09) showed as much. It also stops `outcome` from matching a
+# single character, since `.+?` is non-greedy: without it `Outcome:
+# merged` parses as `m`.
+#
+# This comment used to add "and adding re.DOTALL here changes nothing at
+# all", which was true only while the rule was mandatory and is false now.
+# A reviewer demonstrated it: with re.DOTALL, an entry that quotes the
+# footer format mid-prose and then ends with its real footer matches the
+# *quoted* one, and `outcome` swallows everything from there to the end of
+# the entry. No live entry does that today. Do not add the flag.
 _FOOTER_RE = re.compile(
     r"\n(?:-{3,}[ \t]*\n)?PR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*Outcome:[ \t]*(?P<outcome>.+?)[ \t]*$",
     re.IGNORECASE,
