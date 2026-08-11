@@ -45,15 +45,30 @@ _SEGMENT_SPLIT_RE = re.compile(r"[ \t]+—[ \t]+")
 # The one rigid part of an entry (personality.md): a `---` rule, then the
 # PR and outcome on one line.
 #
-# Two things keep this off a `---` used as an ordinary rule mid-entry, and
-# it is worth being precise about which does what, because a mutation run
-# (2026-08-09) showed one of them carrying all the weight. The literal
-# `\n---\nPR:` is what rejects a rule not followed by a PR line -- adding
-# re.DOTALL here changes nothing at all. The `$` is what stops `outcome`
-# from matching a single character, since `.+?` is non-greedy: without it
-# `Outcome: merged` parses as `m`.
+# The rule is optional, and that is the whole of a bug Edvard could see.
+# The review rubric asks every entry to carry a `Reviewer: n findings`
+# line, and Cycle 104 wrote it where the rule used to sit -- so the
+# entry ended `Reviewer: ...\nPR: #88 | Outcome: merged` with no `---`
+# anywhere, the search failed, and its card on the site showed no PR and
+# no outcome for a cycle that had merged one. An entry is written once
+# and never edited, so the parser is the only end of this that can move.
+#
+# What actually keeps this off a `---` used as an ordinary rule mid-entry
+# is the `$`, not the rule: with no re.MULTILINE it anchors to the end of
+# the entry, so the only `PR: ... | Outcome: ...` line that can match is
+# the last one. That anchor was always doing the work -- a mutation run
+# (2026-08-09) showed as much. It also stops `outcome` from matching a
+# single character, since `.+?` is non-greedy: without it `Outcome:
+# merged` parses as `m`.
+#
+# This comment used to add "and adding re.DOTALL here changes nothing at
+# all", which was true only while the rule was mandatory and is false now.
+# A reviewer demonstrated it: with re.DOTALL, an entry that quotes the
+# footer format mid-prose and then ends with its real footer matches the
+# *quoted* one, and `outcome` swallows everything from there to the end of
+# the entry. No live entry does that today. Do not add the flag.
 _FOOTER_RE = re.compile(
-    r"\n-{3,}[ \t]*\nPR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*Outcome:[ \t]*(?P<outcome>.+?)[ \t]*$",
+    r"\n(?:-{3,}[ \t]*\n)?PR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*Outcome:[ \t]*(?P<outcome>.+?)[ \t]*$",
     re.IGNORECASE,
 )
 _SECTION_RE = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
