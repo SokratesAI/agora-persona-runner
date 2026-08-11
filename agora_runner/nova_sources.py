@@ -15,6 +15,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_journal import (
+    DIGEST_ARCHIVE_PATH,
     DIGEST_PATH,
     JOURNAL_DIR,
     JOURNAL_PATH,
@@ -92,7 +93,29 @@ def comments_markdown():
 
 
 def digest_markdown():
-    return vault_read_path(DIGEST_PATH) or ""
+    """The live digest, with the rolled-off lines appended to it.
+
+    Two files, one document, and the join is plain concatenation because
+    `parse_digest` reads `## Digest` as everything from that heading to
+    the next `##` one -- and the archive deliberately has no `##`
+    heading, so its lines land inside the live file's digest section
+    rather than starting a rival one. Order is preserved: both files are
+    newest-first and the archive holds only lines older than the live
+    file's oldest.
+
+    Anything in the archive that is not a digest line -- its frontmatter,
+    its `#` title -- fails `_DIGEST_LINE_RE` and is dropped, the same way
+    the live file's own prose already is.
+
+    A missing archive is `""`, which makes the split safe in either
+    deploy order: before the vault file exists this is exactly the old
+    behaviour, and after it the site shows every line it ever showed.
+    """
+    live = vault_read_path(DIGEST_PATH) or ""
+    archive = vault_read_path(DIGEST_ARCHIVE_PATH) or ""
+    if not archive:
+        return live
+    return f"{live}\n\n{archive}"
 
 
 def board_markdown(name):
