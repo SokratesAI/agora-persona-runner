@@ -93,7 +93,10 @@ async function loadSite(path = "/", { failComments = false, digest, comments, in
         : Promise.resolve({ json: () => Promise.resolve(comments || payload.comments) });
     }
     if (url.includes("/api/digest")) {
-      return Promise.resolve({ json: () => Promise.resolve(digest || payload.digest) });
+      // A function for the same reason `journal` is one: the digest takes
+      // a window too now, so its answer depends on the query string.
+      const body = typeof digest === "function" ? digest(url) : digest || payload.digest;
+      return Promise.resolve({ json: () => Promise.resolve(body) });
     }
     const body = journal ? journal(url) : payload.journal;
     return Promise.resolve({ json: () => Promise.resolve(body) });
@@ -117,8 +120,11 @@ function click(window, node) {
 
 const cards = (window) => [...window.document.querySelectorAll(".entry")];
 /** A digest line as the card renders it -- spans joined, so the `**` the
- *  raw `text` field still carries is not compared against the DOM. */
-const lineText = (line) => line.spans.map((s) => s.text).join("");
+ *  raw `text` field still carries is not compared against the DOM. Both
+ *  drawers, since that is the whole line: the server stopped sending a
+ *  third copy of it when `/api/digest` learned to send one window. */
+const lineText = (line) =>
+  [...line.briefSpans, ...line.restSpans].map((s) => s.text).join("");
 /** The headline a collapsed card shows for a digest line -- its first drawer.
  *  Distinct from `lineText`: the rest of the line is revealed on open, so
  *  comparing a card against the whole line would have been comparing it
@@ -1389,6 +1395,46 @@ describe("the feed loads a window rather than the whole journal", () => {
     const server = paged(50);
     await loadSite("/cycle/7", { journal: server.serve });
     assert.match(server.asked[0], /\/api\/journal\?cycle=7$/);
+  });
+
+  /** The digest URLs the page asked for, in order. */
+  function digestSpy() {
+    const asked = [];
+    const serve = (url) => {
+      asked.push(url);
+      return payload.digest;
+    };
+    return { serve, asked };
+  }
+
+  test("the digest is asked for the same window as the feed", async () => {
+    /* 266KB of the digest's 271KB is its summary lines, one per cycle and
+     * one more an hour -- the same shape the journal had before it learned
+     * to send a window. The page has to ask for the window, or the server
+     * hands back all of them and the cold load is no smaller. */
+    const server = paged(50);
+    const spy = digestSpy();
+    await loadSite("/", { journal: server.serve, digest: spy.serve });
+    assert.match(spy.asked[0], /\/api\/digest\?limit=20$/);
+  });
+
+  test("showing older entries widens the digest with the feed", async () => {
+    /* They have to move together. A feed of forty against summaries for
+     * twenty is twenty cards that lost their headline on the way past the
+     * boundary. */
+    const server = paged(50);
+    const spy = digestSpy();
+    const window = await loadSite("/", { journal: server.serve, digest: spy.serve });
+    click(window, window.document.querySelector("button.more"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(spy.asked[spy.asked.length - 1], /\/api\/digest\?limit=40$/);
+  });
+
+  test("a deep link asks the digest for its own cycle too", async () => {
+    const server = paged(50);
+    const spy = digestSpy();
+    await loadSite("/cycle/7", { journal: server.serve, digest: spy.serve });
+    assert.match(spy.asked[0], /\/api\/digest\?cycle=7$/);
   });
 
   test("a poll asks for the window that is on screen, not the first page", async () => {

@@ -784,10 +784,22 @@
     return "/api/journal?limit=" + windowSize;
   }
 
+  /* The digest takes the same window as the feed, so the summaries that
+   * come back are the summaries of the cards on screen -- 266KB of the
+   * digest's 271KB is its lines, and the page shows twenty cycles of them.
+   * Asked for alongside the journal rather than after it: the server
+   * resolves the window to a cycle range on its side, so neither request
+   * has to wait to find out what the other got. */
+  function digestUrl() {
+    var wanted = routedCycle(window.location.pathname);
+    if (wanted !== null) return "/api/digest?cycle=" + wanted;
+    return "/api/digest?limit=" + windowSize;
+  }
+
   function fetchAll() {
     return Promise.all([
       fetchVersioned(journalUrl(), "journal"),
-      fetchVersioned("/api/digest", "digest").catch(function () { return null; }),
+      fetchVersioned(digestUrl(), "digest").catch(function () { return null; }),
       // Tolerated the same way the digest is: the journal is the page, and
       // a comments read that fails should cost the bubbles, not the feed.
       // Not conditional: it is uncached and unversioned on purpose, because

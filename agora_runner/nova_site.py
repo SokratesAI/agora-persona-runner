@@ -280,6 +280,7 @@ CACHE_FRESH_SECONDS = 15
 _cache = {}
 _cache_lock = threading.Lock()
 _refreshing = set()
+_build_locks = {}
 
 
 def _versioned(payload):
@@ -335,7 +336,28 @@ def cached_payload(name, build):
         thread.start()
     if entry is not None:
         return entry[0], entry[1], entry[2]
-    return _refresh(name, build)
+    # Cold: one build, however many requests arrive at once. This is a
+    # ThreadingHTTPServer and a cold load now asks for two payloads in
+    # parallel, both of which want the journal -- `/api/digest` needs the
+    # journal window to know which cycles its lines belong to. Without
+    # this the first load of a process pays the 3.0-3.5s journal build
+    # twice, concurrently, for one answer.
+    with _build_lock(name):
+        with _cache_lock:
+            entry = _cache.get(name)
+        if entry is not None:
+            return entry[0], entry[1], entry[2]
+        return _refresh(name, build)
+
+
+def _build_lock(name):
+    """The lock serialising cold builds of one payload. Created under the
+    cache lock so two threads racing to make it end up with the same one."""
+    with _cache_lock:
+        lock = _build_locks.get(name)
+        if lock is None:
+            lock = _build_locks[name] = threading.Lock()
+        return lock
 
 
 def reset_cache():
@@ -346,6 +368,12 @@ def reset_cache():
     with _cache_lock:
         _cache.clear()
         _refreshing.clear()
+        # `_build_locks` is deliberately not cleared. Dropping a lock a
+        # cold build is currently holding does not release it -- it just
+        # hands the next caller a different lock object, and the two build
+        # in parallel, which is the one thing the lock exists to stop. The
+        # dict is keyed by payload name, so it holds three entries in
+        # production and never grows.
 
 
 def _refresh(name, build):
@@ -406,6 +434,58 @@ def journal_page(payload, limit=None, offset=0, cycle=None):
             end += 1
         picked = entries[offset:end]
     return {"entries": picked, "status": payload.get("status", {}), "total": len(entries)}
+
+
+def digest_page(payload, journal, limit=None, offset=0, cycle=None):
+    """The digest, with `lines` cut to the cycles the journal window covers.
+
+    `/api/digest` was 270,793 bytes raw, 38,782 gzipped on the wire, off
+    the live pod at 07:03 Oslo on 2026-08-11 -- and `lines` was 266,393 of
+    that, 98% of a payload the reader sees twenty cycles of. It grows by
+    one line an hour, exactly the way `/api/journal` did before #85. Those
+    three numbers describe the payload as it was *before* this commit,
+    including the dead third copy of every line's text that went with it,
+    so they are the baseline rather than a description of the code below.
+
+    **Cut by the journal window's cycle range, not by a line count.** The
+    two lists do not run in step: 46 digest lines describe 110 journal
+    entries, cycles that never got a digest line leave gaps, and a cycle
+    with an addendum spends two entries on one line. Taking the first
+    twenty lines would hand the page a set of cycles its feed does not
+    contain, and -- worse -- silently drop the summary of whichever cycle
+    straddles the boundary. So the window is computed by asking
+    `journal_page` for the same slice the feed is showing and keeping
+    every line inside the cycles it came back with. The two stay aligned
+    because it is literally the same function answering.
+
+    A range rather than exact membership: a digest line whose cycle has no
+    entry is invisible to the client either way, and a range cannot fall
+    out of step with a feed that is itself contiguous.
+
+    No `limit` means every line, for the same reason `journal_page` says
+    it: an app.js served out of a service worker's cache from before this
+    shipped asks the old way and must still get a whole answer.
+    """
+    lines = payload.get("lines") or []
+    if cycle is not None:
+        picked = [line for line in lines if line.get("cycle") == cycle]
+    elif limit is None:
+        picked = lines
+    else:
+        window = journal_page(journal, limit=limit, offset=offset)
+        cycles = [
+            entry.get("cycle") for entry in window["entries"]
+            if entry.get("cycle") is not None
+        ]
+        if cycles:
+            low, high = min(cycles), max(cycles)
+            picked = [
+                line for line in lines
+                if line.get("cycle") is not None and low <= line["cycle"] <= high
+            ]
+        else:
+            picked = []
+    return dict(payload, lines=picked, totalLines=len(lines))
 
 
 def page_etag(base_etag, descriptor):
@@ -504,6 +584,33 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         page["version"] = etag
         self._send_json_or_304(json.dumps(page), etag)
 
+    def _send_digest(self, query):
+        """`/api/digest`, cut to the cycles the feed is showing.
+
+        Takes the same window parameters as `/api/journal` and is asked
+        for with the same ones, so the page never has to wait for the feed
+        before it can ask for the summaries -- both requests go out
+        together on a cold load, as they always have.
+        """
+        payload, _, base = cached_payload("digest", digest_payload)
+        cycle = _int_param(query, "cycle", None)
+        limit = _int_param(query, "limit", None)
+        offset = _int_param(query, "offset", 0)
+        journal = None
+        if cycle is None and limit is not None:
+            journal, _, journal_etag = cached_payload("journal", journal_payload)
+            # The window is resolved out of the journal, so the answer can
+            # change while the digest file does not -- an addendum written
+            # anywhere in the window pushes its oldest cycle out and pulls
+            # another one in. Keyed on the digest alone, a poll in that gap
+            # gets a 304 and the newly-visible card renders with no summary
+            # until the next digest write, up to an hour later.
+            base = base + "|" + journal_etag
+        page = digest_page(payload, journal, limit=limit, offset=offset, cycle=cycle)
+        etag = page_etag(base, f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}")
+        page["version"] = etag
+        self._send_json_or_304(json.dumps(page), etag)
+
     def _send_json_or_304(self, body, etag):
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
@@ -548,7 +655,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 self._send_journal(query)
                 return
             if path == "/api/digest":
-                self._send_cached_json("digest", digest_payload)
+                self._send_digest(query)
                 return
             if path == "/api/comments":
                 # Deliberately not cached. It is 6KB and 20-78ms against
