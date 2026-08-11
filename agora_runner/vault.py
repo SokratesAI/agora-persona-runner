@@ -148,16 +148,51 @@ class VaultIncompleteDocument(RuntimeError):
     """
 
 
+def _fetch_chunks(chunk_ids):
+    """`{chunk_id: data}` for every chunk that exists, in one request.
+
+    An id absent from the result is genuinely missing -- that is what
+    `vault_assemble` turns into VaultIncompleteDocument, so this must
+    never report a chunk as absent for any reason other than absence. A
+    non-200 from `_all_docs` therefore falls back to per-chunk GETs
+    rather than returning an empty map, which would make every read of
+    every file look like corruption."""
+    keys = sorted(set(chunk_ids))
+    if not keys:
+        return {}
+    status, body = couch_req(
+        "POST", f"{COUCHDB_DB}/_all_docs", {"keys": keys, "include_docs": True}
+    )
+    if status != 200:
+        out = {}
+        for chunk_id in keys:
+            chunk_status, chunk = couch_get_doc(chunk_id)
+            if chunk_status == 200:
+                out[chunk_id] = chunk.get("data", "")
+        return out
+    return {
+        row["key"]: (row["doc"] or {}).get("data", "")
+        for row in body.get("rows", [])
+        if "error" not in row and row.get("doc")
+    }
+
+
 def vault_assemble(doc, path=None):
     kids = doc.get("children") or []
     if kids:
+        # One request for every chunk, not one per chunk. Chunking the
+        # write path (Cycle 117) turned a 134KB file from 1 chunk into 16,
+        # and 16 sequential GETs measured 343ms against 22ms on the live
+        # vault -- a cost nova_site pays on every page load. LiveSync
+        # files, which are Edvard's, have always been chunked and have
+        # always paid it.
+        by_id = _fetch_chunks(kids)
         out = []
         missing = []
         for chunk_id in kids:
-            status, chunk = couch_get_doc(chunk_id)
-            if status != 200:
+            if chunk_id not in by_id:
                 missing.append(chunk_id)
-            out.append(chunk.get("data", "") if status == 200 else "")
+            out.append(by_id.get(chunk_id, ""))
         if missing:
             raise VaultIncompleteDocument(
                 f"{path or doc.get('path') or doc.get('_id')}: {len(missing)} of "

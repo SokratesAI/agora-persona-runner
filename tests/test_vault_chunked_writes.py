@@ -85,8 +85,10 @@ def test_append_rewrites_only_the_changed_chunks():
         calls.append((method, path, body))
         if method == "POST" and path.endswith("/_all_docs"):
             # Every chunk of the current file is already in the database.
-            return 200, {"rows": [{"key": k, "id": k, "value": {"rev": "1-x"}}
-                                  for k in sorted(set(body["keys"]))]}
+            return 200, {"rows": [
+                {"key": k, "id": k, "value": {"rev": "1-x"},
+                 "doc": {"data": existing_data.get(k, "")}}
+                for k in sorted(set(body["keys"]))]}
         if method == "GET":
             doc_id = path.split("/", 1)[1].replace("%3A", ":")
             if doc_id == "notes%2Fissues.md" or doc_id == "notes/issues.md":
@@ -139,3 +141,40 @@ def test_chunking_matches_the_bridge_copy():
     assert (vault.CHUNK_MIN_BYTES, vault.CHUNK_MAX_BYTES,
             vault.CHUNK_BOUNDARY_MASK) == (2048, 16384, 0x1F)
     assert vault._split_chunks("x\n" * 5000) == vault._split_chunks("x\n" * 5000)
+
+
+def test_assemble_fetches_all_chunks_in_one_request():
+    """Chunked writes turned a 134KB file from 1 chunk into 16, and 16
+    sequential GETs measured 343ms against 22ms on the live vault -- a cost
+    nova_site pays on every page load."""
+    calls = []
+
+    def fake_req(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "POST" and path.endswith("/_all_docs"):
+            return 200, {"rows": [
+                {"key": "h:1", "id": "h:1", "doc": {"data": "a"}},
+                {"key": "h:2", "id": "h:2", "doc": {"data": "b"}},
+            ]}
+        return 404, {"error": "not_found"}
+
+    with patch.object(vault, "couch_req", fake_req):
+        assert vault.vault_assemble({"children": ["h:1", "h:2"]}) == "ab"
+    assert len(calls) == 1 and calls[0][0] == "POST"
+
+
+def test_assemble_falls_back_to_per_chunk_gets_when_the_bulk_read_fails():
+    """An empty map out of a failed bulk read would look exactly like every
+    chunk being missing, i.e. it would report every file in the vault as
+    corrupt. Absence has to mean absence."""
+    calls = []
+
+    def fake_req(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "POST" and path.endswith("/_all_docs"):
+            return 500, {"error": "server_error"}
+        return 200, {"data": "a" if path.endswith("h%3A1") else "b"}
+
+    with patch.object(vault, "couch_req", fake_req):
+        assert vault.vault_assemble({"children": ["h:1", "h:2"]}) == "ab"
+    assert [c[0] for c in calls] == ["POST", "GET", "GET"]
