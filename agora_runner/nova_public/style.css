@@ -679,9 +679,26 @@ body.nav-open { overflow: hidden; }
 .menu-btn.open .menu-bar:nth-child(3) { transform: translateY(-0.445rem) rotate(-45deg); }
 
 /* Asked not to animate, don't -- the drawer still opens and closes, it
- * just arrives instead of sliding. */
+ * just arrives instead of sliding.
+ *
+ * The `.open` selectors have to be listed here explicitly, and this is
+ * the whole reason this block is not the one-liner it looks like it
+ * should be. A media query adds no specificity: `.nav.open` is two
+ * classes and beats a bare `.nav` no matter which comes later in the
+ * file, and `.nav.open` redeclares the entire `transition` shorthand.
+ * So the obvious `.nav, .scrim, .menu-bar { transition-duration: 0s }`
+ * silently suppresses only the *closing* animation -- the direction
+ * where the competing rule is the equally-specific base one -- and lets
+ * the opening slide play at full length for exactly the person who
+ * asked for no motion.
+ *
+ * `transition: none` rather than `transition-duration: 0s` for the
+ * second half of the same bug: the base rules carry a 220ms *delay* on
+ * `visibility`, and zeroing the duration leaves that delay in place, so
+ * a closed drawer would stay hit-testable and in the tab order for
+ * 220ms after a tap. The shorthand resets both. */
 @media (prefers-reduced-motion: reduce) {
-  .nav, .scrim, .menu-bar { transition-duration: 0s; }
+  .nav, .nav.open, .scrim, .scrim.open, .menu-bar { transition: none; }
 }
 
 .tabs, .filters {

@@ -1763,10 +1763,49 @@ describe("the sidebar", () => {
     assert.ok(drawer(window).classList.contains("open"));
   });
 
-  test("the three sections are all still reachable from inside it", async () => {
+  /* The href list on its own passes with or without this change -- the
+   * three anchors were already children of `#nav` before it, which is the
+   * point of the move being as small as it is. So it is asserted together
+   * with the thing the move did create: closed, the drawer is off-screen
+   * and its links are out of the tab order, which is the whole difference
+   * between a drawer and the row of tabs it replaced. `aria-hidden` is the
+   * half of that a DOM test can see; the `visibility` half is CSS. */
+  test("the three sections live in the drawer, and are exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
     assert.deepEqual(hrefs, ["/", "/issues", "/ideas"]);
+
+    assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
+    click(window, btn(window));
+    assert.equal(drawer(window).getAttribute("aria-hidden"), "false");
+  });
+
+  /* jsdom applies no stylesheet, so nothing above this can see the slide.
+   * This is the one CSS claim that is worth a mechanical check rather than
+   * a reading, because it is the one that was wrong: a media query adds no
+   * specificity, so a reduced-motion rule listing only `.nav` loses to
+   * `.nav.open` and suppresses the closing animation while leaving the
+   * opening one at full length. Reviewer caught it; this stops it coming
+   * back. Parsing the real sheet, not grepping it -- a dropped or
+   * malformed rule fails here rather than reading as present. */
+  test("reduced motion reaches the open states, not just the closed ones", () => {
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const { window } = openWindow("<style>" + css + "</style>");
+    const rules = [...window.document.styleSheets[0].cssRules];
+
+    const reduced = rules.filter(
+      (r) => r.media && /prefers-reduced-motion/.test(r.media.mediaText),
+    );
+    assert.equal(reduced.length, 1, "expected exactly one reduced-motion block");
+
+    const targeted = new Set();
+    for (const inner of reduced[0].cssRules) {
+      for (const one of inner.selectorText.split(",")) targeted.add(one.trim());
+    }
+    // Both directions of both animated elements.
+    for (const sel of [".nav", ".nav.open", ".scrim", ".scrim.open"]) {
+      assert.ok(targeted.has(sel), `reduced motion does not cover ${sel}`);
+    }
   });
 });
 
