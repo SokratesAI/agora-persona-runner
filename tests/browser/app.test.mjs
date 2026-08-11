@@ -1664,6 +1664,112 @@ describe("the issues page", () => {
   });
 });
 
+/* The sidebar. Edvard, issues.md 2026-08-11: "Move the Journal, issues &
+ * ideas tabs buttons to a sidebar that opens from a hamburger button that
+ * is placed at the top right of the Nova page on the same horizontal line
+ * as the Nova header. Add slide animations."
+ *
+ * jsdom applies no stylesheet here, so none of these can see the slide --
+ * the animation is CSS and is verified by reading it, which these tests
+ * deliberately do not claim to cover. What they do cover is the part that
+ * is real code: whether the button, the scrim, the Escape key and a tap
+ * on a link all agree about one boolean, and whether the drawer survives
+ * the header re-render that happens on every poll. */
+describe("the sidebar", () => {
+  const btn = (window) => window.document.getElementById("menu-btn");
+  const drawer = (window) => window.document.getElementById("nav");
+  const scrim = (window) => window.document.getElementById("scrim");
+
+  test("the nav starts closed and hidden from the tab order", async () => {
+    const window = await loadSite("/");
+    assert.ok(!drawer(window).classList.contains("open"));
+    assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
+    assert.equal(btn(window).getAttribute("aria-expanded"), "false");
+    assert.ok(!window.document.body.classList.contains("nav-open"));
+  });
+
+  test("the hamburger opens it, and opens it again after closing", async () => {
+    const window = await loadSite("/");
+    click(window, btn(window));
+    assert.ok(drawer(window).classList.contains("open"));
+    assert.ok(scrim(window).classList.contains("open"));
+    assert.ok(btn(window).classList.contains("open"), "the bars never became a cross");
+    assert.equal(drawer(window).getAttribute("aria-hidden"), "false");
+    assert.equal(btn(window).getAttribute("aria-expanded"), "true");
+    assert.equal(btn(window).getAttribute("aria-label"), "Close menu");
+    assert.ok(window.document.body.classList.contains("nav-open"),
+      "the page can still scroll under the open drawer");
+
+    click(window, btn(window));
+    assert.ok(!drawer(window).classList.contains("open"), "the button does not toggle back");
+    assert.equal(btn(window).getAttribute("aria-label"), "Open menu");
+
+    click(window, btn(window));
+    assert.ok(drawer(window).classList.contains("open"), "it only opened once");
+  });
+
+  test("tapping the scrim closes it", async () => {
+    const window = await loadSite("/");
+    click(window, btn(window));
+    click(window, scrim(window));
+    assert.ok(!drawer(window).classList.contains("open"));
+    assert.ok(!scrim(window).classList.contains("open"));
+    assert.ok(!window.document.body.classList.contains("nav-open"));
+  });
+
+  test("Escape closes it", async () => {
+    const window = await loadSite("/");
+    click(window, btn(window));
+    window.document.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    assert.ok(!drawer(window).classList.contains("open"));
+  });
+
+  /* The links did not change when they moved into the drawer, so routing
+   * is meant to be untouched -- but a drawer that stays open over the page
+   * it just navigated to is the classic way to get this half right. */
+  test("tapping a link routes and closes the drawer behind it", async () => {
+    const window = await loadSite("/");
+    click(window, btn(window));
+    click(window, window.document.querySelector(".nav-tab[href='/issues']"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.location.pathname, "/issues");
+    assert.ok(rows(window).length > 0, "the board did not render");
+    assert.ok(!drawer(window).classList.contains("open"), "the drawer stayed open over the board");
+    assert.ok(!window.document.body.classList.contains("nav-open"),
+      "the body was left unable to scroll");
+  });
+
+  /* The header is cleared and rebuilt on every render, and the button now
+   * lives in the page beside it. A blanket `textContent = ""` at the wrong
+   * scope removes the button along with the status line, and the drawer
+   * becomes unopenable -- on the journal from the first paint, and on a
+   * board page from the moment the board's own header lands. */
+  test("the hamburger survives a journal render", async () => {
+    const window = await loadSite("/");
+    assert.ok(window.document.querySelector(".status-line"), "the header never rendered");
+    assert.ok(btn(window), "the render took the menu button with it");
+    click(window, btn(window));
+    assert.ok(drawer(window).classList.contains("open"));
+  });
+
+  test("the hamburger survives a board render", async () => {
+    const window = await loadSite("/issues");
+    assert.ok(window.document.querySelector(".status-line"), "the board header never rendered");
+    assert.ok(btn(window), "the board render took the menu button with it");
+    click(window, btn(window));
+    assert.ok(drawer(window).classList.contains("open"));
+  });
+
+  test("the three sections are all still reachable from inside it", async () => {
+    const window = await loadSite("/");
+    const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas"]);
+  });
+});
+
 /* Two taps in quick succession leave two fetches in flight. Before there
  * were three views to land on, whichever resolved last simply won. */
 describe("navigating away mid-fetch", () => {

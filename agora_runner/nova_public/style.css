@@ -542,30 +542,146 @@ pre code { background: none; padding: 0; }
  *
  * Edvard: "Create more pages to contain more, such as issue list, idea
  * list (separate pages)". Three sections now exist, so there has to be
- * something to move between them with -- one row of links under the
- * header, which is one tap from anywhere and costs no vertical space on
- * a phone beyond its own line.
+ * something to move between them with.
+ *
+ * That started as one row of links under the header. Edvard, 2026-08-11:
+ * "Move the Journal, issues & ideas tabs buttons to a sidebar that opens
+ * from a hamburger button that is placed at the top right of the Nova
+ * page on the same horizontal line as the Nova header. Add slide
+ * animations." So the same three anchors now live in a drawer off the
+ * right edge. Nothing about the *links* changed -- same `.nav-tab`
+ * class, same hrefs, same delegated click handler in app.js -- only
+ * where they sit and whether they are on screen.
+ *
+ * `visibility` rather than `display` on both the drawer and the scrim:
+ * `display: none` cannot be transitioned, so it would kill the slide
+ * outright, but leaving a closed drawer merely translated off-screen
+ * leaves its three links in the tab order. Delaying `visibility` by the
+ * length of the slide gets both -- visible for the whole animation out,
+ * unreachable once it has finished.
  */
 .nav {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  width: min(15rem, 76vw);
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  padding: 0.6rem 1rem 0;
+  padding: 4.6rem 1rem 1rem;
+  background: var(--card);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 28px #0008;
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 220ms ease, visibility 0s linear 220ms;
+}
+
+.nav.open {
+  transform: translateX(0);
+  visibility: visible;
+  transition: transform 220ms ease;
 }
 
 .nav-tab {
-  flex: 1;
-  text-align: center;
-  padding: 0.5rem 0.4rem;
+  text-align: left;
+  padding: 0.7rem 0.8rem;
   border: 1px solid var(--line);
   border-radius: 0.5rem;
   color: var(--dim);
   text-decoration: none;
-  font-size: 0.95rem;
+  font-size: 1rem;
 }
 
 .nav-tab.on {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* Dims the page behind the drawer, and is the large tap target that
+ * closes it -- on a phone, reaching back up to the button is the worse
+ * of the two gestures. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  background: #000;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 220ms ease, visibility 0s linear 220ms;
+}
+
+.scrim.open {
+  opacity: 0.55;
+  visibility: visible;
+  transition: opacity 220ms ease;
+}
+
+/* The page must not scroll under an open drawer -- a phone otherwise
+ * scrolls the feed behind the scrim while the thumb is nowhere near it. */
+body.nav-open { overflow: hidden; }
+
+/* The hamburger.
+ *
+ * `fixed`, not absolute inside the header, for one reason: it is the only
+ * way back out of the drawer other than the scrim, and an absolutely
+ * positioned button scrolls away with the header, so opening the menu
+ * halfway down the feed would leave the close control off screen.
+ *
+ * `top: 1.6rem` is `.status`'s own padding-top and `height: 2.5rem` is
+ * the wordmark's line box (1.5rem at the inherited 1.65 line-height =
+ * 2.475rem), so at rest the button centres on the "Nova" line to within
+ * a rounding error -- which is the "same horizontal line as the Nova
+ * header" that was asked for. If either of those two numbers changes,
+ * this one has to change with it.
+ *
+ * `right` tracks the content column rather than the viewport: `body` is
+ * capped at 46rem and centred with 1rem of padding, so once the window
+ * is wider than that the button would otherwise drift off alone into the
+ * margin. Below 46rem the first term wins and it sits at the padding
+ * edge, which is the phone case and the common one. */
+.menu-btn {
+  position: fixed;
+  top: 1.6rem;
+  right: max(1rem, calc(50% - 23rem + 1rem));
+  z-index: 30;
+  width: 2.5rem;
+  height: 2.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.32rem;
+  padding: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.menu-bar {
+  width: 1.15rem;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--text);
+  transition: transform 220ms ease, opacity 140ms ease;
+}
+
+/* Open, the three bars become a cross. 0.445rem is the distance between
+ * two bar centres: 2px of bar plus the 0.32rem gap. */
+.menu-btn.open { border-color: var(--accent); }
+.menu-btn.open .menu-bar { background: var(--accent); }
+.menu-btn.open .menu-bar:nth-child(1) { transform: translateY(0.445rem) rotate(45deg); }
+.menu-btn.open .menu-bar:nth-child(2) { opacity: 0; }
+.menu-btn.open .menu-bar:nth-child(3) { transform: translateY(-0.445rem) rotate(-45deg); }
+
+/* Asked not to animate, don't -- the drawer still opens and closes, it
+ * just arrives instead of sliding. */
+@media (prefers-reduced-motion: reduce) {
+  .nav, .scrim, .menu-bar { transition-duration: 0s; }
 }
 
 .tabs, .filters {
