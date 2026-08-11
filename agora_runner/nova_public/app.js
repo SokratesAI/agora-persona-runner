@@ -1032,7 +1032,13 @@
     });
     var total = payload.notesTotal;
     if (typeof total === "number" && notes.length < total) {
-      var more = el("button", "more", "Show older notes");
+      /* Not "older": my two capture files switched from prepending to
+       * appending partway through, so the tail of the file is the newest
+       * material rather than the oldest. Measured 2026-08-11 -- the first
+       * ~120 notes descend from Cycle 63 to 27, the rest ascend to 102.
+       * The list says what the file says and the button does not claim an
+       * order the data does not have. Filed to normalise the files. */
+      var more = el("button", "more", "Show more notes");
       more.type = "button";
       more.addEventListener("click", function () {
         more.disabled = true;
@@ -1089,7 +1095,15 @@
     }
     fetch("/api/board?name=" + board + "&limit=" + boardState.notes)
       .then(function (r) { return r.json(); })
-      .then(function (payload) { renderBoard(board, payload); })
+      .then(function (payload) {
+        // Two taps in quick succession leave two fetches in flight, and
+        // before there were three views to land on, whichever resolved
+        // last simply won. Now it can paint Issues over Ideas while the
+        // nav highlights Ideas, because `markNav` reads the URL and this
+        // did not.
+        if (route(window.location.pathname).board !== board) return;
+        renderBoard(board, payload);
+      })
       .catch(function (err) {
         markNav();
         feed.textContent = "";
@@ -1105,7 +1119,12 @@
     }
     markNav();
     fetchAll()
-      .then(function (results) { render(results[0], results[1], results[2]); })
+      .then(function (results) {
+        // Same guard, other direction: a board fetch started before a tap
+        // on Journal must not land after this one.
+        if (route(window.location.pathname).view !== "journal") return;
+        render(results[0], results[1], results[2]);
+      })
       .catch(function (err) {
         feed.textContent = "";
         feed.appendChild(el("p", "empty", "Could not load the journal: " + err));

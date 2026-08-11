@@ -140,6 +140,13 @@ def _captures(markdown):
             break
         if stripped.startswith("- ") and stripped[2:].strip():
             bullets.append(stripped[2:].strip())
+        elif stripped and bullets and not stripped.startswith(("-", "*", "|")):
+            # A capture that wrapped. `nova_capture.clean_capture_text`
+            # splits a paste on newlines so this should not happen from
+            # the box, but the same file is edited in Obsidian on a phone,
+            # and half of Edvard's sentence going missing with no error is
+            # the worst failure this page has.
+            bullets[-1] = bullets[-1] + " " + stripped
     return bullets
 
 
@@ -188,12 +195,23 @@ def parse_board(markdown):
 
 
 def parse_notes(markdown):
-    """One of my own capture files -> `[{date, cycle, text}]`, newest first.
+    """One of my own capture files -> `[{date, cycle, text}]`, in file order.
 
-    The file is already newest-first because `prompt.md` step 6 says to
-    prepend, so nothing is sorted here -- re-ordering by the parsed date
-    would silently move any note whose date is missing or mistyped, and
-    the file's own order is the record of when it was written.
+    **File order is not reliably newest-first, and a reviewer caught this
+    docstring claiming it was.** Measured against the live
+    `nova/resources/issues.md` on 2026-08-11: the first ~120 notes descend
+    from Cycle 63 to Cycle 27 -- the era when `prompt.md` said to prepend
+    -- and the remaining ~170 *ascend* from there up to Cycle 102, because
+    step 6 now says `vault_tool.py append`, which appends at the end. Two
+    conventions, one file, and the genuinely newest material is at the
+    bottom. `ideas.md` has the same break in the same place.
+
+    Nothing is sorted here anyway, and that is deliberate: only 75 of the
+    294 live notes carry a parseable date at all, so a sort would rank a
+    quarter of the file and dump the rest. The real fix is to normalise
+    the file, which is its own piece of work and is filed as such. Until
+    then this returns what the file says and the page does not claim an
+    order it does not have -- see the pager's label in app.js.
     """
     notes = []
     for _, title, body in _sections(markdown):

@@ -244,3 +244,17 @@ def test_a_note_wrapped_onto_a_second_line_keeps_its_second_line():
     assert notes[0]["text"] == "the first half of the thought and the second half, indented."
     assert notes[0]["cycle"] == 103
     assert notes[1]["text"] == "a whole note on one line"
+
+
+def test_a_capture_that_wrapped_keeps_its_second_half_and_his_cursor_stays_empty():
+    """The capture box splits a paste on newlines, but the same file is
+    edited in Obsidian on a phone. Half of his sentence going missing with
+    no error is the worst thing this page could do."""
+    board = parse_board(
+        "---\ntype: board\n---\n\n"
+        "- the first half of what he typed\n"
+        "  and the second half, wrapped.\n"
+        "- \n\n"
+        "## Board\n"
+    )
+    assert board["captures"] == ["the first half of what he typed and the second half, wrapped."]

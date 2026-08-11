@@ -1663,3 +1663,31 @@ describe("the issues page", () => {
     assert.ok(window.document.querySelector(".nav-tab[href='/']").classList.contains("on"));
   });
 });
+
+/* Two taps in quick succession leave two fetches in flight. Before there
+ * were three views to land on, whichever resolved last simply won. */
+describe("navigating away mid-fetch", () => {
+  test("a slow board response does not paint over the page you moved to", async () => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("name=ideas")
+        ? { ...payload.board, items: [], notes: [], notesTotal: 0 }
+        : payload.board),
+    });
+    // Hold the Issues response open, tap Ideas, then let Issues land last.
+    const realFetch = window.fetch;
+    window.fetch = (url, init) => (url.includes("name=issues")
+      ? held.then(() => realFetch(url, init))
+      : realFetch(url, init));
+
+    click(window, window.document.querySelector(".nav-tab[href='/issues']"));
+    click(window, window.document.querySelector(".nav-tab[href='/ideas']"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.location.pathname, "/ideas");
+    assert.equal(rows(window).length, 0, "the stale Issues response painted over Ideas");
+  });
+});
