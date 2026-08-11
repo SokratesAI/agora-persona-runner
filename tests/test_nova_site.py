@@ -2170,13 +2170,39 @@ def _both(journal_md, digest_md):
     is the first thing that reads both in one request -- it resolves its
     cycle range by asking `journal_page` -- so it needs a vault that can
     tell them apart.
+
+    Three files now, not two: the archive has to answer as an empty
+    archive rather than fall through to `journal_md`. Without that, every
+    test below feeds a `###`-headed journal fixture to `digest_markdown`
+    as the digest archive, and they all still pass -- but only because
+    `journal_sample.md` happens to contain nothing matching
+    `_DIGEST_LINE_RE`, which is a coincidence of that fixture's contents
+    and not a thing any of them assert.
     """
-    from agora_runner.nova_journal import DIGEST_PATH
+    from agora_runner.nova_journal import DIGEST_ARCHIVE_PATH, DIGEST_PATH
 
     def read(path):
-        return digest_md if path == DIGEST_PATH else journal_md
+        if path == DIGEST_PATH:
+            return digest_md
+        if path == DIGEST_ARCHIVE_PATH:
+            return ""
+        return journal_md
 
     return patch.object(nova_sources, "vault_read_path", side_effect=read)
+
+
+def test_the_window_fixtures_do_not_feed_the_journal_in_as_the_archive(journal_md, digest_md):
+    """`_both` means three files, and this is what says so.
+
+    Without it the helper's correction is unpinned: reverting the archive
+    branch puts a `###`-headed journal fixture into `digest_markdown` as
+    the archive, and all ten tests below go on passing, because
+    `journal_sample.md` happens to hold nothing `_DIGEST_LINE_RE` matches.
+    Asserted against the digest fixture as a literal rather than against
+    a second call, so there is nothing a mutation can move on both sides.
+    """
+    with _both(journal_md, digest_md):
+        assert nova_sources.digest_markdown() == digest_md
 
 
 def test_the_digest_window_is_the_cycles_the_feed_is_showing(journal_md, digest_md):
