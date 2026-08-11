@@ -27,24 +27,34 @@ The archive title is derived from the live file's own `# ` heading
 rather than passed in, so the same command rolls either file and cannot
 be pointed at the wrong archive by a mistyped flag.
 
-**Neither live file can be rolled yet, and this tool refuses both.** Two
-blockers, found by reading the code that consumes these files rather
-than by trusting that nothing did:
+**Both live files have been rolled.** Cycle 114 ran it against the vault
+on 2026-08-11: 265KB down to 58KB across the two, all 534 captures still
+rendering, verified by polling `/api/board` until the count settled.
+Re-running is a no-op until a file passes `KEEP` captures again.
 
-1. **They are not newest-first.** `check_newest_first` below has the
-   measurement. `plan` keeps the top `keep` entries, so rolling
-   `issues.md` today would archive Cycles 104-111 and keep Cycle 27. The
-   guard turns that from a silent data move into a refusal.
+This module shipped at Cycle 112 as the engine plus a tool that refused,
+because two blockers stood in front of it, and both are now closed. They
+are worth keeping written down, because each one left a guard behind
+that is still load-bearing:
+
+1. **They were not newest-first.** These files grew in both directions
+   for a hundred cycles -- `vault_tool.py append` inserts under the
+   section marker when given one and at the bottom when not, and nobody
+   knew there was a choice. `plan` keeps the top `keep` entries, so
+   rolling then would have archived Cycles 104-111 and kept Cycle 27.
+   `normalise_captures` merged the two streams (#98, #99);
+   `check_newest_first` below is what stops the split re-opening, and it
+   will fire again the first time a cycle appends without the marker.
 2. **The site renders these files.** `agora_runner/nova_boards.py`
    serves both as board pages in the Nova app -- Edvard's own ask,
-   `issues.md` #57 -- reading only the live path. The digest archive is
-   safe to roll because `nova_journal.digest_markdown` concatenates it
-   back on; there is no equivalent here, so archiving would delete two
-   thirds of a page he opens. That is a site change, not a tool change,
-   and it has to land first.
-
-So this ships as the engine plus a tool that says no. Both blockers are
-filed in `nova/resources/issues.md`.
+   `issues.md` #57. It reads the archive alongside the live half now
+   (#98), the way `nova_journal.digest_markdown` always has. That fix
+   was necessary and not sufficient: #100 then had to add the
+   `## Entries` heading the archive's own parser keys on, after a roll
+   that passed every writer-side guard took two thirds of a live board
+   page off the screen. `_check_render` is the guard that came out of
+   it, and it is the only one here that asks the *reader* rather than
+   the writer.
 """
 
 import re
