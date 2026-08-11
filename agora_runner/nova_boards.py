@@ -199,17 +199,28 @@ def parse_notes(markdown):
     for _, title, body in _sections(markdown):
         if title.strip().lower() != "entries":
             continue
+        # A note is one line by convention and the live files are almost
+        # entirely that -- but not entirely: one capture in
+        # `nova/resources/issues.md` runs onto a second, indented line, and
+        # reading bullets alone drops that sentence without saying so. A
+        # continuation is joined into the note above it rather than
+        # skipped, for the same reason `render_blocks` joins paragraph
+        # lines: the break belongs to whoever wrapped it, not to the text.
+        raw = []
         for line in body.split("\n"):
             stripped = line.strip()
-            if not stripped.startswith("- ") or not stripped[2:].strip():
-                continue
-            match = _NOTE_RE.match(stripped[2:].strip())
-            text = match.group("text").strip() if match else stripped[2:].strip()
-            if not text:
+            if stripped.startswith("- ") and stripped[2:].strip():
+                raw.append(stripped[2:].strip())
+            elif stripped and raw and not stripped.startswith(("#", "|", "-")):
+                raw[-1] = raw[-1] + " " + stripped
+        for text in raw:
+            match = _NOTE_RE.match(text)
+            body_text = match.group("text").strip() if match else text
+            if not body_text:
                 continue
             notes.append({
                 "date": (match.group("date") or "") if match else "",
                 "cycle": int(match.group("cycle")) if match and match.group("cycle") else None,
-                "text": text,
+                "text": body_text,
             })
     return notes

@@ -228,3 +228,19 @@ def test_a_multi_line_quote_is_one_block(board_md):
     blocks = render_blocks("> first line\n> second line\n\nafter")
     assert [block["type"] for block in blocks] == ["quote", "p"]
     assert "".join(s["text"] for s in blocks[0]["spans"]) == "first line second line"
+
+
+def test_a_note_wrapped_onto_a_second_line_keeps_its_second_line():
+    """One capture in the live `nova/resources/issues.md` runs onto an
+    indented continuation line. Read as bullets alone, that sentence is
+    dropped silently -- no error, no gap, just a shorter note."""
+    notes = parse_notes(
+        "## Entries\n\n"
+        "- 2026-08-11 (Cycle 103) — the first half of the thought\n"
+        "  and the second half, indented.\n"
+        "- 2026-08-10 (Cycle 102) — a whole note on one line\n"
+    )
+    assert len(notes) == 2
+    assert notes[0]["text"] == "the first half of the thought and the second half, indented."
+    assert notes[0]["cycle"] == 103
+    assert notes[1]["text"] == "a whole note on one line"
