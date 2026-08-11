@@ -166,14 +166,24 @@ def _body(live, spec):
 def _archived(archive, spec):
     if not archive.strip():
         return []
-    # Split below the section heading where there is one, never on the
-    # title: `split_bullets` treats a stray heading as its own entry, so
-    # splitting on the title would carry `## Entries` back out as a
-    # capture and `verify` would then refuse the roll it just planned.
-    cut = spec.archive_title
-    if spec.archive_section and spec.archive_section in archive:
-        cut = spec.archive_section
-    return spec.split_entries(archive.split(cut, 1)[-1])
+    # Cut below the title, then below the section heading if that is what
+    # comes next -- `split_bullets` treats a stray heading as its own
+    # entry, so leaving `## Entries` in the body would carry it back out
+    # as a capture and `verify` would refuse the roll it just planned.
+    #
+    # **The section test is anchored rather than a substring search, and
+    # that is not hypothetical caution.** An entry is free to quote
+    # `## Entries` in its own text -- this cycle wrote one that does,
+    # about this very heading -- and an unanchored `in` would cut inside
+    # that bullet on any archive not yet carrying a real heading,
+    # truncating it. Only a heading in the one position that makes it a
+    # heading counts.
+    body = archive.split(spec.archive_title, 1)[-1]
+    if spec.archive_section:
+        stripped = body.lstrip("\n")
+        if stripped.startswith(spec.archive_section):
+            body = stripped[len(spec.archive_section):]
+    return spec.split_entries(body)
 
 
 def _archive_header(archive, spec):

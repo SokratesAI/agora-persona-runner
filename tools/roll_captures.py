@@ -50,6 +50,7 @@ filed in `nova/resources/issues.md`.
 import re
 import sys
 
+from agora_runner.nova_boards import parse_notes
 from tools import rolling
 from tools.rolling import RollError, RollSpec, join_bullets, split_bullets
 
@@ -169,6 +170,33 @@ def check_newest_first(entries):
             )
 
 
+def _check_render(live, archive, kept, new_live, new_archive):
+    """The same comparison through the parser that actually renders the board.
+
+    `roll_digest` has had this since it was written and `roll_captures`
+    did not, which is the whole reason Cycle 114's regression reached the
+    site: every guard here counted captures, and the one thing that
+    mattered was whether `nova_boards.parse_notes` could still find them.
+    A count survives a change in how a note renders -- or in whether it
+    renders at all -- and that is exactly the failure that shipped.
+
+    `kept` is the input pair as the parser should have seen it, so the
+    comparison is against what the roll claims to preserve rather than
+    against a half-applied run. The archive is parsed separately and
+    appended, the same way `nova_site.board_payload` consumes it.
+    """
+    rejoined = live[: live.find(MARKER) + len(MARKER)] + "\n" + join_bullets(kept) + "\n"
+    before = [note["text"] for note in parse_notes(rejoined)]
+    after = [note["text"] for note in parse_notes(new_live)] + [
+        note["text"] for note in parse_notes(new_archive)
+    ]
+    if before != after:
+        raise RollError(
+            "refusing to write: the board would render "
+            f"{len(after)} captures where it rendered {len(before)}"
+        )
+
+
 def spec_for(live):
     return RollSpec(
         marker=MARKER,
@@ -192,6 +220,7 @@ def spec_for(live):
         noun="captures",
         check_entry=_check_entry,
         check_entries=check_newest_first,
+        check_render=_check_render,
     )
 
 

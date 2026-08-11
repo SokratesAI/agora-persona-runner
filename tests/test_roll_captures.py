@@ -267,3 +267,53 @@ def test_the_archive_is_readable_by_the_page_that_renders_it():
     ]
     assert parse_notes(new_archive), "the archive renders as no notes at all"
     assert sorted(after) == sorted(before)
+
+
+def test_a_capture_that_quotes_the_heading_does_not_move_the_split():
+    """A note is free to talk about `## Entries`, and one of mine does.
+
+    The archive's section heading is found by position, not by searching
+    the whole file for the string: an unanchored match would cut inside
+    this bullet on any archive not yet carrying a real heading, and the
+    reviewer that caught it could not construct a case where `verify`
+    was guaranteed to notice.
+    """
+    quoting = (
+        "- 2026-08-11 (Cycle 1) — append needs the `## Entries` marker or "
+        "it writes to the bottom."
+    )
+    archive = ARCHIVE.replace("- 2026-08-10 (Cycle 0) — Zeroth.", quoting)
+    new_live, new_archive = plan(LIVE, archive, keep=2)
+    verify(LIVE, archive, new_live, new_archive)
+    assert quoting in new_archive
+    assert quoting in _captures(new_live, new_archive)
+
+
+def test_rolling_twice_changes_nothing_the_second_time():
+    """`test_roll_digest.py` pins this and this file did not.
+
+    The second roll is the one every future cycle actually runs: an
+    archive that already has its heading, rolled again once the live file
+    has grown back past `keep`.
+    """
+    once_live, once_archive = plan(LIVE, "", keep=2)
+    verify(LIVE, "", once_live, once_archive)
+    twice_live, twice_archive = plan(once_live, once_archive, keep=2)
+    assert (twice_live, twice_archive) == (once_live, once_archive)
+    assert once_archive.count("## Entries") == 1
+
+
+def test_an_archive_the_board_cannot_read_is_refused():
+    """This cycle's regression, as a test that would have stopped it.
+
+    The archive keeps every capture and loses only its `## Entries`
+    heading, so the count guard is satisfied -- `_archived` still finds
+    all six -- while `nova_boards.parse_notes` finds none. That is
+    precisely the shape that shipped: eight guards counting captures and
+    nothing asking the reader.
+    """
+    new_live, new_archive = plan(LIVE, "", keep=2)
+    blinded = new_archive.replace("\n## Entries\n", "\n")
+    assert len(split_bullets(blinded.split("# Nova — Issues Archive", 1)[-1])) == 3
+    with pytest.raises(SystemExit, match="the board would render"):
+        verify(LIVE, "", new_live, blinded)
