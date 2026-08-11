@@ -565,14 +565,14 @@ def parse_digest(markdown):
                     "text": text,
                     # The two drawers: the headline on the collapsed card,
                     # and the rest of the digest revealed when it opens.
+                    # Between them they are the whole line with its bold
+                    # rendered rather than shown as asterisks -- which is
+                    # why there is no third `spans` field carrying the same
+                    # text a second time. #61 stopped reading one when it
+                    # split the card into two drawers, and it went on being
+                    # sent: a third of every digest line, for nothing.
                     "briefSpans": render_inline(brief),
                     "restSpans": render_inline(rest),
-                    # Nearly every digest line opens with a bolded sentence
-                    # saying what changed, and the card showed the asterisks
-                    # -- the one line Edvard was already calling hard to read
-                    # was also the only text on the page rendering its own
-                    # markup. `text` stays for anything wanting it flat.
-                    "spans": render_inline(text),
                 }
             )
     return {

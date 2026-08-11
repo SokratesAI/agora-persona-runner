@@ -1047,16 +1047,27 @@ def test_a_digest_line_carries_its_bold_as_spans_not_asterisks():
     rendered `text` verbatim, so it was the only text on the page showing
     its own markup -- and it is the same line Edvard called hard to read.
     Found by rendering the live files rather than the fixtures, which do
-    not happen to contain a bold digest line."""
+    not happen to contain a bold digest line.
+
+    Checked across the two drawers together, because that is now the whole
+    line: the third `spans` field carrying the same text again went with
+    the digest window, and this guarantee has to survive without it."""
     lines = parse_digest(_fixture("digest_two_entries.md"))["lines"]
     assert lines
     bolded = [line for line in lines if "**" in line["text"]]
     assert bolded, "the fixture has no bold digest line to check"
     for line in bolded:
-        kinds = {span["kind"] for span in line["spans"]}
+        spans = line["briefSpans"] + line["restSpans"]
+        kinds = {span["kind"] for span in spans}
         assert "strong" in kinds
-        assert all("**" not in span["text"] for span in line["spans"])
-        assert "".join(s["text"] for s in line["spans"]) == line["text"].replace("**", "")
+        assert all("**" not in span["text"] for span in spans)
+        brief = "".join(s["text"] for s in line["briefSpans"])
+        rest = "".join(s["text"] for s in line["restSpans"])
+        # The split between the drawers eats exactly the one space it cut
+        # on, and nothing else -- spelled out rather than normalised away,
+        # because "no character is lost" is the point of the assertion.
+        rebuilt = brief + " " + rest if rest else brief
+        assert rebuilt == line["text"].replace("**", "")
 
 
 def test_two_digest_lines_with_no_blank_line_between_them_are_two_cards():
@@ -2043,3 +2054,173 @@ def test_a_window_never_cuts_a_cycle_in_half(journal_md):
         _, _, body = _get("/api/journal?limit=1")
     served = [e["cycle"] for e in json.loads(body)["entries"]]
     assert served == [49, 49], f"the boundary split cycle 49: {served}"
+
+
+# --- the digest window ------------------------------------------------------
+
+
+def _both(journal_md, digest_md):
+    """A vault where the journal and the digest are different files.
+
+    Every test above patches `vault_read_path` with one `return_value`, so
+    whatever it asks for it gets the same markdown back. The digest window
+    is the first thing that reads both in one request -- it resolves its
+    cycle range by asking `journal_page` -- so it needs a vault that can
+    tell them apart.
+    """
+    from agora_runner.nova_journal import DIGEST_PATH
+
+    def read(path):
+        return digest_md if path == DIGEST_PATH else journal_md
+
+    return patch.object(nova_sources, "vault_read_path", side_effect=read)
+
+
+def test_the_digest_window_is_the_cycles_the_feed_is_showing(journal_md, digest_md):
+    """The fixtures are the live files: 5 journal entries (cycles 49, 29,
+    19, 6 and one with no number) against 11 digest lines (49 down to 38).
+
+    Asserted as literals rather than against another response, because a
+    slice compared to the endpoint that produced it can survive its own
+    mutation -- Cycle 101 shipped one that did. One entry is cycle 49
+    alone, so exactly one line comes back; two entries reach back to cycle
+    29, and every line in the file is inside that range. **A line-count
+    slice would have returned two.** That is the difference this test is
+    here to catch.
+    """
+    with _both(journal_md, digest_md):
+        _, _, one = _get("/api/digest?limit=1")
+        nova_site.reset_cache()
+        _, _, two = _get("/api/digest?limit=2")
+    assert [line["cycle"] for line in json.loads(one)["lines"]] == [49]
+    assert [line["cycle"] for line in json.loads(two)["lines"]] == [
+        49, 48, 47, 46, 44, 43, 42, 41, 40, 39, 38
+    ]
+
+
+def test_the_digest_says_how_many_lines_there_are_in_all(journal_md, digest_md):
+    """`totalLines` is the whole file, not the window -- the count has to
+    survive the slice or nothing can tell a short digest from a cut one."""
+    with _both(journal_md, digest_md):
+        _, _, body = _get("/api/digest?limit=1")
+    payload = json.loads(body)
+    assert payload["totalLines"] == 11
+    assert len(payload["lines"]) == 1
+
+
+def test_every_cycle_on_the_page_still_has_its_summary(journal_md, digest_md):
+    """The alignment the window exists to keep. Whatever the feed shows,
+    every one of those cycles that has a digest line must have been sent
+    it -- otherwise a card silently loses its summary at the boundary."""
+    with _both(journal_md, digest_md):
+        _, _, feed = _get("/api/journal?limit=2")
+        nova_site.reset_cache()
+        _, _, digest = _get("/api/digest?limit=2")
+    shown = {e["cycle"] for e in json.loads(feed)["entries"] if e["cycle"] is not None}
+    sent = {line["cycle"] for line in json.loads(digest)["lines"]}
+    have_a_line = {49, 48, 47, 46, 44, 43, 42, 41, 40, 39, 38}
+    assert shown & have_a_line, "the fixture window has no summarised cycle to lose"
+    assert (shown & have_a_line) <= sent
+
+
+def test_an_addendum_does_not_lose_its_cycles_summary_at_the_boundary(journal_md, digest_md):
+    """The trap the whole design is shaped around, and the reason the
+    window is a cycle range rather than an offset.
+
+    Cycle 49 gets a second entry, so a one-entry window grows to two to
+    avoid splitting it -- and the digest has to grow with it. Slicing the
+    digest at the journal's *offset* would have cut after the first entry
+    and dropped the line for the cycle straddling the boundary.
+    """
+    doubled = journal_md.replace(
+        "### 2026-08-09 04:20 (Oslo) — Cycle 49",
+        "### 2026-08-09 05:00 (Oslo) — Cycle 49\n\nAn addendum.\n\n---\nPR: none | Outcome: no-op\n\n"
+        "### 2026-08-09 04:20 (Oslo) — Cycle 49",
+        1,
+    )
+    with _both(doubled, digest_md):
+        _, _, feed = _get("/api/journal?limit=1")
+        nova_site.reset_cache()
+        _, _, digest = _get("/api/digest?limit=1")
+    assert [e["cycle"] for e in json.loads(feed)["entries"]] == [49, 49]
+    assert [line["cycle"] for line in json.loads(digest)["lines"]] == [49]
+
+
+def test_a_deep_linked_cycle_gets_its_own_line_and_no_others(journal_md, digest_md):
+    with _both(journal_md, digest_md):
+        _, _, body = _get("/api/digest?cycle=44")
+    assert [line["cycle"] for line in json.loads(body)["lines"]] == [44]
+
+
+def test_a_digest_asked_for_the_old_way_is_still_the_whole_digest(journal_md, digest_md):
+    """An app.js out of a service worker's cache from before this shipped
+    sends no window, and must not silently lose ten of eleven summaries."""
+    with _both(journal_md, digest_md):
+        _, _, body = _get("/api/digest")
+    assert len(json.loads(body)["lines"]) == 11
+
+
+def test_the_needs_section_survives_every_window(journal_md, digest_md):
+    """`needsEdvard` is the header, not the feed -- it is not part of what
+    gets sliced, and the card at the top of the page renders it on every
+    window the same way the status header does."""
+    with _both(journal_md, digest_md):
+        _, _, windowed = _get("/api/digest?limit=1")
+        nova_site.reset_cache()
+        _, _, whole = _get("/api/digest")
+    windowed, whole = json.loads(windowed), json.loads(whole)
+    assert windowed["needsEdvard"] == whole["needsEdvard"]
+    assert windowed["needsEdvardBlocks"] == whole["needsEdvardBlocks"]
+    assert windowed["nextCycle"] == whole["nextCycle"]
+
+
+def test_each_digest_window_has_its_own_version(journal_md, digest_md):
+    """Same reason the journal's windows do: a client that has just asked
+    for a wider window must not be told it already has it."""
+    with _both(journal_md, digest_md):
+        _, head, body = _get("/api/digest?limit=1")
+        small = re.search(r"ETag: (\S+)", head).group(1)
+        assert json.loads(body)["version"] == small
+        _, head, _ = _get("/api/digest?limit=2")
+        assert re.search(r"ETag: (\S+)", head).group(1) != small
+        status, _, _ = _get("/api/digest?limit=1", f"If-None-Match: {small}\r\n")
+        assert status == 304
+        status, _, _ = _get("/api/digest?limit=2", f"If-None-Match: {small}\r\n")
+        assert status == 200
+
+
+def test_a_digest_line_no_longer_carries_its_text_three_times(digest_md):
+    """`text` once, and the two drawers that between them are the same text
+    again -- #61 stopped reading the third copy and it kept being sent.
+    Measured on the live pod at 07:03 Oslo 2026-08-11: `lines` was 266,393
+    of the endpoint's 270,793 bytes."""
+    line = parse_digest(digest_md)["lines"][0]
+    assert "spans" not in line
+    assert line["briefSpans"]
+
+
+def test_a_cold_load_builds_the_journal_once_not_once_per_request():
+    """`/api/journal` and `/api/digest` are asked for together and both
+    want the journal payload, on a ThreadingHTTPServer. The build is
+    3.0-3.5s of vault fetch and parse against the live pod, and paying it
+    twice concurrently for one answer is what a cold load would have cost
+    without the lock."""
+    builds = []
+
+    def slow_build():
+        builds.append(1)
+        time.sleep(0.05)
+        return {"entries": []}
+
+    import threading
+
+    nova_site.reset_cache()
+    threads = [
+        threading.Thread(target=lambda: nova_site.cached_payload("j", slow_build))
+        for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(builds) == 1, f"the cold build ran {len(builds)} times"
