@@ -203,6 +203,10 @@
    *   placeholder, ariaLabel -> the words for it
    * Everything below is target-agnostic on purpose; the two differ only in
    * which four things they hand in. */
+  /* Unsent comment text, keyed by which box it was typed into, so it
+   * survives the re-render that discards the box. See `renderComments`. */
+  var drafts = {};
+
   function renderComments(container, target, comments) {
     var drawer = el("div", "comment-drawer");
 
@@ -211,6 +215,15 @@
 
     var box = el("textarea", "comment-text");
     box.rows = 3;
+    /* A render throws every drawer away and builds a new one, so anything
+     * typed and not yet sent dies with the old node. `poll` avoids that by
+     * refusing to re-render while there is text in a box -- which works for
+     * a background timer and cannot work for "Show older entries", where
+     * the re-render is the thing the reader just asked for. So the text
+     * outlives the node instead. Cleared only when the server confirms the
+     * write, the same rule `submit` already follows for the box itself. */
+    if (drafts[target.key]) box.value = drafts[target.key];
+    box.addEventListener("input", function () { drafts[target.key] = box.value; });
     box.placeholder = target.placeholder;
     box.setAttribute("autocapitalize", "sentences");
     drawer.appendChild(box);
@@ -338,6 +351,7 @@
           // rule the capture box follows, for the same reason: a box that
           // wiped itself on a failure would lose what it exists to catch.
           box.value = "";
+          delete drafts[target.key];
           fit();
           status.textContent = "saved";
           return fetch("/api/comments")
@@ -371,6 +385,7 @@
 
   function cycleTarget(cycle) {
     return {
+      key: "cycle:" + cycle,
       placeholder: "Say something about cycle " + cycle + "…",
       ariaLabel: "Comment on cycle " + cycle,
       body: function (text) { return { cycle: cycle, text: text }; },
@@ -380,6 +395,7 @@
 
   function needsTarget() {
     return {
+      key: "needs",
       placeholder: "Answer…",
       ariaLabel: "Reply to Needs Edvard",
       body: function (text) { return { target: "needs", text: text }; },

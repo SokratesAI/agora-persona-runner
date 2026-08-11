@@ -1409,3 +1409,38 @@ describe("the feed loads a window rather than the whole journal", () => {
     );
   });
 });
+
+/* A render throws every comment drawer away and builds a new one. `poll`
+ * dodges that by refusing to run while there is text in a box; the pager
+ * cannot, because the re-render is what the reader just asked for. So the
+ * text has to outlive the node. */
+describe("an unsent comment survives a re-render", () => {
+  test("showing older entries does not throw away what was typed", async () => {
+    const corpus = [];
+    for (let i = 0; i < 50; i += 1) {
+      corpus.push({ ...JSON.parse(JSON.stringify(payload.journal.entries[2])), cycle: 50 - i });
+    }
+    const serve = (url) => {
+      const limit = Number(new URL(url, "https://nova.example").searchParams.get("limit"));
+      return {
+        entries: corpus.slice(0, limit || corpus.length),
+        status: payload.journal.status,
+        total: corpus.length,
+        version: 'W/"' + limit + '"',
+      };
+    };
+    const window = await loadSite("/", { journal: serve });
+
+    const box = window.document.querySelector(".entry .comment-text");
+    box.value = "half a thought";
+    box.dispatchEvent(new window.Event("input", { bubbles: true }));
+
+    click(window, window.document.querySelector("button.more"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(cards(window).length, 40, "the pager did not widen the window");
+    const after = window.document.querySelector(".entry .comment-text");
+    assert.notEqual(after, box, "the drawer was not actually rebuilt, so this proves nothing");
+    assert.equal(after.value, "half a thought");
+  });
+});

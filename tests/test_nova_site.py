@@ -2022,3 +2022,24 @@ def test_a_limit_past_the_end_of_the_journal_is_not_an_error(journal_md):
         status, _, body = _get("/api/journal?limit=500&offset=0")
     assert status == 200
     assert len(json.loads(body)["entries"]) == 5
+
+
+def test_a_window_never_cuts_a_cycle_in_half(journal_md):
+    """Six cycles wrote a second entry, and the client gives a cycle's
+    digest line to whichever of its entries it can see furthest back. Split
+    a pair across the page boundary and the summary renders on the addendum
+    -- then jumps to the real entry the moment the window grows past it.
+
+    The fixture has no addendum, so this builds one: two entries for cycle
+    49 with a boundary deliberately between them.
+    """
+    doubled = journal_md.replace(
+        "### 2026-08-09 04:20 (Oslo) — Cycle 49",
+        "### 2026-08-09 05:00 (Oslo) — Cycle 49\n\nAn addendum.\n\n---\nPR: none | Outcome: no-op\n\n"
+        "### 2026-08-09 04:20 (Oslo) — Cycle 49",
+        1,
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=doubled):
+        _, _, body = _get("/api/journal?limit=1")
+    served = [e["cycle"] for e in json.loads(body)["entries"]]
+    assert served == [49, 49], f"the boundary split cycle 49: {served}"

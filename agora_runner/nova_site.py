@@ -391,7 +391,20 @@ def journal_page(payload, limit=None, offset=0, cycle=None):
     elif limit is None:
         picked = entries
     else:
-        picked = entries[offset:offset + limit]
+        end = offset + limit
+        # A window never splits a cycle. Six cycles wrote a second entry
+        # when they went back to verify their own deploy, and the client
+        # hands a cycle's digest line to its *earliest* entry -- which it
+        # finds by looking at the entries in front of it. Cut a pair in
+        # half and the page can only see the addendum, so the summary
+        # renders on the wrong card and then visibly jumps to the right one
+        # the moment the window grows past it. Extending the slice to the
+        # end of the cycle is cheaper than teaching the client to reason
+        # about entries it was not sent.
+        while end < len(entries) and entries[end].get("cycle") is not None \
+                and entries[end].get("cycle") == entries[end - 1].get("cycle"):
+            end += 1
+        picked = entries[offset:end]
     return {"entries": picked, "status": payload.get("status", {}), "total": len(entries)}
 
 
