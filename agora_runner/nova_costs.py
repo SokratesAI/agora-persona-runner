@@ -120,6 +120,17 @@ def costs_payload(document):
                 reading.get("seven_day_pace"),
             ]
         )
+    # Both charts take the first and last row as the ends of their x-axis
+    # and draw straight through everything between, so time order is not a
+    # nicety here -- one row out of place puts a mark outside the plot box
+    # and, in the quota chart, a line that doubles back on itself.
+    #
+    # The live ledger is sorted (checked, 2026-08-11) and the publisher
+    # that writes it lives in the other repo, which is exactly why this
+    # sorts anyway: the client's assumption is cheap to make true on this
+    # side of the wire and impossible to notice breaking on the other.
+    cycles.sort(key=lambda row: row[0])
+    quota.sort(key=lambda row: row[0])
     return {
         "generatedAt": _ms(ledger.get("generatedAt")),
         "cycleColumns": list(CYCLE_COLUMNS),

@@ -197,3 +197,23 @@ def test_the_ledger_path_points_where_the_bridge_publishes():
     assert nova_costs.COST_LEDGER_PATH == (
         "projects/sokrates/projects/agora/nova/resources/cost-ledger.json"
     )
+
+
+def test_rows_come_out_in_time_order_whatever_order_they_went_in():
+    """The client reads `rows[0]` and `rows[-1]` as the ends of the x-axis
+    and draws straight through the middle, so a row out of order is a mark
+    outside the plot box and a quota line that doubles back.
+
+    The live ledger is sorted today. This is here because the thing that
+    sorts it is in the other repo and nothing connects the two: the
+    assumption costs one line to make true here, and would be invisible
+    breaking there.
+    """
+    shuffled = dict(
+        LEDGER,
+        cycles=list(reversed(LEDGER["cycles"])),
+        quota=list(reversed(LEDGER["quota"])),
+    )
+    payload = costs_payload(json.dumps(shuffled))
+    assert [row[0] for row in payload["cycles"]] == [1785756806980, 1786449617908]
+    assert [row[0] for row in payload["quota"]] == [1786227966684, 1786450678872]
