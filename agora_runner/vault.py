@@ -104,14 +104,23 @@ def couch_get_doc(doc_id, db=None):
     return couch_req("GET", f"{db or db_for(doc_id)}/{urllib.parse.quote(doc_id, safe='')}")
 
 
-# Paths whose routing this process reports on demand. Every one of them is
-# a rule that has already been got wrong once, so the probe is a regression
-# list rather than a sample: the digest by exact name, a `.bak` beside it
-# that must NOT follow it (Cycle 118's review), the Nova folder Edvard
-# asked to keep in his own vault (Cycle 121 nearly wrote it into Nova's),
-# and one file of his that must never move.
+# Paths whose routing this process reports on demand. Five distinct
+# behaviours of `db_for`, two of which are regressions rather than
+# examples: a `.bak` beside the digest must NOT follow it into Nova's
+# database (caught in the review of #103), and the Nova folder Edvard
+# asked to keep in his own vault must stay there (Cycle 121 found that
+# anything under `agora/nova/` would have been routed away from him).
+# The other three are the folder rule, the exact-file rule and a file of
+# his that must never move.
+#
+# **These are real paths and must stay real.** The first one is a live
+# journal entry, and journal filenames are `<sequence>-cycle-<n>.md`
+# where the two numbers diverge -- `121-cycle-121.md` looks plausible,
+# has never existed, and was in this tuple until a reviewer listed the
+# folder. A probe pointing at a document nobody can open turns the one
+# endpoint built to remove ambiguity into a second thing to disambiguate.
 HEALTH_PROBE_PATHS = (
-    "projects/sokrates/projects/agora/nova/journal/121-cycle-121.md",
+    "projects/sokrates/projects/agora/nova/journal/138-cycle-121.md",
     "projects/sokrates/projects/agora/journal-digest.md",
     "projects/sokrates/projects/agora/journal-digest.md.bak",
     "projects/sokrates/projects/nova/nova.md",

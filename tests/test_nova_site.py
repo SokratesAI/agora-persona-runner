@@ -2466,7 +2466,7 @@ def test_health_is_503_when_a_named_database_does_not_answer():
     assert payload["databases"]["main"]["reachable"] is True
 
 
-def test_health_routes_pin_the_three_rules_that_have_been_wrong():
+def test_health_routes_pin_every_branch_of_the_routing_rule():
     with patch.object(vault, "COUCHDB_NOVA_DB", "nova"), \
          patch.object(vault, "couch_req", _couch_stub({"obsidian": 1, "nova": 1})):
         _, _, body = _get("/api/health")
@@ -2478,7 +2478,7 @@ def test_health_routes_pin_the_three_rules_that_have_been_wrong():
     assert routes["projects/sokrates/projects/nova/nova.md"] == "obsidian"
     assert routes["projects/sokrates/projects/agora/issues.md"] == "obsidian"
     assert routes[
-        "projects/sokrates/projects/agora/nova/journal/121-cycle-121.md"
+        "projects/sokrates/projects/agora/nova/journal/138-cycle-121.md"
     ] == "nova"
 
 
