@@ -12,6 +12,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 `nova_comments`, which do no I/O at all; this module is only the fetch.
 """
 
+from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_journal import (
     DIGEST_PATH,
@@ -92,3 +93,22 @@ def comments_markdown():
 
 def digest_markdown():
     return vault_read_path(DIGEST_PATH) or ""
+
+
+def board_markdown(name):
+    """`(edvard, nova)` markdown for one board -- issues, or ideas.
+
+    Two reads rather than one because they are two files by two authors,
+    and the page shows them as two tabs for exactly that reason. Both are
+    fetched together so the payload is built from one consistent moment
+    rather than from whichever the client asked for first.
+
+    A missing file comes back as `""` and parses to an empty board. That
+    is deliberate: `nova/resources/ideas.md` existing is not something
+    this site should require, and half a page beats a 502.
+    """
+    paths = BOARD_PATHS[name]
+    return (
+        vault_read_path(paths["edvard"]) or "",
+        vault_read_path(paths["nova"]) or "",
+    )

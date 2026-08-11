@@ -131,7 +131,13 @@ from agora_runner.nova_replies import (
     failed as failed_replies,
     pending_since,
 )
-from agora_runner.nova_sources import comments_markdown, digest_markdown, journal_markdown
+from agora_runner.nova_boards import BOARD_PATHS, parse_board, parse_notes
+from agora_runner.nova_sources import (
+    board_markdown,
+    comments_markdown,
+    digest_markdown,
+    journal_markdown,
+)
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_public")
@@ -268,6 +274,70 @@ def comments_payload():
         # cycle and so cannot ride in `byCycle`.
         "needs": needs_comments(markdown),
     }
+
+
+def board_payload(name):
+    """Everything on one board page, before it is cut to a window.
+
+    Detail bodies are rendered here rather than on request: the cache
+    holds one payload per board and `board_page` slices it, so a tap on a
+    row costs a dict lookup instead of a parse. The bodies are the bulk
+    of the file -- `issues.md` is 68KB and its `# Details` section is
+    ~60KB of that -- which is precisely why they never go out with the
+    list. See `board_page`.
+    """
+    edvard_markdown, nova_markdown = board_markdown(name)
+    board = parse_board(edvard_markdown)
+    details = {
+        str(number): render_blocks(body) for number, body in board["details"].items()
+    }
+    notes = [
+        dict(note, blocks=render_blocks(note.pop("text")))
+        for note in parse_notes(nova_markdown)
+    ]
+    return {
+        "name": name,
+        "captures": [render_blocks(text) for text in board["captures"]],
+        "items": board["items"],
+        "details": details,
+        "notes": notes,
+    }
+
+
+def board_page(payload, limit=None, item=None):
+    """One board, as the page actually asks for it.
+
+    Three shapes, and the split is the whole point of this endpoint:
+
+    - `item=57` -- one detail body. This is what a tap on a row fetches.
+    - `limit=n` -- the list: every row (they are one line each, 60 of
+      them, ~5KB in total) plus the newest `n` of my own notes and no
+      detail bodies at all.
+    - neither -- everything, which is what an app.js served out of a
+      service worker's cache from before this shipped would ask for.
+
+    My notes are windowed and his rows are not because they are different
+    sizes for a structural reason: a row is a title, a note is a
+    paragraph. 294 notes in `nova/resources/issues.md` is 147KB and it
+    grows by two or three every cycle; the rows are bounded by how many
+    things Edvard has ever filed.
+    """
+    if item is not None:
+        blocks = (payload.get("details") or {}).get(str(item))
+        row = next(
+            (i for i in payload.get("items") or [] if i.get("number") == item), None
+        )
+        return {
+            "name": payload.get("name"),
+            "item": dict(row or {"number": item}, blocks=blocks or []),
+            "found": blocks is not None or row is not None,
+        }
+    notes = payload.get("notes") or []
+    page = dict(payload, notes=notes if limit is None else notes[:limit])
+    page["notesTotal"] = len(notes)
+    if limit is not None:
+        page["details"] = {}
+    return page
 
 
 # How long a served payload may be before the next request kicks a
@@ -611,6 +681,29 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         page["version"] = etag
         self._send_json_or_304(json.dumps(page), etag)
 
+    def _send_board(self, query):
+        """`/api/board?name=issues` -- one backlog page (issues.md #57).
+
+        `name` indexes `BOARD_PATHS`, a two-entry dict of literal paths;
+        nothing a request carries ever addresses a vault document, which
+        is the same rule the capture box follows. An unknown name is a
+        400 rather than an empty board, because it can only be a bug in
+        the page or someone poking at the API by hand.
+        """
+        name = (query.get("name") or ["issues"])[0]
+        if name not in BOARD_PATHS:
+            self._send_json(400, {"error": f"name must be one of {sorted(BOARD_PATHS)}"})
+            return
+        payload, _, base = cached_payload(
+            "board:" + name, lambda: board_payload(name)
+        )
+        item = _int_param(query, "item", None)
+        limit = _int_param(query, "limit", None)
+        page = board_page(payload, limit=limit, item=item)
+        etag = page_etag(base, f"item={item}" if item is not None else f"limit={limit}")
+        page["version"] = etag
+        self._send_json_or_304(json.dumps(page), etag)
+
     def _send_json_or_304(self, body, etag):
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
@@ -644,7 +737,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # one entry (item 4). The server has no per-cycle view -- it serves
         # the same shell and app.js reads the path -- but the URL must
         # resolve, or the link is dead on a cold load.
-        if path == "/" or path.startswith("/cycle/"):
+        if path == "/" or path.startswith("/cycle/") or path in ("/issues", "/ideas"):
             self._send_static("index.html")
             return
         if path in STATIC_ROUTES:
@@ -656,6 +749,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/digest":
                 self._send_digest(query)
+                return
+            if path == "/api/board":
+                self._send_board(query)
                 return
             if path == "/api/comments":
                 # Deliberately not cached. It is 6KB and 20-78ms against

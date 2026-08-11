@@ -25,6 +25,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from agora_runner import nova_site, nova_sources  # noqa: E402
+from agora_runner.nova_boards import BOARD_PATHS  # noqa: E402
 from agora_runner.nova_comments import COMMENTS_PATH  # noqa: E402
 from agora_runner.nova_journal import JOURNAL_PATH  # noqa: E402
 
@@ -38,10 +39,12 @@ def _read(name):
 
 
 def build_payload():
-    """The three API responses app.js loads, from the committed fixtures."""
+    """Every API response app.js loads, from the committed fixtures."""
     by_path = {
         JOURNAL_PATH: _read("journal_two_entries.md"),
         COMMENTS_PATH: _read("comments_sample.md"),
+        BOARD_PATHS["issues"]["edvard"]: _read("board_sample.md"),
+        BOARD_PATHS["issues"]["nova"]: _read("board_notes_sample.md"),
     }
     digest_md = _read("digest_two_entries.md")
 
@@ -50,10 +53,15 @@ def build_payload():
 
     with patch.object(nova_sources, "vault_read_path", side_effect=fake_read), \
             patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})):
+        board = nova_site.board_payload("issues")
         return {
             "journal": nova_site.journal_payload(),
             "digest": nova_site.digest_payload(),
             "comments": nova_site.comments_payload(),
+            # The two shapes /api/board answers in: the list the page
+            # loads, and the one write-up a tap on a row asks for.
+            "board": nova_site.board_page(board, limit=2),
+            "boardItem": nova_site.board_page(board, item=57),
         }
 
 
