@@ -35,10 +35,22 @@ BOARD_PATHS = {
     "issues": {
         "edvard": "projects/sokrates/projects/agora/issues.md",
         "nova": "projects/sokrates/projects/agora/nova/resources/issues.md",
+        # Where `tools/roll_captures.py` files the older half of `nova`.
+        # The site has to read it or rolling the live file deletes two
+        # thirds of this page -- the blocker Cycle 112 found and refused
+        # to roll around. Same shape as `DIGEST_ARCHIVE_PATH`, and safe in
+        # either deploy order: the file does not exist until the first
+        # roll, and a missing archive parses to no notes at all.
+        "nova_archive": (
+            "projects/sokrates/projects/agora/nova/resources/issues-archive.md"
+        ),
     },
     "ideas": {
         "edvard": "projects/sokrates/projects/agora/ideas.md",
         "nova": "projects/sokrates/projects/agora/nova/resources/ideas.md",
+        "nova_archive": (
+            "projects/sokrates/projects/agora/nova/resources/ideas-archive.md"
+        ),
     },
 }
 

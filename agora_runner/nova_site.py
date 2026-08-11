@@ -288,14 +288,19 @@ def board_payload(name):
     ~60KB of that -- which is precisely why they never go out with the
     list. See `board_page`.
     """
-    edvard_markdown, nova_markdown = board_markdown(name)
+    edvard_markdown, nova_markdown, nova_archive_markdown = board_markdown(name)
     board = parse_board(edvard_markdown)
     details = {
         str(number): render_blocks(body) for number, body in board["details"].items()
     }
+    # Live first, then the rolled-off older half -- both files are
+    # newest-first and the archive holds only what is older than the live
+    # file's oldest, so appending preserves the order rather than
+    # requiring a sort. `parse_notes` is deliberately run twice instead
+    # of over a concatenation; `board_markdown` says why.
     notes = [
         dict(note, blocks=render_blocks(note.pop("text")))
-        for note in parse_notes(nova_markdown)
+        for note in parse_notes(nova_markdown) + parse_notes(nova_archive_markdown)
     ]
     return {
         "name": name,
