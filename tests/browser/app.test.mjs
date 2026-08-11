@@ -601,6 +601,21 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.equal(cards(window)[0].querySelectorAll(".comment-toggle").length, 1);
   });
 
+  /* The page sets its own className wholesale, so it could easily drop the
+   * class the drawer's CSS keys on. Asserted through `getComputedStyle`
+   * against the real stylesheet rather than by looking for the class, which
+   * is the difference between "the attribute is set" and "he can see it". */
+  test("the comment drawer really opens on the page", async () => {
+    const window = await loadSite("/cycle/57", { install: withStyle });
+    const page = cards(window)[0];
+    const drawer = page.querySelector(".comment-drawer");
+    assert.equal(window.getComputedStyle(drawer).display, "none");
+    click(window, page.querySelector(".comment-toggle"));
+    assert.equal(window.getComputedStyle(drawer).display, "block");
+    click(window, page.querySelector(".comment-toggle"));
+    assert.equal(window.getComputedStyle(drawer).display, "none");
+  });
+
   /* 26 single-entry cycles carry a real title. The first version of this
    * page rendered titles only as part subheadings, and a single part gets
    * none, so all 26 lost theirs -- invisible in the fixture, which is why
