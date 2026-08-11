@@ -210,6 +210,19 @@ def test_an_entry_with_no_footer_still_parses():
     assert entry["body"] == "Just prose."
 
 
+def test_a_footer_without_its_rule_still_parses():
+    """Cycle 104's real shape: the `Reviewer:` line took the rule's place.
+
+    Its card showed no PR and no outcome for a cycle that merged #88.
+    """
+    body = "The account of the cycle.\n\nReviewer: 2 findings, 2 acted on\nPR: #88 | Outcome: merged"
+    entry = parse_journal("## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\n" + body)[0]
+    assert entry["pr"] == "#88"
+    assert entry["outcome"] == "merged"
+    assert "PR: #88" not in entry["body"]
+    assert entry["body"].endswith("Reviewer: 2 findings, 2 acted on")
+
+
 # --- outcomes -------------------------------------------------------------
 
 
