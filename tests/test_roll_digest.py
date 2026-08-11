@@ -195,3 +195,18 @@ def test_a_recovery_run_actually_passes_its_own_verification():
     # dropping `_dedup` from verify breaks nothing else in this file.
     live, archive = _crashed_between_the_two_writes()
     verify(live, archive, *plan(live, archive, keep=2))
+
+
+def test_a_single_rolled_line_is_not_announced_as_plural():
+    """The extraction replaced the original's `line(s)` with a plural
+    noun, which made a one-line roll print "1 digest lines roll off"."""
+    import io, contextlib, tempfile, os
+    from tools.roll_digest import main
+    with tempfile.TemporaryDirectory() as d:
+        live, archive = os.path.join(d, "live.md"), os.path.join(d, "archive.md")
+        open(live, "w").write(LIVE)
+        open(archive, "w").write(ARCHIVE)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--live", live, "--archive", archive, "--keep", "4", "--dry-run"])
+        assert "1 digest line roll off" in out.getvalue(), out.getvalue()
