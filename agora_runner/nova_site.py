@@ -368,7 +368,12 @@ def reset_cache():
     with _cache_lock:
         _cache.clear()
         _refreshing.clear()
-        _build_locks.clear()
+        # `_build_locks` is deliberately not cleared. Dropping a lock a
+        # cold build is currently holding does not release it -- it just
+        # hands the next caller a different lock object, and the two build
+        # in parallel, which is the one thing the lock exists to stop. The
+        # dict is keyed by payload name, so it holds three entries in
+        # production and never grows.
 
 
 def _refresh(name, build):
@@ -434,10 +439,13 @@ def journal_page(payload, limit=None, offset=0, cycle=None):
 def digest_page(payload, journal, limit=None, offset=0, cycle=None):
     """The digest, with `lines` cut to the cycles the journal window covers.
 
-    `/api/digest` was 270,793 bytes raw / 38,782 gzipped off the live pod
-    at 07:03 Oslo on 2026-08-11, and `lines` is 266,393 of that -- 98% of
-    a payload the reader sees twenty cycles of. It grows by one line an
-    hour, exactly the way `/api/journal` did before #85.
+    `/api/digest` was 270,793 bytes raw, 38,782 gzipped on the wire, off
+    the live pod at 07:03 Oslo on 2026-08-11 -- and `lines` was 266,393 of
+    that, 98% of a payload the reader sees twenty cycles of. It grows by
+    one line an hour, exactly the way `/api/journal` did before #85. Those
+    three numbers describe the payload as it was *before* this commit,
+    including the dead third copy of every line's text that went with it,
+    so they are the baseline rather than a description of the code below.
 
     **Cut by the journal window's cycle range, not by a line count.** The
     two lists do not run in step: 46 digest lines describe 110 journal
