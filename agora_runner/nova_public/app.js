@@ -37,9 +37,15 @@
    * zero. Fetching one page and appending it would move fewer bytes when
    * someone reads a long way back, and it would also mean the poll and the
    * pager disagreeing about what is loaded every time a new entry shifts
-   * the offsets underneath them. One window has no such state to get
+   * the offsets underneath them. One window has no such offset to get
    * wrong: a poll is a 304 against exactly what is on screen, and a new
    * entry arriving simply lands at the top of it.
+   *
+   * It is not free of state, and the first review of this said so. Widening
+   * the window re-renders the whole feed, which discards every drawer and
+   * every card's expanded/collapsed state along with it. Unsent text is
+   * carried across (see `drafts`); the folds are not, and a tap on the
+   * pager still closes anything the reader had opened.
    */
   var PAGE = 20;
   var windowSize = PAGE;
