@@ -69,10 +69,15 @@ def pytest_unconfigure(config):
 LEAKED_MESSAGE = (
     "this test left {count} background thread(s) still running: {names}. A "
     "thread that outlives the test has also outlived the test's patches, so "
-    "whatever it does next it does against the real vault, the real bridge "
-    "and the real clock -- and it does it while some later test is running, "
-    "which is where the blame lands. Either do not start the thread (patch "
-    "whatever starts it) or join it before the test ends."
+    "whatever it does next it does against the references the patches were "
+    "hiding -- and it does it while some later test is running, which is "
+    "where the blame lands. Its exception, if it raises one, goes to "
+    "threading's default excepthook and fails nothing. Note that the "
+    "network block above is session-wide and still applies, so an HTTP "
+    "call will not reach production from inside the run -- what does land "
+    "is module state, files, and anything at all once the session ends and "
+    "pytest_unconfigure puts the real sockets back. Either do not start the "
+    "thread (patch whatever starts it) or join it before the test ends."
 )
 
 _threads_at_setup = {}
