@@ -104,6 +104,71 @@ def couch_get_doc(doc_id, db=None):
     return couch_req("GET", f"{db or db_for(doc_id)}/{urllib.parse.quote(doc_id, safe='')}")
 
 
+# Paths whose routing this process reports on demand. Five distinct
+# behaviours of `db_for`, two of which are regressions rather than
+# examples: a `.bak` beside the digest must NOT follow it into Nova's
+# database (caught in the review of #103), and the Nova folder Edvard
+# asked to keep in his own vault must stay there (Cycle 121 found that
+# anything under `agora/nova/` would have been routed away from him).
+# The other three are the folder rule, the exact-file rule and a file of
+# his that must never move.
+#
+# **These are real paths and must stay real.** The first one is a live
+# journal entry, and journal filenames are `<sequence>-cycle-<n>.md`
+# where the two numbers diverge -- `121-cycle-121.md` looks plausible,
+# has never existed, and was in this tuple until a reviewer listed the
+# folder. A probe pointing at a document nobody can open turns the one
+# endpoint built to remove ambiguity into a second thing to disambiguate.
+HEALTH_PROBE_PATHS = (
+    "projects/sokrates/projects/agora/nova/journal/138-cycle-121.md",
+    "projects/sokrates/projects/agora/journal-digest.md",
+    "projects/sokrates/projects/agora/journal-digest.md.bak",
+    "projects/sokrates/projects/nova/nova.md",
+    "projects/sokrates/projects/agora/issues.md",
+)
+
+
+def database_health():
+    """What this process resolved and what it can actually reach.
+
+    Two different questions, and until now answering either one took a
+    write probe against the live site — append a note, poll `/api/board`
+    for twenty seconds, and hope you outlast a 15-second cache. Cycle 121
+    did exactly that and its first four reads all returned the pre-write
+    number, which is indistinguishable from a failed migration.
+
+    So this reports configuration *and* reachability separately. A name in
+    `COUCHDB_NOVA_DB` only says which database this process would ask; it
+    says nothing about whether the answer would come back, and during a
+    migration the gap between those two is the whole risk.
+    """
+    names = {"main": COUCHDB_DB}
+    if COUCHDB_NOVA_DB:
+        names["nova"] = COUCHDB_NOVA_DB
+    databases = {}
+    for role, name in names.items():
+        entry = {"name": name, "reachable": False, "doc_count": None, "error": None}
+        try:
+            status, info = couch_req("GET", urllib.parse.quote(name, safe=""))
+            if status == 200:
+                entry["reachable"] = True
+                # Includes chunk documents, not just files -- a Nova file is
+                # stored as one doc plus ~4KB content chunks. Named
+                # `doc_count` because that is CouchDB's own field and
+                # renaming it here would be a second name for one number.
+                entry["doc_count"] = info.get("doc_count")
+            else:
+                entry["error"] = f"HTTP {status}"
+        except Exception as e:
+            entry["error"] = str(e)[:200]
+        databases[role] = entry
+    return {
+        "routing_enabled": bool(COUCHDB_NOVA_DB),
+        "databases": databases,
+        "routes": [{"path": p, "database": db_for(p)} for p in HEALTH_PROBE_PATHS],
+    }
+
+
 def _couch_batched(items, n):
     for i in range(0, len(items), n):
         yield items[i:i + n]
