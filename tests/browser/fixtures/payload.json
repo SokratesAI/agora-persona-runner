@@ -418,5 +418,93 @@
       ]
     },
     "found": true
+  },
+  "costs": {
+    "generatedAt": 1786450781000,
+    "cycleColumns": [
+      "at",
+      "minutes",
+      "turns",
+      "toolCalls",
+      "weighted"
+    ],
+    "quotaColumns": [
+      "at",
+      "fiveHour",
+      "fiveHourPace",
+      "sevenDay",
+      "sevenDayPace"
+    ],
+    "cycles": [
+      [
+        1786298411000,
+        20.9,
+        69,
+        80,
+        1204348
+      ],
+      [
+        1786438814000,
+        16.1,
+        54,
+        61,
+        866112
+      ],
+      [
+        1786449617908,
+        19.4,
+        103,
+        118,
+        1911430
+      ]
+    ],
+    "quota": [
+      [
+        1786227966684,
+        27.0,
+        null,
+        2.0,
+        null
+      ],
+      [
+        1786420000000,
+        41.0,
+        0.72,
+        44.0,
+        0.58
+      ],
+      [
+        1786450678872,
+        78.0,
+        0.944,
+        51.0,
+        0.615
+      ]
+    ],
+    "summary": {
+      "cycles": 3,
+      "first_cycle": "2026-08-09T18:00:11.000Z",
+      "last_cycle": "2026-08-11T12:00:17.908Z",
+      "total_weighted": 3981890.2,
+      "mean_weighted": 1327296.7,
+      "median_weighted": 1204348.4,
+      "max_weighted": 1911429.8,
+      "mean_duration_seconds": 1126.7,
+      "median_duration_seconds": 1162.2,
+      "cost_share": {
+        "input_tokens": 0.4,
+        "output_tokens": 17.7,
+        "cache_read_tokens": 60.2,
+        "cache_write_5m_tokens": 0.0,
+        "cache_write_1h_tokens": 21.8
+      }
+    },
+    "weights": {
+      "input_tokens": 1.0,
+      "output_tokens": 5.0,
+      "cache_read_tokens": 0.1,
+      "cache_write_5m_tokens": 1.25,
+      "cache_write_1h_tokens": 2.0
+    }
   }
 }

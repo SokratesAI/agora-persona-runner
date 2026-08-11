@@ -1,0 +1,30 @@
+{
+  "generatedAt": "2026-08-11T12:19:41Z",
+  "cycles": [
+    {"session": "aaa", "startedAt": "2026-08-09T18:00:11.000Z", "endedAt": "2026-08-09T18:21:03.000Z", "durationSeconds": 1252.0, "turns": 69, "subagentTurns": 0, "toolCalls": 80, "weightedTokens": 1204348.4, "models": ["claude-opus-5"]},
+    {"session": "bbb", "startedAt": "2026-08-11T09:00:14.000Z", "endedAt": "2026-08-11T09:16:20.000Z", "durationSeconds": 966.0, "turns": 54, "subagentTurns": 0, "toolCalls": 61, "weightedTokens": 866112.0, "models": ["claude-opus-5"]},
+    {"session": "ccc", "startedAt": "2026-08-11T12:00:17.908Z", "endedAt": "2026-08-11T12:19:40.156Z", "durationSeconds": 1162.2, "turns": 103, "subagentTurns": 0, "toolCalls": 118, "weightedTokens": 1911429.8, "models": ["claude-opus-5"]}
+  ],
+  "summary": {
+    "cycles": 3,
+    "other_sessions": 12,
+    "first_cycle": "2026-08-09T18:00:11.000Z",
+    "last_cycle": "2026-08-11T12:00:17.908Z",
+    "totals": {"input_tokens": 5680, "output_tokens": 55757},
+    "totals_weighted": {"input_tokens": 5680.0},
+    "total_weighted": 3981890.2,
+    "mean_weighted": 1327296.7,
+    "median_weighted": 1204348.4,
+    "max_weighted": 1911429.8,
+    "mean_duration_seconds": 1126.7,
+    "median_duration_seconds": 1162.2,
+    "cost_share": {"input_tokens": 0.4, "output_tokens": 17.7, "cache_read_tokens": 60.2, "cache_write_5m_tokens": 0.0, "cache_write_1h_tokens": 21.8},
+    "models": ["claude-opus-5"]
+  },
+  "quota": [
+    {"at": 1786227966.684, "five_hour": 27.0, "seven_day": 2.0},
+    {"at": 1786420000.0, "five_hour": 41.0, "five_hour_pace": 0.72, "seven_day": 44.0, "seven_day_pace": 0.58},
+    {"at": 1786450678.872, "five_hour": 78.0, "five_hour_pace": 0.944, "seven_day": 51.0, "seven_day_pace": 0.615}
+  ],
+  "weights": {"input_tokens": 1.0, "output_tokens": 5.0, "cache_read_tokens": 0.1, "cache_write_5m_tokens": 1.25, "cache_write_1h_tokens": 2.0}
+}

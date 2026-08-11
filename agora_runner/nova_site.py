@@ -132,9 +132,11 @@ from agora_runner.nova_replies import (
     pending_since,
 )
 from agora_runner.nova_boards import BOARD_PATHS, parse_board, parse_notes
+from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_sources import (
     board_markdown,
     comments_markdown,
+    cost_ledger_json,
     digest_markdown,
     journal_markdown,
 )
@@ -302,6 +304,29 @@ def board_payload(name):
         "details": details,
         "notes": notes,
     }
+
+
+def costs_payload():
+    """What a cycle costs, over time (issues.md #57, page 2).
+
+    The whole endpoint, because the ledger arrives as JSON and leaves as
+    JSON: no parse step, no render step, one fetch and one reshape. It is
+    cached like the rest for the ordinary reason -- the vault read is the
+    slow part and the document changes once an hour, at the end of a
+    cycle -- and it is *not* windowed, which is the one thing that
+    deserves saying out loud on a page that plots a growing series.
+
+    Measured against the live ledger, 2026-08-11: 96,853 bytes of vault
+    document shape to 35,769 bytes of payload, 9,272 gzipped, for 110
+    cycles and 728 quota readings. Dropping the keys is what does that
+    (`nova_costs` explains the row format), and it holds because both
+    series grow by a bounded amount per cycle -- one cycle row, a handful
+    of quota readings -- against a page whose entire point is the shape of
+    the whole history. A window here would be the first one on this server
+    that hides data the reader came for. When it does need one, the honest
+    cut is by time, not by count.
+    """
+    return shape_costs(cost_ledger_json())
 
 
 def board_page(payload, limit=None, item=None):
@@ -737,7 +762,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # one entry (item 4). The server has no per-cycle view -- it serves
         # the same shell and app.js reads the path -- but the URL must
         # resolve, or the link is dead on a cold load.
-        if path == "/" or path.startswith("/cycle/") or path in ("/issues", "/ideas"):
+        if path == "/" or path.startswith("/cycle/") or path in ("/issues", "/ideas", "/costs"):
             self._send_static("index.html")
             return
         if path in STATIC_ROUTES:
@@ -752,6 +777,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/board":
                 self._send_board(query)
+                return
+            if path == "/api/costs":
+                self._send_cached_json("costs", costs_payload)
                 return
             if path == "/api/comments":
                 # Deliberately not cached. It is 6KB and 20-78ms against

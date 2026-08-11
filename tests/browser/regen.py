@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from agora_runner import nova_site, nova_sources  # noqa: E402
 from agora_runner.nova_boards import BOARD_PATHS  # noqa: E402
 from agora_runner.nova_comments import COMMENTS_PATH  # noqa: E402
+from agora_runner.nova_costs import COST_LEDGER_PATH  # noqa: E402
 from agora_runner.nova_journal import JOURNAL_PATH  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures")
@@ -45,6 +46,12 @@ def build_payload():
         COMMENTS_PATH: _read("comments_sample.md"),
         BOARD_PATHS["issues"]["edvard"]: _read("board_sample.md"),
         BOARD_PATHS["issues"]["nova"]: _read("board_notes_sample.md"),
+        # JSON rather than markdown, and the only fetch on this page the
+        # other repo writes. Named explicitly because the fall-through
+        # below answers the digest to anything it does not recognise, and
+        # a costs page fed markdown would not fail here -- it would fail
+        # in `json.loads` with a message about the digest.
+        COST_LEDGER_PATH: _read("cost_ledger_sample.json"),
     }
     digest_md = _read("digest_two_entries.md")
 
@@ -62,6 +69,7 @@ def build_payload():
             # loads, and the one write-up a tap on a row asks for.
             "board": nova_site.board_page(board, limit=2),
             "boardItem": nova_site.board_page(board, item=57),
+            "costs": nova_site.costs_payload(),
         }
 
 
