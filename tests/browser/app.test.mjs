@@ -482,8 +482,8 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
   test("the heading appears once and is the page's own h1", async () => {
     const window = await loadSite("/cycle/57");
     const page = cards(window)[0];
-    assert.equal(page.querySelectorAll(".entry-head h1").length, 1);
-    assert.equal(page.querySelector(".entry-head h1").textContent, "Cycle 57");
+    assert.equal(page.querySelectorAll(".entry-head h2").length, 1);
+    assert.equal(page.querySelector(".entry-head h2").textContent, "Cycle 57");
   });
 
   test("the journal text is readable without pressing anything", async () => {
@@ -514,8 +514,12 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.equal(window.getComputedStyle(body).display, "none");
   });
 
+  // `withStyle` because the last assertion is a `display`, and without the
+  // real stylesheet jsdom answers `block` for a div whether the collapse
+  // rules exist or not -- the assertion would have named a behaviour it
+  // could not see. The reviewer caught that; it was true as written.
   test("nothing on the page collapses it, and there is no journal toggle", async () => {
-    const window = await loadSite("/cycle/57");
+    const window = await loadSite("/cycle/57", { install: withStyle });
     const page = cards(window)[0];
     assert.equal(page.querySelector(".journal-toggle"), null);
     assert.equal(page.querySelector(".chevron"), null);
@@ -536,7 +540,73 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const brief = lineBrief(payload.digest.lines.find((l) => l.cycle === 57));
     const briefs = [...page.querySelectorAll(".entry-brief")].map((b) => b.textContent);
     assert.deepEqual(briefs, [brief]);
-    assert.equal(page.querySelectorAll(".entry-meta").length, 1);
+    // `:not(.entry-meta-part)` because a disagreeing part's own row shares
+    // the `entry-meta` class for its styling; the fixture's parts agree, so
+    // this is one either way and the qualifier is what makes it say so.
+    assert.equal(page.querySelectorAll(".entry-meta:not(.entry-meta-part)").length, 1);
+  });
+
+  /* Cycle 102 on the live pod: the base entry carries no PR and no outcome,
+   * the addendum carries `#86 / merged`. Taking all four fields from the
+   * earliest part -- which is what the first version of this page did --
+   * renders a cycle that merged a PR as having done nothing. The fixture's
+   * only two-entry cycle has identical fields on both entries, so this
+   * shape has to be built by hand or it is never exercised. */
+  test("the header takes its outcome from the last part that has one", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    // Newest-first on the wire: [0] is the addendum, [1] the base entry.
+    parts[1].pr = "";
+    parts[1].prSpans = [];
+    parts[1].outcome = "";
+    parts[0].pr = "#86";
+    parts[0].prSpans = [{ kind: "text", text: "#86" }];
+    parts[0].outcome = "merged";
+    const window = await loadSite("/cycle/57", { journal: () => journal });
+    const meta = cards(window)[0].querySelector(".entry-meta");
+    assert.match(meta.textContent, /#86/);
+    assert.match(meta.textContent, /merged/);
+    // The stamp still belongs to the earliest part: that is when it began.
+    assert.match(meta.textContent, new RegExp(parts[1].time));
+  });
+
+  test("a part that reached a different answer keeps its own row", async () => {
+    /* Cycle 6 wrote three entries with three different PR/outcome pairs. A
+     * single header can only be one of them, so the others must survive
+     * somewhere or drawing the header once silently loses them. */
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    parts[1].outcome = "no-op";
+    parts[1].pr = "none (status note)";
+    parts[1].prSpans = [{ kind: "text", text: "none (status note)" }];
+    parts[0].outcome = "merged";
+    const window = await loadSite("/cycle/57", { journal: () => journal });
+    const page = cards(window)[0];
+    assert.match(page.querySelector(".entry-meta").textContent, /merged/);
+    const own = page.querySelector(".entry-meta-part");
+    assert.ok(own, "the disagreeing part must keep a row of its own");
+    assert.match(own.textContent, /no-op/);
+    assert.match(own.textContent, /none \(status note\)/);
+  });
+
+  test("parts that agree with the header stay silent", async () => {
+    // The fixture's two entries carry identical pr/outcome, which is the
+    // common shape and the one that must not produce a second row.
+    const window = await loadSite("/cycle/57");
+    assert.equal(cards(window)[0].querySelectorAll(".entry-meta-part").length, 0);
+  });
+
+  test("a long prose part label is not uppercased", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    parts[0].title = "I watched it land, and caught myself re-filing a bug Edvard had already reported";
+    const window = await loadSite("/cycle/57", { journal: () => journal, install: withStyle });
+    const heading = [...cards(window)[0].querySelectorAll(".entry-part")][1];
+    /* jsdom reports an unset property as "", not as its initial value, so
+     * this asserts the property is not uppercase rather than that it equals
+     * "none" -- the mutation this must catch is someone adding uppercase
+     * back, and both "" and "none" are correct answers to that. */
+    assert.notEqual(window.getComputedStyle(heading).textTransform, "uppercase");
   });
 
   test("the parts read oldest first and each says when it was written", async () => {

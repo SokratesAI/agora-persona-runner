@@ -764,6 +764,33 @@
    * to a plain word when nothing is left. Cycle 6 has three entries, which
    * is why anything past the first is "Addendum" rather than the pair-shaped
    * "The second half". */
+  /** Whether two parts reached the same answer. Compared by *content*, not
+   *  by identity: eleven of the fourteen multi-part cycles repeat their
+   *  parent's PR and outcome verbatim, and those are the ones that must not
+   *  draw a second row -- an identity check calls every one of them a
+   *  disagreement and puts the duplicate straight back. */
+  function sameOutcome(a, b) {
+    return (a.pr || "") === (b.pr || "")
+      && (a.outcome || "") === (b.outcome || "")
+      && (a.outcomeDetail || "") === (b.outcomeDetail || "");
+  }
+
+  /** The outcome pill, the PR references and the qualifier beside them.
+   *  Shared so a part's own row and the cycle's row cannot drift apart. */
+  function appendOutcome(row, entry) {
+    if (entry.outcome) row.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
+    if (entry.pr) {
+      var pr = el("span", "pr");
+      // prSpans carries the same text with each reference linkified; the
+      // plain string is the fallback for a payload from an older build.
+      if (entry.prSpans && entry.prSpans.length) renderSpans(pr, entry.prSpans);
+      else pr.textContent = entry.pr;
+      row.appendChild(pr);
+    }
+    if (entry.outcomeDetail) row.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
+    return row;
+  }
+
   function cleanTitle(title) {
     var text = String(title || "")
       .replace(/^[\s·—–-]+/, "")
@@ -794,8 +821,12 @@
       emoji.setAttribute("aria-hidden", "true");
       head.appendChild(emoji);
     }
-    // `h1`, not the feed's `h2`: on this page the cycle is the document.
-    head.appendChild(el("h1", "cycle-link", "Cycle " + cycleNumber));
+    /* `h2`, matching the feed's card, because index.html already spends the
+     * document's `h1` on the "Nova" wordmark. A second `h1` is legal HTML
+     * and still leaves a screen reader with two top-level headings and no
+     * way to tell which one is the page. So: wordmark h1, cycle h2, the
+     * cycle's parts h3 -- one hierarchy, on both views. */
+    head.appendChild(el("h2", "cycle-link", "Cycle " + cycleNumber));
     card.appendChild(head);
 
     /* A one-part cycle's title has nowhere else to go. Twenty-six of them
@@ -812,21 +843,27 @@
       card.appendChild(el("p", "entry-title", cleanTitle(first.title)));
     }
 
-    /* The meta row belongs to the cycle, so it is built from its earliest
-     * part and drawn once. An addendum repeats its parent's PR and outcome
-     * verbatim -- that repetition is exactly what made two cards look like
-     * a duplicate -- and its own stamp is not lost: it heads its section. */
+    /* The meta row is drawn once for the cycle. The stamp is the earliest
+     * part's, because that is when the cycle began -- but the PR and the
+     * outcome come from the *last* part that declares one.
+     *
+     * The first version of this took all four from the earliest part, on
+     * the assumption that "an addendum repeats its parent's PR and outcome
+     * verbatim". That assumption is false and the live journal says so:
+     * cycle 102's base entry carries no PR and no outcome at all, and its
+     * addendum carries `#86 / merged` -- so `/cycle/102` would have shown a
+     * cycle that merged a PR as having done nothing. Which is the right way
+     * round, once stated: an addendum exists precisely to record what the
+     * earlier entry could not yet know, so it holds the cycle's settled
+     * word. (Measured across all 115 cycles: 4 of the 14 multi-part ones
+     * are affected.) */
+    var settled = parts.reduce(function (best, part) {
+      return (part.pr || part.outcome) ? part : best;
+    }, first);
     var meta = el("div", "entry-meta");
     var stamp = [first.date, first.time].filter(Boolean).join(" ");
     if (stamp) meta.appendChild(el("time", "stamp", stamp + " Oslo"));
-    if (first.outcome) meta.appendChild(el("span", outcomeClass(first.outcome), first.outcome));
-    if (first.pr) {
-      var pr = el("span", "pr");
-      if (first.prSpans && first.prSpans.length) renderSpans(pr, first.prSpans);
-      else pr.textContent = first.pr;
-      meta.appendChild(pr);
-    }
-    if (first.outcomeDetail) meta.appendChild(el("span", "outcome-detail", first.outcomeDetail));
+    appendOutcome(meta, settled);
     if (meta.childNodes.length) card.appendChild(meta);
 
     /* The digest line, whole and open. In the feed it is two drawers -- a
@@ -851,7 +888,18 @@
       if (parts.length > 1) {
         var when = [part.date, part.time].filter(Boolean).join(" ");
         var label = partLabel(part.title, index);
-        card.appendChild(el("h2", "entry-part", when ? label + " · " + when + " Oslo" : label));
+        card.appendChild(el("h3", "entry-part", when ? label + " · " + when + " Oslo" : label));
+        /* A part that reached a different answer than the cycle's settled
+         * one keeps its own row, so nothing is dropped by drawing the
+         * header once. Cycle 6 is the case: three parts, three different
+         * PR/outcome pairs -- `no-op`, then `merged`, then `shipped` -- and
+         * a single header can only be one of them. Where a part agrees
+         * with the header (the common shape) it stays silent, which is the
+         * whole point of not drawing two identical cards. */
+        if ((part.pr || part.outcome) && !sameOutcome(part, settled)) {
+          var partMeta = appendOutcome(el("div", "entry-meta entry-meta-part"), part);
+          if (partMeta.childNodes.length) card.appendChild(partMeta);
+        }
       }
       var body = el("div", "entry-body");
       renderBlocks(body, part.blocks);
