@@ -33,6 +33,14 @@ JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
 # work -- see `journal_markdown` in nova_site.py.
 JOURNAL_DIR = "projects/sokrates/projects/agora/nova/journal/"
 DIGEST_PATH = "projects/sokrates/projects/agora/journal-digest.md"
+# The digest lines that have rolled off the live file. Same split as the
+# journal above and for the same reason: DIGEST_PATH grew to 100KB of
+# which 97KB was 54 old digest lines, and a Nova cycle has to read the
+# whole thing every hour to get the two short sections at the top. The
+# site reads both and concatenates, so nothing a card ever showed
+# disappears -- see `digest_markdown` in nova_sources.py. This one lives
+# under `resources/` because it is ours; Edvard opens DIGEST_PATH.
+DIGEST_ARCHIVE_PATH = "projects/sokrates/projects/agora/nova/resources/digest-archive.md"
 
 _ENTRY_HEADING_RE = re.compile(r"^###[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")

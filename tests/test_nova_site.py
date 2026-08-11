@@ -34,7 +34,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_capture, nova_replies, nova_site, nova_sources
+from agora_runner import nova_capture, nova_journal, nova_replies, nova_site, nova_sources
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.nova_journal import (
     JOURNAL_DIR,
@@ -336,6 +336,85 @@ def test_next_cycle_section_is_carried_through(digest_md):
     assert "PWA" in parse_digest(digest_md)["nextCycle"]
 
 
+# --- the digest archive ---------------------------------------------------
+#
+# `journal-digest.md` reached 100KB, 97KB of which was 54 old digest
+# lines, so the old ones now roll off into a second file. These pin the
+# join rather than the rolling: the site has to keep showing every line
+# it ever showed, and the archive must not be able to shout over the two
+# short sections at the top that are the whole reason the file is small.
+
+_LIVE_DIGEST = """## Needs Edvard
+
+Should the node be replaced?
+
+## Next cycle
+
+Check the deploy.
+
+## Digest
+
+**Cycle 109** (2026-08-11 13:20) — The newest one.
+
+**Cycle 108** (2026-08-11 12:43) — The oldest one still live.
+"""
+
+_ARCHIVED_DIGEST = """---
+type: log
+updated: 2026-08-11
+---
+
+# Journal — Digest Archive
+
+**Cycle 107** (2026-08-11 12:40) — Rolled off.
+
+**Cycle 106** (2026-08-11 11:20) — Rolled off earlier.
+"""
+
+
+def _digest_reader(archive):
+    """`vault_read_path` answering the two digest paths and nothing else."""
+    def read(path):
+        if path == nova_journal.DIGEST_PATH:
+            return _LIVE_DIGEST
+        if path == nova_journal.DIGEST_ARCHIVE_PATH:
+            return archive
+        raise AssertionError(f"unexpected read: {path}")
+    return patch.object(nova_sources, "vault_read_path", side_effect=read)
+
+
+def test_archived_digest_lines_are_still_served_after_the_live_ones():
+    with _digest_reader(_ARCHIVED_DIGEST):
+        lines = parse_digest(nova_sources.digest_markdown())["lines"]
+    assert [line["cycle"] for line in lines] == [109, 108, 107, 106]
+
+
+def test_the_archive_cannot_displace_the_sections_edvard_reads():
+    # The join is concatenation, so an archive carrying its own `##`
+    # heading would start a rival section and `_sections` keeps the last
+    # one it sees. The archive is `#`-titled for exactly this reason.
+    with _digest_reader(_ARCHIVED_DIGEST):
+        digest = parse_digest(nova_sources.digest_markdown())
+    assert "node" in digest["needsEdvard"]
+    assert digest["hasNeedsEdvard"] is True
+    assert "Check the deploy." in digest["nextCycle"]
+
+
+def test_the_archives_own_frontmatter_and_title_are_not_digest_lines():
+    with _digest_reader(_ARCHIVED_DIGEST):
+        texts = [l["text"] for l in parse_digest(nova_sources.digest_markdown())["lines"]]
+    assert not any("type: log" in t or "Archive" in t for t in texts)
+
+
+def test_a_missing_archive_leaves_the_live_digest_exactly_as_it_was():
+    # The split has to be safe in either deploy order: this deploying
+    # before the vault file is written must be a no-op, not a trailing
+    # blank line the parser has to forgive.
+    for absent in (None, ""):
+        with _digest_reader(absent):
+            assert nova_sources.digest_markdown() == _LIVE_DIGEST
+
+
 @pytest.mark.parametrize("text", ["Nothing.", "Nothing", "none", "  \n"])
 def test_needs_edvard_is_empty_when_it_says_nothing(text):
     assert parse_digest(f"## Needs Edvard\n\n{text}\n\n## Digest\n")["hasNeedsEdvard"] is False
@@ -481,7 +560,15 @@ def test_api_journal_returns_rendered_entries_without_the_raw_body(journal_md):
 
 
 def test_api_digest_returns_the_needs_section_rendered(digest_md):
-    with patch.object(nova_sources, "vault_read_path", return_value=digest_md):
+    # Answer by path, not with one value for every read: `digest_markdown`
+    # now reads the live file and the archive, and a blanket return_value
+    # hands it the fixture twice. That is not a duplicate -- `_sections`
+    # keeps the last `##` it sees, so the second copy silently replaces
+    # the first's sections and the test passes while exercising a shape
+    # the real files cannot have.
+    def read(path):
+        return digest_md if path == nova_journal.DIGEST_PATH else ""
+    with patch.object(nova_sources, "vault_read_path", side_effect=read):
         status, _, body = _get("/api/digest")
     payload = json.loads(body)
     assert status == 200
@@ -2083,13 +2170,39 @@ def _both(journal_md, digest_md):
     is the first thing that reads both in one request -- it resolves its
     cycle range by asking `journal_page` -- so it needs a vault that can
     tell them apart.
+
+    Three files now, not two: the archive has to answer as an empty
+    archive rather than fall through to `journal_md`. Without that, every
+    test below feeds a `###`-headed journal fixture to `digest_markdown`
+    as the digest archive, and they all still pass -- but only because
+    `journal_sample.md` happens to contain nothing matching
+    `_DIGEST_LINE_RE`, which is a coincidence of that fixture's contents
+    and not a thing any of them assert.
     """
-    from agora_runner.nova_journal import DIGEST_PATH
+    from agora_runner.nova_journal import DIGEST_ARCHIVE_PATH, DIGEST_PATH
 
     def read(path):
-        return digest_md if path == DIGEST_PATH else journal_md
+        if path == DIGEST_PATH:
+            return digest_md
+        if path == DIGEST_ARCHIVE_PATH:
+            return ""
+        return journal_md
 
     return patch.object(nova_sources, "vault_read_path", side_effect=read)
+
+
+def test_the_window_fixtures_do_not_feed_the_journal_in_as_the_archive(journal_md, digest_md):
+    """`_both` means three files, and this is what says so.
+
+    Without it the helper's correction is unpinned: reverting the archive
+    branch puts a `###`-headed journal fixture into `digest_markdown` as
+    the archive, and all ten tests below go on passing, because
+    `journal_sample.md` happens to hold nothing `_DIGEST_LINE_RE` matches.
+    Asserted against the digest fixture as a literal rather than against
+    a second call, so there is nothing a mutation can move on both sides.
+    """
+    with _both(journal_md, digest_md):
+        assert nova_sources.digest_markdown() == digest_md
 
 
 def test_the_digest_window_is_the_cycles_the_feed_is_showing(journal_md, digest_md):
