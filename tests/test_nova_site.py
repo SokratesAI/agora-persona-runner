@@ -560,7 +560,15 @@ def test_api_journal_returns_rendered_entries_without_the_raw_body(journal_md):
 
 
 def test_api_digest_returns_the_needs_section_rendered(digest_md):
-    with patch.object(nova_sources, "vault_read_path", return_value=digest_md):
+    # Answer by path, not with one value for every read: `digest_markdown`
+    # now reads the live file and the archive, and a blanket return_value
+    # hands it the fixture twice. That is not a duplicate -- `_sections`
+    # keeps the last `##` it sees, so the second copy silently replaces
+    # the first's sections and the test passes while exercising a shape
+    # the real files cannot have.
+    def read(path):
+        return digest_md if path == nova_journal.DIGEST_PATH else ""
+    with patch.object(nova_sources, "vault_read_path", side_effect=read):
         status, _, body = _get("/api/digest")
     payload = json.loads(body)
     assert status == 200
