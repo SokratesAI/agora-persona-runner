@@ -45,9 +45,12 @@ self.addEventListener("fetch", function (event) {
   var url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // /cycle/49 is served by the same shell as / -- fall back to the shell
-  // rather than the URL, or a deep link opened offline misses the cache.
-  var fallback = url.pathname.indexOf("/cycle/") === 0 ? "/" : request;
+  // /cycle/49, /issues and /ideas are all served by the same shell as / --
+  // fall back to the shell rather than the URL, or a deep link opened
+  // offline misses the cache. Keyed on the request being a navigation
+  // rather than on a list of paths, so the next page added to app.js's
+  // router cannot forget to add itself here.
+  var fallback = request.mode === "navigate" && url.pathname !== "/" ? "/" : request;
 
   event.respondWith(
     fetch(request).then(function (response) {

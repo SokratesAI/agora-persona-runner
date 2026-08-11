@@ -14,10 +14,42 @@
   var statusEl = document.getElementById("status");
   var needsEl = document.getElementById("needs");
 
+  var navEl = document.getElementById("nav");
+
+  /* Which page the URL asks for. Three views over four URLs:
+   * `/` and `/cycle/49` are the journal, `/issues` and `/ideas` are the
+   * two board pages Edvard asked for in issues.md #57.
+   *
+   * The server serves the same shell for all of them (nova_site's GET
+   * handler) and this decides what to fetch, so a board page survives a
+   * cold load and a bookmark rather than only being reachable by tapping
+   * the nav. */
+  function route(pathname) {
+    var path = (pathname || "/").replace(/\/+$/, "") || "/";
+    var cycle = /^\/cycle\/(\d+)$/.exec(path);
+    if (cycle) return { view: "journal", cycle: parseInt(cycle[1], 10), board: null };
+    if (path === "/issues") return { view: "board", cycle: null, board: "issues" };
+    if (path === "/ideas") return { view: "board", cycle: null, board: "ideas" };
+    return { view: "journal", cycle: null, board: null };
+  }
+
   /** `/cycle/49` -> 49. Anything else -> null (show the whole feed). */
   function routedCycle(pathname) {
-    var match = /^\/cycle\/(\d+)\/?$/.exec(pathname || "");
-    return match ? parseInt(match[1], 10) : null;
+    return route(pathname).cycle;
+  }
+
+  function markNav() {
+    var here = route(window.location.pathname);
+    var want = here.view === "board" ? "/" + here.board : "/";
+    var tabs = navEl ? navEl.querySelectorAll(".nav-tab") : [];
+    for (var i = 0; i < tabs.length; i++) {
+      var on = tabs[i].getAttribute("href") === want;
+      tabs[i].classList.toggle("on", on);
+      // `aria-current` rather than only a class: the nav is three links
+      // and the active one is otherwise distinguishable by colour alone.
+      if (on) tabs[i].setAttribute("aria-current", "page");
+      else tabs[i].removeAttribute("aria-current");
+    }
   }
 
   /* How much of the journal a cold load asks for, and how much a tap on
@@ -649,6 +681,7 @@
 
   function render(journal, digest, comments) {
     stopPolling();
+    markNav();
     // What the page is now showing, so the poll below can tell "nothing
     // changed" from "changed while he was typing".
     renderedVersion = (journal && journal.version) || null;
@@ -808,7 +841,263 @@
     ]);
   }
 
+  /* ---- The board pages: Issues and Ideas (issues.md #57) ----------------
+   *
+   * Edvard: "I need more visualisations in the Nova app. Create more
+   * pages to contain more, such as issue list, idea list (separate
+   * pages) ..."
+   *
+   * Two tabs per page, because the two files are genuinely different
+   * documents rather than two halves of one list: his is boarded (a
+   * numbered item with a status and a written-up detail section), mine is
+   * a flat stream of one-line captures with a date and a cycle number.
+   * Merging them into one list would have to invent a status for mine and
+   * a cycle for his. "Who wrote it" is also the thing you sort by in your
+   * head when you go looking for something.
+   *
+   * The rows come down with the page; a detail body does not, and is
+   * fetched on the tap that opens it. `issues.md` is 68KB and ~60KB of
+   * that is `# Details` -- the same shape as the journal and the digest
+   * before #85 and #86, and the same fix, applied before it became a
+   * complaint rather than after.
+   */
+  var BOARD_NOTES = 30;
+  var boardState = {
+    tab: "edvard",
+    filter: "open",
+    notes: BOARD_NOTES,
+    open: null,
+    details: {},
+  };
+
+  var FILTERS = [
+    { key: "open", label: "Open", match: function (i) { return i.statusKey !== "done"; } },
+    { key: "done", label: "Done", match: function (i) { return i.statusKey === "done"; } },
+    { key: "all", label: "All", match: function () { return true; } },
+  ];
+
+  function boardTitles(board) {
+    return board === "ideas"
+      ? { page: "Ideas", mine: "Nova's ideas" }
+      : { page: "Issues", mine: "Nova's issues" };
+  }
+
+  function currentFilter() {
+    return FILTERS.filter(function (f) { return f.key === boardState.filter; })[0] || FILTERS[0];
+  }
+
+  function renderBoardStatus(board, payload) {
+    var titles = boardTitles(board);
+    var items = (payload && payload.items) || [];
+    var open = items.filter(function (i) { return i.statusKey !== "done"; }).length;
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el(
+      "p", "status-line",
+      titles.page + " — " + open + " open, " + (items.length - open) + " done, "
+        + ((payload && payload.notesTotal) || 0) + " of my own notes"
+    ));
+  }
+
+  /* One row of Edvard's board. Closed it is the number, the title and a
+   * status chip; open it reveals the write-up, which is a second request
+   * the first time a row is opened and memory after that. */
+  function renderBoardItem(board, item) {
+    var row = el("article", "item item-" + item.statusKey);
+    var head = el("button", "item-head");
+    head.type = "button";
+    head.setAttribute("aria-expanded", boardState.open === item.number ? "true" : "false");
+    head.appendChild(el("span", "item-number", "#" + item.number));
+    head.appendChild(el("span", "item-title", item.title));
+    head.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
+    if (item.updated) head.appendChild(el("span", "item-updated", item.updated));
+    row.appendChild(head);
+
+    var body = el("div", "item-body");
+    if (boardState.open !== item.number) body.hidden = true;
+    row.appendChild(body);
+
+    function fill() {
+      body.textContent = "";
+      if (item.where) body.appendChild(el("p", "item-where", "Landed in " + item.where));
+      var blocks = boardState.details[board + ":" + item.number];
+      if (!blocks) {
+        body.appendChild(el("p", "empty", "Loading…"));
+        fetch("/api/board?name=" + board + "&item=" + item.number)
+          .then(function (r) { return r.json(); })
+          .then(function (payload) {
+            boardState.details[board + ":" + item.number] =
+              ((payload && payload.item) || {}).blocks || [];
+            if (boardState.open === item.number) fill();
+          })
+          .catch(function (err) {
+            body.textContent = "";
+            body.appendChild(el("p", "empty", "Could not load #" + item.number + ": " + err));
+          });
+        return;
+      }
+      if (!blocks.length) {
+        body.appendChild(el("p", "empty", "No write-up yet — only the board row."));
+        return;
+      }
+      renderBlocks(body, blocks);
+    }
+
+    head.addEventListener("click", function () {
+      var opening = boardState.open !== item.number;
+      // One open row at a time. These write-ups run to several screens
+      // and a page of them all open is the scroll problem issues.md #42
+      // already complained about on the journal cards.
+      //
+      // Closing the others is a sweep over the rendered list rather than
+      // each row closing itself, because a row's handler only ever holds
+      // its own nodes: the first version set `boardState.open` and left
+      // the previously open body on screen, which the browser test
+      // caught. The state and the DOM have to be changed together.
+      var others = feed.querySelectorAll(".item-head");
+      for (var i = 0; i < others.length; i++) {
+        if (others[i] === head) continue;
+        others[i].setAttribute("aria-expanded", "false");
+        others[i].parentNode.querySelector(".item-body").hidden = true;
+      }
+      boardState.open = opening ? item.number : null;
+      head.setAttribute("aria-expanded", opening ? "true" : "false");
+      body.hidden = !opening;
+      if (opening) fill();
+    });
+    if (boardState.open === item.number) fill();
+    return row;
+  }
+
+  function renderBoardEdvard(board, payload) {
+    var wrap = el("div", "board");
+    var captures = payload.captures || [];
+    if (captures.length) {
+      var box = el("section", "captures");
+      box.appendChild(el("h2", "captures-title", "Not boarded yet"));
+      captures.forEach(function (blocks) {
+        var one = el("div", "capture-item");
+        renderBlocks(one, blocks);
+        box.appendChild(one);
+      });
+      wrap.appendChild(box);
+    }
+
+    var chips = el("div", "filters");
+    var items = payload.items || [];
+    FILTERS.forEach(function (filter) {
+      var count = items.filter(filter.match).length;
+      var chip = el("button", "filter" + (filter.key === boardState.filter ? " on" : ""),
+        filter.label + " (" + count + ")");
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", filter.key === boardState.filter ? "true" : "false");
+      chip.addEventListener("click", function () {
+        boardState.filter = filter.key;
+        renderBoard(board, payload);
+      });
+      chips.appendChild(chip);
+    });
+    wrap.appendChild(chips);
+
+    var shown = items.filter(currentFilter().match);
+    if (!shown.length) wrap.appendChild(el("p", "empty", "Nothing here."));
+    shown.forEach(function (item) { wrap.appendChild(renderBoardItem(board, item)); });
+    return wrap;
+  }
+
+  function renderBoardNova(board, payload) {
+    var wrap = el("div", "board");
+    var notes = payload.notes || [];
+    if (!notes.length) wrap.appendChild(el("p", "empty", "No notes yet."));
+    notes.forEach(function (note) {
+      var card = el("article", "note");
+      var head = el("div", "note-head");
+      if (note.date) head.appendChild(el("span", "note-date", note.date));
+      if (note.cycle !== null && note.cycle !== undefined) {
+        var link = el("a", "note-cycle", "Cycle " + note.cycle);
+        link.href = "/cycle/" + note.cycle;
+        head.appendChild(link);
+      }
+      card.appendChild(head);
+      var body = el("div", "note-body");
+      renderBlocks(body, note.blocks || []);
+      card.appendChild(body);
+      wrap.appendChild(card);
+    });
+    var total = payload.notesTotal;
+    if (typeof total === "number" && notes.length < total) {
+      var more = el("button", "more", "Show older notes");
+      more.type = "button";
+      more.addEventListener("click", function () {
+        more.disabled = true;
+        more.textContent = "Loading…";
+        boardState.notes += BOARD_NOTES;
+        load();
+      });
+      wrap.appendChild(more);
+    }
+    return wrap;
+  }
+
+  function renderBoard(board, payload) {
+    stopPolling();
+    markNav();
+    needsEl.hidden = true;
+    renderBoardStatus(board, payload);
+    feed.textContent = "";
+
+    var titles = boardTitles(board);
+    var tabs = el("div", "tabs");
+    [
+      { key: "edvard", label: "Edvard's " + titles.page.toLowerCase() },
+      { key: "nova", label: titles.mine },
+    ].forEach(function (tab) {
+      var button = el("button", "tab" + (boardState.tab === tab.key ? " on" : ""), tab.label);
+      button.type = "button";
+      button.setAttribute("aria-pressed", boardState.tab === tab.key ? "true" : "false");
+      button.addEventListener("click", function () {
+        if (boardState.tab === tab.key) return;
+        boardState.tab = tab.key;
+        renderBoard(board, payload);
+      });
+      tabs.appendChild(button);
+    });
+    feed.appendChild(tabs);
+    feed.appendChild(
+      boardState.tab === "nova"
+        ? renderBoardNova(board, payload)
+        : renderBoardEdvard(board, payload)
+    );
+  }
+
+  function loadBoard(board) {
+    // Which row is open and how far back the notes go belong to the board
+    // being looked at, not to the session: carried across, tapping from
+    // Issues to Ideas would open whichever idea happens to share a number
+    // with the issue that was open. `details` is keyed by board and is a
+    // real cache, so it stays.
+    if (boardState.board !== board) {
+      boardState.board = board;
+      boardState.open = null;
+      boardState.notes = BOARD_NOTES;
+    }
+    fetch("/api/board?name=" + board + "&limit=" + boardState.notes)
+      .then(function (r) { return r.json(); })
+      .then(function (payload) { renderBoard(board, payload); })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the board: " + err));
+      });
+  }
+
   function load() {
+    var here = route(window.location.pathname);
+    if (here.view === "board") {
+      loadBoard(here.board);
+      return;
+    }
+    markNav();
     fetchAll()
       .then(function (results) { render(results[0], results[1], results[2]); })
       .catch(function (err) {
@@ -855,6 +1144,10 @@
   }
 
   function poll() {
+    // The poll is the journal's. On a board page it would fetch the feed
+    // and render it straight over the list -- the same "never interrupt"
+    // rule the typing check below exists for, one level up.
+    if (route(window.location.pathname).view !== "journal") return schedulePoll();
     if (document.hidden || typing()) return schedulePoll();
     fetchAll()
       .then(function (results) {

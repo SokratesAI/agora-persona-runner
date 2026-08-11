@@ -267,5 +267,156 @@
       ]
     },
     "needs": []
+  },
+  "board": {
+    "name": "issues",
+    "captures": [
+      [
+        {
+          "type": "p",
+          "spans": [
+            {
+              "kind": "text",
+              "text": "Small pickings on Nova ui - low priority - remove \"Oslo\" text from Journal timestamp."
+            }
+          ]
+        }
+      ]
+    ],
+    "items": [
+      {
+        "number": 57,
+        "title": "More pages in the Nova app",
+        "status": "🟡 In progress",
+        "statusKey": "in-progress",
+        "updated": "08-11",
+        "where": "",
+        "done": false
+      },
+      {
+        "number": 58,
+        "title": "Remove Gemini from Agora personas",
+        "status": "⚪ Backlog",
+        "statusKey": "backlog",
+        "updated": "08-11",
+        "where": "",
+        "done": false
+      },
+      {
+        "number": 56,
+        "title": "Stop postponing work to the next cycle to beat the clock",
+        "status": "✅ Done",
+        "statusKey": "done",
+        "updated": "08-10",
+        "where": "",
+        "done": false
+      },
+      {
+        "number": 51,
+        "title": "The Sokrates inbox should be one way",
+        "status": "✅ Done",
+        "statusKey": "done",
+        "updated": "08-10",
+        "where": "inbox.md, identity.md, prompt.md",
+        "done": true
+      }
+    ],
+    "details": {},
+    "notes": [
+      {
+        "date": "2026-08-09",
+        "cycle": 63,
+        "blocks": [
+          {
+            "type": "p",
+            "spans": [
+              {
+                "kind": "strong",
+                "text": "`vault_tool.py get` does NOT truncate large files."
+              },
+              {
+                "kind": "text",
+                "text": " The standing warning says otherwise."
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "date": "2026-08-09",
+        "cycle": 62,
+        "blocks": [
+          {
+            "type": "p",
+            "spans": [
+              {
+                "kind": "strong",
+                "text": "`test_cost_share_sums_to_100` was structurally incapable of failing."
+              },
+              {
+                "kind": "text",
+                "text": " Its fixture used one model."
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "notesTotal": 3
+  },
+  "boardItem": {
+    "name": "issues",
+    "item": {
+      "number": 57,
+      "title": "More pages in the Nova app",
+      "status": "🟡 In progress",
+      "statusKey": "in-progress",
+      "updated": "08-11",
+      "where": "",
+      "done": false,
+      "blocks": [
+        {
+          "type": "p",
+          "spans": [
+            {
+              "kind": "text",
+              "text": "> \"I need more visualisations in the Nova app. Create more pages to contain more, such as issue list, idea list (separate pages), data and analytics page, etc.\""
+            }
+          ]
+        },
+        {
+          "type": "p",
+          "spans": [
+            {
+              "kind": "strong",
+              "text": "Status: 🟡 In progress 08-11 — designed, not built."
+            }
+          ]
+        },
+        {
+          "type": "p",
+          "spans": [
+            {
+              "kind": "text",
+              "text": "Five pages, in the order I would build them."
+            }
+          ]
+        },
+        {
+          "type": "li",
+          "spans": [
+            {
+              "kind": "strong",
+              "text": "1. Issues and Ideas, as their own pages"
+            },
+            {
+              "kind": "text",
+              "text": " — his explicit ask."
+            }
+          ]
+        }
+      ]
+    },
+    "found": true
   }
 }

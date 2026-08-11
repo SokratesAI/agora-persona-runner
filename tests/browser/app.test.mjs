@@ -69,7 +69,7 @@ function openWindow(html, options) {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, digest, comments, install, journal } = {}) {
+async function loadSite(path = "/", { failComments = false, digest, comments, install, journal, board } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -91,6 +91,13 @@ async function loadSite(path = "/", { failComments = false, digest, comments, in
       return failComments
         ? Promise.reject(new Error("comments are down"))
         : Promise.resolve({ json: () => Promise.resolve(comments || payload.comments) });
+    }
+    if (url.includes("/api/board")) {
+      // Two shapes off one route, told apart the way the server tells
+      // them apart: `item=` is a tap on a row, anything else is the list.
+      const asked = board ? board(url) : null;
+      const body = asked || (url.includes("item=") ? payload.boardItem : payload.board);
+      return Promise.resolve({ json: () => Promise.resolve(body) });
     }
     if (url.includes("/api/digest")) {
       // A function for the same reason `journal` is one: the digest takes
@@ -1488,5 +1495,171 @@ describe("an unsent comment survives a re-render", () => {
     const after = window.document.querySelector(".entry .comment-text");
     assert.notEqual(after, box, "the drawer was not actually rebuilt, so this proves nothing");
     assert.equal(after.value, "half a thought");
+  });
+});
+
+/* The board pages -- Issues and Ideas (issues.md #57).
+ *
+ * Edvard: "I need more visualisations in the Nova app. Create more pages
+ * to contain more, such as issue list, idea list (separate pages)".
+ *
+ * These drive the real router, so what is being checked is what a cold
+ * load of `/issues` actually renders, not that a function exists. */
+const rows = (window) => [...window.document.querySelectorAll(".item")];
+const rowNumbers = (window) =>
+  rows(window).map((row) => row.querySelector(".item-number").textContent);
+
+describe("the issues page", () => {
+  test("a cold load of /issues renders his rows, not the journal", async () => {
+    const window = await loadSite("/issues");
+    assert.equal(cards(window).length, 0, "the journal feed rendered on a board page");
+    assert.ok(rows(window).length > 0, "no board rows");
+    const first = rows(window)[0];
+    assert.equal(first.querySelector(".item-number").textContent, "#57");
+    assert.equal(first.querySelector(".item-title").textContent, "More pages in the Nova app");
+    assert.equal(first.querySelector(".chip").textContent, "🟡 In progress");
+  });
+
+  test("the page asks the board endpoint and never the journal", async () => {
+    const asked = [];
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        asked.push(url);
+        return url.includes("item=") ? payload.boardItem : payload.board;
+      },
+      journal: (url) => {
+        asked.push(url);
+        return payload.journal;
+      },
+    });
+    assert.ok(asked.length > 0);
+    assert.ok(
+      asked.every((url) => url.includes("/api/board")),
+      "a board page fetched the journal: " + asked.join(", "),
+    );
+    assert.ok(asked[0].includes("name=issues"));
+    assert.ok(window.document.querySelector(".nav-tab[href='/issues']").classList.contains("on"));
+  });
+
+  test("the default filter hides done items and a chip brings them back", async () => {
+    const window = await loadSite("/issues");
+    const open = rowNumbers(window);
+    assert.ok(open.includes("#57"), "an open item is missing from the default view");
+    assert.ok(!open.includes("#51"), "a done item is in the default view");
+
+    const all = [...window.document.querySelectorAll(".filter")]
+      .filter((chip) => chip.textContent.startsWith("All"))[0];
+    click(window, all);
+    assert.ok(rowNumbers(window).includes("#51"), "All did not reveal the done items");
+
+    const done = [...window.document.querySelectorAll(".filter")]
+      .filter((chip) => chip.textContent.startsWith("Done"))[0];
+    click(window, done);
+    assert.deepEqual(rowNumbers(window).sort(), ["#51", "#56"]);
+  });
+
+  test("the write-up is fetched on the tap that opens the row, not before", async () => {
+    const asked = [];
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        asked.push(url);
+        return url.includes("item=") ? payload.boardItem : payload.board;
+      },
+    });
+    assert.ok(
+      asked.every((url) => !url.includes("item=")),
+      "a detail body was fetched before anything was opened: " + asked.join(", "),
+    );
+    const head = rows(window)[0].querySelector(".item-head");
+    click(window, head);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.ok(asked.some((url) => url.includes("item=57")), "the tap fetched nothing");
+    assert.equal(head.getAttribute("aria-expanded"), "true");
+    const body = rows(window)[0].querySelector(".item-body");
+    assert.equal(body.hidden, false);
+    assert.match(body.textContent, /Five pages, in the order I would build them\./);
+  });
+
+  test("opening a second row closes the first", async () => {
+    const window = await loadSite("/issues");
+    click(window, rows(window)[0].querySelector(".item-head"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    click(window, rows(window)[1].querySelector(".item-head"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(rows(window)[0].querySelector(".item-body").hidden, true);
+    assert.equal(rows(window)[1].querySelector(".item-body").hidden, false);
+  });
+
+  test("his unboarded captures are shown rather than hidden until a cycle files them", async () => {
+    const window = await loadSite("/issues");
+    const box = window.document.querySelector(".captures");
+    assert.ok(box, "the capture block is missing");
+    assert.match(box.textContent, /Small pickings on Nova ui/);
+  });
+
+  test("my own notes are a separate tab, newest first, with a pager", async () => {
+    const window = await loadSite("/issues");
+    const tab = [...window.document.querySelectorAll(".tab")]
+      .filter((one) => /Nova's/.test(one.textContent))[0];
+    click(window, tab);
+
+    const notes = [...window.document.querySelectorAll(".note")];
+    assert.equal(notes.length, 2, "the notes window was not the one the server sent");
+    assert.match(notes[0].textContent, /vault_tool\.py get. does NOT truncate/);
+    assert.equal(notes[0].querySelector(".note-cycle").getAttribute("href"), "/cycle/63");
+    assert.ok(
+      window.document.querySelector("button.more"),
+      "3 notes exist and 2 were sent, so there should be a pager",
+    );
+    assert.equal(rows(window).length, 0, "his rows are still rendered on my tab");
+  });
+
+  test("the journal poll does not render over a board page", async () => {
+    const server = { asked: [] };
+    let timers;
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        server.asked.push(url);
+        return url.includes("item=") ? payload.boardItem : payload.board;
+      },
+      journal: (url) => {
+        server.asked.push(url);
+        return payload.journal;
+      },
+      install: (w) => { timers = captureTimers(w); },
+    });
+    await timers.firePagePoll();
+
+    assert.ok(
+      server.asked.every((url) => url.includes("/api/board")),
+      "the poll fetched the journal from a board page: " + server.asked.join(", "),
+    );
+    assert.ok(rows(window).length > 0, "the poll replaced the board with the feed");
+  });
+
+  test("tapping Ideas in the nav switches board without a reload", async () => {
+    const asked = [];
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        asked.push(url);
+        return url.includes("item=") ? payload.boardItem : payload.board;
+      },
+    });
+    click(window, window.document.querySelector(".nav-tab[href='/ideas']"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.location.pathname, "/ideas");
+    assert.ok(asked.some((url) => url.includes("name=ideas")), "asked: " + asked.join(", "));
+    assert.ok(window.document.querySelector(".nav-tab[href='/ideas']").classList.contains("on"));
+    assert.ok(!window.document.querySelector(".nav-tab[href='/issues']").classList.contains("on"));
+  });
+
+  test("the journal still loads at / with the nav in place", async () => {
+    const window = await loadSite("/");
+    assert.ok(cards(window).length > 0, "the feed stopped rendering");
+    assert.equal(rows(window).length, 0);
+    assert.ok(window.document.querySelector(".nav-tab[href='/']").classList.contains("on"));
   });
 });
