@@ -2382,3 +2382,28 @@ def test_the_digest_window_revalidates_when_the_journal_moves(journal_md, digest
         status, _, _ = _get("/api/digest?limit=2", f"If-None-Match: {before}\r\n")
     assert after != before, "the same etag for a different window"
     assert status == 200, "a moved window was answered 304"
+
+
+def test_the_costs_page_and_its_endpoint_both_answer():
+    """`/costs` is a shell route and `/api/costs` is the data behind it,
+    and nothing else in this suite would notice either one disappearing:
+    `nova_costs`'s own tests call the shaping directly, and the browser
+    tests stub `fetch`. So a route refactor could drop the pair and leave
+    1391 tests green while the nav tab 404s on his phone.
+
+    The shell is asserted by content rather than by status, because a 404
+    here is also a 200 -- `_send_json(404, ...)` -- and only the body
+    tells the two apart."""
+    ledger = open(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                     "cost_ledger_sample.json"),
+        encoding="utf-8",
+    ).read()
+    with patch.object(nova_sources, "vault_read_path", return_value=ledger):
+        nova_site.reset_cache()
+        status, _, body = _get("/api/costs")
+        shell_status, _, shell = _get("/costs")
+    assert status == 200
+    assert json.loads(body)["summary"]["cycles"] == 3
+    assert len(json.loads(body)["cycles"]) == 3
+    assert shell_status == 200 and b"<!doctype html>" in shell.lower()
