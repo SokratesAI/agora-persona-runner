@@ -24,6 +24,7 @@ before the first test runs.
 """
 import pytest
 import socket
+import threading
 
 BLOCKED_MESSAGE = (
     "network access is blocked in tests (tests/conftest.py) -- attempted "
@@ -65,12 +66,81 @@ def pytest_unconfigure(config):
     socket.socket.connect_ex = _real_connect_ex
 
 
+LEAKED_MESSAGE = (
+    "this test left {count} background thread(s) still running: {names}. A "
+    "thread that outlives the test has also outlived the test's patches, so "
+    "whatever it does next it does against the real vault, the real bridge "
+    "and the real clock -- and it does it while some later test is running, "
+    "which is where the blame lands. Either do not start the thread (patch "
+    "whatever starts it) or join it before the test ends."
+)
+
+_threads_at_setup = {}
+
+
+def pytest_runtest_setup(item):
+    # The Thread objects rather than their `ident`s: an ident is the OS
+    # thread id and the OS reuses those, so a leaked thread that happened
+    # to land on a dead one's id would look like it had been here all
+    # along. Holding the object costs nothing -- it does not keep the OS
+    # thread alive, and the entry is dropped again in teardown.
+    _threads_at_setup[item.nodeid] = set(threading.enumerate())
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Fail a test that leaves a thread running behind it.
+
+    The network guard above is about the wrong mock target; this is about
+    the right mock target and the wrong lifetime. A `with patch(...)` holds
+    only until the test returns, so a background thread started inside it
+    keeps running afterwards with the real thing restored underneath it --
+    and it lands on whichever test happens to be running when it gets
+    round to doing its work. Both repos have now paid for this shape: the
+    bridge's quota watcher took its final reading past a function-scoped
+    patch and appended to the real `quota-history.jsonl` (see the bridge's
+    own conftest), and here the reply worker escaped a site test in about
+    one run in three.
+
+    Checked after the wrapped hook, so fixture finalizers have already run
+    -- a fixture that starts a thread and joins it in teardown is doing the
+    right thing and must not be flagged for it. No grace period, because
+    the bug is the escape and not the duration: a thread still alive once
+    the test and its fixtures are done has already outlived the patches,
+    whether it finishes a millisecond later or not.
+    """
+    result = yield
+    before = _threads_at_setup.pop(item.nodeid, None)
+    if before is None:
+        return result
+    leaked = sorted(
+        t.name for t in threading.enumerate()
+        if t not in before and t.is_alive()
+    )
+    if leaked:
+        pytest.fail(LEAKED_MESSAGE.format(count=len(leaked), names=", ".join(leaked)))
+    return result
+
+
 @pytest.fixture(autouse=True)
 def _clear_nova_site_cache():
     """`/api/journal` and `/api/digest` are served stale-while-revalidate,
-    and the cache is module state shared by every test in this process."""
+    and the cache is module state shared by every test in this process.
+
+    The join is the other half of that: a refresh runs on its own thread,
+    so a test that triggers one and returns leaves the rebuild racing the
+    reset below -- it can write its payload into `_cache` *after* the
+    clear, which is the exact stale-payload-into-the-next-test bug this
+    fixture exists to prevent. Bounded rather than unbounded so a refresh
+    that genuinely wedges is reported by the leak check above instead of
+    hanging the suite; the wait is nowhere near binding, a mocked refresh
+    finishes in under a millisecond.
+    """
     from agora_runner.nova_site import reset_cache
 
     reset_cache()
     yield
+    for thread in threading.enumerate():
+        if thread.name.startswith("nova-site-"):
+            thread.join(timeout=5)
     reset_cache()
