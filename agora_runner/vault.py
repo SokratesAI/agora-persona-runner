@@ -180,12 +180,15 @@ def _fetch_chunks(chunk_ids):
 def vault_assemble(doc, path=None):
     kids = doc.get("children") or []
     if kids:
-        # One request for every chunk, not one per chunk. Chunking the
-        # write path (Cycle 117) turned a 134KB file from 1 chunk into 16,
-        # and 16 sequential GETs measured 343ms against 22ms on the live
-        # vault -- a cost nova_site pays on every page load. LiveSync
-        # files, which are Edvard's, have always been chunked and have
-        # always paid it.
+        # One request for every chunk, not one per chunk. This reduces a
+        # regression that chunked writes (Cycle 117) introduce; it does not
+        # erase it, and the honest numbers belong here rather than in a
+        # commit message. Medians of 7 against the live vault, on the same
+        # 134KB file: 1 chunk 9ms either way; the same file as 16 chunks is
+        # 196ms bulk against 301ms one-GET-per-chunk. So a large file does
+        # get slower for nova_site to read -- roughly 9ms to 196ms -- and
+        # this recovers about a third of that. The trade is deliberate: the
+        # write side was leaving a full dead copy behind on every save.
         by_id = _fetch_chunks(kids)
         out = []
         missing = []
