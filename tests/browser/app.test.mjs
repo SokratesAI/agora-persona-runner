@@ -422,6 +422,47 @@ describe("two entries for one cycle are one card", () => {
     assert.match(meta.textContent, new RegExp(parts[1].time));
   });
 
+  /* Cycle 105 on the live pod, and cycle 6: the footer is mandatory, so a
+   * part with nothing of its own to report still files `PR: none | Outcome:
+   * no-op`. Reading that as the cycle's answer announces a cycle that merged
+   * a PR as a no-op. Both real; neither was in the fixture. */
+  test("a later part that reports nothing does not overrule a merged PR", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    parts[1].pr = "#89";                       // the earlier entry: the work
+    parts[1].prSpans = [{ kind: "text", text: "#89" }];
+    parts[1].outcome = "merged";
+    parts[0].pr = "none";                      // the addendum: nothing to add
+    parts[0].prSpans = [{ kind: "text", text: "none" }];
+    parts[0].outcome = "no-op";
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(meta.textContent, /#89/);
+    assert.match(meta.textContent, /merged/);
+    assert.ok(!/no-op/.test(meta.textContent), meta.textContent);
+    // The page reads off the same function, so it must agree.
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(pageMeta.textContent, /#89/);
+  });
+
+  test("a qualified `none` is still a none", async () => {
+    // Cycle 6's third entry writes `none (status note)`, so this cannot be
+    // an equality test against the string "none".
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    parts[1].pr = "#32";
+    parts[1].prSpans = [{ kind: "text", text: "#32" }];
+    parts[1].outcome = "shipped";
+    parts[0].pr = "none (status note)";
+    parts[0].prSpans = [{ kind: "text", text: "none (status note)" }];
+    parts[0].outcome = "no-op";
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(meta.textContent, /#32/);
+    assert.match(meta.textContent, /shipped/);
+  });
+
   test("a part of the card that reached a different answer keeps its own row", async () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
     const parts = journal.entries.filter((e) => e.cycle === 57);

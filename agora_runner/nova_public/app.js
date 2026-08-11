@@ -837,9 +837,34 @@
    *  merged a PR as having done nothing. An addendum exists precisely to
    *  record what the earlier entry could not yet know. */
   function settledPart(ordered) {
-    return ordered.reduce(function (best, part) {
+    /* "The last part that declares anything" was the first rule here and it
+     * is wrong on real data, because the footer is mandatory: a part with
+     * nothing of its own to report still writes `PR: none | Outcome: no-op`,
+     * and that is a statement about the *part*, not about the cycle.
+     *
+     * Cycle 105 is the case, and it is the cycle that shipped the rule:
+     * its first entry merged `#89`, its addendum struck a non-bug off the
+     * list and filed `none / no-op`. Under the old rule the card announced
+     * a cycle that merged a PR as a no-op, with `merged #89` demoted to a
+     * row two taps down. Cycle 6 is worse -- shipped, then merged three
+     * PRs, then a closing note about an unrelated incident.
+     *
+     * So a real PR reference outranks a later `none`. Where no part has
+     * one, the old rule still applies, which is what keeps cycle 102
+     * (nothing, then `#86 / merged`) reading off its addendum. */
+    var named = ordered.reduce(function (best, part) {
+      return isRealPr(part.pr) ? part : best;
+    }, null);
+    return named || ordered.reduce(function (best, part) {
       return (part.pr || part.outcome) ? part : best;
     }, ordered[0]);
+  }
+
+  /** Whether a `PR:` field names something, as opposed to saying it does
+   *  not. Five entries write a qualifier after it ("none (status note)"),
+   *  so this cannot be an equality test. */
+  function isRealPr(pr) {
+    return !!String(pr || "").trim() && !/^none\b/i.test(String(pr).trim());
   }
 
   /** Every part of a cycle, in the order it was written, appended to
