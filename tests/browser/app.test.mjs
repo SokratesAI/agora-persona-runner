@@ -1187,6 +1187,11 @@ describe("a poll asks whether anything changed, not for the whole journal", () =
     sent.length = 0;
     await timers.firePagePoll();
     assert.equal(asked(sent, "/api/comments").asked, null);
+    /* Paired with the journal on the same poll on purpose. On its own the
+     * assertion above is true of the client that predates this change too,
+     * so it would pin nothing -- it is only evidence of a deliberate split
+     * if the other endpoint on the same poll did send one. */
+    assert.equal(asked(sent, "/api/journal").asked, 'W/"j1"', "nothing was conditional at all");
   });
 
   /* The failure this whole suite exists to catch. A 304 has no body, so a
