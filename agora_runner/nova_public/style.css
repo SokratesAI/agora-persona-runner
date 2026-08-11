@@ -247,6 +247,40 @@ pre code { background: none; padding: 0; }
 .entry.is-expanded .journal-toggle { display: block; }
 .entry.is-expanded.is-reading .entry-body { display: block; }
 
+/* `/cycle/81` is a page, not a card, so none of the three levels above
+ * apply to it -- there is no feed to scan past, and the entry you named in
+ * the URL is the entire document. It renders no chevron, no permalink to
+ * itself and no journal toggle at all (see `renderCyclePage`), so the rules
+ * that hide those have nothing to act on; what this needs is the body shown
+ * without an `.is-reading` that will never be set. */
+.entry.is-page .entry-digest,
+.entry.is-page .entry-body { display: block; }
+
+.entry.is-page .entry-head h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.25;
+}
+
+/* Which of a cycle's two parts you are in, for the six cycles that wrote an
+ * addendum. Quieter than the page's own title and separated from the prose
+ * above it, because it divides one account rather than starting a new one. */
+.entry-part {
+  margin: 1.6rem 0 0.7rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--line, #2a2d3a);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--dim);
+}
+/* No uppercase and no letter-spacing, which the first version had. Those
+ * suit a short tag -- "ADDENDUM" -- and these are not tags: the label is
+ * whatever prose the cycle typed into its own heading, and cycle 75's runs
+ * to ninety characters ("I watched it land, and caught myself re-filing a
+ * bug Edvard had already reported"). Uppercasing a sentence that long makes
+ * it slower to read than the paragraph underneath it. */
+.entry.is-page .entry-body + .entry-part { margin-top: 1.4rem; }
+
 /* No line clamp any more. The brief arrives already cut on a sentence
  * boundary, so a clamp has nothing left to do except break it again in the
  * middle -- which is the thing Edvard was reporting.

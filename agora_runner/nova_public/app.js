@@ -713,6 +713,227 @@
     livePolls = [];
   }
 
+  /* `/cycle/81` is a page, not a card.
+   *
+   * Edvard, inside issue #59: "its not the link thats the problem, its the
+   * single view that is bad ui... Please do some propper ui research and
+   * testing with this as the current solution does not make sense, is hard
+   * to understand and wasteful". And on the comments board, Cycle 81: "i do
+   * not like the double entry Journal cards. If a double entry is necessary
+   * like for cycle 81, have it be combined into one card that has tabs or
+   * something similar. Its confusing that its two separate cards."
+   *
+   * Both are the same page. What it used to render was the feed's card with
+   * `expanded` set, and every part of that card exists to help someone scan
+   * a feed of 115 of them -- which is the one thing this page has none of:
+   *
+   *  - The journal text was still shut. `setExpanded` re-derives the drawer
+   *    from the drawer's own `aria-expanded`, which is `false` on a card
+   *    built one line earlier, so opening the card never opened the drawer
+   *    inside it. You navigated to a URL that names one entry and got a
+   *    button asking whether you wanted to read it. That is the "wasteful".
+   *  - The permalink `#` pointed at the page it was already on.
+   *  - The chevron collapsed the only thing on the page, leaving a back link
+   *    and nothing else.
+   *  - A cycle with an addendum drew two of all of that, both headed
+   *    "Cycle 81", both carrying the same PR and outcome.
+   *
+   * So: one `<article>` per cycle, heading once, meta once, prose open. The
+   * parts run oldest-first, because on a page you are reading rather than
+   * scanning and the addendum is the later half of the same hour.
+   *
+   * Tabs are what he suggested and I did not use them, which is a call he
+   * can reverse in a sentence. Two parts of one cycle are one continuous
+   * account -- the addendum is usually "the deploy I could not see came up
+   * healthy" -- and a tab would hide half of a page whose whole job is to
+   * show the thing you asked for. A dated subheading keeps both readable in
+   * one scroll and still says plainly that they were written at different
+   * times. The feed is untouched and still draws two cards; that is a
+   * separate question about a scanning surface and it stays filed. */
+  /* What to call one part of a multi-part cycle.
+   *
+   * The titles are prose a cycle typed into its own heading, and fourteen
+   * cycles have written more than one entry with no convention between them:
+   * `(addendum)`, `addendum`, `verification`, `postscript`, `· addendum
+   * (2026-08-11 05:24)`, `(2026-08-11 05:09)`, and one 90-character sentence.
+   * Measured off the live pod, not guessed. Printing them raw beside a
+   * timestamp gives "· addendum (2026-08-11 05:24) · 2026-08-11 05:24 Oslo".
+   *
+   * So: drop a leading bullet, drop the wrapping parentheses, drop a
+   * parenthesised date the heading is about to print anyway, and fall back
+   * to a plain word when nothing is left. Cycle 6 has three entries, which
+   * is why anything past the first is "Addendum" rather than the pair-shaped
+   * "The second half". */
+  /** Whether two parts reached the same answer. Compared by *content*, not
+   *  by identity: eleven of the fourteen multi-part cycles repeat their
+   *  parent's PR and outcome verbatim, and those are the ones that must not
+   *  draw a second row -- an identity check calls every one of them a
+   *  disagreement and puts the duplicate straight back. */
+  function sameOutcome(a, b) {
+    return (a.pr || "") === (b.pr || "")
+      && (a.outcome || "") === (b.outcome || "")
+      && (a.outcomeDetail || "") === (b.outcomeDetail || "");
+  }
+
+  /** The outcome pill, the PR references and the qualifier beside them.
+   *  Shared so a part's own row and the cycle's row cannot drift apart. */
+  function appendOutcome(row, entry) {
+    if (entry.outcome) row.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
+    if (entry.pr) {
+      var pr = el("span", "pr");
+      // prSpans carries the same text with each reference linkified; the
+      // plain string is the fallback for a payload from an older build.
+      if (entry.prSpans && entry.prSpans.length) renderSpans(pr, entry.prSpans);
+      else pr.textContent = entry.pr;
+      row.appendChild(pr);
+    }
+    if (entry.outcomeDetail) row.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
+    return row;
+  }
+
+  function cleanTitle(title) {
+    var text = String(title || "")
+      .replace(/^[\s·—–-]+/, "")
+      .replace(/\(\s*\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2})?\s*\)/g, "")
+      .trim();
+    // Only when the parentheses wrap the whole of what is left; `(addendum)`
+    // loses them, `a fix (and the bug under it)` keeps them.
+    if (/^\([^()]*\)$/.test(text)) text = text.slice(1, -1).trim();
+    text = text.replace(/^[\s·—–-]+/, "").trim();
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
+  }
+
+  function partLabel(title, index) {
+    return cleanTitle(title) || (index === 0 ? "The cycle" : "Addendum");
+  }
+
+  function renderCyclePage(cycleNumber, entries, digestLine, comments) {
+    var card = el("article", "entry is-page");
+    card.id = "cycle-" + cycleNumber;
+
+    // Newest-first off the wire; a page reads forwards.
+    var parts = entries.slice().reverse();
+    var first = parts[0];
+
+    var head = el("header", "entry-head");
+    if (first.emoji) {
+      var emoji = el("span", "entry-emoji", first.emoji);
+      emoji.setAttribute("aria-hidden", "true");
+      head.appendChild(emoji);
+    }
+    /* `h2`, matching the feed's card, because index.html already spends the
+     * document's `h1` on the "Nova" wordmark. A second `h1` is legal HTML
+     * and still leaves a screen reader with two top-level headings and no
+     * way to tell which one is the page. So: wordmark h1, cycle h2, the
+     * cycle's parts h3 -- one hierarchy, on both views. */
+    head.appendChild(el("h2", "cycle-link", "Cycle " + cycleNumber));
+    card.appendChild(head);
+
+    /* A one-part cycle's title has nowhere else to go. Twenty-six of them
+     * carry a real one -- "The heartbeat was never late; the clock on the
+     * card was invented" -- and the first version of this page dropped every
+     * one, because titles were only rendered as part subheadings and a
+     * single part gets none. A multi-part cycle keeps them in the
+     * subheadings, where they say which half you are in.
+     *
+     * `cleanTitle` rather than the raw string: eleven entries have a title
+     * that is only their own timestamp, and it renders as nothing rather
+     * than as a date printed twice. */
+    if (parts.length === 1 && cleanTitle(first.title)) {
+      card.appendChild(el("p", "entry-title", cleanTitle(first.title)));
+    }
+
+    /* The meta row is drawn once for the cycle. The stamp is the earliest
+     * part's, because that is when the cycle began -- but the PR and the
+     * outcome come from the *last* part that declares one.
+     *
+     * The first version of this took all four from the earliest part, on
+     * the assumption that "an addendum repeats its parent's PR and outcome
+     * verbatim". That assumption is false and the live journal says so:
+     * cycle 102's base entry carries no PR and no outcome at all, and its
+     * addendum carries `#86 / merged` -- so `/cycle/102` would have shown a
+     * cycle that merged a PR as having done nothing. Which is the right way
+     * round, once stated: an addendum exists precisely to record what the
+     * earlier entry could not yet know, so it holds the cycle's settled
+     * word. (Measured across all 115 cycles: 4 of the 14 multi-part ones
+     * are affected.) */
+    var settled = parts.reduce(function (best, part) {
+      return (part.pr || part.outcome) ? part : best;
+    }, first);
+    var meta = el("div", "entry-meta");
+    var stamp = [first.date, first.time].filter(Boolean).join(" ");
+    if (stamp) meta.appendChild(el("time", "stamp", stamp + " Oslo"));
+    appendOutcome(meta, settled);
+    if (meta.childNodes.length) card.appendChild(meta);
+
+    /* The digest line, whole and open. In the feed it is two drawers -- a
+     * brief that fits a collapsed card, then the remainder -- because a card
+     * has to be short enough to scan past. Here it is the standfirst. */
+    var briefSpans = (digestLine && digestLine.briefSpans) || first.briefSpans;
+    if (briefSpans && briefSpans.length) {
+      var brief = el("p", "entry-brief");
+      renderSpans(brief, briefSpans);
+      card.appendChild(brief);
+    }
+    if (digestLine && digestLine.restSpans && digestLine.restSpans.length) {
+      var rest = el("p", "entry-digest");
+      renderSpans(rest, digestLine.restSpans);
+      card.appendChild(rest);
+    }
+
+    parts.forEach(function (part, index) {
+      /* A single-part cycle gets no subheading: there is nothing to tell
+       * apart, and a header over the only section is the same noise as a
+       * permalink to the current page. */
+      if (parts.length > 1) {
+        var when = [part.date, part.time].filter(Boolean).join(" ");
+        var label = partLabel(part.title, index);
+        card.appendChild(el("h3", "entry-part", when ? label + " · " + when + " Oslo" : label));
+        /* A part that reached a different answer than the cycle's settled
+         * one keeps its own row, so nothing is dropped by drawing the
+         * header once. Cycle 6 is the case: three parts, three different
+         * PR/outcome pairs -- `no-op`, then `merged`, then `shipped` -- and
+         * a single header can only be one of them. Where a part agrees
+         * with the header (the common shape) it stays silent, which is the
+         * whole point of not drawing two identical cards. */
+        if ((part.pr || part.outcome) && !sameOutcome(part, settled)) {
+          var partMeta = appendOutcome(el("div", "entry-meta entry-meta-part"), part);
+          if (partMeta.childNodes.length) card.appendChild(partMeta);
+        }
+      }
+      var body = el("div", "entry-body");
+      renderBlocks(body, part.blocks);
+      card.appendChild(body);
+    });
+
+    /* One comment thread for the cycle, same as the feed gives the anchor-
+     * owning card. `renderComments` appends its drawer to the container it
+     * is handed, so the foot is built first or the drawer opens above the
+     * button that opens it. */
+    var foot = el("div", "entry-foot");
+    card.appendChild(foot);
+    var commenting = renderComments(card, cycleTarget(cycleNumber), comments);
+    foot.appendChild(commenting.toggle);
+
+    function setCommentsOpen(open) {
+      card.className = open ? "entry is-page is-commenting" : "entry is-page";
+      commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    setCommentsOpen(false);
+
+    /* The only thing left to click. Nothing on this page collapses, so the
+     * card has no toggle listener -- a tap on the prose does nothing, which
+     * is what a tap on prose should do. */
+    card.addEventListener("click", function (event) {
+      if (event.target.closest("a")) return;
+      if (event.target.closest(".comment-drawer")) return;
+      if (event.target.closest(".comment-toggle")) {
+        setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true");
+      }
+    });
+    return card;
+  }
+
   function render(journal, digest, comments) {
     stopPolling();
     markNav();
@@ -771,8 +992,13 @@
       feed.appendChild(back);
       if (!entries.length) feed.appendChild(el("p", "empty", "No entry for cycle " + wanted + "."));
     }
-    // A single cycle you navigated to deliberately opens expanded; there is
-    // nothing to scan past on that page, which is the only reason to collapse.
+    if (wanted !== null) {
+      if (entries.length) {
+        feed.appendChild(renderCyclePage(wanted, entries, byCycle[wanted],
+          commentsByCycle[String(wanted)]));
+      }
+      return;
+    }
     entries.forEach(function (entry, index) {
       var line = digestOwner[entry.cycle] === index ? byCycle[entry.cycle] : null;
       // A cycle's comments belong to the card that owns its anchor, so a
