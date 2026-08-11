@@ -135,12 +135,17 @@ def check_newest_first(entries):
     whole reason this guard exists rather than a comment.** `plan` keeps
     the first `keep` entries in file order, which is only "keep the
     newest" if the file is actually newest-first. Measured against the
-    live `nova/resources/issues.md` on 2026-08-11: it is not. The first
-    ~120 entries descend from Cycle 103 to Cycle 27 -- the era when
-    `prompt.md` said to prepend -- and the rest *ascend* to Cycle 111,
-    because step 6 now says `vault_tool.py append`. So the genuinely
-    newest captures are at the bottom, and rolling that file would
-    archive Cycles 104-111 and keep material from Cycle 27.
+    live `nova/resources/issues.md` on 2026-08-11: it is not. **The numbers
+    this paragraph first gave were wrong and Cycle 113 re-measured them**
+    -- it is 324 entries, 89 carrying a marker; the first 118 descend
+    from Cycle 112 to Cycle 24 (with 85 too old to carry a marker at all)
+    and the remaining 206 *ascend* from Cycle 26 to Cycle 111. Both runs
+    reach today, which is the part the first reading missed: this is not
+    one convention that changed on a date, it is two running side by
+    side, because `vault_tool.py append` inserts under the `## Entries`
+    marker when handed one and at the end of the file when not. So the
+    genuinely newest captures are at *both* ends, and rolling that file
+    would archive Cycles 104-111 and keep material from Cycle 27.
     `agora_runner/nova_boards.parse_notes` had already found and
     documented the same break; nothing enforced it.
 
@@ -149,7 +154,9 @@ def check_newest_first(entries):
     single ascent is the two-conventions break and is refused. Sorting
     instead was the obvious alternative and is wrong for the same reason
     `parse_notes` refuses to sort -- it would rank a third of the file
-    and dump the other two thirds in arbitrary order.
+    and dump the other two thirds in arbitrary order. The repair is
+    `tools/normalise_captures.py`, which merges the two streams instead;
+    it is a one-time run and this guard is what stays.
     """
     seen = [int(m.group(1)) for e in entries if (m := _CYCLE_RE.match(e))]
     for older, newer in zip(seen, seen[1:]):

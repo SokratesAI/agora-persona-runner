@@ -1,11 +1,14 @@
 """Put Nova's capture files back into one order, so they can be rolled.
 
 `roll_captures.py` refuses `nova/resources/issues.md` and `ideas.md`
-because they are not newest-first, and its docstring says the fix is to
-"reverse the prepend-era region in place". **That is the wrong fix, and
-the measurement that says so is below.** The two regions do not sit one
-after the other in time; they overlap almost completely, so no reversal
-of either one makes the file newest-first.
+because they are not newest-first. The remedy filed alongside that
+refusal -- in Cycle 112's journal entry and in the capture it left in
+`nova/resources/issues.md`, not in `roll_captures.py` itself, which
+names no remedy at all -- was "reversing the prepend-era region in place
+is the shape that works". **It is not, and the measurement that says so
+is below.** The two regions do not sit one after the other in time; they
+overlap almost completely, so no reversal of either one makes the file
+newest-first.
 
 **What is actually in the file.** Measured against the live
 `nova/resources/issues.md` on 2026-08-11, 324 entries, 89 of them
@@ -67,29 +70,45 @@ def split_streams(entries):
     """`(newest_first, oldest_first)` -- the two ways the file was written.
 
     The boundary is any index where everything above is non-ascending by
-    cycle marker and everything below is non-descending. That is usually
-    a window rather than a point, because the entries either side of the
-    break carry no marker -- two of them on the live `issues.md`.
-    **The smallest valid split wins**, and the reason is the interaction
-    with `keys` below rather than anything about the split itself: taking
-    the largest would pull the bottom stream's *oldest* marked entry up
-    into the top stream, and every unmarked entry above it would then
-    inherit that marker instead of the `-1` that sinks it to the end.
-    Taking the smallest pushes the ambiguous entries into the head of the
-    bottom stream, which reverses to its tail, which is where an entry
-    too old to carry a marker belongs. Both readings agree those entries
-    are old; only one of them keeps saying so.
+    cycle marker and everything below is non-descending. That is a window
+    rather than a point, because only about a third of entries carry a
+    marker at all and the ones either side of the break carry none.
+    **The largest valid cut wins**, and this is the one decision in the
+    module that a reviewer caught me getting backwards, on the live file,
+    after I had already merged it.
 
-    On an already-newest-first file the cut lands somewhere arbitrary --
-    a single trailing entry is trivially "non-descending" on its own --
-    and that is harmless rather than lucky: a one-entry stream reverses
-    to itself and merges back into the position its own marker gives it,
-    so the file comes back unchanged. A file with no markers at all cuts
-    at 0 and reverses wholesale, which is why `normalise` checks its own
-    output rather than trusting this.
+    The argument for the smallest cut was that it pushes the ambiguous
+    unmarked entries into the head of the bottom stream, which reverses
+    to its tail, which is where something too old to carry a marker
+    belongs. That is true for *one* such entry and false for eighty-five.
+    The live `issues.md` has 85 consecutive unmarked entries sitting
+    directly under the top stream's last marker, and the smallest cut
+    sweeps every one of them into `bottom` -- where `normalise`'s
+    `bottom[::-1]` then reverses their internal order. Measured: they
+    came out at positions 323, 322, 321 ... exactly backwards. Nothing
+    caught it, because `check_newest_first` and `verify` both only see
+    entries that carry a marker, so an unmarked run can be scrambled
+    silently while every guard passes.
+
+    The largest cut keeps that run in `top`, the stream it was actually
+    written into, and `top` is never reversed. What it costs is that the
+    bottom stream's oldest marked entry can be absorbed into `top` --
+    harmless, since `keys` then dates the run above it as that cycle and
+    the merge places the whole block by its own key, in order.
+
+    Post-fix, measured on both live files: `issues.md` cuts at 118 and
+    `ideas.md` at 92, the top stream's order is preserved exactly and the
+    bottom stream is exactly reversed. That pair of assertions is the
+    invariant this function owes `merge`, and it is now a test.
+
+    On an already-newest-first file the cut lands at the end -- the whole
+    file is one descending stream and the second is empty -- so nothing
+    is reversed at all. `normalise` returns such a file untouched anyway,
+    before this is ever called.
     """
+
     marks = [(i, c) for i, e in enumerate(entries) if (c := _cycle(e)) is not None]
-    for cut in range(len(entries) + 1):
+    for cut in range(len(entries), -1, -1):
         if _non_ascending([c for i, c in marks if i < cut]) and _non_ascending(
             [c for i, c in marks if i >= cut][::-1]
         ):

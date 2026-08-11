@@ -211,18 +211,20 @@ def parse_notes(markdown):
 
     **File order is not reliably newest-first, and a reviewer caught this
     docstring claiming it was.** Measured against the live
-    `nova/resources/issues.md` on 2026-08-11: the first ~120 notes descend
-    from Cycle 63 to Cycle 27 -- the era when `prompt.md` said to prepend
-    -- and the remaining ~170 *ascend* from there up to Cycle 102, because
-    step 6 now says `vault_tool.py append`, which appends at the end. Two
-    conventions, one file, and the genuinely newest material is at the
-    bottom. `ideas.md` has the same break in the same place.
+    `nova/resources/issues.md` on 2026-08-11, and re-measured by Cycle 113
+    when the first reading turned out to be off: 324 notes, the first 118
+    descending from Cycle 112 to Cycle 24 and the remaining 206 *ascending*
+    from Cycle 26 to Cycle 111. Two conventions, one file -- `vault_tool.py
+    append` inserts under the `## Entries` marker when handed one and at
+    the end of the file when not -- so the genuinely newest material is at
+    both ends at once. `ideas.md` has the same break, at entry 92.
 
-    Nothing is sorted here anyway, and that is deliberate: only 75 of the
-    294 live notes carry a parseable date at all, so a sort would rank a
+    Nothing is sorted here anyway, and that is deliberate: only 89 of the
+    324 live notes carry a cycle marker at all, so a sort would rank a
     quarter of the file and dump the rest. The real fix is to normalise
-    the file, which is its own piece of work and is filed as such. Until
-    then this returns what the file says and the page does not claim an
+    the file, which is `tools/normalise_captures.py` -- a one-time merge
+    of the two streams, run against the vault rather than from here.
+    Until that has been run this returns what the file says and the page does not claim an
     order it does not have -- see the pager's label in app.js.
     """
     notes = []

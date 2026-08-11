@@ -28,13 +28,13 @@ BOTTOM = ["- (Cycle 24) — oldest", "- (Cycle 70) — middling", "- (Cycle 111)
 
 
 def test_the_two_streams_are_found_where_the_order_turns_around():
-    """The cut is the *smallest* index that leaves a descending top and an
-    ascending bottom, so the unmarked entry in the ambiguous window goes
-    to the bottom stream's head -- which reverses to its tail, which is
-    where an entry too old to carry a marker belongs."""
+    """The cut is the *largest* index that leaves a descending top and an
+    ascending bottom, so an unmarked entry in the ambiguous window stays
+    with the top stream -- the stream it was written into, and the one
+    `normalise` never reverses."""
     top, bottom = split_streams(TOP + BOTTOM)
-    assert top == TOP[:2]
-    assert bottom == TOP[2:] + BOTTOM
+    assert top == TOP + BOTTOM[:1]
+    assert bottom == BOTTOM[1:]
 
 
 def test_a_reverse_is_not_the_fix_and_a_merge_is():
@@ -50,8 +50,8 @@ def test_a_reverse_is_not_the_fix_and_a_merge_is():
         "- (Cycle 111) — nearly newest",
         "- (Cycle 70) — middling",
         "- (Cycle 63) — mid",
-        "- (Cycle 24) — oldest",
         "- an ancient one with no marker",
+        "- (Cycle 24) — oldest",
     ]
     check_newest_first(out)
     # And the naive fix this replaces would not have got there.
@@ -65,7 +65,10 @@ def test_an_unmarked_entry_takes_the_oldest_cycle_it_could_be():
     over half of it. Filling from below leaves them last."""
     assert keys(TOP) == [112, 63, -1]
     out = _entries(normalise(_file(*TOP, *BOTTOM)))
-    assert out[-1] == "- an ancient one with no marker"
+    # It sat above `(Cycle 24)` in the stream it was written into, so it
+    # inherits 24 and the stable merge keeps it above it -- last but one,
+    # not lifted over half the file the way filling from above would.
+    assert out[-2:] == ["- an ancient one with no marker", "- (Cycle 24) — oldest"]
 
 
 def test_captures_written_by_one_cycle_keep_the_order_it_wrote_them_in():
@@ -104,3 +107,40 @@ def test_a_file_that_is_not_two_streams_is_refused_rather_than_guessed():
 def test_a_file_with_no_entries_section_is_refused():
     with pytest.raises(RollError, match="no '## Entries' section"):
         normalise("---\ntype: log\n---\n\n# Nova — Issues\n\n- (Cycle 1) — a\n")
+
+
+def test_a_long_unmarked_run_is_not_reversed_by_the_reverse():
+    """The bug a reviewer found on the live file after I had merged it.
+
+    `issues.md` has 85 consecutive unmarked entries directly under the
+    top stream's last marker. Taking the smallest valid cut swept all of
+    them into the bottom stream, where `bottom[::-1]` reversed their
+    internal order -- and every guard passed, because `check_newest_first`
+    and `verify` only ever look at entries that carry a marker. A fixture
+    with one trailing unmarked entry cannot see this: reversing a
+    one-element list is a no-op, which is exactly why the first round of
+    tests missed it.
+    """
+    run = [f"- unmarked, written {n}th" for n in range(6)]
+    top = ["- (Cycle 90) — newest"] + run
+    bottom = ["- (Cycle 10) — oldest", "- (Cycle 50) — middling"]
+    out = _entries(normalise(_file(*top, *bottom)))
+    assert out == [
+        "- (Cycle 90) — newest",
+        "- (Cycle 50) — middling",
+    ] + run + ["- (Cycle 10) — oldest"]
+    assert [e for e in out if e in run] == run
+
+
+def test_the_top_stream_is_never_reordered_and_the_bottom_is_exactly_reversed():
+    """The invariant `split_streams` owes `merge`, asserted on both halves
+    separately rather than on the merged result -- a merge that scrambled
+    one stream can still come out newest-first by marker."""
+    top = ["- (Cycle 99) — a", "- unmarked b", "- unmarked c", "- (Cycle 40) — d"]
+    bottom = ["- (Cycle 41) — e", "- unmarked f", "- (Cycle 98) — g"]
+    entries = top + bottom
+    out = _entries(normalise(_file(*entries)))
+    cut = len(split_streams(entries)[0])
+    positions = [out.index(e) for e in entries]
+    assert positions[:cut] == sorted(positions[:cut])
+    assert positions[cut:] == sorted(positions[cut:], reverse=True)

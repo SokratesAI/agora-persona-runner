@@ -52,6 +52,14 @@ def build_payload():
         # a costs page fed markdown would not fail here -- it would fail
         # in `json.loads` with a message about the digest.
         COST_LEDGER_PATH: _read("cost_ledger_sample.json"),
+        # The rolled-off half of my own captures. Named explicitly for
+        # the same reason the ledger is: the fall-through below answers
+        # the digest to anything it does not recognise, so leaving these
+        # out fed `parse_notes` the digest fixture and the archive path
+        # got fixture coverage that only looked like absence because that
+        # fixture happens to have no `## Entries` heading.
+        BOARD_PATHS["issues"]["nova_archive"]: _read("board_notes_archive_sample.md"),
+        BOARD_PATHS["ideas"]["nova_archive"]: "",
     }
     digest_md = _read("digest_two_entries.md")
 
