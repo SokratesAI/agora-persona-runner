@@ -714,7 +714,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
     def _send_board(self, query):
         """`/api/board?name=issues` -- one backlog page (issues.md #57).
 
-        `name` indexes `BOARD_PATHS`, a two-entry dict of literal paths;
+        `name` indexes `BOARD_PATHS`, whose values are dicts of literal paths;
         nothing a request carries ever addresses a vault document, which
         is the same rule the capture box follows. An unknown name is a
         400 rather than an empty board, because it can only be a bug in
