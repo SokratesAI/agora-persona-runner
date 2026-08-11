@@ -140,7 +140,14 @@ def test_chunking_matches_the_bridge_copy():
     import between the repos, so this pins the constants."""
     assert (vault.CHUNK_MIN_BYTES, vault.CHUNK_MAX_BYTES,
             vault.CHUNK_BOUNDARY_MASK) == (2048, 16384, 0x1F)
-    assert vault._split_chunks("x\n" * 5000) == vault._split_chunks("x\n" * 5000)
+    # Not `_split_chunks(x) == _split_chunks(x)` -- a pure function always
+    # agrees with itself, and a mutation moves both sides equally. The
+    # literal is what a changed hash or a changed cut rule cannot move.
+    fixed = "".join(
+        "line %d of a fixed input used to pin the chunker across repos\n" % i
+        for i in range(400))
+    assert [len(c) for c in vault._split_chunks(fixed)] == [
+        4268, 4001, 4347, 4284, 2583, 3402, 2205]
 
 
 def test_assemble_fetches_all_chunks_in_one_request():
@@ -178,3 +185,38 @@ def test_assemble_falls_back_to_per_chunk_gets_when_the_bulk_read_fails():
     with patch.object(vault, "couch_req", fake_req):
         assert vault.vault_assemble({"children": ["h:1", "h:2"]}) == "ab"
     assert [c[0] for c in calls] == ["POST", "GET", "GET"]
+
+
+def test_split_chunks_respects_the_byte_cap_for_multi_byte_text():
+    """Reviewer finding, Cycle 117. The oversized-line branch sliced by
+    CHARACTER count against a BYTE budget, so 20,000 emoji on one line
+    produced a 65,536-byte chunk -- four times the cap this chunker claims
+    to enforce. The old fixture was pure ASCII, where the two counts are
+    identical, which is exactly why it stayed green."""
+    content = "\U0001F600" * 20000
+    chunks = vault._split_chunks(content)
+    assert "".join(chunks) == content
+    assert max(len(c.encode("utf-8")) for c in chunks) <= vault.CHUNK_MAX_BYTES
+
+
+def test_a_chunk_write_conflict_is_success_not_failure():
+    """Reviewer finding, Cycle 117. Chunk ids are content hashes, so a 409
+    means somebody else stored this exact text first. Aborting there throws
+    away a good write, most often on the common path: if the existence
+    check errors it reports 'nothing exists', every unchanged chunk becomes
+    a blind PUT, and every one of them 409s."""
+    calls = []
+
+    def fake_req(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "POST" and path.endswith("/_all_docs"):
+            return 500, {"error": "server_error"}
+        if method == "GET":
+            return 404, {"error": "not_found"}
+        return (409, {"error": "conflict"}) if "/h%3A" in path else (201, {"ok": True})
+
+    with patch.object(vault, "couch_req", fake_req):
+        assert vault.vault_write_path(
+            "notes/thing.md", _realistic_capture_file()) == "written"
+    assert [c for c in calls if c[0] == "PUT" and "notes%2Fthing.md" in c[1]], \
+        "file doc never written"
