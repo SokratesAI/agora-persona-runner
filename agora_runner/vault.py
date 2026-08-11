@@ -37,10 +37,23 @@ def couch_req(method, path, body=None):
 # the two files Obsidian LiveSync may still write, and a second writer that
 # cannot see the routing rule would silently re-create them in the vault
 # Nova had stopped reading.
-NOVA_DB_PREFIXES = (
+# Folders match by prefix; single files must match exactly. Keeping them in
+# one tuple and testing everything with startswith routed
+# `journal-digest.md.bak` — and any other file merely *beginning* with that
+# name — into Nova's database, which is a file Edvard owns being answered
+# by the wrong store.
+NOVA_DB_FOLDERS = (
     "projects/sokrates/projects/agora/nova/",
+)
+NOVA_DB_FILES = (
     "projects/sokrates/projects/agora/journal-digest.md",
 )
+NOVA_DB_TARGETS = NOVA_DB_FOLDERS + NOVA_DB_FILES
+
+# Stamped onto a fetched doc by _vault_file_docs so later chunk lookups use
+# the database the doc was really read from. Private; never written back --
+# _vault_put_raw builds its document from scratch.
+_SRC_DB_KEY = "_nova_src_db"
 
 
 def db_for(path):
@@ -57,7 +70,10 @@ def db_for(path):
     """
     if not COUCHDB_NOVA_DB:
         return COUCHDB_DB
-    return COUCHDB_NOVA_DB if (path or "").lower().startswith(NOVA_DB_PREFIXES) else COUCHDB_DB
+    lowered = (path or "").lower()
+    if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:
+        return COUCHDB_NOVA_DB
+    return COUCHDB_DB
 
 
 def dbs_for_prefix(prefix):
@@ -72,9 +88,14 @@ def dbs_for_prefix(prefix):
     if not COUCHDB_NOVA_DB:
         return [COUCHDB_DB]
     lowered = (prefix or "").lower()
-    if lowered.startswith(NOVA_DB_PREFIXES):
+    if lowered.startswith(NOVA_DB_FOLDERS):
         return [COUCHDB_NOVA_DB]
-    if any(p.startswith(lowered) for p in NOVA_DB_PREFIXES):
+    # Deliberately not `lowered in NOVA_DB_FILES -> [nova]`: as a *prefix*,
+    # a single file's path also matches its own neighbours (a `.bak` beside
+    # it), and those live in Edvard's database. Querying both is the
+    # conservative answer and costs one extra request on a listing nobody
+    # actually makes.
+    if any(t.startswith(lowered) for t in NOVA_DB_TARGETS):
         return [COUCHDB_DB, COUCHDB_NOVA_DB]
     return [COUCHDB_DB]
 
@@ -152,6 +173,13 @@ def _vault_file_docs(prefix=""):
     for db in dbs_for_prefix(prefix):
         status, data = couch_req("GET", f"{db}/_all_docs?{_id_range(prefix)}")
         if status != 200:
+            # Before routing there was one database, so this returned {} —
+            # visibly, uselessly empty. With two, one failing leaves the
+            # other's rows in place and the caller gets a partial listing
+            # that looks entirely healthy. That is the failure mode this
+            # module exists to prevent, so it does not get to be silent.
+            log(f"vault: _all_docs listing failed on database {db!r} ({status}); "
+                f"files under {prefix!r} in that database are missing from this listing")
             continue
         keys_by_db[db] = [
             row["id"] for row in data.get("rows", [])
@@ -176,12 +204,18 @@ def _vault_file_docs(prefix=""):
             # choice -- failing open would serve tombstones, which is the
             # bug this function exists to fix -- but it does not get to be
             # quiet about it.
-            log(f"vault: _all_docs include_docs batch failed ({status}); "
-                f"{len(batch)} file(s) under {prefix!r} omitted from this listing")
+            log(f"vault: _all_docs include_docs batch failed on database {db!r} "
+                f"({status}); {len(batch)} file(s) under {prefix!r} omitted "
+                f"from this listing")
             continue
         for row in res.get("rows", []):
             doc = row.get("doc")
             if doc and not doc.get("deleted"):
+                # Where it actually came from, not where db_for predicts it
+                # should be. Those agree in steady state and disagree during
+                # a migration -- which is exactly when a doc's chunks would
+                # be looked up in a database that does not hold them.
+                doc[_SRC_DB_KEY] = db
                 out[row["id"]] = doc
     return out
 
@@ -212,7 +246,7 @@ class VaultIncompleteDocument(RuntimeError):
     """
 
 
-def _fetch_chunks(chunk_ids, db=None):
+def _fetch_chunks(chunk_ids, db):
     """`{chunk_id: data}` for every chunk that exists, in one request.
 
     An id absent from the result is genuinely missing -- that is what
@@ -224,7 +258,6 @@ def _fetch_chunks(chunk_ids, db=None):
     keys = sorted(set(chunk_ids))
     if not keys:
         return {}
-    db = db or COUCHDB_DB
     status, body = couch_req(
         "POST", f"{db}/_all_docs", {"keys": keys, "include_docs": True}
     )
@@ -315,6 +348,8 @@ def vault_list_ids(prefix=""):
     for db in dbs_for_prefix(prefix):
         status, data = couch_req("GET", f"{db}/_all_docs?{_id_range(prefix)}")
         if status != 200:
+            log(f"vault: id listing failed on database {db!r} ({status}); "
+                f"ids under {prefix!r} in that database are missing")
             continue
         ids.extend(
             row["id"] for row in data.get("rows", [])
@@ -414,7 +449,7 @@ def _split_chunks(content):
     return chunks
 
 
-def _existing_chunk_ids(chunk_ids, db=None):
+def _existing_chunk_ids(chunk_ids, db):
     """Which of `chunk_ids` are already in the database.
 
     One `_all_docs` POST instead of a GET per chunk. A row for a missing
@@ -423,7 +458,7 @@ def _existing_chunk_ids(chunk_ids, db=None):
     keys = sorted(set(chunk_ids))
     if not keys:
         return set()
-    status, body = couch_req("POST", f"{db or COUCHDB_DB}/_all_docs", {"keys": keys})
+    status, body = couch_req("POST", f"{db}/_all_docs", {"keys": keys})
     if status != 200:
         return set()
     return {
@@ -646,8 +681,9 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
     # find nothing, and surface as every Nova file coming back empty.
     chunk_ids_by_db = {}
     for doc_id, doc in filedocs.items():
+        src = doc.get(_SRC_DB_KEY) or db_for(doc_id)
         for chunk_id in (doc.get("children") or []):
-            chunk_ids_by_db.setdefault(db_for(doc_id), set()).add(chunk_id)
+            chunk_ids_by_db.setdefault(src, set()).add(chunk_id)
     chunks = {}
     chunk_batches = [
         (db, batch)
