@@ -20,6 +20,28 @@
     return match ? parseInt(match[1], 10) : null;
   }
 
+  /* How much of the journal a cold load asks for, and how much a tap on
+   * "Show older entries" adds.
+   *
+   * #84 made the *poll* free -- 227,520 gzipped bytes down to 6,048 -- and
+   * left the first load exactly as it was: every entry ever written, 107 of
+   * them at 669KB raw / 185KB gzipped on 2026-08-11, growing by one an hour
+   * forever. That is the half of "Nova takes a long time to load when i
+   * refresh it" that was still true.
+   *
+   * The window is a single number rather than an accumulating list of
+   * pages, and every request the page makes -- first load, poll, and
+   * "show older" -- asks for the same `?limit=windowSize` from offset
+   * zero. Fetching one page and appending it would move fewer bytes when
+   * someone reads a long way back, and it would also mean the poll and the
+   * pager disagreeing about what is loaded every time a new entry shifts
+   * the offsets underneath them. One window has no such state to get
+   * wrong: a poll is a 304 against exactly what is on screen, and a new
+   * entry arriving simply lands at the top of it.
+   */
+  var PAGE = 20;
+  var windowSize = PAGE;
+
   function el(tag, className, text) {
     var node = document.createElement(tag);
     if (className) node.className = className;
@@ -670,6 +692,22 @@
         entry, line, wanted !== null, own, commentsByCycle[String(entry.cycle)]
       ));
     });
+
+    /* `total` is the whole corpus, `entries.length` is what came back in
+     * this window, so the pager disappears on its own at the last page and
+     * never appears at all on a server that does not paginate. */
+    var total = journal.total;
+    if (wanted === null && typeof total === "number" && entries.length < total) {
+      var more = el("button", "more", "Show older entries");
+      more.type = "button";
+      more.addEventListener("click", function () {
+        more.disabled = true;
+        more.textContent = "Loading…";
+        windowSize += PAGE;
+        load();
+      });
+      feed.appendChild(more);
+    }
   }
 
   /* The last full payload for each versioned endpoint, so a 304 can be
@@ -713,9 +751,18 @@
     });
   }
 
+  /* A deep link asks for its own cycle by number rather than for a window,
+   * because the entry it wants is usually older than the first page and the
+   * page has no way to know how far back that is. */
+  function journalUrl() {
+    var wanted = routedCycle(window.location.pathname);
+    if (wanted !== null) return "/api/journal?cycle=" + wanted;
+    return "/api/journal?limit=" + windowSize;
+  }
+
   function fetchAll() {
     return Promise.all([
-      fetchVersioned("/api/journal", "journal"),
+      fetchVersioned(journalUrl(), "journal"),
       fetchVersioned("/api/digest", "digest").catch(function () { return null; }),
       // Tolerated the same way the digest is: the journal is the page, and
       // a comments read that fails should cost the bubbles, not the feed.

@@ -64,8 +64,12 @@ function openWindow(html, options) {
  *
  * `install` runs against the window just before app.js is evaluated, for a
  * test that has to be in place before the page's first render -- the reply
- * poll schedules its first timer there. */
-async function loadSite(path = "/", { failComments = false, digest, comments, install } = {}) {
+ * poll schedules its first timer there.
+ *
+ * `journal` is a function of the requested URL rather than a fixed body,
+ * which is what the pagination tests need: the whole point of a window is
+ * that the answer depends on the query string. */
+async function loadSite(path = "/", { failComments = false, digest, comments, install, journal } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -88,7 +92,10 @@ async function loadSite(path = "/", { failComments = false, digest, comments, in
         ? Promise.reject(new Error("comments are down"))
         : Promise.resolve({ json: () => Promise.resolve(comments || payload.comments) });
     }
-    const body = url.includes("/api/digest") ? (digest || payload.digest) : payload.journal;
+    if (url.includes("/api/digest")) {
+      return Promise.resolve({ json: () => Promise.resolve(digest || payload.digest) });
+    }
+    const body = journal ? journal(url) : payload.journal;
     return Promise.resolve({ json: () => Promise.resolve(body) });
   };
   window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
@@ -1304,5 +1311,100 @@ describe("no window escapes the registry", () => {
      * `afterEach` closed it after the first test in each and cost 45
      * failures; this is the line that would have to change again. */
     assert.match(source, /\nafter\(\(\) => \{\n\s+for \(const window of openWindows\.splice\(0\)\)/);
+  });
+});
+
+/* The cold load. #84 made the poll conditional and left the first load
+ * downloading every entry ever written -- 107 of them, 185KB gzipped on
+ * 2026-08-11, one more every hour. The page asks for a window now.
+ *
+ * The stub below is the real server contract, not a convenience: `total` is
+ * the whole corpus and `entries` is the slice, so a test can tell "the
+ * pager knows there is more" from "the pager can count the cards". */
+describe("the feed loads a window rather than the whole journal", () => {
+  const all = payload.journal.entries;
+
+  /** A server that honours `?limit=` over a corpus of `size` entries. */
+  function paged(size) {
+    const corpus = [];
+    for (let i = 0; i < size; i += 1) {
+      // Distinct cycle numbers, newest first, so a card can be identified.
+      corpus.push({ ...JSON.parse(JSON.stringify(all[2])), cycle: size - i });
+    }
+    const asked = [];
+    const serve = (url) => {
+      asked.push(url);
+      const limit = Number(new URL(url, "https://nova.example").searchParams.get("limit"));
+      return {
+        entries: corpus.slice(0, limit || corpus.length),
+        status: payload.journal.status,
+        total: corpus.length,
+        version: 'W/"' + (limit || "all") + '"',
+      };
+    };
+    return { serve, asked };
+  }
+
+  test("a cold load asks for twenty entries, not all of them", async () => {
+    const server = paged(50);
+    await loadSite("/", { journal: server.serve });
+    assert.match(server.asked[0], /\/api\/journal\?limit=20$/);
+  });
+
+  test("it renders the window it was given and offers the rest", async () => {
+    const server = paged(50);
+    const window = await loadSite("/", { journal: server.serve });
+    assert.equal(cards(window).length, 20);
+    assert.ok(window.document.querySelector("button.more"), "no way to reach the older entries");
+  });
+
+  test("showing older entries widens the window and adds cards", async () => {
+    const server = paged(50);
+    const window = await loadSite("/", { journal: server.serve });
+    click(window, window.document.querySelector("button.more"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(server.asked[server.asked.length - 1], /limit=40$/);
+    assert.equal(cards(window).length, 40);
+  });
+
+  test("the pager disappears once the whole journal is on screen", async () => {
+    const server = paged(25);
+    const window = await loadSite("/", { journal: server.serve });
+    click(window, window.document.querySelector("button.more"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(cards(window).length, 25);
+    assert.equal(window.document.querySelector("button.more"), null);
+  });
+
+  test("a server that sends no total offers no pager at all", async () => {
+    /* The fixture is the pre-pagination payload: entries and status, no
+     * `total`. A page that guessed from `entries.length` would show a
+     * pager that could never do anything. */
+    const window = await loadSite("/");
+    assert.equal(window.document.querySelector("button.more"), null);
+  });
+
+  test("a deep link asks for its own cycle instead of a window", async () => {
+    const server = paged(50);
+    await loadSite("/cycle/7", { journal: server.serve });
+    assert.match(server.asked[0], /\/api\/journal\?cycle=7$/);
+  });
+
+  test("a poll asks for the window that is on screen, not the first page", async () => {
+    const server = paged(50);
+    let timers;
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { timers = captureTimers(w); },
+    });
+    click(window, window.document.querySelector("button.more"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    server.asked.length = 0;
+    await timers.firePagePoll();
+    assert.ok(server.asked.length, "the poll never ran");
+    assert.ok(
+      server.asked.every((url) => /limit=40$/.test(url)),
+      "a poll narrowed the feed back to the first page: " + server.asked.join(", "),
+    );
   });
 });

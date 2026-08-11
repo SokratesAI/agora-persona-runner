@@ -100,6 +100,7 @@ import mimetypes
 import os
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
@@ -298,11 +299,12 @@ def _versioned(payload):
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     etag = 'W/"' + digest + '"'
     payload = dict(payload, version=etag)
-    return json.dumps(payload), etag
+    return payload, json.dumps(payload), etag
 
 
 def cached_payload(name, build):
-    """Serve the last build immediately; rebuild behind the request.
+    """`(payload, body, etag)` -- the last build, served immediately while
+    the next one is computed behind the request.
 
     `/api/journal` costs 3.0-3.5s every time it is asked (measured against
     the live pod, 2026-08-10: 1.9s of vault bulk fetch, 1.5s of parsing,
@@ -322,7 +324,7 @@ def cached_payload(name, build):
     now = time.time()
     with _cache_lock:
         entry = _cache.get(name)
-        if entry is not None and now - entry[2] >= CACHE_FRESH_SECONDS and name not in _refreshing:
+        if entry is not None and now - entry[3] >= CACHE_FRESH_SECONDS and name not in _refreshing:
             _refreshing.add(name)
             thread = threading.Thread(
                 target=_refresh, args=(name, build), name=f"nova-site-{name}", daemon=True
@@ -332,7 +334,7 @@ def cached_payload(name, build):
     if thread is not None:
         thread.start()
     if entry is not None:
-        return entry[0], entry[1]
+        return entry[0], entry[1], entry[2]
     return _refresh(name, build)
 
 
@@ -348,7 +350,7 @@ def reset_cache():
 
 def _refresh(name, build):
     try:
-        body, etag = _versioned(build())
+        payload, body, etag = _versioned(build())
     except Exception as e:
         with _cache_lock:
             _refreshing.discard(name)
@@ -358,9 +360,67 @@ def _refresh(name, build):
         log(f"nova-site {name} refresh failed: {e}")
         raise
     with _cache_lock:
-        _cache[name] = (body, etag, time.time())
+        _cache[name] = (payload, body, etag, time.time())
         _refreshing.discard(name)
-    return body, etag
+    return payload, body, etag
+
+
+def journal_page(payload, limit=None, offset=0, cycle=None):
+    """One window of the journal, plus how many entries there are in all.
+
+    The cold load is the half the 304 poll of #84 did not touch: 107
+    entries is 669KB raw / 185KB gzipped, it grows by one every hour, and
+    the reader sees twenty of them before they scroll. `status` is not
+    sliced -- it is a handful of fields computed over the whole corpus and
+    the header renders it on every page.
+
+    `cycle` is what keeps `/cycle/49` working on a cold load. Without it a
+    deep link into an entry older than the first page would have to page
+    backwards through the feed to find its own subject.
+
+    No `limit` means every entry, which is what this endpoint has always
+    done. The client always sends one; the default exists so an app.js
+    served out of a service worker's cache from before this shipped still
+    renders a whole feed instead of silently losing everything past the
+    first page.
+    """
+    entries = payload.get("entries") or []
+    if cycle is not None:
+        picked = [entry for entry in entries if entry.get("cycle") == cycle]
+    elif limit is None:
+        picked = entries
+    else:
+        picked = entries[offset:offset + limit]
+    return {"entries": picked, "status": payload.get("status", {}), "total": len(entries)}
+
+
+def page_etag(base_etag, descriptor):
+    """A slice's own etag, derived from the whole payload's.
+
+    It has to differ per window or a client that has just asked for forty
+    entries gets a 304 against the twenty it already had. Derived rather
+    than recomputed over the slice because the base etag already covers
+    every byte the slice can contain, and hashing 185KB per request to
+    learn that would be paying twice.
+    """
+    digest = hashlib.sha256((base_etag + "|" + descriptor).encode("utf-8")).hexdigest()[:16]
+    return 'W/"' + digest + '"'
+
+
+def _int_param(query, name, default):
+    """A non-negative int from the query string, or `default`.
+
+    A limit larger than the journal is not an error and needs no ceiling:
+    the slice is bounded by the number of entries that exist.
+    """
+    values = query.get(name)
+    if not values:
+        return default
+    try:
+        value = int(values[0])
+    except ValueError:
+        return default
+    return value if value >= 0 else default
 
 
 class NovaSiteHandler(BaseHTTPRequestHandler):
@@ -413,7 +473,24 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         reader asking whether anything changed. Answering that with 160KB
         is what makes polling expensive enough to talk yourself out of.
         """
-        body, etag = cached_payload(name, build)
+        _, body, etag = cached_payload(name, build)
+        self._send_json_or_304(body, etag)
+
+    def _send_journal(self, query):
+        """`/api/journal`, sliced to the window the client asked for."""
+        payload, _, base = cached_payload("journal", journal_payload)
+        cycle = _int_param(query, "cycle", None)
+        limit = _int_param(query, "limit", None)
+        offset = _int_param(query, "offset", 0)
+        page = journal_page(payload, limit=limit, offset=offset, cycle=cycle)
+        etag = page_etag(base, f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}")
+        # The version travels inside the document as well as in the header,
+        # for the reason `_versioned` puts it in both: a response served out
+        # of the service worker's cache has no headers the page can read.
+        page["version"] = etag
+        self._send_json_or_304(json.dumps(page), etag)
+
+    def _send_json_or_304(self, body, etag):
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.send_header("ETag", etag)
@@ -438,7 +515,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send(200, body, content_type)
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        path, _, raw_query = self.path.partition("?")
+        path = path.rstrip("/") or "/"
+        query = urllib.parse.parse_qs(raw_query)
 
         # `/cycle/49` is a real URL so an Agora reply can link straight at
         # one entry (item 4). The server has no per-cycle view -- it serves
@@ -452,7 +531,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         try:
             if path == "/api/journal":
-                self._send_cached_json("journal", journal_payload)
+                self._send_journal(query)
                 return
             if path == "/api/digest":
                 self._send_cached_json("digest", digest_payload)
