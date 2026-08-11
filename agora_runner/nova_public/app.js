@@ -750,6 +750,33 @@
    * one scroll and still says plainly that they were written at different
    * times. The feed is untouched and still draws two cards; that is a
    * separate question about a scanning surface and it stays filed. */
+  /* What to call one part of a multi-part cycle.
+   *
+   * The titles are prose a cycle typed into its own heading, and fourteen
+   * cycles have written more than one entry with no convention between them:
+   * `(addendum)`, `addendum`, `verification`, `postscript`, `· addendum
+   * (2026-08-11 05:24)`, `(2026-08-11 05:09)`, and one 90-character sentence.
+   * Measured off the live pod, not guessed. Printing them raw beside a
+   * timestamp gives "· addendum (2026-08-11 05:24) · 2026-08-11 05:24 Oslo".
+   *
+   * So: drop a leading bullet, drop the wrapping parentheses, drop a
+   * parenthesised date the heading is about to print anyway, and fall back
+   * to a plain word when nothing is left. Cycle 6 has three entries, which
+   * is why anything past the first is "Addendum" rather than the pair-shaped
+   * "The second half". */
+  function partLabel(title, index) {
+    var text = String(title || "")
+      .replace(/^[\s·—–-]+/, "")
+      .replace(/\(\s*\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2})?\s*\)/g, "")
+      .trim();
+    // Only when the parentheses wrap the whole of what is left; `(addendum)`
+    // loses them, `a fix (and the bug under it)` keeps them.
+    if (/^\([^()]*\)$/.test(text)) text = text.slice(1, -1).trim();
+    text = text.replace(/^[\s·—–-]+/, "").trim();
+    if (!text) return index === 0 ? "The cycle" : "Addendum";
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
   function renderCyclePage(cycleNumber, entries, digestLine, comments) {
     var card = el("article", "entry is-page");
     card.id = "cycle-" + cycleNumber;
@@ -805,8 +832,8 @@
        * apart, and a header over the only section is the same noise as a
        * permalink to the current page. */
       if (parts.length > 1) {
-        var label = part.title || (index === 0 ? "The cycle" : "Addendum");
         var when = [part.date, part.time].filter(Boolean).join(" ");
+        var label = partLabel(part.title, index);
         card.appendChild(el("h2", "entry-part", when ? label + " · " + when + " Oslo" : label));
       }
       var body = el("div", "entry-body");

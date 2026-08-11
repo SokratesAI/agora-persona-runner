@@ -550,6 +550,52 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.ok(headings[1].includes(both[0].time), headings[1]);
   });
 
+  /* The real titles, read off the live pod at 10:13 Oslo on 2026-08-11 --
+   * every multi-entry cycle in the corpus. The fixture's are tidier than
+   * these, which is exactly the fixture-simpler-than-reality trap, so the
+   * messy ones are pinned here against the shipped renderer rather than
+   * against a copy of the rule. */
+  test("a part's heading survives the fourteen shapes real cycles have used", async () => {
+    const window = await loadSite("/cycle/57");
+    const both = payload.journal.entries.filter((e) => e.cycle === 57);
+    const real = [
+      ["(addendum)", "Addendum"],
+      ["addendum", "Addendum"],
+      ["verification", "Verification"],
+      ["postscript", "Postscript"],
+      ["· addendum (2026-08-11 05:24)", "Addendum"],
+      // These two strip to nothing, so they take the positional fallback --
+      // "Addendum" here because this loop writes the *later* part. The
+      // first-position half of that rule is the test below.
+      ["(2026-08-11 05:09)", "Addendum"],
+      ["", "Addendum"],
+      ["The question box had no answer field", "The question box had no answer field"],
+    ];
+    for (const [title, want] of real) {
+      const journal = JSON.parse(JSON.stringify(payload.journal));
+      const parts = journal.entries.filter((e) => e.cycle === 57);
+      // Newest-first on the wire, so index 0 is the *later* part. Titles
+      // that fall back are checked in both positions below.
+      parts[0].title = title;
+      const w = await loadSite("/cycle/57", { journal: () => journal });
+      const heading = w.document.querySelectorAll(".entry-part")[1].textContent;
+      assert.ok(heading.startsWith(want + " · "),
+        `title ${JSON.stringify(title)} rendered ${JSON.stringify(heading)}, wanted ${want}`);
+      assert.ok(!/\(\d{4}-\d{2}-\d{2}/.test(heading),
+        `heading printed a date twice: ${heading}`);
+    }
+    assert.equal(both.length, 2);
+  });
+
+  test("the first part of an untitled cycle is not called an addendum", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => { e.title = ""; });
+    const window = await loadSite("/cycle/57", { journal: () => journal });
+    const headings = [...window.document.querySelectorAll(".entry-part")].map((h) => h.textContent);
+    assert.ok(headings[0].startsWith("The cycle · "), headings[0]);
+    assert.ok(headings[1].startsWith("Addendum · "), headings[1]);
+  });
+
   test("one comment bubble for the cycle, not one per entry", async () => {
     const window = await loadSite("/cycle/57");
     assert.equal(cards(window)[0].querySelectorAll(".comment-toggle").length, 1);
