@@ -173,6 +173,18 @@ def spec_for(live):
     return RollSpec(
         marker=MARKER,
         archive_title=archive_title(live),
+        # **The archive is the site's data, not just cold storage, and
+        # leaving this off cost Edvard two thirds of a page he opens.**
+        # `nova_boards.parse_notes` returns notes only from a section
+        # titled `entries` and `[]` from anything else, so an archive of
+        # frontmatter-then-bullets renders as an empty half of the board.
+        # Cycle 114 rolled both live files and watched `/api/board` report
+        # 60 notes where the unrolled file had reported 328. Every guard
+        # in this module passed, because all of them ask whether the
+        # captures survived and none asked whether the reader could still
+        # find them. `board_markdown`'s own docstring already asserted
+        # this heading existed; nothing wrote it.
+        archive_section=MARKER.strip(),
         archive_frontmatter=ARCHIVE_FRONTMATTER,
         split_entries=split_bullets,
         join_entries=join_bullets,

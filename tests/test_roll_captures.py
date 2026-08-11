@@ -44,10 +44,19 @@ type: log
 
 
 def _captures(live, archive):
-    """Every capture the pair holds, live first, as raw text."""
+    """Every capture the pair holds, live first, as raw text.
+
+    Both halves are cut below `## Entries`, which is the heading the
+    archive's actual reader (`nova_boards.parse_notes`) requires and the
+    roll now writes. Cutting the archive at its title instead would carry
+    that heading back out as a seventh capture -- which is what this
+    helper did until Cycle 114, and why it disagreed with `verify`.
+    """
     body = live.split("\n## Entries\n", 1)[1]
     title = "# Nova — Issues Archive"
     tail = archive.split(title, 1)[-1] if title in archive else ""
+    if "\n## Entries\n" in tail:
+        tail = tail.split("\n## Entries\n", 1)[1]
     return split_bullets(body) + split_bullets(tail)
 
 
@@ -228,3 +237,33 @@ def test_a_cycle_named_inside_a_note_is_not_read_as_its_marker():
     )
     new_live, new_archive = plan(live, ARCHIVE, keep=2)
     verify(live, ARCHIVE, new_live, new_archive)
+
+
+def test_the_archive_is_readable_by_the_page_that_renders_it():
+    """The archive is the site's data, not just cold storage.
+
+    `nova_boards.parse_notes` returns notes only from a section titled
+    `entries` and `[]` from anything else, so an archive of frontmatter
+    then bullets renders as an empty half of a board Edvard opens. Cycle
+    114 shipped exactly that: it rolled both live files, then watched
+    `/api/board` report 60 notes where the unrolled file had reported
+    328. Every guard in this module passed, because all of them ask
+    whether the *captures* survived and none of them asks whether the
+    consumer can still find them.
+
+    So this test deliberately reaches across into `agora_runner` rather
+    than staying inside `tools/`: the bug lives in the gap between the
+    writer and the reader, and a test on either side alone is blind to
+    it.
+    """
+    from agora_runner.nova_boards import parse_notes
+
+    new_live, new_archive = plan(LIVE, "", keep=2)
+    verify(LIVE, "", new_live, new_archive)
+
+    before = [note["text"] for note in parse_notes(LIVE)]
+    after = [note["text"] for note in parse_notes(new_live)] + [
+        note["text"] for note in parse_notes(new_archive)
+    ]
+    assert parse_notes(new_archive), "the archive renders as no notes at all"
+    assert sorted(after) == sorted(before)

@@ -49,6 +49,16 @@ class RollSpec:
     used only when the archive does not exist yet -- an existing archive
     keeps its own header verbatim.
 
+    `archive_section` is a heading written *below* the archive title and
+    above the entries, and it is what the archive's reader keys on. It
+    defaults to empty because the digest archive must not have one --
+    `parse_digest` reads a named section and the archive is deliberately
+    concatenated in with no rival heading. The capture archive is the
+    opposite: `nova_boards.parse_notes` returns notes only from a section
+    titled `entries`, so an archive without that heading renders as
+    nothing at all. Cycle 114 shipped exactly that and took two thirds of
+    a live board page off the screen; see `roll_captures.spec_for`.
+
     `check_entry` may raise on an entry the split point cannot be trusted
     around; `check_archive` and `check_render` are extra guards the
     caller wants run before any write. All three default to nothing,
@@ -64,6 +74,7 @@ class RollSpec:
         join_entries,
         keep,
         noun="entries",
+        archive_section="",
         check_entry=None,
         check_entries=None,
         check_archive=None,
@@ -73,6 +84,7 @@ class RollSpec:
         self.noun = noun
         self.marker = marker
         self.archive_title = archive_title
+        self.archive_section = archive_section
         self.archive_frontmatter = archive_frontmatter
         self.split_entries = split_entries
         self.join_entries = join_entries
@@ -154,14 +166,32 @@ def _body(live, spec):
 def _archived(archive, spec):
     if not archive.strip():
         return []
-    return spec.split_entries(archive.split(spec.archive_title, 1)[-1])
+    # Split below the section heading where there is one, never on the
+    # title: `split_bullets` treats a stray heading as its own entry, so
+    # splitting on the title would carry `## Entries` back out as a
+    # capture and `verify` would then refuse the roll it just planned.
+    cut = spec.archive_title
+    if spec.archive_section and spec.archive_section in archive:
+        cut = spec.archive_section
+    return spec.split_entries(archive.split(cut, 1)[-1])
 
 
 def _archive_header(archive, spec):
-    """An existing archive's own header, verbatim, or a fresh one."""
+    """An existing archive's own header, verbatim, or a fresh one.
+
+    "Verbatim" covers the frontmatter, which is the part a human may have
+    edited. The section heading is re-asserted rather than preserved, so
+    an archive written before `archive_section` existed is upgraded in
+    place the next time it is rolled instead of staying unreadable to its
+    own page forever.
+    """
     if spec.archive_title in archive:
-        return archive.split(spec.archive_title, 1)[0] + spec.archive_title + "\n\n"
-    return spec.archive_frontmatter + spec.archive_title + "\n\n"
+        header = archive.split(spec.archive_title, 1)[0] + spec.archive_title + "\n\n"
+    else:
+        header = spec.archive_frontmatter + spec.archive_title + "\n\n"
+    if spec.archive_section:
+        header += spec.archive_section + "\n\n"
+    return header
 
 
 def dedup(entries):
