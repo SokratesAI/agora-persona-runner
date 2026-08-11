@@ -81,6 +81,10 @@ COUCHDB_URL = os.environ.get("COUCHDB_URL", "http://couchdb.obsidian.svc.cluster
 COUCHDB_USER = os.environ.get("COUCHDB_USER", "")
 COUCHDB_PASSWORD = os.environ.get("COUCHDB_PASSWORD", "")
 COUCHDB_DB = os.environ.get("COUCHDB_DB", "obsidian")
+# Nova's own database. Empty (the default) means every path resolves to
+# COUCHDB_DB exactly as before, so this file is inert until the migrated
+# documents are actually in place — see vault.db_for.
+COUCHDB_NOVA_DB = os.environ.get("COUCHDB_NOVA_DB", "")
 # Deliberately separate from GH_TOKEN/GITHUB_TOKEN (the broadly-scoped bot
 # credential used elsewhere on this platform for repo/PR writes) -- falls
 # back to whatever's already in the environment only so the tool degrades

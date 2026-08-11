@@ -9,7 +9,7 @@ import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
-from agora_runner.config import COUCHDB_URL, COUCHDB_USER, COUCHDB_PASSWORD, COUCHDB_DB, GITHUB_READONLY_TOKEN, VAULT_CONTEXT_CAP
+from agora_runner.config import COUCHDB_URL, COUCHDB_USER, COUCHDB_PASSWORD, COUCHDB_DB, COUCHDB_NOVA_DB, GITHUB_READONLY_TOKEN, VAULT_CONTEXT_CAP
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import http_json
 
@@ -25,8 +25,62 @@ def couch_req(method, path, body=None):
     )
 
 
-def couch_get_doc(doc_id):
-    return couch_req("GET", f"{COUCHDB_DB}/{urllib.parse.quote(doc_id, safe='')}")
+# Nova's files live in their own CouchDB database rather than in Edvard's
+# vault (his ask, 2026-08-11: "You have outgrown a poc project that is
+# allowed to use my Vault as a database. Move out and get your own space").
+# The document id in a LiveSync vault IS the lowercased file path, so which
+# database holds a document is a pure function of its path and needs no
+# lookup — which is what makes one rule in one place possible at all.
+#
+# `issues.md` and `ideas.md` deliberately stay in `obsidian`. He offered
+# them ("Take all of 'my' files aswell with you if you want"), but they are
+# the two files Obsidian LiveSync may still write, and a second writer that
+# cannot see the routing rule would silently re-create them in the vault
+# Nova had stopped reading.
+NOVA_DB_PREFIXES = (
+    "projects/sokrates/projects/agora/nova/",
+    "projects/sokrates/projects/agora/journal-digest.md",
+)
+
+
+def db_for(path):
+    """Which database holds `path`. One rule, one place, so the answer
+    cannot drift between the nine call sites that need it.
+
+    Note this takes a *path*. Chunk ids (`h:...`) are content hashes with
+    no path at all, so they can never be routed by this function — every
+    chunk lives in the same database as the document that points at it,
+    and the chunk call sites take an explicit `db` argument for exactly
+    that reason. Routing a chunk id through here would silently resolve
+    it to `obsidian` and turn every chunked read of a Nova file into a
+    VaultIncompleteDocument.
+    """
+    if not COUCHDB_NOVA_DB:
+        return COUCHDB_DB
+    return COUCHDB_NOVA_DB if (path or "").lower().startswith(NOVA_DB_PREFIXES) else COUCHDB_DB
+
+
+def dbs_for_prefix(prefix):
+    """Every database that could hold a document under `prefix`.
+
+    Three cases, and the middle one is the one worth naming: a prefix
+    wholly inside Nova's folder needs only Nova's database; a prefix that
+    is an *ancestor* of it (`""`, or `projects/`) straddles both and has
+    to query both or a whole-vault listing quietly loses 162 files; and
+    anything else is Edvard's alone.
+    """
+    if not COUCHDB_NOVA_DB:
+        return [COUCHDB_DB]
+    lowered = (prefix or "").lower()
+    if lowered.startswith(NOVA_DB_PREFIXES):
+        return [COUCHDB_NOVA_DB]
+    if any(p.startswith(lowered) for p in NOVA_DB_PREFIXES):
+        return [COUCHDB_DB, COUCHDB_NOVA_DB]
+    return [COUCHDB_DB]
+
+
+def couch_get_doc(doc_id, db=None):
+    return couch_req("GET", f"{db or db_for(doc_id)}/{urllib.parse.quote(doc_id, safe='')}")
 
 
 def _couch_batched(items, n):
@@ -91,18 +145,28 @@ def _vault_file_docs(prefix=""):
     the prefix.
     """
     prefix = prefix.lower()
-    status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs?{_id_range(prefix)}")
-    if status != 200:
-        return {}
-    keys = [
-        row["id"] for row in data.get("rows", [])
-        if not row["id"].startswith(_INTERNAL_PREFIXES)
-        and row["id"].lower().startswith(prefix)
-    ]
+    # Keyed by database, never flattened: a batch is one POST to one
+    # database, so mixing ids from both into a single list of 500 would
+    # send half of them to a database that has never heard of them.
+    keys_by_db = {}
+    for db in dbs_for_prefix(prefix):
+        status, data = couch_req("GET", f"{db}/_all_docs?{_id_range(prefix)}")
+        if status != 200:
+            continue
+        keys_by_db[db] = [
+            row["id"] for row in data.get("rows", [])
+            if not row["id"].startswith(_INTERNAL_PREFIXES)
+            and row["id"].lower().startswith(prefix)
+        ]
     out = {}
-    for batch in _couch_batched(keys, 500):
+    batches = [
+        (db, batch)
+        for db, keys in keys_by_db.items()
+        for batch in _couch_batched(keys, 500)
+    ]
+    for db, batch in batches:
         status, res = couch_req(
-            "POST", f"{COUCHDB_DB}/_all_docs?include_docs=true", {"keys": batch}
+            "POST", f"{db}/_all_docs?include_docs=true", {"keys": batch}
         )
         if status != 200:
             # Dropping the batch silently would make live files vanish from
@@ -148,7 +212,7 @@ class VaultIncompleteDocument(RuntimeError):
     """
 
 
-def _fetch_chunks(chunk_ids):
+def _fetch_chunks(chunk_ids, db=None):
     """`{chunk_id: data}` for every chunk that exists, in one request.
 
     An id absent from the result is genuinely missing -- that is what
@@ -160,13 +224,14 @@ def _fetch_chunks(chunk_ids):
     keys = sorted(set(chunk_ids))
     if not keys:
         return {}
+    db = db or COUCHDB_DB
     status, body = couch_req(
-        "POST", f"{COUCHDB_DB}/_all_docs", {"keys": keys, "include_docs": True}
+        "POST", f"{db}/_all_docs", {"keys": keys, "include_docs": True}
     )
     if status != 200:
         out = {}
         for chunk_id in keys:
-            chunk_status, chunk = couch_get_doc(chunk_id)
+            chunk_status, chunk = couch_get_doc(chunk_id, db)
             if chunk_status == 200:
                 out[chunk_id] = chunk.get("data", "")
         return out
@@ -189,7 +254,11 @@ def vault_assemble(doc, path=None):
         # get slower for nova_site to read -- roughly 9ms to 196ms -- and
         # this recovers about a third of that. The trade is deliberate: the
         # write side was leaving a full dead copy behind on every save.
-        by_id = _fetch_chunks(kids)
+        # The chunks live wherever their file doc lives. `path` is the
+        # routing key and the doc carries it, so a caller that fetched
+        # this doc out of either database gets the matching chunks with
+        # no extra argument to forget.
+        by_id = _fetch_chunks(kids, db_for(path or doc.get("path") or doc.get("_id")))
         out = []
         missing = []
         for chunk_id in kids:
@@ -242,14 +311,17 @@ def vault_list_ids(prefix=""):
     handle, not a wrong answer. Do not use it to *show* anyone a list.
     """
     prefix = prefix.lower()
-    status, data = couch_req("GET", f"{COUCHDB_DB}/_all_docs?{_id_range(prefix)}")
-    if status != 200:
-        return []
-    return sorted(
-        row["id"] for row in data.get("rows", [])
-        if not row["id"].startswith(_INTERNAL_PREFIXES)
-        and row["id"].lower().startswith(prefix)
-    )
+    ids = []
+    for db in dbs_for_prefix(prefix):
+        status, data = couch_req("GET", f"{db}/_all_docs?{_id_range(prefix)}")
+        if status != 200:
+            continue
+        ids.extend(
+            row["id"] for row in data.get("rows", [])
+            if not row["id"].startswith(_INTERNAL_PREFIXES)
+            and row["id"].lower().startswith(prefix)
+        )
+    return sorted(ids)
 
 
 # Content-defined chunking, in bytes. LiveSync -- the client that wrote
@@ -342,7 +414,7 @@ def _split_chunks(content):
     return chunks
 
 
-def _existing_chunk_ids(chunk_ids):
+def _existing_chunk_ids(chunk_ids, db=None):
     """Which of `chunk_ids` are already in the database.
 
     One `_all_docs` POST instead of a GET per chunk. A row for a missing
@@ -351,7 +423,7 @@ def _existing_chunk_ids(chunk_ids):
     keys = sorted(set(chunk_ids))
     if not keys:
         return set()
-    status, body = couch_req("POST", f"{COUCHDB_DB}/_all_docs", {"keys": keys})
+    status, body = couch_req("POST", f"{db or COUCHDB_DB}/_all_docs", {"keys": keys})
     if status != 200:
         return set()
     return {
@@ -450,6 +522,7 @@ def vault_append_path(path, content, after_marker=""):
 
 def _vault_put_raw(path, content, existing=None):
     path = path.lower()
+    db = db_for(path)
     now_ms = int(time.time() * 1000)
     content_bytes = content.encode("utf-8")
     chunk_texts = _split_chunks(content)
@@ -457,21 +530,21 @@ def _vault_put_raw(path, content, existing=None):
     lower_id = path
 
     if existing is None:
-        status, found = couch_get_doc(lower_id)
+        status, found = couch_get_doc(lower_id, db)
         existing = found if status == 200 else None
 
     # Chunks are content-addressed, so one that already exists holds
     # exactly this text and does not need rewriting -- that reuse is the
     # entire point of chunking, and it is what stops an append from
     # leaving a whole extra copy of the file behind.
-    already = _existing_chunk_ids(chunk_ids)
+    already = _existing_chunk_ids(chunk_ids, db)
     written = set()
     for chunk_id, text in zip(chunk_ids, chunk_texts):
         if chunk_id in already or chunk_id in written:
             continue
         chunk = {"_id": chunk_id, "data": text, "type": "leaf", "children": []}
         chunk_status, _ = couch_req(
-            "PUT", f"{COUCHDB_DB}/{urllib.parse.quote(chunk_id, safe='')}", chunk
+            "PUT", f"{db}/{urllib.parse.quote(chunk_id, safe='')}", chunk
         )
         if chunk_status == 409:
             # Content-addressed, so a conflict means this exact chunk
@@ -508,7 +581,7 @@ def _vault_put_raw(path, content, existing=None):
         doc["_rev"] = existing["_rev"]
         doc["ctime"] = existing.get("ctime", now_ms)
     put_status, _ = couch_req(
-        "PUT", f"{COUCHDB_DB}/{urllib.parse.quote(lower_id, safe='')}", doc
+        "PUT", f"{db}/{urllib.parse.quote(lower_id, safe='')}", doc
     )
     return "written" if put_status in (200, 201) else f"FAILED({put_status})"
 
@@ -568,10 +641,21 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
     the file docs are already in hand here, so the caller gets the write
     times for free rather than paying a second listing for them."""
     filedocs = _vault_file_docs(prefix)
-    chunk_ids = sorted({c for doc in filedocs.values() for c in (doc.get("children") or [])})
+    # Grouped by the database of the file doc that points at them. A flat
+    # set across both would send Nova's chunk ids to Edvard's database,
+    # find nothing, and surface as every Nova file coming back empty.
+    chunk_ids_by_db = {}
+    for doc_id, doc in filedocs.items():
+        for chunk_id in (doc.get("children") or []):
+            chunk_ids_by_db.setdefault(db_for(doc_id), set()).add(chunk_id)
     chunks = {}
-    for batch in _couch_batched(chunk_ids, 1000):
-        status, res = couch_req("POST", f"{COUCHDB_DB}/_all_docs?include_docs=true", {"keys": batch})
+    chunk_batches = [
+        (db, batch)
+        for db, ids in chunk_ids_by_db.items()
+        for batch in _couch_batched(sorted(ids), 1000)
+    ]
+    for db, batch in chunk_batches:
+        status, res = couch_req("POST", f"{db}/_all_docs?include_docs=true", {"keys": batch})
         if status != 200:
             continue
         for row in res.get("rows", []):
