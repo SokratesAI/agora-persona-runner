@@ -672,12 +672,55 @@
     });
   }
 
+  /* The last full payload for each versioned endpoint, so a 304 can be
+   * answered from memory rather than by asking again without the header.
+   *
+   * The server has answered `If-None-Match` with a 304 since #77 and
+   * nothing has ever sent one. Measured against the live pod on
+   * 2026-08-11, one poll is 227,520 gzipped bytes -- journal 184,658,
+   * digest 36,814, comments 6,048 -- and it repeats every 30 seconds for
+   * as long as the tab is visible. That is 27MB an hour on a phone to
+   * learn that nothing changed, which it usually has not: a cycle writes
+   * one entry an hour and this polls 120 times in it. Conditional, the
+   * same poll is the 6,048 bytes of comments and two empty 304s.
+   *
+   * The version is read out of the payload rather than the ETag header,
+   * for the reason `_versioned` puts it in both: a response served from
+   * the service worker's cache has no headers the page can reach, and a
+   * poll that could not find its etag would silently go back to asking
+   * for all 184KB. The two strings are the same by construction.
+   */
+  var lastPayload = { journal: null, digest: null };
+
+  function fetchVersioned(url, key) {
+    var known = lastPayload[key] && lastPayload[key].version;
+    // `no-store` keeps this the only conditional request in play. Neither
+    // response carries `Cache-Control`, so whether the browser's own HTTP
+    // cache revalidates is a heuristic that differs per browser -- and a
+    // heuristic hit would answer this poll from a cache instead of asking
+    // the server, which is the one thing a poll must not do.
+    var init = { cache: "no-store" };
+    if (known) init.headers = { "If-None-Match": known };
+    return fetch(url, init).then(function (r) {
+      // 304 carries no body. Returning the remembered payload keeps every
+      // caller working on a whole object, so `render` and the version
+      // comparison in `poll` need to know nothing about any of this.
+      if (r.status === 304 && lastPayload[key]) return lastPayload[key];
+      return r.json().then(function (body) {
+        lastPayload[key] = body;
+        return body;
+      });
+    });
+  }
+
   function fetchAll() {
     return Promise.all([
-      fetch("/api/journal").then(function (r) { return r.json(); }),
-      fetch("/api/digest").then(function (r) { return r.json(); }).catch(function () { return null; }),
+      fetchVersioned("/api/journal", "journal"),
+      fetchVersioned("/api/digest", "digest").catch(function () { return null; }),
       // Tolerated the same way the digest is: the journal is the page, and
       // a comments read that fails should cost the bubbles, not the feed.
+      // Not conditional: it is uncached and unversioned on purpose, because
+      // it changes underneath itself while a reply is being written.
       fetch("/api/comments").then(function (r) { return r.json(); }).catch(function () { return null; }),
     ]);
   }

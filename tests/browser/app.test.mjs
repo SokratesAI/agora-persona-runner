@@ -1109,6 +1109,177 @@ describe("the page notices new entries on its own", () => {
   });
 });
 
+/* The other half of the same complaint: "Nova takes a long time to load."
+ *
+ * The server has answered `If-None-Match` with a 304 since #77 and the page
+ * never sent one, so every poll re-downloaded the whole journal to find out
+ * it had not changed. Measured against the live pod on 2026-08-11: 227,520
+ * gzipped bytes per poll, every 30 seconds, on his phone.
+ *
+ * These stub a fetch that behaves the way nova_site actually does, rather
+ * than one that always answers 200 -- a client that mishandles a 304 blanks
+ * the feed, and a stub that never sends one cannot see that happen. */
+describe("a poll asks whether anything changed, not for the whole journal", () => {
+  async function pollable() {
+    let timers;
+    const window = await loadSite("/", { install: (win) => { timers = captureTimers(win); } });
+    return { window, timers };
+  }
+
+  /** The fixture with a version on it. The recorded one predates versions,
+   *  and a payload with no version is the case where there is nothing to
+   *  send -- covered by the suite above, not this one. */
+  const versioned = (base, version) =>
+    Object.assign(JSON.parse(JSON.stringify(base)), { version });
+
+  /** nova_site's actual behaviour: a matching `If-None-Match` gets an empty
+   *  304, anything else gets the body. Returns the request log.
+   *
+   *  The 304's `json()` rejects rather than resolving to something empty,
+   *  because that is what a real one does -- there is no body to parse. A
+   *  client that reads the status wrongly fails here loudly instead of
+   *  quietly rendering `undefined`. */
+  function server(window, journal, digest, comments) {
+    const sent = [];
+    window.fetch = (url, init) => {
+      const path = String(url);
+      const asked = (init && init.headers && init.headers["If-None-Match"]) || null;
+      sent.push({ path, asked });
+      if (path.includes("/api/comments")) {
+        return Promise.resolve({ status: 200, json: () => Promise.resolve(comments || payload.comments) });
+      }
+      const body = path.includes("/api/digest") ? digest : journal;
+      if (asked === body.version) {
+        return Promise.resolve({
+          status: 304,
+          json: () => Promise.reject(new Error("a 304 carries no body")),
+        });
+      }
+      return Promise.resolve({ status: 200, json: () => Promise.resolve(body) });
+    };
+    return sent;
+  }
+
+  const asked = (sent, endpoint) => sent.find((r) => r.path.includes(endpoint));
+
+  test("it sends back the version the server last gave it", async () => {
+    const { window, timers } = await pollable();
+    const sent = server(window, versioned(payload.journal, 'W/"j1"'), versioned(payload.digest, 'W/"d1"'));
+
+    await timers.firePagePoll(); // learns the versions; nothing to send yet
+    assert.equal(asked(sent, "/api/journal").asked, null, "it invented a version it was never given");
+
+    sent.length = 0;
+    await timers.firePagePoll();
+    assert.equal(asked(sent, "/api/journal").asked, 'W/"j1"');
+    assert.equal(asked(sent, "/api/digest").asked, 'W/"d1"');
+  });
+
+  /* The endpoint that is uncached and unversioned on purpose, because it
+   * changes underneath itself while a reply is being written. Asking it
+   * conditionally would be asking it to answer 304 to a question it has no
+   * etag for. */
+  test("it does not ask the comments endpoint conditionally", async () => {
+    const { window, timers } = await pollable();
+    const sent = server(window, versioned(payload.journal, 'W/"j1"'), versioned(payload.digest, 'W/"d1"'));
+
+    await timers.firePagePoll();
+    sent.length = 0;
+    await timers.firePagePoll();
+    assert.equal(asked(sent, "/api/comments").asked, null);
+    /* Paired with the journal on the same poll on purpose. On its own the
+     * assertion above is true of the client that predates this change too,
+     * so it would pin nothing -- it is only evidence of a deliberate split
+     * if the other endpoint on the same poll did send one. */
+    assert.equal(asked(sent, "/api/journal").asked, 'W/"j1"', "nothing was conditional at all");
+  });
+
+  /* The failure this whole suite exists to catch. A 304 has no body, so a
+   * page that tries to render one shows nothing at all -- and it would only
+   * do it on the second poll, thirty seconds after a load that looked fine. */
+  test("a 304 leaves the page exactly as it was", async () => {
+    const { window, timers } = await pollable();
+    server(window, versioned(payload.journal, 'W/"j1"'), versioned(payload.digest, 'W/"d1"'));
+
+    await timers.firePagePoll();
+    const card = cards(window)[0];
+    const count = cards(window).length;
+    assert.ok(count > 0, "nothing was on the page before the 304 to begin with");
+
+    await timers.firePagePoll();
+    assert.equal(cards(window).length, count, "the feed emptied on a 304");
+    assert.ok(window.document.contains(card), "the page was rebuilt for an empty response");
+  });
+
+  /* And the remembered payload must not become the page. A client that
+   * answers its own poll from memory forever is worse than one that
+   * re-downloads: it never shows a new entry again. */
+  test("a new entry still arrives after a run of 304s", async () => {
+    const { window, timers } = await pollable();
+    server(window, versioned(payload.journal, 'W/"j1"'), versioned(payload.digest, 'W/"d1"'));
+    await timers.firePagePoll();
+    const before = cards(window).length;
+    await timers.firePagePoll();
+    await timers.firePagePoll();
+
+    server(window, grownWithVersion('W/"j2"'), versioned(payload.digest, 'W/"d1"'));
+    await timers.firePagePoll();
+    assert.equal(cards(window).length, before + 1, "the page stopped noticing new entries");
+  });
+
+  /* The test that tells "handled the 304" apart from "threw on the 304".
+   *
+   * Both leave the feed intact, because a failed poll is caught and the
+   * previous page is the right thing to keep -- so every assertion above
+   * passes either way. What only the first one does is finish the poll: a
+   * rejected journal fetch takes the whole `Promise.all` down with it, and
+   * the comment that arrived alongside the unchanged journal never renders.
+   *
+   * That is the live case, not a contrived one. The journal changes once an
+   * hour and comments change whenever Edvard types, so almost every poll
+   * that has anything to show is exactly this one. */
+  test("a new comment renders on a poll where the journal did not change", async () => {
+    const { window, timers } = await pollable();
+    server(window, versioned(payload.journal, 'W/"j1"'), versioned(payload.digest, 'W/"d1"'));
+    await timers.firePagePoll();
+    const before = window.document.querySelectorAll(".comment-body").length;
+
+    const grownComments = JSON.parse(JSON.stringify(payload.comments));
+    const cycle = Object.keys(grownComments.byCycle)[0];
+    grownComments.byCycle[cycle].unshift({
+      cycle: Number(cycle),
+      stamp: "2026-08-11 05:00",
+      text: "a comment that arrived while the journal stood still",
+      reply: "",
+      replyStamp: "",
+      acknowledged: false,
+      replyPending: false,
+      replyWaiting: false,
+      replyFailed: false,
+    });
+    // Same versions, so both versioned endpoints answer 304 on this poll.
+    server(window, versioned(payload.journal, 'W/"j1"'), versioned(payload.digest, 'W/"d1"'), grownComments);
+
+    await timers.firePagePoll();
+    assert.equal(
+      window.document.querySelectorAll(".comment-body").length,
+      before + 1,
+      "a 304 on the journal swallowed a comment that had arrived",
+    );
+  });
+});
+
+/** The fixture with one more entry at the top and a new version. The suite
+ *  above has its own copy scoped to itself; this one is shared. */
+function grownWithVersion(version) {
+  const copy = JSON.parse(JSON.stringify(payload.journal));
+  const first = JSON.parse(JSON.stringify(copy.entries[0]));
+  first.cycle = 999;
+  copy.entries.unshift(first);
+  copy.version = version;
+  return copy;
+}
+
 /* The suite this file cannot run on itself.
  *
  * A window that outlives the run keeps `node --test` alive forever, and the
