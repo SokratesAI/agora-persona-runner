@@ -858,3 +858,110 @@ blockquote {
   border-left: 2px solid var(--accent);
   color: var(--text);
 }
+
+/* ---- The costs page (issues.md #57, page 2) --------------------------
+ *
+ * The two series colours live in app.js next to the marks they paint,
+ * deliberately: they are validated data colours rather than theme tokens
+ * (--accent and --warn both fail the lightness band against --bg), and a
+ * copy of them here would be a second place for them to drift. What is
+ * here is everything that is layout and ink. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.5rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.tile {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+}
+
+.tile-label {
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Tabular figures so a column of numbers lines up and a value that ticks
+ * over on a poll does not shift the tile's width. */
+.tile-value {
+  margin: 0.1rem 0 0;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.tile-note { margin: 0; color: var(--dim); font-size: 0.78rem; }
+
+.chart {
+  margin: 0 0 1.25rem;
+  padding: 0.75rem 0.5rem 0.5rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.chart-title { margin: 0 0.25rem; font-size: 1rem; font-weight: 600; }
+.chart-sub { margin: 0.1rem 0.25rem 0.5rem; color: var(--dim); font-size: 0.82rem; }
+
+/* The tooltip is positioned against this, not against the SVG: an
+ * absolutely-positioned child of an <svg> is not something CSS will place
+ * for you. */
+.chart-plot { position: relative; }
+.chart-svg { display: block; width: 100%; height: auto; }
+.chart-axis-label { fill: #7d8296; font-size: 8px; }
+.chart-overlay { cursor: crosshair; touch-action: pan-y; }
+
+.chart-tip {
+  position: absolute;
+  top: 0.25rem;
+  background: #0d0e13ee;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  pointer-events: none;
+  min-width: 8.5rem;
+}
+
+.chart-tip-when { margin: 0 0 0.15rem; color: var(--dim); }
+.chart-tip-row { margin: 0; display: flex; align-items: center; gap: 0.35rem; }
+.chart-tip-swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.chart-tip-label { color: var(--dim); }
+.chart-tip-value { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.35rem 0.25rem 0;
+  font-size: 0.8rem;
+  color: var(--dim);
+}
+
+.legend-key { display: inline-flex; align-items: center; gap: 0.35rem; }
+.legend-swatch { width: 10px; height: 10px; border-radius: 3px; }
+
+.share { margin: 0 0 1rem; }
+.share-title { margin: 0 0 0.5rem; font-size: 1rem; }
+
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.3rem 0;
+  font-size: 0.85rem;
+}
+
+.share-label { width: 8rem; flex: none; color: var(--dim); }
+.share-track { flex: 1; height: 8px; background: #23263180; border-radius: 4px; }
+.share-fill { display: block; height: 100%; border-radius: 4px; }
+.share-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
+.share-note { margin: 0.4rem 0 0; color: var(--dim); font-size: 0.78rem; }

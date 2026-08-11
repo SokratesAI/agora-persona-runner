@@ -69,7 +69,7 @@ function openWindow(html, options) {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, digest, comments, install, journal, board } = {}) {
+async function loadSite(path = "/", { failComments = false, digest, comments, install, journal, board, costs } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -91,6 +91,9 @@ async function loadSite(path = "/", { failComments = false, digest, comments, in
       return failComments
         ? Promise.reject(new Error("comments are down"))
         : Promise.resolve({ json: () => Promise.resolve(comments || payload.comments) });
+    }
+    if (url.includes("/api/costs")) {
+      return Promise.resolve({ json: () => Promise.resolve(costs || payload.costs) });
     }
     if (url.includes("/api/board")) {
       // Two shapes off one route, told apart the way the server tells
@@ -2199,10 +2202,10 @@ describe("the sidebar", () => {
    * and its links are out of the tab order, which is the whole difference
    * between a drawer and the row of tabs it replaced. `aria-hidden` is the
    * half of that a DOM test can see; the `visibility` half is CSS. */
-  test("the three sections live in the drawer, and are exposed only with it", async () => {
+  test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/costs"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -2263,5 +2266,93 @@ describe("navigating away mid-fetch", () => {
 
     assert.equal(window.location.pathname, "/ideas");
     assert.equal(rows(window).length, 0, "the stale Issues response painted over Ideas");
+  });
+});
+
+/* ---- The costs page (issues.md #57, page 2) ------------------------------
+ *
+ * Two charts of hand-written SVG, so what is worth pinning here is not
+ * that they render -- it is the handful of decisions inside them that a
+ * later change could quietly undo while leaving a chart on screen. Each
+ * test below is one of those, and each one is a mistake this data would
+ * actually produce: a hole read as a zero, a bad timestamp placed at the
+ * epoch, identity carried by colour alone.
+ */
+describe("the costs page", () => {
+  const plot = (window) => window.document.querySelector(".chart-svg");
+
+  test("it plots the cycles and the quota, not the journal", async () => {
+    const window = await loadSite("/costs");
+    const charts = window.document.querySelectorAll(".chart");
+    assert.equal(charts.length, 2);
+    // One bar per cycle in the ledger, and the fixture has three. The
+    // hover overlay is a `rect` too, hence the exclusion -- counting it
+    // would let a chart that drew two bars pass as three.
+    assert.equal(charts[0].querySelectorAll("rect:not(.chart-overlay)").length, 3);
+    // Two series, two paths.
+    assert.equal(charts[1].querySelectorAll("path").length, 2);
+  });
+
+  test("the nav marks Costs, and the journal poll does not paint over it", async () => {
+    const window = await loadSite("/costs");
+    const on = [...window.document.querySelectorAll(".nav-tab")]
+      .filter((a) => a.getAttribute("aria-current") === "page")
+      .map((a) => a.getAttribute("href"));
+    assert.deepEqual(on, ["/costs"]);
+    assert.equal(window.document.querySelector(".entry"), null);
+  });
+
+  test("a reading from before `pace` existed leaves a hole, not a drop to zero", async () => {
+    /* The fixture's oldest quota row has no pace and, more to the point,
+     * this is the shape the real ledger has for its first two days. Read
+     * as zero the line would dive to the axis and back; the path has to
+     * stop and start again instead. `M` twice in one `d` is exactly that
+     * -- and a single `M` would be the bug. */
+    const window = await loadSite("/costs");
+    const paths = [...plot(window).ownerDocument.querySelectorAll(".chart")[1].querySelectorAll("path")];
+    const withHole = paths.map((p) => (p.getAttribute("d").match(/M/g) || []).length);
+    assert.deepEqual(withHole, [1, 1], "the fixture's readings are contiguous");
+
+    const holed = {
+      ...payload.costs,
+      quota: [
+        [1786227966684, 27.0, null, 2.0, null],
+        [1786420000000, null, null, 44.0, 0.58],
+        [1786450678872, 78.0, 0.944, 51.0, 0.615],
+      ],
+    };
+    const broken = await loadSite("/costs", { costs: holed });
+    const fiveHour = broken.document.querySelectorAll(".chart")[1].querySelectorAll("path")[0];
+    assert.equal((fiveHour.getAttribute("d").match(/M/g) || []).length, 2,
+      "the five-hour line drew through a missing reading");
+  });
+
+  test("two series get a legend, so identity is never colour alone", async () => {
+    const window = await loadSite("/costs");
+    const labels = [...window.document.querySelectorAll(".legend-label")].map((n) => n.textContent);
+    assert.deepEqual(labels, ["5-hour window", "7-day window"]);
+  });
+
+  test("a vault with no ledger is an empty page, not a broken one", async () => {
+    const window = await loadSite("/costs", {
+      costs: {
+        generatedAt: null, cycleColumns: [], quotaColumns: [],
+        cycles: [], quota: [], summary: {}, weights: {},
+      },
+    });
+    assert.equal(window.document.querySelectorAll(".chart").length, 2);
+    assert.equal(window.document.querySelectorAll("rect:not(.chart-overlay)").length, 0);
+    const empties = [...window.document.querySelectorAll(".empty")].map((n) => n.textContent);
+    assert.deepEqual(empties, ["No cycles in the ledger yet.", "No quota readings yet."]);
+  });
+
+  test("a failed fetch says so rather than leaving the last page up", async () => {
+    const window = await loadSite("/", { install: (w) => { w.__x = 1; } });
+    window.fetch = () => Promise.reject(new Error("costs are down"));
+    window.history.pushState(null, "", "/costs");
+    click(window, [...window.document.querySelectorAll(".nav-tab")].find(
+      (a) => a.getAttribute("href") === "/costs"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.match(window.document.querySelector(".empty").textContent, /Could not load the costs/);
   });
 });

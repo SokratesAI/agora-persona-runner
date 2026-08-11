@@ -58,6 +58,7 @@
     if (cycle) return { view: "journal", cycle: parseInt(cycle[1], 10), board: null };
     if (path === "/issues") return { view: "board", cycle: null, board: "issues" };
     if (path === "/ideas") return { view: "board", cycle: null, board: "ideas" };
+    if (path === "/costs") return { view: "costs", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
 
@@ -68,7 +69,7 @@
 
   function markNav() {
     var here = route(window.location.pathname);
-    var want = here.view === "board" ? "/" + here.board : "/";
+    var want = here.view === "board" ? "/" + here.board : here.view === "costs" ? "/costs" : "/";
     var tabs = navEl ? navEl.querySelectorAll(".nav-tab") : [];
     for (var i = 0; i < tabs.length; i++) {
       var on = tabs[i].getAttribute("href") === want;
@@ -1469,10 +1470,477 @@
       });
   }
 
+  /* ---- The costs page (issues.md #57, page 2) --------------------------
+   *
+   * Edvard, 2026-08-08: "I want you to figure out the optimal method of
+   * quota spendage for projects. I do not know the optimal way. Figure
+   * this out by trial and error and gained experience." Every cycle has
+   * been writing its own cost into a ledger since; this is the first time
+   * either of us can see the shape of it rather than one row at a time.
+   *
+   * Two charts and no third, because there are exactly two questions:
+   * what one cycle costs, and how close the week is to running out. They
+   * are different units, so they are two charts sharing one time axis
+   * rather than one chart with two y-scales.
+   *
+   * Every mark is built with createElementNS for the same reason nothing
+   * in this file uses innerHTML: an SVG string assembled out of numbers is
+   * still markup this client would be producing.
+   */
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  /* The two series colours. Validated against this app's own dark surface
+   * (#12131a) rather than chosen: lightness band, chroma floor, contrast,
+   * and colour-vision separation for the pair -- worst adjacent deltaE
+   * 25.2 under protanopia, 21.4 under tritanopia, 26.3 for normal vision.
+   * The app's --accent (#7aa2f7) and --warn (#e8b75c) both fail the
+   * lightness band against this surface, which is why these are their own
+   * two values and not the theme's. */
+  var SERIES_A = "#5d86dd";
+  var SERIES_B = "#bd8b2f";
+  var GRID = "#2a2d3a";
+  var AXIS_INK = "#7d8296";
+
+  function svgEl(tag, attrs) {
+    var node = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach(function (key) {
+      node.setAttribute(key, attrs[key]);
+    });
+    return node;
+  }
+
+  function fmtTokens(n) {
+    if (!isFinite(n)) return "—";
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+    if (Math.abs(n) >= 1e3) return Math.round(n / 1e3) + "k";
+    return String(Math.round(n));
+  }
+
+  function fmtMinutes(seconds) {
+    if (!isFinite(seconds)) return "—";
+    return (seconds / 60).toFixed(1) + " min";
+  }
+
+  /* The reader's own clock, deliberately. The ledger stores UTC and the
+   * payload carries epoch milliseconds precisely so that the one place
+   * that knows what timezone the reader is in gets to decide -- Nova
+   * writes Oslo time everywhere for the same reason, and here the browser
+   * already knows. */
+  function fmtDay(ms) {
+    return new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  }
+
+  function fmtStamp(ms) {
+    return new Date(ms).toLocaleString(undefined, {
+      day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+    });
+  }
+
+  /* One chart's frame: the box, its grid, and its two axes.
+   *
+   * `viewBox` is 360 wide because that is roughly a phone, and the SVG
+   * scales up from there -- so a font-size in user units is about the
+   * pixel size it will have on the device this is actually read on, and
+   * larger on a desktop. Sizing the other way round (a wide viewBox
+   * scaled down) is what makes hand-written SVG unreadable on a phone.
+   */
+  var CHART = { w: 360, h: 168, left: 30, right: 6, top: 10, bottom: 16 };
+
+  function chartFrame(title, subtitle) {
+    var figure = el("figure", "chart");
+    figure.appendChild(el("figcaption", "chart-title", title));
+    if (subtitle) figure.appendChild(el("p", "chart-sub", subtitle));
+    var plot = el("div", "chart-plot");
+    var svg = svgEl("svg", {
+      viewBox: "0 0 " + CHART.w + " " + CHART.h,
+      class: "chart-svg",
+      role: "img",
+      "aria-label": title + (subtitle ? ". " + subtitle : ""),
+    });
+    plot.appendChild(svg);
+    figure.appendChild(plot);
+    return { figure: figure, plot: plot, svg: svg };
+  }
+
+  function plotBox() {
+    return {
+      x0: CHART.left,
+      x1: CHART.w - CHART.right,
+      y0: CHART.top,
+      y1: CHART.h - CHART.bottom,
+    };
+  }
+
+  /* Horizontal gridlines and their value labels. Recessive on purpose:
+   * the grid is a reading aid, not data, so it never competes with a
+   * mark. */
+  function drawYAxis(svg, box, ticks, label) {
+    ticks.forEach(function (tick) {
+      svg.appendChild(svgEl("line", {
+        x1: box.x0, x2: box.x1, y1: tick.y, y2: tick.y,
+        stroke: GRID, "stroke-width": 1,
+      }));
+      var text = svgEl("text", {
+        x: box.x0 - 4, y: tick.y + 3, "text-anchor": "end",
+        class: "chart-axis-label",
+      });
+      text.textContent = label(tick.value);
+      svg.appendChild(text);
+    });
+  }
+
+  function drawXDates(svg, box, from, to) {
+    [
+      { at: from, x: box.x0, anchor: "start" },
+      { at: to, x: box.x1, anchor: "end" },
+    ].forEach(function (mark) {
+      var text = svgEl("text", {
+        x: mark.x, y: CHART.h - 4, "text-anchor": mark.anchor,
+        class: "chart-axis-label",
+      });
+      text.textContent = fmtDay(mark.at);
+      svg.appendChild(text);
+    });
+  }
+
+  /* The hover layer, shared by both charts.
+   *
+   * `points` is `[{x, at, lines}]` already in user units; the overlay
+   * finds the nearest one by x and moves a crosshair to it. One
+   * implementation for a bar chart and a line chart because "which moment
+   * is under my finger" is the same question in both, and a phone has no
+   * pointer to hover with -- pointerdown counts, which is why this listens
+   * for that as well as for pointermove.
+   */
+  function attachHover(chart, box, points) {
+    if (!points.length) return;
+    var rule = svgEl("line", {
+      y1: box.y0, y2: box.y1, stroke: AXIS_INK, "stroke-width": 1,
+      "stroke-dasharray": "2 2", class: "chart-rule", x1: box.x0, x2: box.x0,
+    });
+    rule.style.opacity = "0";
+    chart.svg.appendChild(rule);
+
+    var tip = el("div", "chart-tip");
+    tip.hidden = true;
+    chart.plot.appendChild(tip);
+
+    var overlay = svgEl("rect", {
+      x: box.x0, y: box.y0, width: box.x1 - box.x0, height: box.y1 - box.y0,
+      fill: "transparent", class: "chart-overlay",
+    });
+
+    function show(event) {
+      var bounds = chart.svg.getBoundingClientRect();
+      if (!bounds.width) return;
+      var user = ((event.clientX - bounds.left) / bounds.width) * CHART.w;
+      var best = points[0];
+      points.forEach(function (point) {
+        if (Math.abs(point.x - user) < Math.abs(best.x - user)) best = point;
+      });
+      rule.setAttribute("x1", best.x);
+      rule.setAttribute("x2", best.x);
+      rule.style.opacity = "1";
+      tip.textContent = "";
+      tip.appendChild(el("p", "chart-tip-when", fmtStamp(best.at)));
+      best.lines.forEach(function (line) {
+        var row = el("p", "chart-tip-row");
+        row.appendChild(el("span", "chart-tip-swatch"));
+        row.lastChild.style.background = line.color;
+        row.appendChild(el("span", "chart-tip-label", line.label));
+        row.appendChild(el("span", "chart-tip-value", line.value));
+        tip.appendChild(row);
+      });
+      tip.hidden = false;
+      // Kept inside the plot: the tip is ~120px wide against a 360-unit
+      // box, so pinning it to the side the pointer is *not* on is what
+      // stops it covering the mark it describes.
+      var left = best.x / CHART.w > 0.5;
+      tip.style.left = left ? "4px" : "auto";
+      tip.style.right = left ? "auto" : "4px";
+    }
+
+    function hide() {
+      rule.style.opacity = "0";
+      tip.hidden = true;
+    }
+
+    overlay.addEventListener("pointermove", show);
+    overlay.addEventListener("pointerdown", show);
+    overlay.addEventListener("pointerleave", hide);
+    chart.svg.appendChild(overlay);
+  }
+
+  /* What one cycle costs, as a bar per cycle placed at the moment it ran.
+   *
+   * Placed by time rather than evenly spaced, which is the whole reason
+   * this is worth looking at: the loop has been idle for days at a stretch
+   * and run fourteen cycles in one, and a bar per cycle in a neat row
+   * would draw both stretches identically. The gaps are the finding.
+   */
+  function renderCycleChart(payload) {
+    var rows = payload.cycles || [];
+    var chart = chartFrame(
+      "What a cycle costs",
+      "Weighted tokens per cycle, placed when it ran"
+    );
+    if (!rows.length) {
+      chart.figure.appendChild(el("p", "empty", "No cycles in the ledger yet."));
+      return chart.figure;
+    }
+    var box = plotBox();
+    var from = rows[0][0];
+    var to = rows[rows.length - 1][0];
+    var span = Math.max(to - from, 1);
+    var max = rows.reduce(function (best, row) { return Math.max(best, row[4]); }, 0) || 1;
+
+    var x = function (at) { return box.x0 + ((at - from) / span) * (box.x1 - box.x0); };
+    var y = function (value) { return box.y1 - (value / max) * (box.y1 - box.y0); };
+
+    drawYAxis(chart.svg, box, [
+      { value: max, y: y(max) },
+      { value: max / 2, y: y(max / 2) },
+      { value: 0, y: box.y1 },
+    ], fmtTokens);
+
+    // Wide enough to see, never wide enough to overlap its neighbour: the
+    // median gap between two cycles, which at an hourly heartbeat over
+    // eight days is about 2 user units.
+    var gaps = [];
+    for (var i = 1; i < rows.length; i++) gaps.push(x(rows[i][0]) - x(rows[i - 1][0]));
+    gaps.sort(function (a, b) { return a - b; });
+    var width = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 4;
+    width = Math.max(1.5, Math.min(width - 0.7, 8));
+
+    var points = [];
+    rows.forEach(function (row) {
+      var height = Math.max(box.y1 - y(row[4]), 0.6);
+      chart.svg.appendChild(svgEl("rect", {
+        x: x(row[0]) - width / 2, y: box.y1 - height,
+        width: width, height: height, rx: Math.min(width / 2, 2),
+        fill: SERIES_A,
+      }));
+      points.push({
+        x: x(row[0]), at: row[0],
+        lines: [
+          { color: SERIES_A, label: "Weighted", value: fmtTokens(row[4]) },
+          { color: "transparent", label: "Ran for", value: row[1] + " min" },
+          { color: "transparent", label: "Turns", value: String(row[2]) },
+        ],
+      });
+    });
+    drawXDates(chart.svg, box, from, to);
+    attachHover(chart, box, points);
+    return chart.figure;
+  }
+
+  /* How much of each quota window has been spent, over time.
+   *
+   * Two series on one axis because both are a percentage of their own
+   * window -- the comparison is the point, and it is the one comparison
+   * this data supports without a second scale. The five-hour line sawtooths
+   * because it resets five times a day; the seven-day line is the one that
+   * decides whether the week runs out early.
+   */
+  function renderQuotaChart(payload) {
+    var rows = (payload.quota || []).filter(function (row) {
+      return row[1] !== null || row[3] !== null;
+    });
+    var chart = chartFrame(
+      "How much quota is left",
+      "Percent of each window used, at every reading"
+    );
+    if (!rows.length) {
+      chart.figure.appendChild(el("p", "empty", "No quota readings yet."));
+      return chart.figure;
+    }
+    var box = plotBox();
+    var from = rows[0][0];
+    var to = rows[rows.length - 1][0];
+    var span = Math.max(to - from, 1);
+    var x = function (at) { return box.x0 + ((at - from) / span) * (box.x1 - box.x0); };
+    var y = function (pct) { return box.y1 - (pct / 100) * (box.y1 - box.y0); };
+
+    drawYAxis(chart.svg, box, [
+      { value: 100, y: y(100) },
+      { value: 50, y: y(50) },
+      { value: 0, y: box.y1 },
+    ], function (v) { return v + "%"; });
+
+    [
+      { index: 1, color: SERIES_A, label: "5-hour" },
+      { index: 3, color: SERIES_B, label: "7-day" },
+    ].forEach(function (series) {
+      var d = "";
+      var open = false;
+      rows.forEach(function (row) {
+        var value = row[series.index];
+        if (value === null || value === undefined) {
+          // A reading that predates this field is a hole, not a zero. The
+          // path stops and starts again rather than drawing a line down to
+          // the axis and back, which would read as the quota emptying.
+          open = false;
+          return;
+        }
+        d += (open ? "L" : "M") + x(row[0]).toFixed(1) + " " + y(value).toFixed(1) + " ";
+        open = true;
+      });
+      chart.svg.appendChild(svgEl("path", {
+        d: d.trim(), fill: "none", stroke: series.color, "stroke-width": 2,
+        "stroke-linejoin": "round", "stroke-linecap": "round",
+      }));
+    });
+
+    var points = rows.map(function (row) {
+      return {
+        x: x(row[0]), at: row[0],
+        lines: [
+          { color: SERIES_A, label: "5-hour", value: row[1] === null ? "—" : row[1] + "%" },
+          { color: SERIES_B, label: "7-day", value: row[3] === null ? "—" : row[3] + "%" },
+        ],
+      };
+    });
+    drawXDates(chart.svg, box, from, to);
+    attachHover(chart, box, points);
+
+    // Two series, so a legend is not optional -- identity must not rest on
+    // colour alone.
+    var legend = el("div", "chart-legend");
+    [
+      { color: SERIES_A, label: "5-hour window" },
+      { color: SERIES_B, label: "7-day window" },
+    ].forEach(function (series) {
+      var key = el("span", "legend-key");
+      var swatch = el("span", "legend-swatch");
+      swatch.style.background = series.color;
+      key.appendChild(swatch);
+      key.appendChild(el("span", "legend-label", series.label));
+      legend.appendChild(key);
+    });
+    chart.figure.appendChild(legend);
+    return chart.figure;
+  }
+
+  function statTile(label, value, note) {
+    var tile = el("div", "tile");
+    tile.appendChild(el("p", "tile-label", label));
+    tile.appendChild(el("p", "tile-value", value));
+    if (note) tile.appendChild(el("p", "tile-note", note));
+    return tile;
+  }
+
+  function renderCostTiles(payload) {
+    var summary = payload.summary || {};
+    var quota = payload.quota || [];
+    var latest = quota.length ? quota[quota.length - 1] : null;
+    var row = el("div", "tiles");
+    row.appendChild(statTile("Cycles", String(summary.cycles || (payload.cycles || []).length)));
+    row.appendChild(statTile(
+      "Median cycle", fmtTokens(summary.median_weighted), "weighted tokens"
+    ));
+    row.appendChild(statTile("Median length", fmtMinutes(summary.median_duration_seconds)));
+    if (latest) {
+      row.appendChild(statTile(
+        "7-day used",
+        (latest[3] === null ? "—" : latest[3] + "%"),
+        latest[4] === null || latest[4] === undefined ? null : "pace " + latest[4]
+      ));
+    }
+    return row;
+  }
+
+  /* Where the tokens actually go. Five shares of one total, which is a
+   * table and not a chart: five slices would need five validated hues to
+   * say what five rows say in one line each, and the ranking is the
+   * finding (cache reads dominate, and they are the cheapest per token). */
+  function renderCostShare(payload) {
+    var share = (payload.summary || {}).cost_share;
+    if (!share) return null;
+    var names = {
+      input_tokens: "Input",
+      output_tokens: "Output",
+      cache_read_tokens: "Cache read",
+      cache_write_5m_tokens: "Cache write (5m)",
+      cache_write_1h_tokens: "Cache write (1h)",
+    };
+    var wrap = el("section", "share");
+    wrap.appendChild(el("h2", "share-title", "Where the cost goes"));
+    Object.keys(share)
+      .filter(function (key) { return share[key] > 0; })
+      .sort(function (a, b) { return share[b] - share[a]; })
+      .forEach(function (key) {
+        var row = el("div", "share-row");
+        row.appendChild(el("span", "share-label", names[key] || key));
+        var track = el("span", "share-track");
+        var fill = el("span", "share-fill");
+        fill.style.width = Math.max(share[key], 0.5) + "%";
+        fill.style.background = SERIES_A;
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el("span", "share-value", share[key].toFixed(1) + "%"));
+        wrap.appendChild(row);
+      });
+    var weights = payload.weights || {};
+    if (weights.output_tokens) {
+      wrap.appendChild(el(
+        "p", "share-note",
+        "Weighted, not raw: output counts " + weights.output_tokens +
+        "x an input token and a cache read " + weights.cache_read_tokens + "x."
+      ));
+    }
+    return wrap;
+  }
+
+  function renderCosts(payload) {
+    stopPolling();
+    markNav();
+    needsEl.hidden = true;
+    var summary = payload.summary || {};
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el(
+      "p", "status-line",
+      "Costs — " + (summary.cycles || 0) + " cycles, "
+        + fmtTokens(summary.total_weighted) + " weighted tokens all told"
+    ));
+    feed.textContent = "";
+    feed.appendChild(renderCostTiles(payload));
+    feed.appendChild(renderCycleChart(payload));
+    feed.appendChild(renderQuotaChart(payload));
+    var share = renderCostShare(payload);
+    if (share) feed.appendChild(share);
+    if (payload.generatedAt) {
+      feed.appendChild(el(
+        "p", "chart-sub", "Ledger published " + fmtStamp(payload.generatedAt)
+      ));
+    }
+  }
+
+  function loadCosts() {
+    fetch("/api/costs")
+      .then(function (r) { return r.json(); })
+      .then(function (payload) {
+        // The same guard the board fetch carries: two taps in quick
+        // succession leave two fetches in flight and the loser must not
+        // paint over the winner.
+        if (route(window.location.pathname).view !== "costs") return;
+        renderCosts(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the costs: " + err));
+      });
+  }
+
   function load() {
     var here = route(window.location.pathname);
     if (here.view === "board") {
       loadBoard(here.board);
+      return;
+    }
+    if (here.view === "costs") {
+      loadCosts();
       return;
     }
     markNav();

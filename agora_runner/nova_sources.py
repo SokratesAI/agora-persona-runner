@@ -14,6 +14,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_comments import COMMENTS_PATH
+from agora_runner.nova_costs import COST_LEDGER_PATH
 from agora_runner.nova_journal import (
     DIGEST_ARCHIVE_PATH,
     DIGEST_PATH,
@@ -120,6 +121,21 @@ def digest_markdown():
     if not archive:
         return live
     return f"{live}\n\n{archive}"
+
+
+def cost_ledger_json():
+    """The published cost ledger, raw.
+
+    The only fetch here that is not markdown, and the only one written by
+    the other repo: `publish_costs` in the bridge rebuilds it from the
+    transcripts at the end of every cycle, and this side only ever reads
+    it. Shaping is `nova_costs.costs_payload`, which does no I/O, the same
+    split every other read on this page follows.
+
+    `""` when the document does not exist, which the shaping turns into a
+    page with nothing on it rather than a 502.
+    """
+    return vault_read_path(COST_LEDGER_PATH) or ""
 
 
 def board_markdown(name):
