@@ -141,6 +141,7 @@ from agora_runner.nova_sources import (
     journal_markdown,
 )
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
+from agora_runner.vault import database_health
 
 PUBLIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_public")
 
@@ -794,6 +795,20 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # that has just posted. A stale window on this endpoint
                 # would buy nothing and cost a comment looking lost.
                 self._send_json(200, comments_payload())
+                return
+            if path == "/api/health":
+                # Never cached, and that is the entire point of it. The
+                # thing this answers -- "which database did you resolve,
+                # and can you reach it" -- is asked precisely when a
+                # config flip has just happened, so an answer up to
+                # CACHE_FRESH_SECONDS old is the wrong answer at exactly
+                # the moment it matters.
+                health = database_health()
+                unreachable = [
+                    role for role, db in health["databases"].items() if not db["reachable"]
+                ]
+                health["ok"] = not unreachable
+                self._send_json(200 if health["ok"] else 503, health)
                 return
         except Exception as e:
             log(f"nova-site {path} failed: {e}")

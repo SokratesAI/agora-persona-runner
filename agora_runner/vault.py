@@ -104,6 +104,62 @@ def couch_get_doc(doc_id, db=None):
     return couch_req("GET", f"{db or db_for(doc_id)}/{urllib.parse.quote(doc_id, safe='')}")
 
 
+# Paths whose routing this process reports on demand. Every one of them is
+# a rule that has already been got wrong once, so the probe is a regression
+# list rather than a sample: the digest by exact name, a `.bak` beside it
+# that must NOT follow it (Cycle 118's review), the Nova folder Edvard
+# asked to keep in his own vault (Cycle 121 nearly wrote it into Nova's),
+# and one file of his that must never move.
+HEALTH_PROBE_PATHS = (
+    "projects/sokrates/projects/agora/nova/journal/121-cycle-121.md",
+    "projects/sokrates/projects/agora/journal-digest.md",
+    "projects/sokrates/projects/agora/journal-digest.md.bak",
+    "projects/sokrates/projects/nova/nova.md",
+    "projects/sokrates/projects/agora/issues.md",
+)
+
+
+def database_health():
+    """What this process resolved and what it can actually reach.
+
+    Two different questions, and until now answering either one took a
+    write probe against the live site — append a note, poll `/api/board`
+    for twenty seconds, and hope you outlast a 15-second cache. Cycle 121
+    did exactly that and its first four reads all returned the pre-write
+    number, which is indistinguishable from a failed migration.
+
+    So this reports configuration *and* reachability separately. A name in
+    `COUCHDB_NOVA_DB` only says which database this process would ask; it
+    says nothing about whether the answer would come back, and during a
+    migration the gap between those two is the whole risk.
+    """
+    names = {"main": COUCHDB_DB}
+    if COUCHDB_NOVA_DB:
+        names["nova"] = COUCHDB_NOVA_DB
+    databases = {}
+    for role, name in names.items():
+        entry = {"name": name, "reachable": False, "doc_count": None, "error": None}
+        try:
+            status, info = couch_req("GET", urllib.parse.quote(name, safe=""))
+            if status == 200:
+                entry["reachable"] = True
+                # Includes chunk documents, not just files -- a Nova file is
+                # stored as one doc plus ~4KB content chunks. Named
+                # `doc_count` because that is CouchDB's own field and
+                # renaming it here would be a second name for one number.
+                entry["doc_count"] = info.get("doc_count")
+            else:
+                entry["error"] = f"HTTP {status}"
+        except Exception as e:
+            entry["error"] = str(e)[:200]
+        databases[role] = entry
+    return {
+        "routing_enabled": bool(COUCHDB_NOVA_DB),
+        "databases": databases,
+        "routes": [{"path": p, "database": db_for(p)} for p in HEALTH_PROBE_PATHS],
+    }
+
+
 def _couch_batched(items, n):
     for i in range(0, len(items), n):
         yield items[i:i + n]

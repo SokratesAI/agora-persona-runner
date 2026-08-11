@@ -30,11 +30,12 @@ import os
 import re
 import signal
 import sys
+import urllib.parse
 from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_capture, nova_journal, nova_replies, nova_site, nova_sources
+from agora_runner import nova_capture, nova_journal, nova_replies, nova_site, nova_sources, vault
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.nova_journal import (
     JOURNAL_DIR,
@@ -2407,3 +2408,104 @@ def test_the_costs_page_and_its_endpoint_both_answer():
     assert json.loads(body)["summary"]["cycles"] == 3
     assert len(json.loads(body)["cycles"]) == 3
     assert shell_status == 200 and b"<!doctype html>" in shell.lower()
+
+
+# --- /api/health -------------------------------------------------------
+#
+# The endpoint exists because verifying a database flip used to cost a
+# write probe: append a note to a board, poll `/api/board` until the count
+# moves, and outlast a 15-second cache that hands back the pre-write number
+# four times running. Cycle 121 did that and nearly recorded the migration
+# as failed. These tests pin the two questions it answers separately --
+# what did this process *resolve*, and what can it actually *reach* --
+# because during a migration those two disagree and that gap is the risk.
+
+
+def _couch_stub(reachable):
+    """Stand in for `couch_req` on a `GET <dbname>`. `reachable` maps a
+    database name to its doc_count, or to None for a database that is
+    named in config but does not answer."""
+    def fake(method, path, body=None):
+        name = urllib.parse.unquote(path)
+        count = reachable.get(name)
+        if count is None:
+            return 404, {"error": "not_found"}
+        return 200, {"db_name": name, "doc_count": count}
+    return fake
+
+
+def test_health_reports_both_databases_and_their_counts():
+    with patch.object(vault, "COUCHDB_NOVA_DB", "nova"), \
+         patch.object(vault, "couch_req", _couch_stub({"obsidian": 12096, "nova": 900})):
+        status, _, body = _get("/api/health")
+    payload = json.loads(body)
+    assert status == 200 and payload["ok"] is True
+    assert payload["routing_enabled"] is True
+    assert payload["databases"]["main"] == {
+        "name": "obsidian", "reachable": True, "doc_count": 12096, "error": None,
+    }
+    assert payload["databases"]["nova"] == {
+        "name": "nova", "reachable": True, "doc_count": 900, "error": None,
+    }
+
+
+def test_health_is_503_when_a_named_database_does_not_answer():
+    """The migration failure mode with nothing else to see it: the config
+    names `nova`, every route resolves to `nova`, and `nova` is not there.
+    Routing looks perfectly healthy on its own -- only reachability
+    distinguishes a working flip from a flip into a void."""
+    with patch.object(vault, "COUCHDB_NOVA_DB", "nova"), \
+         patch.object(vault, "couch_req", _couch_stub({"obsidian": 12096})):
+        status, _, body = _get("/api/health")
+    payload = json.loads(body)
+    assert status == 503 and payload["ok"] is False
+    assert payload["databases"]["nova"]["reachable"] is False
+    assert payload["databases"]["nova"]["error"] == "HTTP 404"
+    # The half that still works must still say so, or a reader cannot tell
+    # "one database is down" from "CouchDB is down".
+    assert payload["databases"]["main"]["reachable"] is True
+
+
+def test_health_routes_pin_the_three_rules_that_have_been_wrong():
+    with patch.object(vault, "COUCHDB_NOVA_DB", "nova"), \
+         patch.object(vault, "couch_req", _couch_stub({"obsidian": 1, "nova": 1})):
+        _, _, body = _get("/api/health")
+    routes = {r["path"]: r["database"] for r in json.loads(body)["routes"]}
+    assert routes["projects/sokrates/projects/agora/journal-digest.md"] == "nova"
+    # A `.bak` beside the digest is Edvard's file and must not follow it.
+    assert routes["projects/sokrates/projects/agora/journal-digest.md.bak"] == "obsidian"
+    # The Nova folder he asked to keep in his own vault.
+    assert routes["projects/sokrates/projects/nova/nova.md"] == "obsidian"
+    assert routes["projects/sokrates/projects/agora/issues.md"] == "obsidian"
+    assert routes[
+        "projects/sokrates/projects/agora/nova/journal/121-cycle-121.md"
+    ] == "nova"
+
+
+def test_health_reports_one_database_when_routing_is_off():
+    """Unset `COUCHDB_NOVA_DB` is the pre-migration world, and the endpoint
+    has to describe it honestly rather than report a `nova` that is not
+    configured -- otherwise it cannot be used to confirm a rollback."""
+    with patch.object(vault, "COUCHDB_NOVA_DB", ""), \
+         patch.object(vault, "couch_req", _couch_stub({"obsidian": 12096})):
+        status, _, body = _get("/api/health")
+    payload = json.loads(body)
+    assert status == 200 and payload["routing_enabled"] is False
+    assert "nova" not in payload["databases"]
+    assert {r["database"] for r in payload["routes"]} == {"obsidian"}
+
+
+def test_health_is_never_cached():
+    """The one property the endpoint exists for. A cached answer is worse
+    than no endpoint, because it is confidently stale at exactly the
+    moment someone is checking whether a flip took effect."""
+    counts = iter([12096, 12097])
+    def fake(method, path, body=None):
+        return 200, {"doc_count": next(counts)}
+    with patch.object(vault, "COUCHDB_NOVA_DB", ""), \
+         patch.object(vault, "couch_req", fake):
+        _, _, first = _get("/api/health")
+        _, _, second = _get("/api/health")
+    assert json.loads(first)["databases"]["main"]["doc_count"] == 12096
+    assert json.loads(second)["databases"]["main"]["doc_count"] == 12097, \
+        "the second call was served from cache"
