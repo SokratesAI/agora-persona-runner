@@ -673,3 +673,13 @@ pre code { background: none; padding: 0; }
 
 .note-cycle { color: var(--accent); text-decoration: none; }
 .note-body p { margin: 0.3rem 0; }
+
+/* Edvard's own words. Every item on his boards opens with one, and until
+ * the board pages existed nothing rendered a blockquote -- the `>` showed
+ * on screen in front of the one paragraph on the page he wrote himself. */
+blockquote {
+  margin: 0.6rem 0;
+  padding: 0.2rem 0 0.2rem 0.8rem;
+  border-left: 2px solid var(--accent);
+  color: var(--text);
+}

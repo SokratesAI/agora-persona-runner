@@ -201,3 +201,30 @@ def test_the_board_urls_resolve_on_a_cold_load(path):
     status, head, _ = _get(path)
     assert status == 200
     assert "text/html" in head
+
+
+def test_his_own_words_render_as_a_quote_rather_than_a_stray_marker(board_md):
+    """Every item on his boards opens with a verbatim `>` quote. Until the
+    board pages existed nothing rendered one, so the marker showed on
+    screen as literal text in front of the one paragraph he wrote."""
+    from agora_runner.nova_journal import render_blocks
+
+    body = parse_board(board_md)["details"][57]
+    blocks = render_blocks(body)
+    quotes = [block for block in blocks if block["type"] == "quote"]
+    assert len(quotes) == 1
+    text = "".join(span["text"] for span in quotes[0]["spans"])
+    assert text.startswith('"I need more visualisations in the Nova app.')
+    assert ">" not in text
+    assert not any(
+        "".join(s["text"] for s in block.get("spans", [])).startswith(">")
+        for block in blocks
+    ), "a quote line fell through to a paragraph and kept its marker"
+
+
+def test_a_multi_line_quote_is_one_block(board_md):
+    from agora_runner.nova_journal import render_blocks
+
+    blocks = render_blocks("> first line\n> second line\n\nafter")
+    assert [block["type"] for block in blocks] == ["quote", "p"]
+    assert "".join(s["text"] for s in blocks[0]["spans"]) == "first line second line"

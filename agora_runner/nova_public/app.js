@@ -123,6 +123,12 @@
         return;
       }
       list = null;
+      if (block.type === "quote") {
+        var quote = el("blockquote");
+        renderSpans(quote, block.spans);
+        parent.appendChild(quote);
+        return;
+      }
       if (block.type === "code") {
         var pre = el("pre");
         pre.appendChild(el("code", null, block.text));

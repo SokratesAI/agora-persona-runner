@@ -586,6 +586,12 @@ def parse_digest(markdown):
 _INLINE_RE = re.compile(r"`([^`]+)`|\*\*(.+?)\*\*", re.DOTALL)
 _FENCE_RE = re.compile(r"^[ \t]*```")
 _BULLET_RE = re.compile(r"^[ \t]*[-*][ \t]+(.*)$")
+# Every item on Edvard's boards opens with his own words as a blockquote,
+# and until the board pages existed nothing rendered one -- a `>` line fell
+# through to a paragraph and the marker showed on screen as literal text
+# in front of the one thing on the page he wrote himself. 66 lines across
+# his two files, plus whatever the journal quotes.
+_QUOTE_RE = re.compile(r"^[ \t]*>[ \t]?(.*)$")
 
 
 def render_inline(text):
@@ -753,6 +759,25 @@ def render_blocks(text):
             flush()
             blocks.append({"type": "li", "spans": render_inline(bullet.group(1))})
             index += 1
+            continue
+        quote = _QUOTE_RE.match(line)
+        if quote:
+            flush()
+            # Consecutive `>` lines are one quote, joined with a space for
+            # the same reason paragraph lines are: the source is wrapped
+            # and the reader's screen decides where the breaks go.
+            quoted = [quote.group(1).strip()]
+            index += 1
+            while index < len(lines):
+                more = _QUOTE_RE.match(lines[index])
+                if not more:
+                    break
+                quoted.append(more.group(1).strip())
+                index += 1
+            blocks.append({
+                "type": "quote",
+                "spans": render_inline(" ".join(part for part in quoted if part)),
+            })
             continue
         if not line.strip():
             flush()

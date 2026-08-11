@@ -376,11 +376,11 @@
       "done": false,
       "blocks": [
         {
-          "type": "p",
+          "type": "quote",
           "spans": [
             {
               "kind": "text",
-              "text": "> \"I need more visualisations in the Nova app. Create more pages to contain more, such as issue list, idea list (separate pages), data and analytics page, etc.\""
+              "text": "\"I need more visualisations in the Nova app. Create more pages to contain more, such as issue list, idea list (separate pages), data and analytics page, etc.\""
             }
           ]
         },
