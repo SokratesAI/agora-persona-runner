@@ -139,6 +139,18 @@ const lineText = (line) =>
 const lineBrief = (line) => line.briefSpans.map((s) => s.text).join("");
 const expanded = (card) => card.classList.contains("is-expanded");
 
+/** `install` hook that puts the real style.css into the document.
+ *
+ *  index.html links the stylesheet, and jsdom fetches no external resource,
+ *  so without this every `display` in this file is a jsdom default rather
+ *  than anything the site would show. Inlined as a `<style>` because that is
+ *  the one shape jsdom's cascade does implement. */
+function withStyle(window) {
+  const style = window.document.createElement("style");
+  style.textContent = readFileSync(join(publicDir, "style.css"), "utf8");
+  window.document.head.appendChild(style);
+}
+
 /** The comments payload with one cycle's newest comment awaiting a reply. */
 function withPending(cycle) {
   const copy = JSON.parse(JSON.stringify(payload.comments));
@@ -452,19 +464,109 @@ describe("the Needs Edvard box", () => {
   });
 });
 
-describe("a deep-linked cycle", () => {
-  test("shows both of that cycle's entries, expanded", async () => {
+/* Edvard, in issue #59: "its not the link thats the problem, its the single
+ * view that is bad ui... does not make sense, is hard to understand and
+ * wasteful", and on the comments board: "If a double entry is necessary like
+ * for cycle 81, have it be combined into one card".
+ *
+ * Cycle 57 is the fixture's two-entry cycle, so every one of these is the
+ * double-card case as well as the single-view one. */
+describe("a deep-linked cycle is one page, not a feed card", () => {
+  test("a cycle with two entries draws one article, not two", async () => {
     const window = await loadSite("/cycle/57");
-    const shown = cards(window);
-    assert.equal(shown.length, 2);
-    assert.ok(shown.every(expanded));
+    assert.equal(payload.journal.entries.filter((e) => e.cycle === 57).length, 2,
+      "the fixture must contain a cycle with an addendum");
+    assert.equal(cards(window).length, 1);
   });
 
-  test("still gives the digest line to only one of them", async () => {
+  test("the heading appears once and is the page's own h1", async () => {
     const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    assert.equal(page.querySelectorAll(".entry-head h1").length, 1);
+    assert.equal(page.querySelector(".entry-head h1").textContent, "Cycle 57");
+  });
+
+  test("the journal text is readable without pressing anything", async () => {
+    /* The bug this pins, and the reason the stylesheet is inlined for it.
+     *
+     * The old page reused the feed card, and `setExpanded` re-derived the
+     * journal drawer from the drawer's own `aria-expanded` -- `false` on a
+     * card built one line earlier -- so the entry you named in the URL
+     * arrived shut behind "Read the full journal". Whether it is shut is a
+     * CSS fact (`.entry .entry-body { display: none }`), and jsdom loads no
+     * external stylesheet, so every previous test in this file asserting a
+     * `display` would have read a div's default `block` and passed either
+     * way. `withStyle` puts the real style.css in the document, which makes
+     * this the one rule in that file with a test behind it. */
+    const window = await loadSite("/cycle/57", { install: withStyle });
+    const page = cards(window)[0];
+    const bodies = [...page.querySelectorAll(".entry-body")];
+    assert.equal(bodies.length, 2, "one body per part of the cycle");
+    assert.deepEqual(bodies.map((b) => window.getComputedStyle(b).display),
+      ["block", "block"]);
+  });
+
+  test("the same stylesheet still hides a feed card's journal until asked", async () => {
+    /* The other half of the mutation: `withStyle` has to be able to see a
+     * hidden body, or the test above proves nothing about the CSS. */
+    const window = await loadSite("/", { install: withStyle });
+    const body = cards(window)[0].querySelector(".entry-body");
+    assert.equal(window.getComputedStyle(body).display, "none");
+  });
+
+  test("nothing on the page collapses it, and there is no journal toggle", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    assert.equal(page.querySelector(".journal-toggle"), null);
+    assert.equal(page.querySelector(".chevron"), null);
+    assert.equal(page.querySelector(".entry-toggle"), null);
+    const body = page.querySelector(".entry-body");
+    body.dispatchEvent(new window.Event("click", { bubbles: true }));
+    assert.equal(window.getComputedStyle(body).display, "block");
+  });
+
+  test("no permalink pointing at the page you are already on", async () => {
+    const window = await loadSite("/cycle/57");
+    assert.equal(cards(window)[0].querySelector(".entry-permalink"), null);
+  });
+
+  test("the digest line and the meta row are drawn once, not per entry", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
     const brief = lineBrief(payload.digest.lines.find((l) => l.cycle === 57));
-    const summaries = cards(window).map((c) => c.querySelector(".entry-brief").textContent);
-    assert.equal(summaries.filter((s) => s === brief).length, 1);
+    const briefs = [...page.querySelectorAll(".entry-brief")].map((b) => b.textContent);
+    assert.deepEqual(briefs, [brief]);
+    assert.equal(page.querySelectorAll(".entry-meta").length, 1);
+  });
+
+  test("the parts read oldest first and each says when it was written", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    const both = payload.journal.entries.filter((e) => e.cycle === 57);
+    const headings = [...page.querySelectorAll(".entry-part")].map((h) => h.textContent);
+    assert.equal(headings.length, 2, "two parts, two subheadings");
+    // `both` is newest-first off the wire; the page reverses it.
+    assert.ok(headings[0].includes(both.at(-1).time), headings[0]);
+    assert.ok(headings[1].includes(both[0].time), headings[1]);
+  });
+
+  test("one comment bubble for the cycle, not one per entry", async () => {
+    const window = await loadSite("/cycle/57");
+    assert.equal(cards(window)[0].querySelectorAll(".comment-toggle").length, 1);
+  });
+
+  test("a single-entry cycle gets no part subheadings at all", async () => {
+    const solo = payload.journal.entries.find(
+      (e) => e.cycle !== null && payload.journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+    );
+    assert.ok(solo, "the fixture must contain a cycle with exactly one entry");
+    const window = await loadSite("/cycle/" + solo.cycle);
+    assert.equal(cards(window)[0].querySelectorAll(".entry-part").length, 0);
+  });
+
+  test("the feed is untouched and still draws both cards", async () => {
+    const window = await loadSite("/");
+    assert.equal(cards(window).filter((c) => /Cycle 57/.test(c.textContent)).length, 2);
   });
 });
 

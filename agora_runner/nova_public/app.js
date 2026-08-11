@@ -713,6 +713,135 @@
     livePolls = [];
   }
 
+  /* `/cycle/81` is a page, not a card.
+   *
+   * Edvard, inside issue #59: "its not the link thats the problem, its the
+   * single view that is bad ui... Please do some propper ui research and
+   * testing with this as the current solution does not make sense, is hard
+   * to understand and wasteful". And on the comments board, Cycle 81: "i do
+   * not like the double entry Journal cards. If a double entry is necessary
+   * like for cycle 81, have it be combined into one card that has tabs or
+   * something similar. Its confusing that its two separate cards."
+   *
+   * Both are the same page. What it used to render was the feed's card with
+   * `expanded` set, and every part of that card exists to help someone scan
+   * a feed of 115 of them -- which is the one thing this page has none of:
+   *
+   *  - The journal text was still shut. `setExpanded` re-derives the drawer
+   *    from the drawer's own `aria-expanded`, which is `false` on a card
+   *    built one line earlier, so opening the card never opened the drawer
+   *    inside it. You navigated to a URL that names one entry and got a
+   *    button asking whether you wanted to read it. That is the "wasteful".
+   *  - The permalink `#` pointed at the page it was already on.
+   *  - The chevron collapsed the only thing on the page, leaving a back link
+   *    and nothing else.
+   *  - A cycle with an addendum drew two of all of that, both headed
+   *    "Cycle 81", both carrying the same PR and outcome.
+   *
+   * So: one `<article>` per cycle, heading once, meta once, prose open. The
+   * parts run oldest-first, because on a page you are reading rather than
+   * scanning and the addendum is the later half of the same hour.
+   *
+   * Tabs are what he suggested and I did not use them, which is a call he
+   * can reverse in a sentence. Two parts of one cycle are one continuous
+   * account -- the addendum is usually "the deploy I could not see came up
+   * healthy" -- and a tab would hide half of a page whose whole job is to
+   * show the thing you asked for. A dated subheading keeps both readable in
+   * one scroll and still says plainly that they were written at different
+   * times. The feed is untouched and still draws two cards; that is a
+   * separate question about a scanning surface and it stays filed. */
+  function renderCyclePage(cycleNumber, entries, digestLine, comments) {
+    var card = el("article", "entry is-page");
+    card.id = "cycle-" + cycleNumber;
+
+    // Newest-first off the wire; a page reads forwards.
+    var parts = entries.slice().reverse();
+    var first = parts[0];
+
+    var head = el("header", "entry-head");
+    if (first.emoji) {
+      var emoji = el("span", "entry-emoji", first.emoji);
+      emoji.setAttribute("aria-hidden", "true");
+      head.appendChild(emoji);
+    }
+    // `h1`, not the feed's `h2`: on this page the cycle is the document.
+    head.appendChild(el("h1", "cycle-link", "Cycle " + cycleNumber));
+    card.appendChild(head);
+
+    /* The meta row belongs to the cycle, so it is built from its earliest
+     * part and drawn once. An addendum repeats its parent's PR and outcome
+     * verbatim -- that repetition is exactly what made two cards look like
+     * a duplicate -- and its own stamp is not lost: it heads its section. */
+    var meta = el("div", "entry-meta");
+    var stamp = [first.date, first.time].filter(Boolean).join(" ");
+    if (stamp) meta.appendChild(el("time", "stamp", stamp + " Oslo"));
+    if (first.outcome) meta.appendChild(el("span", outcomeClass(first.outcome), first.outcome));
+    if (first.pr) {
+      var pr = el("span", "pr");
+      if (first.prSpans && first.prSpans.length) renderSpans(pr, first.prSpans);
+      else pr.textContent = first.pr;
+      meta.appendChild(pr);
+    }
+    if (first.outcomeDetail) meta.appendChild(el("span", "outcome-detail", first.outcomeDetail));
+    if (meta.childNodes.length) card.appendChild(meta);
+
+    /* The digest line, whole and open. In the feed it is two drawers -- a
+     * brief that fits a collapsed card, then the remainder -- because a card
+     * has to be short enough to scan past. Here it is the standfirst. */
+    var briefSpans = (digestLine && digestLine.briefSpans) || first.briefSpans;
+    if (briefSpans && briefSpans.length) {
+      var brief = el("p", "entry-brief");
+      renderSpans(brief, briefSpans);
+      card.appendChild(brief);
+    }
+    if (digestLine && digestLine.restSpans && digestLine.restSpans.length) {
+      var rest = el("p", "entry-digest");
+      renderSpans(rest, digestLine.restSpans);
+      card.appendChild(rest);
+    }
+
+    parts.forEach(function (part, index) {
+      /* A single-part cycle gets no subheading: there is nothing to tell
+       * apart, and a header over the only section is the same noise as a
+       * permalink to the current page. */
+      if (parts.length > 1) {
+        var label = part.title || (index === 0 ? "The cycle" : "Addendum");
+        var when = [part.date, part.time].filter(Boolean).join(" ");
+        card.appendChild(el("h2", "entry-part", when ? label + " · " + when + " Oslo" : label));
+      }
+      var body = el("div", "entry-body");
+      renderBlocks(body, part.blocks);
+      card.appendChild(body);
+    });
+
+    /* One comment thread for the cycle, same as the feed gives the anchor-
+     * owning card. `renderComments` appends its drawer to the container it
+     * is handed, so the foot is built first or the drawer opens above the
+     * button that opens it. */
+    var foot = el("div", "entry-foot");
+    card.appendChild(foot);
+    var commenting = renderComments(card, cycleTarget(cycleNumber), comments);
+    foot.appendChild(commenting.toggle);
+
+    function setCommentsOpen(open) {
+      card.className = open ? "entry is-page is-commenting" : "entry is-page";
+      commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    setCommentsOpen(false);
+
+    /* The only thing left to click. Nothing on this page collapses, so the
+     * card has no toggle listener -- a tap on the prose does nothing, which
+     * is what a tap on prose should do. */
+    card.addEventListener("click", function (event) {
+      if (event.target.closest("a")) return;
+      if (event.target.closest(".comment-drawer")) return;
+      if (event.target.closest(".comment-toggle")) {
+        setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true");
+      }
+    });
+    return card;
+  }
+
   function render(journal, digest, comments) {
     stopPolling();
     markNav();
@@ -771,8 +900,13 @@
       feed.appendChild(back);
       if (!entries.length) feed.appendChild(el("p", "empty", "No entry for cycle " + wanted + "."));
     }
-    // A single cycle you navigated to deliberately opens expanded; there is
-    // nothing to scan past on that page, which is the only reason to collapse.
+    if (wanted !== null) {
+      if (entries.length) {
+        feed.appendChild(renderCyclePage(wanted, entries, byCycle[wanted],
+          commentsByCycle[String(wanted)]));
+      }
+      return;
+    }
     entries.forEach(function (entry, index) {
       var line = digestOwner[entry.cycle] === index ? byCycle[entry.cycle] : null;
       // A cycle's comments belong to the card that owns its anchor, so a
