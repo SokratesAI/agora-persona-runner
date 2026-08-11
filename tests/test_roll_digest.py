@@ -1,0 +1,149 @@
+"""`tools/roll_digest.py` -- moving old digest lines into the archive.
+
+The property under test is never "the output looks right". It is that a
+line which went in comes out exactly once, on one side or the other, and
+that the two sections Edvard actually reads survive the move.
+"""
+
+import pytest
+
+from agora_runner.nova_journal import parse_digest
+from tools.roll_digest import ARCHIVE_TITLE, plan, verify
+
+LIVE = """---
+type: log
+---
+
+# Journal — Digest
+
+## Needs Edvard
+
+Should the node be replaced?
+
+## Next cycle
+
+Check the deploy.
+
+## Digest
+
+**Cycle 5** (2026-08-11 17:00) — Fifth.
+
+**Cycle 4** (2026-08-11 16:00) — Fourth.
+
+**Cycle 3** (2026-08-11 15:00) — Third.
+
+**Cycle 2** (2026-08-11 14:00) — Second.
+
+**Cycle 1** (2026-08-11 13:00) — First.
+"""
+
+ARCHIVE = f"""---
+type: log
+---
+
+{ARCHIVE_TITLE}
+
+**Cycle 0** (2026-08-11 12:00) — Zeroth.
+"""
+
+
+def _lines(live, archive):
+    """Every cycle number the pair holds, live first, by raw paragraph.
+
+    Deliberately not via `parse_digest`: that drops what it cannot parse,
+    so counting through it would agree with a roll that lost exactly the
+    lines it also cannot see.
+    """
+    import re
+    body = live.split("\n## Digest\n", 1)[1]
+    tail = archive.split(ARCHIVE_TITLE, 1)[-1] if ARCHIVE_TITLE in archive else ""
+    paras = [p.strip() for p in re.split(r"\n[ \t]*\n", body + "\n\n" + tail) if p.strip()]
+    return [p.split("**")[1] for p in paras]
+
+
+def test_lines_past_the_keep_move_to_the_archive_in_order():
+    live, archive = plan(LIVE, ARCHIVE, keep=2)
+    assert _lines(live, archive) == [
+        "Cycle 5", "Cycle 4", "Cycle 3", "Cycle 2", "Cycle 1", "Cycle 0",
+    ]
+    assert "Cycle 3" in archive and "Cycle 3" not in live
+
+
+def test_a_file_already_under_the_keep_is_left_alone():
+    assert plan(LIVE, ARCHIVE, keep=99) == (LIVE, ARCHIVE)
+
+
+def test_rolling_twice_changes_nothing_the_second_time():
+    once = plan(LIVE, ARCHIVE, keep=2)
+    assert plan(*once, keep=2) == once
+
+
+def test_the_sections_edvard_reads_survive_the_roll():
+    live, archive = plan(LIVE, ARCHIVE, keep=2)
+    digest = parse_digest(f"{live}\n\n{archive}")
+    assert "node" in digest["needsEdvard"]
+    assert digest["hasNeedsEdvard"] is True
+    assert "Check the deploy." in digest["nextCycle"]
+    assert [line["cycle"] for line in digest["lines"]] == [5, 4, 3, 2, 1, 0]
+
+
+def test_a_line_the_parser_cannot_read_is_moved_rather_than_dropped():
+    # `**Cycle 94 (addendum)**` is real, is in the live file, and does
+    # not match `_DIGEST_LINE_RE` -- so it is invisible to `parse_digest`
+    # and a roll that verified only through the parser would be free to
+    # lose it silently.
+    odd = LIVE.replace(
+        "**Cycle 3** (2026-08-11 15:00) — Third.",
+        "**Cycle 3 (addendum)** (2026-08-11 15:00) — Third, again.",
+    )
+    assert not any(l["cycle"] == 3 for l in parse_digest(odd)["lines"])
+    live, archive = plan(odd, ARCHIVE, keep=2)
+    assert "Cycle 3 (addendum)" in archive
+    assert "Third, again." in archive
+
+
+def test_an_archive_that_could_hide_needs_edvard_is_refused():
+    bad = ARCHIVE.replace(ARCHIVE_TITLE, ARCHIVE_TITLE + "\n\n## Digest")
+    with pytest.raises(SystemExit, match="level-two heading"):
+        verify(LIVE, ARCHIVE, LIVE, bad)
+
+
+def test_losing_a_line_the_parser_can_see_is_refused():
+    live, archive = plan(LIVE, ARCHIVE, keep=2)
+    lost = archive.replace("**Cycle 1** (2026-08-11 13:00) — First.\n\n", "")
+    with pytest.raises(SystemExit, match="changes 'lines'"):
+        verify(LIVE, ARCHIVE, live, lost)
+
+
+def test_losing_a_line_the_parser_cannot_see_is_also_refused():
+    # The one the payload comparison is blind to, and the whole reason
+    # `verify` counts raw paragraphs as well: `parse_digest` never
+    # emitted this line, so dropping it leaves both payloads identical.
+    odd = LIVE.replace(
+        "**Cycle 3** (2026-08-11 15:00) — Third.",
+        "**Cycle 3 (addendum)** (2026-08-11 15:00) — Third, again.",
+    )
+    live, archive = plan(odd, ARCHIVE, keep=2)
+    lost = archive.replace("**Cycle 3 (addendum)** (2026-08-11 15:00) — Third, again.\n\n", "")
+    assert parse_digest(f"{live}\n\n{archive}") == parse_digest(f"{live}\n\n{lost}")
+    with pytest.raises(SystemExit, match="digest lines in"):
+        verify(odd, ARCHIVE, live, lost)
+
+
+def test_prose_in_the_digest_section_stops_the_roll_rather_than_guessing():
+    strayed = LIVE.replace(
+        "## Digest\n\n**Cycle 5**", "## Digest\n\nA note somebody left here.\n\n**Cycle 5**"
+    )
+    with pytest.raises(SystemExit, match="not a cycle line"):
+        plan(strayed, ARCHIVE, keep=2)
+
+
+def test_a_missing_digest_section_stops_the_roll():
+    with pytest.raises(SystemExit, match="no '## Digest' section"):
+        plan("## Needs Edvard\n\nNothing.\n", "", keep=2)
+
+
+def test_a_first_roll_with_no_archive_yet_builds_one_the_site_can_read():
+    live, archive = plan(LIVE, "", keep=2)
+    assert ARCHIVE_TITLE in archive
+    assert [l["cycle"] for l in parse_digest(f"{live}\n\n{archive}")["lines"]] == [5, 4, 3, 2, 1]
