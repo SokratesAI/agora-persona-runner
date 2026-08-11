@@ -172,3 +172,73 @@ def test_listing_an_ancestor_prefix_merges_both_databases():
     with _routing_on(), patch.object(vault, "couch_req", fake_couch_req):
         ids = vault.vault_list_ids("projects/")
     assert ids == sorted([HIS_FILE, NOVA_FILE])
+
+
+# --- Findings from the Cycle 118 reviewer, fixed in a follow-up ---------
+
+def test_a_file_merely_starting_with_the_digests_name_is_not_the_digest():
+    """`journal-digest.md` is one exact file, not a prefix. Matching it with
+    startswith routed `journal-digest.md.bak` — a file Edvard owns — into
+    Nova's database."""
+    with _routing_on():
+        assert vault.db_for(DIGEST) == "nova"
+        for impostor in (DIGEST + ".bak", DIGEST + "-old.md", DIGEST + "2"):
+            assert vault.db_for(impostor) == vault.COUCHDB_DB, impostor
+
+
+def test_a_prefix_equal_to_a_single_file_queries_both_databases():
+    """As a prefix that path also matches its neighbours, which live in the
+    other database, so the conservative answer is both."""
+    with _routing_on():
+        assert vault.dbs_for_prefix(DIGEST) == [vault.COUCHDB_DB, "nova"]
+
+
+def test_chunk_helpers_require_a_database():
+    """They used to default to COUCHDB_DB. A caller that forgot would send
+    Nova's chunk ids to Edvard's database and get VaultIncompleteDocument
+    on a file that is perfectly intact."""
+    import pytest
+    with pytest.raises(TypeError):
+        vault._fetch_chunks(["h:aaa"])
+    with pytest.raises(TypeError):
+        vault._existing_chunk_ids(["h:aaa"])
+
+
+def test_bulk_fetch_uses_the_database_a_doc_actually_came_from():
+    """Not the one db_for predicts. They agree in steady state and disagree
+    mid-migration — precisely when a wrong answer costs something."""
+    asked = []
+
+    def fake_couch_req(method, path, body=None):
+        if "_all_docs?include_docs=true" in path and body and "keys" in body:
+            if body["keys"] and body["keys"][0].startswith("h:"):
+                asked.append(path.split("/")[0])
+                return 200, {"rows": [{"id": "h:zzz", "doc": {"data": "content"}}]}
+            return 200, {"rows": [{"id": NOVA_FILE, "doc": {
+                "_id": NOVA_FILE, "path": NOVA_FILE, "children": ["h:zzz"]}}]}
+        # First-phase id listing: only Edvard's database answers, so the
+        # doc is found there despite db_for saying it belongs to nova.
+        if path.startswith(f"{vault.COUCHDB_DB}/_all_docs?"):
+            return 200, {"rows": [{"id": NOVA_FILE}]}
+        return 200, {"rows": []}
+
+    with _routing_on(), patch.object(vault, "couch_req", fake_couch_req):
+        out = vault.vault_bulk_fetch("projects/")
+    assert out.get(NOVA_FILE) == "content", out
+    assert asked == [vault.COUCHDB_DB], asked
+
+
+def test_a_failing_database_is_logged_not_swallowed():
+    """One database down now leaves the other's rows in place, so the caller
+    gets a partial listing that looks healthy. It must at least say so."""
+    lines = []
+
+    def fake_couch_req(method, path, body=None):
+        if path.startswith("nova/"):
+            return 503, {}
+        return 200, {"rows": [{"id": HIS_FILE}]}
+
+    with _routing_on(), patch.object(vault, "couch_req", fake_couch_req), \
+            patch.object(vault, "log", lambda m: lines.append(m)):
+        vault.vault_list_ids("projects/")
+    assert any("nova" in m and "503" in m for m in lines), lines
