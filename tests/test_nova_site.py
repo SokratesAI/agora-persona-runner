@@ -1933,8 +1933,8 @@ def test_a_journal_that_changed_gets_a_new_version(journal_md):
 
 
 # The cold load, which #84's conditional poll deliberately did not touch:
-# every entry ever written, 107 of them at 669KB raw / 185KB gzipped
-# measured against the live pod on 2026-08-11, one more every hour forever.
+# every entry ever written -- 109 of them, 678,027 bytes raw and 187,148
+# gzipped off the live pod at 06:11 Oslo on 2026-08-11, one more an hour.
 # The fixture is five entries -- cycles 49, 29, 19, 6, and one with no cycle
 # number at all -- so a limit of 2 is a real page and a limit of 99 is not.
 

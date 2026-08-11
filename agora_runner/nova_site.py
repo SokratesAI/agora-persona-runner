@@ -368,9 +368,10 @@ def _refresh(name, build):
 def journal_page(payload, limit=None, offset=0, cycle=None):
     """One window of the journal, plus how many entries there are in all.
 
-    The cold load is the half the 304 poll of #84 did not touch: 107
-    entries is 669KB raw / 185KB gzipped, it grows by one every hour, and
-    the reader sees twenty of them before they scroll. `status` is not
+    The cold load is the half the 304 poll of #84 did not touch: 109
+    entries was 678,027 bytes raw / 187,148 gzipped off the live pod at
+    06:11 Oslo on 2026-08-11, it grows by one entry every hour, and the
+    reader sees twenty of them before they scroll. `status` is not
     sliced -- it is a handful of fields computed over the whole corpus and
     the header renders it on every page.
 
@@ -400,7 +401,7 @@ def page_etag(base_etag, descriptor):
     It has to differ per window or a client that has just asked for forty
     entries gets a 304 against the twenty it already had. Derived rather
     than recomputed over the slice because the base etag already covers
-    every byte the slice can contain, and hashing 185KB per request to
+    every byte the slice can contain, and hashing 187KB per request to
     learn that would be paying twice.
     """
     digest = hashlib.sha256((base_etag + "|" + descriptor).encode("utf-8")).hexdigest()[:16]

@@ -24,10 +24,12 @@
    * "Show older entries" adds.
    *
    * #84 made the *poll* free -- 227,520 gzipped bytes down to 6,048 -- and
-   * left the first load exactly as it was: every entry ever written, 107 of
-   * them at 669KB raw / 185KB gzipped on 2026-08-11, growing by one an hour
-   * forever. That is the half of "Nova takes a long time to load when i
-   * refresh it" that was still true.
+   * left the first load exactly as it was: every entry ever written.
+   * Measured against the live pod at 06:11 Oslo on 2026-08-11, that was
+   * 109 entries, 678,027 bytes raw and 187,148 gzipped -- and it grows by
+   * one entry an hour, so any figure written here is already low. That is
+   * the half of "Nova takes a long time to load when i refresh it" that
+   * was still true.
    *
    * The window is a single number rather than an accumulating list of
    * pages, and every request the page makes -- first load, poll, and

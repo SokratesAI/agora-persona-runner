@@ -1315,8 +1315,9 @@ describe("no window escapes the registry", () => {
 });
 
 /* The cold load. #84 made the poll conditional and left the first load
- * downloading every entry ever written -- 107 of them, 185KB gzipped on
- * 2026-08-11, one more every hour. The page asks for a window now.
+ * downloading every entry ever written -- 109 of them, 187,148 gzipped
+ * bytes off the live pod on 2026-08-11, one more an hour. The page asks
+ * for a window now.
  *
  * The stub below is the real server contract, not a convenience: `total` is
  * the whole corpus and `entries` is the slice, so a test can tell "the
