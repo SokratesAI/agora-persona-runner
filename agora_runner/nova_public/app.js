@@ -1678,7 +1678,7 @@
    * and run fourteen cycles in one, and a bar per cycle in a neat row
    * would draw both stretches identically. The gaps are the finding.
    */
-  function renderCycleChart(payload) {
+  function renderCycleChart(payload, domain) {
     var rows = payload.cycles || [];
     var chart = chartFrame(
       "What a cycle costs",
@@ -1689,8 +1689,8 @@
       return chart.figure;
     }
     var box = plotBox();
-    var from = rows[0][0];
-    var to = rows[rows.length - 1][0];
+    var from = domain.from;
+    var to = domain.to;
     var span = Math.max(to - from, 1);
     var max = rows.reduce(function (best, row) { return Math.max(best, row[4]); }, 0) || 1;
 
@@ -1703,14 +1703,15 @@
       { value: 0, y: box.y1 },
     ], fmtTokens);
 
-    // Wide enough to see, never wide enough to overlap its neighbour: the
-    // median gap between two cycles, which at an hourly heartbeat over
-    // eight days is about 2 user units.
+    // Wide enough to see, never wide enough to overlap its neighbour --
+    // which means the *narrowest* gap between two cycles, not the median
+    // one. Sized on the median, 31 of the real ledger's 109 gaps are
+    // tighter than the bar, so the busiest stretches render as a solid
+    // smear and the gaps this chart exists to show stop being visible.
     var gaps = [];
     for (var i = 1; i < rows.length; i++) gaps.push(x(rows[i][0]) - x(rows[i - 1][0]));
-    gaps.sort(function (a, b) { return a - b; });
-    var width = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 4;
-    width = Math.max(1.5, Math.min(width - 0.7, 8));
+    var width = gaps.length ? Math.min.apply(null, gaps) : 4;
+    width = Math.max(1, Math.min(width - 0.4, 8));
 
     var points = [];
     rows.forEach(function (row) {
@@ -1742,7 +1743,7 @@
    * because it resets five times a day; the seven-day line is the one that
    * decides whether the week runs out early.
    */
-  function renderQuotaChart(payload) {
+  function renderQuotaChart(payload, domain) {
     var rows = (payload.quota || []).filter(function (row) {
       return row[1] !== null || row[3] !== null;
     });
@@ -1755,8 +1756,8 @@
       return chart.figure;
     }
     var box = plotBox();
-    var from = rows[0][0];
-    var to = rows[rows.length - 1][0];
+    var from = domain.from;
+    var to = domain.to;
     var span = Math.max(to - from, 1);
     var x = function (at) { return box.x0 + ((at - from) / span) * (box.x1 - box.x0); };
     var y = function (pct) { return box.y1 - (pct / 100) * (box.y1 - box.y0); };
@@ -1891,6 +1892,27 @@
     return wrap;
   }
 
+  /* The first and last moment either series knows about.
+   *
+   * Computed once and handed to both charts, because the comment above
+   * says they share a time axis and until the reviewer checked, they did
+   * not: each worked out its own domain from its own rows, and the two
+   * series do not cover the same days -- the cycle ledger reaches back to
+   * 08-03 and the quota history only to 08-08, so the same date sat at a
+   * different x in the two stacked charts and any correlation a reader
+   * drew between them was false. Sharing the domain also makes the
+   * quota chart's empty left third say something true: nothing was
+   * recorded there.
+   */
+  function timeDomain(payload) {
+    var ends = [];
+    [payload.cycles || [], payload.quota || []].forEach(function (rows) {
+      if (rows.length) ends.push(rows[0][0], rows[rows.length - 1][0]);
+    });
+    if (!ends.length) return { from: 0, to: 1 };
+    return { from: Math.min.apply(null, ends), to: Math.max.apply(null, ends) };
+  }
+
   function renderCosts(payload) {
     stopPolling();
     markNav();
@@ -1904,9 +1926,10 @@
         + fmtTokens(summary.total_weighted) + " weighted tokens all told"
     ));
     feed.textContent = "";
+    var domain = timeDomain(payload);
     feed.appendChild(renderCostTiles(payload));
-    feed.appendChild(renderCycleChart(payload));
-    feed.appendChild(renderQuotaChart(payload));
+    feed.appendChild(renderCycleChart(payload, domain));
+    feed.appendChild(renderQuotaChart(payload, domain));
     var share = renderCostShare(payload);
     if (share) feed.appendChild(share);
     if (payload.generatedAt) {

@@ -23,8 +23,12 @@ import json
 
 COST_LEDGER_PATH = "projects/sokrates/projects/agora/nova/resources/cost-ledger.json"
 
-# The columns each compact row carries, in order, sent alongside the rows
-# so the client indexes by name rather than by a number written twice.
+# The columns each compact row carries, in order. Sent alongside the rows
+# as documentation of the wire format -- the client indexes by position,
+# not by these names, so reordering either tuple silently swaps what the
+# charts plot. `test_a_cycle_row_is_the_five_columns_in_the_declared_order`
+# is what actually holds the two sides together; this is what tells a
+# reader of the payload what they are looking at.
 CYCLE_COLUMNS = ("at", "minutes", "turns", "toolCalls", "weighted")
 QUOTA_COLUMNS = ("at", "fiveHour", "fiveHourPace", "sevenDay", "sevenDayPace")
 
