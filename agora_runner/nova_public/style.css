@@ -242,10 +242,16 @@ pre code { background: none; padding: 0; }
  * find-in-page still reaches a drawer that is shut. */
 .entry .entry-digest,
 .entry .journal-toggle,
+.entry .entry-parts,
 .entry .entry-body { display: none; }
 .entry.is-expanded .entry-digest,
 .entry.is-expanded .journal-toggle { display: block; }
-.entry.is-expanded.is-reading .entry-body { display: block; }
+.entry.is-expanded.is-reading .entry-parts { display: block; }
+/* A cycle that wrote twice has two `.entry-body` blocks and a subheading
+ * between them, all inside the one drawer. The drawer is what opens and
+ * shuts; the parts inside it are shown with it, which is why this has to
+ * out-specify the hide above rather than being folded into it. */
+.entry .entry-parts .entry-body { display: block; }
 
 /* `/cycle/81` is a page, not a card, so none of the three levels above
  * apply to it -- there is no feed to scan past, and the entry you named in
@@ -279,7 +285,9 @@ pre code { background: none; padding: 0; }
  * to ninety characters ("I watched it land, and caught myself re-filing a
  * bug Edvard had already reported"). Uppercasing a sentence that long makes
  * it slower to read than the paragraph underneath it. */
-.entry.is-page .entry-body + .entry-part { margin-top: 1.4rem; }
+/* Not scoped to `.is-page` any more: the feed card's drawer draws the same
+ * subheadings between the same bodies, and it wants the same spacing. */
+.entry-body + .entry-part { margin-top: 1.4rem; }
 
 /* No line clamp any more. The brief arrives already cut on a sentence
  * boundary, so a clamp has nothing left to do except break it again in the
