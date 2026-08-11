@@ -27,8 +27,11 @@ client that pod actually has:
 
 Archive first, always. The two writes are not atomic together, so one of
 them can be the last thing that happens; writing the archive first makes
-the worst case a duplicated line, which is visible and reversible, and
-never a lost one.
+the worst case a duplicated line rather than a lost one. That is only
+worth anything if something actually recovers from it, so `plan` drops
+lines the archive already holds -- without that, the next run rolls the
+same lines a second time and Edvard gets a cycle rendered twice on his
+phone, permanently and with nothing complaining.
 
 Verification runs in both modes and any failure aborts before a write.
 The check that matters is not that the files look right -- it is that
@@ -87,12 +90,25 @@ def plan(live, archive, keep=KEEP):
     if len(lines) <= keep:
         return live, archive
 
-    archived = _paragraphs(archive.split(ARCHIVE_TITLE, 1)[-1]) if archive.strip() else []
     if archive.strip() and ARCHIVE_TITLE not in archive:
         raise SystemExit(f"refusing to roll: archive has no {ARCHIVE_TITLE!r} title")
+    archived = _paragraphs(archive.split(ARCHIVE_TITLE, 1)[-1]) if archive.strip() else []
+
+    # Recover from a half-applied previous run rather than compounding it.
+    # The two vault writes are not atomic, and the archive is written
+    # first, so a cycle killed between them leaves lines in *both* files.
+    # The next run then reads an un-rolled live file against an already
+    # rolled archive and, without this, rolls them a second time -- and
+    # `verify` cannot see it, because it only compares the inputs it was
+    # handed to the outputs it is about to write. The result is a cycle
+    # rendered twice on Edvard's phone, permanently. Dropping the lines
+    # that are already filed is what actually makes "duplicate rather
+    # than lose" the recoverable failure the write order assumes.
+    already = set(archived)
+    rolling = [line for line in lines[keep:] if line not in already]
 
     new_live = head + "\n" + "\n\n".join(lines[:keep]) + "\n"
-    rolled = lines[keep:] + archived
+    rolled = rolling + archived
     new_archive = _archive_header(archive) + "\n\n".join(rolled) + "\n"
     return new_live, new_archive
 
@@ -109,8 +125,9 @@ def _archive_header(archive):
         "maintenance: The digest lines that have rolled off journal-digest.md, "
         "newest first. Append only. No level-two heading anywhere in this file: "
         "the site concatenates it onto the live file's digest section, and a "
-        "second one would start a rival section and hide Edvard's Needs Edvard "
-        "/ Next cycle (agora_runner/nova_sources.py, digest_markdown).\n"
+        "second one would start a rival section, silently replacing the live "
+        "file's newest digest lines with these older ones "
+        "(agora_runner/nova_sources.py, digest_markdown).\n"
         "---\n\n" + ARCHIVE_TITLE + "\n\n"
     )
 
@@ -121,26 +138,31 @@ def verify(live, archive, new_live, new_archive):
     Three things can go wrong and each gets its own check: a line can be
     dropped, a line can be duplicated across the two files, and the
     archive can grow a level-two heading -- which `parse_digest` would
-    read as a rival section, silently replacing the two sections at the
-    top of the file that are the whole reason it is kept small.
+    read as a rival section.
+
+    That last one is worth stating precisely, because the obvious guess
+    is wrong and a reviewer had to correct it: `_sections` keys sections
+    by heading text and keeps the last of each, so a `## Digest` landing
+    in the archive does *not* touch **Needs Edvard** or **Next cycle** --
+    those come from different keys, populated from the live file. What it
+    silently discards is the live file's own digest lines, the newest
+    ones, in favour of the archive's older ones. That is precisely the
+    data this script exists to stop losing, which is why the guard is
+    `^##` and not a search for the two section names.
     """
     if re.search(r"^##[ \t]+", new_archive, re.MULTILINE):
         raise SystemExit(
             "refusing to write: the archive has a level-two heading, which "
-            "would displace Needs Edvard / Next cycle on the site"
+            "would displace the live file's own digest lines on the site"
         )
-    before = parse_digest(f"{live}\n\n{archive}")
-    after = parse_digest(f"{new_live}\n\n{new_archive}")
-    if before != after:
-        for key in before:
-            if before[key] != after[key]:
-                raise SystemExit(f"refusing to write: the split changes {key!r}")
-        raise SystemExit("refusing to write: the split changes the rendered digest")
-
-    # parse_digest drops what it cannot parse, so an identical payload is
-    # not on its own proof that nothing was lost -- the addendum line is
-    # invisible to it. Compare the raw paragraphs too.
-    kept = _paragraphs(_digest_body(live)[1]) + _paragraphs(archive.split(ARCHIVE_TITLE, 1)[-1])
+    # The invariant is *not* "in equals out" -- a run recovering from a
+    # half-applied previous one legitimately drops the lines that are
+    # already in the archive. It is "out equals in, with duplicates
+    # collapsed to their first occurrence", which is the same statement
+    # for the ordinary case and the honest one for the recovery case.
+    kept = _dedup(
+        _paragraphs(_digest_body(live)[1]) + _paragraphs(archive.split(ARCHIVE_TITLE, 1)[-1])
+    )
     rolled = _paragraphs(_digest_body(new_live)[1]) + _paragraphs(
         new_archive.split(ARCHIVE_TITLE, 1)[-1]
     )
@@ -148,6 +170,36 @@ def verify(live, archive, new_live, new_archive):
         raise SystemExit(
             f"refusing to write: {len(kept)} digest lines in, {len(rolled)} out"
         )
+
+    # And the same comparison through the parser that actually renders the
+    # site, because the raw check above and this one are blind to
+    # different things: `parse_digest` drops lines it cannot match (see
+    # `plan`), and the raw check cannot see a change in how a line renders.
+    before = parse_digest(_rejoin(live, archive, kept))
+    after = parse_digest(f"{new_live}\n\n{new_archive}")
+    if before != after:
+        for key in before:
+            if before[key] != after[key]:
+                raise SystemExit(f"refusing to write: the split changes {key!r}")
+        raise SystemExit("refusing to write: the split changes the rendered digest")
+
+
+def _dedup(paragraphs):
+    """Ordered unique -- first occurrence wins, later copies dropped."""
+    seen, out = set(), []
+    for paragraph in paragraphs:
+        if paragraph not in seen:
+            seen.add(paragraph)
+            out.append(paragraph)
+    return out
+
+
+def _rejoin(live, archive, deduped):
+    """The input pair as the parser should have seen it: same head and
+    sections, but with any line duplicated across the two files counted
+    once, so the payload comparison is against what the roll is actually
+    claiming to preserve rather than against a half-applied run."""
+    return _digest_body(live)[0] + "\n" + "\n\n".join(deduped) + "\n"
 
 
 def main(argv=None):
