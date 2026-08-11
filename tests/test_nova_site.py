@@ -2224,3 +2224,32 @@ def test_a_cold_load_builds_the_journal_once_not_once_per_request():
     for thread in threads:
         thread.join()
     assert len(builds) == 1, f"the cold build ran {len(builds)} times"
+
+
+def test_the_digest_window_revalidates_when_the_journal_moves(journal_md, digest_md):
+    """The digest's window is resolved out of the journal, so the right
+    answer can change while the digest file does not.
+
+    Cycle 19 gets an addendum. The two-entry window is now 49 and the two
+    halves of 19, so it reaches back past 29 -- a different cycle range
+    over a byte-identical digest. Keyed on the digest alone the poll would
+    be told 304, and the card that just came into view would render with
+    no summary until the next digest write.
+    """
+    with_addendum = journal_md.replace(
+        "### 2026-08-04 — Cycle 19 (Nova)",
+        "### 2026-08-04 — Cycle 19 (Nova)\n\nAn addendum.\n\n---\nPR: none | Outcome: no-op\n\n"
+        "### 2026-08-04 — Cycle 19 (Nova)",
+        1,
+    )
+    assert with_addendum != journal_md, "the fixture heading moved"
+    with _both(journal_md, digest_md):
+        _, head, _ = _get("/api/digest?limit=2")
+        before = re.search(r"ETag: (\S+)", head).group(1)
+    nova_site.reset_cache()
+    with _both(with_addendum, digest_md):
+        _, head, _ = _get("/api/digest?limit=2")
+        after = re.search(r"ETag: (\S+)", head).group(1)
+        status, _, _ = _get("/api/digest?limit=2", f"If-None-Match: {before}\r\n")
+    assert after != before, "the same etag for a different window"
+    assert status == 200, "a moved window was answered 304"

@@ -590,7 +590,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         offset = _int_param(query, "offset", 0)
         journal = None
         if cycle is None and limit is not None:
-            journal, _, _ = cached_payload("journal", journal_payload)
+            journal, _, journal_etag = cached_payload("journal", journal_payload)
+            # The window is resolved out of the journal, so the answer can
+            # change while the digest file does not -- an addendum written
+            # anywhere in the window pushes its oldest cycle out and pulls
+            # another one in. Keyed on the digest alone, a poll in that gap
+            # gets a 304 and the newly-visible card renders with no summary
+            # until the next digest write, up to an hour later.
+            base = base + "|" + journal_etag
         page = digest_page(payload, journal, limit=limit, offset=offset, cycle=cycle)
         etag = page_etag(base, f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}")
         page["version"] = etag
