@@ -222,8 +222,11 @@ describe("cards expand and collapse", () => {
     window = await loadSite();
   });
 
-  test("every entry in the payload gets a card", () => {
-    assert.equal(cards(window).length, payload.journal.entries.length);
+  test("every cycle in the payload gets one card, not every entry", () => {
+    const cycles = new Set(payload.journal.entries.map((e) => e.cycle));
+    assert.equal(cards(window).length, cycles.size);
+    assert.ok(cycles.size < payload.journal.entries.length,
+      "the fixture must hold a cycle with two entries, or this pins nothing");
   });
 
   test("cards start collapsed on the feed", () => {
@@ -274,10 +277,10 @@ describe("cards expand and collapse", () => {
     assert.equal(toggle.getAttribute("aria-expanded"), "false");
   });
 
-  test("the toggle controls the body it actually owns", () => {
+  test("the toggle controls the drawer it actually owns", () => {
     for (const card of cards(window)) {
       const controlled = card.querySelector(".entry-toggle").getAttribute("aria-controls");
-      assert.equal(card.querySelector(".entry-body").id, controlled);
+      assert.equal(card.querySelector(".entry-parts").id, controlled);
     }
   });
 
@@ -297,7 +300,18 @@ describe("cards expand and collapse", () => {
   });
 });
 
-describe("two entries for one cycle are two different cards", () => {
+/* Edvard, on the comments board at cycle 81: "i do not like the double entry
+ * Journal cards. If a double entry is necessary like for cycle 81, have it be
+ * combined into one card that has tabs or something similar. Its confusing
+ * that its two separate cards."
+ *
+ * Cycle 105 answered that on `/cycle/N` and left the feed drawing two. This
+ * block used to be called "two entries for one cycle are two different cards"
+ * and pinned the old behaviour in place: a digest line handed to the earlier
+ * card, an addendum summarising itself so the two would not look identical,
+ * an anchor id and a comment bubble owned by whichever card came first. All
+ * of that machinery existed only because there were two cards. */
+describe("two entries for one cycle are one card", () => {
   let window;
   before(async () => {
     window = await loadSite();
@@ -308,43 +322,56 @@ describe("two entries for one cycle are two different cards", () => {
     assert.equal(fifty7.length, 2);
   });
 
-  test("their summaries are not identical", () => {
-    // Edvard, issues.md 2026-08-09: "Why are the journals for cycles 55-57
-    // listed twice in the Nova app?" They were not duplicates; both cards
-    // rendered the same digest line as their summary.
-    const [first, second] = cards(window);
-    const summary = (card) => card.querySelector(".entry-brief").textContent;
-    assert.notEqual(summary(first), summary(second));
+  test("cycle 57 draws exactly one card", () => {
+    const headings = cards(window).map((card) => card.querySelector("h2").textContent);
+    assert.equal(headings.filter((h) => h === "Cycle 57").length, 1);
   });
 
-  test("the digest line goes to the cycle's own run, not to its addendum", () => {
+  test("the one card carries the cycle's digest line, whole", () => {
     const line = payload.digest.lines.find((l) => l.cycle === 57);
-    const [addendum, run] = cards(window);
-    assert.equal(run.querySelector(".entry-brief").textContent, lineBrief(line));
-    assert.notEqual(addendum.querySelector(".entry-brief").textContent, lineBrief(line));
-    // And the remainder is the drawer inside it, on that card only.
-    assert.equal(run.querySelector(".entry-digest").textContent.trim(),
+    const card = cards(window)[0];
+    assert.equal(card.querySelector(".entry-brief").textContent, lineBrief(line));
+    assert.equal(card.querySelector(".entry-digest").textContent.trim(),
       line.restSpans.map((s) => s.text).join("").trim());
-    assert.equal(addendum.querySelector(".entry-digest"), null);
     assert.ok(lineBrief(line).length < lineText(line).length,
       "the fixture must actually split, or this test cannot fail");
   });
 
-  test("the addendum summarises itself from its own first paragraph", () => {
-    const addendum = cards(window)[0];
-    const brief = payload.journal.entries[0].briefSpans.map((s) => s.text).join("");
-    const opening = payload.journal.entries[0].blocks.find((b) => b.type === "p");
-    const text = opening.spans.map((s) => s.text).join("");
-    assert.equal(addendum.querySelector(".entry-brief").textContent, brief);
-    assert.ok(text.startsWith(brief), "the brief is the front of that paragraph");
-    assert.ok(brief.length < text.length, "and shorter than it, or nothing is being tested");
+  test("both entries' prose is inside that one card's drawer", () => {
+    const bodies = cards(window)[0].querySelectorAll(".entry-parts .entry-body");
+    assert.equal(bodies.length, 2);
+    const text = cards(window)[0].querySelector(".entry-parts").textContent;
+    for (const entry of payload.journal.entries.filter((e) => e.cycle === 57)) {
+      const opening = entry.blocks.find((b) => b.type === "p");
+      assert.ok(text.includes(opening.spans.map((s) => s.text).join("")),
+        "a part's own prose is missing from the card that replaced its card");
+    }
+  });
+
+  test("the parts read oldest-first and are labelled and dated", () => {
+    const parts = [...cards(window)[0].querySelectorAll(".entry-part")]
+      .map((h) => h.textContent);
+    assert.equal(parts.length, 2);
+    // The wire is newest-first, so entries[1] is the earlier of the two.
+    const [addendum, run] = payload.journal.entries.filter((e) => e.cycle === 57);
+    assert.ok(parts[0].endsWith(run.date + " " + run.time + " Oslo"), parts[0]);
+    assert.ok(parts[1].endsWith(addendum.date + " " + addendum.time + " Oslo"), parts[1]);
+    assert.ok(parts[1].startsWith("Verification"), parts[1]);
+  });
+
+  test("the button says how many entries are behind it", () => {
+    assert.equal(cards(window)[0].querySelector(".journal-toggle").textContent,
+      "Read the full journal (2 entries)");
+    const single = cards(window).find(
+      (card) => card.querySelectorAll(".entry-parts .entry-body").length === 1);
+    assert.ok(single, "the fixture must also hold a one-entry cycle");
+    assert.equal(single.querySelector(".journal-toggle").textContent, "Read the full journal");
   });
 
   test("the digest summary renders its bold instead of showing asterisks", () => {
     // The digest line was the only text on the page rendering its own
     // markup, and it is the line Edvard called hard to read.
-    const run = cards(window)[1];
-    const summary = run.querySelector(".entry-brief");
+    const summary = cards(window)[0].querySelector(".entry-brief");
     assert.equal(summary.querySelectorAll("strong").length, 1);
     assert.equal(
       summary.querySelector("strong").textContent,
@@ -361,10 +388,6 @@ describe("two entries for one cycle are two different cards", () => {
     }
   });
 
-  test("the addendum is still labelled as one", () => {
-    assert.equal(cards(window)[0].querySelector(".entry-title").textContent, "verification");
-  });
-
   test("no element id is used twice", () => {
     const ids = [...window.document.querySelectorAll("[id]")].map((n) => n.id);
     assert.equal(new Set(ids).size, ids.length, "duplicate id: " + ids.join(", "));
@@ -372,6 +395,46 @@ describe("two entries for one cycle are two different cards", () => {
 
   test("the cycle anchor exists exactly once for a cycle with two entries", () => {
     assert.equal(window.document.querySelectorAll("#cycle-57").length, 1);
+  });
+
+  /* The same two cases the page has, on the card, because one card per cycle
+   * gives the card the same problem the page had: one meta row for two parts
+   * that may not agree. The fixture's only two-entry cycle carries identical
+   * fields on both entries, so a mutation from `settled` back to the earliest
+   * part passes every other test in this file. */
+  test("the card takes its outcome from the last part that has one", async () => {
+    // Cycle 102 on the live pod: the base entry carries no PR and no outcome,
+    // the addendum carries `#86 / merged`. Reading the earliest part shows a
+    // cycle that merged a PR as having done nothing.
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    parts[1].pr = "";
+    parts[1].prSpans = [];
+    parts[1].outcome = "";
+    parts[0].pr = "#86";
+    parts[0].prSpans = [{ kind: "text", text: "#86" }];
+    parts[0].outcome = "merged";
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta");
+    assert.match(meta.textContent, /#86/);
+    assert.match(meta.textContent, /merged/);
+    // The stamp still belongs to the earliest part: that is when it began.
+    assert.match(meta.textContent, new RegExp(parts[1].time));
+  });
+
+  test("a part of the card that reached a different answer keeps its own row", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    parts[1].outcome = "no-op";
+    parts[1].pr = "none (status note)";
+    parts[1].prSpans = [{ kind: "text", text: "none (status note)" }];
+    parts[0].outcome = "merged";
+    const w = await loadSite("/", { journal: () => journal });
+    const card = cards(w)[0];
+    assert.match(card.querySelector(".entry-meta").textContent, /merged/);
+    const own = card.querySelector(".entry-meta-part");
+    assert.ok(own, "the disagreeing part must keep a row of its own");
+    assert.match(own.textContent, /no-op/);
   });
 });
 
@@ -508,10 +571,15 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
 
   test("the same stylesheet still hides a feed card's journal until asked", async () => {
     /* The other half of the mutation: `withStyle` has to be able to see a
-     * hidden body, or the test above proves nothing about the CSS. */
+     * hidden drawer, or the test above proves nothing about the CSS.
+     *
+     * The drawer is `.entry-parts` rather than `.entry-body`, because a
+     * multi-part card holds several bodies and one of them cannot be what
+     * opens and shuts. jsdom's `getComputedStyle` does not walk ancestors,
+     * so this has to name the element the rule actually hides. */
     const window = await loadSite("/", { install: withStyle });
-    const body = cards(window)[0].querySelector(".entry-body");
-    assert.equal(window.getComputedStyle(body).display, "none");
+    const drawer = cards(window)[0].querySelector(".entry-parts");
+    assert.equal(window.getComputedStyle(drawer).display, "none");
   });
 
   // `withStyle` because the last assertion is a `display`, and without the
@@ -719,9 +787,16 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.equal(cards(window)[0].querySelectorAll(".entry-part").length, 0);
   });
 
-  test("the feed is untouched and still draws both cards", async () => {
+  test("the feed draws the same cycle as one card, on the same rules", async () => {
     const window = await loadSite("/");
-    assert.equal(cards(window).filter((c) => /Cycle 57/.test(c.textContent)).length, 2);
+    const own = cards(window).filter((c) => c.querySelector("h2").textContent === "Cycle 57");
+    assert.equal(own.length, 1);
+    // Same subheadings, same order, same source function as the page above.
+    const page = await loadSite("/cycle/57");
+    assert.deepEqual(
+      [...own[0].querySelectorAll(".entry-part")].map((h) => h.textContent),
+      [...cards(page)[0].querySelectorAll(".entry-part")].map((h) => h.textContent)
+    );
   });
 });
 
@@ -800,7 +875,9 @@ describe("a drawer within a drawer", () => {
     click(window, card.querySelector(".entry-body"));
     assert.ok(!reading(card), "the journal closed");
     assert.ok(expanded(card), "the card stayed open");
-    assert.equal(journalButton(card).textContent, "Read the full journal");
+    // The first card is cycle 57, which wrote two entries, so closing has to
+    // put back that card's own label rather than the generic one.
+    assert.equal(journalButton(card).textContent, "Read the full journal (2 entries)");
   });
 
   test("the button closes it again too", () => {
@@ -949,9 +1026,13 @@ describe("commenting on a cycle", () => {
   });
 
   test("a cycle with two entries has exactly one bubble", () => {
-    // Two would be two places to look for the same conversation.
+    // Two would be two places to look for the same conversation. It used to
+    // take an ownership rule across two cards to get this right; now the
+    // cycle has one card, so the guarantee is structural.
     const both = cards(window).filter((c) => c.querySelector("h2").textContent === "Cycle 57");
-    assert.equal(both.length, 2, "the fixture must contain a cycle with an addendum");
+    assert.equal(both.length, 1, "one card per cycle");
+    assert.equal(payload.journal.entries.filter((e) => e.cycle === 57).length, 2,
+      "the fixture must contain a cycle with an addendum");
     assert.equal(both.filter((c) => bubble(c)).length, 1);
   });
 
@@ -1181,7 +1262,7 @@ describe("commenting on a cycle", () => {
 
   test("a comments endpoint that fails costs the bubbles, not the feed", async () => {
     const w = await loadSite("/", { failComments: true });
-    assert.equal(cards(w).length, payload.journal.entries.length);
+    assert.equal(cards(w).length, new Set(payload.journal.entries.map((e) => e.cycle)).size);
     assert.equal(bubble(cardFor(w, 57)).textContent, "💬");
   });
 });

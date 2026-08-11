@@ -871,7 +871,10 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
         os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "style.css"),
         encoding="utf-8",
     ).read()
-    assert ".entry.is-expanded.is-reading .entry-body { display: block; }" in css
+    # `.entry-parts`, not `.entry-body`: a cycle that wrote twice has two
+    # bodies inside the one drawer, and one of them cannot be what opens.
+    assert ".entry.is-expanded.is-reading .entry-parts { display: block; }" in css
+    assert ".entry .entry-parts .entry-body { display: block; }" in css
     assert ".entry.is-expanded .journal-toggle" in css
     # The clamp survives on exactly one selector -- the unsplit fallback for a
     # payload sw.js cached before this shipped -- and nowhere else.
