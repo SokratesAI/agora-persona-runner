@@ -1930,3 +1930,116 @@ def test_a_journal_that_changed_gets_a_new_version(journal_md):
     with patch.object(nova_sources, "vault_read_path", return_value=journal_md + "\n\n### Cycle 999 (2026-08-10 21:00)\n\nA new entry.\n\n---\nPR: none | Outcome: no-op\n"):
         _, head, _ = _get("/api/journal")
     assert re.search(r"ETag: (\S+)", head).group(1) != first
+
+
+# The cold load, which #84's conditional poll deliberately did not touch:
+# every entry ever written -- 109 of them, 678,027 bytes raw and 187,148
+# gzipped off the live pod at 06:11 Oslo on 2026-08-11, one more an hour.
+# The fixture is five entries -- cycles 49, 29, 19, 6, and one with no cycle
+# number at all -- so a limit of 2 is a real page and a limit of 99 is not.
+
+
+def test_a_limit_serves_the_newest_entries_and_says_how_many_there_are(journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        status, _, body = _get("/api/journal?limit=2")
+    assert status == 200
+    payload = json.loads(body)
+    assert [e["cycle"] for e in payload["entries"]] == [49, 29], "not the newest two, in order"
+    assert payload["total"] == 5, "the pager cannot know there is more without this"
+
+
+def test_an_offset_walks_further_back_without_repeating_a_page(journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        _, _, first = _get("/api/journal?limit=2")
+        _, _, second = _get("/api/journal?limit=2&offset=2")
+    seen = [e["cycle"] for e in json.loads(first)["entries"]]
+    seen += [e["cycle"] for e in json.loads(second)["entries"]]
+    assert seen == [49, 29, 19, 6]
+
+
+def test_asking_for_no_limit_still_serves_the_whole_journal(journal_md):
+    """An app.js served out of a service worker's cache from before this
+    shipped sends no `limit`, and must not silently lose the feed."""
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        _, _, body = _get("/api/journal")
+    assert len(json.loads(body)["entries"]) == 5
+
+
+def test_a_deep_linked_cycle_is_served_without_paging_back_to_it(journal_md):
+    """`/cycle/6` is older than any first page it will ever be on."""
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        _, _, body = _get("/api/journal?cycle=6")
+    payload = json.loads(body)
+    assert [e["cycle"] for e in payload["entries"]] == [6]
+    assert payload["total"] == 5, "the whole-corpus count is still the whole corpus"
+
+
+def test_the_status_header_is_the_whole_corpus_not_the_page(journal_md):
+    """`status` is what the header renders, and it is computed over every
+    entry -- a page of one must not make it describe one.
+
+    Asserted against the corpus figures rather than against the unpaginated
+    response: the fixture's newest entry is the newest on every page, so
+    comparing the two responses to each other passes just as happily when
+    `status` is rebuilt from the slice. It did, the first time this was
+    written.
+    """
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        _, _, page = _get("/api/journal?limit=1")
+    status = json.loads(page)["status"]
+    assert len(json.loads(page)["entries"]) == 1
+    assert status["entryCount"] == 5
+    assert status["runningDays"] == 7
+
+
+def test_each_window_has_its_own_version(journal_md):
+    """A client that has just asked for four entries must not be handed a
+    304 against the two it already had."""
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        _, head, body = _get("/api/journal?limit=2")
+        small = re.search(r"ETag: (\S+)", head).group(1)
+        assert json.loads(body)["version"] == small
+        _, head, _ = _get("/api/journal?limit=4")
+        large = re.search(r"ETag: (\S+)", head).group(1)
+        assert small != large
+
+        status, _, _ = _get("/api/journal?limit=2", f"If-None-Match: {small}\r\n")
+        assert status == 304, "an unchanged window is still a 304"
+        status, _, _ = _get("/api/journal?limit=4", f"If-None-Match: {small}\r\n")
+    assert status == 200, "a wider window was answered as if nothing had changed"
+
+
+def test_a_junk_window_is_the_default_rather_than_a_500(journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        for query in ["?limit=nonsense", "?limit=-3", "?offset=-1", "?limit=", "?cycle=x"]:
+            status, _, body = _get("/api/journal" + query)
+            assert status == 200, query
+            assert json.loads(body)["entries"], query
+
+
+def test_a_limit_past_the_end_of_the_journal_is_not_an_error(journal_md):
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+        status, _, body = _get("/api/journal?limit=500&offset=0")
+    assert status == 200
+    assert len(json.loads(body)["entries"]) == 5
+
+
+def test_a_window_never_cuts_a_cycle_in_half(journal_md):
+    """Six cycles wrote a second entry, and the client gives a cycle's
+    digest line to whichever of its entries it can see furthest back. Split
+    a pair across the page boundary and the summary renders on the addendum
+    -- then jumps to the real entry the moment the window grows past it.
+
+    The fixture has no addendum, so this builds one: two entries for cycle
+    49 with a boundary deliberately between them.
+    """
+    doubled = journal_md.replace(
+        "### 2026-08-09 04:20 (Oslo) — Cycle 49",
+        "### 2026-08-09 05:00 (Oslo) — Cycle 49\n\nAn addendum.\n\n---\nPR: none | Outcome: no-op\n\n"
+        "### 2026-08-09 04:20 (Oslo) — Cycle 49",
+        1,
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=doubled):
+        _, _, body = _get("/api/journal?limit=1")
+    served = [e["cycle"] for e in json.loads(body)["entries"]]
+    assert served == [49, 49], f"the boundary split cycle 49: {served}"

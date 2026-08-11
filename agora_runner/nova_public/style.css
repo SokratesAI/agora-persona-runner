@@ -517,3 +517,23 @@ pre code { background: none; padding: 0; }
 
 .comment-send:hover:not(:disabled) { border-color: var(--accent); }
 .comment-send:disabled { color: var(--dim); cursor: default; }
+
+/* The pager under the feed. Full width rather than the pill the comment
+ * box uses: it is the last thing on the page and the thumb should not have
+ * to find it. */
+.more {
+  display: block;
+  width: 100%;
+  margin: 1.2rem 0 0;
+  background: none;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  min-height: 44px;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.more:hover:not(:disabled) { border-color: var(--accent); }
+.more:disabled { color: var(--dim); cursor: default; }

@@ -20,6 +20,36 @@
     return match ? parseInt(match[1], 10) : null;
   }
 
+  /* How much of the journal a cold load asks for, and how much a tap on
+   * "Show older entries" adds.
+   *
+   * #84 made the *poll* free -- 227,520 gzipped bytes down to 6,048 -- and
+   * left the first load exactly as it was: every entry ever written.
+   * Measured against the live pod at 06:11 Oslo on 2026-08-11, that was
+   * 109 entries, 678,027 bytes raw and 187,148 gzipped -- and it grows by
+   * one entry an hour, so any figure written here is already low. That is
+   * the half of "Nova takes a long time to load when i refresh it" that
+   * was still true.
+   *
+   * The window is a single number rather than an accumulating list of
+   * pages, and every request the page makes -- first load, poll, and
+   * "show older" -- asks for the same `?limit=windowSize` from offset
+   * zero. Fetching one page and appending it would move fewer bytes when
+   * someone reads a long way back, and it would also mean the poll and the
+   * pager disagreeing about what is loaded every time a new entry shifts
+   * the offsets underneath them. One window has no such offset to get
+   * wrong: a poll is a 304 against exactly what is on screen, and a new
+   * entry arriving simply lands at the top of it.
+   *
+   * It is not free of state, and the first review of this said so. Widening
+   * the window re-renders the whole feed, which discards every drawer and
+   * every card's expanded/collapsed state along with it. Unsent text is
+   * carried across (see `drafts`); the folds are not, and a tap on the
+   * pager still closes anything the reader had opened.
+   */
+  var PAGE = 20;
+  var windowSize = PAGE;
+
   function el(tag, className, text) {
     var node = document.createElement(tag);
     if (className) node.className = className;
@@ -179,6 +209,10 @@
    *   placeholder, ariaLabel -> the words for it
    * Everything below is target-agnostic on purpose; the two differ only in
    * which four things they hand in. */
+  /* Unsent comment text, keyed by which box it was typed into, so it
+   * survives the re-render that discards the box. See `renderComments`. */
+  var drafts = {};
+
   function renderComments(container, target, comments) {
     var drawer = el("div", "comment-drawer");
 
@@ -187,6 +221,15 @@
 
     var box = el("textarea", "comment-text");
     box.rows = 3;
+    /* A render throws every drawer away and builds a new one, so anything
+     * typed and not yet sent dies with the old node. `poll` avoids that by
+     * refusing to re-render while there is text in a box -- which works for
+     * a background timer and cannot work for "Show older entries", where
+     * the re-render is the thing the reader just asked for. So the text
+     * outlives the node instead. Cleared only when the server confirms the
+     * write, the same rule `submit` already follows for the box itself. */
+    if (drafts[target.key]) box.value = drafts[target.key];
+    box.addEventListener("input", function () { drafts[target.key] = box.value; });
     box.placeholder = target.placeholder;
     box.setAttribute("autocapitalize", "sentences");
     drawer.appendChild(box);
@@ -314,6 +357,7 @@
           // rule the capture box follows, for the same reason: a box that
           // wiped itself on a failure would lose what it exists to catch.
           box.value = "";
+          delete drafts[target.key];
           fit();
           status.textContent = "saved";
           return fetch("/api/comments")
@@ -347,6 +391,7 @@
 
   function cycleTarget(cycle) {
     return {
+      key: "cycle:" + cycle,
       placeholder: "Say something about cycle " + cycle + "…",
       ariaLabel: "Comment on cycle " + cycle,
       body: function (text) { return { cycle: cycle, text: text }; },
@@ -356,6 +401,7 @@
 
   function needsTarget() {
     return {
+      key: "needs",
       placeholder: "Answer…",
       ariaLabel: "Reply to Needs Edvard",
       body: function (text) { return { target: "needs", text: text }; },
@@ -670,6 +716,22 @@
         entry, line, wanted !== null, own, commentsByCycle[String(entry.cycle)]
       ));
     });
+
+    /* `total` is the whole corpus, `entries.length` is what came back in
+     * this window, so the pager disappears on its own at the last page and
+     * never appears at all on a server that does not paginate. */
+    var total = journal.total;
+    if (wanted === null && typeof total === "number" && entries.length < total) {
+      var more = el("button", "more", "Show older entries");
+      more.type = "button";
+      more.addEventListener("click", function () {
+        more.disabled = true;
+        more.textContent = "Loading…";
+        windowSize += PAGE;
+        load();
+      });
+      feed.appendChild(more);
+    }
   }
 
   /* The last full payload for each versioned endpoint, so a 304 can be
@@ -713,9 +775,18 @@
     });
   }
 
+  /* A deep link asks for its own cycle by number rather than for a window,
+   * because the entry it wants is usually older than the first page and the
+   * page has no way to know how far back that is. */
+  function journalUrl() {
+    var wanted = routedCycle(window.location.pathname);
+    if (wanted !== null) return "/api/journal?cycle=" + wanted;
+    return "/api/journal?limit=" + windowSize;
+  }
+
   function fetchAll() {
     return Promise.all([
-      fetchVersioned("/api/journal", "journal"),
+      fetchVersioned(journalUrl(), "journal"),
       fetchVersioned("/api/digest", "digest").catch(function () { return null; }),
       // Tolerated the same way the digest is: the journal is the page, and
       // a comments read that fails should cost the bubbles, not the feed.
