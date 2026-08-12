@@ -1991,10 +1991,16 @@ describe("the pager fires on scroll, not only on a press", () => {
   });
 
   test("a second intersection before the fetch lands does not skip a window", async () => {
-    /* A real observer fires repeatedly while the node stays in view. Two
-     * reports either side of one fetch must widen by twenty, not forty --
-     * the reader would otherwise scroll past a page they never saw
-     * requested. */
+    /* A real observer can deliver a batch that was already queued when
+     * `disconnect` landed. Two reports either side of one fetch must widen
+     * by twenty, not forty -- the reader would otherwise scroll past a page
+     * they never saw requested.
+     *
+     * What actually stops the second one is that the click handler disables
+     * the button and a disabled button dispatches no click. That is worth a
+     * test precisely because it is not a line anyone wrote here: it is a
+     * platform rule the code is leaning on, and it is invisible in the
+     * source. */
     const server = paged(90);
     let spy;
     const window = await loadSite("/", {
