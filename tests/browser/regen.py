@@ -69,8 +69,16 @@ def build_payload():
     with patch.object(nova_sources, "vault_read_path", side_effect=fake_read), \
             patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})):
         board = nova_site.board_payload("issues")
+        journal = nova_site.journal_payload()
         return {
-            "journal": nova_site.journal_payload(),
+            # `journal_payload` is the cache's shape, not the wire's --
+            # markdown kept, blocks unbuilt. What the browser gets is what
+            # `journal_page` hands back for its window, so the fixture is
+            # built the same way: blocks rendered, `body` left behind.
+            "journal": dict(
+                journal,
+                entries=[nova_site._rendered(entry) for entry in journal["entries"]],
+            ),
             "digest": nova_site.digest_payload(),
             "comments": nova_site.comments_payload(),
             # The two shapes /api/board answers in: the list the page

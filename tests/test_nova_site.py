@@ -2855,3 +2855,31 @@ def test_a_refresh_already_running_cannot_put_the_stale_answer_back():
         "a build that read the vault before the write must not repopulate"
     )
     assert started is None
+
+
+def test_only_the_window_the_reader_asked_for_is_ever_rendered():
+    """The cost this removes, pinned by counting the renders.
+
+    `journal_payload` used to build blocks for every entry so that
+    `journal_page` could slice out twenty -- 158 entries and 1.07MB per
+    process, growing by one an hour. A change that quietly renders eagerly
+    again looks identical from the outside: same JSON, same etag, same
+    tests green. So count. Two entries in the window, two renders, and the
+    build itself renders nothing at all.
+    """
+    with patch.object(nova_sources, "vault_read_path", return_value=_fixture("journal_sample.md")):
+        with patch.object(nova_site, "render_blocks", wraps=nova_site.render_blocks) as render:
+            payload = nova_site.journal_payload()
+            assert len(payload["entries"]) > 2, "fixture must be wider than the window"
+            assert render.call_count == 0
+
+            page = nova_site.journal_page(payload, limit=2, offset=0)
+            assert render.call_count == len(page["entries"])
+            assert page["entries"][0]["blocks"]
+            assert "body" not in page["entries"][0]
+
+            # And a second reader of the same window pays nothing: the
+            # blocks stay on the cached entry, which is what makes this a
+            # deferral rather than a move of the same work onto the request.
+            nova_site.journal_page(payload, limit=2, offset=0)
+            assert render.call_count == len(page["entries"])
