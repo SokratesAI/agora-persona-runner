@@ -207,6 +207,16 @@ def describe(report):
             line += " -- the read reported: " + "; ".join(report["unreadable"])
         return line
     parts = []
+    # A partial read is not only the `entries == 0` case, and the other case
+    # is worse. If one entry document lost its content chunks -- which has
+    # happened in production, to `ideas.md`, 6 chunks of 184 -- the rest of
+    # the folder still arrives, `entries` is healthy, and that one cycle
+    # number simply is not in the set. `missing_cycles` then reports it as
+    # "ran and wrote no journal entry", which is a confident false claim
+    # about a cycle that wrote its entry perfectly well. So the reason comes
+    # first, before the findings it undermines.
+    for note in report.get("unreadable") or []:
+        parts.append(f"part of the journal could not be read: {note}")
     missing = report.get("missing") or []
     if missing:
         recent = ", ".join(str(n) for n in missing[-5:])

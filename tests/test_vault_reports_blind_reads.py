@@ -136,3 +136,44 @@ def test_cycle_health_prints_the_reason_the_read_failed():
     assert "cannot tell" in line
     assert "401" in line
     assert "nova" in line
+
+
+def test_a_lost_entry_is_not_reported_as_a_cycle_that_wrote_nothing():
+    """The reviewer's finding on the first draft of this fix, and it is the
+    same bug one level up. A single entry document that loses its content
+    chunks -- which has happened in production, to `ideas.md`, 6 of 184 --
+    leaves the rest of the folder intact, so `entries` is healthy and only
+    that one cycle number is absent. The check then said "cycle 131 ran and
+    wrote no journal entry", which is a confident false claim about a cycle
+    whose entry is sitting right there. The reason has to survive a read that
+    was partial rather than empty."""
+    from datetime import datetime
+    from agora_runner.cycle_health import describe, findings
+    from agora_runner.config import OSLO
+
+    paths = ["j/130-cycle-130.md", "j/132-cycle-132.md", "j/133-cycle-133.md"]
+    report = findings(
+        paths, {}, datetime.now(OSLO),
+        unreadable=["131-cycle-131.md omitted from bulk fetch -- 1 of 4 content chunks missing"],
+    )
+    assert report["entries"] == 3
+    line = describe(report)
+    assert "could not be read" in line
+    assert "131-cycle-131.md" in line
+    assert line.index("could not be read") < line.index("wrote no journal entry")
+
+
+def test_the_listing_tool_stops_saying_no_files_when_it_could_not_look():
+    """`sorted()` on the mapping returns a plain list and dropped the flag, so
+    `vault_list` was left exactly as blind as before -- "[no files under that
+    prefix]" for a database that refused to answer."""
+    from agora_runner import tools_dispatch
+
+    with _routing_on(), _everything_down(401), patch.object(vault, "log", lambda m: None):
+        paths = vault.vault_list_prefix("projects/")
+        out = tools_dispatch.execute_tool(
+            "vault_list", {"prefix": "projects/"}, {"name": "nova"}, "conv",
+        )
+    assert paths == []
+    assert paths.unreadable
+    assert "INCOMPLETE READ" in out, out

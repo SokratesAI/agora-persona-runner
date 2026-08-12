@@ -243,8 +243,8 @@ class VaultFiles(dict):
     a loop health check that said the loop was perfectly healthy while the
     journal folder visibly skipped a cycle; it had read zero entries.
 
-    A `dict` subclass rather than a second return value so the twelve
-    existing callers are untouched and only the ones that care have to look.
+    A `dict` subclass rather than a second return value so every existing
+    caller is untouched and only the ones that care have to look.
     `unreadable` holds the same human-readable lines that go to the log, so a
     caller can put the reason in front of a person rather than an exit code.
     Used for the private `{doc_id: doc}` listing as well as the public
@@ -457,8 +457,23 @@ def vault_read_path(path):
     return vault_assemble(doc, path.lower())
 
 
+class VaultPaths(list):
+    """A sorted listing that remembers what it could not see.
+
+    `sorted()` on a `VaultFiles` returns a plain list and drops the flag, so
+    the listing tools were left exactly as blind as before -- "[no files
+    under that prefix]" for a database that refused to answer. Same channel,
+    same reason, different container.
+    """
+
+    def __init__(self, *args, unreadable=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.unreadable = list(unreadable)
+
+
 def vault_list_prefix(prefix=""):
-    return sorted(_vault_file_docs(prefix))
+    docs = _vault_file_docs(prefix)
+    return VaultPaths(sorted(docs), unreadable=docs.unreadable)
 
 
 def vault_list_ids(prefix=""):
