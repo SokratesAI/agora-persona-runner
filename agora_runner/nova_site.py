@@ -219,18 +219,41 @@ def accepts_gzip(header):
 
 
 def journal_payload():
-    """Every entry, rendered. The raw `body` is dropped rather than sent
-    alongside the blocks -- it is the same 200KB twice, and the client has
-    no use for markdown it is not allowed to interpret."""
+    """Every entry, with its markdown kept and its blocks not yet built.
+
+    Rendering used to happen here, for all 158 entries, so that
+    `journal_page` could slice out the twenty a reader sees -- 1.07MB
+    built and serialised per process to answer a request for 7% of it,
+    growing by an entry an hour. `_rendered` builds the blocks for the
+    window that asked instead, and this stays the parse the etag and the
+    status are computed over.
+
+    `body` stays in the cached entry and never leaves it: it is what the
+    blocks get built from later, and the client has no use for markdown it
+    is not allowed to interpret -- sending both is the same text twice.
+    """
     markdown, times = journal_markdown(with_times=True)
     entries = parse_journal(markdown, times)
     status = build_status(entries)
-    rendered = []
-    for entry in entries:
-        entry = dict(entry)
-        entry["blocks"] = render_blocks(entry.pop("body", ""))
-        rendered.append(entry)
-    return {"entries": rendered, "status": status}
+    return {"entries": [dict(entry) for entry in entries], "status": status}
+
+
+def _rendered(entry):
+    """One entry as the client gets it: blocks built, `body` left behind.
+
+    The blocks are memoised onto the cached entry, so a window costs its
+    rendering once per process rather than once per request, and only the
+    windows somebody actually read are ever built. Two threads racing here
+    both render and both store the same value -- the duplicate work is
+    cheaper than a lock on the read path, and `render_blocks` is pure.
+    """
+    blocks = entry.get("blocks")
+    if blocks is None:
+        blocks = render_blocks(entry.get("body", ""))
+        entry["blocks"] = blocks
+    out = dict(entry)
+    out.pop("body", None)
+    return out
 
 
 def digest_payload():
@@ -658,7 +681,11 @@ def journal_page(payload, limit=None, offset=0, cycle=None):
                 and entries[end].get("cycle") == entries[end - 1].get("cycle"):
             end += 1
         picked = entries[offset:end]
-    return {"entries": picked, "status": payload.get("status", {}), "total": len(entries)}
+    return {
+        "entries": [_rendered(entry) for entry in picked],
+        "status": payload.get("status", {}),
+        "total": len(entries),
+    }
 
 
 def digest_page(payload, journal, limit=None, offset=0, cycle=None):
