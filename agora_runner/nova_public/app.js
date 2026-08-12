@@ -2060,11 +2060,17 @@
     if (!document.hidden) poll();
   });
 
-  /* The capture box (item 6). Two buttons rather than a target toggle plus
-   * a submit: it is one tap fewer on a phone, which is the whole point of
-   * the feature. The text is only cleared once the server confirms the
-   * write -- a failed capture that wiped the box would lose the thought it
-   * exists to catch. */
+  /* The capture box (item 6). One button per target rather than a target
+   * toggle plus a submit: it is one tap fewer on a phone, which is the
+   * whole point of the feature, and it is why a third target cost one
+   * button rather than a redesign. The text is only cleared once the
+   * server confirms the write -- a failed capture that wiped the box would
+   * lose the thought it exists to catch.
+   *
+   * Nothing here names the targets: `send` takes whatever `data-target`
+   * the button carries and the server rejects anything not in
+   * CAPTURE_TARGETS, so the Note button (Edvard, issues.md 2026-08-12)
+   * needed no change in this file at all. */
   (function captureBox() {
     var form = document.getElementById("capture-form");
     if (!form) return;

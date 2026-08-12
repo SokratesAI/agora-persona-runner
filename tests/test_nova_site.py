@@ -638,8 +638,12 @@ def test_a_capture_reaches_the_vault_through_the_real_request_path():
     cap.assert_called_once_with("issues", "the app needs a restart")
 
 
-@pytest.mark.parametrize("target", ["issues", "ideas"])
-def test_both_targets_are_accepted(target):
+# Parametrized over the dict rather than a literal list: this test was
+# `["issues", "ideas"]` and its name said "both", so adding `notes` as a
+# third target left a test that still passed, still read as complete, and
+# covered two thirds of the endpoint. Derived, it cannot go stale again.
+@pytest.mark.parametrize("target", sorted(nova_capture.CAPTURE_TARGETS))
+def test_every_target_is_accepted(target):
     with patch.object(nova_site, "capture", return_value=(True, "ok")) as cap:
         status, _, _ = _post("/api/capture", {"target": target, "text": "x"})
     assert status == 200

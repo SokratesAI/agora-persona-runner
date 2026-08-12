@@ -12,6 +12,7 @@ offset-based insertion correct on one file and wrong on the other.
 
 import difflib
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -258,3 +259,75 @@ def test_a_missing_target_file_is_reported_not_created():
     assert not ok
     assert "not found" in message
     write.assert_not_called()
+
+
+# --- notes: the third target (Edvard, issues.md 2026-08-12) ---------------
+#
+# *"I should be able to just leave you notes instead of just issues and
+# ideas. I have said this 2-3 times before. Add a button next to
+# issues/ideas in the Nova app that lets me just send you notes."*
+#
+# `notes.md` is a real third shape rather than a copy: it has a `## Read`
+# heading directly under the capture list where the other two have
+# `## Board`, and it is the only one of the three with no `# Details`
+# section at all. The fixture is the live file as created on 2026-08-12.
+
+
+@pytest.fixture
+def notes_md():
+    return _fixture("notes_capture_sample.md")
+
+
+def test_notes_is_a_capture_target_pointing_at_edvards_own_folder():
+    """Not under `nova/`, or it routes to Nova's database and never
+    reaches his phone -- `vault.db_for` keys on that prefix."""
+    assert CAPTURE_TARGETS["notes"] == "projects/sokrates/projects/agora/notes.md"
+    assert "/nova/" not in CAPTURE_TARGETS["notes"]
+
+
+def test_a_note_lands_above_the_read_heading(notes_md):
+    """The list is found structurally, so a file whose first heading is
+    `## Read` rather than `## Board` needs no special case -- but nothing
+    was pinning that, and a note filed *below* `## Read` reads as already
+    handled to every cycle after it."""
+    out = insert_captures(notes_md, ["the vault sync is stuck again"])
+    # Split on the heading at the start of a line: the frontmatter's
+    # contract sentence names `## Read` inline, and splitting on the bare
+    # string puts the whole file below a "heading" inside the frontmatter.
+    above, _, below = out.partition("\n## Read")
+    assert "- the vault sync is stuck again" in above
+    assert "- the vault sync is stuck again" not in below
+
+
+def test_a_note_keeps_the_single_empty_bullet_last(notes_md):
+    out = insert_captures(notes_md, ["one", "two"])
+    assert _capture_list(out) == ["- one", "- two", "- "]
+
+
+def test_capture_writes_a_note_to_notes_md(notes_md):
+    with patch.object(nova_capture, "vault_read_path", return_value=notes_md), \
+            patch.object(nova_capture, "vault_write_path", return_value="written") as write:
+        ok, message = capture("notes", "you were right about the OOM kills")
+    assert ok, message
+    path, content = write.call_args[0]
+    assert path == CAPTURE_TARGETS["notes"]
+    assert "- you were right about the OOM kills" in content
+
+
+def test_every_button_in_the_page_names_a_real_target():
+    """The one coupling that can break silently.
+
+    `app.js` sends whatever `data-target` a button carries and never names
+    a target itself, so a button and this dict disagreeing is a capture
+    that 400s on a phone with no sign of it here. Read out of the shipped
+    HTML rather than a list, because a list would just be a fourth place
+    to forget.
+    """
+    page = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "agora_runner", "nova_public", "index.html",
+    )
+    with open(page, encoding="utf-8") as handle:
+        html = handle.read()
+    buttons = re.findall(r'class="capture-btn" data-target="([^"]+)"', html)
+    assert sorted(buttons) == sorted(CAPTURE_TARGETS)

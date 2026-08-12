@@ -43,6 +43,22 @@ from agora_runner.vault import vault_read_path, vault_write_path
 CAPTURE_TARGETS = {
     "issues": "projects/sokrates/projects/agora/issues.md",
     "ideas": "projects/sokrates/projects/agora/ideas.md",
+    # Edvard, issues.md 2026-08-12: *"I should be able to just leave you
+    # notes instead of just issues and ideas. I have said this 2-3 times
+    # before. Add a button next to issues/ideas in the Nova app that lets
+    # me just send you notes."* A note is neither a bug nor a proposal --
+    # it is context, a correction, a preference, something he wants a
+    # cycle to know. Forcing it into one of the other two files is what
+    # made him ask three times.
+    #
+    # `notes.md` deliberately carries the same bare-bullet contract as the
+    # other two rather than a shape of its own, because every line of this
+    # module is about *that* list and a third convention would need a
+    # third parser. What differs is downstream: notes are never boarded,
+    # numbered or given a `# Details` block. A cycle reads them and acts;
+    # `prompt.md` step 1a is where that obligation is written down, and
+    # without it this button files into a file nothing opens.
+    "notes": "projects/sokrates/projects/agora/notes.md",
 }
 
 # 64 KiB. A capture is a line typed on a phone; this is orders of

@@ -184,8 +184,8 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # Audited with the text on the `after` side, the same shape the
             # site's own capture box uses (nova_site.py), so a line filed by
             # a reply and a line typed into the box read identically in the
-            # Activity feed. `capture` refuses any target outside its own
-            # two-entry map, so nothing here needs to validate the path.
+            # Activity feed. `capture` refuses any target outside
+            # CAPTURE_TARGETS, so nothing here needs to validate the path.
             audit(
                 persona_name, conversation_id, "nova_capture",
                 f"Capture to {target} · {'ok' if ok else message}",
