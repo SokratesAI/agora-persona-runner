@@ -106,12 +106,19 @@ pre code { background: none; padding: 0; }
   align-items: center;
   gap: 0.5rem;
   margin-top: 0.5rem;
+  /* Three buttons rather than two since the Note button landed. Three
+   * 44px pills plus their gaps is ~250px, which fits a 390px phone and
+   * not a 320px one, so the row is allowed to wrap instead of pushing a
+   * button off the edge where it cannot be tapped. */
+  flex-wrap: wrap;
 }
 
 /* Pushes the buttons right and takes the slack, so they do not shift
- * sideways when the status text appears. */
+ * sideways when the status text appears. The 6rem basis is what lets the
+ * status yield first: it shrinks to a readable width before the buttons
+ * are forced onto a second line. */
 .capture-status {
-  flex: 1;
+  flex: 1 1 6rem;
   margin: 0;
   color: var(--dim);
   font-size: 0.82rem;
