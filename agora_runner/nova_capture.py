@@ -20,12 +20,19 @@ structurally -- frontmatter, then the run of top-level bullets before the
 first heading -- never by offset.
 
 **The write is a read-modify-write against a live vault, and it can
-lose.** `vault_write_path` sends CouchDB the `_rev` it just read, so a
-concurrent edit -- a cycle boarding these very files, or LiveSync
-flushing the phone -- makes the PUT fail with 409 rather than silently
-clobbering. That is the good case, and it is why the retry below re-reads
-before each attempt instead of resending. Any non-409 failure is not a
-conflict and retrying it would just spin.
+lose.** The read hands back the `_rev` it saw and the write sends that
+same `_rev`, so a concurrent edit -- a cycle boarding these very files,
+or LiveSync flushing the phone -- makes the PUT fail with 409 rather than
+silently clobbering. That is the good case, and it is why the retry below
+re-reads before each attempt instead of resending. Any non-409 failure is
+not a conflict and retrying it would just spin.
+
+This paragraph described the wrong mechanism until 2026-08-12, and it was
+wrong in the direction that matters: `vault_write_path` looked up a
+*fresh* revision immediately before the PUT, so the other writer's edit
+was adopted and overwritten and the 409 the retry loop below is built
+around could not occur. The loop was real; the conflict it waited for was
+not. Passing `if_rev` is what makes the sentence true.
 
 **One limit, one measured danger.** The runner pod's memory limit is
 256Mi (measured live 2026-08-09), and `rfile.read(n)` allocates whatever
@@ -38,7 +45,7 @@ capture at all.
 """
 
 from agora_runner.log import log
-from agora_runner.vault import vault_read_path, vault_write_path
+from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 # These three moved out of `projects/sokrates/projects/agora/` on
 # 2026-08-12. Edvard had asked whether they should follow Nova into its
@@ -218,7 +225,7 @@ def amend(target, index, original, text):
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):
-        current = vault_read_path(path)
+        current, rev = vault_read_path_rev(path)
         if current is None:
             return False, f"{path} not found"
         amended = replace_capture(current, index, original, bullets)
@@ -227,7 +234,7 @@ def amend(target, index, original, text):
             # likely a cycle boarded it while this page was open, which is
             # the ordinary outcome rather than a fault.
             return False, "that capture is no longer in the list"
-        result = vault_write_path(path, amended)
+        result = vault_write_path(path, amended, if_rev=rev)
         if result == "written":
             what = "edited" if bullets else "deleted"
             log(f"nova-capture {what} a capture in {target}")
@@ -308,10 +315,11 @@ def capture(target, text):
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):
-        current = vault_read_path(path)
+        current, rev = vault_read_path_rev(path)
         if current is None:
             return False, f"{path} not found"
-        result = vault_write_path(path, insert_captures(current, bullets))
+        result = vault_write_path(
+            path, insert_captures(current, bullets), if_rev=rev)
         if result == "written":
             log(f"nova-capture wrote {len(bullets)} bullet(s) to {target}")
             return True, f"captured to {target}"

@@ -446,15 +446,35 @@ def vault_assemble(doc, path=None):
 
 
 def vault_read_path(path):
+    return vault_read_path_rev(path)[0]
+
+
+def vault_read_path_rev(path):
+    """`(content, rev)` — the text, and the revision it was read at.
+
+    Every write this loop makes is a read-modify-write, and until now the
+    revision the caller read at was thrown away: `vault_write_path` looked
+    up a *fresh* `_rev` immediately before the PUT, so a writer that landed
+    in between was adopted and overwritten with no error anywhere. CouchDB
+    already solves this — a PUT carrying a stale `_rev` is rejected with a
+    409 — and this is the half of it the client was discarding. Hand the
+    `rev` back to `vault_write_path` as `if_rev` and a losing write fails
+    loudly instead of silently winning.
+
+    `rev` is None only when no document exists at that path. Content is
+    None for a missing file *and* for a tombstone, but a tombstone has a
+    revision and writing over it has to carry it — so the two cases are
+    `(None, None)` and `(None, "<rev>")`, and they are not the same.
+    """
     status, doc = couch_get_doc(path.lower())
     if status != 200:
-        return None
+        return None, None
     # A LiveSync tombstone still has its content chunks attached, so this
     # returns the old text unless the flag is checked — see _vault_file_docs.
     # Deleted means gone; vault_git_revision_history is the way back.
     if doc.get("deleted"):
-        return None
-    return vault_assemble(doc, path.lower())
+        return None, doc.get("_rev")
+    return vault_assemble(doc, path.lower()), doc.get("_rev")
 
 
 class VaultPaths(list):
@@ -630,8 +650,27 @@ def _chunk_id_for(content_bytes):
         return f"h:{hashlib.sha256(content_bytes).hexdigest()[:16]}"
 
 
-def vault_write_path(path, content):
+#: `if_rev` default: "I have no expectation about the current revision,
+#: overwrite whatever is there." Deliberately not `None`, which is a real
+#: and different expectation — "there should be no document here yet".
+_ANY_REV = object()
+
+#: How many times an append re-reads and retries after losing a conflict.
+#: Three, matching nova_capture's WRITE_ATTEMPTS. A conflict means another
+#: writer won, so the retry is against a moving target and bounding it is
+#: what stops two writers livelocking on one hot file.
+APPEND_ATTEMPTS = 3
+
+
+def vault_write_path(path, content, if_rev=_ANY_REV):
     """LiveSync v0.25+ chunked write, mirroring vault_tool.seed_file.
+
+    2026-08-12: `if_rev` makes the write conditional. Pass the `rev` from
+    `vault_read_path_rev` and CouchDB rejects the PUT with 409 if anything
+    changed since that read, instead of this function quietly picking up
+    the winner's revision and overwriting them. Pass `None` to mean "this
+    file should not exist yet". Omit it and the write is unconditional,
+    which is what every caller got before and still gets.
 
     2026-08-06: this used to snapshot the previous content into
     `agora/backups/<timestamp> <basename>` in the vault before every
@@ -655,7 +694,9 @@ def vault_write_path(path, content):
     identical by construction, closing this bug class for good."""
     lower_id = path.lower()
     status, existing = couch_get_doc(lower_id)
-    return _vault_put_raw(path, content, existing if status == 200 else None)
+    return _vault_put_raw(
+        path, content, existing if status == 200 else None, if_rev=if_rev
+    )
 
 
 def vault_append_path(path, content, after_marker=""):
@@ -690,22 +731,41 @@ def vault_append_path(path, content, after_marker=""):
     which this function already refuses to do -- and here the caller is
     a model, which can read the FAILED string and retry with a real
     marker."""
-    existing_content = vault_read_path(path)
-    if existing_content is None:
-        return f"FAILED(not found: {path} -- use vault_write to create a new file)"
+    result = ""
+    for _ in range(APPEND_ATTEMPTS):
+        existing_content, rev = vault_read_path_rev(path)
+        if existing_content is None:
+            return f"FAILED(not found: {path} -- use vault_write to create a new file)"
+        merged = _appended(existing_content, content, after_marker)
+        if merged is None:
+            return (f"FAILED(after_marker not found in {path}: {after_marker!r} "
+                    f"-- nothing written; omit after_marker to append at the end)")
+        # The whole point of an append is "add mine to whatever is there",
+        # so losing a conflict is not a failure -- it means the file grew
+        # under us and the merge has to be redone against the new text.
+        # Retrying the *write* alone would resend a body built from the
+        # text we lost the race to, which is the clobber written out long
+        # hand. Re-read, re-merge, re-write.
+        result = vault_write_path(path, merged, if_rev=rev)
+        if "409 conflict" not in result:
+            return result
+    return result
+
+
+def _appended(existing_content, content, after_marker):
+    """The file's new text, or None if `after_marker` matches no line."""
     if after_marker:
         lines = existing_content.split("\n")
         for i, line in enumerate(lines):
             if line.strip() == after_marker.strip():
                 lines[i + 1:i + 1] = ["", content.strip("\n")]
-                return vault_write_path(path, "\n".join(lines))
-        return (f"FAILED(after_marker not found in {path}: {after_marker!r} "
-                f"-- nothing written; omit after_marker to append at the end)")
+                return "\n".join(lines)
+        return None
     sep = "" if existing_content.endswith("\n\n") else ("\n" if existing_content.endswith("\n") else "\n\n")
-    return vault_write_path(path, existing_content + sep + content.strip("\n") + "\n")
+    return existing_content + sep + content.strip("\n") + "\n"
 
 
-def _vault_put_raw(path, content, existing=None):
+def _vault_put_raw(path, content, existing=None, if_rev=_ANY_REV):
     path = path.lower()
     db = db_for(path)
     now_ms = int(time.time() * 1000)
@@ -765,10 +825,29 @@ def _vault_put_raw(path, content, existing=None):
     if existing is not None:
         doc["_rev"] = existing["_rev"]
         doc["ctime"] = existing.get("ctime", now_ms)
+    if if_rev is not _ANY_REV:
+        # The caller's expectation beats whatever the lookup above found —
+        # that lookup exists to carry `ctime` forward, not to decide who
+        # wins. Adopting the current revision here is precisely the silent
+        # clobber `if_rev` was added to stop. `None` means "no document
+        # expected", and a PUT with no `_rev` against a live document is
+        # CouchDB's own way of saying that: it 409s.
+        if if_rev is None:
+            doc.pop("_rev", None)
+        else:
+            doc["_rev"] = if_rev
     put_status, _ = couch_req(
         "PUT", f"{db}/{urllib.parse.quote(lower_id, safe='')}", doc
     )
-    return "written" if put_status in (200, 201) else f"FAILED({put_status})"
+    if put_status in (200, 201):
+        return "written"
+    if put_status == 409:
+        # Named, not just numbered. A caller deciding whether to retry has
+        # to tell "someone else wrote first, re-read and try again" apart
+        # from "the vault refused you", and 409 is the only status where
+        # retrying is the right answer rather than a spin.
+        return f"FAILED(409 conflict: {path} changed since it was read)"
+    return f"FAILED({put_status})"
 
 
 def fetch_vault_context(paths):

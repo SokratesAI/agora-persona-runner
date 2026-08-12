@@ -193,7 +193,7 @@ def test_no_bullets_leaves_the_file_byte_identical(issues_md):
 
 
 def test_capture_writes_the_updated_file_to_the_right_path(issues_md):
-    with patch.object(nova_capture, "vault_read_path", return_value=issues_md), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
         ok, message = capture("issues", "the app needs a restart")
     assert ok, message
@@ -226,7 +226,8 @@ def test_a_conflicting_write_is_retried_against_freshly_read_content(issues_md):
     landed."""
     his_note = insert_captures(issues_md, ["something he typed meanwhile"])
     reads = [issues_md, his_note]
-    with patch.object(nova_capture, "vault_read_path", side_effect=reads) as read, \
+    with patch.object(nova_capture, "vault_read_path_rev",
+                       side_effect=[(c, "1-x") for c in reads]) as read, \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=["FAILED(409)", "written"]) as write:
         ok, message = capture("issues", "mine")
@@ -237,7 +238,7 @@ def test_a_conflicting_write_is_retried_against_freshly_read_content(issues_md):
 
 
 def test_a_write_that_keeps_conflicting_gives_up_rather_than_spinning(issues_md):
-    with patch.object(nova_capture, "vault_read_path", return_value=issues_md), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="FAILED(409)") as write:
         ok, _ = capture("issues", "mine")
     assert not ok
@@ -247,7 +248,7 @@ def test_a_write_that_keeps_conflicting_gives_up_rather_than_spinning(issues_md)
 def test_a_non_conflict_failure_is_not_retried(issues_md):
     """A 401 or a 500 will fail identically next time; retrying it just
     triples the damage and the latency."""
-    with patch.object(nova_capture, "vault_read_path", return_value=issues_md), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="FAILED(401)") as write:
         ok, message = capture("issues", "mine")
     assert not ok
@@ -258,7 +259,7 @@ def test_a_non_conflict_failure_is_not_retried(issues_md):
 def test_a_missing_target_file_is_reported_not_created():
     """`vault_write_path` would happily create it; a capture file that
     appeared from nowhere would be a silent second copy of the backlog."""
-    with patch.object(nova_capture, "vault_read_path", return_value=None), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(None, None)), \
             patch.object(nova_capture, "vault_write_path") as write:
         ok, message = capture("issues", "mine")
     assert not ok
@@ -321,7 +322,7 @@ def test_a_note_keeps_the_single_empty_bullet_last(notes_md):
 
 
 def test_capture_writes_a_note_to_notes_md(notes_md):
-    with patch.object(nova_capture, "vault_read_path", return_value=notes_md), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(notes_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
         ok, message = capture("notes", "you were right about the OOM kills")
     assert ok, message
@@ -445,7 +446,7 @@ def test_a_capture_that_is_no_longer_there_is_not_an_edit(issues_md):
 
 
 def test_amend_reports_a_boarded_capture_without_writing(issues_md):
-    with patch.object(nova_capture, "vault_read_path", return_value=issues_md), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path") as write:
         ok, message = amend("issues", 0, "not in the file", "new text")
     assert not ok
@@ -455,7 +456,7 @@ def test_amend_reports_a_boarded_capture_without_writing(issues_md):
 
 def test_amend_writes_the_edited_file_to_the_right_path(issues_md):
     start = insert_captures(issues_md, ["the app needs a restart"])
-    with patch.object(nova_capture, "vault_read_path", return_value=start), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(start, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
         ok, message = amend("issues", 0, "the app needs a restart", "the app needs two restarts")
     assert ok, message
@@ -466,7 +467,7 @@ def test_amend_writes_the_edited_file_to_the_right_path(issues_md):
 
 def test_amend_with_no_text_deletes(issues_md):
     start = insert_captures(issues_md, ["a typo I want gone"])
-    with patch.object(nova_capture, "vault_read_path", return_value=start), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(start, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
         ok, message = amend("issues", 0, "a typo I want gone", "")
     assert ok, message
@@ -487,7 +488,8 @@ def test_an_amend_conflict_is_retried_against_freshly_read_content(issues_md):
     concurrent writer is a cycle boarding this very file."""
     start = insert_captures(issues_md, ["mine"])
     meanwhile = insert_captures(start, ["something he typed on the phone"])
-    with patch.object(nova_capture, "vault_read_path", side_effect=[start, meanwhile]) as read, \
+    with patch.object(nova_capture, "vault_read_path_rev",
+                       side_effect=[(c, "1-x") for c in [start, meanwhile]]) as read, \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=["FAILED(409)", "written"]) as write:
         ok, message = amend("issues", 0, "mine", "mine, reworded")
@@ -504,7 +506,8 @@ def test_an_amend_conflict_that_loses_to_a_boarding_does_not_resurrect_it(issues
     cycle boarded it between the attempts. Rebuilding on top would put it
     back in the list Edvard just watched it leave."""
     start = insert_captures(issues_md, ["mine"])
-    with patch.object(nova_capture, "vault_read_path", side_effect=[start, issues_md]), \
+    with patch.object(nova_capture, "vault_read_path_rev",
+                       side_effect=[(c, "1-x") for c in [start, issues_md]]), \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=["FAILED(409)", "written"]) as write:
         ok, message = amend("issues", 0, "mine", "mine, reworded")
