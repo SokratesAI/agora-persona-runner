@@ -701,8 +701,11 @@ def _with_silence(status, now=None):
     `build_status` because the payload that holds `status` is cached and
     warmed at startup: a stall judged at build time would be frozen at
     "healthy" for the whole life of a process, which is precisely the
-    hours when it would need to say otherwise. Per request, it is never
-    more than one request stale.
+    hours when it would need to say otherwise. Computed here it is never
+    more than one request stale -- though *reaching* a client that polls
+    with `If-None-Match` takes one more thing, because the journal content
+    does not change during a stall and so neither does the base etag. See
+    `journal_descriptor`.
 
     `stalled` waits `STALL_GRACE_INTERVALS` rather than asking whether
     this hour has an entry yet. A cycle writes its entry at the *end* of
@@ -803,6 +806,28 @@ def page_etag(base_etag, descriptor):
     return 'W/"' + digest + '"'
 
 
+def journal_descriptor(page, limit, offset, cycle):
+    """What `/api/journal`'s etag must vary by, beyond the payload itself.
+
+    The window, obviously -- a client that just asked for forty entries
+    must not be handed a 304 against the twenty it had.
+
+    And the silence, which is the one that is easy to miss and was.
+    `stalled` is judged per request against the clock, but the journal
+    content it is judged *from* does not change while the loop is quiet --
+    that silence is precisely the failure being reported. So the base etag
+    is byte-identical across a stall, and a client polling with
+    `If-None-Match` would be answered 304 for as long as the stall lasted:
+    the warning would render only in a tab opened *after* the loop died,
+    and never in the one already sitting open on Edvard's phone, which is
+    the case the feature exists for. Folding the interval count in means
+    the etag turns over at each hour boundary, which is exactly when the
+    answer changes and no more often.
+    """
+    window = f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}"
+    return f"{window}|silent={(page.get('status') or {}).get('silentIntervals')}"
+
+
 def _int_param(query, name, default):
     """A non-negative int from the query string, or `default`.
 
@@ -879,7 +904,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         limit = _int_param(query, "limit", None)
         offset = _int_param(query, "offset", 0)
         page = journal_page(payload, limit=limit, offset=offset, cycle=cycle)
-        etag = page_etag(base, f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}")
+        etag = page_etag(base, journal_descriptor(page, limit, offset, cycle))
         # The version travels inside the document as well as in the header,
         # for the reason `_versioned` puts it in both: a response served out
         # of the service worker's cache has no headers the page can read.

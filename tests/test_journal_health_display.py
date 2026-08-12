@@ -246,6 +246,54 @@ def test_the_stall_is_judged_per_request_and_not_frozen_into_the_cache():
     assert later["status"]["stalled"] is True
 
 
+def test_a_stall_changes_the_etag_so_an_open_tab_can_be_told():
+    """Raised by the reviewer, and it would have shipped the feature dead.
+
+    `stalled` is judged per request -- but the journal content it is judged
+    from does not change while the loop is silent, because that silence is
+    the failure. So the base etag is identical across a stall, and a page
+    polling with `If-None-Match` is answered 304 for as long as it lasts.
+    The warning would appear only in a tab opened after the loop died, and
+    never in the one already open on Edvard's phone, which is the whole
+    case it exists for.
+
+    Same payload, same window, only the clock moved across the threshold.
+    """
+    from agora_runner.nova_site import journal_descriptor, page_etag
+
+    payload = {"entries": [dict(e) for e in _entries(129, 128)]}
+    payload["status"] = build_status(parse_journal(_journal(129, 128)))
+
+    healthy = journal_page(payload, limit=20, now=NOW + timedelta(minutes=30))
+    stalled = journal_page(payload, limit=20, now=NOW + timedelta(hours=4))
+    assert healthy["status"]["stalled"] is False
+    assert stalled["status"]["stalled"] is True
+
+    base = "W/base"
+    assert page_etag(base, journal_descriptor(healthy, 20, 0, None)) \
+        != page_etag(base, journal_descriptor(stalled, 20, 0, None))
+
+
+def test_the_etag_still_holds_still_when_nothing_has_changed():
+    """The other half: it must not turn over on every request.
+
+    An etag that varied with the raw clock would 200 on every poll and
+    undo the whole point of `If-None-Match` -- so this pins that two
+    requests in the same hour agree.
+    """
+    from agora_runner.nova_site import journal_descriptor, page_etag
+
+    payload = {"entries": [dict(e) for e in _entries(129, 128)]}
+    payload["status"] = build_status(parse_journal(_journal(129, 128)))
+
+    first = journal_page(payload, limit=20, now=NOW + timedelta(minutes=5))
+    second = journal_page(payload, limit=20, now=NOW + timedelta(minutes=50))
+
+    base = "W/base"
+    assert page_etag(base, journal_descriptor(first, 20, 0, None)) \
+        == page_etag(base, journal_descriptor(second, 20, 0, None))
+
+
 def test_build_status_never_reads_the_clock():
     """The same guard from the other side, and the one that survives a rewrite.
 
