@@ -678,7 +678,7 @@ def test_an_edit_with_nothing_in_it_is_rejected_rather_than_treated_as_a_delete(
 @pytest.mark.parametrize("path", ["/api/capture/edit", "/api/capture/delete"])
 @pytest.mark.parametrize("payload", [
     {"target": "../../etc/passwd", "index": 0, "original": "x"},
-    {"target": "projects/sokrates/projects/agora/issues.md", "index": 0, "original": "x"},
+    {"target": "projects/sokrates/projects/nova/issues.md", "index": 0, "original": "x"},
     {"index": 0, "original": "x"},
     {"target": "issues", "index": 0},
     {"target": "issues", "index": 0, "original": ""},
@@ -745,7 +745,7 @@ def test_every_target_is_accepted(target):
 @pytest.mark.parametrize("payload", [
     {"target": "journal", "text": "x"},
     {"target": "../../etc/passwd", "text": "x"},
-    {"target": "projects/sokrates/projects/agora/issues.md", "text": "x"},
+    {"target": "projects/sokrates/projects/nova/issues.md", "text": "x"},
     {"text": "x"},
     {"target": "issues"},
     {"target": "issues", "text": 42},
@@ -2578,7 +2578,10 @@ def test_health_routes_pin_every_branch_of_the_routing_rule():
     assert routes["projects/sokrates/projects/agora/journal-digest.md.bak"] == "obsidian"
     # The Nova folder he asked to keep in his own vault.
     assert routes["projects/sokrates/projects/nova/nova.md"] == "obsidian"
-    assert routes["projects/sokrates/projects/agora/issues.md"] == "obsidian"
+    # A file he writes by hand. It sat under the agora folder until
+    # 2026-08-12 and moved into the Nova folder in his own vault at his
+    # ask -- the folder changed, the database deliberately did not.
+    assert routes["projects/sokrates/projects/nova/issues.md"] == "obsidian"
     assert routes[
         "projects/sokrates/projects/agora/nova/journal/138-cycle-121.md"
     ] == "nova"

@@ -21,7 +21,7 @@ def client_tool_schemas(caps, active_step=None):
             "name": "vault_read",
             "description": (
                 "Read one file from Edvard's Obsidian vault by path. "
-                "Paths are always lowercase -- e.g. 'projects/sokrates/projects/agora/issues.md', "
+                "Paths are always lowercase -- e.g. 'projects/sokrates/projects/nova/issues.md', "
                 "never 'Projects/Sokrates/...'."
             ),
             "input_schema": {"type": "object", "properties": {"path": {"type": "string"}},

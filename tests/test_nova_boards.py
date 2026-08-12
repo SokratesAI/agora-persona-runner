@@ -313,3 +313,21 @@ def test_a_board_reads_the_archive_beside_the_live_file(board_md, notes_md):
     assert BOARD_PATHS["ideas"]["nova_archive"].endswith(
         "nova/resources/ideas-archive.md"
     )
+
+
+def test_the_board_reads_the_same_file_the_capture_button_writes():
+    """The one invariant nothing was pinning, found by mutation-checking
+    the 2026-08-12 folder move: reverting `BOARD_PATHS["issues"]["edvard"]`
+    to the old path left all 1519 tests green.
+
+    These are two literal strings in two modules and they must name one
+    document. When they drift, nothing raises -- a capture is written to
+    one path and the board reads the other, so the page shows an
+    unchanging list and the writes go somewhere nobody opens. That is
+    indistinguishable from "he hasn't typed anything", which is why it
+    needs a test rather than attention.
+    """
+    from agora_runner.nova_capture import CAPTURE_TARGETS
+
+    for name, paths in BOARD_PATHS.items():
+        assert paths["edvard"] == CAPTURE_TARGETS[name], name

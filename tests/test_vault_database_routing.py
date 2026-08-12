@@ -18,7 +18,7 @@ from agora_runner import vault
 
 NOVA_FILE = "projects/sokrates/projects/agora/nova/journal/118-cycle-118.md"
 DIGEST = "projects/sokrates/projects/agora/journal-digest.md"
-HIS_FILE = "projects/sokrates/projects/agora/issues.md"
+HIS_FILE = "projects/sokrates/projects/nova/issues.md"
 
 
 def _routing_on():
@@ -45,14 +45,47 @@ def test_novas_own_paths_route_to_novas_database():
 
 
 def test_edvards_files_stay_in_his_vault():
-    """He offered issues.md and ideas.md; they deliberately did not move.
-    Obsidian LiveSync may still write them and cannot see this rule."""
+    """He offered issues.md and ideas.md; they deliberately did not move
+    database. Obsidian LiveSync may still write them and cannot see this
+    rule."""
     with _routing_on():
         assert vault.db_for(HIS_FILE) == vault.COUCHDB_DB
-        assert vault.db_for("projects/sokrates/projects/agora/ideas.md") == vault.COUCHDB_DB
         assert vault.db_for("projects/sokrates/projects/agora/architecture.md") == vault.COUCHDB_DB
         # The name is a prefix of Nova's folder without being inside it.
         assert vault.db_for("projects/sokrates/projects/agora/nova-notes.md") == vault.COUCHDB_DB
+
+
+def test_the_nova_folder_in_edvards_own_vault_is_not_novas_database():
+    """Two folders say "nova" and only one of them is Nova's.
+
+    `projects/sokrates/projects/agora/nova/` is Nova's database;
+    `projects/sokrates/projects/nova/` is a folder in Edvard's vault that
+    he asked to keep, and on 2026-08-12 the three files he writes by hand
+    moved into it -- *"they can be moved into the Nova folder in my Vault
+    and not be underneath the agora project folder"*. Adding that second
+    prefix to `NOVA_DB_FOLDERS` because it reads like Nova's would take
+    every capture he types off his phone, and nothing else would notice:
+    the boards would keep working, because the site reads through the
+    same wrong rule that wrote them.
+    """
+    with _routing_on():
+        for name in ("issues.md", "ideas.md", "notes.md", "nova.md"):
+            path = "projects/sokrates/projects/nova/" + name
+            assert vault.db_for(path) == vault.COUCHDB_DB, path
+        assert vault.dbs_for_prefix(
+            "projects/sokrates/projects/nova/") == [vault.COUCHDB_DB]
+
+
+def test_every_capture_target_lands_in_edvards_database():
+    """The pin that survives a rename. The test above names paths; this
+    one asks the module that actually decides, so moving a capture file
+    into a folder that routes to Nova cannot pass by being consistent
+    with itself."""
+    from agora_runner.nova_capture import CAPTURE_TARGETS
+
+    with _routing_on():
+        for kind, path in CAPTURE_TARGETS.items():
+            assert vault.db_for(path) == vault.COUCHDB_DB, f"{kind} -> {path}"
 
 
 def test_case_is_not_a_way_out_of_the_routing_rule():
