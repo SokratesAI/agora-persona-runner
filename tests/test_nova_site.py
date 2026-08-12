@@ -41,6 +41,8 @@ from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.nova_journal import (
     JOURNAL_DIR,
     assemble_entries,
+    normalise_entry,
+    synthetic_heading,
     assign_emoji,
     entry_filename,
     build_status,
@@ -1628,6 +1630,104 @@ def test_an_unnumbered_file_sorts_oldest_rather_than_being_dropped():
         JOURNAL_DIR + "hand-written.md": "### Cycle 1\n\nNo sequence prefix.",
     }
     assert [e["cycle"] for e in parse_journal(assemble_entries(files))] == [65, 1]
+
+
+def test_a_heading_at_the_wrong_depth_is_promoted_rather_than_absorbed():
+    # The live failure, 2026-08-13: `162-cycle-146.md` and
+    # `163-cycle-147.md` open with `## Cycle N`, two hashes where
+    # `_ENTRY_HEADING_RE` needs three, so both were absorbed into the card
+    # above them. The assertion that matters is the count -- three files
+    # in, three entries out -- because absorbing loses an entry silently
+    # while still returning a well-formed page.
+    files = {
+        JOURNAL_DIR + "162-cycle-146.md": "## Cycle 146 — 2026-08-12 20:35\n\nMine.",
+        JOURNAL_DIR + "163-cycle-147.md": "## Cycle 147 — 2026-08-12 21:01\n\nAlso mine.",
+        JOURNAL_DIR + "164-cycle-148.md": "### Cycle 148\n\nNot mine.",
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert [e["cycle"] for e in entries] == [148, 147, 146]
+    assert entries[0]["body"] == "Not mine."
+    assert entries[1]["body"] == "Also mine."
+    # The heading's own text survives promotion -- it is a real heading
+    # written by a real cycle, and only the hash count was wrong.
+    assert entries[2]["date"] == "2026-08-12" and entries[2]["time"] == "20:35"
+
+
+def test_frontmatter_is_stripped_instead_of_rendering_as_text():
+    # `146-cycle-131.md` opens with frontmatter and then `# Cycle 131`,
+    # so its `type: log` lines rendered as literal text inside the card
+    # for Cycle 132.
+    files = {
+        JOURNAL_DIR + "146-cycle-131.md": (
+            "---\ntype: log\nstatus: built\n---\n\n"
+            "# Cycle 131 — 2026-08-12 09:00 Oslo\n\nBody."
+        ),
+        JOURNAL_DIR + "147-cycle-132.md": "### Cycle 132\n\nNeighbour.",
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert [e["cycle"] for e in entries] == [132, 131]
+    assert entries[0]["body"] == "Neighbour."
+    assert entries[1]["body"] == "Body."
+
+
+def test_a_document_with_no_heading_at_all_gets_one_from_its_filename():
+    files = {
+        JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nNeighbour.",
+        JOURNAL_DIR + "071-cycle-66.md": "Straight into prose, no heading.",
+        JOURNAL_DIR + "001-edvard-s-first-message.md": "No heading and no cycle.",
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert [e["cycle"] for e in entries] == [66, 65, None]
+    assert entries[0]["body"] == "Straight into prose, no heading."
+    assert entries[1]["body"] == "Neighbour."
+    assert entries[2]["body"] == "No heading and no cycle."
+    # Named directly, because the cycle number reaching the card through
+    # `assemble_entries` above does not say *which* part of the filename
+    # it came from -- the first mutation run got a green suite out of a
+    # `synthetic_heading` that ignored the filename entirely.
+    assert synthetic_heading(JOURNAL_DIR + "071-cycle-66.md") == "Cycle 66"
+    assert synthetic_heading(JOURNAL_DIR + "001-edvard-s-first-message.md") == (
+        "Edvard s first message"
+    )
+
+
+def test_a_correct_document_is_left_exactly_as_written():
+    # The 161 live files that already do the right thing must round-trip
+    # untouched -- normalisation that rewrote them would be a silent
+    # rewrite of the archive on every page load.
+    text = "### Cycle 65 — 2026-08-09\n\nBody with a ## line in it.\n\n---\nPR: #23 | Outcome: merged"
+    assert normalise_entry(JOURNAL_DIR + "070-cycle-65.md", text) == text
+
+
+def test_an_entry_body_containing_a_two_hash_line_is_not_split():
+    # Why this is fixed per-document rather than by loosening
+    # `_ENTRY_HEADING_RE` to accept `##`: entries are free prose and some
+    # of them quote headings.
+    files = {
+        JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nI edited:\n\n## Needs Edvard\n\nand stopped.",
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert len(entries) == 1
+    assert "## Needs Edvard" in entries[0]["body"]
+
+
+def test_the_single_entry_fetch_normalises_the_same_way_the_folder_does(monkeypatch):
+    # The reply worker's fast path. Without this it parses to zero
+    # entries and falls back to the full journal, where -- before this
+    # change -- the entry was absorbed into its neighbour and so was not
+    # found there either, leaving Edvard's reply written with no memory
+    # of the entry he was replying to.
+    from agora_runner import nova_sources
+
+    monkeypatch.setattr(
+        nova_sources, "vault_list_ids", lambda prefix: [JOURNAL_DIR + "163-cycle-147.md"]
+    )
+    monkeypatch.setattr(
+        nova_sources, "vault_read_path", lambda path: "## Cycle 147\n\nWhat I did."
+    )
+    entries = parse_journal(nova_sources.journal_entry_markdown(147))
+    assert [e["cycle"] for e in entries] == [147]
+    assert entries[0]["body"] == "What I did."
 
 
 def test_the_migration_refuses_to_write_when_two_entries_collide():

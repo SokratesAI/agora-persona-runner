@@ -518,7 +518,8 @@ def assemble_entries(files):
     blob, shaped exactly like `journal.md`'s entries half so that
     `parse_journal` cannot tell the two sources apart."""
     ordered = sorted(files.items(), key=lambda kv: (-entry_seq(kv[0]), kv[0]))
-    return "\n\n".join(content.strip() for _, content in ordered if content.strip())
+    normalised = (normalise_entry(path, content) for path, content in ordered)
+    return "\n\n".join(text for text in normalised if text)
 
 
 _FILE_CYCLE_RE = re.compile(r"-cycle-(\d+)")
@@ -534,6 +535,88 @@ def file_cycle(path):
     """
     match = _FILE_CYCLE_RE.search(path.rsplit("/", 1)[-1])
     return int(match.group(1)) if match else None
+
+
+_FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+_LEADING_HEADING_RE = re.compile(r"\A#{1,6}[ \t]+(.+?)[ \t]*(?:\r?\n|\Z)")
+
+
+def normalise_entry(path, content):
+    """One entry document -> text `parse_journal` reads as exactly one entry.
+
+    A document is *supposed* to start with its `### ` heading and nothing
+    else, and 161 of the 164 live ones do. The three that do not were not
+    dropped, which would at least have been visible -- they were absorbed
+    into the card above them, because `_ENTRY_HEADING_RE` is what decides
+    where an entry begins and text before the first match belongs to
+    whatever `assemble_entries` concatenated in front of it. So Cycle
+    147's entry rendered as the tail of Cycle 148's card, with no card,
+    no permalink and no comment bubble of its own, and Cycle 131's
+    frontmatter rendered as literal `---` and `type: log` lines inside
+    Cycle 132's. Measured against the live folder 2026-08-13.
+
+    Two shapes, both fixed here rather than in the regex. Loosening
+    `_ENTRY_HEADING_RE` to accept `##` would split any entry *body*
+    containing a `## ` line, and every entry is free prose, so that trades
+    three broken cards for an unknown number of entries chopped in half.
+
+    - a leading heading at the wrong depth (`# Cycle 131 — ...`,
+      `## Cycle 146 — ...`) is promoted to `###`, keeping its text: the
+      cycle wrote a real heading and only the hash count is wrong.
+    - anything else gets one synthesised from the filename, which is the
+      only other statement of the entry's identity. `entry_filename`
+      built that name *from* the heading, so this is its inverse -- exact
+      for the `NNN-cycle-M.md` names every cycle writes, lossy for the
+      prose-slug ones, and a lossy card title beats no card. Exactly one
+      of the 164 live filenames carries no `-cycle-N` token
+      (`004-2026-08-02-edvard-s-first-message-not-a.md`); this said
+      "three" until a reviewer checked, which was `entry_filename`'s
+      count of headings with no cycle number, copied across without being
+      re-measured against the folder this function actually reads.
+
+    Frontmatter is stripped either way. It is not content, no entry that
+    parses today has any, and leaving it in front of a promoted heading
+    would just move the literal `type: log` lines from one card to
+    another.
+    """
+    text = (content or "").strip()
+    if not text:
+        return ""
+    text = _FRONTMATTER_RE.sub("", text, count=1).lstrip()
+    if not text:
+        return ""
+    if text.startswith("### ") or text.startswith("###\t"):
+        return text
+    heading = _LEADING_HEADING_RE.match(text)
+    if heading:
+        body = text[heading.end():].lstrip()
+        # `\n\n` rather than `\n`, matching the synthesis branch below and
+        # every correctly written document. `parse_journal` strips the body
+        # either way, so this is about the assembled markdown staying the
+        # shape the rest of the file assumes, not about the parse.
+        return f"### {heading.group(1)}\n\n{body}".rstrip() if body else f"### {heading.group(1)}"
+    return f"### {synthetic_heading(path)}\n\n{text}"
+
+
+def synthetic_heading(path):
+    """`.../163-cycle-147.md` -> `Cycle 147`; a prose slug back to prose.
+
+    The plain inverse of `entry_filename` -- drop the sequence prefix,
+    dashes back to spaces -- and that one rule covers both filename
+    shapes rather than special-casing the `-cycle-N` one. It was written
+    with a `file_cycle(path)` branch in front of it, which a mutation run
+    then showed to be unreachable in any observable sense: `071-cycle-66`
+    becomes `Cycle 66` down this path too, so the branch could be deleted
+    with every test still green. A branch nothing can distinguish is not
+    a safety net, it is a second thing to keep in sync.
+
+    Only ever used for a document that failed to write its own heading,
+    so it carries no date or time -- `entry_times` supplies those from
+    the document's mtime, which is the authoritative stamp anyway.
+    """
+    stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    words = re.sub(r"\A\d+-", "", stem).replace("-", " ").strip()
+    return words.capitalize() if words else "Entry"
 
 
 def entry_times(mtimes):
