@@ -1345,13 +1345,15 @@
    * one-line thoughts stacked with only a paragraph margin between them
    * read as one thought with a line break.
    *
-   * **A capture is addressed by its text, never by its position.** The
-   * board is rewritten by cycles constantly; an index from a page painted
-   * a minute ago points at a different bullet the moment anything above
-   * it is boarded. The server answers a stale address with 409 and the
-   * page re-reads, which is the honest outcome -- the alternative is
-   * editing whichever line happens to sit there now. */
-  function renderCapture(board, capture) {
+   * **A capture is addressed by its position *and* its text, and both
+   * halves are load-bearing.** The board is rewritten by cycles
+   * constantly, so a position alone points at a different bullet the
+   * moment anything above it is boarded; but two captures can read the
+   * same, so text alone would rewrite whichever came first and report
+   * success. Sending both means the server can refuse a disagreement
+   * instead of resolving it. A stale address is a 409 and the page
+   * re-reads, which is the honest outcome. */
+  function renderCapture(board, capture, index) {
     var one = el("div", "capture-item");
     var body = el("div", "capture-body");
     renderBlocks(body, capture.blocks || []);
@@ -1423,7 +1425,9 @@
         fetch("/api/capture/edit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target: board, original: capture.text, text: next }),
+          body: JSON.stringify({
+            target: board, index: index, original: capture.text, text: next,
+          }),
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (result) {
@@ -1448,7 +1452,7 @@
       // native confirm is one line and blocks the accident, and building
       // a modal for it would be a different item's work done badly.
       if (!window.confirm("Delete this capture?\n\n" + (capture.text || ""))) return;
-      send("/api/capture/delete", { target: board, original: capture.text });
+      send("/api/capture/delete", { target: board, index: index, original: capture.text });
     });
 
     actions.appendChild(status);
@@ -1464,8 +1468,8 @@
     if (captures.length) {
       var box = el("section", "captures");
       box.appendChild(el("h2", "captures-title", "Not boarded yet"));
-      captures.forEach(function (capture) {
-        box.appendChild(renderCapture(board, capture));
+      captures.forEach(function (capture, index) {
+        box.appendChild(renderCapture(board, capture, index));
       });
       wrap.appendChild(box);
     }

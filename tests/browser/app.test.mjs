@@ -2060,7 +2060,29 @@ describe("the issues page", () => {
     assert.equal(window.posted[0].url, "/api/capture/delete");
     assert.equal(window.posted[0].body.target, "issues");
     assert.equal(window.posted[0].body.original, payload.board.captures[0].text);
+    assert.equal(window.posted[0].body.index, 0);
     assert.equal(window.posted[0].body.text, undefined, "a delete carried replacement text");
+  });
+
+  test("the second of two identical captures sends its own position", async () => {
+    /* Review found this: matching on text alone rewrites whichever came
+     * first and reports success. Two captures reading the same is the
+     * only way the page can tell the server which one was tapped. */
+    const same = { text: "fix this", blocks: [{ type: "p", spans: [{ kind: "text", text: "fix this" }] }] };
+    const board = { ...payload.board, captures: [same, same] };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    window.confirm = () => true;
+    const items = [...window.document.querySelectorAll(".capture-item")];
+    assert.equal(items.length, 2);
+    click(window, [...items[1].querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.posted[0].body.index, 1,
+      "both rows sent the same address, so the wrong capture would be deleted");
+    assert.equal(window.posted[0].body.original, "fix this");
   });
 
   test("Delete asks first, and sends nothing when the answer is no", async () => {
@@ -2116,6 +2138,7 @@ describe("the issues page", () => {
     assert.equal(window.posted[0].url, "/api/capture/edit");
     assert.deepEqual(window.posted[0].body, {
       target: "issues",
+      index: 0,
       original: raw,
       text: "reworded on the phone",
     });

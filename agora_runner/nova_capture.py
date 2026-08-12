@@ -107,64 +107,79 @@ def _capture_span(lines):
     return start, first, end
 
 
-def list_captures(markdown):
-    """The capture list's non-empty bullets, in file order.
+def capture_entries(markdown):
+    """`[(start_line, end_line, text)]` for the capture list, in file order.
 
-    The same text `nova_boards._captures` shows on the board page, from
-    the same region -- this is what an edit or a delete addresses, so the
-    two have to agree about what a capture *is*. It differs in one way and
-    deliberately: no wrapped-line joining. `_captures` joins a
-    continuation into the bullet above it so the page never displays half
-    a sentence, but a writer that did the same would address a capture by
-    text that matches no single line in the file, and the edit would
-    silently find nothing.
+    **`text` is exactly what `nova_boards._captures` puts on the page**,
+    joining rule included: a continuation line is folded into the bullet
+    above it, because the same files are edited in Obsidian on a phone and
+    a capture that wrapped would otherwise show Edvard half a sentence.
+    That joining is why this returns a *span* rather than a line number --
+    one capture can be two lines in the file, and replacing only the first
+    would leave its second half orphaned as a stray paragraph.
+
+    The two functions must agree about what a capture is, and the first
+    version of this file got that exactly backwards: it deliberately did
+    *not* join, reasoning that a joined address would match no single line
+    and so fail safely. It does fail -- but the page is what supplies the
+    address, and the page joins, so Edit and Delete were permanently dead
+    on any wrapped capture and said "no longer in the list", which is
+    false. Found by review, reproduced against the live parser.
     """
     lines = (markdown or "").split("\n")
-    _, first, end = _capture_span(lines)
-    if first is None:
-        return []
-    return [
-        line.strip()[2:].strip()
-        for line in lines[first:end]
-        if line.strip().startswith("- ") and line.strip()[2:].strip()
-    ]
-
-
-def replace_capture(markdown, original, bullets):
-    """Swap the bullet reading exactly `original` for `bullets`. None if absent.
-
-    **Addressed by its text, never by its index**, and that is the whole
-    design. Edvard edits from his phone while a cycle is boarding the same
-    file; an index taken from a page rendered ten seconds ago points at a
-    different bullet once anything above it has been filed, and the edit
-    lands on the wrong line with nothing to say so. Matching the text
-    means a stale request finds nothing and can be told so honestly.
-
-    `None` is returned rather than an unchanged copy so the caller can
-    tell "already gone" from "written", which are different answers to
-    Edvard and only one of them is an error.
-
-    Passing no bullets deletes it. The empty cursor bullet is untouched --
-    it is the file's contract, not a capture.
-    """
-    lines = (markdown or "").split("\n")
-    _, first, end = _capture_span(lines)
-    if first is None:
-        return None
-    wanted = (original or "").strip()
-    if not wanted:
-        return None
-    for i in range(first, end):
+    start = _frontmatter_end(lines)
+    entries = []
+    for i in range(start, len(lines)):
         stripped = lines[i].strip()
-        if not stripped.startswith("- ") or stripped[2:].strip() != wanted:
-            continue
-        return "\n".join(
-            lines[:i] + [f"- {b}" for b in bullets] + lines[i + 1:]
-        )
-    return None
+        if stripped.startswith("#"):
+            break
+        if stripped.startswith("- ") and stripped[2:].strip():
+            entries.append((i, i + 1, stripped[2:].strip()))
+        elif stripped and entries and not stripped.startswith(("-", "*", "|")):
+            begin, _, text = entries[-1]
+            entries[-1] = (begin, i + 1, text + " " + stripped)
+    return entries
 
 
-def amend(target, original, text):
+def list_captures(markdown):
+    """The capture list's texts, exactly as the board page shows them."""
+    return [text for _, _, text in capture_entries(markdown)]
+
+
+def replace_capture(markdown, index, original, bullets):
+    """Swap capture `index` for `bullets`, if it still reads `original`.
+
+    **Both halves of the address are load-bearing, and each covers a way
+    the other fails.** The index alone is not enough: these files are
+    rewritten by cycles constantly, so a position taken from a page
+    painted a minute ago points at a different capture the moment anything
+    above it is boarded, and the edit would land on the wrong line with
+    nothing to say so. The text alone is not enough either -- two captures
+    can read the same, and matching on text would find the first one,
+    rewrite it, and report success, which is the same wrong-line edit
+    dressed as a working feature. That second hole was in the first
+    version of this function and was found by review, not by me.
+
+    So: the index says which one, the text says it has not moved, and a
+    disagreement is refused rather than resolved. `None` means "not there
+    any more", which is a different answer to Edvard than a failed write
+    and only one of them is an error.
+
+    Passing no bullets deletes it. The empty cursor bullet is not a
+    capture and is never addressable -- it is the file's contract.
+    """
+    entries = capture_entries(markdown)
+    wanted = (original or "").strip()
+    if not wanted or not isinstance(index, int) or not 0 <= index < len(entries):
+        return None
+    begin, end, text = entries[index]
+    if text != wanted:
+        return None
+    lines = (markdown or "").split("\n")
+    return "\n".join(lines[:begin] + [f"- {b}" for b in bullets] + lines[end:])
+
+
+def amend(target, index, original, text):
     """Edit or delete one capture. Empty `text` deletes. Returns (ok, message).
 
     Issues #66: *"The reported issues should be able to be edited and
@@ -190,7 +205,7 @@ def amend(target, original, text):
         current = vault_read_path(path)
         if current is None:
             return False, f"{path} not found"
-        amended = replace_capture(current, original, bullets)
+        amended = replace_capture(current, index, original, bullets)
         if amended is None:
             # Not a write failure: the bullet is not there to amend. Most
             # likely a cycle boarded it while this page was open, which is

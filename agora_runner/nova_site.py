@@ -931,6 +931,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         addressed moved, and the page should re-read rather than retry.
         """
         target = payload.get("target")
+        index = payload.get("index")
         original = payload.get("original")
         text = "" if delete else payload.get("text")
         if target not in CAPTURE_TARGETS:
@@ -938,6 +939,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if not isinstance(original, str) or not original.strip():
             self._send_json(400, {"error": "original must be a non-empty string"})
+            return
+        # `True` is an int in Python and would silently address capture 1.
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            self._send_json(400, {"error": "index must be a non-negative number"})
             return
         if not delete:
             if not isinstance(text, str):
@@ -948,7 +953,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
 
         try:
-            ok, message = amend(target, original, text)
+            ok, message = amend(target, index, original, text)
         except Exception as e:
             log(f"nova-site capture amend failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})

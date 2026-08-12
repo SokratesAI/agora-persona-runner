@@ -642,11 +642,11 @@ def test_editing_a_capture_reaches_the_vault_through_the_real_request_path():
     with patch.object(nova_site, "amend", return_value=(True, "edited in issues")) as am:
         status, _, body = _post(
             "/api/capture/edit",
-            {"target": "issues", "original": "old wording", "text": "new wording"},
+            {"target": "issues", "index": 2, "original": "old wording", "text": "new wording"},
         )
     assert status == 200
     assert json.loads(body)["ok"] is True
-    am.assert_called_once_with("issues", "old wording", "new wording")
+    am.assert_called_once_with("issues", 2, "old wording", "new wording")
 
 
 def test_deleting_a_capture_never_carries_replacement_text():
@@ -656,11 +656,11 @@ def test_deleting_a_capture_never_carries_replacement_text():
     with patch.object(nova_site, "amend", return_value=(True, "deleted in ideas")) as am:
         status, _, body = _post(
             "/api/capture/delete",
-            {"target": "ideas", "original": "a typo", "text": "surprise"},
+            {"target": "ideas", "index": 0, "original": "a typo", "text": "surprise"},
         )
     assert status == 200
     assert json.loads(body)["ok"] is True
-    am.assert_called_once_with("ideas", "a typo", "")
+    am.assert_called_once_with("ideas", 0, "a typo", "")
 
 
 def test_an_edit_with_nothing_in_it_is_rejected_rather_than_treated_as_a_delete():
@@ -668,7 +668,8 @@ def test_an_edit_with_nothing_in_it_is_rejected_rather_than_treated_as_a_delete(
     bad request, never carried out."""
     with patch.object(nova_site, "amend") as am:
         status, _, _ = _post(
-            "/api/capture/edit", {"target": "issues", "original": "keep me", "text": "   "}
+            "/api/capture/edit",
+            {"target": "issues", "index": 0, "original": "keep me", "text": "   "}
         )
     assert status == 400
     am.assert_not_called()
@@ -676,13 +677,18 @@ def test_an_edit_with_nothing_in_it_is_rejected_rather_than_treated_as_a_delete(
 
 @pytest.mark.parametrize("path", ["/api/capture/edit", "/api/capture/delete"])
 @pytest.mark.parametrize("payload", [
-    {"target": "../../etc/passwd", "original": "x"},
-    {"target": "projects/sokrates/projects/agora/issues.md", "original": "x"},
-    {"original": "x"},
-    {"target": "issues"},
-    {"target": "issues", "original": ""},
-    {"target": "issues", "original": "   "},
-    {"target": "issues", "original": 42},
+    {"target": "../../etc/passwd", "index": 0, "original": "x"},
+    {"target": "projects/sokrates/projects/agora/issues.md", "index": 0, "original": "x"},
+    {"index": 0, "original": "x"},
+    {"target": "issues", "index": 0},
+    {"target": "issues", "index": 0, "original": ""},
+    {"target": "issues", "index": 0, "original": "   "},
+    {"target": "issues", "index": 0, "original": 42},
+    # `True` is an int in Python and would silently address capture 1.
+    {"target": "issues", "index": True, "original": "x"},
+    {"target": "issues", "index": -1, "original": "x"},
+    {"target": "issues", "index": "0", "original": "x"},
+    {"target": "issues", "original": "x"},
 ])
 def test_an_amend_that_could_address_the_wrong_document_is_rejected(path, payload):
     with patch.object(nova_site, "amend") as am:
@@ -698,7 +704,7 @@ def test_a_capture_that_moved_under_him_is_a_conflict_rather_than_a_failure():
     with patch.object(nova_site, "amend",
                       return_value=(False, "that capture is no longer in the list")):
         status, _, body = _post(
-            "/api/capture/delete", {"target": "issues", "original": "gone"}
+            "/api/capture/delete", {"target": "issues", "index": 0, "original": "gone"}
         )
     assert status == 409
     assert json.loads(body)["ok"] is False
@@ -708,7 +714,7 @@ def test_a_vault_failure_on_an_amend_is_still_a_502():
     with patch.object(nova_site, "amend",
                       return_value=(False, "could not write to issues: FAILED(401)")):
         status, _, _ = _post(
-            "/api/capture/delete", {"target": "issues", "original": "x"}
+            "/api/capture/delete", {"target": "issues", "index": 0, "original": "x"}
         )
     assert status == 502
 
@@ -718,7 +724,7 @@ def test_a_successful_amend_invalidates_the_board_it_changed(path):
     nova_site.reset_cache()
     nova_site._cache["board:issues"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
     with patch.object(nova_site, "amend", return_value=(True, "ok")):
-        _post(path, {"target": "issues", "original": "x", "text": "y"})
+        _post(path, {"target": "issues", "index": 0, "original": "x", "text": "y"})
     assert "board:issues" not in nova_site._cache, (
         "the board Edvard is looking at would reload to the pre-edit copy"
     )
