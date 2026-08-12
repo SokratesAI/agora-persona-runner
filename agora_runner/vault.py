@@ -257,7 +257,7 @@ class VaultFiles(dict):
 
 
 def unreadable_note(files, tool):
-    """`"[tool: could not read ...]"` when `files` is a partial read, else "".
+    """`"[tool: INCOMPLETE READ -- ...]\\n"` when `files` is a partial read, else "".
 
     Prefixed onto a tool's answer rather than replacing it: the files that
     *were* read are still real, and a search that found three matches out of
