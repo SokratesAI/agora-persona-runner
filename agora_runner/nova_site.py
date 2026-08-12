@@ -462,6 +462,54 @@ def cached_payload(name, build):
         return _refresh(name, build)
 
 
+def warm_cache():
+    """Build what a first visit asks for, before anyone asks for it.
+
+    `cached_payload` removed the cost of the *second* load and left the
+    first one exactly where it was: "The first request of a process still
+    pays the full build". That reads like a rare edge until you notice how
+    often this process is new. Every cycle that merges into
+    `agora-persona-runner` rolls the nova-site pod, which is most hours of
+    most days -- so the visitor who pays the cold build is not an unlucky
+    first-ever reader, it is Edvard, on his phone, on the next visit after
+    almost any cycle. That is issues.md #71, "The Nova app takes 6-7
+    seconds to load", still standing after the cache landed.
+
+    Measured against the live pod 2026-08-12, 26 minutes after the #125
+    deploy, nothing having visited since: `/api/journal?limit=20` answered
+    in **5.70s** cold and **0.009s** on the next three requests. The digest
+    was 0.57s and comments 0.07s cold. So the whole of what he is waiting
+    for is one build that nobody had asked for yet. (The 3.0-3.5s in
+    `cached_payload` is the 2026-08-10 number for the same build; it grows
+    with the journal.)
+
+    The three payloads here are exactly the three `fetchAll` requests on a
+    cold page load. Boards are deliberately not warmed: they are fetched
+    on a sidebar press rather than at startup, and they measured 0.53s and
+    0.39s cold, which is a wait nobody has reported.
+
+    Sequential, on one thread, and never on the request path. Serving is
+    already underway when this starts, so a visitor arriving mid-warm is
+    not made to wait for it -- they take the cold path into the same
+    `_build_lock` this is holding and get the one build it produces, which
+    is the behaviour that lock already existed for.
+    """
+    for name, build in (
+        ("journal", journal_payload),
+        ("digest", digest_payload),
+        ("comments", comments_payload),
+    ):
+        try:
+            cached_payload(name, build)
+        except Exception as e:
+            # A vault that is unreachable at startup must cost the warm and
+            # nothing else: the server is already listening, and the next
+            # real request takes the cold path exactly as it does today.
+            # Raising here would kill a daemon thread noisily and leave the
+            # two payloads after this one unbuilt for no gain.
+            log(f"nova-site warm {name} failed: {e}")
+
+
 def _build_lock(name):
     """The lock serialising cold builds of one payload. Created under the
     cache lock so two threads racing to make it end up with the same one."""
@@ -1172,4 +1220,8 @@ def start_nova_site():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log(f"nova site listening on :{NOVA_PORT}")
+    # After the socket is being served, never before: the readiness probe
+    # must be answerable while this runs, or a warm that takes six seconds
+    # is six seconds of the pod looking dead rather than six seconds saved.
+    threading.Thread(target=warm_cache, name="nova-site-warm", daemon=True).start()
     return server

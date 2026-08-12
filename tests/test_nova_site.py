@@ -30,6 +30,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import urllib.parse
 from unittest.mock import patch
 
@@ -844,7 +845,8 @@ def test_start_nova_site_binds_and_serves_the_real_handler():
     """Drives the actual entry point main() calls. Eight QuotaWatcher tests
     in the bridge all called `_run()` directly and left `start()` covered by
     nothing; this is the same seam, so it gets the real function."""
-    with patch.object(nova_site, "NOVA_PORT", 0):
+    with patch.object(nova_site, "NOVA_PORT", 0), \
+            patch.object(nova_site, "warm_cache"):
         server = nova_site.start_nova_site()
     try:
         assert server.RequestHandlerClass is nova_site.NovaSiteHandler
@@ -889,7 +891,8 @@ def test_site_main_serves_until_sigterm_then_releases_the_port(site_main):
     served = []
 
     def capture_server():
-        with patch.object(nova_site, "NOVA_PORT", 0):
+        with patch.object(nova_site, "NOVA_PORT", 0), \
+                patch.object(nova_site, "warm_cache"):
             server = nova_site.start_nova_site()
         served.append(server)
         return server
@@ -916,7 +919,8 @@ def test_site_main_closes_the_port_even_if_the_loop_raises(site_main):
     served = []
 
     def capture_server():
-        with patch.object(nova_site, "NOVA_PORT", 0):
+        with patch.object(nova_site, "NOVA_PORT", 0), \
+                patch.object(nova_site, "warm_cache"):
             server = nova_site.start_nova_site()
         served.append(server)
         return server
@@ -2115,6 +2119,75 @@ def test_a_stale_payload_is_refreshed_behind_the_request_that_got_it(journal_md)
                 break
             time.sleep(0.05)
     assert read.call_count > served, "a stale payload was served and never refreshed"
+
+
+# Edvard, issues.md #71: "I takes 6-7 seconds to load the Nova app, even
+# though only 20 journals are shown." The cache above fixed the *second*
+# load and left the first one alone -- and this process is new most hours,
+# because a cycle merging into the runner rolls the nova-site pod. Measured
+# on the live pod 2026-08-12, 26 minutes after the #125 deploy with nothing
+# having visited since: /api/journal?limit=20 answered in 5.70s, then 0.009s.
+
+
+def test_the_first_visit_after_a_deploy_is_served_from_a_warmed_cache(journal_md):
+    """The visitor who arrives into a fresh process pays nothing.
+
+    Asserted as "the vault was not read again" rather than as a duration:
+    the 5.7s is the vault fetch plus the parse, and a wall-clock assertion
+    on a test fixture would be measuring neither.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md) as read:
+        nova_site.warm_cache()
+        warmed = read.call_count
+        assert warmed, "the warm built nothing at all"
+        status, _, body = _get("/api/journal")
+        assert read.call_count == warmed, "the first visitor paid the cold build anyway"
+    assert status == 200
+    assert json.loads(body)["entries"], "and what was warmed is the real answer"
+
+
+def test_the_warm_does_not_hold_up_the_server_it_runs_behind(journal_md):
+    """Started after the socket is being served, and never waited on.
+
+    A warm that ran inline would be six seconds of a pod that is listening
+    to nobody -- long enough for the readiness probe to call it dead. So
+    this blocks inside the warm and asserts `start_nova_site` came back
+    while it was still in there; called synchronously, the call below would
+    not return until this test's own timeout expired.
+    """
+    entered = threading.Event()
+    finished = threading.Event()
+    release = threading.Event()
+
+    def blocking_warm():
+        entered.set()
+        release.wait(10)
+        finished.set()
+
+    with patch.object(nova_site, "warm_cache", side_effect=blocking_warm), \
+            patch.object(nova_site, "NOVA_PORT", 0):
+        server = nova_site.start_nova_site()
+    try:
+        assert entered.wait(10), "start_nova_site never warmed the cache"
+        assert not finished.is_set(), "the warm ran on the startup path"
+        assert server.server_address[1] != 0, "and the socket was bound before it"
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_warm_that_cannot_reach_the_vault_costs_only_the_warm():
+    """CouchDB refusing at startup must not take down a daemon thread, and
+    must not stop the payloads behind the failing one from being built."""
+    nova_site.reset_cache()
+    with patch.object(nova_site, "journal_payload", side_effect=RuntimeError("couch is down")), \
+            patch.object(nova_site, "digest_payload", return_value={"needsEdvard": ""}) as digest, \
+            patch.object(nova_site, "comments_payload", return_value={}) as comments:
+        nova_site.warm_cache()
+    assert digest.called and comments.called, "one unreachable payload stopped the rest"
+    assert "journal" not in nova_site._cache, "a failed build must not be cached"
 
 
 def test_an_unchanged_journal_answers_a_returning_client_with_304(journal_md):
