@@ -1908,8 +1908,14 @@ describe("the feed loads a window rather than the whole journal", () => {
  * test is what app.js does with an intersection, not when a real browser
  * decides to report one. */
 describe("the pager fires on scroll, not only on a press", () => {
-  /** Install a fake IntersectionObserver and hand back the control surface. */
-  function observed(window) {
+  /** Install a fake IntersectionObserver and hand back the control surface.
+   *
+   * `initial` models the half of the spec that is easiest to forget: an
+   * observer delivers an observation as soon as `observe()` is called, if
+   * the target already meets the condition. A stub that only fires when a
+   * test says so cannot see any of the behaviour that follows from that,
+   * and the first version of this file had exactly that blind spot. */
+  function observed(window, { initial = false } = {}) {
     const watching = [];
     let disconnects = 0;
     window.IntersectionObserver = class {
@@ -1919,6 +1925,7 @@ describe("the pager fires on scroll, not only on a press", () => {
       }
       observe(node) {
         watching.push({ node, observer: this });
+        if (initial) this.callback([{ isIntersecting: true, target: node }], this);
       }
       disconnect() {
         disconnects += 1;
@@ -2042,7 +2049,11 @@ describe("the pager fires on scroll, not only on a press", () => {
     await loadSite("/", { journal: server.serve, install: (w) => { spy = observed(w); } });
     spy.scrollTo();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(spy.disconnects, 1, "the fired observer stayed attached");
+    /* Two, not one, and the second is the point of the test above this one:
+     * firing disconnects it, and then the re-render's fresh attach
+     * disconnects whatever it is superseding. Both paths have to hold or an
+     * observer outlives the node it is watching. */
+    assert.ok(spy.disconnects >= 1, "the fired observer stayed attached");
     assert.equal(spy.watching.length, 1, "more than one live observer on one pager");
   });
 
@@ -2072,6 +2083,49 @@ describe("the pager fires on scroll, not only on a press", () => {
     click(window, pager);
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(cards(window).length, 40);
+  });
+
+  test("a pager already on screen at first paint fills the screen and stops", async () => {
+    /* The spec delivers an observation on `observe()`, so on a viewport tall
+     * enough to hold the whole first window the pager widens with no scroll.
+     * That is intended -- it is the screen filling -- but it has to *stop*,
+     * and this stub is the worst case for that: it reports every new pager
+     * as visible, which is a viewport of infinite height. What must not
+     * happen is a hang or a fetch that never ends. */
+    const server = paged(50);
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { observed(w, { initial: true }); },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(cards(window).length > 20, "an already-visible pager did nothing");
+    assert.equal(cards(window).length, 50, "it stopped before the corpus was exhausted");
+    assert.equal(window.document.querySelector("button.more"), null, "a pager with nothing left to fetch");
+  });
+
+  test("only one observer is ever live, however many times the feed re-renders", async () => {
+    /* The leak the fired-observer disconnect does not cover: the 30-second
+     * poll rebuilds the feed whenever an entry lands, and a reader who never
+     * scrolled to the pager leaves an observer on a node that has just been
+     * thrown away. Over a day on a phone that is hundreds of them. */
+    const server = paged(50);
+    let spy;
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { spy = observed(w); },
+    });
+    assert.equal(spy.watching.length, 1);
+    const first = spy.watching[0].node;
+
+    // Two more renders that are not the pager firing: a fresh load each time.
+    window.dispatchEvent(new window.Event("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.dispatchEvent(new window.Event("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(spy.watching.length, 1, "an observer per render, all but one on a detached node");
+    assert.notEqual(spy.watching[0].node, first, "the live observer is on the old node");
+    assert.ok(spy.disconnects >= 2, "the superseded observers were never disconnected");
   });
 
   test("my notes pager scrolls itself too", async () => {

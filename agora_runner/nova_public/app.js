@@ -172,14 +172,34 @@
    *
    * Disconnecting also matters on its own: `render` throws this node away
    * and builds a new one, so an observer left attached is watching a node
-   * that is no longer in the document and never can be again.
+   * that is no longer in the document and never can be again. Firing is not
+   * the only way that happens -- the 30-second poll re-renders the feed
+   * whenever a new entry lands, and a reader who never scrolled to the
+   * pager leaves one observer and one detached subtree behind every time.
+   * On a phone left open all day that is hundreds. So `attached` holds the
+   * live one and every attach disconnects its predecessor: there is one
+   * pager on screen, so there is one observer.
+   *
+   * **It can fire the moment it is attached, and that is intended.** The
+   * spec delivers an initial observation on `observe()`, so on a viewport
+   * tall enough to show all twenty collapsed cards the first window widens
+   * with no scroll at all. That is the screen being filled, not the cold
+   * load growing: it is bounded, because each widening adds twenty more
+   * cards and the viewport does not grow with them, so it stops as soon as
+   * the content is taller than the screen plus the margin. Twenty collapsed
+   * cards is already ~1400px against a phone's ~850px, so Edvard's own
+   * first load does not trigger it at all -- but a desktop's does, and it
+   * is the path no test had until the reviewer pointed at it.
    *
    * `rootMargin` starts the fetch 300px before the pager is actually on
    * screen, so the entries are usually there by the time the reader gets
    * to where they go. That number is a guess at a comfortable feel, not a
    * measurement, and it is one line to change. */
+  var attached = null;
+
   function loadWhenScrolledTo(node) {
     if (typeof window.IntersectionObserver !== "function") return;
+    if (attached) attached.disconnect();
     var observer = new window.IntersectionObserver(function (entries) {
       for (var i = 0; i < entries.length; i += 1) {
         if (!entries[i].isIntersecting) continue;
@@ -188,6 +208,7 @@
         return;
       }
     }, { rootMargin: "300px 0px" });
+    attached = observer;
     observer.observe(node);
     /* He asked for the button to stop being something he presses, so when
      * the observer is actually attached it stops looking like one: no box,
