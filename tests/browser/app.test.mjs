@@ -1978,10 +1978,15 @@ describe("the pager fires on scroll, not only on a press", () => {
     assert.equal(cards(window).length, 40);
   });
 
-  test("it starts fetching before the pager is actually on screen", async () => {
+  test("the observer is handed a margin, so it does not wait for the pager to be visible", async () => {
     /* A window that only begins loading once the reader is looking at the
      * end of the feed shows them the end of the feed. The margin is what
-     * makes it feel like there was never a boundary. */
+     * makes it feel like there was never a boundary.
+     *
+     * The name says what this checks and no more: it reads the option the
+     * observer was constructed with. Whether a margin of that size actually
+     * feels seamless is a judgement about a real phone, and no test in a
+     * jsdom with no layout and no scrolling can make it. */
     const server = paged(50);
     let spy;
     await loadSite("/", { journal: server.serve, install: (w) => { spy = observed(w); } });
