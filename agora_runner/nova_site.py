@@ -382,6 +382,9 @@ _cache = {}
 _cache_lock = threading.Lock()
 _refreshing = set()
 _build_locks = {}
+# Bumped by `invalidate`. A refresh that started before an invalidation
+# must not be allowed to write its result afterwards -- see `_refresh`.
+_generation = {}
 
 
 def _versioned(payload):
@@ -461,6 +464,40 @@ def _build_lock(name):
         return lock
 
 
+def invalidate(name):
+    """Drop one cached payload so the next request rebuilds it cold.
+
+    Edvard, `issues.md` 2026-08-12: *"When i create a new issues, the
+    'not boarded yet' block for issues is not refreshed automatically.
+    This is probably a problem for ideas aswell."* It is, and it is
+    deterministic rather than flaky, which is why waiting and retrying
+    never fixed it for him.
+
+    `cached_payload` is stale-while-revalidate: it *always* returns the
+    entry it is holding and kicks the rebuild off behind the request.
+    That is exactly right for a poll -- it is what stopped the site
+    costing 3.5s a load -- and exactly wrong immediately after a write.
+    The reload that `app.js` fires on a successful capture is therefore
+    guaranteed to render the board as it was *before* the capture, every
+    single time. Nothing is stale by a fixed number of seconds here; the
+    write simply is not in the answer yet.
+
+    Dropping the entry rather than back-dating its timestamp is the whole
+    point: a back-dated entry is still served stale once and merely
+    schedules a refresh, which is the bug again. With no entry,
+    `cached_payload` takes the cold path and *waits* for the true answer.
+    Only the request that follows the write pays it, and a board build is
+    two vault reads rather than the journal's 3.5s.
+    """
+    with _cache_lock:
+        _cache.pop(name, None)
+        _generation[name] = _generation.get(name, 0) + 1
+        # Deliberately left in `_refreshing`: a rebuild already in flight
+        # read the vault before the write landed, so its result is stale
+        # and `_refresh` will now discard it. Clearing the flag here would
+        # let a *second* refresh start while the first is still running.
+
+
 def reset_cache():
     """Drop every cached payload. For tests, which share one process: a
     payload warmed by one test is exactly the stale copy the next one
@@ -469,6 +506,7 @@ def reset_cache():
     with _cache_lock:
         _cache.clear()
         _refreshing.clear()
+        _generation.clear()
         # `_build_locks` is deliberately not cleared. Dropping a lock a
         # cold build is currently holding does not release it -- it just
         # hands the next caller a different lock object, and the two build
@@ -478,6 +516,13 @@ def reset_cache():
 
 
 def _refresh(name, build):
+    # Read before the build, compared after it. An `invalidate` landing
+    # while this build is in flight means the build read the vault before
+    # the write it is meant to pick up, so storing its result would put
+    # the pre-write answer back into an empty cache and reinstate the
+    # exact bug `invalidate` exists to fix.
+    with _cache_lock:
+        started_at = _generation.get(name, 0)
     try:
         payload, body, etag = _versioned(build())
     except Exception as e:
@@ -489,8 +534,14 @@ def _refresh(name, build):
         log(f"nova-site {name} refresh failed: {e}")
         raise
     with _cache_lock:
-        _cache[name] = (payload, body, etag, time.time())
+        stale = _generation.get(name, 0) != started_at
+        if not stale:
+            _cache[name] = (payload, body, etag, time.time())
         _refreshing.discard(name)
+    # Returned either way: a caller on the cold path asked for *an*
+    # answer and this one is no older than the request that wanted it.
+    # What the generation check protects is the shared cache, not this
+    # return value.
     return payload, body, etag
 
 
@@ -1007,6 +1058,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             log(f"nova-site capture failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
             return
+
+        if ok:
+            # The board page Edvard is looking at has just gone stale, and
+            # `app.js` reloads it on the very next tick. Without this the
+            # reload is served the pre-capture payload -- see `invalidate`.
+            # `board:notes` never exists (notes have no board page yet) and
+            # popping a missing key is a no-op, so this needs no special
+            # case and cannot forget a target that grows one later.
+            invalidate("board:" + target)
 
         # Recorded whether or not it succeeded, and the Tailscale identity
         # headers go in as evidence rather than as a check -- nothing here

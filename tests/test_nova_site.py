@@ -2536,3 +2536,107 @@ def test_health_probes_use_a_short_timeout_not_the_60s_default():
         _get("/api/health")
     assert seen == [vault.HEALTH_TIMEOUT_SECONDS] * 2
     assert vault.HEALTH_TIMEOUT_SECONDS < 60
+
+
+# --- a capture is visible on the very next request -----------------------
+#
+# Edvard, `issues.md` 2026-08-12: *"When i create a new issues, the 'not
+# boarded yet' block for issues is not refreshed automatically. This is
+# probably a problem for ideas aswell."*
+#
+# It was, for both, and deterministically: `cached_payload` always serves
+# the entry it holds and rebuilds behind the request, so the reload
+# `app.js` fires after a capture could only ever render the board from
+# before the capture. Nothing here is timing-dependent, which is why the
+# fixtures below need no clock control.
+
+
+def _board_captures(name="issues"):
+    """The capture bullets as plain strings.
+
+    `/api/board` serves each one as rendered blocks, so the text has to be
+    walked out of the spans -- comparing rendered structures would make
+    these tests fail on a change to the renderer that has nothing to do
+    with what they are pinning."""
+    status, _, body = _get(f"/api/board?name={name}")
+    assert status == 200, status
+    out = []
+    for blocks in json.loads(body)["captures"]:
+        out.append("".join(
+            span.get("text", "")
+            for block in blocks
+            for span in block.get("spans", [])
+        ))
+    return out
+
+
+def test_a_capture_is_in_the_board_on_the_very_next_request():
+    """The bug, stated as the behaviour Edvard expects."""
+    nova_site.reset_cache()
+    live = {"text": "---\n---\n\n- an older capture\n- \n\n## Board\n"}
+    with patch.object(nova_site, "board_markdown",
+                      side_effect=lambda name: (live["text"], "", "")):
+        assert _board_captures() == ["an older capture"]
+
+        def _write(target, text):
+            live["text"] = live["text"].replace(
+                "- \n", f"- {text}\n- \n", 1
+            )
+            return True, "ok"
+
+        with patch.object(nova_site, "capture", side_effect=_write):
+            status, _, _ = _post("/api/capture",
+                                 {"target": "issues", "text": "the new one"})
+        assert status == 200
+        assert _board_captures() == ["an older capture", "the new one"]
+
+
+def test_capturing_an_idea_does_not_invalidate_the_issues_board():
+    """The invalidation is keyed on the target, not a blanket cache drop:
+    a cache cleared on every write is the 3.5s cold journal load back."""
+    nova_site.reset_cache()
+    with patch.object(nova_site, "board_markdown",
+                      side_effect=lambda name: ("---\n---\n\n- x\n- \n\n## Board\n", "", "")):
+        _board_captures("issues")
+        with patch.object(nova_site, "capture", return_value=(True, "ok")):
+            _post("/api/capture", {"target": "ideas", "text": "y"})
+    assert "board:issues" in nova_site._cache
+    assert "board:ideas" not in nova_site._cache
+
+
+def test_a_failed_capture_leaves_the_cache_alone():
+    """Nothing was written, so making the next reader pay a cold build
+    buys nothing."""
+    nova_site.reset_cache()
+    with patch.object(nova_site, "board_markdown",
+                      side_effect=lambda name: ("---\n---\n\n- x\n- \n\n## Board\n", "", "")):
+        _board_captures("issues")
+        with patch.object(nova_site, "capture", return_value=(False, "nope")):
+            _post("/api/capture", {"target": "issues", "text": "y"})
+    assert "board:issues" in nova_site._cache
+
+
+def test_a_refresh_already_running_cannot_put_the_stale_answer_back():
+    """The race the generation counter exists for.
+
+    A background rebuild that started *before* the capture read the vault
+    before the write landed. Left alone it would finish afterwards and
+    store the pre-capture payload into the cache `invalidate` had just
+    emptied -- reinstating the exact bug, and only under load, which is
+    the worst way to find it.
+    """
+    nova_site.reset_cache()
+    nova_site._cache["board:issues"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
+    started = nova_site._refresh_started_probe = None
+
+    def _slow_build():
+        # Stands in for a rebuild in flight: the invalidation lands while
+        # this is running, exactly as a real capture would.
+        nova_site.invalidate("board:issues")
+        return {"captures": ["read before the write"]}
+
+    nova_site._refresh("board:issues", _slow_build)
+    assert "board:issues" not in nova_site._cache, (
+        "a build that read the vault before the write must not repopulate"
+    )
+    assert started is None
