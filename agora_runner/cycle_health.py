@@ -141,12 +141,18 @@ def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES):
     old hole means the record has a gap that a human should be told about
     once and not again.
 
-    `entries` is how many entry documents were actually seen, and it is here
-    because every other field in this dict reads as healthy when the answer
-    is really that nothing was read. `vault_bulk_fetch` logs a failed listing
-    and returns what it got, so a 401 arrives as an empty dict -- and an empty
-    dict yields no gaps, no stall, and an exit code of zero. The caller cannot
-    tell that apart from a clean loop without this count.
+    `entries` is how many distinct cycle *numbers* were parsed out of the
+    filenames -- deliberately the size of the same set `missing_cycles` works
+    from, and **not** a count of documents. A cycle that wrote twice leaves two
+    files under one number (`nova_journal` documents 081 and its addendum), so
+    the two figures genuinely differ and only this one answers the question
+    being asked. It is here because every other field in this dict reads as
+    healthy when the answer is really that nothing was read: `vault_bulk_fetch`
+    logs a failed listing and returns what it got, so a 401 arrives as an empty
+    dict -- and an empty dict yields no gaps, no stall, and an exit code of
+    zero. The caller cannot tell that apart from a clean loop without this
+    count. Zero here means nothing parseable came back at all, which is the
+    only threshold the blindness check depends on.
     """
     silent = stalled_for(mtimes, now, minutes)
     return {
@@ -167,12 +173,21 @@ def describe(report):
     **Reading nothing is reported, and it is reported instead of the rest.**
     Measured 2026-08-12 from the bridge pod, which is the shell `prompt.md`
     sends cycles to and where the previous handoff told the next cycle to run
-    this: `COUCHDB_USER`, `COUCHDB_PASSWORD` and `COUCHDB_NOVA_DB` are all
-    empty there, so the journal routes to the wrong database and 401s, the
+    this. The reason it reads nothing there is worth stating exactly, because
+    the obvious guess is wrong and would send the next debugger hunting for a
+    missing secret: **the bridge pod's CouchDB credentials are present and
+    working -- under different names.** Its own vault client reads `CDB_USER`,
+    `CDB_PASS`, `CDB_NOVA_DB`; this package reads `COUCHDB_*`, of which not one
+    is set in that pod. `agora_runner` is not in the bridge image at all
+    (`import agora_runner` outside a checkout is a `ModuleNotFoundError`), so
+    the only way to run this there is out of a git checkout in the workspace,
+    where the names this package wants default to empty. `db_for` then routes
+    the journal to Edvard's database instead of Nova's, that request 401s, the
     listing comes back with zero files, and every finding below is vacuously
     clean. The check printed nothing and exited 0 while the live folder
     visibly skipped 134 -- an all-clear from a blind instrument, which is
-    worse than no check at all because it reads as reassurance. The other
+    worse than no check at all because it reads as reassurance. The fix for
+    running it in the wrong pod is this message, not a credential. The other
     findings are suppressed rather than appended because they are not
     evidence of anything when the input was empty; saying "0 gaps, and also I
     could not look" invites reading the first half.
