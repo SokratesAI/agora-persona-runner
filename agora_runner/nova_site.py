@@ -462,6 +462,18 @@ def cached_payload(name, build):
         return _refresh(name, build)
 
 
+# What gets built at startup. There is an obvious way to write this list
+# -- warm what the page asks for on a cold load -- and it is wrong: what
+# matters is what the page asks for *and* is served out of this cache,
+# and those are not the same list (see `warm_cache`). A module constant
+# rather than a literal inside the function so the test that checks it
+# against the request path has something to read.
+WARM_PAYLOADS = (
+    ("journal", journal_payload),
+    ("digest", digest_payload),
+)
+
+
 def warm_cache():
     """Build what a first visit asks for, before anyone asks for it.
 
@@ -483,10 +495,19 @@ def warm_cache():
     `cached_payload` is the 2026-08-10 number for the same build; it grows
     with the journal.)
 
-    The three payloads here are exactly the three `fetchAll` requests on a
-    cold page load. Boards are deliberately not warmed: they are fetched
-    on a sidebar press rather than at startup, and they measured 0.53s and
-    0.39s cold, which is a wait nobody has reported.
+    The two payloads here are the two of `fetchAll`'s three requests that
+    are actually served out of this cache. `/api/comments` is the third
+    and is not warmed: its handler deliberately does not go through
+    `cached_payload` at all -- it is the one payload that changes
+    underneath itself -- so warming it would spend a vault read at every
+    process start that no request can ever collect. That is worth spelling
+    out because the wrong version of this function is the obvious one:
+    warm what the page asks for. What matters is what the page asks for
+    *and* reads from here, and those are not the same list.
+
+    Boards are also not warmed: they are fetched on a sidebar press rather
+    than at startup, and measured 0.53s and 0.39s cold, which is a wait
+    nobody has reported.
 
     Sequential, on one thread, and never on the request path. Serving is
     already underway when this starts, so a visitor arriving mid-warm is
@@ -494,11 +515,7 @@ def warm_cache():
     `_build_lock` this is holding and get the one build it produces, which
     is the behaviour that lock already existed for.
     """
-    for name, build in (
-        ("journal", journal_payload),
-        ("digest", digest_payload),
-        ("comments", comments_payload),
-    ):
+    for name, build in WARM_PAYLOADS:
         try:
             cached_payload(name, build)
         except Exception as e:

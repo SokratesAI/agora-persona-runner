@@ -2182,12 +2182,54 @@ def test_a_warm_that_cannot_reach_the_vault_costs_only_the_warm():
     """CouchDB refusing at startup must not take down a daemon thread, and
     must not stop the payloads behind the failing one from being built."""
     nova_site.reset_cache()
-    with patch.object(nova_site, "journal_payload", side_effect=RuntimeError("couch is down")), \
-            patch.object(nova_site, "digest_payload", return_value={"needsEdvard": ""}) as digest, \
-            patch.object(nova_site, "comments_payload", return_value={}) as comments:
+    attempted = []
+
+    def couch_is_down(name, build):
+        attempted.append(name)
+        if name == "journal":
+            raise RuntimeError("couch is down")
+        return ({}, "{}", 'W/"x"')
+
+    with patch.object(nova_site, "cached_payload", side_effect=couch_is_down):
         nova_site.warm_cache()
-    assert digest.called and comments.called, "one unreachable payload stopped the rest"
+    # Literals rather than a comparison against WARM_PAYLOADS itself: that
+    # list is the code under test, and a test that reads it back agrees
+    # with whatever it says. A third payload added here should fail this
+    # and be looked at.
+    assert attempted == ["journal", "digest"], "the payload behind the failing one was skipped"
     assert "journal" not in nova_site._cache, "a failed build must not be cached"
+
+
+def test_nothing_is_warmed_that_the_request_path_will_not_read_back():
+    """A warmed payload no handler reads from the cache is a vault round
+    trip at every process start that nobody can ever collect.
+
+    The obvious version of `WARM_PAYLOADS` is the three requests `app.js`
+    makes on a cold load, and the reviewer caught that being wrong:
+    `/api/comments` is deliberately *not* served through `cached_payload`,
+    because it changes underneath itself. So the list has to agree with
+    the handlers rather than with the client, and this reads the handlers
+    to check -- an assertion restating the list would move with it.
+    """
+    served = set()
+    for node in ast.walk(ast.parse(inspect.getsource(nova_site))):
+        if not isinstance(node, ast.Call):
+            continue
+        named = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if named not in ("cached_payload", "_send_cached_json"):
+            continue
+        first = node.args[0] if node.args else None
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            served.add(first.value)
+    # A scanner that finds nothing agrees with any list at all, which is
+    # the shape of vacuous guard this suite already bans elsewhere.
+    assert "journal" in served and "digest" in served, (
+        f"the handler scan found {sorted(served)} -- it is no longer reading the request path"
+    )
+    warmed = {name for name, _ in nova_site.WARM_PAYLOADS}
+    assert warmed <= served, (
+        f"{sorted(warmed - served)} is built at startup and no handler reads it back"
+    )
 
 
 def test_an_unchanged_journal_answers_a_returning_client_with_304(journal_md):
