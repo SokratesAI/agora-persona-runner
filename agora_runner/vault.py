@@ -230,6 +230,47 @@ def _id_range(prefix):
     })
 
 
+class VaultFiles(dict):
+    """A vault read that remembers what it could not see.
+
+    A bulk read that loses a database logs the failure and returns what it
+    got. That is the right call for the website -- one unreachable database
+    should not blank the journal page -- and it is the wrong shape for
+    anything that draws a conclusion from emptiness, because a refusal and
+    an empty folder arrive as the same `{}`. `{}` has no gaps in it, no
+    stubs, no duplicate titles and no search matches, so every tool built on
+    this reports a clean result and means "I read nothing". Cycle 136 shipped
+    a loop health check that said the loop was perfectly healthy while the
+    journal folder visibly skipped a cycle; it had read zero entries.
+
+    A `dict` subclass rather than a second return value so every existing
+    caller is untouched and only the ones that care have to look.
+    `unreadable` holds the same human-readable lines that go to the log, so a
+    caller can put the reason in front of a person rather than an exit code.
+    Used for the private `{doc_id: doc}` listing as well as the public
+    `{path: content}`, because both need exactly this channel.
+    """
+
+    def __init__(self, *args, unreadable=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.unreadable = list(unreadable)
+
+
+def unreadable_note(files, tool):
+    """`"[tool: INCOMPLETE READ -- ...]\\n"` when `files` is a partial read, else "".
+
+    Prefixed onto a tool's answer rather than replacing it: the files that
+    *were* read are still real, and a search that found three matches out of
+    two databases should hand over the three and say the third database is
+    missing. Only the emptiness is a lie, and this is what stops it being
+    told silently.
+    """
+    missed = getattr(files, "unreadable", ())
+    if not missed:
+        return ""
+    return f"[{tool}: INCOMPLETE READ -- {'; '.join(missed)}]\n"
+
+
 def _vault_file_docs(prefix=""):
     """{doc_id: doc} for every file under `prefix` that still exists.
 
@@ -256,6 +297,7 @@ def _vault_file_docs(prefix=""):
     # database, so mixing ids from both into a single list of 500 would
     # send half of them to a database that has never heard of them.
     keys_by_db = {}
+    unreadable = []
     for db in dbs_for_prefix(prefix):
         status, data = couch_req("GET", f"{db}/_all_docs?{_id_range(prefix)}")
         if status != 200:
@@ -263,9 +305,14 @@ def _vault_file_docs(prefix=""):
             # visibly, uselessly empty. With two, one failing leaves the
             # other's rows in place and the caller gets a partial listing
             # that looks entirely healthy. That is the failure mode this
-            # module exists to prevent, so it does not get to be silent.
-            log(f"vault: _all_docs listing failed on database {db!r} ({status}); "
-                f"files under {prefix!r} in that database are missing from this listing")
+            # module exists to prevent, so it does not get to be silent —
+            # and the log alone was still silent to every caller, which is
+            # why the same line now rides back on the result.
+            note = (f"_all_docs listing failed on database {db!r} ({status}); "
+                    f"files under {prefix!r} in that database are missing "
+                    f"from this listing")
+            log(f"vault: {note}")
+            unreadable.append(note)
             continue
         keys_by_db[db] = [
             row["id"] for row in data.get("rows", [])
@@ -290,9 +337,11 @@ def _vault_file_docs(prefix=""):
             # choice -- failing open would serve tombstones, which is the
             # bug this function exists to fix -- but it does not get to be
             # quiet about it.
-            log(f"vault: _all_docs include_docs batch failed on database {db!r} "
-                f"({status}); {len(batch)} file(s) under {prefix!r} omitted "
-                f"from this listing")
+            note = (f"_all_docs include_docs batch failed on database {db!r} "
+                    f"({status}); {len(batch)} file(s) under {prefix!r} "
+                    f"omitted from this listing")
+            log(f"vault: {note}")
+            unreadable.append(note)
             continue
         for row in res.get("rows", []):
             doc = row.get("doc")
@@ -303,7 +352,7 @@ def _vault_file_docs(prefix=""):
                 # be looked up in a database that does not hold them.
                 doc[_SRC_DB_KEY] = db
                 out[row["id"]] = doc
-    return out
+    return VaultFiles(out, unreadable=unreadable)
 
 
 class VaultIncompleteDocument(RuntimeError):
@@ -408,8 +457,23 @@ def vault_read_path(path):
     return vault_assemble(doc, path.lower())
 
 
+class VaultPaths(list):
+    """A sorted listing that remembers what it could not see.
+
+    `sorted()` on a `VaultFiles` returns a plain list and drops the flag, so
+    the listing tools were left exactly as blind as before -- "[no files
+    under that prefix]" for a database that refused to answer. Same channel,
+    same reason, different container.
+    """
+
+    def __init__(self, *args, unreadable=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.unreadable = list(unreadable)
+
+
 def vault_list_prefix(prefix=""):
-    return sorted(_vault_file_docs(prefix))
+    docs = _vault_file_docs(prefix)
+    return VaultPaths(sorted(docs), unreadable=docs.unreadable)
 
 
 def vault_list_ids(prefix=""):
@@ -760,8 +824,16 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
 
     With `with_mtimes`, returns `(contents, {path: mtime_ms})` instead --
     the file docs are already in hand here, so the caller gets the write
-    times for free rather than paying a second listing for them."""
+    times for free rather than paying a second listing for them.
+
+    The contents are a `VaultFiles`, so a caller that is about to conclude
+    something from an empty or short result can ask `.unreadable` what was
+    lost on the way. Everything that could not be read ends up there: a
+    failed listing, a failed document batch, and a file whose content chunks
+    are missing. Only the mapping carries it -- `mtimes` stays a plain dict,
+    because the two are always read together and one flag is enough."""
     filedocs = _vault_file_docs(prefix)
+    unreadable = list(filedocs.unreadable)
     # Grouped by the database of the file doc that points at them. A flat
     # set across both would send Nova's chunk ids to Edvard's database,
     # find nothing, and surface as every Nova file coming back empty.
@@ -779,6 +851,13 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
     for db, batch in chunk_batches:
         status, res = couch_req("POST", f"{db}/_all_docs?include_docs=true", {"keys": batch})
         if status != 200:
+            # Every file in this batch loses its body and drops out below as
+            # "missing chunks" -- which reads as damaged files rather than as
+            # a database that would not answer. Say which it was.
+            note = (f"content chunk batch failed on database {db!r} ({status}); "
+                    f"{len(batch)} chunk(s) under {prefix!r} could not be read")
+            log(f"vault: {note}")
+            unreadable.append(note)
             continue
         for row in res.get("rows", []):
             doc = row.get("doc")
@@ -797,9 +876,11 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
                 # the same call the failed-batch branch above makes, and it
                 # gets the same condition attached — silence is what let a
                 # spliced ideas.md read as intact all morning.
-                log(f"vault: {doc.get('path') or doc_id} omitted from bulk "
-                    f"fetch — {len(missing)} of {len(kids)} content chunks "
-                    f"missing from the vault ({', '.join(missing[:5])})")
+                note = (f"{doc.get('path') or doc_id} omitted from bulk fetch — "
+                        f"{len(missing)} of {len(kids)} content chunks missing "
+                        f"from the vault ({', '.join(missing[:5])})")
+                log(f"vault: {note}")
+                unreadable.append(note)
                 continue
             content = "".join(chunks[c] for c in kids)
         else:
@@ -808,7 +889,8 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
             path = doc.get("path") or doc_id
             out[path] = content
             mtimes[path] = doc.get("mtime")
-    return (out, mtimes) if with_mtimes else out
+    files = VaultFiles(out, unreadable=unreadable)
+    return (files, mtimes) if with_mtimes else files
 
 
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
@@ -851,21 +933,27 @@ def vault_search(query, prefix="", max_results=20):
         pattern = re.compile(query, re.IGNORECASE)
     except re.error:
         pattern = re.compile(re.escape(query), re.IGNORECASE)
+    files = vault_bulk_fetch(prefix)
+    note = unreadable_note(files, "vault_search")
     results = []
-    for path, content in sorted(vault_bulk_fetch(prefix).items()):
+    for path, content in sorted(files.items()):
         for lineno, line in enumerate(content.splitlines(), start=1):
             if pattern.search(line):
                 results.append(f"{path}:{lineno}: {line.strip()[:200]}")
                 if len(results) >= max_results:
-                    return "\n".join(results)
-    return "\n".join(results) if results else f"[vault_search: no matches for {query!r}]"
+                    return note + "\n".join(results)
+    if results:
+        return note + "\n".join(results)
+    return note + f"[vault_search: no matches for {query!r}]"
 
 
 def vault_query_frontmatter(field, value="", prefix=""):
     if not field.strip():
         return "[vault_query_frontmatter: field is required]"
+    files = vault_bulk_fetch(prefix)
+    note = unreadable_note(files, "vault_query_frontmatter")
     results = []
-    for path, content in sorted(vault_bulk_fetch(prefix).items()):
+    for path, content in sorted(files.items()):
         fields, _ = parse_frontmatter(content)
         if field not in fields:
             continue
@@ -875,8 +963,8 @@ def vault_query_frontmatter(field, value="", prefix=""):
             continue
         results.append(f"{path}: {field}={actual_str}")
     if not results:
-        return f"[vault_query_frontmatter: no files with {field}={value or '*'}]"
-    return "\n".join(results[:200])
+        return note + f"[vault_query_frontmatter: no files with {field}={value or '*'}]"
+    return note + "\n".join(results[:200])
 
 
 def vault_validate_frontmatter_schema(prefix=""):
@@ -891,16 +979,19 @@ def vault_validate_frontmatter_schema(prefix=""):
             continue
         if not str(fields.get("type", "")).strip():
             issues.append(f"{path}: missing required 'type' key")
+    note = unreadable_note(files, "vault_validate_frontmatter_schema")
     if not issues:
-        return f"[vault_validate_frontmatter_schema: {len(files)} file(s) checked, no issues]"
-    return f"{len(issues)} issue(s) out of {len(files)} file(s):\n" + "\n".join(issues[:200])
+        return note + f"[vault_validate_frontmatter_schema: {len(files)} file(s) checked, no issues]"
+    return note + f"{len(issues)} issue(s) out of {len(files)} file(s):\n" + "\n".join(issues[:200])
 
 
 def vault_update_frontmatter_batch(field, value, prefix="", match_field="", match_value=""):
     if not field.strip():
         return "[vault_update_frontmatter_batch: field is required]"
+    files = vault_bulk_fetch(prefix)
+    note = unreadable_note(files, "vault_update_frontmatter_batch")
     updated = []
-    for path, content in sorted(vault_bulk_fetch(prefix).items()):
+    for path, content in sorted(files.items()):
         match = FRONTMATTER_RE.match(content)
         if not match:
             continue
@@ -925,8 +1016,8 @@ def vault_update_frontmatter_batch(field, value, prefix="", match_field="", matc
         if vault_write_path(path, new_content) == "written":
             updated.append(path)
     if not updated:
-        return "[vault_update_frontmatter_batch: no matching files updated]"
-    return f"updated {field}={value!r} on {len(updated)} file(s):\n" + "\n".join(updated[:200])
+        return note + "[vault_update_frontmatter_batch: no matching files updated]"
+    return note + f"updated {field}={value!r} on {len(updated)} file(s):\n" + "\n".join(updated[:200])
 
 
 def vault_find_stub_notes(prefix="", min_chars=40):
@@ -937,9 +1028,10 @@ def vault_find_stub_notes(prefix="", min_chars=40):
         stripped = body.strip()
         if len(stripped) < min_chars:
             stubs.append(f"{path}: {len(stripped)} body char(s)")
+    note = unreadable_note(files, "vault_find_stub_notes")
     if not stubs:
-        return f"[vault_find_stub_notes: {len(files)} file(s) checked, no stubs found]"
-    return f"{len(stubs)} stub(s) out of {len(files)}:\n" + "\n".join(stubs[:200])
+        return note + f"[vault_find_stub_notes: {len(files)} file(s) checked, no stubs found]"
+    return note + f"{len(stubs)} stub(s) out of {len(files)}:\n" + "\n".join(stubs[:200])
 
 
 def vault_find_duplicate_titles(prefix=""):
@@ -951,18 +1043,20 @@ def vault_find_duplicate_titles(prefix=""):
         title = h1.group(1).strip() if h1 else path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
         titles.setdefault(title.lower(), []).append(path)
     dupes = {t: p for t, p in titles.items() if len(p) > 1}
+    note = unreadable_note(files, "vault_find_duplicate_titles")
     if not dupes:
-        return f"[vault_find_duplicate_titles: {len(files)} file(s) checked, no duplicate titles]"
+        return note + f"[vault_find_duplicate_titles: {len(files)} file(s) checked, no duplicate titles]"
     lines = [f"{len(dupes)} duplicate title(s):"]
     for title, paths in sorted(dupes.items()):
         lines.append(f"- {title!r}: {', '.join(sorted(paths))}")
-    return "\n".join(lines[:200])
+    return note + "\n".join(lines[:200])
 
 
 def vault_get_token_metrics(prefix=""):
     files = vault_bulk_fetch(prefix)
+    note = unreadable_note(files, "vault_get_token_metrics")
     if not files:
-        return "[vault_get_token_metrics: no files under that prefix]"
+        return note + "[vault_get_token_metrics: no files under that prefix]"
     rows = []
     total_tokens = 0
     for path, content in files.items():
@@ -971,7 +1065,8 @@ def vault_get_token_metrics(prefix=""):
         total_tokens += tokens
         rows.append((tokens, words, path))
     rows.sort(reverse=True)
-    lines = [f"{len(files)} file(s), ~{total_tokens:,} tokens total (chars/4 heuristic, not an exact tokenizer)."]
+    lines = [note.rstrip("\n")] if note else []
+    lines.append(f"{len(files)} file(s), ~{total_tokens:,} tokens total (chars/4 heuristic, not an exact tokenizer).")
     lines.append("Largest files:")
     for tokens, words, path in rows[:20]:
         flag = "  ⚠ large" if tokens > 20000 else ""

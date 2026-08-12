@@ -11,6 +11,7 @@ from agora_runner.vault import (
     vault_query_frontmatter, vault_validate_frontmatter_schema, vault_find_stub_notes,
     vault_find_duplicate_titles, vault_get_token_metrics, vault_git_revision_history,
     vault_summarize_recent_agent_work, vault_update_frontmatter_batch,
+    unreadable_note,
 )
 from agora_runner.tools_kubectl import kubectl_read
 from agora_runner.tools_github import github_read, create_pr, github_comment, merge_pr
@@ -101,7 +102,8 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             prefix = str(args.get("prefix", ""))
             audit(persona_name, conversation_id, "vault_list", prefix)
             paths = vault_list_prefix(prefix)
-            return "\n".join(paths[:200]) or "[no files under that prefix]"
+            note = unreadable_note(paths, "vault_list")
+            return note + ("\n".join(paths[:200]) or "[no files under that prefix]")
         if name == "vault_write":
             path = str(args.get("path", ""))
             content = str(args.get("content", ""))
