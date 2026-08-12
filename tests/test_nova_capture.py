@@ -18,11 +18,16 @@ from unittest.mock import patch
 import pytest
 
 from agora_runner import nova_capture
+from agora_runner.nova_boards import _captures
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
+    amend,
     capture,
     clean_capture_text,
+    capture_entries,
     insert_captures,
+    list_captures,
+    replace_capture,
 )
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -331,3 +336,167 @@ def test_every_button_in_the_page_names_a_real_target():
         html = handle.read()
     buttons = re.findall(r'class="capture-btn" data-target="([^"]+)"', html)
     assert sorted(buttons) == sorted(CAPTURE_TARGETS)
+
+
+# --- editing and deleting a capture (issues.md #66) -----------------------
+
+
+def test_the_list_edvard_can_edit_is_the_one_he_typed_in(issues_md):
+    """`list_captures` and the board page have to agree about what a
+    capture is, or the page offers an Edit button on something the writer
+    cannot find."""
+    out = insert_captures(issues_md, ["first", "second"])
+    assert list_captures(out)[-2:] == ["first", "second"]
+    assert "" not in list_captures(out), "the cursor bullet is not a capture"
+
+
+def test_a_bullet_below_the_first_heading_is_not_editable():
+    """Same boundary as the insert: an edit must never be able to address
+    a Board row."""
+    markdown = "---\nx: 1\n---\n\n- mine\n- \n\n## Board\n\n- not the capture list\n"
+    assert list_captures(markdown) == ["mine"]
+    assert replace_capture(markdown, 1, "not the capture list", ["hacked"]) is None
+
+
+def test_the_writer_and_the_page_agree_on_a_capture_that_wrapped():
+    """The bug review found, and the reason `capture_entries` joins.
+
+    The board joins a continuation into the bullet above it so Edvard is
+    never shown half a sentence -- and the page is what supplies the
+    address an edit comes back with. A writer that did not join would find
+    no single line matching that address, so Edit and Delete were dead on
+    every wrapped capture while reporting "no longer in the list", which
+    is false rather than merely unhelpful."""
+    markdown = ("---\nx: 1\n---\n\n- the first half of what he typed\n"
+                "  and the second half, wrapped.\n- \n\n## Board\n")
+    joined = "the first half of what he typed and the second half, wrapped."
+    assert _captures(markdown) == [joined], "the page's own parser moved"
+    assert list_captures(markdown) == [joined]
+
+    edited = replace_capture(markdown, 0, joined, ["one line now"])
+    assert list_captures(edited) == ["one line now"]
+    assert "wrapped." not in edited, "the continuation line was orphaned"
+
+
+def test_two_captures_reading_the_same_are_told_apart_by_position():
+    """The second bug review found. Matching on text alone rewrites
+    whichever came first and reports success -- the wrong-line edit this
+    design exists to prevent, dressed as a working feature."""
+    markdown = "---\nx: 1\n---\n\n- fix this\n- fix this\n- \n\n## Board\n"
+    edited = replace_capture(markdown, 1, "fix this", ["fixed the second one"])
+    assert list_captures(edited) == ["fix this", "fixed the second one"]
+
+
+def test_an_index_that_no_longer_holds_that_text_is_refused():
+    """Both halves of the address have to agree. A cycle boarded the
+    bullet above, so position 1 is now a different sentence."""
+    markdown = "---\nx: 1\n---\n\n- second thing\n- \n\n## Board\n"
+    assert replace_capture(markdown, 1, "the one he tapped", ["x"]) is None
+    assert replace_capture(markdown, 0, "the one he tapped", ["x"]) is None
+
+
+@pytest.mark.parametrize("index", [-1, 5, None, True, "0"])
+def test_an_index_off_the_end_is_refused_rather_than_wrapped(index, issues_md):
+    out = insert_captures(issues_md, ["only one"])
+    assert replace_capture(out, index, "only one", ["x"]) is None
+
+
+def test_an_edit_replaces_only_the_bullet_that_matches(issues_md):
+    out = insert_captures(issues_md, ["first", "second", "third"])
+    edited = replace_capture(out, list_captures(out).index("second"), "second", ["second, reworded"])
+    assert list_captures(edited)[-3:] == ["first", "second, reworded", "third"]
+    assert edited.split("## Board", 1)[1] == issues_md.split("## Board", 1)[1]
+
+
+def test_a_delete_removes_the_bullet_and_leaves_the_cursor(issues_md):
+    out = insert_captures(issues_md, ["first", "second"])
+    deleted = replace_capture(out, list_captures(out).index("first"), "first", [])
+    assert list_captures(deleted)[-1:] == ["second"]
+    assert "first" not in list_captures(deleted)
+    assert _capture_list(deleted)[-1] == "- ", "the empty cursor bullet was taken with it"
+
+
+def test_an_edit_can_split_one_capture_into_several(issues_md):
+    """The same rule as the box: one line per item, because a bullet
+    holding a newline would break the list it lives in."""
+    out = insert_captures(issues_md, ["two things at once"])
+    edited = replace_capture(
+        out, list_captures(out).index("two things at once"),
+        "two things at once", clean_capture_text("one\ntwo"))
+    assert list_captures(edited)[-2:] == ["one", "two"]
+
+
+def test_a_capture_that_is_no_longer_there_is_not_an_edit(issues_md):
+    """The case this design exists for: a cycle boarded the bullet while
+    the page was open. Matching by text means the request finds nothing
+    rather than editing whichever line now sits at that index."""
+    assert replace_capture(issues_md, 0, "something a cycle already boarded", ["x"]) is None
+
+
+def test_amend_reports_a_boarded_capture_without_writing(issues_md):
+    with patch.object(nova_capture, "vault_read_path", return_value=issues_md), \
+            patch.object(nova_capture, "vault_write_path") as write:
+        ok, message = amend("issues", 0, "not in the file", "new text")
+    assert not ok
+    assert "no longer" in message
+    write.assert_not_called()
+
+
+def test_amend_writes_the_edited_file_to_the_right_path(issues_md):
+    start = insert_captures(issues_md, ["the app needs a restart"])
+    with patch.object(nova_capture, "vault_read_path", return_value=start), \
+            patch.object(nova_capture, "vault_write_path", return_value="written") as write:
+        ok, message = amend("issues", 0, "the app needs a restart", "the app needs two restarts")
+    assert ok, message
+    path, content = write.call_args[0]
+    assert path == CAPTURE_TARGETS["issues"]
+    assert list_captures(content)[-1] == "the app needs two restarts"
+
+
+def test_amend_with_no_text_deletes(issues_md):
+    start = insert_captures(issues_md, ["a typo I want gone"])
+    with patch.object(nova_capture, "vault_read_path", return_value=start), \
+            patch.object(nova_capture, "vault_write_path", return_value="written") as write:
+        ok, message = amend("issues", 0, "a typo I want gone", "")
+    assert ok, message
+    assert "deleted" in message
+    assert "a typo I want gone" not in list_captures(write.call_args[0][1])
+
+
+def test_an_unknown_target_never_reaches_the_vault_from_an_amend():
+    with patch.object(nova_capture, "vault_write_path") as write:
+        ok, message = amend("../../etc/passwd", 0, "x", "y")
+    assert not ok
+    assert "unknown target" in message
+    write.assert_not_called()
+
+
+def test_an_amend_conflict_is_retried_against_freshly_read_content(issues_md):
+    """Exactly the capture box's 409 retry, and it matters more here: the
+    concurrent writer is a cycle boarding this very file."""
+    start = insert_captures(issues_md, ["mine"])
+    meanwhile = insert_captures(start, ["something he typed on the phone"])
+    with patch.object(nova_capture, "vault_read_path", side_effect=[start, meanwhile]) as read, \
+            patch.object(nova_capture, "vault_write_path",
+                         side_effect=["FAILED(409)", "written"]) as write:
+        ok, message = amend("issues", 0, "mine", "mine, reworded")
+    assert ok, message
+    assert read.call_count == 2
+    final = write.call_args[0][1]
+    assert "mine, reworded" in list_captures(final)
+    assert "something he typed on the phone" in list_captures(final), \
+        "the retry resent a stale body and clobbered his write"
+
+
+def test_an_amend_conflict_that_loses_to_a_boarding_does_not_resurrect_it(issues_md):
+    """The retry re-reads, and the re-read no longer has the bullet: a
+    cycle boarded it between the attempts. Rebuilding on top would put it
+    back in the list Edvard just watched it leave."""
+    start = insert_captures(issues_md, ["mine"])
+    with patch.object(nova_capture, "vault_read_path", side_effect=[start, issues_md]), \
+            patch.object(nova_capture, "vault_write_path",
+                         side_effect=["FAILED(409)", "written"]) as write:
+        ok, message = amend("issues", 0, "mine", "mine, reworded")
+    assert not ok
+    assert "no longer" in message
+    assert write.call_count == 1

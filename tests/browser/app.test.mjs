@@ -2031,6 +2031,146 @@ describe("the issues page", () => {
     assert.match(box.textContent, /Small pickings on Nova ui/);
   });
 
+  test("each not-boarded capture is separated from the next", async () => {
+    /* Edvard, issues.md #66: "should have a separator line or something
+     * that shows a clear separation of the not boarded issues." The block
+     * already had a border; what ran together was one bullet against the
+     * next. Pinned on the rule rather than on a class name being present,
+     * because the class alone would still pass with no rule drawn. */
+    const window = await loadSite("/issues");
+    const items = [...window.document.querySelectorAll(".capture-item")];
+    assert.ok(items.length >= 1, "no captures rendered");
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(sheet, /\.capture-item\s*{[^}]*border-top:\s*1px/);
+    assert.match(sheet, /\.capture-item:first-of-type\s*{[^}]*border-top:\s*0/);
+  });
+
+  test("Delete sends the capture's own text, not its position", async () => {
+    /* The whole point of the design: a cycle boarding a bullet above this
+     * one shifts every index, and an index-addressed delete would then
+     * remove a different capture. */
+    const window = await loadSite("/issues");
+    window.confirm = () => true;
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/capture/delete");
+    assert.equal(window.posted[0].body.target, "issues");
+    assert.equal(window.posted[0].body.original, payload.board.captures[0].text);
+    assert.equal(window.posted[0].body.index, 0);
+    assert.equal(window.posted[0].body.text, undefined, "a delete carried replacement text");
+  });
+
+  test("the second of two identical captures sends its own position", async () => {
+    /* Review found this: matching on text alone rewrites whichever came
+     * first and reports success. Two captures reading the same is the
+     * only way the page can tell the server which one was tapped. */
+    const same = { text: "fix this", blocks: [{ type: "p", spans: [{ kind: "text", text: "fix this" }] }] };
+    const board = { ...payload.board, captures: [same, same] };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    window.confirm = () => true;
+    const items = [...window.document.querySelectorAll(".capture-item")];
+    assert.equal(items.length, 2);
+    click(window, [...items[1].querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.posted[0].body.index, 1,
+      "both rows sent the same address, so the wrong capture would be deleted");
+    assert.equal(window.posted[0].body.original, "fix this");
+  });
+
+  test("Delete asks first, and sends nothing when the answer is no", async () => {
+    const window = await loadSite("/issues");
+    window.confirm = () => false;
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0, "a declined confirm still deleted");
+  });
+
+  test("Edit opens the raw markdown and saves it against the original", async () => {
+    /* The capture carries markdown, and that is the whole point of the
+     * fixture. Filling the field from the rendered node instead of from
+     * `text` is indistinguishable on a plain one-line capture -- which is
+     * every capture in the live payload -- so a test written against one
+     * of those passes whether the code is right or wrong. Here the two
+     * genuinely differ: the field must hold the backticks and asterisks,
+     * because what Edvard edits is what the vault stores. */
+    const raw = "the `/api/board` page is **slow**";
+    const board = {
+      ...payload.board,
+      captures: [{
+        text: raw,
+        blocks: [{ type: "p", spans: [
+          { kind: "text", text: "the " },
+          { kind: "code", text: "/api/board" },
+          { kind: "text", text: " page is " },
+          { kind: "strong", text: "slow" },
+        ] }],
+      }],
+    };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    const item = window.document.querySelector(".capture-item");
+    assert.equal(item.querySelector(".capture-body").textContent,
+      "the /api/board page is slow", "the fixture does not render differently from its source");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Edit")[0]);
+
+    const box = item.querySelector(".capture-input");
+    assert.ok(box, "Edit did not open a field");
+    assert.equal(box.value, raw,
+      "the field was filled with rendered text rather than what the vault holds");
+    box.value = "reworded on the phone";
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Save")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/capture/edit");
+    assert.deepEqual(window.posted[0].body, {
+      target: "issues",
+      index: 0,
+      original: raw,
+      text: "reworded on the phone",
+    });
+  });
+
+  test("saving an emptied field is not a delete", async () => {
+    /* Deleting has a button and that button asks. Clearing the box has to
+     * do nothing at all, or the confirm is one backspace away from being
+     * bypassed. */
+    const window = await loadSite("/issues");
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Edit")[0]);
+    item.querySelector(".capture-input").value = "   ";
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Save")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0, "an emptied field deleted the capture");
+  });
+
+  test("a capture that moved under him says so instead of silently doing nothing", async () => {
+    const window = await loadSite("/issues");
+    window.confirm = () => true;
+    window.postReply = { ok: false, message: "that capture is no longer in the list" };
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.match(item.querySelector(".capture-item-status").textContent, /no longer/);
+  });
+
   test("my own notes are a separate tab, newest first, with a pager", async () => {
     const window = await loadSite("/issues");
     const tab = [...window.document.querySelectorAll(".tab")]

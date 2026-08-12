@@ -78,6 +78,150 @@ def _frontmatter_end(lines):
     return 0
 
 
+def _capture_span(lines):
+    """`(start, first, end)` for the capture list, or `(start, None, start)`.
+
+    The capture list is the run of top-level bullets between the
+    frontmatter and the first heading. Scanning stops at the heading so a
+    bullet inside the Board or Details sections can never be mistaken for
+    it. `start` is where the frontmatter ends, `first` the line the list
+    begins on, `end` one past its last bullet.
+
+    Shared by all three writers rather than repeated, because "which lines
+    are the capture list" is the one judgement they must agree on: an edit
+    that scanned a wider region than the insert could rewrite a Board row.
+    """
+    start = _frontmatter_end(lines)
+    first = None
+    end = start
+    i = start
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("#"):
+            break
+        if stripped == "-" or stripped.startswith("- "):
+            if first is None:
+                first = i
+            end = i + 1
+        i += 1
+    return start, first, end
+
+
+def capture_entries(markdown):
+    """`[(start_line, end_line, text)]` for the capture list, in file order.
+
+    **`text` is exactly what `nova_boards._captures` puts on the page**,
+    joining rule included: a continuation line is folded into the bullet
+    above it, because the same files are edited in Obsidian on a phone and
+    a capture that wrapped would otherwise show Edvard half a sentence.
+    That joining is why this returns a *span* rather than a line number --
+    one capture can be two lines in the file, and replacing only the first
+    would leave its second half orphaned as a stray paragraph.
+
+    The two functions must agree about what a capture is, and the first
+    version of this file got that exactly backwards: it deliberately did
+    *not* join, reasoning that a joined address would match no single line
+    and so fail safely. It does fail -- but the page is what supplies the
+    address, and the page joins, so Edit and Delete were permanently dead
+    on any wrapped capture and said "no longer in the list", which is
+    false. Found by review, reproduced against the live parser.
+    """
+    lines = (markdown or "").split("\n")
+    start = _frontmatter_end(lines)
+    entries = []
+    for i in range(start, len(lines)):
+        stripped = lines[i].strip()
+        if stripped.startswith("#"):
+            break
+        if stripped.startswith("- ") and stripped[2:].strip():
+            entries.append((i, i + 1, stripped[2:].strip()))
+        elif stripped and entries and not stripped.startswith(("-", "*", "|")):
+            begin, _, text = entries[-1]
+            entries[-1] = (begin, i + 1, text + " " + stripped)
+    return entries
+
+
+def list_captures(markdown):
+    """The capture list's texts, exactly as the board page shows them."""
+    return [text for _, _, text in capture_entries(markdown)]
+
+
+def replace_capture(markdown, index, original, bullets):
+    """Swap capture `index` for `bullets`, if it still reads `original`.
+
+    **Both halves of the address are load-bearing, and each covers a way
+    the other fails.** The index alone is not enough: these files are
+    rewritten by cycles constantly, so a position taken from a page
+    painted a minute ago points at a different capture the moment anything
+    above it is boarded, and the edit would land on the wrong line with
+    nothing to say so. The text alone is not enough either -- two captures
+    can read the same, and matching on text would find the first one,
+    rewrite it, and report success, which is the same wrong-line edit
+    dressed as a working feature. That second hole was in the first
+    version of this function and was found by review, not by me.
+
+    So: the index says which one, the text says it has not moved, and a
+    disagreement is refused rather than resolved. `None` means "not there
+    any more", which is a different answer to Edvard than a failed write
+    and only one of them is an error.
+
+    Passing no bullets deletes it. The empty cursor bullet is not a
+    capture and is never addressable -- it is the file's contract.
+    """
+    entries = capture_entries(markdown)
+    wanted = (original or "").strip()
+    if not wanted or not isinstance(index, int) or not 0 <= index < len(entries):
+        return None
+    begin, end, text = entries[index]
+    if text != wanted:
+        return None
+    lines = (markdown or "").split("\n")
+    return "\n".join(lines[:begin] + [f"- {b}" for b in bullets] + lines[end:])
+
+
+def amend(target, index, original, text):
+    """Edit or delete one capture. Empty `text` deletes. Returns (ok, message).
+
+    Issues #66: *"The reported issues should be able to be edited and
+    deleted by me."* Same read-modify-write and same 409 retry as
+    `capture`, for the same reason -- and the retry matters more here,
+    because a cycle boarding these files is exactly the concurrent writer
+    that would collide.
+
+    The re-read inside the loop is not just about the conflict. If the
+    losing attempt's re-read no longer contains the bullet, the capture
+    was boarded or removed between the attempts, and `replace_capture`
+    returns `None` rather than resurrecting it.
+    """
+    path = CAPTURE_TARGETS.get(target)
+    if path is None:
+        return False, f"unknown target: {target!r}"
+    if not (original or "").strip():
+        return False, "nothing to amend"
+    bullets = clean_capture_text(text or "")
+
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current = vault_read_path(path)
+        if current is None:
+            return False, f"{path} not found"
+        amended = replace_capture(current, index, original, bullets)
+        if amended is None:
+            # Not a write failure: the bullet is not there to amend. Most
+            # likely a cycle boarded it while this page was open, which is
+            # the ordinary outcome rather than a fault.
+            return False, "that capture is no longer in the list"
+        result = vault_write_path(path, amended)
+        if result == "written":
+            what = "edited" if bullets else "deleted"
+            log(f"nova-capture {what} a capture in {target}")
+            return True, f"{what} in {target}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed amending {target}: {result}")
+    return False, f"could not write to {target}: {result}"
+
+
 def clean_capture_text(text):
     """Text as typed -> the bullets to add.
 
@@ -113,24 +257,7 @@ def insert_captures(markdown, bullets):
     if not bullets:
         return markdown
     lines = markdown.split("\n")
-    start = _frontmatter_end(lines)
-
-    # The capture list is the run of top-level bullets between the
-    # frontmatter and the first heading. Scanning stops at the heading so
-    # a bullet inside the Board or Details sections can never be mistaken
-    # for it.
-    first = None
-    end = start
-    i = start
-    while i < len(lines):
-        stripped = lines[i].strip()
-        if stripped.startswith("#"):
-            break
-        if stripped == "-" or stripped.startswith("- "):
-            if first is None:
-                first = i
-            end = i + 1
-        i += 1
+    start, first, end = _capture_span(lines)
 
     if first is None:
         # No capture list at all. Put one where the contract says it goes,

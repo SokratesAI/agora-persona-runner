@@ -789,7 +789,69 @@ body.nav-open { overflow: hidden; }
   letter-spacing: 0.05em;
 }
 
+/* A rule between captures, not around the block (issues.md #66). The
+ * block's own border was already there; what ran together was one bullet
+ * against the next, because a capture is usually a single unpunctuated
+ * line and two of them stacked read as one. The rule is on the top edge
+ * so the first row keeps sitting straight under the title. */
+.capture-item {
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.capture-item:first-of-type { border-top: 0; padding-top: 0.2rem; }
+
 .capture-item p { margin: 0.3rem 0; }
+
+.capture-edit {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.capture-item-status {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.capture-item-status.is-error { color: var(--warn); }
+
+/* 44px is the iOS touch-target minimum, same as the capture buttons --
+ * these sit on the same page and are tapped with the same thumb. */
+.capture-act {
+  min-height: 44px;
+  padding: 0 0.75rem;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.capture-act:hover:not(:disabled) { border-color: var(--accent); }
+.capture-act:disabled { color: var(--dim); cursor: default; }
+.capture-act.is-danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
+
+.capture-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 3.5rem;
+  padding: 0.5rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+}
+
+.capture-input:focus { outline: none; border-color: var(--accent); }
 
 .item {
   background: var(--card);
