@@ -66,13 +66,22 @@ in `## New` for the next cycle to act on -- see `nova_replies`.
 so it retries on 409 exactly as `nova_capture.capture` does, re-reading
 each time rather than resending. Any non-409 failure is not a conflict
 and would fail identically on a retry.
+
+That paragraph was false for two days and is worth leaving as the
+correction rather than a clean claim: the retry loop was here, the 409 it
+waited for was not. Both writes below read, edited and PUT without
+carrying the revision they read at, so `vault_write_path` picked up
+whoever had written in between and overwrote them -- a loop watching for a
+conflict that the write it wrapped could not produce. `nova_capture` was
+fixed this way on 2026-08-12 (runner #118) and this module, holding the
+file Edvard types comments into, was not.
 """
 
 import re
 from datetime import datetime, timedelta, timezone
 
 from agora_runner.log import log
-from agora_runner.vault import vault_read_path, vault_write_path
+from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 COMMENTS_PATH = "projects/sokrates/projects/agora/nova/resources/comments.md"
 
@@ -303,13 +312,13 @@ def add_reply(cycle, stamp, text, reply_stamp=None):
     reply_stamp = reply_stamp or format_stamp()
     result = ""
     for _ in range(WRITE_ATTEMPTS):
-        current = vault_read_path(COMMENTS_PATH)
+        current, rev = vault_read_path_rev(COMMENTS_PATH)
         if current is None:
             return False, "could not read comments"
         updated = insert_reply(current, cycle, stamp, body, reply_stamp)
         if updated is None:
             return False, f"no comment on cycle {cycle} at {stamp} left to reply to"
-        result = vault_write_path(COMMENTS_PATH, updated)
+        result = vault_write_path(COMMENTS_PATH, updated, if_rev=rev)
         if result == "written":
             log(f"nova-comment replied to cycle {cycle} at {stamp}")
             return True, "replied"
@@ -445,13 +454,21 @@ def _store(cycle, text, stamp=None):
     stamp = stamp or format_stamp()
     result = ""
     for _ in range(WRITE_ATTEMPTS):
-        current = vault_read_path(COMMENTS_PATH)
+        current, rev = vault_read_path_rev(COMMENTS_PATH)
         if current is None:
             # First comment ever, or the file was moved. Creating it is
             # strictly better than refusing: the alternative is losing
             # what he typed to a missing heading.
+            #
+            # `rev` is kept rather than zeroed, and the two no-content cases
+            # differ: genuinely absent gives None, which PUTs without a
+            # `_rev` and so 409s if another writer created the file first --
+            # correct, because two "first comments" must not silently become
+            # one. A tombstone gives its revision, and overwriting one has
+            # to carry it or the write conflicts forever.
             current = ""
-        result = vault_write_path(COMMENTS_PATH, insert_comment(current, cycle, body, stamp))
+        result = vault_write_path(
+            COMMENTS_PATH, insert_comment(current, cycle, body, stamp), if_rev=rev)
         if result == "written":
             log(f"nova-comment stored on {target}")
             return True, f"commented on {target}"
