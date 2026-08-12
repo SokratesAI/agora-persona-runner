@@ -17,7 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_comments
+from agora_runner import nova_comments, vault
+from tests.couch_fake import FakeCouch
 from agora_runner.nova_comments import (
     COMMENTS_PATH,
     ACKNOWLEDGED_HEADING,
@@ -657,3 +658,59 @@ def test_overwriting_a_tombstone_carries_the_tombstone_revision():
         ok, _ = add_comment(63, "keep it up", stamp="2026-08-09 22:40")
     assert ok
     assert write.call_args.kwargs["if_rev"] == REV
+
+
+def test_a_reply_that_loses_a_real_race_keeps_the_comment_that_landed():
+    """The end-to-end version of `test_add_reply_retries_on_a_conflict...`.
+
+    That test hands the write mock the string "409 conflict" and watches
+    the retry. It proves the loop branches on 409; it cannot prove a 409
+    reaches it. Measured Cycle 142: with the mocked version alone, deleting
+    `if_rev=rev` from `add_reply` failed exactly one test in this file --
+    the narrow one asserting the argument -- while the reply went back to
+    silently overwriting whoever it raced.
+
+    `interleave={2: ...}` lands the other writer in the only window that
+    matters: after `add_reply`'s own read, before the lookup inside
+    `vault_write_path`. Later than that and the unconditional path has
+    already taken its revision, so the test would pass either way.
+    """
+    landed = insert_comment(THREAD, 81, "typed while you were writing",
+                            "2026-08-10 13:58")
+    couch = FakeCouch()
+    couch.seed(COMMENTS_PATH, THREAD)
+    couch.interleave = {2: lambda c: c.seed(COMMENTS_PATH, landed)}
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = nova_comments.add_reply(
+            80, "2026-08-10 13:54", "They are.", reply_stamp="2026-08-10 14:02")
+    assert ok, message
+    assert couch.rejected == 1, "the losing write must have been refused"
+    final = couch.text(COMMENTS_PATH)
+    assert _by_stamp(final, "2026-08-10 13:54")["reply"] == "They are."
+    assert _by_stamp(final, "2026-08-10 13:58")["text"] == \
+        "typed while you were writing", "his comment must survive the reply"
+
+
+def test_a_comment_that_loses_a_real_race_keeps_the_one_that_landed():
+    """`_store` is the path the chat bubble on a journal card writes through
+    -- the highest-traffic write in this module and the one that carries
+    Edvard's own words.
+
+    Reviewer finding on PR #123. The author checked that dropping
+    `if_rev=rev` here failed four tests and stopped there. All four assert
+    the keyword argument on a mocked write, which is the class this whole
+    change exists to move past: they prove the argument is passed, never
+    that omitting it loses anything. Nothing in the repo watched an actual
+    comment disappear.
+    """
+    landed = insert_comment(EMPTY, 64, "landed first", "2026-08-09 23:00")
+    couch = FakeCouch()
+    couch.seed(COMMENTS_PATH, EMPTY)
+    couch.interleave = {2: lambda c: c.seed(COMMENTS_PATH, landed)}
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = nova_comments.add_comment(
+            63, "mine", stamp="2026-08-09 23:10")
+    assert ok, message
+    assert couch.rejected == 1, "the losing write must have been refused"
+    assert [c["text"] for c in parse_comments(couch.text(COMMENTS_PATH))] == \
+        ["mine", "landed first"]

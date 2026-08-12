@@ -25,7 +25,7 @@ from unittest.mock import patch
 import pytest
 
 from agora_runner import tools_dispatch, vault
-from tests.test_vault_conditional_writes import FakeCouch
+from tests.couch_fake import FakeCouch
 
 PATH = "notes/issues.md"
 PERSONA = {"name": "nova"}
