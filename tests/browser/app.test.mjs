@@ -2074,14 +2074,38 @@ describe("the issues page", () => {
   });
 
   test("Edit opens the raw markdown and saves it against the original", async () => {
-    const window = await loadSite("/issues");
+    /* The capture carries markdown, and that is the whole point of the
+     * fixture. Filling the field from the rendered node instead of from
+     * `text` is indistinguishable on a plain one-line capture -- which is
+     * every capture in the live payload -- so a test written against one
+     * of those passes whether the code is right or wrong. Here the two
+     * genuinely differ: the field must hold the backticks and asterisks,
+     * because what Edvard edits is what the vault stores. */
+    const raw = "the `/api/board` page is **slow**";
+    const board = {
+      ...payload.board,
+      captures: [{
+        text: raw,
+        blocks: [{ type: "p", spans: [
+          { kind: "text", text: "the " },
+          { kind: "code", text: "/api/board" },
+          { kind: "text", text: " page is " },
+          { kind: "strong", text: "slow" },
+        ] }],
+      }],
+    };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
     const item = window.document.querySelector(".capture-item");
+    assert.equal(item.querySelector(".capture-body").textContent,
+      "the /api/board page is slow", "the fixture does not render differently from its source");
     click(window, [...item.querySelectorAll(".capture-act")].filter(
       (b) => b.textContent === "Edit")[0]);
 
     const box = item.querySelector(".capture-input");
     assert.ok(box, "Edit did not open a field");
-    assert.equal(box.value, payload.board.captures[0].text,
+    assert.equal(box.value, raw,
       "the field was filled with rendered text rather than what the vault holds");
     box.value = "reworded on the phone";
     click(window, [...item.querySelectorAll(".capture-act")].filter(
@@ -2092,7 +2116,7 @@ describe("the issues page", () => {
     assert.equal(window.posted[0].url, "/api/capture/edit");
     assert.deepEqual(window.posted[0].body, {
       target: "issues",
-      original: payload.board.captures[0].text,
+      original: raw,
       text: "reworded on the phone",
     });
   });
