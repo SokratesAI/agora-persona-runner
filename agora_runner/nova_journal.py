@@ -814,11 +814,16 @@ def render_blocks(text):
 def _newest_written_at(entries):
     """When the newest entry was written, as an aware datetime, or `None`.
 
-    The date and time on an entry are the vault's *write* time for that
-    document, not the stamp the cycle typed into its own heading
-    (`parse_journal`), so this is a measurement rather than a cycle's guess
-    at when it expected to finish -- which is the same instrument
-    `cycle_health.newest_entry_at` reads, off the same mtimes.
+    For a numbered entry the date and time are the vault's *write* time
+    for that document rather than the stamp the cycle typed into its own
+    heading (`parse_journal` substitutes it), so this is normally a
+    measurement and not a cycle's guess at when it expected to finish --
+    the same instrument `cycle_health.newest_entry_at` reads, off the same
+    mtimes. The substitution is keyed on the cycle number, so an entry
+    without one (Edvard's own notes) keeps its typed stamp; that is only
+    ever the newest entry in a corpus whose newest entry is not a cycle's,
+    and being an hour out on the silence there is not worth reaching for a
+    second time source.
 
     Defensive about the format because the four legacy heading shapes are
     still in the corpus and carry times like `03:19Z`: an entry whose stamp
