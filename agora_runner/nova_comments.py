@@ -75,6 +75,17 @@ whoever had written in between and overwrote them -- a loop watching for a
 conflict that the write it wrapped could not produce. `nova_capture` was
 fixed this way on 2026-08-12 (runner #118) and this module, holding the
 file Edvard types comments into, was not.
+
+**This does not make `comments.md` safe, and reading it that way is the
+mistake the sentence above invites.** Both writers *here* are conditional
+now, which closes phone-against-phone and phone-against-reply. The larger
+writer is elsewhere: a cycle acknowledging a comment moves it to
+`## Acknowledged` through the generic `vault_write` / `scoped_write` tools
+in `tools_dispatch`, which pass no revision at all -- so a cycle that read
+this file before Edvard's comment landed still overwrites it silently,
+which is precisely this bug from the other actor. That is idea #63's later
+slice, not an oversight, and it is the last write surface in the platform
+that cannot do a conditional write.
 """
 
 import re
@@ -461,11 +472,19 @@ def _store(cycle, text, stamp=None):
             # what he typed to a missing heading.
             #
             # `rev` is kept rather than zeroed, and the two no-content cases
-            # differ: genuinely absent gives None, which PUTs without a
-            # `_rev` and so 409s if another writer created the file first --
+            # differ: absent gives None, which PUTs without a `_rev` and so
+            # 409s if another writer created the file first --
             # correct, because two "first comments" must not silently become
             # one. A tombstone gives its revision, and overwriting one has
             # to carry it or the write conflicts forever.
+            #
+            # `(None, None)` is not only "absent": `vault_read_path_rev`
+            # collapses every non-200 into it, so a 500 or a timeout arrives
+            # looking like a missing file. That degrades safely here -- the
+            # unconditional-create attempt 409s against the live document and
+            # the retry reports failure rather than losing his text -- but it
+            # is the same failed-read-looks-empty class filed against both
+            # clients, not a distinction this code can actually make.
             current = ""
         result = vault_write_path(
             COMMENTS_PATH, insert_comment(current, cycle, body, stamp), if_rev=rev)
