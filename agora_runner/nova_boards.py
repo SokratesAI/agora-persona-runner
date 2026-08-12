@@ -33,7 +33,9 @@ import re
 # `nova_capture.CAPTURE_TARGETS` follows, and for the same reason.
 BOARD_PATHS = {
     "issues": {
-        "edvard": "projects/sokrates/projects/agora/issues.md",
+        # Moved out of the agora folder 2026-08-12, still in his database.
+        # See the note on `nova_capture.CAPTURE_TARGETS`.
+        "edvard": "projects/sokrates/projects/nova/issues.md",
         "nova": "projects/sokrates/projects/agora/nova/resources/issues.md",
         # Where `tools/roll_captures.py` files the older half of `nova`.
         # The site has to read it or rolling the live file deletes two
@@ -46,7 +48,7 @@ BOARD_PATHS = {
         ),
     },
     "ideas": {
-        "edvard": "projects/sokrates/projects/agora/ideas.md",
+        "edvard": "projects/sokrates/projects/nova/ideas.md",
         "nova": "projects/sokrates/projects/agora/nova/resources/ideas.md",
         "nova_archive": (
             "projects/sokrates/projects/agora/nova/resources/ideas-archive.md"

@@ -40,9 +40,25 @@ capture at all.
 from agora_runner.log import log
 from agora_runner.vault import vault_read_path, vault_write_path
 
+# These three moved out of `projects/sokrates/projects/agora/` on
+# 2026-08-12. Edvard had asked whether they should follow Nova into its
+# own database; the answer was no, and the reason is worth keeping:
+# *"It is actually a good point to leave them in my Vault just in case
+# the Nova app malfunctions or something else goes wrong. Then I have
+# easy access to them. But they can be moved into the Nova folder in my
+# Vault and not be underneath the agora project folder."* So they stay in
+# `obsidian` -- his database, and therefore on his phone -- and only the
+# folder changed.
+#
+# `projects/sokrates/projects/nova/` is deliberately NOT the same folder
+# as `projects/sokrates/projects/agora/nova/`, which routes to Nova's own
+# database. One is his; one is Nova's; they differ by a path segment.
+# `test_vault_database_routing` pins these three to `obsidian` for that
+# reason -- adding this prefix to `NOVA_DB_FOLDERS` because it says
+# "nova" would take the only three files he writes by hand off his phone.
 CAPTURE_TARGETS = {
-    "issues": "projects/sokrates/projects/agora/issues.md",
-    "ideas": "projects/sokrates/projects/agora/ideas.md",
+    "issues": "projects/sokrates/projects/nova/issues.md",
+    "ideas": "projects/sokrates/projects/nova/ideas.md",
     # Edvard, issues.md 2026-08-12: *"I should be able to just leave you
     # notes instead of just issues and ideas. I have said this 2-3 times
     # before. Add a button next to issues/ideas in the Nova app that lets
@@ -58,7 +74,7 @@ CAPTURE_TARGETS = {
     # numbered or given a `# Details` block. A cycle reads them and acts;
     # `prompt.md` step 1a is where that obligation is written down, and
     # without it this button files into a file nothing opens.
-    "notes": "projects/sokrates/projects/agora/notes.md",
+    "notes": "projects/sokrates/projects/nova/notes.md",
 }
 
 # 64 KiB. A capture is a line typed on a phone; this is orders of

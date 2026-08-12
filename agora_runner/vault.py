@@ -136,7 +136,13 @@ HEALTH_PROBE_PATHS = (
     "projects/sokrates/projects/agora/journal-digest.md",
     "projects/sokrates/projects/agora/journal-digest.md.bak",
     "projects/sokrates/projects/nova/nova.md",
-    "projects/sokrates/projects/agora/issues.md",
+    # Was `agora/issues.md` until 2026-08-12, when his three capture files
+    # moved into the Nova folder in his own vault at his ask. The rule it
+    # probes is unchanged -- a file he writes by hand must resolve to his
+    # database -- but the path it probes had to move with the file, or
+    # this tuple would be pointing at a document nobody can open, which is
+    # the exact failure the paragraph above is about.
+    "projects/sokrates/projects/nova/issues.md",
 )
 
 

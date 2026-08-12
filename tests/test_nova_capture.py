@@ -284,10 +284,21 @@ def notes_md():
 
 
 def test_notes_is_a_capture_target_pointing_at_edvards_own_folder():
-    """Not under `nova/`, or it routes to Nova's database and never
-    reaches his phone -- `vault.db_for` keys on that prefix."""
-    assert CAPTURE_TARGETS["notes"] == "projects/sokrates/projects/agora/notes.md"
-    assert "/nova/" not in CAPTURE_TARGETS["notes"]
+    """The folder changed on 2026-08-12; the database must not have.
+
+    This used to assert `"/nova/" not in path`, which was a proxy for
+    "routes to Edvard's database" and stopped being one the moment his
+    files moved into `projects/sokrates/projects/nova/`. The real rule is
+    `vault.db_for`, so `test_vault_database_routing` asks it directly for
+    every target; this one just pins the path.
+    """
+    assert CAPTURE_TARGETS["notes"] == "projects/sokrates/projects/nova/notes.md"
+    assert CAPTURE_TARGETS["issues"] == "projects/sokrates/projects/nova/issues.md"
+    assert CAPTURE_TARGETS["ideas"] == "projects/sokrates/projects/nova/ideas.md"
+    assert not any(
+        p.startswith("projects/sokrates/projects/agora/")
+        for p in CAPTURE_TARGETS.values()
+    )
 
 
 def test_a_note_lands_above_the_read_heading(notes_md):
