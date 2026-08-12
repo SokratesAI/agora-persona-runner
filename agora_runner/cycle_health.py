@@ -132,7 +132,7 @@ def stalled_for(mtimes, now, minutes=HEARTBEAT_MINUTES):
     return int(elapsed.total_seconds() // (minutes * 60))
 
 
-def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES):
+def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES, unreadable=()):
     """`{"entries": n, "missing": [...], "silent_intervals": n | None, "stalled": bool}`.
 
     `missing` is history and never shrinks; `stalled` is about right now.
@@ -156,6 +156,7 @@ def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES):
     """
     silent = stalled_for(mtimes, now, minutes)
     return {
+        "unreadable": list(unreadable),
         "entries": len(cycles_written(paths)),
         "missing": missing_cycles(paths),
         "silent_intervals": silent,
@@ -193,11 +194,18 @@ def describe(report):
     could not look" invites reading the first half.
     """
     if not report.get("entries"):
-        return (
+        line = (
             "read 0 journal entries -- cannot tell a healthy loop from an "
             "unreadable one; check the vault credentials and that this is "
             "running where they are set (the runner pod, not the bridge)"
         )
+        # When the read knew why it failed, say that instead of guessing at
+        # credentials. `vault_bulk_fetch` carries the reason back on the
+        # mapping it returns (`VaultFiles.unreadable`); a cycle staring at
+        # this line wants the 401 and the database name, not advice.
+        if report.get("unreadable"):
+            line += " -- the read reported: " + "; ".join(report["unreadable"])
+        return line
     parts = []
     missing = report.get("missing") or []
     if missing:
@@ -224,7 +232,10 @@ def main():
     from agora_runner.vault import vault_bulk_fetch
 
     files, mtimes = vault_bulk_fetch(JOURNAL_DIR, with_mtimes=True)
-    report = findings(list(files), mtimes, datetime.now(OSLO))
+    report = findings(
+        list(files), mtimes, datetime.now(OSLO),
+        unreadable=getattr(files, "unreadable", ()),
+    )
     line = describe(report)
     if line:
         print(line)
