@@ -222,3 +222,31 @@ def test_an_evicted_path_falls_back_to_the_old_behaviour_not_to_a_failure():
 
     couch.seed(PATH, "theirs\n")
     assert _run(couch, "vault_write", {"path": PATH, "content": "mine\n"}) == "written"
+
+
+def test_an_append_between_the_read_and_the_write_makes_the_read_stale():
+    """The persona's *own* append counts as somebody writing.
+
+    Read, `vault_append`, then a full `vault_write` in one conversation and
+    the write is refused -- with nobody else involved. That is the intended
+    answer, not an accident: `vault_append` moved the file, so the text the
+    persona read is no longer what is there, and a full-file write built
+    from it destroys the persona's own appended line. The 409 carries the
+    recovery instruction, so the model re-reads and re-applies.
+
+    This is pinned because the obvious "fix" -- dropping the remembered
+    revision when an append lands -- makes that write unconditional again
+    and restores exactly the silent clobber this whole mechanism exists to
+    stop. Found by the review subagent on PR #121, which read the same
+    behaviour as a spurious rejection; the behaviour is right and the
+    absolute claim in `_READ_REVS_MAX`'s docstring was what was wrong.
+    """
+    couch = FakeCouch()
+    couch.seed(PATH, "# Issues\n\n- one\n")
+
+    _run(couch, "vault_read", {"path": PATH})
+    assert _run(couch, "vault_append", {"path": PATH, "content": "- mine"}) == "written"
+    out = _run(couch, "vault_write", {"path": PATH, "content": "# Issues\n\n- one\n"})
+
+    assert "409 conflict" in out, out
+    assert "- mine" in couch.text(PATH)

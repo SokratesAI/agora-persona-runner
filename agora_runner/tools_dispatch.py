@@ -1,6 +1,7 @@
 """execute_tool -- the single dispatch point every provider calls for every tool_use block."""
 
 import json
+import threading
 from collections import OrderedDict
 
 from agora_runner.log import debug_log
@@ -62,11 +63,22 @@ _READ_REVS = OrderedDict()
 
 #: The runner process lives for days and serves every persona and every
 #: conversation, so this dict has no natural end -- that is the danger, and
-#: it is the only reason there is a number here. Eviction cannot break a
+#: it is the only reason there is a number here. *Eviction* cannot break a
 #: write: forgetting a revision downgrades that one write to the
 #: unconditional behaviour it had before this existed, which is a lost
-#: protection, never a lost or spuriously rejected write.
+#: protection, never a lost write.
+#:
+#: That sentence is about eviction and nothing else. It was phrased loosely
+#: enough to read as a promise about the whole mechanism, and it is not one:
+#: a write can be refused on the ordinary single-persona path, deliberately
+#: -- see `test_an_append_between_the_read_and_the_write_makes_the_read_stale`.
 _READ_REVS_MAX = 512
+
+#: `invoke_server` is a ThreadingHTTPServer, so tool calls arrive on handler
+#: threads and this dict is shared across them -- the same reason
+#: `tools_mcp._grants` carries one. The eviction loop below is a
+#: check-then-act sequence that is not atomic on its own.
+_READ_REVS_LOCK = threading.Lock()
 
 #: "This conversation never read this path", as distinct from the None that
 #: `vault_read_path_rev` returns for a path holding no document.
@@ -75,10 +87,11 @@ _NO_READ = object()
 
 def _remember_read_rev(conversation_id, path, rev):
     key = (conversation_id, path.lower())
-    _READ_REVS.pop(key, None)
-    _READ_REVS[key] = rev
-    while len(_READ_REVS) > _READ_REVS_MAX:
-        _READ_REVS.popitem(last=False)
+    with _READ_REVS_LOCK:
+        _READ_REVS.pop(key, None)
+        _READ_REVS[key] = rev
+        while len(_READ_REVS) > _READ_REVS_MAX:
+            _READ_REVS.popitem(last=False)
 
 
 def _claim_read_rev(conversation_id, path):
@@ -93,7 +106,8 @@ def _claim_read_rev(conversation_id, path):
     Returns `_NO_READ` (not None) when this conversation never read the
     path, because None means "I read it and there was nothing there".
     """
-    return _READ_REVS.pop((conversation_id, path.lower()), _NO_READ)
+    with _READ_REVS_LOCK:
+        return _READ_REVS.pop((conversation_id, path.lower()), _NO_READ)
 
 
 def _conditional_write(conversation_id, path, content):
