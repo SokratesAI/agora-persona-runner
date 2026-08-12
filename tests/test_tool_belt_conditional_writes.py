@@ -130,21 +130,32 @@ def test_a_second_write_with_no_new_read_is_not_rejected_forever():
     assert couch.text(PATH) == "three\n"
 
 
-def test_one_conversation_does_not_lend_its_read_to_another():
+def test_one_conversation_does_not_borrow_another_conversation_s_read():
     """Two conversations editing one file are the exact collision this
-    guards. Keying the memory by path alone would hand the second one the
-    first one's revision and call the race won."""
+    guards, and the memory is keyed by both or it is wrong in both
+    directions -- borrowing a *current* revision would call a race won, and
+    borrowing a *stale* one rejects a write nobody promised anything about.
+
+    So the other writer lands here deliberately. With the conversation
+    dropped from the key, conv-b inherits conv-a's now-stale revision and
+    409s on a write that was always unconditional. Without the interloper
+    this test passes under path-only keying, which is the version I wrote
+    first: the borrowed revision was still current, so the write landed
+    either way and the mutation went unnoticed.
+    """
     couch = FakeCouch()
     couch.seed(PATH, "one\n")
 
     _run(couch, "vault_read", {"path": PATH}, conversation_id="conv-a")
+    couch.seed(PATH, "theirs\n")
     out = _run(couch, "vault_write", {"path": PATH, "content": "mine\n"},
                conversation_id="conv-b")
 
-    # conv-b never read it, so its write is unconditional -- but it must not
-    # have been able to claim conv-a's expectation either.
     assert out == "written", out
-    assert ("conv-a", PATH) in tools_dispatch._READ_REVS
+    assert couch.text(PATH) == "mine\n"
+    # ...and conv-a's expectation survives, still waiting to protect the
+    # write that conversation actually makes.
+    assert tools_dispatch._READ_REVS[("conv-a", PATH)] == "1-x"
 
 
 def test_scoped_write_carries_the_read_revision_too():
