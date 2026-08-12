@@ -8,3 +8,15 @@ node_modules/
 # in the bridge since Cycle 108 and not here, which left them one
 # `git add -A` away from being committed by the cycle under review.
 .claude/
+
+# Scratch from the digest roll in `prompt.md` step 7, which tells a cycle
+# to `cd` into this repo and write `live.md`/`archive.md` here before
+# calling `tools.roll_digest`. They are fragments of Edvard's
+# `journal-digest.md`, not source, and they have been swept into a commit
+# by `git add -A` twice: Cycle 125 caught it before merging, Cycle 132
+# did not, and #111 shipped both files to `main`. Ignoring them is the
+# only version of this fix that does not depend on the next cycle
+# remembering.
+/live.md
+/live2.md
+/archive.md
