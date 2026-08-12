@@ -82,23 +82,84 @@ def _mentions_409(node):
     return False
 
 
+def _names_used(node):
+    """Every name referenced under `node`, including patched attributes.
+
+    `patch.object(vault, "couch_req", couch.req)` names its target with a
+    *string*, so a collector that only walks Name and Attribute nodes cannot
+    see the one wiring step that makes a FakeCouch real -- it reads as an
+    unrelated literal. Missing that is why the first version of this
+    function marked nothing as earned at all.
+    """
+    used = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            used.add(sub.id)
+        elif isinstance(sub, ast.Attribute):
+            used.add(sub.attr)
+        elif isinstance(sub, ast.Call):
+            attr = _patched_attr(sub)
+            if attr is not None and _patched_module(sub) is not None:
+                used.add(attr)
+    return used
+
+
+def _earned_in(tree):
+    """Modules exercised by a function that provokes a *real* conflict.
+
+    Scoped to the function, not the file, and that is the whole difference.
+    A file-level check is a coincidence detector: the tests that genuinely
+    race link themselves to their subject by *calling* it, so the module
+    name is picked up instead from whatever unrelated `patch.object` happens
+    to sit elsewhere in the same file. Delete every real race test, leave
+    one dangling `import FakeCouch` and one ordinary canned-success stub
+    behind, and a file-level guard stays green with the protection gone --
+    which is this guard committing the exact sin it forbids, one level up.
+    (Reviewer finding, Cycle 143, reproduced by doing it to
+    `test_nova_comments.py`.)
+
+    Two conditions, both inside one function's reach: it constructs a
+    `FakeCouch`, and it patches `couch_req` with it. A fake that is built
+    and never wired to the client enforces nothing.
+    """
+    #: Same-file helpers hold half the evidence -- `_run` in
+    #: test_tool_belt_conditional_writes.py does the `couch_req` patch on
+    #: behalf of every test in the file, so a function's own body is not
+    #: the whole of what it does. Resolved transitively below.
+    bodies = {n.name: n for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    def reach(name, seen):
+        if name in seen or name not in bodies:
+            return set()
+        seen.add(name)
+        used = _names_used(bodies[name])
+        for callee in list(used):
+            used |= reach(callee, seen)
+        return used
+
+    earned = set()
+    for name in bodies:
+        used = reach(name, set())
+        if "FakeCouch" in used and "couch_req" in used:
+            earned |= used
+    return earned
+
+
 def _scan():
     """(modules handed a canned 409, modules exercised through FakeCouch)."""
     canned, earned = {}, set()
     for path in sorted(TESTS.glob("test_*.py")) + [TESTS / "couch_fake.py"]:
         if path.name in EXEMPT:
             continue
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        uses_fake = "FakeCouch" in source
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        earned |= _earned_in(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             module = _patched_module(node)
             if module is None:
                 continue
-            if uses_fake:
-                earned.add(module)
             if _patched_attr(node) not in WRITE_FUNCS:
                 continue
             for kw in node.keywords:
@@ -114,6 +175,13 @@ def test_every_canned_409_is_paired_with_one_a_real_database_would_send():
         "(delete this guard) or the scanner stopped matching (fix it), and "
         "a guard that silently matches nothing is the vacuous test it exists "
         "to forbid")
+    assert earned, (
+        "found no function that both builds a FakeCouch and wires it to "
+        "couch_req -- the earned half matched nothing, so this guard would "
+        "fail every module for the wrong reason. The asymmetry is the point: "
+        "`canned` is checked above because matching nothing there passes "
+        "silently, and `earned` is checked here because matching nothing "
+        "*here* fails loudly and would get fixed by weakening the rule")
     unpaired = {mod: sorted(files) for mod, files in canned.items() if mod not in earned}
     assert not unpaired, (
         "these modules are handed a canned 409 but nothing makes a real "
