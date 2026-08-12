@@ -418,6 +418,18 @@ pre code { background: none; padding: 0; }
 
 .empty { color: var(--dim); }
 
+/* A cycle that ran and wrote nothing, marked between the two cards that
+ * bracket it (#72). Dim and rule-like rather than a card of its own: it is
+ * a hole in the record, and giving it the weight of an entry would let six
+ * permanent historical gaps crowd out the feed they sit in. */
+.cycle-gap {
+  margin: 0 0 1rem;
+  padding-left: 0.9rem;
+  border-left: 2px solid #6b552f;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
 /* The comment drawer (ideas.md #44). Its show condition is deliberately
  * not `.is-expanded`: the bubble opens it on a collapsed card too, because
  * he asked to comment on a cycle rather than to read one first. */

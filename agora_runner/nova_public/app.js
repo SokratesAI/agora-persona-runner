@@ -302,6 +302,20 @@
       }
       statusEl.appendChild(line);
     }
+
+    /* Shown only once the server calls the loop stalled, which it will not
+     * do while a cycle is merely mid-flight -- an entry is written at the
+     * end of an hour, so "one behind agora" is what a healthy loop looks
+     * like from here and a badge every hour is a badge nobody reads (#72).
+     * The server owns that judgement; this renders it and does not
+     * second-guess the number. */
+    if (status.stalled) {
+      var hours = status.silentIntervals;
+      var quiet = el("p", "status-sub");
+      quiet.appendChild(el("span", "badge badge-warn", "no entry for "
+        + hours + (hours === 1 ? " hour" : " hours")));
+      statusEl.appendChild(quiet);
+    }
   }
 
   function renderNeeds(digest, comments) {
@@ -1183,8 +1197,36 @@
       }
       return;
     }
+    /* The hole in the record, marked where it happened (#72). Edvard found
+     * cycles 127 and 128 himself, by noticing the numbers on this feed jump
+     * from 126 to 129 -- so the gap is put back exactly where he was
+     * already looking, rather than summarised in a counter at the top.
+     *
+     * The server decides what counts as missing; this only asks whether a
+     * number it already listed falls between two adjacent cards. That
+     * matters because a window is a contiguous slice of the corpus but an
+     * unnumbered entry is not: filling in every number between two cards
+     * from the client's own arithmetic would invent gaps for Edvard's own
+     * notes, which have no cycle number to be missing. */
+    var missing = {};
+    (journal.status && journal.status.missingCycles || []).forEach(function (n) {
+      missing[n] = true;
+    });
+    var previousCycle = null;
     groups.forEach(function (parts) {
       var cycle = parts[0].cycle;
+      if (previousCycle !== null && typeof cycle === "number") {
+        var gap = [];
+        for (var n = cycle + 1; n < previousCycle; n++) {
+          if (missing[n]) gap.push(n);
+        }
+        if (gap.length) {
+          feed.appendChild(el("p", "cycle-gap", gap.length === 1
+            ? "Cycle " + gap[0] + " ran and wrote no entry"
+            : "Cycles " + gap.join(", ") + " ran and wrote no entry"));
+        }
+      }
+      if (typeof cycle === "number") previousCycle = cycle;
       feed.appendChild(renderEntry(parts, byCycle[cycle], commentsByCycle[String(cycle)]));
     });
 
