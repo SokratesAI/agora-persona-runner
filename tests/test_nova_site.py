@@ -2424,8 +2424,14 @@ def test_the_costs_page_and_its_endpoint_both_answer():
 def _couch_stub(reachable):
     """Stand in for `couch_req` on a `GET <dbname>`. `reachable` maps a
     database name to its doc_count, or to None for a database that is
-    named in config but does not answer."""
-    def fake(method, path, body=None):
+    named in config but does not answer.
+
+    Takes `timeout` because `database_health` passes a short one, and
+    `database_health` catches every exception to report it as an
+    unreachable database -- so a stub whose signature has drifted from the
+    caller does not fail as a TypeError, it quietly reports CouchDB as
+    down. Keep this signature in step with `couch_req`."""
+    def fake(method, path, body=None, timeout=None):
         name = urllib.parse.unquote(path)
         count = reachable.get(name)
         if count is None:
@@ -2500,7 +2506,7 @@ def test_health_is_never_cached():
     than no endpoint, because it is confidently stale at exactly the
     moment someone is checking whether a flip took effect."""
     counts = iter([12096, 12097])
-    def fake(method, path, body=None):
+    def fake(method, path, body=None, timeout=None):
         return 200, {"doc_count": next(counts)}
     with patch.object(vault, "COUCHDB_NOVA_DB", ""), \
          patch.object(vault, "couch_req", fake):
@@ -2509,3 +2515,20 @@ def test_health_is_never_cached():
     assert json.loads(first)["databases"]["main"]["doc_count"] == 12096
     assert json.loads(second)["databases"]["main"]["doc_count"] == 12097, \
         "the second call was served from cache"
+
+
+def test_health_probes_use_a_short_timeout_not_the_60s_default():
+    """`database_health` probes each named database in turn, so at the 60s
+    default two unreachable ones cost two minutes -- the slow uncertain
+    wait this endpoint exists to replace."""
+    seen = []
+
+    def fake(method, path, body=None, timeout=None):
+        seen.append(timeout)
+        return 200, {"doc_count": 1}
+
+    with patch.object(vault, "COUCHDB_NOVA_DB", "nova"), \
+         patch.object(vault, "couch_req", fake):
+        _get("/api/health")
+    assert seen == [vault.HEALTH_TIMEOUT_SECONDS] * 2
+    assert vault.HEALTH_TIMEOUT_SECONDS < 60
