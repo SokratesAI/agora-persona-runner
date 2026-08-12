@@ -14,15 +14,27 @@ from agora_runner.log import log, debug_log
 from agora_runner.http_util import http_json
 
 
-def couch_req(method, path, body=None):
+def couch_req(method, path, body=None, timeout=60):
     auth = base64.b64encode(f"{COUCHDB_USER}:{COUCHDB_PASSWORD}".encode()).decode()
     return http_json(
         method,
         f"{COUCHDB_URL}/{path}",
         body,
         {"Authorization": f"Basic {auth}"},
-        timeout=60,
+        timeout=timeout,
     )
+
+
+# `database_health` only, and deliberately far below the 60s every other
+# call gets. A health check that can block for two minutes is the slow
+# uncertain wait it was built to replace: /api/health probes each database
+# in turn, so two unreachable ones cost 2 x timeout before anything is
+# reported. The question it answers -- "can I reach this database" -- is
+# also the one question where a slow answer and no answer mean the same
+# thing operationally, so failing fast loses nothing. A local CouchDB that
+# cannot respond in 5s is unhealthy by any definition this endpoint cares
+# about.
+HEALTH_TIMEOUT_SECONDS = 5
 
 
 # Nova's files live in their own CouchDB database rather than in Edvard's
@@ -149,7 +161,10 @@ def database_health():
     for role, name in names.items():
         entry = {"name": name, "reachable": False, "doc_count": None, "error": None}
         try:
-            status, info = couch_req("GET", urllib.parse.quote(name, safe=""))
+            status, info = couch_req(
+                "GET", urllib.parse.quote(name, safe=""),
+                timeout=HEALTH_TIMEOUT_SECONDS,
+            )
             if status == 200:
                 entry["reachable"] = True
                 # Includes chunk documents, not just files -- a Nova file is
