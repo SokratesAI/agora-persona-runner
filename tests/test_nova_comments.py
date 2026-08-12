@@ -23,6 +23,7 @@ from agora_runner.nova_comments import (
     ACKNOWLEDGED_HEADING,
     add_comment,
     add_needs_comment,
+    add_reply,
     clean_comment_text,
     comments_by_cycle,
     needs_comments,
@@ -30,6 +31,14 @@ from agora_runner.nova_comments import (
     insert_comment,
     parse_comments,
 )
+
+# The revision a read is served at. Every write here is a
+# read-modify-write and has to send this back, so a stale one is rejected
+# by CouchDB rather than quietly adopted -- see
+# `test_the_write_carries_the_revision_it_read_at` below for why a
+# hard-coded value is enough: what matters is that it is *this* read's
+# revision and not whatever the vault holds at PUT time.
+REV = "7-abc"
 
 # The shape the live file is created with -- frontmatter, both sections,
 # nothing else. Written out rather than imported so a change to the real
@@ -290,7 +299,7 @@ def test_the_stamp_is_oslo_time(utc, expected):
 
 
 def test_a_comment_is_written_to_the_comments_file():
-    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
             patch.object(nova_comments, "vault_write_path", return_value="written") as write:
         ok, message = add_comment(63, "keep it up", stamp="2026-08-09 22:40")
     assert ok, message
@@ -311,7 +320,8 @@ def test_a_conflict_is_retried_against_a_re_read_file():
     PUT. The retry must re-read rather than resend, or it would clobber
     exactly the write that just beat it."""
     reads = [EMPTY, insert_comment(EMPTY, 64, "landed first", "2026-08-09 23:00")]
-    with patch.object(nova_comments, "vault_read_path", side_effect=reads) as read, \
+    with patch.object(nova_comments, "vault_read_path_rev",
+                         side_effect=[(r, REV) for r in reads]) as read, \
             patch.object(nova_comments, "vault_write_path",
                          side_effect=["409 conflict", "written"]) as write:
         ok, _ = add_comment(63, "mine", stamp="2026-08-09 23:10")
@@ -325,7 +335,7 @@ def test_a_conflict_is_retried_against_a_re_read_file():
 def test_a_non_conflict_failure_is_not_retried():
     """Anything that is not a 409 will fail identically next time, so
     retrying it only spins."""
-    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
             patch.object(nova_comments, "vault_write_path", return_value="500 boom") as write:
         ok, message = add_comment(63, "keep it up")
     assert not ok
@@ -334,7 +344,7 @@ def test_a_non_conflict_failure_is_not_retried():
 
 
 def test_a_missing_file_is_created_rather_than_refused():
-    with patch.object(nova_comments, "vault_read_path", return_value=None), \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(None, None)), \
             patch.object(nova_comments, "vault_write_path", return_value="written") as write:
         ok, _ = add_comment(63, "keep it up", stamp="2026-08-09 22:40")
     assert ok
@@ -342,7 +352,7 @@ def test_a_missing_file_is_created_rather_than_refused():
 
 
 def test_an_empty_comment_never_reaches_the_vault():
-    with patch.object(nova_comments, "vault_read_path") as read, \
+    with patch.object(nova_comments, "vault_read_path_rev") as read, \
             patch.object(nova_comments, "vault_write_path") as write:
         ok, message = add_comment(63, "   \n  ")
     assert not ok
@@ -352,7 +362,7 @@ def test_an_empty_comment_never_reaches_the_vault():
 
 @pytest.mark.parametrize("cycle", ["sixty-three", None, "", -1])
 def test_a_cycle_that_is_not_a_number_never_reaches_the_vault(cycle):
-    with patch.object(nova_comments, "vault_read_path") as read, \
+    with patch.object(nova_comments, "vault_read_path_rev") as read, \
             patch.object(nova_comments, "vault_write_path") as write:
         ok, _ = add_comment(cycle, "keep it up")
     assert not ok
@@ -361,7 +371,7 @@ def test_a_cycle_that_is_not_a_number_never_reaches_the_vault(cycle):
 
 def test_a_numeric_string_cycle_is_accepted():
     """The client sends JSON and a phone keyboard can produce either."""
-    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
             patch.object(nova_comments, "vault_write_path", return_value="written") as write:
         ok, _ = add_comment("63", "keep it up", stamp="2026-08-09 22:40")
     assert ok
@@ -378,7 +388,7 @@ def test_a_numeric_string_cycle_is_accepted():
 
 
 def test_a_needs_reply_is_headed_by_the_block_not_a_cycle():
-    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
             patch.object(nova_comments, "vault_write_path", return_value="written") as write:
         ok, message = add_needs_comment("go ahead and do it", stamp="2026-08-10 08:20")
     assert ok
@@ -419,14 +429,14 @@ def test_needs_replies_and_cycle_comments_share_one_new_section():
 
 def test_a_needs_reply_is_stored_verbatim():
     typed = "Go ahead and do it.\n\nYou do not need permission from me.\n  indented"
-    with patch.object(nova_comments, "vault_read_path", return_value=EMPTY), \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
             patch.object(nova_comments, "vault_write_path", return_value="written") as write:
         add_needs_comment(typed, stamp="2026-08-10 08:20")
     assert parse_comments(write.call_args[0][1])[0]["text"] == typed
 
 
 def test_an_empty_needs_reply_never_reaches_the_vault():
-    with patch.object(nova_comments, "vault_read_path") as read, \
+    with patch.object(nova_comments, "vault_read_path_rev") as read, \
             patch.object(nova_comments, "vault_write_path") as write:
         ok, message = add_needs_comment("   \n  ")
     assert not ok
@@ -543,7 +553,7 @@ def test_a_multi_paragraph_reply_survives_the_round_trip():
 
 
 def test_add_reply_writes_the_whole_file_back():
-    with patch.object(nova_comments, "vault_read_path", return_value=THREAD), \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(THREAD, REV)), \
             patch.object(nova_comments, "vault_write_path", return_value="written") as write:
         ok, message = nova_comments.add_reply(
             80, "2026-08-10 13:54", "They are.", reply_stamp="2026-08-10 14:02")
@@ -556,7 +566,7 @@ def test_add_reply_writes_the_whole_file_back():
 def test_add_reply_retries_on_a_conflict_against_the_re_read_file():
     """Same reason `_store` does: 409 means someone wrote between the read
     and the PUT, and resending the stale body would clobber them."""
-    with patch.object(nova_comments, "vault_read_path", return_value=THREAD) as read, \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(THREAD, REV)) as read, \
             patch.object(nova_comments, "vault_write_path",
                          side_effect=["409 conflict", "written"]) as write:
         ok, _ = nova_comments.add_reply(80, "2026-08-10 13:54", "They are.")
@@ -566,7 +576,7 @@ def test_add_reply_retries_on_a_conflict_against_the_re_read_file():
 
 
 def test_add_reply_gives_up_rather_than_writing_somewhere_else():
-    with patch.object(nova_comments, "vault_read_path", return_value=THREAD), \
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(THREAD, REV)), \
             patch.object(nova_comments, "vault_write_path") as write:
         ok, message = nova_comments.add_reply(80, "2026-08-10 09:00", "answering thin air")
     assert not ok
@@ -575,8 +585,75 @@ def test_add_reply_gives_up_rather_than_writing_somewhere_else():
 
 
 def test_an_empty_reply_is_refused_before_any_read():
-    with patch.object(nova_comments, "vault_read_path") as read, \
+    with patch.object(nova_comments, "vault_read_path_rev") as read, \
             patch.object(nova_comments, "vault_write_path") as write:
         ok, message = nova_comments.add_reply(80, "2026-08-10 13:54", "   \n\n  ")
     assert (ok, message) == (False, "nothing to reply")
     assert not read.called and not write.called
+
+
+# ---------------------------------------------------------------------------
+# The revision (2026-08-12). Both writes above retried on 409 while sending
+# no revision at all, so the conflict they waited for could not happen: the
+# client looked up a fresh `_rev` immediately before the PUT and adopted
+# whoever had written in between. Note what the retry tests above cannot
+# see -- they feed the write mock a "409 conflict" directly, so they pass
+# whether or not the real write could ever produce one. These are the tests
+# that fail when the revision is dropped.
+# ---------------------------------------------------------------------------
+
+
+def test_the_write_carries_the_revision_it_read_at():
+    """Edvard typing a comment while a cycle rewrites this same file is the
+    collision, and his is the write that would have vanished."""
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, _ = add_comment(63, "keep it up", stamp="2026-08-09 22:40")
+    assert ok
+    assert write.call_args.kwargs["if_rev"] == REV
+
+
+def test_a_retry_carries_the_revision_of_the_re_read_not_the_first_read():
+    """The retry exists because the file moved. Resending the first read's
+    revision would conflict forever; resending none would clobber the
+    winner, which is the bug one level down."""
+    reads = [(EMPTY, "7-abc"),
+             (insert_comment(EMPTY, 64, "landed first", "2026-08-09 23:00"), "8-def")]
+    with patch.object(nova_comments, "vault_read_path_rev", side_effect=reads), \
+            patch.object(nova_comments, "vault_write_path",
+                         side_effect=["409 conflict", "written"]) as write:
+        ok, _ = add_comment(63, "mine", stamp="2026-08-09 23:10")
+    assert ok
+    assert [c.kwargs["if_rev"] for c in write.call_args_list] == ["7-abc", "8-def"]
+
+
+def test_a_reply_carries_its_revision_too():
+    """`nova_replies` writes the same file from the other direction."""
+    stored = insert_comment(EMPTY, 63, "what happened here?", "2026-08-09 22:40")
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(stored, REV)), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, message = add_reply(63, "2026-08-09 22:40", "fixed it",
+                                reply_stamp="2026-08-09 23:00")
+    assert ok, message
+    assert write.call_args.kwargs["if_rev"] == REV
+
+
+def test_creating_the_file_expects_it_to_be_absent():
+    """Two first comments must not silently become one. `if_rev=None` PUTs
+    without a `_rev`, which is CouchDB's own way of saying "there should be
+    nothing here" -- it 409s if another writer created the file first."""
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(None, None)), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, _ = add_comment(63, "keep it up", stamp="2026-08-09 22:40")
+    assert ok
+    assert write.call_args.kwargs["if_rev"] is None
+
+
+def test_overwriting_a_tombstone_carries_the_tombstone_revision():
+    """A deleted comments file has no content and a live revision. Treating
+    it as absent would 409 on every attempt and lose what he typed."""
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(None, REV)), \
+            patch.object(nova_comments, "vault_write_path", return_value="written") as write:
+        ok, _ = add_comment(63, "keep it up", stamp="2026-08-09 22:40")
+    assert ok
+    assert write.call_args.kwargs["if_rev"] == REV
