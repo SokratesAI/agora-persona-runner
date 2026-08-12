@@ -811,6 +811,33 @@ def render_blocks(text):
     return blocks
 
 
+def _newest_written_at(entries):
+    """When the newest entry was written, as an aware datetime, or `None`.
+
+    The date and time on an entry are the vault's *write* time for that
+    document, not the stamp the cycle typed into its own heading
+    (`parse_journal`), so this is a measurement rather than a cycle's guess
+    at when it expected to finish -- which is the same instrument
+    `cycle_health.newest_entry_at` reads, off the same mtimes.
+
+    Defensive about the format because the four legacy heading shapes are
+    still in the corpus and carry times like `03:19Z`: an entry whose stamp
+    will not parse is skipped rather than guessed at, and `None` (no
+    usable stamp anywhere) is a different answer from "no silence", which
+    is why the caller reports it as `None` instead of `0`.
+    """
+    for entry in entries:
+        if not entry.get("date") or not entry.get("time"):
+            continue
+        try:
+            stamp = datetime.strptime(
+                entry["date"] + " " + entry["time"], "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        return stamp.replace(tzinfo=OSLO)
+    return None
+
+
 def build_status(entries):
     """The front-page header: is Nova alive, and what did it just do.
 
@@ -818,7 +845,26 @@ def build_status(entries):
     today on purpose -- it answers "how long has this loop been going",
     and if entries stopped arriving a week ago that number should stop
     growing rather than quietly keep counting.
+
+    `missingCycles` is the history half of Edvard's #72: *"Nova is 1
+    behind agora. Agora failed a cycle Journal and you did not catch
+    it."* These are the holes he found himself, by noticing the numbers
+    on the feed jump from 126 to 129. Deliberately the whole list and not
+    a count -- the feed marks each gap in the position it happened, so
+    the numbers are what the client needs, and trimming a list of six to
+    spare a header that never renders it would be a limit with no danger
+    behind it.
+
+    **Everything here is a pure function of the corpus, and the clock is
+    deliberately not consulted.** This payload is cached and warmed at
+    startup, so a value derived from `now` would freeze at build time and
+    could never become true; the live half of #72 (`stalled`) is stamped
+    per request in `nova_site.journal_page` instead. `lastWrittenAt` is
+    the measured input it needs, carried as a fact rather than a
+    judgement so both layers read one clock and one stamp.
     """
+    from agora_runner.cycle_health import gaps_between
+
     dated = [e for e in entries if e["date"]]
     numbered = [e for e in entries if e["cycle"] is not None]
     latest = entries[0] if entries else None
@@ -832,6 +878,8 @@ def build_status(entries):
             running_days = (newest - oldest).days
         except ValueError:
             running_days = 0
+    written_at = _newest_written_at(entries)
+
     return {
         "cycle": numbered[0]["cycle"] if numbered else None,
         "lastWokeDate": latest["date"] if latest else "",
@@ -841,4 +889,6 @@ def build_status(entries):
         "lastOutcomeDetail": latest.get("outcomeDetail", "") if latest else "",
         "runningDays": running_days,
         "entryCount": len(entries),
+        "missingCycles": gaps_between(e["cycle"] for e in numbered),
+        "lastWrittenAt": written_at.isoformat() if written_at else "",
     }

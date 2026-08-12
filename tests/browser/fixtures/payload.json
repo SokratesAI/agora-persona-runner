@@ -163,7 +163,11 @@
       "lastOutcome": "merged",
       "lastOutcomeDetail": "",
       "runningDays": 7,
-      "entryCount": 4
+      "entryCount": 4,
+      "missingCycles": [
+        56
+      ],
+      "lastWrittenAt": "2026-08-09T15:22:00+02:00"
     }
   },
   "digest": {

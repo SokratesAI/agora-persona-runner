@@ -2744,3 +2744,80 @@ describe("the costs page", () => {
     assert.match(window.document.querySelector(".empty").textContent, /Could not load the costs/);
   });
 });
+
+/* A cycle that ran and wrote nothing, marked where it happened -- the
+ * display half of Edvard's #72. He found cycles 127 and 128 himself by
+ * noticing the feed jump from 126 to 129, so the gap goes back exactly
+ * where he was already looking. The committed fixture carries a real one:
+ * cycles 57 and 55, with 56 missing, and an unnumbered entry of his own
+ * below them. */
+describe("a hole in the record is visible in the feed", () => {
+  const gaps = (window) => [...window.document.querySelectorAll(".cycle-gap")];
+
+  test("the missing cycle is named between the two cards that bracket it", async () => {
+    const window = await loadSite("/");
+    assert.equal(gaps(window).length, 1);
+    assert.match(gaps(window)[0].textContent, /Cycle 56 ran and wrote no entry/);
+  });
+
+  test("it sits between the cards, not at the top of the feed", async () => {
+    const window = await loadSite("/");
+    const feed = window.document.getElementById("feed");
+    const kids = [...feed.children];
+    const gap = kids.findIndex((n) => n.classList.contains("cycle-gap"));
+    // Card for 57 above it, card for 55 below it.
+    assert.ok(gap > 0, "the gap rendered before the newer card");
+    assert.ok(kids[gap - 1].classList.contains("entry"));
+    assert.ok(kids[gap + 1].classList.contains("entry"));
+  });
+
+  test("a journal with no holes shows no marker at all", async () => {
+    const clean = JSON.parse(JSON.stringify(payload.journal));
+    clean.status.missingCycles = [];
+    const window = await loadSite("/", { journal: () => clean });
+    assert.equal(gaps(window).length, 0);
+  });
+
+  /* The client does its own arithmetic between two adjacent cards, so it
+   * has to be told which numbers count. Edvard's own notes carry no cycle
+   * number and sit in the feed between numbered entries -- filling in
+   * every number between two cards would invent a gap out of a note, and
+   * the server is the only one that knows the difference. */
+  test("it marks only what the server called missing", async () => {
+    const lying = JSON.parse(JSON.stringify(payload.journal));
+    lying.status.missingCycles = [];
+    lying.entries = lying.entries.filter((e) => e.cycle !== 56);
+    const window = await loadSite("/", { journal: () => lying });
+    assert.equal(gaps(window).length, 0);
+  });
+});
+
+describe("a loop that has gone quiet says so in the header", () => {
+  const warn = (window) =>
+    [...window.document.querySelectorAll("#status .badge-warn")]
+      .map((n) => n.textContent);
+
+  test("nothing is said while the loop is healthy", async () => {
+    const live = JSON.parse(JSON.stringify(payload.journal));
+    live.status.stalled = false;
+    live.status.silentIntervals = 1;
+    const window = await loadSite("/", { journal: () => live });
+    assert.deepEqual(warn(window).filter((t) => /no entry/.test(t)), []);
+  });
+
+  test("a stall is named with how long it has been", async () => {
+    const quiet = JSON.parse(JSON.stringify(payload.journal));
+    quiet.status.stalled = true;
+    quiet.status.silentIntervals = 4;
+    const window = await loadSite("/", { journal: () => quiet });
+    assert.ok(warn(window).some((t) => t === "no entry for 4 hours"));
+  });
+
+  test("one hour is not pluralised", async () => {
+    const quiet = JSON.parse(JSON.stringify(payload.journal));
+    quiet.status.stalled = true;
+    quiet.status.silentIntervals = 1;
+    const window = await loadSite("/", { journal: () => quiet });
+    assert.ok(warn(window).some((t) => t === "no entry for 1 hour"));
+  });
+});

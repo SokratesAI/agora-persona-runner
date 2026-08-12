@@ -76,6 +76,22 @@ def cycles_written(paths):
     return found
 
 
+def gaps_between(numbers):
+    """The interior cycle numbers absent from `numbers`, ascending.
+
+    Split out of `missing_cycles` so the journal page can mark the same
+    holes on screen without deciding for itself what a hole is. The site
+    reaches this through `build_status`, which has parsed cycle numbers
+    rather than paths -- and a second implementation over there is exactly
+    the hand-synced pair this repo keeps finding drifted (the two vault
+    clients, Cycles 136-142). One definition, two callers.
+    """
+    written = set(numbers)
+    if len(written) < 2:
+        return []
+    return [n for n in range(min(written) + 1, max(written)) if n not in written]
+
+
 def missing_cycles(paths):
     """Cycle numbers with no entry, bracketed by entries on both sides.
 
@@ -86,10 +102,7 @@ def missing_cycles(paths):
     caller's `[-1]` is the most recent failure and the one still worth
     acting on.
     """
-    written = cycles_written(paths)
-    if len(written) < 2:
-        return []
-    return [n for n in range(min(written) + 1, max(written)) if n not in written]
+    return gaps_between(cycles_written(paths))
 
 
 def newest_entry_at(mtimes):

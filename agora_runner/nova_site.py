@@ -101,10 +101,11 @@ import os
 import threading
 import time
 import urllib.parse
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
-from agora_runner.config import NOVA_PORT
+from agora_runner.config import NOVA_PORT, OSLO
 from agora_runner.log import log
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
@@ -641,7 +642,7 @@ def _refresh(name, build):
     return payload, body, etag
 
 
-def journal_page(payload, limit=None, offset=0, cycle=None):
+def journal_page(payload, limit=None, offset=0, cycle=None, now=None):
     """One window of the journal, plus how many entries there are in all.
 
     The cold load is the half the 304 poll of #84 did not touch: 109
@@ -683,9 +684,53 @@ def journal_page(payload, limit=None, offset=0, cycle=None):
         picked = entries[offset:end]
     return {
         "entries": [_rendered(entry) for entry in picked],
-        "status": payload.get("status", {}),
+        "status": _with_silence(payload.get("status", {}), now),
         "total": len(entries),
     }
+
+
+def _with_silence(status, now=None):
+    """`status` plus how long the loop has been quiet, judged right now.
+
+    The live half of #72, and it is computed here rather than in
+    `build_status` because the payload that holds `status` is cached and
+    warmed at startup: a stall judged at build time would be frozen at
+    "healthy" for the whole life of a process, which is precisely the
+    hours when it would need to say otherwise. Per request, it is never
+    more than one request stale.
+
+    `stalled` waits `STALL_GRACE_INTERVALS` rather than asking whether
+    this hour has an entry yet. A cycle writes its entry at the *end* of
+    its hour, so between waking and finishing there is a real 20-30
+    minute window where agora has started cycle N and this page can only
+    see N-1 -- Edvard's #72 is exactly that ambiguity, and a check that
+    cannot tell a running cycle from a dead one would raise a false alarm
+    every single hour. `silentIntervals` is reported whether or not it
+    crossed the threshold, so the two questions stay separable.
+
+    `None` (no entry carries a usable write time) is deliberately not
+    flattened into `0`: "nothing to judge" and "judged, and fine" are
+    different answers, and only the second is reassurance.
+    """
+    from agora_runner.cycle_health import HEARTBEAT_MINUTES, STALL_GRACE_INTERVALS
+
+    out = dict(status)
+    written = out.get("lastWrittenAt") or ""
+    silent = None
+    if written:
+        try:
+            stamp = datetime.fromisoformat(written)
+        except ValueError:
+            stamp = None
+        if stamp is not None:
+            elapsed = (now or datetime.now(OSLO)) - stamp
+            # An entry stamped in the future is a clock disagreement, not a
+            # stalled loop -- zero rather than a negative the client would
+            # have to guard. The same call `cycle_health.stalled_for` makes.
+            silent = max(0, int(elapsed.total_seconds() // (HEARTBEAT_MINUTES * 60)))
+    out["silentIntervals"] = silent
+    out["stalled"] = silent is not None and silent >= STALL_GRACE_INTERVALS
+    return out
 
 
 def digest_page(payload, journal, limit=None, offset=0, cycle=None):
