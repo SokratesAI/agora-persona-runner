@@ -109,7 +109,9 @@ from agora_runner.log import log
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
     MAX_BODY_BYTES,
+    amend,
     capture,
+    clean_capture_text,
 )
 from agora_runner.nova_comments import (
     add_comment,
@@ -305,7 +307,13 @@ def board_payload(name):
     ]
     return {
         "name": name,
-        "captures": [render_blocks(text) for text in board["captures"]],
+        # Rendered *and* raw. The blocks are what the page draws; the raw
+        # text is how an edit or a delete addresses the bullet, since
+        # `nova_capture.replace_capture` matches on text rather than on an
+        # index that a cycle boarding the file would shift underneath it.
+        "captures": [
+            {"text": text, "blocks": render_blocks(text)} for text in board["captures"]
+        ],
         "items": board["items"],
         "details": details,
         "notes": notes,
@@ -902,6 +910,71 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return None
         return payload
 
+    def _post_amend(self, payload, delete):
+        """`/api/capture/edit` and `/api/capture/delete` -- issues.md #66.
+
+        *"The reported issues should be able to be edited and deleted by
+        me."* Same boundaries as the capture box: `target` is checked
+        against CAPTURE_TARGETS, both texts must be strings, and nothing a
+        client sends addresses a document.
+
+        **Two routes rather than one endpoint with an empty `text`.**
+        Deleting is the destructive half and it should be impossible to
+        reach by accident -- an edit that arrives with its text field
+        somehow blank is answered as a bad request here, not quietly
+        carried out as a delete. The two share one implementation because
+        the vault write genuinely is the same read-modify-write; it is the
+        *request* that must be unambiguous, not the code underneath it.
+
+        A stale `original` -- the capture already boarded, or edited from
+        Obsidian -- is a 409, not a 502. Nothing failed; the thing being
+        addressed moved, and the page should re-read rather than retry.
+        """
+        target = payload.get("target")
+        original = payload.get("original")
+        text = "" if delete else payload.get("text")
+        if target not in CAPTURE_TARGETS:
+            self._send_json(400, {"error": f"target must be one of {sorted(CAPTURE_TARGETS)}"})
+            return
+        if not isinstance(original, str) or not original.strip():
+            self._send_json(400, {"error": "original must be a non-empty string"})
+            return
+        if not delete:
+            if not isinstance(text, str):
+                self._send_json(400, {"error": "text must be a string"})
+                return
+            if not clean_capture_text(text):
+                self._send_json(400, {"error": "nothing to save"})
+                return
+
+        try:
+            ok, message = amend(target, original, text)
+        except Exception as e:
+            log(f"nova-site capture amend failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            # Exactly as for a new capture: the board Edvard is looking at
+            # has gone stale and `app.js` reloads on the next tick.
+            invalidate("board:" + target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"{'Delete' if delete else 'Edit'} in {target} · {'ok' if ok else message}",
+            before=original[:MAX_BODY_BYTES],
+            after=text[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        stale = "no longer" in message
+        self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
     def _post_comment(self, payload):
         """`/api/comment` -- Edvard replying to one cycle (ideas.md #44).
 
@@ -1033,7 +1106,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path == "/mcp":
             self._handle_mcp()
             return
-        if path not in ("/api/capture", "/api/comment"):
+        if path not in (
+            "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment"
+        ):
             self._send_json(404, {"error": "not found"})
             return
 
@@ -1042,6 +1117,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/comment":
             self._post_comment(payload)
+            return
+        if path in ("/api/capture/edit", "/api/capture/delete"):
+            self._post_amend(payload, delete=path.endswith("delete"))
             return
         target = payload.get("target")
         text = payload.get("text")

@@ -1334,16 +1334,138 @@
     return row;
   }
 
+  /* One not-boarded capture, with Edvard's edit and delete on it
+   * (issues.md #66). Two halves of that item live here: the rule between
+   * rows, and the controls.
+   *
+   * **The separator is between the captures, not around the block.** His
+   * words are "a clear separation of the not boarded issues" -- the block
+   * already had a border, and what ran together was one bullet against
+   * the next, since a capture is usually a single unpunctuated line. Two
+   * one-line thoughts stacked with only a paragraph margin between them
+   * read as one thought with a line break.
+   *
+   * **A capture is addressed by its text, never by its position.** The
+   * board is rewritten by cycles constantly; an index from a page painted
+   * a minute ago points at a different bullet the moment anything above
+   * it is boarded. The server answers a stale address with 409 and the
+   * page re-reads, which is the honest outcome -- the alternative is
+   * editing whichever line happens to sit there now. */
+  function renderCapture(board, capture) {
+    var one = el("div", "capture-item");
+    var body = el("div", "capture-body");
+    renderBlocks(body, capture.blocks || []);
+    one.appendChild(body);
+
+    var actions = el("div", "capture-edit");
+    var status = el("span", "capture-item-status");
+    var editBtn = el("button", "capture-act", "Edit");
+    var delBtn = el("button", "capture-act is-danger", "Delete");
+    editBtn.type = "button";
+    delBtn.type = "button";
+
+    function fail(err) {
+      status.textContent = String((err && (err.message || err)) || "failed");
+      status.className = "capture-item-status is-error";
+      [editBtn, delBtn].forEach(function (b) { b.disabled = false; });
+    }
+
+    function send(url, payload) {
+      status.textContent = "saving…";
+      status.className = "capture-item-status";
+      [editBtn, delBtn].forEach(function (b) { b.disabled = true; });
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          // The bullet has moved or gone; repaint from the file rather
+          // than patching the node, so what is on screen is what is in
+          // the vault.
+          loadBoard(board);
+        })
+        .catch(fail);
+    }
+
+    editBtn.addEventListener("click", function () {
+      // The textarea carries the raw markdown, not the rendered text --
+      // an edit round-trips through the same field the vault stores, so
+      // saving something untouched is a no-op rather than a reformat.
+      var box = el("textarea", "capture-input");
+      box.value = capture.text || "";
+      box.rows = 2;
+      var save = el("button", "capture-act", "Save");
+      var cancel = el("button", "capture-act", "Cancel");
+      save.type = "button";
+      cancel.type = "button";
+      one.replaceChild(box, body);
+      actions.textContent = "";
+      actions.appendChild(status);
+      actions.appendChild(save);
+      actions.appendChild(cancel);
+      box.focus();
+      save.addEventListener("click", function () {
+        var next = box.value.trim();
+        if (!next) {
+          // Emptying the box is not how a capture is deleted -- there is
+          // a button for that, and it asks first.
+          box.focus();
+          return;
+        }
+        save.disabled = true;
+        cancel.disabled = true;
+        status.textContent = "saving…";
+        fetch("/api/capture/edit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: board, original: capture.text, text: next }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (result) {
+            if (!result || !result.ok) {
+              throw new Error((result && (result.message || result.error)) || "failed");
+            }
+            loadBoard(board);
+          })
+          .catch(function (err) {
+            status.textContent = String((err && (err.message || err)) || "failed");
+            status.className = "capture-item-status is-error";
+            save.disabled = false;
+            cancel.disabled = false;
+          });
+      });
+      cancel.addEventListener("click", function () { loadBoard(board); });
+    });
+
+    delBtn.addEventListener("click", function () {
+      // Deleting is the one thing here that cannot be undone from the
+      // page, so it asks. This is not the confirmation modal of #6 -- a
+      // native confirm is one line and blocks the accident, and building
+      // a modal for it would be a different item's work done badly.
+      if (!window.confirm("Delete this capture?\n\n" + (capture.text || ""))) return;
+      send("/api/capture/delete", { target: board, original: capture.text });
+    });
+
+    actions.appendChild(status);
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    one.appendChild(actions);
+    return one;
+  }
+
   function renderBoardEdvard(board, payload) {
     var wrap = el("div", "board");
     var captures = payload.captures || [];
     if (captures.length) {
       var box = el("section", "captures");
       box.appendChild(el("h2", "captures-title", "Not boarded yet"));
-      captures.forEach(function (blocks) {
-        var one = el("div", "capture-item");
-        renderBlocks(one, blocks);
-        box.appendChild(one);
+      captures.forEach(function (capture) {
+        box.appendChild(renderCapture(board, capture));
       });
       wrap.appendChild(box);
     }

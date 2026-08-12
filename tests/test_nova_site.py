@@ -638,6 +638,92 @@ def test_a_capture_reaches_the_vault_through_the_real_request_path():
     cap.assert_called_once_with("issues", "the app needs a restart")
 
 
+def test_editing_a_capture_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "amend", return_value=(True, "edited in issues")) as am:
+        status, _, body = _post(
+            "/api/capture/edit",
+            {"target": "issues", "original": "old wording", "text": "new wording"},
+        )
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    am.assert_called_once_with("issues", "old wording", "new wording")
+
+
+def test_deleting_a_capture_never_carries_replacement_text():
+    """The two routes exist so that deleting cannot be reached by accident.
+    Whatever a client puts in `text` on the delete route is ignored, so a
+    stray field can never turn a delete into an edit."""
+    with patch.object(nova_site, "amend", return_value=(True, "deleted in ideas")) as am:
+        status, _, body = _post(
+            "/api/capture/delete",
+            {"target": "ideas", "original": "a typo", "text": "surprise"},
+        )
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    am.assert_called_once_with("ideas", "a typo", "")
+
+
+def test_an_edit_with_nothing_in_it_is_rejected_rather_than_treated_as_a_delete():
+    """The dangerous shape: an edit whose text arrived blank. Answered as a
+    bad request, never carried out."""
+    with patch.object(nova_site, "amend") as am:
+        status, _, _ = _post(
+            "/api/capture/edit", {"target": "issues", "original": "keep me", "text": "   "}
+        )
+    assert status == 400
+    am.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/api/capture/edit", "/api/capture/delete"])
+@pytest.mark.parametrize("payload", [
+    {"target": "../../etc/passwd", "original": "x"},
+    {"target": "projects/sokrates/projects/agora/issues.md", "original": "x"},
+    {"original": "x"},
+    {"target": "issues"},
+    {"target": "issues", "original": ""},
+    {"target": "issues", "original": "   "},
+    {"target": "issues", "original": 42},
+])
+def test_an_amend_that_could_address_the_wrong_document_is_rejected(path, payload):
+    with patch.object(nova_site, "amend") as am:
+        status, _, _ = _post(path, payload)
+    assert status == 400
+    am.assert_not_called()
+
+
+def test_a_capture_that_moved_under_him_is_a_conflict_rather_than_a_failure():
+    """A cycle boarded the bullet while the page was open. Nothing broke --
+    the address is stale -- so the page should re-read, not retry, and 502
+    would tell it the opposite."""
+    with patch.object(nova_site, "amend",
+                      return_value=(False, "that capture is no longer in the list")):
+        status, _, body = _post(
+            "/api/capture/delete", {"target": "issues", "original": "gone"}
+        )
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_vault_failure_on_an_amend_is_still_a_502():
+    with patch.object(nova_site, "amend",
+                      return_value=(False, "could not write to issues: FAILED(401)")):
+        status, _, _ = _post(
+            "/api/capture/delete", {"target": "issues", "original": "x"}
+        )
+    assert status == 502
+
+
+@pytest.mark.parametrize("path", ["/api/capture/edit", "/api/capture/delete"])
+def test_a_successful_amend_invalidates_the_board_it_changed(path):
+    nova_site.reset_cache()
+    nova_site._cache["board:issues"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
+    with patch.object(nova_site, "amend", return_value=(True, "ok")):
+        _post(path, {"target": "issues", "original": "x", "text": "y"})
+    assert "board:issues" not in nova_site._cache, (
+        "the board Edvard is looking at would reload to the pre-edit copy"
+    )
+
+
 # Parametrized over the dict rather than a literal list: this test was
 # `["issues", "ideas"]` and its name said "both", so adding `notes` as a
 # third target left a test that still passed, still read as complete, and
@@ -2557,14 +2643,19 @@ def _board_captures(name="issues"):
     `/api/board` serves each one as rendered blocks, so the text has to be
     walked out of the spans -- comparing rendered structures would make
     these tests fail on a change to the renderer that has nothing to do
-    with what they are pinning."""
+    with what they are pinning.
+
+    The rendered blocks rather than the raw `text` beside them, still, and
+    deliberately: `text` was added for edit and delete to address a bullet
+    by (issues.md #66) and reading it here would stop these pinning that
+    the *page* shows the capture, which is what they exist for."""
     status, _, body = _get(f"/api/board?name={name}")
     assert status == 200, status
     out = []
-    for blocks in json.loads(body)["captures"]:
+    for capture in json.loads(body)["captures"]:
         out.append("".join(
             span.get("text", "")
-            for block in blocks
+            for block in capture["blocks"]
             for span in block.get("spans", [])
         ))
     return out

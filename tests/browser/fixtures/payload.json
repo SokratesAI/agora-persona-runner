@@ -271,17 +271,20 @@
   "board": {
     "name": "issues",
     "captures": [
-      [
-        {
-          "type": "p",
-          "spans": [
-            {
-              "kind": "text",
-              "text": "Small pickings on Nova ui - low priority - remove \"Oslo\" text from Journal timestamp."
-            }
-          ]
-        }
-      ]
+      {
+        "text": "Small pickings on Nova ui - low priority - remove \"Oslo\" text from Journal timestamp.",
+        "blocks": [
+          {
+            "type": "p",
+            "spans": [
+              {
+                "kind": "text",
+                "text": "Small pickings on Nova ui - low priority - remove \"Oslo\" text from Journal timestamp."
+              }
+            ]
+          }
+        ]
+      }
     ],
     "items": [
       {

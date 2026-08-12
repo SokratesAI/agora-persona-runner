@@ -2031,6 +2031,99 @@ describe("the issues page", () => {
     assert.match(box.textContent, /Small pickings on Nova ui/);
   });
 
+  test("each not-boarded capture is separated from the next", async () => {
+    /* Edvard, issues.md #66: "should have a separator line or something
+     * that shows a clear separation of the not boarded issues." The block
+     * already had a border; what ran together was one bullet against the
+     * next. Pinned on the rule rather than on a class name being present,
+     * because the class alone would still pass with no rule drawn. */
+    const window = await loadSite("/issues");
+    const items = [...window.document.querySelectorAll(".capture-item")];
+    assert.ok(items.length >= 1, "no captures rendered");
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(sheet, /\.capture-item\s*{[^}]*border-top:\s*1px/);
+    assert.match(sheet, /\.capture-item:first-of-type\s*{[^}]*border-top:\s*0/);
+  });
+
+  test("Delete sends the capture's own text, not its position", async () => {
+    /* The whole point of the design: a cycle boarding a bullet above this
+     * one shifts every index, and an index-addressed delete would then
+     * remove a different capture. */
+    const window = await loadSite("/issues");
+    window.confirm = () => true;
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/capture/delete");
+    assert.equal(window.posted[0].body.target, "issues");
+    assert.equal(window.posted[0].body.original, payload.board.captures[0].text);
+    assert.equal(window.posted[0].body.text, undefined, "a delete carried replacement text");
+  });
+
+  test("Delete asks first, and sends nothing when the answer is no", async () => {
+    const window = await loadSite("/issues");
+    window.confirm = () => false;
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0, "a declined confirm still deleted");
+  });
+
+  test("Edit opens the raw markdown and saves it against the original", async () => {
+    const window = await loadSite("/issues");
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Edit")[0]);
+
+    const box = item.querySelector(".capture-input");
+    assert.ok(box, "Edit did not open a field");
+    assert.equal(box.value, payload.board.captures[0].text,
+      "the field was filled with rendered text rather than what the vault holds");
+    box.value = "reworded on the phone";
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Save")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/capture/edit");
+    assert.deepEqual(window.posted[0].body, {
+      target: "issues",
+      original: payload.board.captures[0].text,
+      text: "reworded on the phone",
+    });
+  });
+
+  test("saving an emptied field is not a delete", async () => {
+    /* Deleting has a button and that button asks. Clearing the box has to
+     * do nothing at all, or the confirm is one backspace away from being
+     * bypassed. */
+    const window = await loadSite("/issues");
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Edit")[0]);
+    item.querySelector(".capture-input").value = "   ";
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Save")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0, "an emptied field deleted the capture");
+  });
+
+  test("a capture that moved under him says so instead of silently doing nothing", async () => {
+    const window = await loadSite("/issues");
+    window.confirm = () => true;
+    window.postReply = { ok: false, message: "that capture is no longer in the list" };
+    const item = window.document.querySelector(".capture-item");
+    click(window, [...item.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.match(item.querySelector(".capture-item-status").textContent, /no longer/);
+  });
+
   test("my own notes are a separate tab, newest first, with a pager", async () => {
     const window = await loadSite("/issues");
     const tab = [...window.document.querySelectorAll(".tab")]
