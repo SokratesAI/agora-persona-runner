@@ -567,8 +567,12 @@ def normalise_entry(path, content):
       only other statement of the entry's identity. `entry_filename`
       built that name *from* the heading, so this is its inverse -- exact
       for the `NNN-cycle-M.md` names every cycle writes, lossy for the
-      three prose-slug names in the archive, and a lossy card title beats
-      no card.
+      prose-slug ones, and a lossy card title beats no card. Exactly one
+      of the 164 live filenames carries no `-cycle-N` token
+      (`004-2026-08-02-edvard-s-first-message-not-a.md`); this said
+      "three" until a reviewer checked, which was `entry_filename`'s
+      count of headings with no cycle number, copied across without being
+      re-measured against the folder this function actually reads.
 
     Frontmatter is stripped either way. It is not content, no entry that
     parses today has any, and leaving it in front of a promoted heading
