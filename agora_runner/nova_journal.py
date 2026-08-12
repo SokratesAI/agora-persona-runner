@@ -79,6 +79,104 @@ _FOOTER_RE = re.compile(
     r"\n(?:-{3,}[ \t]*\n)?PR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*Outcome:[ \t]*(?P<outcome>.+?)[ \t]*$",
     re.IGNORECASE,
 )
+# The repair side of `_FOOTER_RE`, and deliberately a separate pattern:
+# that one is anchored to the end of the entry on purpose and must stay
+# that way. This one finds a footer *wherever* the cycle put it and
+# whether or not it bolded it; `stray_footer` decides whether moving it
+# is safe.
+_STRAY_FOOTER_RE = re.compile(
+    r"\A[ \t]*\*{0,2}[ \t]*PR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*"
+    r"Outcome:[ \t]*(?P<outcome>.+?)[ \t]*\*{0,2}[ \t]*\Z",
+    re.IGNORECASE,
+)
+# Not the `_FENCE_RE` further down this file: that one has no capture
+# group and is bound *after* this line, so naming this one the same
+# silently won the binding and every lookup here raised `no such group`.
+# The tests caught it; the collision is worth a sentence because the
+# failure was nowhere near the cause. Backticks and tildes both, since a
+# closing marker has to match its opening one.
+_OPEN_FENCE_RE = re.compile(r"\A[ \t]{0,3}(`{3,}|~{3,})")
+_RULE_ONLY_RE = re.compile(r"\A[ \t]*-{3,}[ \t]*\Z")
+
+
+def stray_footer(body):
+    """One entry body -> `(body, pr, outcome)` with a misplaced footer lifted.
+
+    `personality.md` asks for one rigid line at the very end of an entry:
+    `PR: ... | Outcome: ...`, bare, under a `---`. Three of the 165 live
+    entries do not have it there, and the result is not a parse error --
+    their cards render with no PR badge and no outcome at all, which
+    reads as a cycle that shipped nothing. Cycles 146 and 147 wrote it
+    **bolded, directly under the heading**; entry 004 wrote it correctly
+    and hard-wrapped it, so `_FOOTER_RE`'s `$` lands on the continuation.
+
+    The fix people reach for first is loosening `_FOOTER_RE`, and it is
+    the wrong one -- its `$` is what stops a `PR: ...` line quoted
+    mid-prose from being read as the entry's real outcome, and a reviewer
+    has already demonstrated the damage when that anchor gives way. So
+    the strict rule stays and the odd shapes are repaired in front of it.
+
+    Three conditions, and each one is refusing to guess:
+
+    - the caller only asks when `_FOOTER_RE` found nothing. An entry that
+      ends correctly is never touched, whatever else it contains.
+    - candidates inside a fenced code block do not count. `personality.md`
+      states the footer format *as* a fenced block, so an entry quoting it
+      is a thing a cycle would plausibly write, and a badge invented out
+      of an example is worse than no badge.
+    - exactly one candidate, or nothing moves. Two means the document is
+      making two claims and picking one is inventing an answer.
+
+    A candidate is a whole *paragraph*, not a line, and that is not
+    tidiness -- it is the difference between repairing entry 004 and
+    corrupting it. A line-at-a-time version of this, run against the live
+    folder before any of it was written, matched that entry's first line,
+    moved it, and left `survives; next cycle should merge it...` dangling
+    at the end of the body under a badge whose outcome stopped
+    mid-sentence. Joining the paragraph gives the whole outcome back.
+    """
+    lines = body.split("\n")
+    fenced = [False] * len(lines)
+    fence = None
+    for index, line in enumerate(lines):
+        marker = _OPEN_FENCE_RE.match(line)
+        fenced[index] = True if marker else fence is not None
+        if marker:
+            token = marker.group(1)[0]
+            fence = None if fence == token else (fence or token)
+
+    hits = []
+    for start, end in _paragraphs(lines):
+        if any(fenced[start:end]):
+            continue
+        # The footer's own `---` rule shares the paragraph when no blank
+        # line separates them, which is how it is actually written.
+        head = start + 1 if _RULE_ONLY_RE.match(lines[start]) else start
+        if head >= end:
+            continue
+        match = _STRAY_FOOTER_RE.match(" ".join(lines[head:end]).strip())
+        if match:
+            hits.append((start, end, match))
+    if len(hits) != 1:
+        return body, "", ""
+    start, end, match = hits[0]
+    rest = "\n".join(lines[:start] + lines[end:]).strip()
+    return rest, match.group("pr"), match.group("outcome")
+
+
+def _paragraphs(lines):
+    """Line indices of each blank-line-separated block, as `(start, end)`."""
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip():
+            start = index if start is None else start
+        elif start is not None:
+            yield start, index
+            start = None
+    if start is not None:
+        yield start, len(lines)
+
+
 _SECTION_RE = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 _DIGEST_LINE_RE = re.compile(
     r"^\*\*Cycle[ \t]+(?P<cycle>\d+)\*\*[ \t]*\((?P<at>[^)]*)\)[ \t]*—[ \t]*(?P<text>.*)$",
@@ -422,6 +520,8 @@ def parse_journal(markdown, times_by_cycle=None):
             pr = footer.group("pr")
             outcome = footer.group("outcome")
             raw_body = raw_body[: footer.start()].rstrip()
+        else:
+            raw_body, pr, outcome = stray_footer(raw_body)
 
         entry = parse_heading(match.group(1))
         cycle = entry["cycle"]

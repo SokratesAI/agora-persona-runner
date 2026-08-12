@@ -1699,6 +1699,131 @@ def test_a_correct_document_is_left_exactly_as_written():
     assert normalise_entry(JOURNAL_DIR + "070-cycle-65.md", text) == text
 
 
+def test_a_footer_written_at_the_top_and_bolded_still_becomes_a_badge():
+    # Cycles 146 and 147, live: `**PR: ... | Outcome: ...**` directly
+    # under the heading. Not a parse error -- both cards rendered with no
+    # PR and no outcome, which reads as a cycle that shipped nothing.
+    files = {
+        JOURNAL_DIR + "162-cycle-146.md": (
+            "### Cycle 146 — 2026-08-12 20:35\n\n"
+            "**PR: runner#128 | Outcome: merged**\n\n"
+            "The item at the top of the handoff is done."
+        ),
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert len(entries) == 1
+    assert entries[0]["pr"] == "runner#128"
+    assert entries[0]["outcome"] == "merged"
+    # And the body no longer carries the line as prose, in either place.
+    assert "PR:" not in entries[0]["body"]
+    assert entries[0]["body"] == "The item at the top of the handoff is done."
+
+
+def test_a_hard_wrapped_footer_keeps_the_half_below_the_line_break():
+    # Entry 004, live: a correct footer, hard-wrapped. `_FOOTER_RE` misses
+    # it because `$` lands on the continuation line. Matching a line at a
+    # time repairs the badge and truncates the outcome mid-sentence, so
+    # the paragraph is what gets matched.
+    files = {
+        JOURNAL_DIR + "004-edvard-s-first-message.md": (
+            "### 2026-08-02 — Edvard's first message\n\n"
+            "I'd rather ask.\n\n"
+            "---\nPR: #31 | Outcome: open — green, deliberately unmerged\n"
+            "so this reply survives"
+        ),
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert entries[0]["pr"] == "#31"
+    assert entries[0]["outcome"] == "open"
+    assert entries[0]["outcomeDetail"] == (
+        "green, deliberately unmerged so this reply survives"
+    )
+    # The `---` was that footer's own rule; leaving it behind draws a line
+    # across the card with nothing under it.
+    assert entries[0]["body"] == "I'd rather ask."
+
+
+def test_a_footer_quoted_in_a_code_fence_is_not_promoted_to_a_badge():
+    # `personality.md` states the footer format as a fenced block, so an
+    # entry quoting it is a thing a cycle would plausibly write. A missing
+    # badge is honest; a badge invented out of an example is not.
+    #
+    # The blank lines inside the fence are the whole test. Written without
+    # them -- the way `personality.md` actually prints the block -- the
+    # fence markers join the same paragraph as the footer and the match
+    # fails on the leading backticks, so deleting the fence guard
+    # entirely left the suite green. That is the tests being blind, not
+    # the guard being unreachable: a fence can contain blank lines, and
+    # then this line is a paragraph of its own and the guard is the only
+    # thing standing between it and a badge.
+    files = {
+        JOURNAL_DIR + "070-cycle-65.md": (
+            "### Cycle 65\n\nThe rule says end with:\n\n"
+            "```\n\nPR: #23 | Outcome: merged\n\n```\n\nand I forgot to."
+        ),
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert entries[0]["pr"] == ""
+    assert entries[0]["outcome"] == ""
+    assert "PR: #23 | Outcome: merged" in entries[0]["body"]
+
+
+def test_the_same_quote_without_blank_lines_is_also_left_alone():
+    # The shape `personality.md` really prints, kept alongside the one
+    # above so the two protections stay distinguishable: here it is the
+    # paragraph join, not the fence guard, that refuses.
+    files = {
+        JOURNAL_DIR + "070-cycle-65.md": (
+            "### Cycle 65\n\nThe rule says end with:\n\n"
+            "```\n---\nPR: #23 | Outcome: merged\n```\n\nand I forgot to."
+        ),
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert entries[0]["pr"] == ""
+    assert "PR: #23 | Outcome: merged" in entries[0]["body"]
+
+
+def test_two_candidate_footers_are_left_alone_rather_than_picked_between():
+    files = {
+        JOURNAL_DIR + "070-cycle-65.md": (
+            "### Cycle 65\n\n**PR: #1 | Outcome: merged**\n\n"
+            "I then changed my mind.\n\nPR: #2 | Outcome: stuck\n\nEnd."
+        ),
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert entries[0]["pr"] == ""
+    assert "PR: #1" in entries[0]["body"]
+    assert "PR: #2" in entries[0]["body"]
+
+
+def test_an_entry_that_ends_correctly_keeps_its_own_footer():
+    # The guard that makes the rest of this safe: if `_FOOTER_RE` can
+    # already read a footer, nothing moves, whatever else the entry says.
+    files = {
+        JOURNAL_DIR + "070-cycle-65.md": (
+            "### Cycle 65\n\nLast hour I wrote\n\n**PR: #1 | Outcome: merged**\n\n"
+            "and it was wrong.\n\n---\nPR: #2 | Outcome: shipped"
+        ),
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert entries[0]["pr"] == "#2"
+    assert entries[0]["outcome"] == "shipped"
+    assert "**PR: #1 | Outcome: merged**" in entries[0]["body"]
+
+
+def test_the_repair_reaches_the_frozen_archive_too_not_just_the_folder():
+    # The repair sits in `parse_journal`, not in `normalise_entry`, and
+    # this is why: `normalise_entry` only runs on the per-entry documents,
+    # so putting it there gave the folder better cards than the monolith
+    # built from the same text -- which is exactly what
+    # `test_the_split_reassembles_into_an_identical_entry_list` is for,
+    # and it caught the divergence.
+    markdown = "## Entries\n\n### Cycle 65\n\n**PR: #1 | Outcome: merged**\n\nBody."
+    entries = parse_journal(markdown)
+    assert entries[0]["pr"] == "#1"
+    assert entries[0]["body"] == "Body."
+
+
 def test_an_entry_body_containing_a_two_hash_line_is_not_split():
     # Why this is fixed per-document rather than by loosening
     # `_ENTRY_HEADING_RE` to accept `##`: entries are free prose and some
