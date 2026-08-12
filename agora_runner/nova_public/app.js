@@ -160,11 +160,19 @@
    * which means there is exactly one thing that can happen when the end of
    * the feed is reached and no second version of it to drift.
    *
-   * `disabled` is the re-entry guard the click handlers already set, so an
-   * observer that fires twice before the fetch lands widens the window
-   * once. And it disconnects as soon as it has fired: `render` throws this
-   * node away and builds a new one, so an observer left attached is
-   * watching a node that is no longer in the document.
+   * Re-entry is already handled twice over and neither of them is a check
+   * written here. It disconnects before it clicks, so one observer fires
+   * once; and a click handler's first act is to disable the button, and a
+   * disabled button does not dispatch a click at all -- so a second batch
+   * already queued when `disconnect` landed cannot widen the window twice.
+   * A third guard reading `if (!node.disabled)` was in the first draft of
+   * this, and removing it failed no test out of 155, because it could not
+   * be reached in a state where it changed the answer. It was deleted
+   * rather than given a test, which would have been a test of dead code.
+   *
+   * Disconnecting also matters on its own: `render` throws this node away
+   * and builds a new one, so an observer left attached is watching a node
+   * that is no longer in the document and never can be again.
    *
    * `rootMargin` starts the fetch 300px before the pager is actually on
    * screen, so the entries are usually there by the time the reader gets
@@ -176,7 +184,7 @@
       for (var i = 0; i < entries.length; i += 1) {
         if (!entries[i].isIntersecting) continue;
         observer.disconnect();
-        if (!node.disabled) node.click();
+        node.click();
         return;
       }
     }, { rootMargin: "300px 0px" });
