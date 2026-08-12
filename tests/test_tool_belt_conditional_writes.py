@@ -75,6 +75,29 @@ def test_the_conflict_tells_the_model_what_to_do_about_it():
     assert "vault_read" in out and "write again" in out, out
 
 
+def test_a_lost_race_is_audited_as_a_failure_and_not_as_a_diff():
+    """The recovery sentence is appended to the client's string, so the
+    "FAILED" prefix `_audit_vault_write` keys on has to survive it. If it
+    did not, the audit log -- the only durable record of what a persona did
+    to Edvard's vault -- would render a completed before/after diff for a
+    write that never happened."""
+    couch = FakeCouch()
+    couch.seed(PATH, "one\n")
+    entries = []
+
+    with patch.object(vault, "couch_req", couch.req), \
+            patch.object(tools_dispatch, "audit",
+                         lambda *a, **k: entries.append((a, k))):
+        tools_dispatch.execute_tool("vault_read", {"path": PATH}, PERSONA, CONV)
+        couch.seed(PATH, "theirs\n")
+        tools_dispatch.execute_tool(
+            "vault_write", {"path": PATH, "content": "mine\n"}, PERSONA, CONV)
+
+    _args, kwargs = entries[-1]
+    assert "after" not in kwargs, kwargs
+    assert "409 conflict" in _args[-1], _args
+
+
 def test_an_uncontested_write_after_a_read_still_lands():
     """A protection that fails the ordinary path is worse than the bug."""
     couch = FakeCouch()
