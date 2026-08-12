@@ -861,8 +861,8 @@ def test_vault_write_path_does_not_copy_previous_content_into_the_vault(runner):
 # ---------------------------------------------------------------------------
 
 def test_vault_append_path_inserts_after_marker_when_found(runner):
-    with patch.object(runner.vault, "vault_read_path",
-                       return_value="---\nfm\n---\n\n## Entries\n\nold entry text"), \
+    with patch.object(runner.vault, "vault_read_path_rev",
+                       return_value=("---\nfm\n---\n\n## Entries\n\nold entry text", "1-x")), \
          patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
         result = runner.vault_append_path("journal.md", "new entry text", after_marker="## Entries")
     assert result == "written"
@@ -871,7 +871,7 @@ def test_vault_append_path_inserts_after_marker_when_found(runner):
 
 
 def test_vault_append_path_appends_at_end_when_no_marker_given(runner):
-    with patch.object(runner.vault, "vault_read_path", return_value="line one"), \
+    with patch.object(runner.vault, "vault_read_path_rev", return_value=("line one", "1-x")), \
          patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
         runner.vault_append_path("notes.md", "line two")
     assert mock_write.call_args[0][1] == "line one\n\nline two\n"
@@ -891,7 +891,7 @@ def test_vault_append_path_fails_and_writes_nothing_when_marker_not_found(runner
     # vault_write_path returns a real string here so that a fall-through to
     # the end-of-file append is caught by the FAILED assertion too -- against
     # a bare MagicMock, `result.startswith("FAILED")` is quietly truthy.
-    with patch.object(runner.vault, "vault_read_path", return_value="no marker here"), \
+    with patch.object(runner.vault, "vault_read_path_rev", return_value=("no marker here", "1-x")), \
          patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
         result = runner.vault_append_path("notes.md", "addition", after_marker="## Missing")
     mock_write.assert_not_called()
@@ -903,7 +903,7 @@ def test_vault_append_path_still_appends_at_end_when_marker_is_empty(runner):
     """Omitting the marker is the documented way to append at the end, and
     must keep working -- the failure above is only for a marker that was
     actually asked for."""
-    with patch.object(runner.vault, "vault_read_path", return_value="line one"), \
+    with patch.object(runner.vault, "vault_read_path_rev", return_value=("line one", "1-x")), \
          patch.object(runner.vault, "vault_write_path", return_value="written") as mock_write:
         result = runner.vault_append_path("notes.md", "line two", after_marker="")
     assert result == "written"
@@ -911,7 +911,7 @@ def test_vault_append_path_still_appends_at_end_when_marker_is_empty(runner):
 
 
 def test_vault_append_path_fails_loudly_for_a_missing_file(runner):
-    with patch.object(runner.vault, "vault_read_path", return_value=None), \
+    with patch.object(runner.vault, "vault_read_path_rev", return_value=(None, None)), \
          patch.object(runner.vault, "vault_write_path") as mock_write:
         result = runner.vault_append_path("missing.md", "content")
     assert result.startswith("FAILED")
