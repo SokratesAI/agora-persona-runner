@@ -896,6 +896,37 @@ def fetch_vault_context(paths):
 # fetching hundreds of files one at a time is exactly what the vault's
 # own CLAUDE.md says never to do.
 # --------------------------------------------------------------------------
+def vault_bulk_list(prefix=""):
+    """`(paths, {path: mtime_ms})` under `prefix`, without reading a byte
+    of content. `paths` is a `VaultFiles` so `.unreadable` still answers
+    what the listing lost.
+
+    `vault_bulk_fetch(..., with_mtimes=True)` returns the same two things
+    and then some, but the mtimes it hands back come from the file docs of
+    its *first* phase alone -- the second phase, which pulls every content
+    chunk of every file, contributes nothing to them. A caller that only
+    wants filenames and write times was paying for the whole folder's body
+    to get them, growing by one entry an hour (`cycle_health`, on a journal
+    folder already past 1MB).
+
+    It is also the more truthful read for that caller, which is the part
+    worth keeping. `vault_bulk_fetch` drops a file whose content chunks are
+    missing, because it has no string to return for it -- so a document that
+    lost its chunks disappears from the listing entirely, and anything
+    reasoning about which files exist concludes it was never written. Here
+    the file doc *is* the answer, so a chunk-level loss cannot make a file
+    vanish.
+    """
+    filedocs = _vault_file_docs(prefix)
+    paths = {}
+    mtimes = {}
+    for doc_id, doc in filedocs.items():
+        path = doc.get("path") or doc_id
+        paths[path] = None
+        mtimes[path] = doc.get("mtime")
+    return VaultFiles(paths, unreadable=list(filedocs.unreadable)), mtimes
+
+
 def vault_bulk_fetch(prefix="", with_mtimes=False):
     """{path: content} for every vault file under `prefix`, assembled
     from batched bulk _all_docs POSTs (file docs, then their content

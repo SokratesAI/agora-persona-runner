@@ -30,8 +30,7 @@ def fake_journal(monkeypatch, mtimes, unreadable=()):
     files.unreadable = unreadable
 
     import agora_runner.vault as vault
-    monkeypatch.setattr(vault, "vault_bulk_fetch",
-                        lambda prefix, with_mtimes=False: (files, mtimes))
+    monkeypatch.setattr(vault, "vault_bulk_list", lambda prefix: (files, mtimes))
 
 
 def entry(cycle, when):
@@ -74,13 +73,13 @@ def test_another_persona_never_gets_novas_journal_read_at_all(monkeypatch):
     fake_journal(monkeypatch, {**entry(133, NOW - timedelta(hours=3)),
                                **entry(135, NOW - timedelta(minutes=35))})
     import agora_runner.vault as vault
-    real = vault.vault_bulk_fetch
+    real = vault.vault_bulk_list
 
     def record(*a, **kw):
         calls.append(a)
         return real(*a, **kw)
 
-    monkeypatch.setattr(vault, "vault_bulk_fetch", record)
+    monkeypatch.setattr(vault, "vault_bulk_list", record)
     since = (NOW - timedelta(hours=1)).isoformat()
     assert nova_health_note(SOMEONE_ELSE, since) == ""
     assert nova_health_note(None, since) == ""
@@ -91,13 +90,20 @@ def test_another_persona_never_gets_novas_journal_read_at_all(monkeypatch):
     assert len(calls) == 1
 
 
-def test_a_broken_check_never_costs_the_cycle_its_turn(monkeypatch):
-    """A self-check is not worth losing an hour over. If the vault read
-    throws, the cycle still runs and step 1 finds out the slow way."""
+def test_a_broken_check_never_costs_the_cycle_its_turn_and_never_goes_quiet(monkeypatch):
+    """Two properties, and the second was a review finding against the
+    first draft. Not raising is right -- a self-check is not worth an hour.
+    Returning `""` was not: the freshness boundary is Agora's `lastRunAt`,
+    which advances whether or not this ran, so a gap whose bracket lands in
+    a failed hour is not delayed but *lost*. Silence there is an all-clear
+    from an instrument that never ran, which is the one thing this module
+    exists to prevent."""
     import agora_runner.vault as vault
-    monkeypatch.setattr(vault, "vault_bulk_fetch",
+    monkeypatch.setattr(vault, "vault_bulk_list",
                         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("couch 503")))
-    assert nova_health_note(NOVA, NOW.isoformat()) == ""
+    note = nova_health_note(NOVA, NOW.isoformat())
+    assert "couch 503" in note
+    assert "may now never be reported" in note
 
 
 def test_a_blind_read_is_reported_rather_than_certified_as_healthy(monkeypatch):
@@ -163,3 +169,21 @@ def test_run_heartbeat_actually_puts_the_note_in_the_system_prompt(monkeypatch):
     # After the task, so a cycle reads its instructions before the
     # exception report that only ever changes how it carries them out.
     assert captured["extra"].index("Follow prompt.md") < captured["extra"].index("134")
+
+
+def test_a_utc_boundary_is_compared_against_oslo_write_times_correctly(monkeypatch):
+    """Two different zones meet here and Oslo is +02:00 in August, so a
+    naive comparison would be two hours out -- which is longer than the
+    heartbeat interval this whole thing is measured in. Written as an
+    explicit UTC string because that is exactly what Agora stores in
+    `lastRunAt`, and as Oslo mtimes because that is what `cycle_health`
+    builds. A wrong sign here either announces every old gap forever or
+    swallows every new one."""
+    bracket = NOW - timedelta(minutes=35)
+    fake_journal(monkeypatch, {**entry(133, NOW - timedelta(hours=3)),
+                               **entry(135, bracket)})
+
+    just_before = (bracket - timedelta(minutes=5)).astimezone(timezone.utc)
+    just_after = (bracket + timedelta(minutes=5)).astimezone(timezone.utc)
+    assert "134" in nova_health_note(NOVA, just_before.isoformat())
+    assert nova_health_note(NOVA, just_after.isoformat()) == ""

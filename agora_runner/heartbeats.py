@@ -219,17 +219,34 @@ def nova_health_note(persona, previous_run_at):
     try:
         from agora_runner.cycle_health import describe, heartbeat_findings
         from agora_runner.nova_journal import JOURNAL_DIR
-        from agora_runner.vault import vault_bulk_fetch
+        from agora_runner.vault import vault_bulk_list
 
-        files, mtimes = vault_bulk_fetch(JOURNAL_DIR, with_mtimes=True)
+        files, mtimes = vault_bulk_list(JOURNAL_DIR)
         line = describe(heartbeat_findings(
             list(files), mtimes, datetime.now(OSLO),
             _parse_run_at(previous_run_at),
             unreadable=getattr(files, "unreadable", ()),
         ))
     except Exception as e:
+        # Never re-raised -- a self-check is not worth a cycle's hour. But
+        # not silent either, and the reason is specific to reporting each
+        # gap once: the boundary this filters on is Agora's `lastRunAt`,
+        # which advances whether or not this check succeeded. So a gap
+        # whose bracketing entry lands during a failed hour is not delayed,
+        # it is lost -- the next successful run sees a bracket older than
+        # its own boundary and treats it as already told. Saying so is the
+        # only thing standing between that and the exact failure this whole
+        # module exists to prevent: an all-clear from an instrument that
+        # never ran.
         log(f"cycle health check failed, dispatching anyway: {e}")
-        return ""
+        return (
+            "## Your own last hours\n"
+            f"The automatic check of your journal folder failed to run: {e}. "
+            "It reports each dead cycle exactly once and its boundary moves on "
+            "regardless, so a cycle that died in the last hour may now never be "
+            "reported. Run `python -m agora_runner.cycle_health` in the runner "
+            "pod (terminal_exec) if you want the full history."
+        )
     if not line:
         return ""
     return (

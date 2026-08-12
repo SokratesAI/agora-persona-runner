@@ -200,10 +200,14 @@ def gaps_since(paths, mtimes, since):
     previous one, which announces each gap to exactly one cycle: the first
     one that could possibly have seen it.
 
-    `since` of `None` means there is no previous run to compare against --
-    the first run after a deploy, say -- and everything is reported once.
-    That is the honest answer rather than a convenient silence: with no
-    boundary, no gap has been shown to anyone yet.
+    `since` of `None` means there is no previous run to compare against,
+    and everything is reported once. That is the honest answer rather than
+    a convenient silence: with no boundary, no gap has been shown to
+    anyone yet. Note when this actually fires, because the obvious guess
+    is wrong: the boundary is Agora's `lastRunAt`, which lives in the
+    heartbeat store and not in this process, so **deploying this code does
+    not reset it**. Only a brand-new heartbeat, or an unparseable
+    timestamp, takes this branch.
     """
     gaps = missing_cycles(paths)
     if since is None or not gaps:
