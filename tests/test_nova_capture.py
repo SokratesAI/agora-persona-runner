@@ -29,6 +29,8 @@ from agora_runner.nova_capture import (
     list_captures,
     replace_capture,
 )
+from agora_runner import vault
+from tests.couch_fake import FakeCouch
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
@@ -514,3 +516,73 @@ def test_an_amend_conflict_that_loses_to_a_boarding_does_not_resurrect_it(issues
     assert not ok
     assert "no longer" in message
     assert write.call_count == 1
+
+
+# --- The capture box against a CouchDB that enforces revisions ------------
+#
+# The three conflict tests above this block hand `vault_write_path` the
+# string "FAILED(409)" and watch what `capture` does with it. That proves
+# the retry branches on 409. It does not prove a 409 can ever reach it.
+#
+# Measured Cycle 142: delete `if_rev=rev` from either write site in
+# `nova_capture.py` and all 123 tests in this file and `test_nova_comments`
+# still pass -- while the capture box goes back to silently overwriting
+# whoever it raced, which is the exact bug Cycle 138 shipped. The tests
+# below run the real client against `FakeCouch`, which applies CouchDB's
+# actual rule, so dropping the revision fails them.
+
+
+def _seeded(path, content):
+    couch = FakeCouch()
+    couch.seed(path, content)
+    return couch
+
+
+def test_a_capture_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
+    """The end-to-end version of the retry test above.
+
+    `interleave={2: ...}` lands the other writer between `capture`'s own
+    read and the lookup inside `vault_write_path` -- the only window where
+    an unconditional write silently adopts the winner's revision and
+    overwrites them. Interleaving anywhere later is caught either way and
+    proves nothing.
+    """
+    path = CAPTURE_TARGETS["issues"]
+    couch = _seeded(path, issues_md)
+    couch.interleave = {2: lambda c: c.seed(
+        path, insert_captures(issues_md, ["something he typed meanwhile"]))}
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = capture("issues", "mine")
+    assert ok, message
+    assert couch.rejected == 1, "the losing write must have been refused"
+    assert _capture_list(couch.text(path)) == [
+        "- something he typed meanwhile", "- mine", "- "]
+
+
+def test_an_amend_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
+    """Same window, the edit/delete path, and the damage is worse here:
+    `capture` only inserts a bullet, `amend` rewrites the whole file, so an
+    unconditional write drops everything the other writer did.
+
+    The interloper edits the board rather than the capture list on purpose.
+    A new bullet above the amended one moves it, and `amend` then correctly
+    refuses (the position and the text disagree -- Cycle 132's design). The
+    losing-and-retrying case only exists when the rest of the file moved,
+    which is what a cycle boarding an item actually does.
+    """
+    path = CAPTURE_TARGETS["issues"]
+    start = insert_captures(issues_md, ["mine"])
+    his_board = start.replace(
+        "|---|------|--------|---------|",
+        "|---|------|--------|---------|\n| 70 | boarded meanwhile | Open | 2026-08-12 |")
+    assert his_board != start
+    couch = _seeded(path, start)
+    couch.interleave = {2: lambda c: c.seed(path, his_board)}
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = amend("issues", 0, "mine", "mine, edited")
+    assert ok, message
+    assert couch.rejected == 1, "the losing write must have been refused"
+    final = couch.text(path)
+    assert _capture_list(final) == ["- mine, edited", "- "]
+    assert "| 70 | boarded meanwhile | Open | 2026-08-12 |" in final, \
+        "the board row the other writer added must survive the amend"
