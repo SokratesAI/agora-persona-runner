@@ -69,9 +69,12 @@ def test_a_second_entry_for_the_same_cycle_wins_over_the_first():
     card he is commenting on, and the sequence prefix is what orders them:
     `104-` is after `103-` whatever the cycle number says."""
     ids = _ids("103-cycle-94.md", "104-cycle-94.md")
-    docs = {ids[0]: "first", ids[1]: "the addendum"}
+    # Both sentinels are shaped like real entries, because this path now
+    # normalises what it reads and a bare string would come back with a
+    # heading synthesised in front of it.
+    docs = {ids[0]: "### Cycle 94\n\nfirst", ids[1]: "### Cycle 94\n\nthe addendum"}
     content, read = _lookup(94, ids, docs)
-    assert content == "the addendum"
+    assert content == docs[ids[1]]
     assert read == [ids[1]]
 
 
@@ -87,9 +90,9 @@ def test_sequence_numbers_are_compared_as_numbers_not_as_text():
     entry is already outside the convention; and nothing enforces the
     padding on a file written by anything other than `entry_filename`."""
     ids = _ids("999-cycle-990.md", "1000-cycle-990.md")
-    docs = {ids[0]: "the old one", ids[1]: "the new one"}
+    docs = {ids[0]: "### Cycle 990\n\nthe old one", ids[1]: "### Cycle 990\n\nthe new one"}
     content, _ = _lookup(990, ids, docs)
-    assert content == "the new one"
+    assert content == docs[ids[1]]
 
 
 def test_a_cycle_with_no_document_returns_nothing_rather_than_a_neighbour():
@@ -125,10 +128,10 @@ def test_a_tombstoned_document_returns_nothing_rather_than_its_old_text():
 def test_a_filename_without_a_cycle_number_is_ignored():
     """`_context.md` and anything hand-added sit in the same folder."""
     ids = _ids("_context.md", "101-cycle-92.md", "notes.md")
-    docs = {p: p for p in ids}
+    docs = {p: f"### Cycle 92\n\n{p}" for p in ids}
     content, read = _lookup(92, ids, docs)
     assert read == _ids("101-cycle-92.md")
-    assert content == read[0]
+    assert content == docs[read[0]]
 
 
 def test_the_two_filename_readers_agree_with_the_assembler():

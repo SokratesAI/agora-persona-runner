@@ -24,6 +24,7 @@ from agora_runner.nova_journal import (
     entry_seq,
     entry_times,
     file_cycle,
+    normalise_entry,
 )
 from agora_runner.vault import vault_bulk_fetch, vault_list_ids, vault_read_path
 
@@ -86,7 +87,18 @@ def journal_entry_markdown(cycle):
     if not paths:
         return None
     newest = max(paths, key=lambda p: (entry_seq(p), p))
-    return vault_read_path(newest)
+    # Same normalisation the folder path gets, for the same reason: a
+    # document that wrote its heading at the wrong depth parses to zero
+    # entries here, and the caller's fallback is the full journal, where
+    # that entry is absorbed into its neighbour and so is not found
+    # either. Without this, Edvard commenting on one of those three cards
+    # gets a reply written with no memory of the entry he is replying to.
+    #
+    # A missing read stays missing rather than becoming `""`: None is this
+    # function's documented "I have nothing, fall back", and a tombstone
+    # is the case that reaches it.
+    raw = vault_read_path(newest)
+    return normalise_entry(newest, raw) if raw else raw
 
 
 def comments_markdown():
