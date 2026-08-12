@@ -8,6 +8,8 @@ from agora_runner.config import OSLO
 from agora_runner.cycle_health import (
     describe,
     findings,
+    gaps_since,
+    heartbeat_findings,
     missing_cycles,
     newest_entry_at,
     stalled_for,
@@ -157,3 +159,107 @@ def test_main_exits_nonzero_when_the_journal_listing_comes_back_empty(monkeypatc
     monkeypatch.setattr(vault, "vault_bulk_fetch", lambda prefix, with_mtimes=False: ({}, {}))
     assert main() == 1
     assert "cannot tell" in capsys.readouterr().out
+
+
+# --- Which gaps a heartbeat is told about ------------------------------
+#
+# `missing_cycles` is history and never shrinks. Put in front of every
+# cycle it would recite the same six holes every hour forever, which is
+# the failure `describe`'s empty-on-healthy contract exists to avoid.
+
+
+def written(mapping):
+    """`{cycle: when}` -> the `{path: mtime_ms}` the check actually takes."""
+    return {f"projects/x/journal/{100 + n:03d}-cycle-{n}.md": ms(when)
+            for n, when in mapping.items()}
+
+
+def test_a_dead_cycle_is_announced_to_the_run_that_could_first_have_seen_it():
+    """134 died. Nothing about it changed when it died -- it left no
+    document -- so the hole only became observable when 135 wrote the entry
+    that brackets it, and that write is the event to key on."""
+    mtimes = written({133: NOW - timedelta(hours=3), 135: NOW - timedelta(minutes=35)})
+    since = NOW - timedelta(hours=1)
+    assert gaps_since(list(mtimes), mtimes, since) == [134]
+
+
+def test_the_same_dead_cycle_is_not_announced_again_an_hour_later():
+    """The property the whole filter exists for, and the one a plain
+    `missing_cycles` fails: 135's entry is now older than this run's
+    boundary, so the gap has already been shown to somebody."""
+    mtimes = written({133: NOW - timedelta(hours=4), 135: NOW - timedelta(hours=2)})
+    since = NOW - timedelta(hours=1)
+    assert missing_cycles(list(mtimes)) == [134]
+    assert gaps_since(list(mtimes), mtimes, since) == []
+
+
+def test_no_previous_run_reports_every_gap_once():
+    """First run after a deploy: there is no boundary, so nothing has been
+    shown to anyone yet and silence would be a convenient lie."""
+    mtimes = written({120: NOW - timedelta(days=9), 125: NOW - timedelta(days=8)})
+    assert gaps_since(list(mtimes), mtimes, None) == [121, 122, 123, 124]
+
+
+def test_an_older_gap_is_silent_while_a_fresh_one_speaks():
+    """Both are real holes; only one is news. Reporting both is how the
+    line becomes permanent furniture."""
+    mtimes = written({
+        126: NOW - timedelta(days=1), 129: NOW - timedelta(days=1),
+        133: NOW - timedelta(hours=3), 135: NOW - timedelta(minutes=35),
+    })
+    since = NOW - timedelta(hours=1)
+    assert missing_cycles(list(mtimes)) == [127, 128, 130, 131, 132, 134]
+    assert gaps_since(list(mtimes), mtimes, since) == [134]
+
+
+def test_a_gap_with_no_timed_entry_above_it_stays_quiet():
+    """Nothing dates it, so any answer is a guess -- and guessing "new"
+    re-reports old history on every single run."""
+    mtimes = written({130: NOW - timedelta(hours=9)})
+    paths_with_untimed_top = list(mtimes) + ["projects/x/journal/103-cycle-133.md"]
+    assert missing_cycles(paths_with_untimed_top) == [131, 132]
+    assert gaps_since(paths_with_untimed_top, mtimes, NOW - timedelta(hours=1)) == []
+
+
+def test_an_addendum_does_not_postpone_the_cycle_that_wrote_it():
+    """Cycle 135 wrote twice. The gap below it became visible at the first
+    write, so bracketing on the later one would announce 134 an hour late
+    -- to a run that has already swept the workspace."""
+    mtimes = {
+        "projects/x/journal/136-cycle-133.md": ms(NOW - timedelta(hours=4)),
+        "projects/x/journal/137-cycle-135.md": ms(NOW - timedelta(hours=2)),
+        "projects/x/journal/138-cycle-135.md": ms(NOW - timedelta(minutes=20)),
+    }
+    assert gaps_since(list(mtimes), mtimes, NOW - timedelta(hours=1)) == []
+
+
+def test_the_heartbeat_report_keeps_the_stall_and_the_blindness_whole():
+    """Only the gap list is filtered. Both other findings are already
+    statements about right now, so there is nothing to age out of them --
+    and a stall is exactly the multi-cycle outage the gap filter cannot
+    see, because a hole needs a bracket and a stall has none."""
+    mtimes = written({133: NOW - timedelta(minutes=200)})
+    report = heartbeat_findings(list(mtimes), mtimes, NOW, NOW - timedelta(hours=1))
+    assert report["stalled"] is True
+    assert "heartbeat intervals" in describe(report)
+    blind = heartbeat_findings([], {}, NOW, NOW - timedelta(hours=1))
+    assert "cannot tell" in describe(blind)
+
+
+def test_a_healthy_loop_still_says_nothing_to_a_heartbeat():
+    mtimes = written({132: NOW - timedelta(minutes=80), 133: NOW - timedelta(minutes=20)})
+    assert describe(heartbeat_findings(list(mtimes), mtimes, NOW,
+                                       NOW - timedelta(hours=1))) == ""
+
+
+def test_the_heartbeat_report_does_not_forget_to_filter():
+    """`heartbeat_findings` differs from `findings` in exactly one field,
+    and a version that forgot the substitution passes every other test
+    here -- the stall, the blindness and the healthy case are all
+    identical between the two."""
+    mtimes = written({126: NOW - timedelta(days=1), 129: NOW - timedelta(hours=2),
+                      130: NOW - timedelta(minutes=20)})
+    report = heartbeat_findings(list(mtimes), mtimes, NOW, NOW - timedelta(hours=1))
+    assert findings(list(mtimes), mtimes, NOW)["missing"] == [127, 128]
+    assert report["missing"] == []
+    assert describe(report) == ""
