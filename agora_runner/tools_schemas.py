@@ -1,6 +1,7 @@
 """Capability-gated tool schemas for both providers, and the persona-capabilities <-> tool-name map."""
 
 from agora_runner.config import NO_CAPS
+from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.tools_kubectl import KUBECTL_ALLOWED_VERBS, KUBECTL_ALLOWED_FLAGS
 from agora_runner.tools_github import GITHUB_ALLOWED_SUBCOMMANDS
 from agora_runner.tools_terminal import TERMINAL_EXEC_OUTPUT_MAX
@@ -349,7 +350,13 @@ def client_tool_schemas(caps, active_step=None):
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "target": {"type": "string", "enum": ["issues", "ideas"]},
+                    # Derived, never a literal. This enum was
+                    # `["issues", "ideas"]` and went stale the hour a third
+                    # target shipped: the site's button worked and this
+                    # path -- the one a journal-comment reply uses -- could
+                    # still only offer Edvard's two old files, which is the
+                    # exact confusion he asked three times to be rid of.
+                    "target": {"type": "string", "enum": sorted(CAPTURE_TARGETS)},
                     "text": {"type": "string"},
                 },
                 "required": ["target", "text"],

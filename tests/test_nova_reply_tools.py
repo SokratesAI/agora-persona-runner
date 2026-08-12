@@ -298,3 +298,21 @@ def test_a_capture_that_did_write_is_not_reported_as_an_error():
         tools_mcp.revoke(token)
     assert payload["result"]["isError"] is False
     assert payload["result"]["content"][0]["text"] == "captured to issues"
+
+
+def test_the_capture_tool_offers_every_target_the_backend_accepts():
+    """The second capture entry point, and the one that went stale.
+
+    `nova_capture` is the tool a journal-comment reply uses to file a line
+    for Edvard, and its schema carried a literal `["issues", "ideas"]`.
+    Adding `notes` to CAPTURE_TARGETS shipped a working button on the site
+    and a reply turn that could still only offer his two old files -- the
+    exact two-way choice he asked three times to be rid of, with nothing
+    red anywhere. Found by a reviewer, not by a test; this is the test.
+    """
+    from agora_runner.nova_capture import CAPTURE_TARGETS
+    from agora_runner.tools_schemas import client_tool_schemas
+
+    tools = client_tool_schemas({"novaCapture": True})
+    schema = next(t for t in tools if t["name"] == "nova_capture")
+    assert schema["input_schema"]["properties"]["target"]["enum"] == sorted(CAPTURE_TARGETS)
