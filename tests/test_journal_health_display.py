@@ -22,7 +22,7 @@ from agora_runner.cycle_health import (
     gaps_between,
     missing_cycles,
 )
-from agora_runner.nova_journal import build_status, parse_journal
+from agora_runner.nova_journal import JOURNAL_DIR, build_status, parse_journal
 from agora_runner.nova_site import _with_silence, journal_page
 
 NOW = datetime(2026, 8, 12, 23, 0, tzinfo=OSLO)
@@ -78,14 +78,87 @@ def test_the_page_and_the_self_check_cannot_disagree_about_a_hole():
     """One definition of "missing", read by both callers.
 
     The point of `gaps_between` existing: `cycle_health` answers this for
-    Nova off filenames and the site answers it for Edvard off parsed
-    headings, and a second implementation is the hand-synced pair this
-    repo keeps finding drifted. If these two ever disagree, one of the two
-    readers is lying to somebody.
+    Nova and `build_status` answers it for Edvard, and a second
+    implementation is the hand-synced pair this repo keeps finding
+    drifted. If these two ever disagree, one of the two readers is lying
+    to somebody.
+
+    Sharing the function is only half of it -- they also have to be fed
+    the same set, which is why the live path passes the filename-derived
+    numbers rather than the parsed ones. See
+    `test_an_entry_whose_heading_cannot_be_parsed_is_not_called_a_gap`.
     """
     paths = [f"{n:03d}-cycle-{n}.md" for n in (125, 126, 129)]
     assert missing_cycles(paths) == build_status(
         _entries(129, 126, 125))["missingCycles"] == [127, 128]
+
+
+def test_an_entry_whose_heading_cannot_be_parsed_is_not_called_a_gap():
+    """The false alarm this feature would otherwise have shipped.
+
+    Measured against the live journal on 2026-08-12: 140 cycle numbers
+    appear in the `NNN-cycle-M.md` filenames and only 137 survive parsing
+    the `### ` heading inside, because cycle 131 opens with frontmatter
+    and cycles 146 and 147 wrote `## Cycle N` with two hashes. The entry
+    regex needs three, so those headings are not headings and their text
+    is absorbed into a neighbour.
+
+    Those cycles wrote entries. Inferring the written set from parsed
+    headings reports them missing, and the feed then prints "Cycle 146 ran
+    and wrote no entry" directly above Cycle 146's own words -- a false
+    accusation in the one feature built to stop false accusations.
+    """
+    markdown = (
+        "### 2026-08-12 23:00 (Oslo) — Cycle 148\n\nBody.\n\n"
+        "---\nPR: none | Outcome: merged\n"
+        # Two hashes: not a heading, so cycle 147 is invisible to the parser.
+        "## Cycle 147 — 2026-08-12 21:01\n\nBody.\n\n"
+        "### 2026-08-12 20:00 (Oslo) — Cycle 146\n\nBody.\n\n"
+        "---\nPR: none | Outcome: merged\n"
+    )
+    entries = parse_journal(markdown)
+    assert {e["cycle"] for e in entries if e["cycle"] is not None} == {146, 148}
+
+    # What the filenames know, which is the truth: 147 wrote an entry.
+    status = build_status(entries, known_cycles=[146, 147, 148])
+    assert status["missingCycles"] == []
+
+    # And without that input it would have accused it.
+    assert build_status(entries)["missingCycles"] == [147]
+
+
+def test_the_payload_takes_the_written_set_from_the_filenames():
+    """The plumbing, end to end -- and it is the half a unit test misses.
+
+    `build_status` can be handed the right answer all day; what matters is
+    whether `journal_payload` hands it one. Removing that argument leaves
+    every other test in this file green, because they all call
+    `build_status` directly. So this one goes through the real payload,
+    over a corpus shaped like the live one: three entry documents, one of
+    which (147) wrote `## Cycle N` and is therefore invisible to the
+    heading parser while its filename says plainly that it exists.
+    """
+    from unittest.mock import patch
+
+    from agora_runner import nova_sources, nova_site
+
+    docs = {
+        JOURNAL_DIR + "164-cycle-148.md":
+            "### 2026-08-12 23:00 (Oslo) — Cycle 148\n\nBody.\n",
+        JOURNAL_DIR + "163-cycle-147.md":
+            "## Cycle 147 — 2026-08-12 21:01\n\nBody.\n",
+        JOURNAL_DIR + "162-cycle-146.md":
+            "### 2026-08-12 20:35 (Oslo) — Cycle 146\n\nBody.\n",
+    }
+    mtimes = {path: 1786000000000 for path in docs}
+
+    with patch.object(nova_sources, "vault_bulk_fetch",
+                      return_value=(docs, mtimes)):
+        status = nova_site.journal_payload()["status"]
+
+    assert status["missingCycles"] == [], (
+        "a cycle whose heading the parser cannot read was reported as a "
+        "cycle that never wrote one")
 
 
 def test_gaps_between_needs_two_entries_to_bracket_anything():

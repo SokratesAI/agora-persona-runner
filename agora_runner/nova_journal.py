@@ -838,7 +838,7 @@ def _newest_written_at(entries):
     return None
 
 
-def build_status(entries):
+def build_status(entries, known_cycles=None):
     """The front-page header: is Nova alive, and what did it just do.
 
     `runningDays` spans the oldest entry to the newest rather than to
@@ -854,6 +854,23 @@ def build_status(entries):
     the numbers are what the client needs, and trimming a list of six to
     spare a header that never renders it would be a limit with no danger
     behind it.
+
+    **`known_cycles` is which cycles have an entry document, and it must
+    come from the filenames.** Measured against the live journal
+    2026-08-12: 140 cycle numbers appear in `NNN-cycle-M.md` filenames and
+    only 137 can be read back out of the `### ` headings inside them,
+    because 131 opens with frontmatter and 146 and 147 wrote `## Cycle N`
+    with two hashes instead of three. Those three entries exist and are
+    not gaps. Inferring the set from parsed headings instead would have
+    printed "Cycle 146 ran and wrote no entry" directly above Cycle 146's
+    own words -- the exact false alarm #72 warns about, in the one feature
+    built to answer it. The filename is also what `cycle_health` counts,
+    so passing it here is what actually makes the two agree; sharing
+    `gaps_between` only guarantees they agree about a *set*.
+
+    Falls back to the parsed numbers when the caller has none -- the
+    frozen `journal.md` archive is one file with no per-entry names, and a
+    slightly wrong list there beats no list at all.
 
     **Everything here is a pure function of the corpus, and the clock is
     deliberately not consulted.** This payload is cached and warmed at
@@ -889,6 +906,8 @@ def build_status(entries):
         "lastOutcomeDetail": latest.get("outcomeDetail", "") if latest else "",
         "runningDays": running_days,
         "entryCount": len(entries),
-        "missingCycles": gaps_between(e["cycle"] for e in numbered),
+        "missingCycles": gaps_between(
+            known_cycles if known_cycles is not None
+            else (e["cycle"] for e in numbered)),
         "lastWrittenAt": written_at.isoformat() if written_at else "",
     }

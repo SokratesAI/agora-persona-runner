@@ -235,7 +235,12 @@ def journal_payload():
     """
     markdown, times = journal_markdown(with_times=True)
     entries = parse_journal(markdown, times)
-    status = build_status(entries)
+    # `times` is keyed by the cycle number in the *filename*, which is the
+    # only reliable answer to "did this cycle write an entry" -- three live
+    # entries carry headings the parser cannot read a number out of, and
+    # calling those gaps would accuse a cycle of silence above its own
+    # words. See `build_status`.
+    status = build_status(entries, known_cycles=times.keys() if times else None)
     return {"entries": [dict(entry) for entry in entries], "status": status}
 
 
