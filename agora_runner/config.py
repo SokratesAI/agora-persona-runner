@@ -51,6 +51,16 @@ NOVA_PORT = int(os.environ.get("NOVA_PORT", "8083"))
 # straight to the bridge, so the subscription is the only thing it can
 # spend (identity.md rule 9).
 NOVA_REPLY_MODEL = os.environ.get("NOVA_REPLY_MODEL", "claude-sonnet-5")
+# Whose heartbeat gets the journal self-check put in front of it
+# (cycle_health.py, wired up in heartbeats.run_heartbeat). The journal
+# folder this checks is Nova's alone -- JOURNAL_DIR is already a hardcoded
+# Nova path one module over -- so the id is defaulted rather than required.
+# A required env var would have made the check inert in production until a
+# manifest caught up, which is the exact way the last two conflict-safety
+# cycles shipped a capability that nothing called.
+NOVA_PERSONA_ID = os.environ.get(
+    "NOVA_PERSONA_ID", "08ffac94-7c4a-4506-897f-968c592358cb"
+)
 # Where the bridge sends live tool-use reports back to -- this process's
 # own in-cluster address (tool_activity.py explains why the reports come
 # here rather than going straight to Agora's internal API). A default

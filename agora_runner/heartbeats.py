@@ -4,7 +4,13 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from agora_runner.config import FETCH_LIMIT, HEARTBEAT_NO_REPORT_SENTINEL, NO_CAPS
+from agora_runner.config import (
+    FETCH_LIMIT,
+    HEARTBEAT_NO_REPORT_SENTINEL,
+    NO_CAPS,
+    NOVA_PERSONA_ID,
+    OSLO,
+)
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
@@ -164,6 +170,94 @@ def _older_cycle_conversations(heartbeat, current_id):
         yield detail, f'the conversation "{conversation.get("name") or conversation["id"]}"'
 
 
+def _parse_run_at(stamp):
+    """An Agora `lastRunAt` as an aware datetime, or `None`.
+
+    `None` on anything unparseable rather than a raised error or a guessed
+    time: it feeds `gaps_since`, where `None` means "no boundary, report
+    everything once". Erring toward one noisy run beats silently adopting
+    a wrong boundary and swallowing a real failure.
+    """
+    if not stamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def nova_health_note(persona, previous_run_at):
+    """The journal self-check, as a line for Nova's own heartbeat, or `""`.
+
+    Edvard, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not
+    already have a self check that your previous cycles worked correctly,
+    you should make yourself do this and self repair automatically."*
+    `cycle_health` answered the first half the same day and then sat there
+    with nothing calling it for five cycles -- issue #70, and the reason it
+    stalled is that a cycle cannot run it itself. `agora_runner` is not in
+    the bridge image, and the `COUCHDB_*` names it needs are set in *this*
+    pod and not that one, so the check reads an empty journal and certifies
+    a healthy loop from a blind instrument. Here is the only place that has
+    both the credentials and a cycle's attention: the run that dispatches
+    the cycle, one line ahead of it in the same turn.
+
+    It reports `heartbeat_findings` rather than `findings` -- only the gaps
+    this run is the first to see, so a cycle is told about a dead
+    predecessor once instead of reading the same six historical holes every
+    hour until it stops looking.
+
+    Gated on the persona because the finding is about Nova's journal and
+    would be meaningless in front of anyone else's heartbeat, and wrapped
+    because a self-check is never worth losing a cycle over -- if the vault
+    read fails, the cycle should still run, and step 1 will notice.
+    """
+    if (persona or {}).get("id") != NOVA_PERSONA_ID:
+        return ""
+    try:
+        from agora_runner.cycle_health import describe, heartbeat_findings
+        from agora_runner.nova_journal import JOURNAL_DIR
+        from agora_runner.vault import vault_bulk_list
+
+        files, mtimes = vault_bulk_list(JOURNAL_DIR)
+        line = describe(heartbeat_findings(
+            list(files), mtimes, datetime.now(OSLO),
+            _parse_run_at(previous_run_at),
+            unreadable=getattr(files, "unreadable", ()),
+        ))
+    except Exception as e:
+        # Never re-raised -- a self-check is not worth a cycle's hour. But
+        # not silent either, and the reason is specific to reporting each
+        # gap once: the boundary this filters on is Agora's `lastRunAt`,
+        # which advances whether or not this check succeeded. So a gap
+        # whose bracketing entry lands during a failed hour is not delayed,
+        # it is lost -- the next successful run sees a bracket older than
+        # its own boundary and treats it as already told. Saying so is the
+        # only thing standing between that and the exact failure this whole
+        # module exists to prevent: an all-clear from an instrument that
+        # never ran.
+        log(f"cycle health check failed, dispatching anyway: {e}")
+        return (
+            "## Your own last hours\n"
+            f"The automatic check of your journal folder failed to run: {e}. "
+            "It reports each dead cycle exactly once and its boundary moves on "
+            "regardless, so a cycle that died in the last hour may now never be "
+            "reported. Run `python -m agora_runner.cycle_health` in the runner "
+            "pod (terminal_exec) if you want the full history."
+        )
+    if not line:
+        return ""
+    return (
+        "## Your own last hours\n"
+        f"An automatic check of your journal folder, run just now: {line}. "
+        "You are the first cycle to be told this. Anything a dead cycle left "
+        "behind is still in `/data/workspace` -- prompt.md step 1c sweeps it -- "
+        "and picking that up beats starting something new."
+    )
+
+
 def run_heartbeat(heartbeat):
     # Read BEFORE the claim PATCH below overwrites it: this is the
     # previous run's timestamp, and it is the boundary
@@ -242,6 +336,12 @@ def run_heartbeat(heartbeat):
     ]
     if heartbeat.get("task"):
         extra_parts.append(f"Task for this turn: {heartbeat['task']}")
+    # Before the vault context and after the task, so a cycle reads what it
+    # was asked to do and then what went wrong last hour -- the second only
+    # ever changes how it does the first.
+    health = nova_health_note(persona, previous_run_at)
+    if health:
+        extra_parts.append(health)
     if heartbeat.get("vaultPaths"):
         context = fetch_vault_context(heartbeat["vaultPaths"])
         if context:

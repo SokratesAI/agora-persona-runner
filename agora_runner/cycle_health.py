@@ -164,6 +164,82 @@ def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES, unreadable=()):
     }
 
 
+def first_written_at(mtimes):
+    """`{cycle number: when its first document appeared}`, Oslo.
+
+    The *first*, not the newest: a cycle that wrote twice (an addendum) is
+    still a cycle whose existence became observable at the earlier write,
+    and that moment is what `gaps_since` brackets against.
+    """
+    out = {}
+    for path, ms in mtimes.items():
+        number = file_cycle(path)
+        if number is None or not ms:
+            continue
+        stamp = datetime.fromtimestamp(ms / 1000, tz=OSLO)
+        if number not in out or stamp < out[number]:
+            out[number] = stamp
+    return out
+
+
+def gaps_since(paths, mtimes, since):
+    """Interior gaps that became *observable* after `since`, ascending.
+
+    `missing_cycles` is history and never shrinks, which is right for a
+    report a human reads once and wrong for a line put in front of every
+    cycle: after a while it says "6 cycles wrote no entry" every hour
+    forever, and a check that always prints something trains its reader to
+    skip it -- the same reason `describe` returns "" on a clean loop.
+
+    The filter is not "recent" in any arbitrary sense; there is an actual
+    event to key on. **A dead cycle changes nothing at the moment it
+    dies** -- it leaves no document, so there is nothing to observe. The
+    hole only appears once a *later* cycle writes the entry that brackets
+    it from above, and that write is a real, timed event. So a gap is new
+    to this run exactly when its upper bracket was written since the
+    previous one, which announces each gap to exactly one cycle: the first
+    one that could possibly have seen it.
+
+    `since` of `None` means there is no previous run to compare against,
+    and everything is reported once. That is the honest answer rather than
+    a convenient silence: with no boundary, no gap has been shown to
+    anyone yet. Note when this actually fires, because the obvious guess
+    is wrong: the boundary is Agora's `lastRunAt`, which lives in the
+    heartbeat store and not in this process, so **deploying this code does
+    not reset it**. Only a brand-new heartbeat, or an unparseable
+    timestamp, takes this branch.
+    """
+    gaps = missing_cycles(paths)
+    if since is None or not gaps:
+        return gaps
+    written_at = first_written_at(mtimes)
+    fresh = []
+    for gap in gaps:
+        brackets = [n for n in written_at if n > gap]
+        if not brackets:
+            # No timed entry above it, so nothing dates this gap. Stay
+            # quiet: `stalled_for` owns the top of the range, and guessing
+            # here would re-report old history on every run.
+            continue
+        if written_at[min(brackets)] > since:
+            fresh.append(gap)
+    return fresh
+
+
+def heartbeat_findings(paths, mtimes, now, since, minutes=HEARTBEAT_MINUTES,
+                       unreadable=()):
+    """`findings`, but reporting only the gaps this run is the first to see.
+
+    Same dict, same renderer (`describe`), one substitution -- the two
+    callers differ in *which gaps count*, not in how a gap reads. The
+    stall and the blind-read are unchanged, because both are already
+    statements about right now.
+    """
+    report = findings(paths, mtimes, now, minutes, unreadable)
+    report["missing"] = gaps_since(paths, mtimes, since)
+    return report
+
+
 def describe(report):
     """One line for a cycle to read, or `""` when the loop looks healthy.
 

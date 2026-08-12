@@ -171,3 +171,43 @@ def test_the_audit_read_never_blocks_a_repairing_overwrite(couch, monkeypatch):
     before = tools_dispatch._before_snapshot(HOLED)
     assert "h:missing" in before
     assert "one two |five six" not in before
+
+
+def test_a_listing_only_read_keeps_the_damaged_file_and_costs_no_chunks(couch, monkeypatch):
+    """`vault_bulk_list` answers "which files exist and when were they
+    written" from the file docs alone, and the difference from
+    `vault_bulk_fetch` is not only cost.
+
+    Dropping a chunk-damaged file is right when the caller wanted its
+    text -- half a note is not the note. It is wrong when the caller
+    wanted the *set of filenames*, and `cycle_health` is exactly that
+    caller: it reads a hole in the run of cycle numbers as "that cycle
+    woke and wrote nothing". Feed it a fetch and one lost chunk turns a
+    cycle that wrote its entry perfectly well into a reported failure --
+    a confident false claim, from the file whose content nobody asked
+    for. This is the real incident's shape (`ideas.md`, 6 chunks of 184)
+    pointed at a different reader.
+    """
+    posts = []
+    real = vault.couch_req
+
+    def counting(method, path, body=None):
+        if method == "POST" and "include_docs" in path:
+            posts.append(sorted(body["keys"]))
+        return real(method, path, body)
+
+    monkeypatch.setattr(vault, "couch_req", counting)
+    paths, mtimes = vault.vault_bulk_list("notes/")
+    listing_posts = list(posts)
+
+    assert sorted(paths) == sorted([WHOLE, HOLED])
+    assert sorted(mtimes) == sorted([WHOLE, HOLED])
+    # One batch, for the file docs. No chunk ids anywhere in it -- the
+    # bodies are what this call exists not to pay for.
+    assert len(listing_posts) == 1
+    assert not any(key.startswith("h:") for key in listing_posts[0])
+    # Same fixture, the other reader: the fetch drops the damaged file, so
+    # the two assertions above are this function's behaviour and not the
+    # fake quietly serving something intact.
+    assert sorted(vault.vault_bulk_fetch("notes/")) == [WHOLE]
+    assert any(key.startswith("h:") for batch in posts for key in batch)
