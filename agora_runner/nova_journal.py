@@ -585,7 +585,12 @@ def normalise_entry(path, content):
         return text
     heading = _LEADING_HEADING_RE.match(text)
     if heading:
-        return f"### {heading.group(1)}\n{text[heading.end():].lstrip()}".rstrip()
+        body = text[heading.end():].lstrip()
+        # `\n\n` rather than `\n`, matching the synthesis branch below and
+        # every correctly written document. `parse_journal` strips the body
+        # either way, so this is about the assembled markdown staying the
+        # shape the rest of the file assumes, not about the parse.
+        return f"### {heading.group(1)}\n\n{body}".rstrip() if body else f"### {heading.group(1)}"
     return f"### {synthetic_heading(path)}\n\n{text}"
 
 
