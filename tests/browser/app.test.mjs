@@ -1895,6 +1895,254 @@ describe("the feed loads a window rather than the whole journal", () => {
   });
 });
 
+/* Scrolling to the end of the feed loads the next window on its own.
+ *
+ * Edvard, issues.md #71: "Make it more lazy load when i scroll down instead
+ * of a button i press."
+ *
+ * jsdom has no IntersectionObserver at all, which is why every test above
+ * still clicks and still passes -- app.js finds none and leaves the button
+ * exactly as it was. That is the fallback working, and it means these tests
+ * have to install one. The stub is deliberately dumb: it records what it was
+ * asked to watch and fires only when a test says so, because the thing under
+ * test is what app.js does with an intersection, not when a real browser
+ * decides to report one. */
+describe("the pager fires on scroll, not only on a press", () => {
+  /** Install a fake IntersectionObserver and hand back the control surface.
+   *
+   * `initial` models the half of the spec that is easiest to forget: an
+   * observer delivers an observation as soon as `observe()` is called, if
+   * the target already meets the condition. A stub that only fires when a
+   * test says so cannot see any of the behaviour that follows from that,
+   * and the first version of this file had exactly that blind spot. */
+  function observed(window, { initial = false } = {}) {
+    const watching = [];
+    let disconnects = 0;
+    window.IntersectionObserver = class {
+      constructor(callback, options) {
+        this.callback = callback;
+        this.options = options;
+      }
+      observe(node) {
+        watching.push({ node, observer: this });
+        if (initial) this.callback([{ isIntersecting: true, target: node }], this);
+      }
+      disconnect() {
+        disconnects += 1;
+        for (let i = watching.length - 1; i >= 0; i -= 1) {
+          if (watching[i].observer === this) watching.splice(i, 1);
+        }
+      }
+    };
+    return {
+      watching,
+      get disconnects() { return disconnects; },
+      /** Report the newest watched node as having scrolled into view. */
+      scrollTo() {
+        const last = watching[watching.length - 1];
+        last.observer.callback([{ isIntersecting: true, target: last.node }], last.observer);
+      },
+    };
+  }
+
+  /** The same paged server the suite above uses. */
+  function paged(size) {
+    const all = payload.journal.entries;
+    const corpus = [];
+    for (let i = 0; i < size; i += 1) {
+      corpus.push({ ...JSON.parse(JSON.stringify(all[2])), cycle: size - i });
+    }
+    const asked = [];
+    return {
+      asked,
+      serve(url) {
+        asked.push(url);
+        const limit = Number(new URL(url, "https://nova.example").searchParams.get("limit"));
+        return {
+          entries: corpus.slice(0, limit || corpus.length),
+          status: payload.journal.status,
+          total: corpus.length,
+          version: 'W/"' + (limit || "all") + '"',
+        };
+      },
+    };
+  }
+
+  test("reaching the end of the feed widens the window with no press", async () => {
+    const server = paged(50);
+    let spy;
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { spy = observed(w); },
+    });
+    assert.equal(spy.watching.length, 1, "the pager was never watched");
+    assert.equal(spy.watching[0].node, window.document.querySelector("button.more"));
+
+    spy.scrollTo();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.match(server.asked[server.asked.length - 1], /limit=40$/);
+    assert.equal(cards(window).length, 40);
+  });
+
+  test("the observer is handed a margin, so it does not wait for the pager to be visible", async () => {
+    /* A window that only begins loading once the reader is looking at the
+     * end of the feed shows them the end of the feed. The margin is what
+     * makes it feel like there was never a boundary.
+     *
+     * The name says what this checks and no more: it reads the option the
+     * observer was constructed with. Whether a margin of that size actually
+     * feels seamless is a judgement about a real phone, and no test in a
+     * jsdom with no layout and no scrolling can make it. */
+    const server = paged(50);
+    let spy;
+    await loadSite("/", { journal: server.serve, install: (w) => { spy = observed(w); } });
+    const margin = spy.watching[0].observer.options.rootMargin;
+    assert.match(margin, /(\d+)px/);
+    assert.ok(Number(margin.match(/(\d+)px/)[1]) > 0, "no margin, so it fires too late: " + margin);
+  });
+
+  test("a second intersection before the fetch lands does not skip a window", async () => {
+    /* A real observer can deliver a batch that was already queued when
+     * `disconnect` landed. Two reports either side of one fetch must widen
+     * by twenty, not forty -- the reader would otherwise scroll past a page
+     * they never saw requested.
+     *
+     * What actually stops the second one is that the click handler disables
+     * the button and a disabled button dispatches no click. That is worth a
+     * test precisely because it is not a line anyone wrote here: it is a
+     * platform rule the code is leaning on, and it is invisible in the
+     * source. */
+    const server = paged(90);
+    let spy;
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { spy = observed(w); },
+    });
+    const before = spy.watching[0];
+    before.observer.callback([{ isIntersecting: true, target: before.node }], before.observer);
+    before.observer.callback([{ isIntersecting: true, target: before.node }], before.observer);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(cards(window).length, 40, "one node in view twice widened the window twice");
+  });
+
+  test("it ignores a report that the pager left the screen", async () => {
+    const server = paged(50);
+    let spy;
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { spy = observed(w); },
+    });
+    const seen = spy.watching[0];
+    seen.observer.callback([{ isIntersecting: false, target: seen.node }], seen.observer);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(cards(window).length, 20, "scrolling away from the pager loaded more");
+  });
+
+  test("the old observer lets go of the node the re-render threw away", async () => {
+    /* `render` rebuilds the feed from scratch, so the node the first
+     * observer holds is detached the moment the new window arrives. Left
+     * attached, every widening leaves another observer behind watching a
+     * node that can never intersect again. */
+    const server = paged(90);
+    let spy;
+    await loadSite("/", { journal: server.serve, install: (w) => { spy = observed(w); } });
+    spy.scrollTo();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    /* Two, not one, and the second is the point of the test above this one:
+     * firing disconnects it, and then the re-render's fresh attach
+     * disconnects whatever it is superseding. Both paths have to hold or an
+     * observer outlives the node it is watching. */
+    assert.ok(spy.disconnects >= 1, "the fired observer stayed attached");
+    assert.equal(spy.watching.length, 1, "more than one live observer on one pager");
+  });
+
+  test("the pager stops looking like a button once it drives itself", async () => {
+    /* He asked for it to stop being something he presses. It stays a real
+     * focusable button -- and it stays laid out, because an element that is
+     * `display: none` never intersects and the whole thing would silently
+     * never fire. */
+    const server = paged(50);
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { observed(w); },
+    });
+    const pager = window.document.querySelector("button.more");
+    assert.ok(pager.classList.contains("more-auto"), "still styled as a control");
+    assert.doesNotMatch(pager.textContent, /^Show /, "still tells him to press it");
+    assert.notEqual(window.getComputedStyle(pager).display, "none");
+  });
+
+  test("with no IntersectionObserver it is still the button it always was", async () => {
+    /* Which is also what every other test in this file is relying on. */
+    const server = paged(50);
+    const window = await loadSite("/", { journal: server.serve });
+    const pager = window.document.querySelector("button.more");
+    assert.equal(pager.textContent, "Show older entries");
+    assert.equal(pager.classList.contains("more-auto"), false);
+    click(window, pager);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(cards(window).length, 40);
+  });
+
+  test("a pager already on screen at first paint fills the screen and stops", async () => {
+    /* The spec delivers an observation on `observe()`, so on a viewport tall
+     * enough to hold the whole first window the pager widens with no scroll.
+     * That is intended -- it is the screen filling -- but it has to *stop*,
+     * and this stub is the worst case for that: it reports every new pager
+     * as visible, which is a viewport of infinite height. What must not
+     * happen is a hang or a fetch that never ends. */
+    const server = paged(50);
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { observed(w, { initial: true }); },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(cards(window).length > 20, "an already-visible pager did nothing");
+    assert.equal(cards(window).length, 50, "it stopped before the corpus was exhausted");
+    assert.equal(window.document.querySelector("button.more"), null, "a pager with nothing left to fetch");
+  });
+
+  test("only one observer is ever live, however many times the feed re-renders", async () => {
+    /* The leak the fired-observer disconnect does not cover: the 30-second
+     * poll rebuilds the feed whenever an entry lands, and a reader who never
+     * scrolled to the pager leaves an observer on a node that has just been
+     * thrown away. Over a day on a phone that is hundreds of them. */
+    const server = paged(50);
+    let spy;
+    const window = await loadSite("/", {
+      journal: server.serve,
+      install: (w) => { spy = observed(w); },
+    });
+    assert.equal(spy.watching.length, 1);
+    const first = spy.watching[0].node;
+
+    // Two more renders that are not the pager firing: a fresh load each time.
+    window.dispatchEvent(new window.Event("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.dispatchEvent(new window.Event("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(spy.watching.length, 1, "an observer per render, all but one on a detached node");
+    assert.notEqual(spy.watching[0].node, first, "the live observer is on the old node");
+    assert.ok(spy.disconnects >= 2, "the superseded observers were never disconnected");
+  });
+
+  test("my notes pager scrolls itself too", async () => {
+    /* Same helper, second caller. The journal is the one he asked about and
+     * this is the other list in the app with a pager under it; leaving one
+     * behind is how the two halves of a pair drift. */
+    let spy;
+    const window = await loadSite("/issues", { install: (w) => { spy = observed(w); } });
+    const tab = [...window.document.querySelectorAll(".tab")]
+      .filter((one) => /Nova's/.test(one.textContent))[0];
+    click(window, tab);
+    const pager = window.document.querySelector("button.more");
+    assert.ok(pager, "no pager on the notes tab, so this test proves nothing");
+    assert.ok(spy.watching.some((one) => one.node === pager), "the notes pager is not watched");
+  });
+});
+
 /* A render throws every comment drawer away and builds a new one. `poll`
  * dodges that by refusing to run while there is text in a box; the pager
  * cannot, because the re-render is what the reader just asked for. So the

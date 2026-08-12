@@ -148,6 +148,79 @@
     return node;
   }
 
+  /* Make a pager fire when it is scrolled to, instead of when it is tapped.
+   *
+   * Edvard, issues.md #71: "Make it more lazy load when i scroll down
+   * instead of a button i press."
+   *
+   * The button stays. It is not a fallback nobody reaches -- it is the
+   * keyboard path, it is what a screen reader announces, and it is what
+   * runs in any engine without an IntersectionObserver. So the observer
+   * does not get its own copy of the widening logic; it clicks the button,
+   * which means there is exactly one thing that can happen when the end of
+   * the feed is reached and no second version of it to drift.
+   *
+   * Re-entry is already handled twice over and neither of them is a check
+   * written here. It disconnects before it clicks, so one observer fires
+   * once; and a click handler's first act is to disable the button, and a
+   * disabled button does not dispatch a click at all -- so a second batch
+   * already queued when `disconnect` landed cannot widen the window twice.
+   * A third guard reading `if (!node.disabled)` was in the first draft of
+   * this, and removing it failed no test out of 155, because it could not
+   * be reached in a state where it changed the answer. It was deleted
+   * rather than given a test, which would have been a test of dead code.
+   *
+   * Disconnecting also matters on its own: `render` throws this node away
+   * and builds a new one, so an observer left attached is watching a node
+   * that is no longer in the document and never can be again. Firing is not
+   * the only way that happens -- the 30-second poll re-renders the feed
+   * whenever a new entry lands, and a reader who never scrolled to the
+   * pager leaves one observer and one detached subtree behind every time.
+   * On a phone left open all day that is hundreds. So `attached` holds the
+   * live one and every attach disconnects its predecessor: there is one
+   * pager on screen, so there is one observer.
+   *
+   * **It can fire the moment it is attached, and that is intended.** The
+   * spec delivers an initial observation on `observe()`, so on a viewport
+   * tall enough to show all twenty collapsed cards the first window widens
+   * with no scroll at all. That is the screen being filled, not the cold
+   * load growing: it is bounded, because each widening adds twenty more
+   * cards and the viewport does not grow with them, so it stops as soon as
+   * the content is taller than the screen plus the margin. Twenty collapsed
+   * cards is already ~1400px against a phone's ~850px, so Edvard's own
+   * first load does not trigger it at all -- but a desktop's does, and it
+   * is the path no test had until the reviewer pointed at it.
+   *
+   * `rootMargin` starts the fetch 300px before the pager is actually on
+   * screen, so the entries are usually there by the time the reader gets
+   * to where they go. That number is a guess at a comfortable feel, not a
+   * measurement, and it is one line to change. */
+  var attached = null;
+
+  function loadWhenScrolledTo(node) {
+    if (typeof window.IntersectionObserver !== "function") return;
+    if (attached) attached.disconnect();
+    var observer = new window.IntersectionObserver(function (entries) {
+      for (var i = 0; i < entries.length; i += 1) {
+        if (!entries[i].isIntersecting) continue;
+        observer.disconnect();
+        node.click();
+        return;
+      }
+    }, { rootMargin: "300px 0px" });
+    attached = observer;
+    observer.observe(node);
+    /* He asked for the button to stop being something he presses, so when
+     * the observer is actually attached it stops looking like one: no box,
+     * no border, dim centred text. It is still a real focusable button
+     * underneath -- the styling changes, the element does not -- because
+     * something has to remain reachable without a mouse wheel, and because
+     * `display: none` would make it stop intersecting and the whole thing
+     * would silently never fire. */
+    node.classList.add("more-auto");
+    node.textContent = "↓ " + node.textContent.replace(/^Show /, "").toLowerCase();
+  }
+
   function renderSpans(parent, spans) {
     (spans || []).forEach(function (span) {
       if (span.kind === "code") parent.appendChild(el("code", null, span.text));
@@ -1129,6 +1202,7 @@
         load();
       });
       feed.appendChild(more);
+      loadWhenScrolledTo(more);
     }
   }
 
@@ -1532,6 +1606,7 @@
         load();
       });
       wrap.appendChild(more);
+      loadWhenScrolledTo(more);
     }
     return wrap;
   }
