@@ -1,12 +1,14 @@
 """execute_tool -- the single dispatch point every provider calls for every tool_use block."""
 
 import json
+from collections import OrderedDict
 
 from agora_runner.log import debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
 from agora_runner.vault import (
-    vault_read_path, vault_write_path, vault_append_path, vault_list_prefix, vault_search,
+    vault_read_path, vault_read_path_rev, vault_write_path, vault_append_path,
+    vault_list_prefix, vault_search,
     VaultIncompleteDocument,
     vault_query_frontmatter, vault_validate_frontmatter_schema, vault_find_stub_notes,
     vault_find_duplicate_titles, vault_get_token_metrics, vault_git_revision_history,
@@ -41,6 +43,73 @@ def _resolve_scoped_target(active_step, args):
     locked = filepath + filename
     active_step["_locked_path"] = locked
     return locked
+
+
+#: What revision each conversation last *read* a vault path at, so the
+#: write that follows can be conditional on it. Keyed
+#: (conversation_id, lowercased path) -> rev, where None is a real and
+#: different expectation: "there was no document here when I looked".
+#:
+#: A persona's edit is a read-modify-write spread across turns -- it calls
+#: vault_read, reasons for a while, then calls vault_write minutes later.
+#: The whole window between those two calls is where somebody else's write
+#: gets destroyed, so the revision that has to travel is the one from the
+#: read, not one fetched just before the PUT. Grabbing a fresh revision at
+#: write time is what vault_write_path already did on its own, and it is
+#: exactly the silent clobber `if_rev` was added to stop (vault.py,
+#: `vault_read_path_rev`).
+_READ_REVS = OrderedDict()
+
+#: The runner process lives for days and serves every persona and every
+#: conversation, so this dict has no natural end -- that is the danger, and
+#: it is the only reason there is a number here. Eviction cannot break a
+#: write: forgetting a revision downgrades that one write to the
+#: unconditional behaviour it had before this existed, which is a lost
+#: protection, never a lost or spuriously rejected write.
+_READ_REVS_MAX = 512
+
+#: "This conversation never read this path", as distinct from the None that
+#: `vault_read_path_rev` returns for a path holding no document.
+_NO_READ = object()
+
+
+def _remember_read_rev(conversation_id, path, rev):
+    key = (conversation_id, path.lower())
+    _READ_REVS.pop(key, None)
+    _READ_REVS[key] = rev
+    while len(_READ_REVS) > _READ_REVS_MAX:
+        _READ_REVS.popitem(last=False)
+
+
+def _claim_read_rev(conversation_id, path):
+    """The revision this conversation read `path` at, and forget it.
+
+    Forgetting is the point of `pop`. After the write lands, the remembered
+    revision is stale by definition, and a second write with no read in
+    between would fail against it forever. Consuming it means that write is
+    unconditional -- no worse than before this change -- while the write
+    that actually follows a read is protected.
+
+    Returns `_NO_READ` (not None) when this conversation never read the
+    path, because None means "I read it and there was nothing there".
+    """
+    return _READ_REVS.pop((conversation_id, path.lower()), _NO_READ)
+
+
+def _conditional_write(conversation_id, path, content):
+    """vault_write_path, conditional on the read this conversation did."""
+    rev = _claim_read_rev(conversation_id, path)
+    if rev is _NO_READ:
+        return vault_write_path(path, content)
+    result = vault_write_path(path, content, if_rev=rev)
+    if "409 conflict" in result:
+        # The caller here is a model, and it can act on this: it has the
+        # tool it needs to recover, and no way to guess that from a bare
+        # 409. Retrying the write alone would resend the body built from
+        # the text it lost the race to -- the clobber, spelled out.
+        return (f"{result} -- read it again with vault_read, re-apply your "
+                f"change to what is there now, then write again")
+    return result
 
 
 def _before_snapshot(path):
@@ -96,7 +165,12 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
         if name == "vault_read":
             path = str(args.get("path", ""))
             audit(persona_name, conversation_id, "vault_read", path)
-            content = vault_read_path(path)
+            content, rev = vault_read_path_rev(path)
+            # Remember the revision even when nothing was there: a write
+            # that follows then says "this file should still not exist",
+            # which is what stops two personas both creating it and one
+            # of them disappearing.
+            _remember_read_rev(conversation_id, path, rev)
             return content if content is not None else f"[not found: {path}]"
         if name == "vault_list":
             prefix = str(args.get("prefix", ""))
@@ -112,7 +186,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # effort -- a failed read (e.g. new file) just means "" as
             # the before side, same as the file not existing.
             before = _before_snapshot(path)
-            result = vault_write_path(path, content)
+            result = _conditional_write(conversation_id, path, content)
             _audit_vault_write(persona_name, conversation_id, "vault_write", path, result, before, content)
             return result
         if name == "vault_append":
@@ -333,7 +407,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
                 return "[scoped_write error: folder target requires a valid filename on the first call]"
             content = str(args.get("content", ""))
             before = _before_snapshot(target)
-            result = vault_write_path(target, content)
+            result = _conditional_write(conversation_id, target, content)
             _audit_vault_write(persona_name, conversation_id, "scoped_write", target, result, before, content)
             return result
         return f"[unknown tool {name}]"

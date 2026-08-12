@@ -230,7 +230,11 @@ def test_a_granted_tool_still_runs():
         nova_replies.REPLY_PERSONA, nova_replies.REPLY_CAPS, nova_replies.CONVERSATION_ID
     )
     try:
-        with patch("agora_runner.tools_dispatch.vault_read_path", return_value="We are Nova."), \
+        # `vault_read` reads through `vault_read_path_rev` since the tool
+        # belt started remembering what revision it read at, so that is the
+        # reference the module actually uses.
+        with patch("agora_runner.tools_dispatch.vault_read_path_rev",
+                   return_value=("We are Nova.", "3-abc")), \
                 patch("agora_runner.tools_dispatch.audit"):
             status, payload = tools_mcp.handle_http(
                 f"Bearer {token}",
