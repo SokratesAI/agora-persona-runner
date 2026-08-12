@@ -30,9 +30,16 @@ class FakeCouch:
         self.docs = dict(docs or {})
         self.rejected = 0
         self.accepted = 0
-        #: called with the doc id just before a file doc is stored, so a
-        #: test can simulate another writer landing mid-flight.
-        self.on_put = None
+        self.reads = 0
+        #: {nth file-doc read: fn(couch)} -- another writer landing just
+        #: before that read is served. Read 1 is the caller's own; read 2
+        #: is the lookup inside `vault_write_path`. **Two is the one that
+        #: matters, and getting this wrong is why the first version of
+        #: these tests passed against the bug.** An interloper that lands
+        #: after read 2 is caught either way, because the unconditional
+        #: path has already taken its revision by then -- so a test that
+        #: interleaves there proves nothing about `if_rev`.
+        self.interleave = {}
 
     def _next_rev(self, doc_id):
         current = self.docs.get(doc_id, {}).get("_rev", "0-x")
@@ -56,13 +63,15 @@ class FakeCouch:
                 for k in body["keys"]
             ]}
         if method == "GET":
+            if not rest.startswith("h:"):
+                self.reads += 1
+                hook = self.interleave.pop(self.reads, None)
+                if hook is not None:
+                    hook(self)
             if rest in self.docs:
                 return 200, dict(self.docs[rest])
             return 404, {"error": "not_found"}
         if method == "PUT":
-            if not rest.startswith("h:") and self.on_put is not None:
-                hook, self.on_put = self.on_put, None
-                hook(self)
             sent = (body or {}).get("_rev")
             held = self.docs.get(rest, {}).get("_rev")
             if sent != held:
@@ -160,7 +169,7 @@ def test_append_that_loses_a_race_re_reads_and_keeps_both_lines():
     def other_writer(c):
         c.seed(PATH, "# Issues\n\n## Entries\n\n- theirs\n- old\n")
 
-    couch.on_put = other_writer
+    couch.interleave = {2: other_writer}
     with patch.object(vault, "couch_req", couch.req):
         result = vault.vault_append_path(PATH, "- mine", "## Entries")
 
@@ -180,9 +189,8 @@ def test_append_gives_up_after_a_bounded_number_of_attempts():
     def always_lose(c):
         counter["n"] += 1
         c.seed(PATH, f"# Issues\n\n## Entries\n\n- theirs {counter['n']}\n")
-        c.on_put = always_lose
 
-    couch.on_put = always_lose
+    couch.interleave = {2: always_lose, 4: always_lose, 6: always_lose}
     with patch.object(vault, "couch_req", couch.req):
         result = vault.vault_append_path(PATH, "- mine", "## Entries")
 
@@ -223,7 +231,7 @@ def test_a_capture_that_loses_a_race_is_not_lost():
     def cycle_boards_it(c):
         c.seed(path, "---\ntype: log\n---\n\n- something a cycle added\n- \n\n## Board\n")
 
-    couch.on_put = cycle_boards_it
+    couch.interleave = {2: cycle_boards_it}
     with patch.object(vault, "couch_req", couch.req):
         ok, message = nova_capture.capture("issues", "typed on the phone")
 
