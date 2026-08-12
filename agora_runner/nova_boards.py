@@ -4,8 +4,9 @@ Edvard, issues.md #57: *"I need more visualisations in the Nova app.
 Create more pages to contain more, such as issue list, idea list
 (separate pages) ..."* This is that page's data.
 
-**Four files, two shapes.** `issues.md` and `ideas.md` one level up are
-his, and they are boarded: a run of bare capture bullets at the top, a
+**Four files, two shapes.** `issues.md` and `ideas.md` in
+`projects/sokrates/projects/nova/` are his -- a sibling of the `agora`
+folder, not inside it, since 2026-08-12 -- and they are boarded: a run of bare capture bullets at the top, a
 `## Board` table, a `## Done` table, then a `# Details` section holding
 one `## N — Title` block per item. `nova/resources/issues.md` and
 `.../ideas.md` are mine, and they are not boarded at all -- they are a
