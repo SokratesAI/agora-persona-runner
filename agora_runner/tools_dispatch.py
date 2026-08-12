@@ -68,6 +68,10 @@ _READ_REVS = OrderedDict()
 #: protection, never a lost or spuriously rejected write.
 _READ_REVS_MAX = 512
 
+#: "This conversation never read this path", as distinct from the None that
+#: `vault_read_path_rev` returns for a path holding no document.
+_NO_READ = object()
+
 
 def _remember_read_rev(conversation_id, path, rev):
     key = (conversation_id, path.lower())
@@ -90,11 +94,6 @@ def _claim_read_rev(conversation_id, path):
     path, because None means "I read it and there was nothing there".
     """
     return _READ_REVS.pop((conversation_id, path.lower()), _NO_READ)
-
-
-#: "This conversation never read this path", as distinct from the None that
-#: `vault_read_path_rev` returns for a path holding no document.
-_NO_READ = object()
 
 
 def _conditional_write(conversation_id, path, content):
