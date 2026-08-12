@@ -120,3 +120,40 @@ def test_findings_reports_history_and_now_side_by_side(cycles, expected):
     report = findings(paths(*cycles), {}, NOW)
     assert report["missing"] == expected
     assert report["silent_intervals"] is None
+
+
+def test_reading_nothing_is_not_a_healthy_loop():
+    """The one that actually happened, 2026-08-12. Run from the bridge pod --
+    where `prompt.md` sends cycles and where the handoff told the next cycle
+    to run this -- the vault credentials are unset, the listing 401s, and
+    `vault_bulk_fetch` returns an empty dict. Every field below then reads
+    clean, so the check printed nothing and exited 0 while the live journal
+    folder visibly skipped cycle 134."""
+    report = findings([], {}, NOW)
+    assert report["entries"] == 0
+    assert report["missing"] == []
+    assert report["stalled"] is False
+    assert describe(report) != ""
+    assert "cannot tell" in describe(report)
+
+
+def test_a_blind_read_does_not_also_claim_zero_gaps():
+    """Suppressed rather than appended: "0 gaps, and also I could not look"
+    invites reading the first half. Handed the dict directly because
+    `findings` cannot produce gaps and no entries at the same time -- the
+    contract being pinned is `describe`'s, on a report that says it read
+    nothing."""
+    line = describe({"entries": 0, "missing": [131], "silent_intervals": 9, "stalled": True})
+    assert "131" not in line
+    assert "heartbeat intervals" not in line
+
+
+def test_main_exits_nonzero_when_the_journal_listing_comes_back_empty(monkeypatch, capsys):
+    """End to end, because the silent exit 0 is the whole failure: a cycle
+    runs this, sees no output, and writes down that the loop is healthy."""
+    import agora_runner.vault as vault
+    from agora_runner.cycle_health import main
+
+    monkeypatch.setattr(vault, "vault_bulk_fetch", lambda prefix, with_mtimes=False: ({}, {}))
+    assert main() == 1
+    assert "cannot tell" in capsys.readouterr().out

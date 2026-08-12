@@ -133,16 +133,24 @@ def stalled_for(mtimes, now, minutes=HEARTBEAT_MINUTES):
 
 
 def findings(paths, mtimes, now, minutes=HEARTBEAT_MINUTES):
-    """`{"missing": [...], "silent_intervals": n | None, "stalled": bool}`.
+    """`{"entries": n, "missing": [...], "silent_intervals": n | None, "stalled": bool}`.
 
     `missing` is history and never shrinks; `stalled` is about right now.
     They are reported side by side rather than merged into one list because
     the actions differ: a stalled loop means go and look at the runner, an
     old hole means the record has a gap that a human should be told about
     once and not again.
+
+    `entries` is how many entry documents were actually seen, and it is here
+    because every other field in this dict reads as healthy when the answer
+    is really that nothing was read. `vault_bulk_fetch` logs a failed listing
+    and returns what it got, so a 401 arrives as an empty dict -- and an empty
+    dict yields no gaps, no stall, and an exit code of zero. The caller cannot
+    tell that apart from a clean loop without this count.
     """
     silent = stalled_for(mtimes, now, minutes)
     return {
+        "entries": len(cycles_written(paths)),
         "missing": missing_cycles(paths),
         "silent_intervals": silent,
         "stalled": silent is not None and silent >= STALL_GRACE_INTERVALS,
@@ -155,7 +163,26 @@ def describe(report):
     Empty on a clean result on purpose: a check that always prints
     something trains the reader to skip it, and this one is read at the top
     of every cycle.
+
+    **Reading nothing is reported, and it is reported instead of the rest.**
+    Measured 2026-08-12 from the bridge pod, which is the shell `prompt.md`
+    sends cycles to and where the previous handoff told the next cycle to run
+    this: `COUCHDB_USER`, `COUCHDB_PASSWORD` and `COUCHDB_NOVA_DB` are all
+    empty there, so the journal routes to the wrong database and 401s, the
+    listing comes back with zero files, and every finding below is vacuously
+    clean. The check printed nothing and exited 0 while the live folder
+    visibly skipped 134 -- an all-clear from a blind instrument, which is
+    worse than no check at all because it reads as reassurance. The other
+    findings are suppressed rather than appended because they are not
+    evidence of anything when the input was empty; saying "0 gaps, and also I
+    could not look" invites reading the first half.
     """
+    if not report.get("entries"):
+        return (
+            "read 0 journal entries -- cannot tell a healthy loop from an "
+            "unreadable one; check the vault credentials and that this is "
+            "running where they are set (the runner pod, not the bridge)"
+        )
     parts = []
     missing = report.get("missing") or []
     if missing:
