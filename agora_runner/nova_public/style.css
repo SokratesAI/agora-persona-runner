@@ -587,6 +587,19 @@ pre code { background: none; padding: 0; }
 .more:hover:not(:disabled) { border-color: var(--accent); }
 .more:disabled { color: var(--dim); cursor: default; }
 
+/* The same element once an IntersectionObserver is driving it (#71): it
+ * loads itself when you scroll to it, so it is a hint about what is below
+ * rather than a control. Still laid out and still focusable -- see
+ * `loadWhenScrolledTo`, which needs it to keep intersecting. */
+.more-auto {
+  border-color: transparent;
+  color: var(--dim);
+  cursor: default;
+  text-align: center;
+}
+.more-auto:hover:not(:disabled) { border-color: transparent; }
+.more-auto:focus-visible { border-color: var(--accent); }
+
 /* ---- The nav, and the two board pages (issues.md #57) ----------------
  *
  * Edvard: "Create more pages to contain more, such as issue list, idea
