@@ -145,9 +145,28 @@ def stray_footer(body):
             token = marker.group(1)[0]
             fence = None if fence == token else (fence or token)
 
+    blocks = list(_paragraphs(lines))
+    if not blocks:
+        return body, "", ""
+    ends = (blocks[0][0], blocks[-1][1])
+
     hits = []
-    for start, end in _paragraphs(lines):
+    for start, end in blocks:
         if any(fenced[start:end]):
+            continue
+        # First paragraph or last, never the middle. The fence guard alone
+        # is not enough and a reviewer proved it: `personality.md` states
+        # the footer format as a *quotable* example, and this journal
+        # quotes rule text as plain unfenced paragraphs constantly, so an
+        # entry explaining the rule and then forgetting its own footer got
+        # `#23 (or "none")` promoted to a badge -- the exact "invented out
+        # of an example" failure this function claims to refuse.
+        #
+        # An end is where a footer can honestly be. All three live repairs
+        # are at one: 146 and 147 wrote it as the opening paragraph, 004
+        # as the closing one. A footer-shaped paragraph with prose on both
+        # sides of it is somebody quoting the format.
+        if start != ends[0] and end != ends[1]:
             continue
         # The footer's own `---` rule shares the paragraph when no blank
         # line separates them, which is how it is actually written.

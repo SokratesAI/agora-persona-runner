@@ -1703,9 +1703,13 @@ def test_a_footer_written_at_the_top_and_bolded_still_becomes_a_badge():
     # Cycles 146 and 147, live: `**PR: ... | Outcome: ...**` directly
     # under the heading. Not a parse error -- both cards rendered with no
     # PR and no outcome, which reads as a cycle that shipped nothing.
+    # Two hashes, not three, because that is what the live document says
+    # -- the heading only becomes `###` via `normalise_entry`'s promotion,
+    # and a fixture written with three tests the repair in isolation from
+    # the composition it actually has to survive.
     files = {
         JOURNAL_DIR + "162-cycle-146.md": (
-            "### Cycle 146 — 2026-08-12 20:35\n\n"
+            "## Cycle 146 — 2026-08-12 20:35\n\n"
             "**PR: runner#128 | Outcome: merged**\n\n"
             "The item at the top of the handoff is done."
         ),
@@ -1741,6 +1745,41 @@ def test_a_hard_wrapped_footer_keeps_the_half_below_the_line_break():
     # The `---` was that footer's own rule; leaving it behind draws a line
     # across the card with nothing under it.
     assert entries[0]["body"] == "I'd rather ask."
+
+
+def test_the_real_hard_wrapped_footer_in_the_fixture_extracts_the_real_values(journal_md):
+    # `test_the_split_reassembles_into_an_identical_entry_list` runs the
+    # real entry-004 text, but it compares `parse_journal` to itself: a
+    # wrong extraction moves both sides equally and it stays green. So the
+    # concrete values are pinned here, against the real committed fixture
+    # rather than against a shorter wrap I made up.
+    entries = parse_journal(journal_md)
+    first = [e for e in entries if e["title"].startswith("Edvard's first message")]
+    assert len(first) == 1
+    assert first[0]["pr"] == "#31"
+    assert first[0]["outcome"] == "open"
+    assert first[0]["outcomeDetail"] == (
+        "green, deliberately unmerged so this reply survives; next cycle "
+        "should merge it as its first act and expect to die"
+    )
+
+
+def test_the_rule_quoted_as_a_plain_paragraph_is_not_promoted_to_a_badge():
+    # The hole the fence guard alone left open, found by a reviewer. This
+    # journal quotes rule text as unfenced prose constantly, and the entry
+    # below forgot its own footer -- so before the ends-only rule, the
+    # example's own `#23 (or "none")` became the card's badge.
+    files = {
+        JOURNAL_DIR + "070-cycle-65.md": (
+            "### Cycle 65\n\nThe rule says end with a line shaped like this:\n\n"
+            'PR: #23 (or "none") | Outcome: merged / shipped / stuck / no-op\n\n'
+            "and I meant to fill it in for real but ran out of time."
+        ),
+    }
+    entries = parse_journal(assemble_entries(files))
+    assert entries[0]["pr"] == ""
+    assert entries[0]["outcome"] == ""
+    assert 'PR: #23 (or "none")' in entries[0]["body"]
 
 
 def test_a_footer_quoted_in_a_code_fence_is_not_promoted_to_a_badge():
@@ -1786,8 +1825,10 @@ def test_the_same_quote_without_blank_lines_is_also_left_alone():
 def test_two_candidate_footers_are_left_alone_rather_than_picked_between():
     files = {
         JOURNAL_DIR + "070-cycle-65.md": (
+            # Both at an end, so the ends-only rule cannot be what refuses
+            # here -- the count is.
             "### Cycle 65\n\n**PR: #1 | Outcome: merged**\n\n"
-            "I then changed my mind.\n\nPR: #2 | Outcome: stuck\n\nEnd."
+            "I then changed my mind.\n\n**PR: #2 | Outcome: stuck**"
         ),
     }
     entries = parse_journal(assemble_entries(files))
