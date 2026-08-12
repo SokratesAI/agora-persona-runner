@@ -236,10 +236,18 @@ def journal_payload():
     markdown, times = journal_markdown(with_times=True)
     entries = parse_journal(markdown, times)
     # `times` is keyed by the cycle number in the *filename*, which is the
-    # only reliable answer to "did this cycle write an entry" -- three live
-    # entries carry headings the parser cannot read a number out of, and
-    # calling those gaps would accuse a cycle of silence above its own
-    # words. See `build_status`.
+    # only reliable answer to "did this cycle write an entry": the heading
+    # is written by hand and the filename is not, so the two disagree
+    # whenever a cycle gets the shape wrong, and calling that a gap would
+    # accuse a cycle of silence directly above its own words.
+    #
+    # This used to name the three live entries whose headings the parser
+    # could not read a number out of. `normalise_entry` now repairs those
+    # before they are parsed, so the two sources agree today -- which is
+    # exactly why this stays keyed on the filename rather than being
+    # simplified away. It is the independent check, and the next cycle to
+    # invent a new way of mis-writing a heading is the reason for it.
+    # See `build_status`.
     status = build_status(entries, known_cycles=times.keys() if times else None)
     return {"entries": [dict(entry) for entry in entries], "status": status}
 
