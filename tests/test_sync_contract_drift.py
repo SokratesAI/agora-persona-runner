@@ -1298,14 +1298,19 @@ VaultClient.auth = "probe"
 # The decisions each mutation below breaks. Both copies carry them at their
 # own indent, which is the difference that makes a syntax comparison useless
 # here and is why this is driven rather than parsed.
-_REACHABLE_RUNNER = '                entry["reachable"] = True'
-_REACHABLE_BRIDGE = '                entry["reachable"] = True'
+_REACHABLE = '                entry["reachable"] = True'
+_STATUS_OK = "            if status == 200:"
 _COUNT_RUNNER = '                entry["doc_count"] = info.get("doc_count")'
 _COUNT_BRIDGE = '                entry["doc_count"] = info.get("doc_count")'
 _TRUNCATE = '            entry["error"] = str(e)[:200]'
 _SHORT_TIMEOUT_RUNNER = "                timeout=HEALTH_TIMEOUT_SECONDS,"
+_ROUTES_RUNNER = ('        "routes": [{"path": p, "database": db_for(p)} '
+                  'for p in HEALTH_PROBE_PATHS],')
+_ROUTES_BRIDGE = ('        "routes": [{"path": p, "database": self.db_for(p)} '
+                  'for p in HEALTH_PROBE_PATHS],')
 _SHORT_TIMEOUT_BRIDGE = 'self.auth, "", timeout=HEALTH_TIMEOUT_SECONDS)'
-_ROUTING_FLAG = '        "routing_enabled": bool(self.nova_db),'
+_ROUTING_FLAG_BRIDGE = '        "routing_enabled": bool(self.nova_db),'
+_ROUTING_FLAG_RUNNER = '        "routing_enabled": bool(COUCHDB_NOVA_DB),'
 
 
 def _health_pair(tmp_path, runner=(None, None), bridge=(None, None)):
@@ -1354,13 +1359,17 @@ def test_every_health_question_is_actually_asked(tmp_path):
         sync_contract._health_answers = original
     want = sorted(row[0] for row in sync_contract._HEALTH_QUESTIONS)
     assert asked == [want] * (2 * len(sync_contract.ROUTING_CONFIGS))
-    assert len(want) * len(sync_contract.ROUTING_CONFIGS) == 12
+    assert len(want) * len(sync_contract.ROUTING_CONFIGS) == 10
 
 
 @pytest.mark.parametrize("old,new", [
     # A 404 reported as a reachable database: the friendliest possible lie,
     # and the page it feeds is what a migration is judged by.
-    ("            if status == 200:", "            if status >= 200:"),
+    (_STATUS_OK, "            if status >= 200:"),
+    # The reachable flag itself, which the stage's own advice names first and
+    # which nothing here had mutated -- the row above only broke the status
+    # check guarding it. Second reader on #158.
+    (_REACHABLE, '                entry["reachable"] = False'),
     # A missing doc_count read as zero rather than unknown.
     (_COUNT_BRIDGE, '                entry["doc_count"] = info.get("doc_count", 0)'),
     # The error text no longer truncated -- one CouchDB traceback becomes the
@@ -1369,10 +1378,90 @@ def test_every_health_question_is_actually_asked(tmp_path):
     # The short probe timeout replaced by the 60s default every other call
     # uses, which is the whole reason the constant exists.
     (_SHORT_TIMEOUT_BRIDGE, 'self.auth, "", timeout=60)'),
+    # The flag that says whether a second store exists at all.
+    (_ROUTING_FLAG_BRIDGE, '        "routing_enabled": True,'),
+    # The routes comprehension, as opposed to `db_for` -- see the both-copies
+    # version below for why these are not the same bug.
+    (_ROUTES_BRIDGE, '        "routes": [{"path": p, "database": self.db} '
+                     'for p in HEALTH_PROBE_PATHS],'),
 ])
 def test_a_broken_health_report_in_one_copy_is_drift(tmp_path, old, new):
     assert sync_contract.compare_health(
         *_health_pair(tmp_path, bridge=(old, new))) != []
+
+
+def test_the_runner_losing_the_short_probe_timeout_is_drift(tmp_path):
+    """Every mutation above breaks the bridge stub. This one breaks the real
+    runner, so a driver that only ever read one side would pass all of them
+    and fail this."""
+    assert sync_contract.compare_health(*_health_pair(
+        tmp_path,
+        runner=(_SHORT_TIMEOUT_RUNNER, "                timeout=60,"))) != []
+
+
+def test_both_copies_routing_every_path_to_one_store_is_an_error(tmp_path):
+    """The gap the second reader on #158 demonstrated.
+
+    `db_for` keeps answering correctly, so `compare_routing` stays green; it
+    is the routes comprehension inside the report that is wrong, in both
+    copies. The first version of this stage collapsed that list to a single
+    token whenever it was non-empty, which scored this for free.
+    """
+    runner_path, bridge_path = _health_pair(
+        tmp_path,
+        runner=(_ROUTES_RUNNER, '        "routes": [{"path": p, "database": '
+                                'COUCHDB_DB} for p in HEALTH_PROBE_PATHS],'),
+        bridge=(_ROUTES_BRIDGE, '        "routes": [{"path": p, "database": '
+                                'self.db} for p in HEALTH_PROBE_PATHS],'))
+    assert sync_contract.compare_routing(runner_path, bridge_path) == []
+    with pytest.raises(sync_contract.ContractHealthMissing) as exc:
+        sync_contract.compare_health(runner_path, bridge_path)
+    assert "agreement is not evidence" in str(exc.value)
+
+
+def test_both_copies_dropping_probe_paths_is_an_error(tmp_path):
+    """The other half of the same gap: the report still names both databases,
+    so a guard that only checked *which* stores appear would pass."""
+    runner_path, bridge_path = _health_pair(
+        tmp_path,
+        runner=(_ROUTES_RUNNER, '        "routes": [{"path": p, "database": '
+                                'db_for(p)} for p in HEALTH_PROBE_PATHS[:2]],'),
+        bridge=(_ROUTES_BRIDGE, '        "routes": [{"path": p, "database": '
+                                'self.db_for(p)} for p in HEALTH_PROBE_PATHS[:2]],'))
+    with pytest.raises(sync_contract.ContractHealthMissing):
+        sync_contract.compare_health(runner_path, bridge_path)
+
+
+def test_both_copies_hardcoding_routing_enabled_is_an_error(tmp_path):
+    """`routing_enabled` is the one field the status page reads to decide
+    whether to show a second store at all."""
+    runner_path, bridge_path = _health_pair(
+        tmp_path,
+        runner=(_ROUTING_FLAG_RUNNER, '        "routing_enabled": True,'),
+        bridge=(_ROUTING_FLAG_BRIDGE, '        "routing_enabled": True,'))
+    with pytest.raises(sync_contract.ContractHealthMissing):
+        sync_contract.compare_health(runner_path, bridge_path)
+
+
+def test_a_multi_line_names_drift_stays_readable(capsys):
+    """The names stage answers with a normalised source body, so `repr` turns
+    a readable diff into one escaped string. Every driven stage answers with
+    short scalars, where `repr` is what makes a trailing space visible -- so
+    the loop asks the stage, rather than picking one for all five."""
+    stage = sync_contract._VaultStage
+    saved = sync_contract._VAULT_STAGES
+    body = "def f():\n    return 1\n"
+    sync_contract._VAULT_STAGES = (
+        stage("names", lambda l, r: [("f", body, "def f():\n    return 2\n")],
+              (LookupError,), "advice", lambda l, r: "ok", str),
+    )
+    try:
+        assert sync_contract.check_vault_pair("l.py", "r.py") == 1
+    finally:
+        sync_contract._VAULT_STAGES = saved
+    err = capsys.readouterr().err
+    assert "    return 1" in err
+    assert "\\n" not in err
 
 
 def test_the_second_store_is_still_probed_after_the_first_one_raises(tmp_path):
@@ -1496,6 +1585,7 @@ def test_every_stage_of_the_vault_pair_is_reachable_from_the_list():
         assert stage.errors and all(
             issubclass(e, Exception) for e in stage.errors)
         assert stage.advice.strip()
+        assert stage.render in (str, repr)
 
 
 def test_the_pair_stops_at_the_first_stage_that_drifts(capsys):
@@ -1522,9 +1612,12 @@ def test_the_pair_stops_at_the_first_stage_that_drifts(capsys):
     stage = sync_contract._VaultStage
     saved = sync_contract._VAULT_STAGES
     sync_contract._VAULT_STAGES = (
-        stage("first", clean, (LookupError,), "advice", lambda l, r: "ok"),
-        stage("second", dirty, (LookupError,), "the advice", lambda l, r: "ok"),
-        stage("third", never, (LookupError,), "advice", lambda l, r: "ok"),
+        stage("first", clean, (LookupError,), "advice",
+              lambda l, r: "ok", repr),
+        stage("second", dirty, (LookupError,), "the advice",
+              lambda l, r: "ok", repr),
+        stage("third", never, (LookupError,), "advice",
+              lambda l, r: "ok", repr),
     )
     try:
         assert sync_contract.check_vault_pair("left.py", "right.py") == 1
@@ -1553,8 +1646,9 @@ def test_a_stage_that_cannot_be_driven_is_two_not_one(capsys):
     saved = sync_contract._VAULT_STAGES
     sync_contract._VAULT_STAGES = (
         stage("first", missing, (sync_contract.ContractHealthMissing,),
-              "advice", lambda l, r: "ok"),
-        stage("second", never, (LookupError,), "advice", lambda l, r: "ok"),
+              "advice", lambda l, r: "ok", repr),
+        stage("second", never, (LookupError,), "advice",
+              lambda l, r: "ok", repr),
     )
     try:
         assert sync_contract.check_vault_pair("left.py", "right.py") == 2
