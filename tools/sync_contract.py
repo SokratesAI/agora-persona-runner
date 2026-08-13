@@ -1496,7 +1496,7 @@ def _health_answers(ask):
 # routes table, and a drifted row prints two of them. Twelve rows of that is
 # a CI log a human has to diff by eye to find a `5` that became a `60`.
 # Every other stage answers with a short string or a request tuple, which is
-# why this narrowing lives here and not in `check_vault_pair`.
+# why this narrowing lives here and not in `check_pair`.
 _SAME = "<same>"
 
 
@@ -1936,7 +1936,7 @@ def _name_count(left_path, _right_path):
 
 # (label, compare, the exceptions that mean "cannot drive this", advice,
 # what to print when it passes). Every stage returns the same
-# `(question, left answer, right answer)` rows, so `check_vault_pair` is one
+# `(question, left answer, right answer)` rows, so `check_pair` is one
 # loop -- which is the point of the list existing. Four stages that each
 # called the next one by name meant a fifth was an edit to the fourth, and
 # the fifth is `health` below.
@@ -1950,16 +1950,16 @@ def _name_count(left_path, _right_path):
 # body*, which is multi-line -- `repr` turns a readable diff into one escaped
 # string, which is what the unified loop did until the second reader on #158
 # read the two outputs side by side.
-_VaultStage = collections.namedtuple(
-    "_VaultStage", "label compare errors advice summary render")
+_Stage = collections.namedtuple(
+    "_Stage", "label compare errors advice summary render")
 
 _VAULT_STAGES = (
     # OSError as well: a copy that moved is a legible "cannot read", not a
     # traceback in the CI log. Same reasoning as `_load_module`.
-    _VaultStage("vault contract", compare_names, (ContractNameMissing, OSError),
+    _Stage("vault contract", compare_names, (ContractNameMissing, OSError),
                 _ADVICE,
                 lambda l, r: "%d names in sync" % _name_count(l, r), str),
-    _VaultStage("vault routing", compare_routing, (ContractRouterMissing,),
+    _Stage("vault routing", compare_routing, (ContractRouterMissing,),
                 _ROUTING_ADVICE,
                 lambda l, r: "every probed path and prefix resolved the same "
                              "in both copies", repr),
@@ -1967,18 +1967,18 @@ _VAULT_STAGES = (
     # Counting the rows alone understated the run by half, which is a check
     # under-claiming what it did -- the same class of thing as over-claiming,
     # one direction friendlier. Second reader on #156.
-    _VaultStage("vault assembly", compare_assembly,
+    _Stage("vault assembly", compare_assembly,
                 (ContractAssemblerMissing, ContractRouterMissing),
                 _ASSEMBLY_ADVICE,
                 lambda l, r: "%d probed reads resolved to the same database in "
                         "both copies"
                         % (len(_assembly_questions("_probe"))
                            * len(ROUTING_CONFIGS)), repr),
-    _VaultStage("vault writes", compare_writes,
+    _Stage("vault writes", compare_writes,
                 (ContractWriterMissing, ContractRouterMissing), _WRITE_ADVICE,
                 lambda l, r: "%d probed writes made the same requests in both copies"
                         % (len(_WRITE_QUESTIONS) * len(ROUTING_CONFIGS)), repr),
-    _VaultStage("vault health", compare_health,
+    _Stage("vault health", compare_health,
                 (ContractHealthMissing, ContractRouterMissing), _HEALTH_ADVICE,
                 lambda l, r: "%d probed health reports agreed in both copies"
                              % (len(_HEALTH_QUESTIONS) * len(ROUTING_CONFIGS)),
@@ -1986,14 +1986,19 @@ _VAULT_STAGES = (
 )
 
 
-def check_vault_pair(left_path, right_path):
-    """Exit code for the vault client pair: 0 in sync, 1 drift, 2 unreadable.
+def check_pair(stages, left_path, right_path):
+    """Exit code for one pair of copies: 0 in sync, 1 drift, 2 unreadable.
 
     Every stage or none. A stage returning 0 on its own is exactly the state
     that read as "in sync" while a deleted routing branch went unnoticed, so
     the loop only reaches the next one by falling through this one.
+
+    Takes the stages rather than reading a module-level list, because the
+    redaction and CI-workflow pairs are one stage each and used to be their
+    own hand-written copies of this loop. Three copies of a printing loop is
+    the same thing this whole tool exists to catch.
     """
-    for stage in _VAULT_STAGES:
+    for stage in stages:
         try:
             drifted = stage.compare(left_path, right_path)
         except stage.errors as exc:
@@ -2021,30 +2026,20 @@ def check_vault_pair(left_path, right_path):
     return 0
 
 
-def check_redaction_pair(left_path, right_path):
-    """Exit code for the redaction pair: 0 in sync, 1 drift, 2 undrivable."""
-    try:
-        drifted = compare_redaction(left_path, right_path)
+# One stage each, because the pair is one question rather than five -- but a
+# stage all the same, so the printing, the exit codes and the flushing are
+# `check_pair`'s and not three hand-written copies of them. The wording of a
+# drift header used to differ per pair ("question(s) answered differently",
+# "probe(s) answered differently", "probe(s) differ"); `check_pair`'s is now
+# the only one, which is the one visible change here.
+_REDACTION_STAGES = (
     # ContractRouterMissing too: `_load_module` is shared, so an unreadable
     # path arrives as that one even on this pair.
-    except (ContractRedactorMissing, ContractRouterMissing) as exc:
-        print("redaction: %s" % exc, file=sys.stderr)
-        return 2
-    if not drifted:
-        print("redaction: %d probes redacted identically in both copies"
-              % len(REDACTION_PROBES))
-        return 0
-    print("\nredaction: %d probe(s) answered differently between\n"
-          "  %s\n  %s\n" % (len(drifted), left_path, right_path), file=sys.stderr)
-    for label, left_answer, right_answer in drifted:
-        print("\n".join([
-            "  %s" % label,
-            "    %s: %r" % (left_path, left_answer),
-            "    %s: %r" % (right_path, right_answer),
-        ]), file=sys.stderr)
-    print(_REDACTION_ADVICE, file=sys.stderr)
-    return 1
-
+    _Stage("redaction", compare_redaction,
+           (ContractRedactorMissing, ContractRouterMissing), _REDACTION_ADVICE,
+           lambda l, r: "%d probes redacted identically in both copies"
+                        % len(REDACTION_PROBES), repr),
+)
 
 _WORKFLOW_ADVICE = (
     "\nThe two build pipelines disagree about a part that is meant to be one\n"
@@ -2057,37 +2052,20 @@ _WORKFLOW_ADVICE = (
     "the two pipelines are allowed to differ there."
 )
 
-
-def check_workflow_pair(left_path, right_path):
-    """Exit code for the CI workflow pair: 0 in sync, 1 drift, 2 unreadable."""
-    try:
-        drifted = compare_workflow(left_path, right_path)
-    except ContractWorkflowUnreadable as exc:
-        print("ci workflow: %s" % exc, file=sys.stderr)
-        return 2
-    if not drifted:
-        # Flushed for the reason `check_vault_pair` gives: stdout is buffered
-        # in CI and stderr is not, so an unflushed success line lands after
-        # the next pair's failure and reads as though it followed it.
-        print("ci workflow: %d probes match in both pipelines"
-              % len(WORKFLOW_PROBES), flush=True)
-        return 0
-    print("\nci workflow: %d probe(s) differ between\n  %s\n  %s\n"
-          % (len(drifted), left_path, right_path), file=sys.stderr)
-    for label, left_answer, right_answer in drifted:
-        print("\n".join([
-            "  %s" % label,
-            "    %s: %r" % (left_path, left_answer),
-            "    %s: %r" % (right_path, right_answer),
-        ]), file=sys.stderr)
-    print(_WORKFLOW_ADVICE, file=sys.stderr)
-    return 1
+_WORKFLOW_STAGES = (
+    _Stage("ci workflow", compare_workflow, (ContractWorkflowUnreadable,),
+           _WORKFLOW_ADVICE,
+           lambda l, r: "%d probes match in both pipelines"
+                        % len(WORKFLOW_PROBES), repr),
+)
 
 
+# Label -> the stages that pair runs. A new pair is a row here and a stage
+# list beside the others; nothing in `main` or `check_pair` changes for it.
 _CHECKERS = {
-    "vault client": check_vault_pair,
-    "redaction": check_redaction_pair,
-    "ci workflow": check_workflow_pair,
+    "vault client": _VAULT_STAGES,
+    "redaction": _REDACTION_STAGES,
+    "ci workflow": _WORKFLOW_STAGES,
 }
 
 
@@ -2105,7 +2083,7 @@ def main(argv=None):
         # Every pair is run even after one fails. They are independent files
         # and a cycle that has to fix two of them wants to know that now, not
         # after a second red build.
-        worst = max(worst, _CHECKERS[label](left_path, right_path))
+        worst = max(worst, check_pair(_CHECKERS[label], left_path, right_path))
     return worst
 
 
