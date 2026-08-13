@@ -11,6 +11,7 @@ from agora_runner.vault import (
     vault_read_path, vault_read_path_rev, vault_write_path, vault_append_path,
     vault_list_prefix, vault_search,
     VaultIncompleteDocument,
+    VaultUnreadableDocument,
     vault_query_frontmatter, vault_validate_frontmatter_schema, vault_find_stub_notes,
     vault_find_duplicate_titles, vault_get_token_metrics, vault_git_revision_history,
     vault_summarize_recent_agent_work, vault_update_frontmatter_batch,
@@ -138,10 +139,17 @@ def _before_snapshot(path):
     blocked by `vault_append_path`'s own read, which is the read that
     actually matters, because appending onto a truncated file is what makes
     the truncation permanent.
+
+    `VaultUnreadableDocument` is caught for the same reason and was added
+    to this line with the exception itself (#148): a CouchDB that answered
+    the snapshot read with a 500 would otherwise have blocked the write
+    behind it, which is the one thing the paragraph above says this read
+    must never do. Both are failed reads and this function's contract is
+    that a failed read degrades to a note in the audit trail.
     """
     try:
         return vault_read_path(path) or ""
-    except VaultIncompleteDocument as e:
+    except (VaultIncompleteDocument, VaultUnreadableDocument) as e:
         return f"[unreadable before this write: {e}]"
 
 

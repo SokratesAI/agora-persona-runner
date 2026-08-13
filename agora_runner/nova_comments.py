@@ -595,13 +595,18 @@ def _store(cycle, text, stamp=None):
             # one. A tombstone gives its revision, and overwriting one has
             # to carry it or the write conflicts forever.
             #
-            # `(None, None)` is not only "absent": `vault_read_path_rev`
-            # collapses every non-200 into it, so a 500 or a timeout arrives
-            # looking like a missing file. That degrades safely here -- the
-            # unconditional-create attempt 409s against the live document and
-            # the retry reports failure rather than losing his text -- but it
-            # is the same failed-read-looks-empty class filed against both
-            # clients, not a distinction this code can actually make.
+            # `(None, None)` used to mean more than "absent":
+            # `vault_read_path_rev` collapsed every non-200 into it, so a 500
+            # arrived here looking like a missing file. It degraded safely --
+            # the unconditional-create attempt 409s against the live document
+            # and the retry reports failure rather than losing his text -- but
+            # this branch could not tell the two apart. It does not have to
+            # any more: only a 404 reaches here, and an unreadable database
+            # raises out of the read above (`VaultUnreadableDocument`), which
+            # the caller reports as a failed save. The bridge's copy of the
+            # client was fixed in the same cycle (agora-claude-bridge#49);
+            # what is still open is that nothing detects drift between the
+            # two, which is filed rather than claimed fixed here.
             current = ""
         updated = insert_comment(current, cycle, body, stamp)
         try:

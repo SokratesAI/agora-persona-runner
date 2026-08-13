@@ -381,6 +381,38 @@ class VaultIncompleteDocument(RuntimeError):
     """
 
 
+class VaultUnreadableDocument(RuntimeError):
+    """CouchDB answered a single-document read with something that is not
+    200 and is not 404.
+
+    Raised for the same reason `VaultIncompleteDocument` above is: the
+    alternative answer is *plausible*. `vault_read_path_rev` collapsed
+    every non-200 into `(None, None)`, so a 500, a 503 or a 401 arrived at
+    the caller looking exactly like a file that does not exist -- and
+    every caller on the site turns "does not exist" into `""` and renders
+    an empty page. A database that stopped answering therefore showed up
+    as a comments board with no comments, a digest with no lines, a costs
+    page with nothing on it and empty issue and idea boards. Nothing said
+    anything was wrong.
+
+    That is the same failure #147 deleted from the journal, one layer
+    down. The journal was fixed through `vault_bulk_fetch`, which has
+    reported `.unreadable` since Cycle 136 -- but that channel only ever
+    existed for the *folder* read, so every single-document read on the
+    site kept the old behaviour. `journal_markdown` raising while
+    `comments_markdown` returned `""` was not a considered difference; it
+    was the only one of the two that had a way to tell.
+
+    404 stays `(None, None)`. It is a real answer, it is how a first
+    comment and a not-yet-created archive are detected, and callers
+    already distinguish it from a tombstone by its `rev`.
+
+    `RuntimeError` is the base class for the same reason as above:
+    `nova_site`'s handlers already turn one into a 502 carrying the
+    message, so the page reports the outage rather than illustrating it.
+    """
+
+
 def _fetch_chunks(chunk_ids, db):
     """`{chunk_id: data}` for every chunk that exists, in one request.
 
@@ -465,10 +497,21 @@ def vault_read_path_rev(path):
     None for a missing file *and* for a tombstone, but a tombstone has a
     revision and writing over it has to carry it — so the two cases are
     `(None, None)` and `(None, "<rev>")`, and they are not the same.
+
+    2026-08-13: a third case used to be folded into the first. Every
+    non-200 returned `(None, None)`, so "this file does not exist" and
+    "the database would not answer" were one answer — see
+    `VaultUnreadableDocument` for what that rendered as. Only 404 is
+    absence now; anything else raises.
     """
     status, doc = couch_get_doc(path.lower())
-    if status != 200:
+    if status == 404:
         return None, None
+    if status != 200:
+        raise VaultUnreadableDocument(
+            f"{path.lower()}: CouchDB answered HTTP {status} — refusing to "
+            "report this as a missing file"
+        )
     # A LiveSync tombstone still has its content chunks attached, so this
     # returns the old text unless the flag is checked — see _vault_file_docs.
     # Deleted means gone; vault_git_revision_history is the way back.
@@ -863,16 +906,28 @@ def fetch_vault_context(paths):
                 return "\n\n".join(sections)
             try:
                 content = vault_read_path(target)
-            except VaultIncompleteDocument as e:
-                # One damaged file must not kill the run. This function
-                # builds the prompt for every heartbeat -- including Nova's
-                # own cycle -- and it is called before run_heartbeat's try
-                # block, on a bare daemon thread. An exception escaping here
-                # takes the thread down with no reply posted, no audit chip,
-                # and the heartbeat's lastResult stuck on "running" forever.
-                # That is a worse silence than the splice this exception
-                # exists to prevent, so it degrades the same way a missing
-                # file already does -- one visible marker, keep going.
+            except (VaultIncompleteDocument, VaultUnreadableDocument) as e:
+                # One damaged or unreachable file must not kill the run.
+                # This function builds the prompt for every heartbeat --
+                # including Nova's own cycle -- and it is called before
+                # run_heartbeat's try block, on a bare daemon thread. An
+                # exception escaping here takes the thread down with no
+                # reply posted, no audit chip, and the heartbeat's
+                # lastResult stuck on "running" forever. That is a worse
+                # silence than the splice this exception exists to prevent,
+                # so it degrades the same way a missing file already does --
+                # one visible marker, keep going.
+                #
+                # `VaultUnreadableDocument` joined this list with the
+                # exception itself (#148) and it is the more likely of the
+                # two by far: a chunk-damaged file is rare and permanent,
+                # while a CouchDB 500 is transient and hits whatever read
+                # is in flight. Catching only the rare one would have meant
+                # a transient blip on any heartbeat's `vaultPaths` silently
+                # killing an entire cycle -- strictly worse than the empty
+                # page this PR set out to fix. The marker says which
+                # happened, because a reader of the prompt needs to know
+                # whether the file is broken or the database was.
                 sections.append(f"### {target}\n[unreadable: {e}]")
                 continue
             if content is None:
