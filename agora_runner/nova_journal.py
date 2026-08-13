@@ -562,11 +562,16 @@ def parse_journal_file(markdown, times_by_cycle=None):
     rather than an omitted argument, and it fails in the safe direction:
     calling `parse_journal` on a whole `journal.md` yields the preamble's
     own heading as a spurious extra entry instead of deleting real ones.
+
+    The cut itself is `entries_body`, not a second copy of the partition
+    written here. There must be exactly one definition of where the
+    preamble ends, because the migration writes out as documents whatever
+    this treats as content -- two copies that drift would split the
+    archive at one boundary and render it at another.
     """
     if not markdown:
         return []
-    _, marker, body = markdown.partition("\n## Entries")
-    return parse_journal(body if marker else markdown, times_by_cycle)
+    return parse_journal(entries_body(markdown), times_by_cycle)
 
 
 def parse_journal(markdown, times_by_cycle=None):
@@ -641,9 +646,16 @@ def parse_journal(markdown, times_by_cycle=None):
 def entries_body(markdown):
     """The entries half of `journal.md` -- everything below `## Entries`.
 
-    Same split `parse_journal` does, factored out because the migration
-    needs it too and the two must not drift: whatever the parser treats
-    as content is exactly what gets written out as per-entry documents.
+    The one definition of that boundary. `parse_journal_file` is a caller
+    rather than a second copy, and so is the migration -- they must not
+    drift, because whatever the parser treats as content is exactly what
+    gets written out as per-entry documents.
+
+    It named `parse_journal` until Cycle 156 and that had gone stale: the
+    split moved to `parse_journal_file` when the flag became two
+    functions, and this sentence kept pointing at the half that no longer
+    cuts anything. Caught by the reviewer, which is the whole reason a
+    second reader exists -- a comment cannot fail a test.
     """
     _, marker, body = (markdown or "").partition("\n## Entries")
     return body if marker else (markdown or "")
