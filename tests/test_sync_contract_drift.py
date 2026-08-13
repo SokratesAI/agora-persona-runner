@@ -17,6 +17,7 @@ noise, over the same input.
 """
 import ast
 import importlib
+import re
 import os
 import sys
 import time
@@ -921,6 +922,10 @@ def test_a_drifting_redaction_pair_exits_one_through_the_shared_loop(
     assert "redaction: 1 question(s) answered differently" in err
     assert "named value, quoted json" in err
     assert "WORKFLOW_PROBES" not in err   # the other pair's advice
+    # Rendered with `repr`, as the hand-written copy's `%r` did. A redacted
+    # string differs from its neighbour by a marker and by whitespace, and
+    # `str` hides the whitespace half of that.
+    assert re.search(r": '.*'$", err, re.M), err
 
 
 def test_the_pair_is_registered_so_the_cli_actually_runs_it():
