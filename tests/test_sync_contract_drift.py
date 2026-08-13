@@ -465,6 +465,184 @@ def test_the_guard_still_fires_when_there_is_no_drift_to_report(tmp_path):
     assert "obsidian" in str(caught.value)
 
 
+# --- routing: the expected answer, not just agreement -----------------------
+#
+# Everything above this line asks whether the two copies agree, plus one guard
+# against agreeing on a name neither was given. Both are blind to two copies
+# edited the same way *within* the two databases they were given, which is the
+# ordinary shape of this mistake: one hand-written fix typed into both files.
+# Each test below therefore breaks both copies identically, and none of them
+# can be reached by breaking one.
+#
+# The routing-off configuration is deliberately absent from this section: with
+# `COUCHDB_NOVA_DB` empty there is exactly one configured database, so there is
+# no wrong-but-configured answer to give. Every routing-off failure is either a
+# difference between the copies or a stray name, and the two guards above
+# already own both.
+
+
+def _both_copies(tmp_path, runner_old, runner_new, bridge_old, bridge_new):
+    """One mutation, written into each copy in its own spelling."""
+    return (_runner_copy(tmp_path, old=runner_old, new=runner_new),
+            _bridge_copy(tmp_path, old=bridge_old, new=bridge_new))
+
+
+def _answers_agree(runner_path, bridge_path):
+    """Do the two copies answer every routing question identically?
+
+    `compare_routing`'s drive loop with the expected-answer check left off,
+    so a test below can show that its mutation was caught by the expectations
+    and not by the two copies disagreeing. Asserting that from
+    `compare_routing` alone would be circular -- it runs the check only when
+    nothing drifted, so the test would be resting on the behaviour it exists
+    to pin.
+    """
+    with sync_contract._process_state_restored():
+        for db, nova_db in sync_contract.ROUTING_CONFIGS:
+            runner = sync_contract._runner_router(runner_path, db, nova_db)
+            bridge = sync_contract._bridge_router(bridge_path, db, nova_db)
+            paths = tuple(sys.modules["_sync_contract_runner"].HEALTH_PROBE_PATHS)
+            paths += sync_contract.EXTRA_PROBE_PATHS
+            if (sync_contract._routing_answers(*runner, paths)
+                    != sync_contract._routing_answers(*bridge, paths)):
+                return False
+    return True
+
+
+def test_edvards_own_nova_folder_added_to_both_copies_is_caught(tmp_path):
+    """The mistake this table was written for, and it is a named trap rather
+    than an invented one: two folders in the vault are called "nova" and only
+    `agora/nova/` is Nova's. `projects/nova/` is Edvard's own, deliberately
+    left in his vault so his capture files survive the app breaking.
+
+    Adding it to `NOVA_DB_FOLDERS` routes his `issues.md`, `ideas.md` and
+    `notes.md` into Nova's database, where his phone does not look. Typed
+    into both copies -- which is how every fix in this pair gets written --
+    the two agree, both answers are databases this tool configured, and every
+    other guard on this stage is green.
+    """
+    runner, bridge = _both_copies(
+        tmp_path,
+        runner_old='NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n)',
+        runner_new='NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n'
+                   '    "projects/sokrates/projects/nova/",\n)',
+        bridge_old='NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",)',
+        bridge_new='NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",'
+                   ' "projects/sokrates/projects/nova/",)')
+
+    # Agreement first, or this test proves nothing about the expected table:
+    # if the copies differed, drift would be reported and the check would
+    # never run.
+    assert _answers_agree(runner, bridge)
+
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract.compare_routing(runner, bridge)
+    message = str(caught.value)
+    assert "projects/sokrates/projects/nova/issues.md" in message
+    assert "expected" in message
+
+
+def test_the_exact_file_branch_lost_from_both_copies_is_caught(tmp_path):
+    """`journal-digest.md` is the file Edvard opens, and it is the one file
+    routed by exact match rather than by folder. Losing that branch in one
+    copy is the drift `test_the_exact_gap_the_name_comparison_could_not_see`
+    covers. Losing it in both is the same page reading from the wrong
+    database in both processes, with nothing above this line able to say so.
+    """
+    runner, bridge = _both_copies(
+        tmp_path,
+        runner_old="if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:",
+        runner_new="if lowered.startswith(NOVA_DB_FOLDERS):",
+        bridge_old="if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:",
+        bridge_new="if lowered.startswith(NOVA_DB_FOLDERS):")
+
+    assert _answers_agree(runner, bridge)
+
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract.compare_routing(runner, bridge)
+    assert "journal-digest.md" in str(caught.value)
+
+
+def test_a_straddling_prefix_narrowed_in_both_copies_is_caught(tmp_path):
+    """The ancestor branch, dropped from both. A listing of `projects/` then
+    queries only Edvard's database and silently returns none of Nova's files
+    -- and because both copies return `[probe-edvard-db]`, which is a
+    configured name, agreement and the stray guard are both satisfied.
+    """
+    runner, bridge = _both_copies(
+        tmp_path,
+        runner_old="    if any(t.startswith(lowered) for t in NOVA_DB_TARGETS):\n"
+                   "        return [COUCHDB_DB, COUCHDB_NOVA_DB]\n",
+        runner_new="",
+        bridge_old="        if any(t.startswith(lowered) for t in NOVA_DB_TARGETS):\n"
+                   "            return [self.db, self.nova_db]\n",
+        bridge_new="")
+
+    assert _answers_agree(runner, bridge)
+
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract.compare_routing(runner, bridge)
+    assert "dbs_for_prefix" in str(caught.value)
+
+
+def test_the_expected_table_stays_quiet_on_the_copies_as_they_are(tmp_path):
+    """The control for the three above. The live pair is checked by
+    `test_the_two_copies_route_every_probed_path_the_same_way`, which would
+    also go red if the expected table were wrong -- this asserts it directly
+    so a failure names the expectation rather than the comparison.
+    """
+    paths = tuple(vault.HEALTH_PROBE_PATHS) + sync_contract.EXTRA_PROBE_PATHS
+    for db, nova_db in sync_contract.ROUTING_CONFIGS:
+        expected = sync_contract._routing_expectations(paths, db, nova_db)
+        assert expected, "no expectations were built"
+        sync_contract._check_the_probe_answered_correctly(
+            expected, paths, db, nova_db)
+
+
+def test_a_probed_path_with_no_expectation_stops_the_run():
+    """`HEALTH_PROBE_PATHS` is read off the runner copy at run time, so a
+    path added there arrives here with no expectation. Skipping it would
+    make the newest probe -- the one somebody just decided was worth
+    checking -- the only one compared by agreement alone.
+    """
+    paths = ("projects/sokrates/projects/agora/nova/journal/999-cycle-999.md",)
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract._routing_expectations(
+            paths, sync_contract.PROBE_DB, sync_contract.PROBE_NOVA_DB)
+    assert "999-cycle-999.md" in str(caught.value)
+
+
+def test_an_expectation_nothing_probes_stops_the_run():
+    """The mirror, and the reason it is not merely tidiness: the stage's
+    success line counts this table, so a row that no longer corresponds to a
+    probe makes the CI log claim a check that did not run. Under-claiming
+    was worth fixing at #156; over-claiming is the same fault, pointed the
+    unfriendly way.
+    """
+    paths = tuple(p for p in sync_contract._ROUTING_EXPECTED_PATHS
+                  if p != "unrelated/file.md")
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract._routing_expectations(
+            paths, sync_contract.PROBE_DB, sync_contract.PROBE_NOVA_DB)
+    assert "unrelated/file.md" in str(caught.value)
+
+
+def test_the_success_line_counts_every_probe_it_actually_ran(tmp_path):
+    """The count in the CI log, against the questions the comparison really
+    asked. `_routing_expectations` keys its dict exactly as `_routing_answers`
+    does, so this also pins the two spellings of that format string together.
+    """
+    stage = [s for s in sync_contract._VAULT_STAGES
+             if s.label == "vault routing"][0]
+    summary = stage.summary(vault.__file__, _bridge_copy(tmp_path))
+
+    paths = tuple(vault.HEALTH_PROBE_PATHS) + sync_contract.EXTRA_PROBE_PATHS
+    asked = len(sync_contract._routing_expectations(
+        paths, sync_contract.PROBE_DB, sync_contract.PROBE_NOVA_DB))
+    assert summary.startswith(
+        "%d " % (asked * len(sync_contract.ROUTING_CONFIGS),)), summary
+
+
 # ---------------------------------------------------------------------------
 # Chunk assembly: which database a document's chunks are fetched from. Same
 # discipline again -- silence and noise over the same input -- with one extra

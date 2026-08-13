@@ -335,6 +335,90 @@ PROBE_PREFIXES = (
 )
 
 
+# What every probed path and prefix must actually resolve to, as a token
+# rather than a name, because two of the three answers depend on how routing
+# is configured.
+#
+#   nova   -- Nova's database, or Edvard's when routing is off
+#   edvard -- Edvard's database
+#   both   -- a prefix straddling the two, so a listing has to query both
+#
+# Agreement is not evidence here, and this is the last stage of the vault
+# pair that was relying on it. Every legitimate answer is one of the two
+# databases this tool supplies, so two copies whose routing drifted the same
+# way -- one folder added to `NOVA_DB_FOLDERS` in both, or two prefixes
+# swapped in both -- answer every row of this table identically, with real,
+# configured, wrong names. `_check_the_probe_reached_both` does not see that
+# either: it only refuses a name this tool never supplied, and a swap uses
+# both of them. Nor does `compare_names`, which compares the two prefix
+# lists against each other; nor `compare_health`, whose `routes` normalises
+# to a count and a set of database names, and a swap changes neither.
+#
+# So these are the answers, hand-verified against the rules written in
+# `db_for` and `dbs_for_prefix` -- deliberately not recomputed from
+# `NOVA_DB_FOLDERS`/`NOVA_DB_FILES`, which would be the instrument agreeing
+# with itself for the same reason the copies do.
+_ROUTING_EXPECTED_PATHS = {
+    # HEALTH_PROBE_PATHS, read off the runner copy at run time. A path added
+    # there and not here stops the run rather than going unchecked; see
+    # `_routing_expectations`.
+    "projects/sokrates/projects/agora/nova/journal/138-cycle-121.md": "nova",
+    "projects/sokrates/projects/agora/journal-digest.md": "nova",
+    # The `.bak` beside the digest. `NOVA_DB_FILES` is an exact-match list
+    # precisely so this one does not follow it across.
+    "projects/sokrates/projects/agora/journal-digest.md.bak": "edvard",
+    # Edvard's own Nova folder, which is not Nova's. Two folders now say
+    # "nova" and only `agora/nova/` routes to Nova's database.
+    "projects/sokrates/projects/nova/nova.md": "edvard",
+    "projects/sokrates/projects/nova/issues.md": "edvard",
+    # EXTRA_PROBE_PATHS.
+    "": "edvard",
+    None: "edvard",
+    "PROJECTS/Sokrates/Projects/Agora/NOVA/journal/191-cycle-169.md": "nova",
+    # The folder itself, unslashed: `NOVA_DB_FOLDERS` carries the trailing
+    # slash, so this is not inside it and is not the exact file either.
+    "projects/sokrates/projects/agora/nova": "edvard",
+    "projects/sokrates/projects/agora/novaX/file.md": "edvard",
+    "projects/sokrates/projects/nova/notes.md": "edvard",
+    "unrelated/file.md": "edvard",
+}
+
+_ROUTING_EXPECTED_PREFIXES = {
+    # Ancestors of Nova's folder: a whole-vault listing that queried only
+    # Edvard's database would quietly lose every Nova file.
+    "": "both",
+    None: "both",
+    "projects/": "both",
+    "projects/sokrates/projects/agora/": "both",
+    "projects/sokrates/projects/agora/nova/": "nova",
+    "projects/sokrates/projects/agora/nova/journal/": "nova",
+    # As a *prefix* the digest's own path also matches its neighbours, and
+    # the `.bak` beside it is Edvard's -- so both, not Nova's alone.
+    "projects/sokrates/projects/agora/journal-digest.md": "both",
+    # One character longer than any Nova target, so nothing is under it.
+    "projects/sokrates/projects/agora/journal-digest.md.bak": "edvard",
+    "projects/sokrates/projects/nova/": "edvard",
+    "unrelated/": "edvard",
+}
+
+# Routing off is `if not <nova db>: return <db>` in both copies, so every
+# token collapses to Edvard's database -- which is what makes these usable
+# under both configurations rather than needing a second table.
+_ROUTING_EXPECTED_DB = {
+    "nova": lambda db, nova_db: nova_db or db,
+    "edvard": lambda db, nova_db: db,
+}
+
+# Lists, and the order is part of the answer: `dbs_for_prefix` returns
+# Edvard's first, both copies do, and a reordering is a real difference in
+# which database a listing reads before the other.
+_ROUTING_EXPECTED_DBS = {
+    "nova": lambda db, nova_db: [nova_db] if nova_db else [db],
+    "both": lambda db, nova_db: [db, nova_db] if nova_db else [db],
+    "edvard": lambda db, nova_db: [db],
+}
+
+
 # The environment variables the two copies are configured through, and the
 # module names this tool loads them under. Both have to be put back: run
 # from the command line the process exits immediately and nothing notices,
@@ -504,13 +588,81 @@ def _check_the_probe_reached_both(agreed, db, nova_db):
                 "either of them" % (question, stray, sorted(allowed)))
 
 
+def _routing_expectations(paths, db, nova_db):
+    """`{question: the answer it must have}` for one configuration.
+
+    Keyed the same way `_routing_answers` keys its dict, so the two line up
+    by construction rather than by a second spelling of the format string.
+
+    Raises both ways round, and both directions are load-bearing.
+    `HEALTH_PROBE_PATHS` is read off the runner copy at run time so this tool
+    cannot fall behind it -- which means a path added there has no expectation
+    here, and skipping it silently would let the newest probe be the one
+    nothing checks. A row here that nothing probes is the mirror: the stage
+    would then report a probe count it did not run, which is the
+    under-claiming #156 fixed pointed the other way.
+    """
+    probed = tuple(paths)
+    missing = [p for p in probed if p not in _ROUTING_EXPECTED_PATHS]
+    if missing:
+        raise ContractRouterMissing(
+            "no expected database for probed path(s) %r. Add the row to "
+            "_ROUTING_EXPECTED_PATHS in tools/sync_contract.py, hand-verified "
+            "against db_for -- a probe with no expectation is compared only "
+            "against the other copy, which is the agreement this table exists "
+            "to stop relying on" % (missing,))
+    unprobed = [p for p in _ROUTING_EXPECTED_PATHS if p not in probed]
+    if unprobed:
+        raise ContractRouterMissing(
+            "_ROUTING_EXPECTED_PATHS has row(s) %r that nothing probes. "
+            "HEALTH_PROBE_PATHS is read off the runner copy, so it has "
+            "shrunk; drop the row or add the path back, but do not leave "
+            "this stage counting a probe it never ran" % (unprobed,))
+
+    expected = {}
+    for path in probed:
+        token = _ROUTING_EXPECTED_PATHS[path]
+        expected["db_for(%r)" % (path,)] = _ROUTING_EXPECTED_DB[token](db, nova_db)
+    for prefix in PROBE_PREFIXES:
+        token = _ROUTING_EXPECTED_PREFIXES[prefix]
+        expected["dbs_for_prefix(%r)" % (prefix,)] = (
+            _ROUTING_EXPECTED_DBS[token](db, nova_db))
+    return expected
+
+
+def _check_the_probe_answered_correctly(agreed, paths, db, nova_db):
+    """Raise if the two copies agreed on an answer that is simply wrong.
+
+    `_check_the_probe_reached_both` catches a copy that never took this
+    tool's configuration at all. It cannot catch a copy that took it and
+    routes it wrongly, because every wrong answer available here is one of
+    the two names it was handed. That is the case this states the expected
+    answer for, the same way the assembly, write and health stages do.
+
+    Runs only on rows the two copies agreed about, for the reason
+    `compare_routing` gives: a named routing difference must not be replaced
+    by an instrumentation error.
+    """
+    for question, want in sorted(_routing_expectations(paths, db, nova_db).items()):
+        if question not in agreed:
+            continue
+        if agreed[question] != want:
+            raise ContractRouterMissing(
+                "both copies answered %s with %r, expected %r. Two copies "
+                "that drifted the same way agree on every row of this table, "
+                "so agreement is not evidence here -- refusing to report a "
+                "comparison whose answers are wrong in both"
+                % (question, agreed[question], want))
+
+
 def compare_routing(runner_path, bridge_path):
     """Routing questions the two copies answer differently, ascending.
 
     Empty means every path and prefix in the tables above resolved to the
-    same database in both, under both configurations. This is what the name
-    comparison structurally cannot do: routing lives in a method on one side
-    and a plain function on the other, so no AST comparison can pair them.
+    same database in both, under both configurations, *and* that database
+    was the right one. This is what the name comparison structurally cannot
+    do: routing lives in a method on one side and a plain function on the
+    other, so no AST comparison can pair them.
     """
     drifted = []
     agreed = {}
@@ -527,7 +679,7 @@ def compare_routing(runner_path, bridge_path):
                 ("%s: %s" % (label, q), left[q], right[q])
                 for q in sorted(left) if left[q] != right[q]
             ]
-            agreed[(db, nova_db)] = {
+            agreed[(db, nova_db, paths)] = {
                 q: left[q] for q in left if left[q] == right[q]}
     # After every configuration, and only when nothing drifted. The guard
     # exists to stop *agreement* being reported as a clean comparison, so a
@@ -538,8 +690,14 @@ def compare_routing(runner_path, bridge_path):
     # loop, so drift found under one configuration was discarded by a guard
     # tripping under the next.
     if not drifted:
-        for (db, nova_db), answers in agreed.items():
+        for (db, nova_db, paths), answers in agreed.items():
+            # Reached-both first: a copy that never took this tool's
+            # configuration answers with a live name, and "that is not a
+            # database this comparison configured" diagnoses it. The expected
+            # table would call the same thing a wrong answer, which is true
+            # and points at the routing rules rather than at the probe.
             _check_the_probe_reached_both(answers, db, nova_db)
+            _check_the_probe_answered_correctly(answers, paths, db, nova_db)
     return drifted
 
 
@@ -1961,8 +2119,11 @@ _VAULT_STAGES = (
                 lambda l, r: "%d names in sync" % _name_count(l, r), str),
     _Stage("vault routing", compare_routing, (ContractRouterMissing,),
                 _ROUTING_ADVICE,
-                lambda l, r: "every probed path and prefix resolved the same "
-                             "in both copies", repr),
+                lambda l, r: "%d probed paths and prefixes resolved to the "
+                             "right database in both copies"
+                             % ((len(_ROUTING_EXPECTED_PATHS)
+                                 + len(PROBE_PREFIXES))
+                                * len(ROUTING_CONFIGS)), repr),
     # Questions times configurations, because every row is driven under both.
     # Counting the rows alone understated the run by half, which is a check
     # under-claiming what it did -- the same class of thing as over-claiming,
