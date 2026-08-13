@@ -59,6 +59,7 @@
     if (path === "/issues") return { view: "board", cycle: null, board: "issues" };
     if (path === "/ideas") return { view: "board", cycle: null, board: "ideas" };
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
+    if (path === "/retro") return { view: "retro", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
 
@@ -69,7 +70,12 @@
 
   function markNav() {
     var here = route(window.location.pathname);
-    var want = here.view === "board" ? "/" + here.board : here.view === "costs" ? "/costs" : "/";
+    // Every view but the journal is named after its own path, so the two
+    // single-page views need no branch of their own -- which is what a
+    // third one turning the chain into a nested ternary made worth doing.
+    var want = here.view === "board"
+      ? "/" + here.board
+      : here.view === "journal" ? "/" : "/" + here.view;
     var tabs = navEl ? navEl.querySelectorAll(".nav-tab") : [];
     for (var i = 0; i < tabs.length; i++) {
       var on = tabs[i].getAttribute("href") === want;
@@ -2360,6 +2366,264 @@
       });
   }
 
+  /* ---- The retrospective page (issues.md, 2026-08-13) ------------------
+   *
+   * Edvard: "Rate yourself on a scale from 1 to 10 on how you feel its
+   * going, how effective do you think you are, whats good, whats bad,
+   * whats the overall feeling (which is the most important metric).
+   * Actually note down data and compare it to previous retros (lets also
+   * make a page that shows these data as graphs)."
+   *
+   * The comparison is the ask, so the chart is one chart with all three
+   * lines on one 1-10 axis, not three charts side by side: the question
+   * is whether they move together, and that is only readable when they
+   * share an axis.
+   */
+
+  /* The third series colour, and it took a measurement to find.
+   *
+   * SERIES_A (blue) and SERIES_B (amber) already straddle the axis that
+   * red-green deficiency collapses, so most third hues land on top of one
+   * of them for somebody. Measured as CIEDE2000 between this and each of
+   * the existing two, under normal vision and under simulated protanopia,
+   * deuteranopia and tritanopia: teal #38a3a5 falls to 4.7, pink #c2739f
+   * to 3.0, violet #b07de0 to 2.4 -- all indistinguishable from a
+   * neighbour to a real reader. This one's worst adjacent delta is 16.8
+   * (deuteranopia, against the amber) and its contrast against the app's
+   * surface is 10.8:1. It is lighter than the pair (L* 79.7 against 56.7
+   * and 61.2), which is what buys the separation and is a second channel
+   * rather than a compromise. The legend below carries identity anyway --
+   * three lines is past where colour alone should be asked to. */
+  var SERIES_C = "#8fd694";
+
+  /* Ordered to match nova_retro.SCORE_KEYS, and the overall feeling is
+   * last because it is drawn last: three integer scores on a 1-10 axis
+   * overlap exactly whenever two of them are equal, and the line he
+   * called the most important metric should be the one on top. It is also
+   * the thickest, for the same reason. */
+  var RETRO_SERIES = {
+    going: { color: SERIES_A, width: 2 },
+    effectiveness: { color: SERIES_B, width: 2 },
+    feeling: { color: SERIES_C, width: 3 },
+  };
+
+  function retroSeries(payload) {
+    return (payload.scoreKeys || []).map(function (entry) {
+      var style = RETRO_SERIES[entry.key] || { color: SERIES_A, width: 2 };
+      return { key: entry.key, label: entry.label, color: style.color, width: style.width };
+    });
+  }
+
+  function renderRetroChart(payload) {
+    var rows = payload.retros || [];
+    var series = retroSeries(payload);
+    var chart = chartFrame(
+      "How it has been going",
+      "Each Friday's self-rating, 1 to 10"
+    );
+    if (!rows.length) {
+      chart.figure.appendChild(el("p", "empty", "No retrospectives yet."));
+      return chart.figure;
+    }
+    var box = plotBox();
+    var range = payload.range || [1, 10];
+    var lo = range[0];
+    var hi = range[1];
+    var from = rows[0].at;
+    var to = rows[rows.length - 1].at;
+    // One retro is a single moment, so the domain has no width and every
+    // x would be NaN. Give it a week either side, which is what the axis
+    // would show once the second retro lands.
+    if (to === from) {
+      from -= 3.5 * 24 * 3600 * 1000;
+      to += 3.5 * 24 * 3600 * 1000;
+    }
+    var span = to - from;
+    var x = function (at) { return box.x0 + ((at - from) / span) * (box.x1 - box.x0); };
+    var y = function (v) { return box.y1 - ((v - lo) / (hi - lo)) * (box.y1 - box.y0); };
+
+    drawYAxis(chart.svg, box, [
+      { value: hi, y: y(hi) },
+      { value: Math.round((hi + lo) / 2), y: y(Math.round((hi + lo) / 2)) },
+      { value: lo, y: box.y1 },
+    ], function (v) { return String(v); });
+
+    series.forEach(function (line) {
+      var d = "";
+      var open = false;
+      rows.forEach(function (row) {
+        var value = (row.scores || {})[line.key];
+        if (typeof value !== "number") {
+          // Same rule as the quota chart: a missing score is a hole, not
+          // a zero, and a line drawn down to the axis and back would read
+          // as a week that went catastrophically.
+          open = false;
+          return;
+        }
+        d += (open ? "L" : "M") + x(row.at).toFixed(1) + " " + y(value).toFixed(1) + " ";
+        open = true;
+      });
+      if (!d) return;
+      chart.svg.appendChild(svgEl("path", {
+        d: d.trim(), fill: "none", stroke: line.color, "stroke-width": line.width,
+        "stroke-linejoin": "round", "stroke-linecap": "round",
+      }));
+      // A dot per retro as well as the line. With one retro there is no
+      // line to see at all, and with five there are still only five real
+      // observations -- marking them stops the eye reading the segments
+      // between as data.
+      rows.forEach(function (row) {
+        var value = (row.scores || {})[line.key];
+        if (typeof value !== "number") return;
+        chart.svg.appendChild(svgEl("circle", {
+          cx: x(row.at).toFixed(1), cy: y(value).toFixed(1), r: line.width,
+          fill: line.color,
+        }));
+      });
+    });
+
+    drawXDates(chart.svg, box, from, to);
+    attachHover(chart, box, rows.map(function (row) {
+      return {
+        x: x(row.at), at: row.at,
+        lines: series.map(function (line) {
+          var value = (row.scores || {})[line.key];
+          return {
+            color: line.color,
+            label: line.label,
+            value: typeof value === "number" ? value + "/" + hi : "—",
+          };
+        }),
+      };
+    }));
+
+    var legend = el("div", "chart-legend");
+    series.forEach(function (line) {
+      var key = el("span", "legend-key");
+      var swatch = el("span", "legend-swatch");
+      swatch.style.background = line.color;
+      key.appendChild(swatch);
+      key.appendChild(el("span", "legend-label", line.label));
+      legend.appendChild(key);
+    });
+    chart.figure.appendChild(legend);
+    return chart.figure;
+  }
+
+  function renderRetroTiles(payload) {
+    var rows = payload.retros || [];
+    var latest = rows.length ? rows[rows.length - 1] : null;
+    var row = el("div", "tiles");
+    row.appendChild(statTile("Retros", String(rows.length)));
+    if (!latest) return row;
+    var hi = (payload.range || [1, 10])[1];
+    retroSeries(payload).forEach(function (line) {
+      var value = (latest.scores || {})[line.key];
+      row.appendChild(statTile(
+        line.label,
+        typeof value === "number" ? value + "/" + hi : "—",
+        latest.date
+      ));
+    });
+    return row;
+  }
+
+  /* One retro, in full. The chart answers "is it getting better"; this
+   * answers "why", and the two are on one page because the score without
+   * the sentence behind it is the thing he specifically did not ask for. */
+  function renderRetroCard(payload, row) {
+    var hi = (payload.range || [1, 10])[1];
+    var card = el("article", "retro-card");
+    var head = el("header", "retro-head");
+    head.appendChild(el("h2", "retro-date", row.date));
+    if (row.cycle) head.appendChild(el("p", "retro-cycle", "Cycle " + row.cycle));
+    card.appendChild(head);
+
+    var scores = el("div", "retro-scores");
+    retroSeries(payload).forEach(function (line) {
+      var value = (row.scores || {})[line.key];
+      var pill = el("span", "retro-pill");
+      var swatch = el("span", "legend-swatch");
+      swatch.style.background = line.color;
+      pill.appendChild(swatch);
+      pill.appendChild(el("span", "retro-pill-label", line.label));
+      pill.appendChild(el(
+        "span", "retro-pill-value",
+        typeof value === "number" ? value + "/" + hi : "—"
+      ));
+      scores.appendChild(pill);
+    });
+    card.appendChild(scores);
+
+    if (row.overall) card.appendChild(el("p", "retro-overall", row.overall));
+    [
+      { label: "What is good", text: row.good },
+      { label: "What is bad", text: row.bad },
+    ].forEach(function (part) {
+      if (!part.text) return;
+      card.appendChild(el("h3", "retro-sub", part.label));
+      card.appendChild(el("p", "retro-text", part.text));
+    });
+    if ((row.changes || []).length) {
+      card.appendChild(el("h3", "retro-sub", "What I am changing"));
+      var list = el("ul", "retro-changes");
+      row.changes.forEach(function (change) {
+        list.appendChild(el("li", "retro-change", change));
+      });
+      card.appendChild(list);
+    }
+    return card;
+  }
+
+  function renderRetro(payload) {
+    stopPolling();
+    markNav();
+    needsEl.hidden = true;
+    var rows = payload.retros || [];
+    var latest = rows.length ? rows[rows.length - 1] : null;
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el(
+      "p", "status-line",
+      rows.length
+        ? "Retrospectives — " + rows.length + ", newest " + latest.date
+        : "Retrospectives — none yet"
+    ));
+    feed.textContent = "";
+    if (!rows.length) {
+      feed.appendChild(el(
+        "p", "empty",
+        "The first retrospective runs on a Friday morning. Nothing to compare yet."
+      ));
+      return;
+    }
+    feed.appendChild(renderRetroTiles(payload));
+    feed.appendChild(renderRetroChart(payload));
+    // Newest first, which is the opposite of the chart's left-to-right
+    // and is right for both: a chart is read forwards and a feed is read
+    // from the top.
+    rows.slice().reverse().forEach(function (row) {
+      feed.appendChild(renderRetroCard(payload, row));
+    });
+  }
+
+  function loadRetro() {
+    fetch("/api/retro")
+      .then(json)
+      .then(function (payload) {
+        // The same guard the board and costs fetches carry: two taps in
+        // quick succession leave two fetches in flight and the loser must
+        // not paint over the winner.
+        if (route(window.location.pathname).view !== "retro") return;
+        renderRetro(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the retrospectives: " + err));
+      });
+  }
+
   function load() {
     var here = route(window.location.pathname);
     if (here.view === "board") {
@@ -2368,6 +2632,10 @@
     }
     if (here.view === "costs") {
       loadCosts();
+      return;
+    }
+    if (here.view === "retro") {
+      loadRetro();
       return;
     }
     markNav();
