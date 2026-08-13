@@ -18,10 +18,14 @@ a no-op once the live file is already at or under `--keep`.
 The mechanics -- keep the newest, archive first, drop what is already
 filed, verify before writing -- moved into `tools/rolling.py` when
 `roll_captures.py` became the third caller. What stays here is what is
-true of the digest and of nothing else: the entries are blank-line
-separated `**Cycle N**` paragraphs, and the pair has to render
-identically through `parse_digest`, which is what the site actually
-reads. See `rolling.py` for why the write order is what it is.
+true of the digest and of nothing else: where one entry ends, and that
+the pair has to render identically through `parse_digest`, which is what
+the site actually reads. Both of those now come from
+`nova_journal.split_digest_entries` rather than being restated here --
+this file used to say "blank-line separated" and split that way, the
+site had not agreed with that since Cycle 65, and the disagreement made
+the roll a silent no-op on a digest whose cards were merged. See
+`rolling.py` for why the write order is what it is.
 
 Vault I/O is deliberately not in here -- the two files come in as paths
 and go out as paths, so this runs from either pod, with whichever vault
@@ -37,9 +41,9 @@ client that pod actually has:
 import re
 import sys
 
-from agora_runner.nova_journal import parse_digest
+from agora_runner.nova_journal import parse_digest, split_digest_entries
 from tools import rolling
-from tools.rolling import RollError, RollSpec, dedup, join_paragraphs, split_paragraphs
+from tools.rolling import RollError, RollSpec, dedup, join_paragraphs
 
 # Half a day at the current one-cycle-an-hour cadence. The number is not
 # arbitrary: Edvard sleeps 22:00-07:00, so nine cycles run while he is
@@ -129,7 +133,7 @@ SPEC = RollSpec(
     marker=MARKER,
     archive_title=ARCHIVE_TITLE,
     archive_frontmatter=ARCHIVE_FRONTMATTER,
-    split_entries=split_paragraphs,
+    split_entries=split_digest_entries,
     join_entries=join_paragraphs,
     keep=KEEP,
     noun="digest lines",
