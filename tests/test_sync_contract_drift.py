@@ -1,6 +1,6 @@
 """The two vault clients agree on the part of themselves that must agree.
 
-`tools/vault_contract.py` is the comparison; this is the test that runs it
+`tools/sync_contract.py` is the comparison; this is the test that runs it
 against the runner's real `agora_runner/vault.py`, plus the checks on the
 comparison itself. The bridge's copy is in another repository, so the
 cross-repo half runs in CI, which checks both out -- see the `vault-drift`
@@ -25,7 +25,11 @@ import sys
 import pytest
 
 from agora_runner import vault
-from tools import vault_contract
+
+# `from agora_runner import redact` gets the function, not the module -- the
+# package re-exports it. This wants the module, for its `__file__`.
+redact = importlib.import_module("agora_runner.redact")
+from tools import sync_contract
 
 RUNNER_SOURCE = open(vault.__file__, encoding="utf-8").read()
 
@@ -40,9 +44,9 @@ def _mutated(old, new, source=None):
 
 
 def test_the_runner_contract_extracts_every_name_the_contract_lists():
-    contract = vault_contract.extract_contract(RUNNER_SOURCE)
-    expected = {n for n, _ in vault_contract.CONTRACT_CONSTANTS}
-    expected |= {n for n, _ in vault_contract.CONTRACT_FUNCTIONS}
+    contract = sync_contract.extract_contract(RUNNER_SOURCE)
+    expected = {n for n, _ in sync_contract.CONTRACT_CONSTANTS}
+    expected |= {n for n, _ in sync_contract.CONTRACT_FUNCTIONS}
     assert set(contract) == expected
     assert all(v for v in contract.values())
 
@@ -51,8 +55,8 @@ def test_a_missing_name_is_an_error_and_names_all_of_them_at_once():
     stripped = _mutated("CHUNK_MIN_BYTES = 2048", "CHUNK_MIN_BYTES_X = 2048")
     stripped = _mutated("def _split_chunks(content)", "def _split_chunks_x(content)",
                         stripped)
-    with pytest.raises(vault_contract.ContractNameMissing) as caught:
-        vault_contract.extract_contract(stripped)
+    with pytest.raises(sync_contract.ContractNameMissing) as caught:
+        sync_contract.extract_contract(stripped)
     assert "CHUNK_MIN_BYTES" in str(caught.value)
     assert "_split_chunks" in str(caught.value)
 
@@ -64,7 +68,7 @@ def test_the_two_live_clients_are_compared_by_value_not_by_text():
     reflowed = _mutated(
         'NOVA_DB_FILES = (\n    "projects/sokrates/projects/agora/journal-digest.md",\n)',
         'NOVA_DB_FILES = ("projects/sokrates/projects/agora/journal-digest.md",)')
-    assert vault_contract.compare(RUNNER_SOURCE, reflowed) == []
+    assert sync_contract.compare(RUNNER_SOURCE, reflowed) == []
 
 
 def test_a_changed_routing_folder_is_drift():
@@ -72,7 +76,7 @@ def test_a_changed_routing_folder_is_drift():
     and the other to Edvard's, so his file is answered by the wrong store."""
     other = _mutated('"projects/sokrates/projects/agora/nova/",',
                      '"projects/sokrates/projects/nova/",')
-    drifted = vault_contract.compare(RUNNER_SOURCE, other)
+    drifted = sync_contract.compare(RUNNER_SOURCE, other)
     assert "NOVA_DB_FOLDERS" in drifted
     # The derived tuple is followed through rather than compared as the
     # expression `NOVA_DB_FOLDERS + NOVA_DB_FILES`, which is textually equal
@@ -88,18 +92,18 @@ def test_a_routing_tuple_turned_into_a_list_is_drift():
     other = _mutated(
         'NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n)',
         'NOVA_DB_FOLDERS = [\n    "projects/sokrates/projects/agora/nova/",\n]')
-    assert "NOVA_DB_FOLDERS" in vault_contract.compare(RUNNER_SOURCE, other)
+    assert "NOVA_DB_FOLDERS" in sync_contract.compare(RUNNER_SOURCE, other)
 
 
 def test_a_changed_health_probe_path_is_drift():
     other = _mutated('"projects/sokrates/projects/nova/issues.md",',
                      '"projects/sokrates/projects/agora/issues.md",')
-    assert vault_contract.compare(RUNNER_SOURCE, other) == ["HEALTH_PROBE_PATHS"]
+    assert sync_contract.compare(RUNNER_SOURCE, other) == ["HEALTH_PROBE_PATHS"]
 
 
 def test_a_changed_chunk_size_is_drift():
     other = _mutated("CHUNK_MAX_BYTES = 16384", "CHUNK_MAX_BYTES = 32768")
-    assert vault_contract.compare(RUNNER_SOURCE, other) == ["CHUNK_MAX_BYTES"]
+    assert sync_contract.compare(RUNNER_SOURCE, other) == ["CHUNK_MAX_BYTES"]
 
 
 def test_a_changed_function_signature_is_drift():
@@ -109,7 +113,7 @@ def test_a_changed_function_signature_is_drift():
     there."""
     other = _mutated("def _appended(existing_content, content, after_marker):",
                      "def _appended(existing_content, content, after_marker=''):")
-    assert vault_contract.compare(RUNNER_SOURCE, other) == ["_appended"]
+    assert sync_contract.compare(RUNNER_SOURCE, other) == ["_appended"]
 
 
 def test_a_changed_function_body_is_drift():
@@ -118,7 +122,7 @@ def test_a_changed_function_body_is_drift():
     repo's review rubric, so both are here and each mutates what it says."""
     other = _mutated("            if line.strip() == after_marker.strip():",
                      "            if line.strip().startswith(after_marker.strip()):")
-    assert vault_contract.compare(RUNNER_SOURCE, other) == ["_appended"]
+    assert sync_contract.compare(RUNNER_SOURCE, other) == ["_appended"]
 
 
 def test_a_reworded_comment_or_docstring_is_not_drift():
@@ -128,7 +132,7 @@ def test_a_reworded_comment_or_docstring_is_not_drift():
     other = _mutated(
         "# Obsidian LiveSync's own bookkeeping docs",
         "# Wholly different words about the same tuple, added by one repo")
-    assert vault_contract.compare(RUNNER_SOURCE, other) == []
+    assert sync_contract.compare(RUNNER_SOURCE, other) == []
 
     node = next(n for n in ast.parse(RUNNER_SOURCE).body
                 if isinstance(n, ast.FunctionDef) and n.name == "_split_chunks")
@@ -137,7 +141,7 @@ def test_a_reworded_comment_or_docstring_is_not_drift():
     opening = (ast.get_docstring(node) or "").splitlines()[0]
     assert opening, "test assumes _split_chunks is documented"
     redocumented = _mutated(opening, "A completely different explanation.")
-    assert vault_contract.compare(RUNNER_SOURCE, redocumented) == []
+    assert sync_contract.compare(RUNNER_SOURCE, redocumented) == []
 
 
 # --- routing behaviour ------------------------------------------------------
@@ -204,7 +208,7 @@ def _bridge_copy(tmp_path, source=None, old=None, new=None):
 
 
 def test_the_two_copies_route_every_probed_path_the_same_way(tmp_path):
-    assert vault_contract.compare_routing(
+    assert sync_contract.compare_routing(
         vault.__file__, _bridge_copy(tmp_path)) == []
 
 
@@ -217,13 +221,13 @@ def test_the_exact_gap_the_name_comparison_could_not_see(tmp_path):
         tmp_path,
         old="if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:",
         new="if lowered.startswith(NOVA_DB_FOLDERS):")
-    drifted = vault_contract.compare_routing(vault.__file__, other)
+    drifted = sync_contract.compare_routing(vault.__file__, other)
     questions = [q for q, _, _ in drifted]
     assert questions == [
         "routing on: db_for('projects/sokrates/projects/agora/journal-digest.md')"]
     _, runner_answer, bridge_answer = drifted[0]
-    assert runner_answer == vault_contract.PROBE_NOVA_DB
-    assert bridge_answer == vault_contract.PROBE_DB
+    assert runner_answer == sync_contract.PROBE_NOVA_DB
+    assert bridge_answer == sync_contract.PROBE_DB
 
 
 def test_a_prefix_that_straddles_both_databases_is_drift(tmp_path):
@@ -235,7 +239,7 @@ def test_a_prefix_that_straddles_both_databases_is_drift(tmp_path):
             return [self.db, self.nova_db]
 """,
         new="")
-    questions = [q for q, _, _ in vault_contract.compare_routing(vault.__file__, other)]
+    questions = [q for q, _, _ in sync_contract.compare_routing(vault.__file__, other)]
     assert "routing on: dbs_for_prefix('projects/')" in questions
     assert "routing on: dbs_for_prefix('')" in questions
 
@@ -246,7 +250,7 @@ def test_dropping_the_lowercase_is_drift(tmp_path):
     other = _bridge_copy(tmp_path,
                          old='lowered = (path or "").lower()',
                          new='lowered = (path or "")')
-    questions = [q for q, _, _ in vault_contract.compare_routing(vault.__file__, other)]
+    questions = [q for q, _, _ in sync_contract.compare_routing(vault.__file__, other)]
     assert questions == [
         "routing on: db_for('PROJECTS/Sokrates/Projects/Agora/NOVA/"
         "journal/191-cycle-169.md')"]
@@ -263,7 +267,7 @@ def test_the_routing_off_configuration_is_compared_too(tmp_path):
             return self.db
         lowered = (path or "").lower()""",
         new='        lowered = (path or "").lower()')
-    questions = [q for q, _, _ in vault_contract.compare_routing(vault.__file__, other)]
+    questions = [q for q, _, _ in sync_contract.compare_routing(vault.__file__, other)]
     assert questions, "the routing-off pass reported nothing"
     assert all(q.startswith("routing off:") for q in questions), questions
 
@@ -274,8 +278,8 @@ def test_a_copy_with_no_router_is_an_error_not_agreement(tmp_path):
     renamed function read as two copies agreeing."""
     other = _bridge_copy(tmp_path, old="    def db_for(self, path):",
                          new="    def db_for_path(self, path):")
-    with pytest.raises(vault_contract.ContractRouterMissing):
-        vault_contract.compare_routing(vault.__file__, other)
+    with pytest.raises(sync_contract.ContractRouterMissing):
+        sync_contract.compare_routing(vault.__file__, other)
 
 
 def test_two_copies_agreeing_on_a_database_neither_was_given_is_an_error():
@@ -286,16 +290,16 @@ def test_two_copies_agreeing_on_a_database_neither_was_given_is_an_error():
     reproducing it through two files means breaking both of them the same
     way, which is the assumption under test."""
     agreed = {"db_for('x')": "obsidian"}
-    with pytest.raises(vault_contract.ContractRouterMissing) as caught:
-        vault_contract._check_the_probe_reached_both(
-            agreed, vault_contract.PROBE_DB, vault_contract.PROBE_NOVA_DB)
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract._check_the_probe_reached_both(
+            agreed, sync_contract.PROBE_DB, sync_contract.PROBE_NOVA_DB)
     assert "obsidian" in str(caught.value)
 
     # And it stays quiet on an answer that was configured, or the test above
     # only shows that it raises on everything.
-    vault_contract._check_the_probe_reached_both(
-        {"db_for('x')": vault_contract.PROBE_NOVA_DB},
-        vault_contract.PROBE_DB, vault_contract.PROBE_NOVA_DB)
+    sync_contract._check_the_probe_reached_both(
+        {"db_for('x')": sync_contract.PROBE_NOVA_DB},
+        sync_contract.PROBE_DB, sync_contract.PROBE_NOVA_DB)
 
 
 def test_a_difference_is_reported_as_drift_rather_than_as_incomparable(tmp_path):
@@ -306,7 +310,7 @@ def test_a_difference_is_reported_as_drift_rather_than_as_incomparable(tmp_path)
     other = _bridge_copy(tmp_path,
                          old="        return self.nova_db",
                          new='        return "somewhere-else"')
-    drifted = vault_contract.compare_routing(vault.__file__, other)
+    drifted = sync_contract.compare_routing(vault.__file__, other)
     assert any(a == "somewhere-else" or a == ["somewhere-else"]
                for _, _, a in drifted), drifted
 
@@ -321,7 +325,7 @@ def restored_config():
     """
     from agora_runner import config
 
-    saved = {k: os.environ.get(k) for k in vault_contract._PROBE_ENV}
+    saved = {k: os.environ.get(k) for k in sync_contract._PROBE_ENV}
     try:
         yield config
     finally:
@@ -357,13 +361,13 @@ def test_the_comparison_puts_the_process_back_how_it_found_it(
     importlib.reload(restored_config)
     assert restored_config.COUCHDB_DB == SENTINEL_DB, "the sentinel never took"
 
-    vault_contract.compare_routing(vault.__file__, _bridge_copy(tmp_path))
+    sync_contract.compare_routing(vault.__file__, _bridge_copy(tmp_path))
 
     assert os.environ["COUCHDB_DB"] == SENTINEL_DB
     assert "COUCHDB_NOVA_DB" not in os.environ
     assert restored_config.COUCHDB_DB == SENTINEL_DB
     assert restored_config.COUCHDB_NOVA_DB == ""
-    assert not set(vault_contract._PROBE_MODULES) & set(sys.modules)
+    assert not set(sync_contract._PROBE_MODULES) & set(sys.modules)
 
 
 def test_the_process_is_put_back_even_when_the_comparison_raises(
@@ -376,8 +380,8 @@ def test_the_process_is_put_back_even_when_the_comparison_raises(
 
     broken = _bridge_copy(tmp_path, old="    def db_for(self, path):",
                           new="    def db_for_path(self, path):")
-    with pytest.raises(vault_contract.ContractRouterMissing):
-        vault_contract.compare_routing(vault.__file__, broken)
+    with pytest.raises(sync_contract.ContractRouterMissing):
+        sync_contract.compare_routing(vault.__file__, broken)
 
     assert os.environ["COUCHDB_DB"] == SENTINEL_DB
     assert restored_config.COUCHDB_DB == SENTINEL_DB
@@ -435,7 +439,7 @@ def test_real_drift_is_not_masked_by_the_probe_guard(tmp_path):
         old="if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:",
         new="if lowered.startswith(NOVA_DB_FOLDERS):")
 
-    drifted = vault_contract.compare_routing(runner, bridge)
+    drifted = sync_contract.compare_routing(runner, bridge)
 
     questions = [q for q, _, _ in drifted]
     assert questions == [
@@ -456,6 +460,122 @@ def test_the_guard_still_fires_when_there_is_no_drift_to_report(tmp_path):
         '        lowered = (path or "").lower()\n',
         '        lowered = (path or "").lower()\n' + _STRAY_BRIDGE, 1))
 
-    with pytest.raises(vault_contract.ContractRouterMissing) as caught:
-        vault_contract.compare_routing(runner, bridge)
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract.compare_routing(runner, bridge)
     assert "obsidian" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# The redaction pair. Same shape as above: every test expecting silence is
+# paired with one expecting noise, over the same input.
+# ---------------------------------------------------------------------------
+
+REDACT_SOURCE = open(redact.__file__, encoding="utf-8").read()
+
+
+def _redact_copy(tmp_path, old=None, new=None, name="redact_copy.py"):
+    """A second copy of redact() on disk, optionally mutated.
+
+    The real runner source rather than a stub, for the reason `_bridge_copy`
+    gives: a stub that only defines `redact` is the double that agrees with
+    whatever it is handed. The bridge's copy lives in another repository and
+    is compared in CI.
+    """
+    source = REDACT_SOURCE
+    if old is not None:
+        assert old in source, "mutation target %r is gone; fix this test" % (old,)
+        source = source.replace(old, new, 1)
+    path = tmp_path / name
+    path.write_text(source, encoding="utf-8")
+    return str(path)
+
+
+def test_two_identical_copies_redact_every_probe_the_same_way(tmp_path):
+    assert sync_contract.compare_redaction(
+        redact.__file__, _redact_copy(tmp_path)) == []
+
+
+def test_a_pattern_dropped_from_one_copy_is_drift(tmp_path):
+    """The realistic miss: a fix widens one copy's patterns and not the
+    other's. Here the JSON-quoted name goes back to how it was written
+    before Cycle 170, in one copy only."""
+    other = _redact_copy(tmp_path,
+                         old=r'r"(\"?\s*[=:]\s*\"?)"',
+                         new=r'r"(\s*[=:]\s*\"?)"')
+    drifted = sync_contract.compare_redaction(redact.__file__, other)
+    labels = [label for label, _, _ in drifted]
+    assert "named value, quoted json" in labels, labels
+    # Named, not `drifted[0]`. Only one probe drifts under this mutation
+    # today, so indexing would pass -- and would silently start checking a
+    # different probe's answers the moment another JSON-shaped probe is
+    # added to the table.
+    _, left_answer, right_answer = [
+        d for d in drifted if d[0] == "named value, quoted json"][0]
+    assert "[redacted:" in left_answer
+    assert "[redacted:" not in right_answer
+
+
+def test_a_label_reworded_in_one_copy_is_drift(tmp_path):
+    """The marker is what Edvard reads, so the two feeds saying different
+    words for the same removal is a real difference, not cosmetics."""
+    other = _redact_copy(tmp_path, old='("aws key id"', new='("aws access key"')
+    labels = [label for label, _, _ in
+              sync_contract.compare_redaction(redact.__file__, other)]
+    assert "aws access key id" in labels, labels
+
+
+def test_a_copy_with_no_redact_is_an_error_not_agreement(tmp_path):
+    """Same reasoning as ContractRouterMissing: a filter that cannot be
+    found has not been shown to agree with anything."""
+    other = _redact_copy(tmp_path, old="def redact(text):", new="def scrub(text):")
+    with pytest.raises(sync_contract.ContractRedactorMissing):
+        sync_contract.compare_redaction(redact.__file__, other)
+
+
+def test_two_copies_that_both_stopped_redacting_is_an_error(tmp_path):
+    """The guard that makes this comparison evidence rather than decoration.
+
+    Both copies pass everything through, so every probe matches and the
+    difference list is empty -- which is exactly the clean run a credential
+    filter must not be able to produce by doing nothing.
+    """
+    off = "    return text\n    if not isinstance(text, str) or not text:"
+    a = _redact_copy(tmp_path,
+                     old="    if not isinstance(text, str) or not text:",
+                     new=off, name="a.py")
+    b = _redact_copy(tmp_path,
+                     old="    if not isinstance(text, str) or not text:",
+                     new=off, name="b.py")
+    with pytest.raises(sync_contract.ContractRedactorMissing) as caught:
+        sync_contract.compare_redaction(a, b)
+    assert "unchanged" in str(caught.value)
+
+
+def test_two_copies_that_both_redact_everything_is_an_error(tmp_path):
+    """The other direction, and the one Edvard's keep-everything rule is
+    about: a filter that eats ordinary prose also agrees with itself."""
+    everything = ('    if not isinstance(text, str) or not text:\n'
+                  '        return text\n'
+                  '    return "[redacted: value]"\n'
+                  '    if False:')
+    a = _redact_copy(tmp_path,
+                     old="    if not isinstance(text, str) or not text:",
+                     new=everything, name="a.py")
+    b = _redact_copy(tmp_path,
+                     old="    if not isinstance(text, str) or not text:",
+                     new=everything, name="b.py")
+    with pytest.raises(sync_contract.ContractRedactorMissing) as caught:
+        sync_contract.compare_redaction(a, b)
+    assert "over-redacting" in str(caught.value)
+
+
+def test_every_probe_that_claims_to_be_a_credential_is_one(tmp_path):
+    """The table itself, checked against the live filter.
+
+    A `must_change` probe that the real redact() does not touch would make
+    the guard above fire on every run and the next cycle would relax the
+    guard. This is what keeps the table honest instead.
+    """
+    for label, text, must_change in sync_contract.REDACTION_PROBES:
+        out = redact.redact(text)
+        assert (out != text) == must_change, label

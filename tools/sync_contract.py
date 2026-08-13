@@ -1,12 +1,27 @@
-"""Compares the part of the two vault clients that has to agree.
+"""Compares the parts of this repo's hand-synced twins that have to agree.
+
+Two files here have a second hand-written copy in agora-claude-bridge, in a
+different pod with no common dependency, deliberately not shared as a
+package. Nothing detected drift between either pair until Cycle 168, and
+Cycles 136-142, 148, 151 and 167 each wrote the same vault fix into both by
+hand. A drift test has been in `nova/resources/ideas.md` since Cycle 137 and
+this is it. `PAIRS` at the bottom of this file is the list; the CLI takes the
+two repository roots and looks the paths up there, so adding the third pair
+(the CI workflows) is a table entry rather than a new argument.
+
+The two pairs are checked in completely different ways, because they are
+different shapes of problem, and the second one is the cheap one:
+
+  * the **vault clients** are stateful classes-or-modules configured out of
+    the environment, so they get a syntax comparison of the names that must
+    match plus a driven comparison of the routing decisions -- see below;
+  * **redaction** is a pure function of one string, so it needs no
+    configuration at all. `compare_redaction` puts one table of
+    credential-shaped strings through both copies and compares the output.
 
 `agora_runner/vault.py` here and `bridge/vault_tool.py` in
 agora-claude-bridge are separate hand-written copies of one client, talking
-to one CouchDB. They are deliberately not a shared package -- the two run in
-different pods with no common dependency -- so nothing has ever detected
-drift between them, and Cycles 136-142, 148, 151 and 167 each wrote the same
-fix into both by hand. A drift test has been in `nova/resources/ideas.md`
-since Cycle 137 and this is it.
+to one CouchDB.
 
 Most of the two files may differ and should: one is a library the runner
 imports, the other is a CLI with a `VaultClient` class and argv parsing.
@@ -293,7 +308,8 @@ PROBE_PREFIXES = (
 # a dozen of them import.
 _PROBE_ENV = ("COUCHDB_DB", "COUCHDB_NOVA_DB",
               "CDB_BASE", "CDB_USER", "CDB_PASS", "CDB_DB", "CDB_NOVA_DB")
-_PROBE_MODULES = ("_vault_contract_runner", "_vault_contract_bridge")
+_PROBE_MODULES = ("_sync_contract_runner", "_sync_contract_bridge",
+                  "_sync_contract_runner_redact", "_sync_contract_bridge_redact")
 
 
 @contextlib.contextmanager
@@ -341,6 +357,16 @@ class ContractRouterMissing(LookupError):
 
 
 def _load_module(path, name):
+    """The file at `path`, imported under `name`.
+
+    The `spec is None` guard below does not cover a path that simply is not
+    there: `spec_from_file_location` happily builds a spec for a file that
+    does not exist, and the failure only surfaces from `exec_module` as a
+    bare `FileNotFoundError`. So a repo that moved `redact.py` produced a
+    Python traceback in the CI log rather than the exit code 2 this tool
+    documents. Second reader on #154; the author had hit the same traceback
+    by hand ten minutes earlier and read past it.
+    """
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ContractRouterMissing("cannot import %s" % (path,))
@@ -348,7 +374,11 @@ def _load_module(path, name):
     # Registered before exec so a copy that imports itself by name resolves,
     # and so `importlib.reload` has something to work with.
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except OSError as exc:
+        sys.modules.pop(name, None)
+        raise ContractRouterMissing("cannot read %s: %s" % (path, exc)) from exc
     return module
 
 
@@ -363,7 +393,7 @@ def _runner_router(path, db, nova_db):
     os.environ["COUCHDB_DB"] = db
     os.environ["COUCHDB_NOVA_DB"] = nova_db
     importlib.reload(importlib.import_module("agora_runner.config"))
-    module = _load_module(path, "_vault_contract_runner")
+    module = _load_module(path, "_sync_contract_runner")
     try:
         return module.db_for, module.dbs_for_prefix
     except AttributeError as exc:
@@ -386,7 +416,7 @@ def _bridge_router(path, db, nova_db):
         "CDB_DB": db,
         "CDB_NOVA_DB": nova_db,
     })
-    module = _load_module(path, "_vault_contract_bridge")
+    module = _load_module(path, "_sync_contract_bridge")
     client_class = getattr(module, "VaultClient", None)
     if client_class is None:
         raise ContractRouterMissing("%s: no VaultClient" % (path,))
@@ -448,7 +478,7 @@ def compare_routing(runner_path, bridge_path):
         for db, nova_db in ROUTING_CONFIGS:
             runner = _runner_router(runner_path, db, nova_db)
             bridge = _bridge_router(bridge_path, db, nova_db)
-            paths = tuple(sys.modules["_vault_contract_runner"].HEALTH_PROBE_PATHS)
+            paths = tuple(sys.modules["_sync_contract_runner"].HEALTH_PROBE_PATHS)
             paths += EXTRA_PROBE_PATHS
             left = _routing_answers(*runner, paths)
             right = _routing_answers(*bridge, paths)
@@ -473,10 +503,149 @@ def compare_routing(runner_path, bridge_path):
     return drifted
 
 
+# ---------------------------------------------------------------------------
+# Redaction: the second hand-synced pair, and a pure function of its input.
+# ---------------------------------------------------------------------------
+
+# (label, text, must_change). One entry per pattern family in `_PATTERNS`,
+# plus the cases that must come back untouched. None of these are real: every
+# secret-shaped one is the right shape and the wrong bytes.
+#
+# `must_change` is what stops this comparison being decoration, and it is the
+# same problem `_check_the_probe_reached_both` solves for routing. Agreement
+# is free to a degenerate function: two copies that both stopped redacting
+# agree on every line of this table, and so do two that redact everything.
+# One direction is a leaked credential and the other is Edvard's standing
+# rule that nothing is thrown away to make the output tidier. Both are
+# checked, and only when nothing drifted -- a real difference is reported as
+# itself rather than masked by an instrumentation error.
+REDACTION_PROBES = (
+    ("anthropic oauth token",
+     "auth: sk-ant-oat01-Zx9Kq2Lm4Np7Rt0Vw3Yb6Ec8Hj1Ug5Sd", True),
+    ("github classic pat",
+     "cloning with ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5 now", True),
+    ("github fine-grained pat",
+     "GITHUB=github_pat_11ABCDEFG0abcdefghij_KLMNOPQRSTUVWX", True),
+    # Built from pieces, following the same comment in
+    # tests/test_agora_persona_runner.py: gitleaks' own jwt rule keys on a
+    # contiguous `eyJ...`, so a literal one fails this repo's secret scan in
+    # the file whose whole subject is not leaking secrets. The scanner needs
+    # contiguous text; redact() does not.
+    ("jwt",
+     "cookie=eyJhbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiJub3ZhIn0"
+     + ".QWJjRGVmR2hpSmts", True),
+    ("aws access key id", "id AKIAIOSFODNN7EXAMPLE here", True),
+    ("aws session key id", "id ASIAIOSFODNN7EXAMPLE here", True),
+    ("private key block",
+     "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNza\nAAAA\n"
+     "-----END OPENSSH PRIVATE KEY-----", True),
+    ("named value, bare",
+     "ANTHROPIC_API_KEY=notarealkeyvalue1234", True),
+    ("named value, quoted json",
+     '{"couchdb_password": "notarealpassword", "db": "nova"}', True),
+    ("named value, yaml colon",
+     "  CDB_PASS: notarealpassword1234\n  CDB_USER: nova", True),
+    # Two patterns over one string, in order, which is where the label got
+    # rewritten by the pass after the one that earned it. The probe cannot
+    # assert *which* label survives -- it compares two copies, it does not
+    # know what is right -- but it does hold them to the same answer, and
+    # `must_change` holds them to giving one at all.
+    ("credential inside a name the value pattern also matches",
+     '{"accessToken": "sk-ant-oat01-Zx9Kq2Lm4Np7Rt0Vw3Yb6Ec8Hj1Ug5Sd"}', True),
+    # The pass-through half. A cycle reading these should be able to say why
+    # each one is not a credential without running the regexes.
+    ("ordinary prose",
+     "The password rotation is documented in decisions/adr-0012.md.", False),
+    ("named value below the length floor", "TOKEN = short", False),
+    ("a word that is only a topic", "secrets, passwords and api keys", False),
+    ("empty string", "", False),
+    ("not a string at all", None, False),
+    ("also not a string", 42, False),
+)
+
+
+class ContractRedactorMissing(LookupError):
+    """A copy does not expose a `redact` this tool can drive.
+
+    Same reasoning as `ContractNameMissing` and `ContractRouterMissing`: a
+    filter that cannot be found is not a filter that agrees.
+    """
+
+
+def _redactor(path, name):
+    module = _load_module(path, name)
+    fn = getattr(module, "redact", None)
+    if not callable(fn):
+        raise ContractRedactorMissing("%s: no callable redact()" % (path,))
+    return fn
+
+
+def _check_the_probe_still_bites(agreed):
+    """Raise if the two copies agree by not doing the job at all.
+
+    `agreed` is `{label: (probe text, shared answer)}`. A `must_change` probe
+    that came back byte-identical means both copies passed a credential
+    through; a pass-through probe that came back altered means both copies
+    are eating material that is not a credential. Either way the comparison
+    above found nothing, and reporting that as "in sync" would be true and
+    useless.
+
+    It states what it observed and not why, for the same reason the routing
+    guard does: a filter that stopped filtering has more than one cause and
+    this tool cannot tell them apart from here.
+    """
+    for label, must_change, text, answer in agreed:
+        if must_change and answer == text:
+            raise ContractRedactorMissing(
+                "both copies returned the %s probe unchanged (%r). Two copies "
+                "agreeing that a credential needs no redaction is not evidence "
+                "that they agree -- refusing to report a comparison in which "
+                "the filter under test did nothing" % (label, text))
+        if not must_change and answer != text:
+            raise ContractRedactorMissing(
+                "both copies altered the %s probe, which is not credential-"
+                "shaped: %r became %r. Redaction is the one exception to "
+                "keeping output whole, so both copies over-redacting is a "
+                "finding, not a clean run" % (label, text, answer))
+
+
+def compare_redaction(runner_path, bridge_path):
+    """Probes the two copies answer differently, as (label, left, right).
+
+    Empty means every string in `REDACTION_PROBES` came out of both copies
+    byte-identical. Behaviour rather than syntax, like `compare_routing` --
+    but unlike routing this needs no configuration, because `redact` reads
+    nothing but its argument.
+    """
+    with _process_state_restored():
+        left = _redactor(runner_path, "_sync_contract_runner_redact")
+        right = _redactor(bridge_path, "_sync_contract_bridge_redact")
+        drifted = []
+        agreed = []
+        for label, text, must_change in REDACTION_PROBES:
+            left_answer = left(text)
+            right_answer = right(text)
+            if left_answer != right_answer:
+                drifted.append((label, left_answer, right_answer))
+            else:
+                agreed.append((label, must_change, text, left_answer))
+    if not drifted:
+        _check_the_probe_still_bites(agreed)
+    return drifted
+
+
+# (label, path inside the runner, path inside the bridge). The CLI takes the
+# two repository roots and joins these, so a new pair is one line here.
+PAIRS = (
+    ("vault client", "agora_runner/vault.py", "bridge/vault_tool.py"),
+    ("redaction", "agora_runner/redact.py", "bridge/redact.py"),
+)
+
+
 _ADVICE = (
     "\nThese two files are hand-synced copies of one client against one\n"
     "database. Write the change into both, or move the name out of\n"
-    "CONTRACT_CONSTANTS/CONTRACT_FUNCTIONS in tools/vault_contract.py\n"
+    "CONTRACT_CONSTANTS/CONTRACT_FUNCTIONS in tools/sync_contract.py\n"
     "and say in the journal why it is allowed to differ."
 )
 
@@ -485,7 +654,7 @@ _ROUTING_ADVICE = (
     "\nThe two copies sent the same path to different databases. That is a\n"
     "file being read from, or written into, the wrong store -- not a\n"
     "formatting difference. Fix the copy that is wrong; there is no\n"
-    "table in tools/vault_contract.py to relax, because both processes\n"
+    "table in tools/sync_contract.py to relax, because both processes\n"
     "have to agree on this to share one CouchDB at all."
 )
 
@@ -498,17 +667,23 @@ def _report(name, left_label, left, right_label, right):
     ])
 
 
-def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if len(argv) != 2:
-        print("usage: vault_contract.py <runner vault.py> <bridge vault_tool.py>",
-              file=sys.stderr)
-        return 2
-    left_path, right_path = argv
+_REDACTION_ADVICE = (
+    "\nThe two copies of redact() answered the same string differently. One\n"
+    "of them is publishing something the other strips, or stripping\n"
+    "something the other keeps. There is no table in tools/sync_contract.py\n"
+    "to relax: both processes publish into the same conversation feed, so\n"
+    "the weaker filter is the one that decides what Edvard sees."
+)
+
+
+def check_vault_pair(left_path, right_path):
+    """Exit code for the vault client pair: 0 in sync, 1 drift, 2 unreadable."""
     try:
         left = extract_contract(open(left_path, encoding="utf-8").read())
         right = extract_contract(open(right_path, encoding="utf-8").read())
-    except ContractNameMissing as exc:
+    # OSError as well: a copy that moved is a legible "cannot read", not a
+    # traceback in the CI log. Same reasoning as `_load_module`.
+    except (ContractNameMissing, OSError) as exc:
         print("vault contract: %s" % exc, file=sys.stderr)
         return 2
     drifted = sorted(n for n in left if left[n] != right[n])
@@ -547,6 +722,55 @@ def main(argv=None):
         ]), file=sys.stderr)
     print(_ROUTING_ADVICE, file=sys.stderr)
     return 1
+
+
+def check_redaction_pair(left_path, right_path):
+    """Exit code for the redaction pair: 0 in sync, 1 drift, 2 undrivable."""
+    try:
+        drifted = compare_redaction(left_path, right_path)
+    # ContractRouterMissing too: `_load_module` is shared, so an unreadable
+    # path arrives as that one even on this pair.
+    except (ContractRedactorMissing, ContractRouterMissing) as exc:
+        print("redaction: %s" % exc, file=sys.stderr)
+        return 2
+    if not drifted:
+        print("redaction: %d probes redacted identically in both copies"
+              % len(REDACTION_PROBES))
+        return 0
+    print("\nredaction: %d probe(s) answered differently between\n"
+          "  %s\n  %s\n" % (len(drifted), left_path, right_path), file=sys.stderr)
+    for label, left_answer, right_answer in drifted:
+        print("\n".join([
+            "  %s" % label,
+            "    %s: %r" % (left_path, left_answer),
+            "    %s: %r" % (right_path, right_answer),
+        ]), file=sys.stderr)
+    print(_REDACTION_ADVICE, file=sys.stderr)
+    return 1
+
+
+_CHECKERS = {
+    "vault client": check_vault_pair,
+    "redaction": check_redaction_pair,
+}
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) != 2:
+        print("usage: sync_contract.py <runner repo root> <bridge repo root>",
+              file=sys.stderr)
+        return 2
+    runner_root, bridge_root = argv
+    worst = 0
+    for label, runner_rel, bridge_rel in PAIRS:
+        left_path = os.path.join(runner_root, runner_rel)
+        right_path = os.path.join(bridge_root, bridge_rel)
+        # Every pair is run even after one fails. They are independent files
+        # and a cycle that has to fix two of them wants to know that now, not
+        # after a second red build.
+        worst = max(worst, _CHECKERS[label](left_path, right_path))
+    return worst
 
 
 if __name__ == "__main__":

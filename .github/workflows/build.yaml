@@ -106,7 +106,7 @@ jobs:
   # agora_runner/vault.py and bridge/vault_tool.py in agora-claude-bridge are
   # two hand-written copies of one client against one CouchDB. Cycles 136-142,
   # 148, 151 and 167 each wrote the same fix into both by hand, and nothing
-  # has ever noticed when one of them was missed. tools/vault_contract.py
+  # has ever noticed when one of them was missed. tools/sync_contract.py
   # compares the sixteen names that must agree -- routing, chunking, append
   # placement -- ignoring the prose around them, which differs by design.
   #
@@ -136,7 +136,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m tools.vault_contract agora_runner/vault.py .bridge/bridge/vault_tool.py
+      - run: python -m tools.sync_contract . .bridge
 
   build-push:
     if: github.ref == 'refs/heads/main'
