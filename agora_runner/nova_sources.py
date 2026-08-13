@@ -57,7 +57,7 @@ def journal_markdown(with_times=False):
     # Always an entries body, never a whole `journal.md`. The folder is
     # one already; the archive gets its preamble cut here, so that both
     # branches return the same kind of thing and every caller can parse
-    # with `strip_header=False`. Leaving the archive whole would mean the
+    # with `parse_journal`. Leaving the archive whole would mean the
     # return type depended on which branch ran, and the caller would have
     # to strip a preamble that is only sometimes there -- which is the
     # guess that made an entry quoting `## Entries` eat the newer cards.

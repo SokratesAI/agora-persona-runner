@@ -24,6 +24,7 @@ import importlib
 import inspect
 import io
 import json
+import pathlib
 import queue
 import time
 import os
@@ -50,6 +51,7 @@ from agora_runner.nova_journal import (
     parse_digest,
     parse_heading,
     parse_journal,
+    parse_journal_file,
     parse_pr_refs,
     render_blocks,
     render_inline,
@@ -113,7 +115,7 @@ def digest_md():
 
 @pytest.fixture(scope="module")
 def entries(journal_md):
-    return parse_journal(journal_md)
+    return parse_journal_file(journal_md)
 
 
 # --- headings -------------------------------------------------------------
@@ -185,7 +187,53 @@ def test_a_heading_in_the_preamble_does_not_become_an_entry():
         "# Journal\n\nWrite entries like:\n\n### 2026-01-01 00:00 (Oslo) — Cycle 0\n\n"
         "## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\nReal entry."
     )
-    assert [e["cycle"] for e in parse_journal(markdown)] == [1]
+    assert [e["cycle"] for e in parse_journal_file(markdown)] == [1]
+
+
+def test_the_two_parsers_disagree_on_purpose_and_the_hourly_one_never_cuts():
+    """One text, two answers, and which one is right is a fact about where
+    the text came from rather than anything in it.
+
+    This is the whole reason there are two functions instead of one with a
+    flag. The body below is an entries body -- what the folder assembles
+    and what every hourly caller holds -- whose newest entry quotes the
+    captures marker, which `prompt.md` step 6 tells every cycle to write
+    about. Read as a whole `journal.md` it loses that entry *and* every
+    entry above it, silently; read as what it is, nothing is lost.
+
+    Asserting both halves is deliberate: pinning only `parse_journal`
+    would stay green if `parse_journal_file` were quietly made identical
+    to it, which would take the migration's own verification with it."""
+    body = (
+        "### Cycle 3\n\nNewest.\n\n"
+        "### Cycle 2\n\nI appended my captures under:\n\n## Entries\n\nis the marker.\n\n"
+        "### Cycle 1\n\nOldest.\n"
+    )
+    assert [e["cycle"] for e in parse_journal(body)] == [3, 2, 1]
+    assert [e["cycle"] for e in parse_journal_file(body)] == [1]
+
+
+def test_only_the_migration_reads_a_whole_journal_file():
+    """The guard on the misdeclaration this split exists to prevent.
+
+    `parse_journal_file` cuts at the captures marker, which is correct for
+    exactly one source -- the frozen `journal.md` -- and destructive for
+    every other. Nothing that runs every hour holds one of those, so the
+    honest invariant is not "call it carefully", it is "there is one
+    caller". A new one is a design decision that should have to delete
+    this test, rather than a line that reads fine in review.
+
+    Cycle 154 threaded a `strip_header` flag through instead, and the
+    hazard it left behind was measured here at Cycle 156: 35 call sites in
+    this suite, not one of them passing the flag, and 34 holding an
+    entries body. The tests modelled the wrong combination as normal,
+    which is where a future caller would have copied it from."""
+    root = pathlib.Path(__file__).resolve().parent.parent
+    callers = set()
+    for path in list((root / "agora_runner").rglob("*.py")) + list((root / "tools").rglob("*.py")):
+        if "parse_journal_file" in path.read_text(encoding="utf-8"):
+            callers.add(path.relative_to(root).as_posix())
+    assert callers == {"agora_runner/nova_journal.py", "tools/split_journal.py"}
 
 
 def test_footer_is_lifted_out_of_the_body(entries):
@@ -201,14 +249,14 @@ def test_a_rule_inside_an_entry_is_not_mistaken_for_the_footer():
         "Opening paragraph.\n\n---\n\nA section after a horizontal rule, "
         "which is not the footer.\n\n---\nPR: #12 | Outcome: shipped"
     )
-    entry = parse_journal("## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\n" + body)[0]
+    entry = parse_journal_file("## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\n" + body)[0]
     assert entry["pr"] == "#12"
     assert entry["outcome"] == "shipped"
     assert "A section after a horizontal rule" in entry["body"]
 
 
 def test_an_entry_with_no_footer_still_parses():
-    entry = parse_journal("## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\nJust prose.")[0]
+    entry = parse_journal_file("## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\nJust prose.")[0]
     assert entry["pr"] == ""
     assert entry["outcome"] == ""
     assert entry["body"] == "Just prose."
@@ -220,7 +268,7 @@ def test_a_footer_without_its_rule_still_parses():
     Its card showed no PR and no outcome for a cycle that merged #88.
     """
     body = "The account of the cycle.\n\nReviewer: 2 findings, 2 acted on\nPR: #88 | Outcome: merged"
-    entry = parse_journal("## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\n" + body)[0]
+    entry = parse_journal_file("## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\n" + body)[0]
     assert entry["pr"] == "#88"
     assert entry["outcome"] == "merged"
     assert "PR: #88" not in entry["body"]
@@ -1186,7 +1234,7 @@ def test_no_pr_field_in_the_live_journal_loses_a_character(journal_md):
     """The spans must reassemble the field exactly. This is the invariant
     that makes "leave it as is" (Edvard's words) checkable rather than
     asserted -- linkifying is allowed to add structure and never to edit."""
-    fields = {e["pr"] for e in parse_journal(journal_md) if e["pr"]}
+    fields = {e["pr"] for e in parse_journal_file(journal_md) if e["pr"]}
     assert fields
     for field in fields:
         assert "".join(s["text"] for s in parse_pr_refs(field)) == field
@@ -1435,7 +1483,7 @@ def test_every_entry_briefs_itself_for_the_cycles_with_no_digest_line():
     """The digest is rewritten every cycle and its older lines are dropped, so
     55 of the 68 live entries have none. Without an entry-level brief that is
     most of the feed collapsing to a row of dates, not a rare fallback."""
-    entries = parse_journal(_fixture("journal_two_entries.md"))
+    entries = parse_journal_file(_fixture("journal_two_entries.md"))
     assert entries
     for entry in entries:
         assert entry["briefSpans"], "every entry needs a brief of its own"
@@ -1569,7 +1617,7 @@ def _plan(markdown):
 
 
 def test_splitting_the_journal_finds_exactly_the_entries_the_parser_does(journal_md):
-    assert len(split_entries(journal_md)) == len(parse_journal(journal_md))
+    assert len(split_entries(journal_md)) == len(parse_journal_file(journal_md))
 
 
 def test_a_heading_in_the_preamble_is_not_split_out_as_an_entry():
@@ -1586,7 +1634,7 @@ def test_each_split_entry_is_the_original_text_verbatim(journal_md):
 
 
 def test_the_split_reassembles_into_an_identical_entry_list(journal_md):
-    assert parse_journal(assemble_entries(_plan(journal_md))) == parse_journal(journal_md)
+    assert parse_journal(assemble_entries(_plan(journal_md))) == parse_journal_file(journal_md)
 
 
 def test_the_oldest_entry_gets_sequence_one_so_numbers_never_shift(journal_md):
@@ -1810,7 +1858,7 @@ def test_the_real_hard_wrapped_footer_in_the_fixture_extracts_the_real_values(jo
     # wrong extraction moves both sides equally and it stays green. So the
     # concrete values are pinned here, against the real committed fixture
     # rather than against a shorter wrap I made up.
-    entries = parse_journal(journal_md)
+    entries = parse_journal_file(journal_md)
     first = [e for e in entries if e["title"].startswith("Edvard's first message")]
     assert len(first) == 1
     assert first[0]["pr"] == "#31"
@@ -1917,7 +1965,7 @@ def test_the_repair_reaches_the_frozen_archive_too_not_just_the_folder():
     # `test_the_split_reassembles_into_an_identical_entry_list` is for,
     # and it caught the divergence.
     markdown = "## Entries\n\n### Cycle 65\n\n**PR: #1 | Outcome: merged**\n\nBody."
-    entries = parse_journal(markdown)
+    entries = parse_journal_file(markdown)
     assert entries[0]["pr"] == "#1"
     assert entries[0]["body"] == "Body."
 
