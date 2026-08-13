@@ -3274,3 +3274,71 @@ def test_only_the_window_the_reader_asked_for_is_ever_rendered():
             # deferral rather than a move of the same work onto the request.
             nova_site.journal_page(payload, limit=2, offset=0)
             assert render.call_count == len(page["entries"])
+
+
+# --- The eight-cycle report card (Edvard, comments board at cycle 156) ---
+
+
+REPORT_ENTRY = (
+    "### 2026-08-13 14:00 (Oslo) — Report · Cycles 149–156\n\n"
+    "Eight hours in plain language.\n\n"
+    "PR: none | Outcome: report\n"
+)
+
+
+def test_a_report_heading_is_parsed_as_a_report():
+    entry = nova_journal.parse_heading(
+        "2026-08-13 14:00 (Oslo) — Report · Cycles 149–156"
+    )
+    assert entry["kind"] == "report"
+    assert entry["cycle"] is None
+    assert entry["title"] == "Report · Cycles 149–156"
+
+
+def test_an_ordinary_cycle_heading_is_not_a_report():
+    entry = nova_journal.parse_heading("2026-08-13 07:20 (Oslo) — Cycle 157")
+    assert entry["kind"] == "cycle"
+
+
+def test_an_entry_merely_titled_report_is_still_a_cycle_card():
+    """The declaration is the whole segment, not a word inside it.
+
+    A cycle whose own entry is about the reports -- which is exactly what
+    the cycle that built them wrote -- must not turn its card purple. This
+    is the guard that makes reading the marker off a heading defensible at
+    all, so it is tested rather than assumed.
+    """
+    for heading in (
+        "2026-08-13 07:20 (Oslo) — Cycle 157 — Report · Cycles 149–156",
+        "2026-08-13 07:20 (Oslo) — Report on the last eight cycles",
+        "2026-08-13 07:20 (Oslo) — A Report · Cycles 149–156 card",
+        # The trailing anchor specifically. The three above all fail on the
+        # leading one, which `.match` supplies anyway -- so without this
+        # line the shape could be unanchored at the end and every test here
+        # would still pass. Found by mutation, not by reading it.
+        "2026-08-13 07:20 (Oslo) — Report · Cycles 149–156 and what broke",
+    ):
+        assert nova_journal.parse_heading(heading)["kind"] == "cycle", heading
+
+
+def test_a_report_card_gets_the_report_emoji_not_a_scored_one():
+    """A report quotes eight cycles' topics, so the scorer would pick one of
+    them at random. Two reports with different subject matter must still
+    carry the same emoji."""
+    entries = nova_journal.parse_journal(
+        REPORT_ENTRY
+        + "\n### 2026-08-13 06:00 (Oslo) — Report · Cycles 141–148\n\n"
+        + "The vault and the heartbeat and the pods and the quota.\n\n"
+        + "PR: none | Outcome: report\n"
+    )
+    assert [e["kind"] for e in entries] == ["report", "report"]
+    assert {e["emoji"] for e in entries} == {nova_journal.REPORT_EMOJI}
+
+
+def test_a_report_entry_still_carries_its_outcome_and_body():
+    """It is an ordinary journal document in every other respect -- it goes
+    through `lint_entry`, it gets a badge, and it has a brief."""
+    entry = nova_journal.parse_journal(REPORT_ENTRY)[0]
+    assert entry["outcome"] == "report"
+    assert entry["pr"] == "none"
+    assert "Eight hours in plain language." in entry["body"]
