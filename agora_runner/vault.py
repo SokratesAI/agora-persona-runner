@@ -718,11 +718,11 @@ def _doc_to_overwrite(doc_id, db=None):
     It raises rather than returning a sentinel because "absent" and
     "unreadable" already have a shared vocabulary on the read side, and the
     point of this fix is that they are one question with one answer. It is
-    caught at both write entry points rather than allowed to escape, because
-    the write contract is a string -- `vault_write_path` returning "written"
-    or "FAILED(...)" is what every caller branches on, and #148's reviewer
-    caught this exact function about to raise onto the bare thread that runs
-    every heartbeat.
+    caught by its single caller, `_vault_put_raw`, rather than allowed to
+    escape, because the write contract is a string -- `vault_write_path`
+    returning "written" or "FAILED(...)" is what every caller branches on,
+    and #148's reviewer caught this exact function about to raise onto the
+    bare thread that runs every heartbeat.
 
     What the old behaviour actually cost, in the two shapes it took:
 
