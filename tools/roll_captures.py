@@ -60,7 +60,7 @@ that is still load-bearing:
 import re
 import sys
 
-from agora_runner.md_sections import split_at_heading
+from agora_runner.md_sections import find_title, split_at_heading
 from agora_runner.nova_boards import parse_notes
 from tools import rolling
 from tools.rolling import RollError, RollSpec, join_bullets, split_bullets
@@ -99,10 +99,18 @@ def archive_title(live):
     `ideas-archive.md` is not one mistyped flag away. If the live file
     has no level-one heading there is nothing to derive from and no safe
     guess, so this refuses instead.
+
+    `find_title` rather than the first line starting with `"# "`: inside
+    YAML frontmatter that is a **comment**, not a heading, and it is legal
+    YAML that any of these hand-edited files could grow. Given one, the
+    old scan derived `# Nova's captures, newest first Archive` -- which a
+    first roll would write as a real archive title, and every roll after
+    it would refuse, having correctly failed to find that title in the
+    file it had just created.
     """
-    for line in live.split("\n"):
-        if line.startswith("# "):
-            return line.strip() + " Archive"
+    title = find_title(live)
+    if title:
+        return title + " Archive"
     raise RollError(
         "refusing to roll: the live file has no '# ' title, so the archive "
         "title would be a guess"

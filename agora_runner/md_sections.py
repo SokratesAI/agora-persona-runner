@@ -35,6 +35,11 @@ import re
 # neither is `### Cycle 12`.
 _SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
 
+# A level-one title line. The second character must be whitespace, so `##`
+# is not a title -- the two patterns partition the headings rather than
+# overlapping.
+_TITLE_RE = re.compile(r"^#[ \t]+(?P<name>.+?)[ \t]*$")
+
 _FENCE_RE = re.compile(r"^[ \t]*(?P<fence>```+|~~~+)")
 
 
@@ -101,6 +106,33 @@ def find_heading(lines, heading):
     for i, line in enumerate(lines):
         if i not in skip and _normalise(line) == wanted:
             return i
+    return None
+
+
+def find_title(text):
+    """The file's first real `# ` heading line, stripped, or None.
+
+    The `##` functions above are given the heading they are looking for;
+    this one is the other direction -- `roll_captures` derives an archive
+    title from whatever title the live file happens to carry, so it has
+    to *find* one rather than confirm one. It scanned for the first line
+    starting with `"# "`, which is the same substring search this module
+    exists to replace, one level up.
+
+    Measured, not imagined: `# ` at the start of a line inside YAML
+    frontmatter is a **comment**, which is legal and which several of
+    these files are one hand-edit away from carrying. Given a frontmatter
+    commented `# Nova's captures, newest first`, the old scan derived the
+    archive title `# Nova's captures, newest first Archive` -- so a first
+    roll would create a permanently mistitled archive and every roll
+    after it would refuse, having correctly failed to find that title in
+    the file it just wrote.
+    """
+    lines = text.split("\n")
+    skip = _skippable(lines)
+    for i, line in enumerate(lines):
+        if i not in skip and _TITLE_RE.match(line):
+            return line.strip()
     return None
 
 
