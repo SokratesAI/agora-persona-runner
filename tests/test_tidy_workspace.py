@@ -9,6 +9,7 @@ for deleting one.
 Every test runs against a `tmp_path`, never the real workspace.
 """
 import os
+import time
 
 import pytest
 
@@ -115,20 +116,44 @@ def test_a_directory_that_only_looks_like_an_archive_is_left_alone(workspace):
         assert (workspace / name).is_dir(), name
 
 
-def test_a_reviewer_worktree_is_removed(workspace):
+def test_an_old_reviewer_worktree_is_removed(workspace):
     """`review-rubric.md` says to make one every build cycle and to remove it
     afterwards; four were still on disk when this script was written, which
     is the measurement that says the manual step does not happen.
     """
     (workspace / "_review-c178").mkdir()
     (workspace / "_review-c178" / "checkout.py").write_text("x", encoding="utf-8")
+    old = time.time() - 24 * 3600
+    os.utime(workspace / "_review-c178", (old, old))
 
-    _, _, worktrees = tidy_workspace.tidy(
-        str(workspace), today="2026-08-14",
-        clone=str(workspace / "no-such-clone"))
+    _, _, worktrees = tidy_workspace.tidy(str(workspace), today="2026-08-14")
 
     assert worktrees == ["_review-c178"]
     assert not (workspace / "_review-c178").exists()
+
+
+def test_a_live_reviewer_worktree_is_left_alone(workspace):
+    """The finding that made this threshold exist, reproduced. While the
+    second reader on this very change was working, two `_review-c178*`
+    worktrees sat side by side -- one it was reading out of, one live at a
+    different commit for a different open PR in the same cycle. The first
+    version of this script would have force-removed both, and `--force`
+    bypasses git's own refusal to drop a worktree with uncommitted changes.
+
+    Age is what tells them apart without asking the caller to have timed the
+    run correctly, so this is the test the prose instruction could not be.
+    """
+    for name in ("_review-c178", "_review-c178-tidy"):
+        (workspace / name).mkdir()
+        (workspace / name / "checkout.py").write_text("x", encoding="utf-8")
+    old = time.time() - 24 * 3600
+    os.utime(workspace / "_review-c178", (old, old))
+
+    _, _, worktrees = tidy_workspace.tidy(str(workspace), today="2026-08-14")
+
+    assert worktrees == ["_review-c178"]
+    assert not (workspace / "_review-c178").exists()
+    assert (workspace / "_review-c178-tidy" / "checkout.py").exists()
 
 
 def test_a_worktree_git_refuses_to_remove_still_goes(workspace, monkeypatch):
@@ -139,17 +164,25 @@ def test_a_worktree_git_refuses_to_remove_still_goes(workspace, monkeypatch):
     because what is under test is what happens when it does nothing.
     """
     calls = []
-    monkeypatch.setattr(tidy_workspace.subprocess, "run",
-                        lambda *a, **k: calls.append(a[0]))
-    (workspace / "_review-c178").mkdir()
-    (workspace / "agora-persona-runner" / "worktrees").mkdir()
 
-    tidy_workspace.tidy(str(workspace), today="2026-08-14",
-                        clone=str(workspace / "agora-persona-runner"))
+    class _Refused:
+        returncode = 1
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run",
+                        lambda *a, **k: (calls.append(a[0]), _Refused())[1])
+    (workspace / "_review-c178").mkdir()
+    old = time.time() - 24 * 3600
+    os.utime(workspace / "_review-c178", (old, old))
+
+    tidy_workspace.tidy(str(workspace), today="2026-08-14")
 
     assert not (workspace / "_review-c178").exists()
     assert any("remove" in call for call in calls), calls
     assert any("prune" in call for call in calls), calls
+    # Every clone is offered it, because the worktree may have been made from
+    # any of them -- hardcoding one orphaned the registration for the rest.
+    offered = {call[2] for call in calls if "remove" in call}
+    assert len(offered) == len(tidy_workspace.clones(str(workspace))), offered
 
 
 def test_dry_run_changes_nothing(workspace):
@@ -157,6 +190,8 @@ def test_dry_run_changes_nothing(workspace):
     plan rather than a second implementation of it."""
     (workspace / "_scratch-archive-2026-08-01").mkdir()
     (workspace / "_review-c178").mkdir()
+    old = time.time() - 24 * 3600
+    os.utime(workspace / "_review-c178", (old, old))
     before = _names(workspace)
 
     archived, expired, worktrees = tidy_workspace.tidy(
