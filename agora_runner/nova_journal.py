@@ -1202,12 +1202,26 @@ def build_status(entries, known_cycles=None):
     per request in `nova_site.journal_page` instead. `lastWrittenAt` is
     the measured input it needs, carried as a fact rather than a
     judgement so both layers read one clock and one stamp.
+
+    **The newest document is not the newest cycle, and neither field may
+    assume it is.** Two things break that assumption and both are now
+    routine. A report (step 6c) is a document with no cycle number that
+    lands *after* the entry of the cycle that wrote it, so reading the
+    header off `entries[0]` puts `Outcome: report` and `PR: none` on the
+    front page three times a day -- the loop's own summary rendered as a
+    cycle that shipped nothing. And an addendum written after a later
+    cycle's entry carries the earlier number, so taking the first number
+    in document order walks the header backwards. `latest` therefore skips
+    reports, which also keeps its four fields describing one event rather
+    than splicing a time off one document and an outcome off another, and
+    the cycle number is the highest written rather than the newest.
     """
     from agora_runner.cycle_health import gaps_between
 
     dated = [e for e in entries if e["date"]]
     numbered = [e for e in entries if e["cycle"] is not None]
-    latest = entries[0] if entries else None
+    cycles = [e for e in entries if e.get("kind") != "report"]
+    latest = (cycles or entries or [None])[0]
     running_days = 0
     if dated:
         from datetime import date
@@ -1221,7 +1235,7 @@ def build_status(entries, known_cycles=None):
     written_at = _newest_written_at(entries)
 
     return {
-        "cycle": numbered[0]["cycle"] if numbered else None,
+        "cycle": max(e["cycle"] for e in numbered) if numbered else None,
         "lastWokeDate": latest["date"] if latest else "",
         "lastWokeTime": latest["time"] if latest else "",
         "lastPr": latest["pr"] if latest else "",

@@ -74,6 +74,41 @@ def test_an_entry_with_no_cycle_number_is_not_a_hole():
     assert build_status(parse_journal(markdown))["missingCycles"] == []
 
 
+def test_a_report_does_not_become_the_header():
+    """The header describes the last cycle, not the last document.
+
+    A report carries no cycle number and lands after the entry of the
+    cycle that wrote it, so the naive read puts `Outcome: report` and
+    `PR: none` on the front page at 06:00, 14:00 and 22:00 -- Nova's own
+    summary of eight cycles rendered as a cycle that shipped nothing.
+    """
+    markdown = (
+        "### 2026-08-13 14:00 (Oslo) — Report · Cycles 122–129\n\nEight cycles.\n\n"
+        "---\nPR: none | Outcome: report\n"
+        "### 2026-08-13 13:40 (Oslo) — Cycle 129\n\nBody.\n\n"
+        "---\nPR: #99 | Outcome: merged\n"
+    )
+    status = build_status(parse_journal(markdown))
+    assert (status["lastOutcome"], status["lastPr"]) == ("merged", "#99")
+    assert status["lastWokeTime"] == "13:40"
+
+
+def test_a_late_addendum_does_not_walk_the_cycle_number_backwards():
+    """`Cycle N` in the header is the highest written, not the newest filed.
+
+    An addendum to an earlier cycle is a normal document and it carries
+    that earlier number. Reading the first number in document order made
+    the front page announce a cycle the loop had already passed.
+    """
+    markdown = (
+        "### 2026-08-13 08:10 (Oslo) — Cycle 128, addendum\n\nBody.\n\n"
+        "---\nPR: none | Outcome: shipped\n"
+        "### 2026-08-13 07:50 (Oslo) — Cycle 129\n\nBody.\n\n"
+        "---\nPR: none | Outcome: merged\n"
+    )
+    assert build_status(parse_journal(markdown))["cycle"] == 129
+
+
 def test_the_page_and_the_self_check_cannot_disagree_about_a_hole():
     """One definition of "missing", read by both callers.
 
