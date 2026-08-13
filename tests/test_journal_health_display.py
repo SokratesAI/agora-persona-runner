@@ -104,9 +104,15 @@ def test_a_late_addendum_does_not_walk_the_cycle_number_backwards():
         "### 2026-08-13 08:10 (Oslo) — Cycle 128, addendum\n\nBody.\n\n"
         "---\nPR: none | Outcome: shipped\n"
         "### 2026-08-13 07:50 (Oslo) — Cycle 129\n\nBody.\n\n"
-        "---\nPR: none | Outcome: merged\n"
+        "---\nPR: #98 | Outcome: merged\n"
     )
-    assert build_status(parse_journal(markdown))["cycle"] == 129
+    status = build_status(parse_journal(markdown))
+    assert status["cycle"] == 129
+    # And the other three fields have to name the same cycle the number
+    # does. Skipping reports alone left these describing 128 under a
+    # heading that said 129 -- one header, two cycles.
+    assert (status["lastOutcome"], status["lastPr"]) == ("merged", "#98")
+    assert status["lastWokeTime"] == "07:50"
 
 
 def test_the_page_and_the_self_check_cannot_disagree_about_a_hole():
