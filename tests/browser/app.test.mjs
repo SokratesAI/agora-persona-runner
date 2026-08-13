@@ -52,23 +52,6 @@ function openWindow(html, options) {
   return dom;
 }
 
-/** Load the site at `path` with fetch stubbed to serve the fixture.
- *
- * `failComments` rejects only `/api/comments`, which is how the "a broken
- * endpoint costs the bubbles, not the feed" test reaches the catch that
- * app.js's Promise.all relies on.
- *
- * `digest` and `comments` override those two responses. The Needs Edvard
- * tests need both: the live fixture's digest asks for nothing (so the
- * section is hidden), and its comments carry no reply to it.
- *
- * `install` runs against the window just before app.js is evaluated, for a
- * test that has to be in place before the page's first render -- the reply
- * poll schedules its first timer there.
- *
- * `journal` is a function of the requested URL rather than a fixed body,
- * which is what the pagination tests need: the whole point of a window is
- * that the answer depends on the query string. */
 /** A stub response carrying the fields `app.js` actually reads off a real one.
  *
  *  `ok` is the one that matters and every double in this file used to omit
@@ -87,6 +70,19 @@ function res(body, status = 200) {
   });
 }
 
+/** A proxy's 502 page: a real status, and a body that is not JSON at all, so
+ *  reading it rejects. This is the shape the site sees when something in
+ *  front of the server fails rather than the server itself, and it is the
+ *  reason the helper under test reads the body with two callbacks instead
+ *  of one. */
+function unreadableBody(status) {
+  return Promise.resolve({
+    ok: false,
+    status,
+    json: () => Promise.reject(new SyntaxError("Unexpected token < in JSON")),
+  });
+}
+
 /** The other real shape: a 304 is not `ok` and carries no body at all, so a
  *  page that checks `ok` before checking for 304 turns every successful
  *  conditional poll into an error. Kept as its own helper rather than a
@@ -99,7 +95,24 @@ function notModified() {
   });
 }
 
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, digest, comments, install, journal, board, costs } = {}) {
+/** Load the site at `path` with fetch stubbed to serve the fixture.
+ *
+ * `failComments` rejects only `/api/comments`, which is how the "a broken
+ * endpoint costs the bubbles, not the feed" test reaches the catch that
+ * app.js's Promise.all relies on.
+ *
+ * `digest` and `comments` override those two responses. The Needs Edvard
+ * tests need both: the live fixture's digest asks for nothing (so the
+ * section is hidden), and its comments carry no reply to it.
+ *
+ * `install` runs against the window just before app.js is evaluated, for a
+ * test that has to be in place before the page's first render -- the reply
+ * poll schedules its first timer there.
+ *
+ * `journal` is a function of the requested URL rather than a fixed body,
+ * which is what the pagination tests need: the whole point of a window is
+ * that the answer depends on the query string. */
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, digestStatus = 200, unparsable = false, digest, comments, install, journal, board, costs } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -136,10 +149,10 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // A function for the same reason `journal` is one: the digest takes
       // a window too now, so its answer depends on the query string.
       const body = typeof digest === "function" ? digest(url) : digest || payload.digest;
-      return res(body);
+      return res(body, digestStatus);
     }
     const body = journal ? journal(url) : payload.journal;
-    return res(body, journalStatus);
+    return unparsable ? unreadableBody(journalStatus) : res(body, journalStatus);
   };
   window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
   /* Kept before `install` can replace it: a test that takes setTimeout over
@@ -2984,6 +2997,25 @@ describe("a server error is shown, not rendered as emptiness", () => {
   /* The board and the costs pages route through the same helper. Pinned
    * separately because they are separate call sites: reverting any one of
    * them back to a bare `r.json()` restores the bug on that page alone. */
+  test("a status is shown when the body is not JSON at all", async () => {
+    // A proxy in front of the server answers with an HTML error page, so
+    // reading the body rejects too. There is no message to prefer, and the
+    // page must still say something rather than fall through to a blank.
+    const window = await loadSite("/", { journalStatus: 502, unparsable: true });
+    assert.match(feedText(window), /Could not load the journal/);
+    assert.match(feedText(window), /HTTP 502/);
+  });
+
+  test("a 502 on the digest costs the summaries, not the feed", async () => {
+    // The digest is tolerated the same way comments are, and it was
+    // tolerated before this change too -- so this pins that the new throw
+    // still lands in that existing catch rather than escaping to the
+    // page-level one and taking the whole feed with it.
+    const window = await loadSite("/", { digestStatus: 502 });
+    assert.ok(window.document.querySelectorAll(".entry").length > 0);
+    assert.doesNotMatch(feedText(window), /Could not load the journal/);
+  });
+
   test("a 502 on the board reaches the board's own message", async () => {
     const window = await loadSite("/issues", { boardStatus: 502 });
     assert.match(feedText(window), /Could not load the board/);

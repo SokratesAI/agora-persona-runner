@@ -1336,9 +1336,12 @@
    * message: the messages were there, the condition that reaches them
    * never was.
    *
-   * Note this is the read side only. The POSTs below check `result.ok`
-   * out of the parsed body and so already surface a failure -- by luck
-   * rather than design, since an error body happens not to carry `ok`.
+   * Note this is the read side only, and the POSTs below are genuinely
+   * fine without it: they check `result.ok` out of the parsed body, and
+   * the server sends `{"ok": false, "message": ...}` on a rejected write
+   * deliberately. The generic 502 sends `{"error": ...}` with no `ok` at
+   * all, which that same check also catches -- so the POST path is right
+   * on purpose in the first case and right by accident in the second.
    */
   function json(r) {
     if (r.ok) return r.json();
