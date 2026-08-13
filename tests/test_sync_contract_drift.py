@@ -1503,6 +1503,36 @@ def test_both_copies_dropping_the_routes_table_is_an_error(tmp_path):
     assert "agreement is not evidence" in str(exc.value)
 
 
+@pytest.mark.parametrize("field, value", [
+    # Reachability the page renders as a green light, computed instead of
+    # measured: `True` here regardless of what either store answered.
+    ('"overall_healthy"', "True"),
+    # A number the page would show beside a database, from nowhere.
+    ('"doc_total"', "0"),
+])
+def test_a_field_both_copies_added_is_not_silently_unchecked(
+        tmp_path, field, value):
+    """A field added to the health report has to be stated in
+    `_HEALTH_QUESTIONS` before this stage will report a clean run.
+
+    The correctness check used to rebuild the report from three known keys,
+    so anything else in it was invisible to the expectations -- and a field
+    added to *both* copies at once is exactly the case those expectations
+    exist for, since the drift comparison scores identical copies as in
+    sync. Both mutations below put a value on the status page that no store
+    was asked about.
+    """
+    added = "        %s: %s," % (field, value)
+    runner_path, bridge_path = _health_pair(
+        tmp_path,
+        runner=(_ROUTING_FLAG_RUNNER, _ROUTING_FLAG_RUNNER + "\n" + added),
+        bridge=(_ROUTING_FLAG_BRIDGE, _ROUTING_FLAG_BRIDGE + "\n" + added))
+    with pytest.raises(sync_contract.ContractHealthMissing) as exc:
+        sync_contract.compare_health(runner_path, bridge_path)
+    assert "agreement is not evidence" in str(exc.value)
+    assert field.strip('"') in str(exc.value)
+
+
 def test_the_reported_difference_names_only_what_differs():
     """A whole health report is ~900 characters and a drifted row prints two
     of them, so the CI log has to be diffed by eye to find the one field
