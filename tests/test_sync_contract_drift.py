@@ -554,6 +554,19 @@ def test_an_explicit_database_argument_dropped_on_one_side_is_drift(tmp_path):
     ]
 
 
+def test_the_explicit_row_catches_a_dropped_argument_on_its_own(tmp_path):
+    """A copy that ignores the `db=` argument *and* the stamp and routes by
+    path. The second reader on #156 found this scored the explicit row for
+    free, because that row's path used to route to the same database the
+    argument named. Other rows caught it, which is why it was a near-miss
+    and not a bug -- but a row that needs another row to mean anything is
+    not the row it says it is."""
+    runner, bridge = _assemble_pair(
+        tmp_path, runner=(_PICK_RUNNER, "db = db_for("))
+    drifted = [q for q, _, _ in sync_contract.compare_assembly(runner, bridge)]
+    assert "assembly, routing on: explicit db beats the stamp" in drifted
+
+
 def test_both_copies_dropping_the_stamp_is_an_error_not_agreement(tmp_path):
     """The one this table exists for, and the one routing's guard shape
     cannot catch: both copies answer with a database this comparison did

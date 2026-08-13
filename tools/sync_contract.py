@@ -574,8 +574,19 @@ def _assembly_questions(src_db_key):
         # An explicit argument is the caller saying it already knows; it has
         # to beat the stamp, or `vault_bulk_fetch` loses the database it
         # just read the doc out of.
+        #
+        # The path here routes to Nova's database *and* the stamp names it,
+        # so `explicit` is the only one of the three that answers Edvard's.
+        # It read `unrelated/file.md` for one commit, which routes to the
+        # same database the explicit argument names -- a copy that ignored
+        # the argument entirely and fell through to the path scored the row
+        # anyway. Other rows still caught every reordering the second reader
+        # on #156 could build, but a row that needs another row to mean
+        # anything is not the row it says it is.
         ("explicit db beats the stamp",
-         dict(stamped), "unrelated/file.md", PROBE_DB, "explicit"),
+         dict(stamped),
+         "projects/sokrates/projects/agora/nova/resources/inbox.md",
+         PROBE_DB, "explicit"),
         ("unstamped, path argument inside Nova's folder",
          {"children": list(_PROBE_CHUNKS)},
          "projects/sokrates/projects/agora/nova/journal/191-cycle-169.md",
@@ -1072,9 +1083,13 @@ def check_vault_pair(left_path, right_path):
         print("vault assembly: %s" % exc, file=sys.stderr)
         return 2
     if not assembled:
-        print("vault assembly: %d probed documents read their chunks from the "
-              "same database in both copies"
-              % len(_assembly_questions("_probe")))
+        # Questions times configurations, because every row is driven under
+        # both. Counting the rows alone understated the run by half, which
+        # is a check under-claiming what it did -- the same class of thing
+        # as over-claiming, one direction friendlier. Second reader on #156.
+        print("vault assembly: %d probed reads resolved to the same database "
+              "in both copies"
+              % (len(_assembly_questions("_probe")) * len(ROUTING_CONFIGS)))
         return 0
     print("\nvault assembly: %d question(s) answered differently between\n"
           "  %s\n  %s\n" % (len(assembled), left_path, right_path),
