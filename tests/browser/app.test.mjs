@@ -2790,6 +2790,67 @@ describe("a hole in the record is visible in the feed", () => {
     const window = await loadSite("/", { journal: () => lying });
     assert.equal(gaps(window).length, 0);
   });
+
+  /* The feed is not sorted by cycle number. A card takes the position of
+   * its cycle's newest part, so an addendum written after the next cycle
+   * has already filed carries its whole card back up the page, above a
+   * higher number. Reading the hole off the previous card then announced
+   * it above a card that is newer than the hole -- which says the cycle in
+   * that card never ran, while its own entry sits directly underneath. */
+  const reordered = (cyclesInWireOrder, missingCycles) => {
+    const base = payload.journal.entries.find((e) => typeof e.cycle === "number");
+    const j = JSON.parse(JSON.stringify(payload.journal));
+    j.entries = cyclesInWireOrder.map((cycle) => {
+      const entry = JSON.parse(JSON.stringify(base));
+      entry.cycle = cycle;
+      return entry;
+    });
+    j.status.missingCycles = missingCycles;
+    return j;
+  };
+  const positions = (window) =>
+    [...window.document.getElementById("feed").children];
+
+  test("an addendum out of order does not strand the hole above a newer card",
+    async () => {
+      // Cycle 54 wrote an addendum during 57, so its card sits above 56's.
+      const window = await loadSite("/",
+        { journal: () => reordered([57, 54, 56, 54], [55]) });
+      assert.equal(gaps(window).length, 1);
+      assert.match(gaps(window)[0].textContent, /Cycle 55 ran and wrote no entry/);
+      const kids = positions(window);
+      const gap = kids.findIndex((n) => n.classList.contains("cycle-gap"));
+      const newer = kids.findIndex((n) => n.id === "cycle-56");
+      assert.ok(newer >= 0, "cycle 56 has a card");
+      assert.ok(gap > newer,
+        "the hole was drawn above cycle 56, which is newer than the hole");
+    });
+
+  test("the hole is drawn once, under the oldest card newer than it",
+    async () => {
+      const window = await loadSite("/",
+        { journal: () => reordered([59, 55, 58, 55], [56, 57]) });
+      assert.equal(gaps(window).length, 1);
+      assert.match(gaps(window)[0].textContent,
+        /Cycles 56, 57 ran and wrote no entry/);
+      const kids = positions(window);
+      const gap = kids.findIndex((n) => n.classList.contains("cycle-gap"));
+      assert.equal(kids[gap - 1].id, "cycle-58");
+    });
+
+  test("a hole older than everything loaded is left for the older page",
+    async () => {
+      const window = await loadSite("/",
+        { journal: () => reordered([57, 56], [55]) });
+      assert.equal(gaps(window).length, 0);
+    });
+
+  test("a hole newer than everything loaded is not pinned to the top",
+    async () => {
+      const window = await loadSite("/",
+        { journal: () => reordered([57, 56], [58]) });
+      assert.equal(gaps(window).length, 0);
+    });
 });
 
 describe("a loop that has gone quiet says so in the header", () => {
