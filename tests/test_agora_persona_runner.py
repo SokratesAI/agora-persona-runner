@@ -5667,6 +5667,40 @@ def test_redact_leaves_ordinary_text_alone(runner):
         assert redact(text) == text
 
 
+def test_redact_finds_the_value_when_json_has_quoted_the_name_too(runner):
+    """`"couchdb_password": "x"` -- the shape the comment claimed to cover.
+
+    The separator pattern went straight from the name to `[=:]`, so the
+    closing quote of a JSON key stopped it matching at all. Found by the
+    drift probes in tools/sync_contract.py, not by a person. The quote is
+    kept in group 2 so the replacement puts it back and the document is
+    still parseable, which is the half a `not in out` assertion misses.
+    """
+    out = audit_module.redact(
+        '{"couchdb_password": "notarealpassword", "db": "nova"}')
+    assert out == '{"couchdb_password": "[redacted: value]", "db": "nova"}'
+    assert json.loads(out)["couchdb_password"] == "[redacted: value]"
+
+
+def test_redact_covers_the_name_this_system_keeps_its_own_password_under(runner):
+    """`CDB_PASS` is neither PASSWD nor PASSWORD, and it is the live one."""
+    out = audit_module.redact("CDB_PASS: notarealpassword1234\nCDB_USER: nova")
+    assert "CDB_PASS: [redacted: value]" in out
+    assert "notarealpassword1234" not in out
+    assert "CDB_USER: nova" in out
+
+
+def test_redact_does_not_eat_the_english_word_pass(runner):
+    """Why `_PASS` carries its underscore. Over-redacting prose is the
+    failure Edvard's keep-everything rule is actually about, so the widening
+    above has to be pinned from both sides or the next cycle drops the
+    underscore to catch one more case."""
+    for text in ("second pass: completed successfully",
+                 "a first pass at the digest: reasonable",
+                 "The password rotation is documented in decisions/adr-0012.md."):
+        assert audit_module.redact(text) == text
+
+
 def test_redact_passes_non_strings_through(runner):
     """audit() hands over whatever a tool returned; callers shouldn't have
     to type-check first."""
@@ -5699,12 +5733,22 @@ def test_audit_redacts_the_vault_write_diff_it_publishes(runner):
 def test_audit_redacts_tool_output(runner):
     """The bridge scrubs its own reports before sending them, but report()
     is not the only way output reaches audit() and the bridge could be a
-    version behind at any moment."""
+    version behind at any moment.
+
+    Asserted whole rather than by substring, because the substring version
+    was passing on mangled output: `_PATTERNS` runs in order, the github
+    pattern left `[redacted: github token]` behind, and the value pattern
+    then matched the marker as if it were the value, so what actually
+    reached the feed was `GITHUB_TOKEN=[redacted: value] github token]` --
+    which contains the string this test used to look for. The secret was
+    gone either way; the label named the wrong pattern and had a stray
+    bracket. Cycle 170.
+    """
     token = "ghp_" + "w" * 36
     sent = _audited("Nova", "c1", "Bash", "printenv",
                     tool_use_id="t1", output=f"GITHUB_TOKEN={token}")
     assert token not in sent["output"]
-    assert "GITHUB_TOKEN=[redacted: value]" in sent["output"]
+    assert sent["output"] == "GITHUB_TOKEN=[redacted: github token]"
 
 
 def test_audit_redacts_before_it_truncates(runner):
