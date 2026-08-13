@@ -603,6 +603,22 @@ def _routing_expectations(paths, db, nova_db):
     under-claiming #156 fixed pointed the other way.
     """
     probed = tuple(paths)
+    # Prefixes first, and by the same rule in both directions. Both of these
+    # are module constants, so a mismatch is a maintainer's edit rather than
+    # drift -- but a bare `KeyError` from the lookup below would escape
+    # `check_pair`, which catches only `ContractRouterMissing`, and reach the
+    # CI log as a traceback exiting 1. That is the documented code for "drift
+    # found", so a broken checker would read as a real finding. Same failure
+    # `_load_module` was fixed for on #154, and the second reader on this
+    # change reached it independently.
+    if set(PROBE_PREFIXES) != set(_ROUTING_EXPECTED_PREFIXES):
+        odd = set(PROBE_PREFIXES) ^ set(_ROUTING_EXPECTED_PREFIXES)
+        raise ContractRouterMissing(
+            "PROBE_PREFIXES and _ROUTING_EXPECTED_PREFIXES disagree about %r. "
+            "Every probed prefix needs an expected answer, hand-verified "
+            "against dbs_for_prefix, and an expectation nothing probes makes "
+            "this stage count a check it did not run"
+            % (sorted(odd, key=lambda p: (p is not None, p)),))
     missing = [p for p in probed if p not in _ROUTING_EXPECTED_PATHS]
     if missing:
         raise ContractRouterMissing(

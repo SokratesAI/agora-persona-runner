@@ -585,18 +585,76 @@ def test_a_straddling_prefix_narrowed_in_both_copies_is_caught(tmp_path):
     assert "dbs_for_prefix" in str(caught.value)
 
 
-def test_the_expected_table_stays_quiet_on_the_copies_as_they_are(tmp_path):
-    """The control for the three above. The live pair is checked by
-    `test_the_two_copies_route_every_probed_path_the_same_way`, which would
-    also go red if the expected table were wrong -- this asserts it directly
-    so a failure names the expectation rather than the comparison.
+def _observed_answers(runner_path, bridge_path):
+    """`{(db, nova_db, paths): {question: answer}}` as the copies really
+    answer, with no expectation applied -- what `compare_routing` collects
+    before it checks anything."""
+    observed = {}
+    with sync_contract._process_state_restored():
+        for db, nova_db in sync_contract.ROUTING_CONFIGS:
+            runner = sync_contract._runner_router(runner_path, db, nova_db)
+            sync_contract._bridge_router(bridge_path, db, nova_db)
+            paths = tuple(sys.modules["_sync_contract_runner"].HEALTH_PROBE_PATHS)
+            paths += sync_contract.EXTRA_PROBE_PATHS
+            observed[(db, nova_db, paths)] = sync_contract._routing_answers(
+                *runner, paths)
+    return observed
+
+
+def test_the_expected_table_matches_what_the_copies_really_answer(tmp_path):
+    """The control for the three above, and the second reader caught the
+    version of it I wrote first.
+
+    That one built the expectations and handed them straight back to the
+    checker as the observed answers, so both sides came from one call to one
+    pure function and the assertion could not fail -- it stayed green with a
+    row of the table deliberately corrupted, and with the whole feature
+    reverted. Checklist item 13, written into the diff whose entire subject
+    is a guard that agrees with itself.
+
+    So this drives the real copies and checks their *observed* answers, and
+    the test below corrupts a row to prove the pairing bites.
     """
-    paths = tuple(vault.HEALTH_PROBE_PATHS) + sync_contract.EXTRA_PROBE_PATHS
-    for db, nova_db in sync_contract.ROUTING_CONFIGS:
-        expected = sync_contract._routing_expectations(paths, db, nova_db)
-        assert expected, "no expectations were built"
+    for (db, nova_db, paths), answers in _observed_answers(
+            vault.__file__, _bridge_copy(tmp_path)).items():
+        assert answers, "no answers were observed"
         sync_contract._check_the_probe_answered_correctly(
-            expected, paths, db, nova_db)
+            answers, paths, db, nova_db)
+
+
+def test_a_corrupted_expectation_is_caught_against_the_real_copies(
+        tmp_path, monkeypatch):
+    """The noise half. `journal-digest.md` is the file Edvard opens and the
+    one path routed by exact match, so claiming it belongs in his database is
+    an expectation the live code disagrees with."""
+    corrupted = dict(sync_contract._ROUTING_EXPECTED_PATHS)
+    corrupted["projects/sokrates/projects/agora/journal-digest.md"] = "edvard"
+    observed = _observed_answers(vault.__file__, _bridge_copy(tmp_path))
+    (db, nova_db, paths), answers = next(
+        (key, value) for key, value in observed.items() if key[1])
+    monkeypatch.setattr(sync_contract, "_ROUTING_EXPECTED_PATHS", corrupted)
+
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract._check_the_probe_answered_correctly(
+            answers, paths, db, nova_db)
+    assert "journal-digest.md" in str(caught.value)
+
+
+def test_a_probed_prefix_with_no_expectation_stops_the_run(monkeypatch):
+    """The prefix table had no guard in either direction while the path table
+    beside it had both. A `KeyError` from that lookup escapes `check_pair`,
+    which catches `ContractRouterMissing` only, and exits 1 -- the documented
+    code for "drift found", so a broken checker would read as a real finding.
+    Second reader on this change, and my own re-read of it.
+    """
+    monkeypatch.setattr(sync_contract, "PROBE_PREFIXES",
+                        sync_contract.PROBE_PREFIXES + ("brand/new/prefix/",))
+    paths = tuple(vault.HEALTH_PROBE_PATHS) + sync_contract.EXTRA_PROBE_PATHS
+
+    with pytest.raises(sync_contract.ContractRouterMissing) as caught:
+        sync_contract._routing_expectations(
+            paths, sync_contract.PROBE_DB, sync_contract.PROBE_NOVA_DB)
+    assert "brand/new/prefix/" in str(caught.value)
 
 
 def test_a_probed_path_with_no_expectation_stops_the_run():
