@@ -52,6 +52,49 @@ function openWindow(html, options) {
   return dom;
 }
 
+/** A stub response carrying the fields `app.js` actually reads off a real one.
+ *
+ *  `ok` is the one that matters and every double in this file used to omit
+ *  it. `fetch` resolves on a 500 or a 502 as readily as on a 200, so `ok`
+ *  is the only thing separating a page's success path from its error path
+ *  -- and a double without it can express "the network died" and "the
+ *  server answered" and nothing in between, which is exactly the case that
+ *  broke on the live site. Every test here was therefore passing through a
+ *  branch a real browser cannot reach.
+ */
+function res(body, status = 200) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    json: () => Promise.resolve(body),
+  });
+}
+
+/** A proxy's 502 page: a real status, and a body that is not JSON at all, so
+ *  reading it rejects. This is the shape the site sees when something in
+ *  front of the server fails rather than the server itself, and it is the
+ *  reason the helper under test reads the body with two callbacks instead
+ *  of one. */
+function unreadableBody(status) {
+  return Promise.resolve({
+    ok: false,
+    status,
+    json: () => Promise.reject(new SyntaxError("Unexpected token < in JSON")),
+  });
+}
+
+/** The other real shape: a 304 is not `ok` and carries no body at all, so a
+ *  page that checks `ok` before checking for 304 turns every successful
+ *  conditional poll into an error. Kept as its own helper rather than a
+ *  status argument to `res`, because the empty body is the whole point. */
+function notModified() {
+  return Promise.resolve({
+    ok: false,
+    status: 304,
+    json: () => Promise.reject(new Error("a 304 carries no body")),
+  });
+}
+
 /** Load the site at `path` with fetch stubbed to serve the fixture.
  *
  * `failComments` rejects only `/api/comments`, which is how the "a broken
@@ -69,7 +112,7 @@ function openWindow(html, options) {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, digest, comments, install, journal, board, costs } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, digestStatus = 200, unparsable = false, digest, comments, install, journal, board, costs } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -85,31 +128,31 @@ async function loadSite(path = "/", { failComments = false, digest, comments, in
   window.fetch = (url, init) => {
     if (init && init.method === "POST") {
       window.posted.push({ url, headers: init.headers, body: JSON.parse(init.body) });
-      return Promise.resolve({ json: () => Promise.resolve(window.postReply) });
+      return res(window.postReply);
     }
     if (url.includes("/api/comments")) {
       return failComments
         ? Promise.reject(new Error("comments are down"))
-        : Promise.resolve({ json: () => Promise.resolve(comments || payload.comments) });
+        : res(comments || payload.comments, commentsStatus);
     }
     if (url.includes("/api/costs")) {
-      return Promise.resolve({ json: () => Promise.resolve(costs || payload.costs) });
+      return res(costs || payload.costs, costsStatus);
     }
     if (url.includes("/api/board")) {
       // Two shapes off one route, told apart the way the server tells
       // them apart: `item=` is a tap on a row, anything else is the list.
       const asked = board ? board(url) : null;
       const body = asked || (url.includes("item=") ? payload.boardItem : payload.board);
-      return Promise.resolve({ json: () => Promise.resolve(body) });
+      return res(body, boardStatus);
     }
     if (url.includes("/api/digest")) {
       // A function for the same reason `journal` is one: the digest takes
       // a window too now, so its answer depends on the query string.
       const body = typeof digest === "function" ? digest(url) : digest || payload.digest;
-      return Promise.resolve({ json: () => Promise.resolve(body) });
+      return res(body, digestStatus);
     }
     const body = journal ? journal(url) : payload.journal;
-    return Promise.resolve({ json: () => Promise.resolve(body) });
+    return unparsable ? unreadableBody(journalStatus) : res(body, journalStatus);
   };
   window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
   /* Kept before `install` can replace it: a test that takes setTimeout over
@@ -560,9 +603,7 @@ describe("the Needs Edvard box", () => {
       needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about the node." }] }],
     };
     window.fetch = (url) =>
-      Promise.resolve({
-        json: () => Promise.resolve(url.includes("/api/digest") ? asking : payload.journal),
-      });
+      res(url.includes("/api/digest") ? asking : payload.journal);
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     const needs = window.document.getElementById("needs");
@@ -856,9 +897,7 @@ describe("the vault cannot inject markup", () => {
     const html = readFileSync(join(publicDir, "index.html"), "utf8");
     const { window } = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
     window.fetch = (url) =>
-      Promise.resolve({
-        json: () => Promise.resolve(url.includes("/api/digest") ? payload.digest : hostile),
-      });
+      res(url.includes("/api/digest") ? payload.digest : hostile);
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     assert.equal(window.pwned, undefined);
@@ -960,9 +999,8 @@ describe("a payload cached before the brief existed", () => {
     const html = readFileSync(join(publicDir, "index.html"), "utf8");
     const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only", pretendToBeVisual: true });
     const { window } = dom;
-    window.fetch = (url) => Promise.resolve({
-      json: () => Promise.resolve(url.includes("/api/digest") ? stale.digest : stale.journal),
-    });
+    window.fetch = (url) =>
+      res(url.includes("/api/digest") ? stale.digest : stale.journal);
     window.scrollTo = () => {};
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -1194,9 +1232,9 @@ describe("commenting on a cycle", () => {
     w.fetch = (url) => {
       if (String(url).includes("/api/comments")) {
         served += 1;
-        return Promise.resolve({ json: () => Promise.resolve(served === 1 ? withPending(57) : answered) });
+        return res(served === 1 ? withPending(57) : answered);
       }
-      return Promise.resolve({ json: () => Promise.resolve({}) });
+      return res({});
     };
 
     await timers.fire();
@@ -1211,6 +1249,27 @@ describe("commenting on a cycle", () => {
       "Thanks — here is what I found.",
     );
     assert.equal(timers.queued.length, 0, "nothing left scheduled once the reply is in");
+  });
+
+  test("a server error mid-wait keeps the drawer waiting instead of giving up", async () => {
+    /* The drawer's `.catch` is the keep-waiting path, and a 500 used to
+     * walk straight past it: the error body parsed, `pick` found no reply
+     * in it, and the drawer stopped as though it had been told the reply
+     * was not coming. He would have been left looking at a comment that
+     * had quietly given up on itself. */
+    let timers;
+    const w = await loadSite("/", {
+      comments: withPending(57),
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const card = cardFor(w, 57);
+    w.fetch = (url) => (String(url).includes("/api/comments")
+      ? res({ error: "the comments file is unreadable" }, 502)
+      : res({}));
+
+    await timers.fire();
+    assert.ok(card.querySelector(".comment-waiting"), "still waiting after a 502");
+    assert.ok(timers.queued.length > 0, "and still scheduled to try again");
   });
 
   test("navigating while a reply is coming does not leave two pollers", async () => {
@@ -1432,13 +1491,12 @@ describe("the page notices new entries on its own", () => {
 
   /** Serve `journal` from here on, leaving the other two endpoints alone. */
   function serve(window, journal) {
-    window.fetch = (url) => Promise.resolve({
-      json: () => Promise.resolve(
+    window.fetch = (url) =>
+      res(
         String(url).includes("/api/digest") ? payload.digest
           : String(url).includes("/api/comments") ? payload.comments
             : journal,
-      ),
-    });
+      );
   }
 
   /** The fixture with one more entry at the top, and a new server version. */
@@ -1598,16 +1656,13 @@ describe("a poll asks whether anything changed, not for the whole journal", () =
       const asked = (init && init.headers && init.headers["If-None-Match"]) || null;
       sent.push({ path, asked });
       if (path.includes("/api/comments")) {
-        return Promise.resolve({ status: 200, json: () => Promise.resolve(comments || payload.comments) });
+        return res(comments || payload.comments);
       }
       const body = path.includes("/api/digest") ? digest : journal;
       if (asked === body.version) {
-        return Promise.resolve({
-          status: 304,
-          json: () => Promise.reject(new Error("a 304 carries no body")),
-        });
+        return notModified();
       }
-      return Promise.resolve({ status: 200, json: () => Promise.resolve(body) });
+      return res(body);
     };
     return sent;
   }
@@ -2899,5 +2954,75 @@ describe("a loop that has gone quiet says so in the header", () => {
     quiet.status.silentIntervals = 1;
     const window = await loadSite("/", { journal: () => quiet });
     assert.ok(warn(window).some((t) => t === "no entry for 1 hour"));
+  });
+});
+
+/* An HTTP error is not a network error, and the page could not tell them
+ * apart. `fetch` rejects only when the request never completed, so every
+ * 500 and 502 arrived here as a resolved response whose JSON body happened
+ * to parse -- and the page rendered it. Four written "Could not load ..."
+ * messages sat in this file's `.catch` blocks, unreachable, for as long as
+ * they have existed. Cycles 163 and 164 fixed the server side of this twice;
+ * this is the browser side, and it is the half Edvard actually sees. */
+describe("a server error is shown, not rendered as emptiness", () => {
+  const feedText = (window) => window.document.getElementById("feed").textContent;
+
+  test("a 502 on the journal says so instead of drawing an empty page", async () => {
+    const window = await loadSite("/", { journalStatus: 502 });
+    assert.match(feedText(window), /Could not load the journal/);
+    assert.equal(window.document.querySelectorAll(".entry").length, 0);
+  });
+
+  test("the server's own message is preferred over the bare status", async () => {
+    const window = await loadSite("/", {
+      journalStatus: 500,
+      journal: () => ({ error: "the journal folder is unreadable" }),
+    });
+    assert.match(feedText(window), /the journal folder is unreadable/);
+  });
+
+  test("a 502 on comments costs the bubbles, and says the bubbles are missing", async () => {
+    const window = await loadSite("/", { commentsStatus: 502 });
+    // The feed is the page: it must survive a comments failure.
+    assert.ok(window.document.querySelectorAll(".entry").length > 0);
+    assert.equal(window.document.querySelectorAll(".comment").length, 0);
+    assert.match(feedText(window), /Comments could not be loaded/);
+  });
+
+  test("a healthy page says nothing about comments", async () => {
+    const window = await loadSite("/");
+    assert.doesNotMatch(feedText(window), /Could not load|could not be loaded/);
+  });
+
+  /* The board and the costs pages route through the same helper. Pinned
+   * separately because they are separate call sites: reverting any one of
+   * them back to a bare `r.json()` restores the bug on that page alone. */
+  test("a status is shown when the body is not JSON at all", async () => {
+    // A proxy in front of the server answers with an HTML error page, so
+    // reading the body rejects too. There is no message to prefer, and the
+    // page must still say something rather than fall through to a blank.
+    const window = await loadSite("/", { journalStatus: 502, unparsable: true });
+    assert.match(feedText(window), /Could not load the journal/);
+    assert.match(feedText(window), /HTTP 502/);
+  });
+
+  test("a 502 on the digest costs the summaries, not the feed", async () => {
+    // The digest is tolerated the same way comments are, and it was
+    // tolerated before this change too -- so this pins that the new throw
+    // still lands in that existing catch rather than escaping to the
+    // page-level one and taking the whole feed with it.
+    const window = await loadSite("/", { digestStatus: 502 });
+    assert.ok(window.document.querySelectorAll(".entry").length > 0);
+    assert.doesNotMatch(feedText(window), /Could not load the journal/);
+  });
+
+  test("a 502 on the board reaches the board's own message", async () => {
+    const window = await loadSite("/issues", { boardStatus: 502 });
+    assert.match(feedText(window), /Could not load the board/);
+  });
+
+  test("a 502 on the costs page reaches the costs page's own message", async () => {
+    const window = await loadSite("/costs", { costsStatus: 502 });
+    assert.match(feedText(window), /Could not load the costs/);
   });
 });
