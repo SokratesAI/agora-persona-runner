@@ -41,6 +41,7 @@ client that pod actually has:
 import re
 import sys
 
+from agora_runner.md_sections import split_at_heading
 from agora_runner.nova_journal import parse_digest, split_digest_entries
 from tools import rolling
 from tools.rolling import RollError, RollSpec, dedup, join_paragraphs
@@ -119,7 +120,7 @@ def _check_render(live, archive, kept, new_live, new_archive):
     comparison is against what the roll claims to preserve rather than
     against a half-applied run.
     """
-    rejoined = live[: live.find(MARKER) + len(MARKER)] + "\n" + join_paragraphs(kept) + "\n"
+    rejoined = split_at_heading(live, MARKER)[0] + "\n" + join_paragraphs(kept) + "\n"
     before = parse_digest(rejoined)
     after = parse_digest(f"{new_live}\n\n{new_archive}")
     if before != after:
