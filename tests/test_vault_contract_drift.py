@@ -97,12 +97,22 @@ def test_a_changed_chunk_size_is_drift():
     assert vault_contract.compare(RUNNER_SOURCE, other) == ["CHUNK_MAX_BYTES"]
 
 
-def test_a_changed_function_body_is_drift():
+def test_a_changed_function_signature_is_drift():
     """`_appended` decides where a capture lands relative to its marker --
-    the split that took Cycles 112-114 to repair. A one-token change to it
-    has to be visible."""
+    the split that took Cycles 112-114 to repair. Giving `after_marker` a
+    default in one copy silently changes what an unmarked append does
+    there."""
     other = _mutated("def _appended(existing_content, content, after_marker):",
                      "def _appended(existing_content, content, after_marker=''):")
+    assert vault_contract.compare(RUNNER_SOURCE, other) == ["_appended"]
+
+
+def test_a_changed_function_body_is_drift():
+    """The signature test above is not this test: a name that says `body`
+    and mutates the parameter list is the second-commonest finding in this
+    repo's review rubric, so both are here and each mutates what it says."""
+    other = _mutated("            if line.strip() == after_marker.strip():",
+                     "            if line.strip().startswith(after_marker.strip()):")
     assert vault_contract.compare(RUNNER_SOURCE, other) == ["_appended"]
 
 

@@ -15,6 +15,7 @@ question both processes ask of the same stored bytes:
 
   * the routing tuples decide which of two databases a path lives in, so a
     disagreement writes Edvard's file into Nova's store or the reverse;
+    note the *inputs* only -- see the limit below;
   * the chunker decides how a document is cut into chunk ids, so a
     disagreement stops the two reusing each other's chunks and brings the
     write amplification straight back;
@@ -27,6 +28,29 @@ Comments and docstrings are stripped before comparing, because the two
 copies explain themselves to different readers and always have. What is
 compared is the value of each constant and the syntax tree of each function
 body -- so a reworded comment is silence and a changed number is noise.
+
+**What this does NOT cover, stated here because the list above reads like
+it does.** Only module-level names are compared. The bridge keeps
+`db_for`, `dbs_for_prefix`, `assemble`, `_put_raw` and `database_health` as
+methods on `VaultClient` while the runner has them as plain functions, so
+none of them can be named here at all -- `extract_contract` would raise on
+every bridge run. The consequence, reproduced by the second reader on this
+diff rather than guessed: delete the `lowered in NOVA_DB_FILES` branch of
+the bridge's `db_for` and this tool still prints `16 names in sync`, while
+`journal-digest.md` stops resolving to Nova's database on that copy. The
+routing *inputs* are pinned; the routing *decision* is not.
+
+The two also already disagree about something outside these names, found
+the same way: the runner's `vault_assemble` recomputes `db_for(...)` and
+ignores `_SRC_DB_KEY`, while the bridge's `assemble` prefers the database
+the document was actually read from. Not live-exploitable today -- no
+runner caller stamps that key before assembling -- but it is exactly the
+divergence this file exists to catch, sitting next to it.
+
+Closing either gap means comparing behaviour instead of syntax: import both
+copies and run one table of paths through each. `HEALTH_PROBE_PATHS` is
+already that table, and `database_health()` in both copies already reports
+what each resolved. That is a separate build; it is filed, not done.
 """
 import ast
 import json
