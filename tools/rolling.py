@@ -34,9 +34,7 @@ whichever vault client that pod actually has.
 """
 
 import argparse
-import re
 
-_PARA_SPLIT_RE = re.compile(r"\n[ \t]*\n")
 
 
 class RollSpec:
@@ -104,11 +102,6 @@ class RollError(SystemExit):
     before this module existed; keeping that is what makes the extraction
     invisible to its callers and to its tests.
     """
-
-
-def split_paragraphs(text):
-    """Blank-line separated blocks -- the digest's entry shape."""
-    return [p.strip() for p in _PARA_SPLIT_RE.split(text.strip()) if p.strip()]
 
 
 def join_paragraphs(entries):
