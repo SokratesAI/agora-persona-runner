@@ -27,10 +27,11 @@ least:
 - **Unconditional, or `if_rev=None`**, it does 409 -- but reports
   `FAILED(409 conflict: <path> changed since it was read)`, which is a
   false statement about what happened. Nothing changed. The database
-  refused. That string is load bearing: `_write_exit` turns it into exit
-  3, `vault_append_path` and `nova_comments` retry on it, and `prompt.md`
-  step 7 tells a cycle that exit 3 means re-read and write again.
-  Retrying is the one wrong response to a 500.
+  refused. That string is load bearing here because `vault_append_path`
+  and both of `nova_comments`' write loops retry on it, and retrying is
+  the one wrong response to a 500. The exit-code version of this belongs
+  to the bridge: `_write_exit` and `CONFLICT_EXIT` are in
+  `bridge/vault_tool.py`, and nothing in `agora_runner` has an exit code.
 
 The fake here is `FakeCouch`, which enforces CouchDB's real revision rule,
 with one document's GET answered by a failure status while the rest of the

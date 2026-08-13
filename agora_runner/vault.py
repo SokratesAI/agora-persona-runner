@@ -736,10 +736,15 @@ def _doc_to_overwrite(doc_id, db=None):
       and 409s against the live document. Safe, but misattributed: the
       caller is told the file "changed since it was read" when nothing
       changed and the database was refusing to answer. That string is load
-      bearing -- `_write_exit` turns it into exit 3, `vault_append_path`
-      and `nova_comments` retry on it, and `prompt.md` step 7 tells a cycle
-      that exit 3 means re-read and try again. Retrying is the one wrong
-      response to a 500.
+      bearing *in this repo* because `vault_append_path` below and both of
+      `nova_comments`' write loops retry on it, and retrying is the one
+      wrong response to a 500. The exit-code half of that sentence belongs
+      to the bridge, not here: `_write_exit` and `CONFLICT_EXIT` live in
+      `bridge/vault_tool.py`, which wraps the twin of this client in a CLI.
+      Nothing in `agora_runner` has an exit code at all -- it is called
+      in-process through `tools_dispatch.execute_tool`. A reviewer caught
+      this docstring asserting otherwise, which would have sent a future
+      reader grepping this repo for a function that is not in it.
     """
     status, existing = couch_get_doc(doc_id, db)
     if status == 200:
