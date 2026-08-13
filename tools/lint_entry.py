@@ -10,7 +10,7 @@ both are guesses made by something that was not there when the entry was
 written. The author was. An entry is written once and never edited, so
 the only moment a mistake is cheap to correct is before the `put`.
 
-    python3 -m tools.lint_entry entry.md --path '<vault path>'
+    python3 -m tools.lint_entry entry.md --name 168-cycle-152.md
 
 Exits 0 when the document renders as written, 1 when a repair would be
 needed, 2 when it could not be read. `prompt.md` step 7 chains the `put`
@@ -22,12 +22,20 @@ design. A linter carrying its own copy of what a valid entry looks like
 is a seventh statement of the rules, free to drift from the six already
 in `nova_journal.py`, and a linter that disagrees with the parser is
 worse than no linter. So every check here runs the real function and
-compares: heading by calling `normalise_entry`, footer by calling
-`parse_journal` and then `stray_footer`.
+compares: heading by calling `normalise_entry`, footer by applying
+`_FOOTER_RE` and then `stray_footer` exactly as `parse_journal` does.
 
-Measured against all 166 live entries (2026-08-13): 3 fail the heading
-check, 3 the footer check, 1 the cycle-number check, and the other 162
-pass untouched. That measurement is also why there is no rule here
+Measured against all 166 live entries (2026-08-13): 4 documents are
+flagged and 162 pass untouched -- 3 fail the heading check (Cycle 150's
+bug) and 3 the footer check (Cycle 151's), two of them failing both. The
+cycle-number check fires on none of them, which is said plainly rather
+than dropped: the one live heading/filename disagreement is Cycle 131's,
+and the heading check already has it. It stays because the failure it
+guards is distinct and silent -- a correct-looking heading carrying the
+wrong number puts one cycle's words under another's name, while the gap
+detector counts that cycle from the filename, so the two halves of the
+site disagree and nothing anywhere raises an error. That measurement is
+also why there is no rule here
 requiring the `---` above the footer, which `personality.md` asks for
 and 17 live entries do not have -- 14 of them because they carry the
 `Reviewer: n findings` line the review rubric asks for, in the place the
@@ -44,6 +52,8 @@ import sys
 from agora_runner.nova_journal import (
     _ENTRY_HEADING_RE,
     _FOOTER_RE,
+    _FRONTMATTER_RE,
+    _LEADING_HEADING_RE,
     JOURNAL_DIR,
     normalise_entry,
     parse_journal,
@@ -58,6 +68,20 @@ from agora_runner.nova_journal import (
 import re
 
 _FILENAME_CYCLE_RE = re.compile(r"\A\d+-cycle-(\d+)(?:-|\.)")
+
+
+def _has_own_heading(content):
+    """Did the cycle write a heading at all, or will one be synthesised?
+
+    The two repair branches in `normalise_entry` are not equivalent for
+    anything downstream. A heading at the wrong depth is *promoted*, so
+    the words -- including the cycle number -- are the author's. A missing
+    heading is *synthesised from the filename*, so the cycle number agrees
+    with the filename by construction and nothing can be learned by
+    comparing them.
+    """
+    text = _FRONTMATTER_RE.sub("", (content or "").strip(), count=1).lstrip()
+    return bool(_LEADING_HEADING_RE.match(text))
 
 
 def _heading_finding(path, content):
@@ -128,11 +152,10 @@ def _cycle_finding(name, entry):
     this against the live folder, where the first version failed Cycle
     151's own entry.
 
-    Only meaningful once the heading itself is right, which is why the
-    caller skips it otherwise: `normalise_entry` synthesises a missing
-    heading *from the filename*, so after a repair the two agree by
-    construction and this check would report nothing however wrong the
-    document was.
+    Only meaningful when the cycle wrote a heading of its own: a
+    synthesised one is built *from the filename*, so the two agree by
+    construction and the caller skips this. A promoted one carries the
+    author's own words and can disagree, so it does not.
     """
     declared = _FILENAME_CYCLE_RE.match(name)
     if not declared:
@@ -180,7 +203,15 @@ def lint(name, content):
     footer = _footer_finding(_raw_body(normalised))
     if footer:
         findings.append(footer)
-    if not heading:
+    # Suppressed only when the heading was synthesised rather than
+    # promoted -- see `_has_own_heading`. A blanket `if not heading`
+    # here reported nothing for `## Cycle 153` in a file named
+    # `...-152.md`, which has two real and independent defects, so the
+    # author would fix the hash count and only then discover the number
+    # was wrong too. A mutation that removed the guard entirely failed
+    # no test, which is what exposed it: the case the tests used was the
+    # synthesised one, where the guard cannot be reached.
+    if _has_own_heading(content):
         cycle = _cycle_finding(name, entry)
         if cycle:
             findings.append(cycle)

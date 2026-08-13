@@ -60,6 +60,26 @@ def test_frontmatter_before_the_heading_is_caught():
     assert _kinds(lint("168-cycle-152.md", entry)) == ["heading"]
 
 
+def test_a_promoted_heading_with_the_wrong_number_reports_both():
+    """Two independent defects, and the author needs to see both at once.
+
+    A blanket "skip the cycle check whenever the heading is wrong" guard
+    passed every test in this file, because the only case they exercised
+    was the synthesised one below, where the check cannot fire at all. It
+    meant the author fixed the hash count, re-ran, and only then found out
+    the number was wrong too.
+    """
+    entry = GOOD.replace("### Cycle 152", "## Cycle 153")
+    assert _kinds(lint("168-cycle-152.md", entry)) == ["cycle", "heading"]
+
+
+def test_a_synthesised_heading_cannot_disagree_with_the_filename():
+    """The other branch: `normalise_entry` builds the heading *from* the
+    filename, so comparing the two afterwards is a check of nothing."""
+    entry = "body\n\n---\nPR: #1 | Outcome: merged\n"
+    assert _kinds(lint("168-cycle-152.md", entry)) == ["heading"]
+
+
 def test_a_broken_heading_is_reported_once_not_twice():
     """The heading check must not also surface as a footer or cycle finding.
 
