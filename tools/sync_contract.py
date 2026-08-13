@@ -65,12 +65,27 @@ it exists. It covers `db_for` and `dbs_for_prefix` under both database
 configurations (routing on, and routing off, which is a separate early
 return in both copies).
 
+A third comparison, added in Cycle 173, covers chunk assembly:
+`compare_assembly` drives each copy's assembler with its chunk fetcher
+replaced by a recorder, so the answer to every question is the *database
+each copy went looking for the chunks in*. That is the one decision in
+assembly that can send an intact file's chunks to a store that does not
+hold them, and an intact file that reports itself corrupt is
+indistinguishable from a corrupt one. It is driven rather than read for
+the same reason routing is: the runner has `vault_assemble` as a plain
+function and the bridge has `assemble` as a method, so no name comparison
+can pair them.
+
+Unlike routing, this one also states what the answers *should* be, not
+only that the two agree -- `_ASSEMBLY_EXPECTED` resolves per
+configuration. Agreement alone is worthless here: both copies dropping the
+`_SRC_DB_KEY` branch would agree on every row of the table, and that is
+precisely the drift Cycle 169 found by hand.
+
 **What is still not covered**, stated here rather than left to be
-rediscovered: chunk assembly picks its database from `_SRC_DB_KEY` in both
-copies as of Cycle 169, and nothing checks that automatically -- doing so
-means faking CouchDB, not calling a pure function. `_put_raw`,
-`database_health` and the rest of the class are unpinned for the same
-reason.
+rediscovered: `_put_raw`, `database_health` and the rest of the class are
+unpinned, because driving them means faking CouchDB responses rather than
+recording one argument.
 
 And the disclosure the earlier version of this docstring carried, kept
 because dropping it was a step down in candour on the very diff that
@@ -309,7 +324,9 @@ PROBE_PREFIXES = (
 _PROBE_ENV = ("COUCHDB_DB", "COUCHDB_NOVA_DB",
               "CDB_BASE", "CDB_USER", "CDB_PASS", "CDB_DB", "CDB_NOVA_DB")
 _PROBE_MODULES = ("_sync_contract_runner", "_sync_contract_bridge",
-                  "_sync_contract_runner_redact", "_sync_contract_bridge_redact")
+                  "_sync_contract_runner_redact", "_sync_contract_bridge_redact",
+                  "_sync_contract_runner_assemble",
+                  "_sync_contract_bridge_assemble")
 
 
 @contextlib.contextmanager
@@ -500,6 +517,238 @@ def compare_routing(runner_path, bridge_path):
     if not drifted:
         for (db, nova_db), answers in agreed.items():
             _check_the_probe_reached_both(answers, db, nova_db)
+    return drifted
+
+
+# ---------------------------------------------------------------------------
+# Chunk assembly: which database a document's content chunks are read from.
+# ---------------------------------------------------------------------------
+
+
+class ContractAssemblerMissing(LookupError):
+    """A copy has no assembler this tool can drive, or no chunk fetcher.
+
+    Its own error for the reason `ContractRouterMissing` is: a copy that
+    cannot be driven has not been compared, and reporting that as agreement
+    is the failure this whole file exists to prevent.
+    """
+
+
+# Chunk ids are content hashes with no path in them, which is exactly why
+# `db_for` can never route one and the fetcher takes an explicit database.
+_PROBE_CHUNKS = ("h:probe-chunk-a", "h:probe-chunk-b")
+
+# Which database each row must resolve to, as a token rather than a name,
+# because two of the four answers depend on how routing is configured.
+#
+#   stamp    -- the database the doc says it was read from
+#   explicit -- the `db=` argument the caller passed
+#   nova     -- whatever `db_for` calls Nova's database in this configuration
+#   edvard   -- likewise, Edvard's
+_ASSEMBLY_EXPECTED = {
+    "stamp": lambda db, nova_db: PROBE_NOVA_DB,
+    "explicit": lambda db, nova_db: PROBE_DB,
+    "nova": lambda db, nova_db: nova_db or db,
+    "edvard": lambda db, nova_db: db,
+}
+
+
+def _assembly_questions(src_db_key):
+    """`(label, doc, path argument, db argument, expected)`, one per row.
+
+    Built against the copy's *own* `_SRC_DB_KEY` rather than a literal, so
+    this table measures where assembly looks and not whether the constant
+    still spells itself the same way. That second question is already
+    `CONTRACT_CONSTANTS`' job, and asking it twice in two places is how the
+    two answers start disagreeing.
+    """
+    stamped = {"children": list(_PROBE_CHUNKS), src_db_key: PROBE_NOVA_DB}
+    return (
+        # The row Cycle 169 fixed by hand in the runner: the stamp wins over
+        # a path that routes the other way. Recomputing the route here is
+        # what makes an intact file report itself corrupt mid-migration.
+        ("stamped doc, path routes the other way",
+         dict(stamped), "unrelated/file.md", None, "stamp"),
+        ("stamped doc, no path anywhere",
+         dict(stamped), None, None, "stamp"),
+        # An explicit argument is the caller saying it already knows; it has
+        # to beat the stamp, or `vault_bulk_fetch` loses the database it
+        # just read the doc out of.
+        #
+        # The path here routes to Nova's database *and* the stamp names it,
+        # so `explicit` is the only one of the three that answers Edvard's.
+        # It read `unrelated/file.md` for one commit, which routes to the
+        # same database the explicit argument names -- a copy that ignored
+        # the argument entirely and fell through to the path scored the row
+        # anyway. Other rows still caught every reordering the second reader
+        # on #156 could build, but a row that needs another row to mean
+        # anything is not the row it says it is.
+        ("explicit db beats the stamp",
+         dict(stamped),
+         "projects/sokrates/projects/agora/nova/resources/inbox.md",
+         PROBE_DB, "explicit"),
+        ("unstamped, path argument inside Nova's folder",
+         {"children": list(_PROBE_CHUNKS)},
+         "projects/sokrates/projects/agora/nova/journal/191-cycle-169.md",
+         None, "nova"),
+        ("unstamped, path argument outside it",
+         {"children": list(_PROBE_CHUNKS)}, "unrelated/file.md", None,
+         "edvard"),
+        # The two fallbacks after the path argument, in the order both
+        # copies try them.
+        ("unstamped, path off the doc's own `path`",
+         {"children": list(_PROBE_CHUNKS),
+          "path": "projects/sokrates/projects/agora/nova/resources/inbox.md"},
+         None, None, "nova"),
+        ("unstamped, path off the doc's `_id`",
+         {"children": list(_PROBE_CHUNKS),
+          "_id": "projects/sokrates/projects/agora/journal-digest.md"},
+         None, None, "nova"),
+    )
+
+
+def _chunk_recorder(asked):
+    """A stand-in fetcher that records its database and answers every id.
+
+    Every id, because a missing chunk raises `VaultIncompleteDocument` in
+    both copies before they return -- and an exception would lose the one
+    thing this probe came for.
+    """
+    def fetch(chunk_ids, db):
+        asked.append(db)
+        return {chunk_id: "" for chunk_id in chunk_ids}
+    return fetch
+
+
+def _runner_assembler(path, db, nova_db):
+    """`(ask, src_db_key)` for the runner copy, configured as its own process.
+
+    Same import dance as `_runner_router` and for the same reason: both
+    `agora_runner.config` and the module reading it copy their values at
+    import time.
+    """
+    os.environ["COUCHDB_DB"] = db
+    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    importlib.reload(importlib.import_module("agora_runner.config"))
+    module = _load_module(path, "_sync_contract_runner_assemble")
+    for name in ("vault_assemble", "_fetch_chunks", "_SRC_DB_KEY"):
+        if not hasattr(module, name):
+            raise ContractAssemblerMissing(
+                "%s: no module-level %s" % (path, name))
+    asked = []
+    module._fetch_chunks = _chunk_recorder(asked)
+
+    def ask(doc, path_arg, db_arg):
+        del asked[:]
+        module.vault_assemble(doc, path_arg, db_arg)
+        return list(asked)
+
+    return ask, module._SRC_DB_KEY
+
+
+def _bridge_assembler(path, db, nova_db):
+    """`(ask, src_db_key)` for the bridge copy.
+
+    The recorder goes on the *instance*, which shadows the bound method
+    without touching the class -- so a second `VaultClient` built later in
+    the same interpreter is the real one.
+    """
+    os.environ.update({
+        "CDB_BASE": "http://vault-contract.invalid",
+        "CDB_USER": "probe",
+        "CDB_PASS": "probe",
+        "CDB_DB": db,
+        "CDB_NOVA_DB": nova_db,
+    })
+    module = _load_module(path, "_sync_contract_bridge_assemble")
+    client_class = getattr(module, "VaultClient", None)
+    if client_class is None:
+        raise ContractAssemblerMissing("%s: no VaultClient" % (path,))
+    if not hasattr(module, "_SRC_DB_KEY"):
+        raise ContractAssemblerMissing(
+            "%s: no module-level _SRC_DB_KEY" % (path,))
+    client = client_class()
+    for name in ("assemble", "_fetch_chunks"):
+        if not hasattr(client, name):
+            raise ContractAssemblerMissing(
+                "%s: VaultClient has no %s" % (path, name))
+    asked = []
+    client._fetch_chunks = _chunk_recorder(asked)
+
+    def ask(doc, path_arg, db_arg):
+        del asked[:]
+        client.assemble(doc, path_arg, db_arg)
+        return list(asked)
+
+    return ask, module._SRC_DB_KEY
+
+
+def _assembly_answers(ask, src_db_key):
+    """`{question: [databases asked, in order]}` for one copy.
+
+    The whole list rather than one name: a copy that asked twice, or asked
+    nobody, is a different bug from a copy that asked the wrong database,
+    and collapsing them would hide both behind the same answer.
+    """
+    answers = {}
+    for label, doc, path_arg, db_arg, _ in _assembly_questions(src_db_key):
+        answers[label] = ask(doc, path_arg, db_arg)
+    return answers
+
+
+def _check_the_assembly_probe_bites(agreed, src_db_key, db, nova_db):
+    """Raise if the two copies agreed on an answer that is simply wrong.
+
+    Routing gets away with checking only that the two agree, because a
+    routing answer this tool never configured is visibly stray. Assembly
+    cannot: every database in play here is one of the two, so two copies
+    that both stopped honouring `_SRC_DB_KEY` answer this table identically
+    and land on real, configured, wrong names. That is not a hypothetical --
+    it is the state the runner was in until Cycle 169, and the bridge was
+    the only reason anyone noticed.
+
+    So this states the expected answer per row. It runs only on rows the
+    two copies agreed about, for the reason `compare_routing` gives: a
+    named difference must not be replaced by an instrumentation error.
+    """
+    for label, _, _, _, token in _assembly_questions(src_db_key):
+        if label not in agreed:
+            continue
+        want = [_ASSEMBLY_EXPECTED[token](db, nova_db)]
+        if agreed[label] != want:
+            raise ContractAssemblerMissing(
+                "both copies read the chunks for %r from %r, expected %r. "
+                "Two copies that drifted the same way agree on every row of "
+                "this table, so agreement is not evidence here -- refusing "
+                "to report a comparison whose answers are wrong in both"
+                % (label, agreed[label], want))
+
+
+def compare_assembly(runner_path, bridge_path):
+    """Assembly questions the two copies answer differently, ascending.
+
+    Empty means both copies went looking for a document's chunks in the
+    same database on every row, under both configurations, *and* that
+    database was the right one.
+    """
+    drifted = []
+    agreed = {}
+    with _process_state_restored():
+        for db, nova_db in ROUTING_CONFIGS:
+            runner_ask, runner_key = _runner_assembler(runner_path, db, nova_db)
+            bridge_ask, bridge_key = _bridge_assembler(bridge_path, db, nova_db)
+            left = _assembly_answers(runner_ask, runner_key)
+            right = _assembly_answers(bridge_ask, bridge_key)
+            label = "assembly, routing on" if nova_db else "assembly, routing off"
+            drifted += [
+                ("%s: %s" % (label, q), left[q], right[q])
+                for q in sorted(left) if left[q] != right[q]
+            ]
+            agreed[(db, nova_db, runner_key)] = {
+                q: left[q] for q in left if left[q] == right[q]}
+    if not drifted:
+        for (db, nova_db, key), answers in agreed.items():
+            _check_the_assembly_probe_bites(answers, key, db, nova_db)
     return drifted
 
 
@@ -766,6 +1015,17 @@ _REDACTION_ADVICE = (
 )
 
 
+_ASSEMBLY_ADVICE = (
+    "\nThe two copies went looking for one document's content chunks in\n"
+    "different databases. Chunk ids carry no path, so a chunk fetched from\n"
+    "the wrong store is not found -- and a chunk that is merely in the\n"
+    "other database is indistinguishable from one that was never written,\n"
+    "so an intact file reports itself corrupt. There is no table in\n"
+    "tools/sync_contract.py to relax: both copies read one CouchDB and a\n"
+    "document's chunks live wherever the document does."
+)
+
+
 def check_vault_pair(left_path, right_path):
     """Exit code for the vault client pair: 0 in sync, 1 drift, 2 unreadable."""
     try:
@@ -798,19 +1058,49 @@ def check_vault_pair(left_path, right_path):
     except ContractRouterMissing as exc:
         print("vault routing: %s" % exc, file=sys.stderr)
         return 2
-    if not routed:
-        print("vault routing: every probed path and prefix resolved the same "
-              "in both copies")
+    if routed:
+        print("\nvault routing: %d question(s) answered differently between\n"
+              "  %s\n  %s\n" % (len(routed), left_path, right_path),
+              file=sys.stderr)
+        for question, left_answer, right_answer in routed:
+            print("\n".join([
+                "  %s" % question,
+                "    %s: %r" % (left_path, left_answer),
+                "    %s: %r" % (right_path, right_answer),
+            ]), file=sys.stderr)
+        print(_ROUTING_ADVICE, file=sys.stderr)
+        return 1
+    print("vault routing: every probed path and prefix resolved the same "
+          "in both copies", flush=True)
+
+    # Third and last: where each copy goes looking for a document's chunks.
+    # All three or none, for the reason the routing half gives -- the two
+    # halves above passing is exactly the state that read as "in sync" while
+    # assembly recomputed a route it had been handed.
+    try:
+        assembled = compare_assembly(left_path, right_path)
+    except (ContractAssemblerMissing, ContractRouterMissing) as exc:
+        print("vault assembly: %s" % exc, file=sys.stderr)
+        return 2
+    if not assembled:
+        # Questions times configurations, because every row is driven under
+        # both. Counting the rows alone understated the run by half, which
+        # is a check under-claiming what it did -- the same class of thing
+        # as over-claiming, one direction friendlier. Second reader on #156.
+        print("vault assembly: %d probed reads resolved to the same database "
+              "in both copies"
+              % (len(_assembly_questions("_probe")) * len(ROUTING_CONFIGS)))
         return 0
-    print("\nvault routing: %d question(s) answered differently between\n"
-          "  %s\n  %s\n" % (len(routed), left_path, right_path), file=sys.stderr)
-    for question, left_answer, right_answer in routed:
+    print("\nvault assembly: %d question(s) answered differently between\n"
+          "  %s\n  %s\n" % (len(assembled), left_path, right_path),
+          file=sys.stderr)
+    for question, left_answer, right_answer in assembled:
         print("\n".join([
             "  %s" % question,
             "    %s: %r" % (left_path, left_answer),
             "    %s: %r" % (right_path, right_answer),
         ]), file=sys.stderr)
-    print(_ROUTING_ADVICE, file=sys.stderr)
+    print(_ASSEMBLY_ADVICE, file=sys.stderr)
     return 1
 
 

@@ -466,6 +466,198 @@ def test_the_guard_still_fires_when_there_is_no_drift_to_report(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Chunk assembly: which database a document's chunks are fetched from. Same
+# discipline again -- silence and noise over the same input -- with one extra
+# obligation the routing tests do not carry. Every database in play here is
+# one of the two configured, so an answer cannot be visibly stray: two copies
+# that drifted the same way agree on real names. Hence the tests that expect
+# an *error* on agreement.
+# ---------------------------------------------------------------------------
+
+# The bridge's `assemble`, as a method, appended to the routing stub's class.
+# Faithful to `bridge/vault_tool.py` in the one line this comparison reads --
+# how `db` is chosen -- and deliberately not in what it does with a missing
+# chunk, because the probe answers every id and never reaches that branch.
+BRIDGE_ASSEMBLE_STUB = BRIDGE_STUB + '''
+    def _fetch_chunks(self, chunk_ids, db):
+        raise AssertionError("the probe is meant to replace this")
+
+    def assemble(self, doc, path=None, db=None):
+        kids = doc.get("children") or []
+        if not kids:
+            return doc.get("data", "")
+        db = db or doc.get(_SRC_DB_KEY) or self.db_for(
+            path or doc.get("path") or doc.get("_id"))
+        by_id = self._fetch_chunks(kids, db)
+        return "".join(by_id.get(chunk_id, "") for chunk_id in kids)
+
+
+_SRC_DB_KEY = "_nova_src_db"
+'''
+
+# The line each copy makes its one decision on, in each copy's own shape.
+_PICK_RUNNER = "db = db or doc.get(_SRC_DB_KEY) or db_for("
+_PICK_BRIDGE = "db = db or doc.get(_SRC_DB_KEY) or self.db_for("
+
+
+def _assemble_pair(tmp_path, runner=(None, None), bridge=(None, None)):
+    """`(runner path, bridge path)`, each optionally mutated once."""
+    runner_path = str(tmp_path / "runner_vault.py")
+    source = RUNNER_SOURCE
+    if runner[0] is not None:
+        source = _mutated(runner[0], runner[1])
+    open(runner_path, "w", encoding="utf-8").write(source)
+    return runner_path, _bridge_copy(
+        tmp_path, source=BRIDGE_ASSEMBLE_STUB, old=bridge[0], new=bridge[1])
+
+
+def test_the_two_copies_read_every_probed_document_from_the_same_database(
+        tmp_path):
+    assert sync_contract.compare_assembly(*_assemble_pair(tmp_path)) == []
+
+
+def test_the_gap_this_pair_was_built_for(tmp_path):
+    """Cycle 169's finding, which nothing prevented coming back.
+
+    The runner recomputed the route instead of honouring the database the
+    doc was actually read from. Both name comparison and routing comparison
+    stay silent on it: the constant is still defined, `db_for` still answers
+    every path identically, and the drift is one term of one expression
+    inside a function no AST pairing can reach.
+    """
+    runner, bridge = _assemble_pair(
+        tmp_path, runner=(_PICK_RUNNER, "db = db or db_for("))
+    drifted = sync_contract.compare_assembly(runner, bridge)
+    assert sorted(q for q, _, _ in drifted) == [
+        "assembly, routing off: stamped doc, no path anywhere",
+        "assembly, routing off: stamped doc, path routes the other way",
+        "assembly, routing on: stamped doc, no path anywhere",
+        "assembly, routing on: stamped doc, path routes the other way",
+    ]
+    # And the name comparison really is blind to it, which is the claim that
+    # justifies this comparison existing at all.
+    assert sync_contract.compare(
+        RUNNER_SOURCE, _mutated(_PICK_RUNNER, "db = db or db_for(")) == []
+
+
+def test_an_explicit_database_argument_dropped_on_one_side_is_drift(tmp_path):
+    """`vault_bulk_fetch` passes the database it just read the doc out of.
+    A copy that lets the stamp win over it is reading with an argument it
+    was told to ignore."""
+    runner, bridge = _assemble_pair(
+        tmp_path,
+        runner=(_PICK_RUNNER, "db = doc.get(_SRC_DB_KEY) or db or db_for("))
+    drifted = sync_contract.compare_assembly(runner, bridge)
+    assert sorted(q for q, _, _ in drifted) == [
+        "assembly, routing off: explicit db beats the stamp",
+        "assembly, routing on: explicit db beats the stamp",
+    ]
+
+
+def test_the_explicit_row_catches_a_dropped_argument_on_its_own(tmp_path):
+    """A copy that ignores the `db=` argument *and* the stamp and routes by
+    path. The second reader on #156 found this scored the explicit row for
+    free, because that row's path used to route to the same database the
+    argument named. Other rows caught it, which is why it was a near-miss
+    and not a bug -- but a row that needs another row to mean anything is
+    not the row it says it is."""
+    runner, bridge = _assemble_pair(
+        tmp_path, runner=(_PICK_RUNNER, "db = db_for("))
+    drifted = [q for q, _, _ in sync_contract.compare_assembly(runner, bridge)]
+    assert "assembly, routing on: explicit db beats the stamp" in drifted
+
+
+def test_both_copies_dropping_the_stamp_is_an_error_not_agreement(tmp_path):
+    """The one this table exists for, and the one routing's guard shape
+    cannot catch: both copies answer with a database this comparison did
+    configure, and they answer with the same one."""
+    runner, bridge = _assemble_pair(
+        tmp_path,
+        runner=(_PICK_RUNNER, "db = db or db_for("),
+        bridge=(_PICK_BRIDGE, "db = db or self.db_for("))
+    with pytest.raises(sync_contract.ContractAssemblerMissing) as caught:
+        sync_contract.compare_assembly(runner, bridge)
+    assert "stamped doc, path routes the other way" in str(caught.value)
+
+
+def test_the_routing_off_configuration_is_driven_too(tmp_path):
+    """Both copies honour the stamp only while Nova's database is
+    configured. Routing-on is identical to the real thing, so a comparison
+    that ran one configuration would report this pair in sync."""
+    runner, bridge = _assemble_pair(
+        tmp_path,
+        runner=(_PICK_RUNNER,
+                "db = db or (doc.get(_SRC_DB_KEY) if COUCHDB_NOVA_DB else None)"
+                " or db_for("),
+        bridge=(_PICK_BRIDGE,
+                "db = db or (doc.get(_SRC_DB_KEY) if self.nova_db else None)"
+                " or self.db_for("))
+    with pytest.raises(sync_contract.ContractAssemblerMissing) as caught:
+        sync_contract.compare_assembly(runner, bridge)
+    assert "'probe-edvard-db'" in str(caught.value)
+
+
+def test_a_copy_with_no_assembler_is_an_error_not_agreement(tmp_path):
+    """The routing stub, which has no `assemble` at all. Silence here would
+    be a green CI job comparing nothing."""
+    runner, _ = _assemble_pair(tmp_path)
+    with pytest.raises(sync_contract.ContractAssemblerMissing) as caught:
+        sync_contract.compare_assembly(runner, _bridge_copy(tmp_path))
+    assert "assemble" in str(caught.value)
+
+
+def test_real_assembly_drift_is_not_masked_by_the_guard(tmp_path):
+    """Both copies wrong the same way on one row, and one of them wrong
+    again on another. The named difference has to survive: replacing it
+    with an instrumentation error is a finding masked by its own safety
+    net, which is what the second reader caught on #153 for routing."""
+    runner, bridge = _assemble_pair(
+        tmp_path,
+        runner=(_PICK_RUNNER, "db = db or db_for("),
+        bridge=(_PICK_BRIDGE, "db = db or self.db or self.db_for("))
+    drifted = sync_contract.compare_assembly(runner, bridge)
+    # Both dropped the stamp, so the two stamped rows agree on a wrong
+    # answer -- and the guard must not get to speak, because these did not.
+    assert sorted(q for q, _, _ in drifted) == [
+        "assembly, routing on: unstamped, path argument inside Nova's folder",
+        "assembly, routing on: unstamped, path off the doc's `_id`",
+        "assembly, routing on: unstamped, path off the doc's own `path`",
+    ]
+
+
+def test_the_assembly_comparison_puts_the_process_back_too(
+        tmp_path, restored_config):
+    """It configures both copies out of the environment exactly as
+    `compare_routing` does, and loads two more modules. The restore is
+    shared, so this asserts the shared restore actually covers them --
+    `_PROBE_MODULES` is a list somebody has to remember to add to, and the
+    routing test above cannot notice a name it never loads."""
+    os.environ["COUCHDB_DB"] = SENTINEL_DB
+    os.environ.pop("COUCHDB_NOVA_DB", None)
+    importlib.reload(restored_config)
+    assert restored_config.COUCHDB_DB == SENTINEL_DB, "the sentinel never took"
+
+    sync_contract.compare_assembly(*_assemble_pair(tmp_path))
+
+    assert os.environ["COUCHDB_DB"] == SENTINEL_DB
+    assert "COUCHDB_NOVA_DB" not in os.environ
+    assert restored_config.COUCHDB_DB == SENTINEL_DB
+    assert "_sync_contract_runner_assemble" not in sys.modules
+    assert "_sync_contract_bridge_assemble" not in sys.modules
+
+
+def test_the_probe_table_would_notice_a_copy_that_hardcoded_one_database():
+    """Every expectation token is used, and under routing-on they do not all
+    resolve to the same name. A table whose rows all expect one database is
+    satisfied by a copy that ignores its arguments entirely."""
+    tokens = {row[4] for row in sync_contract._assembly_questions("_k")}
+    assert tokens == set(sync_contract._ASSEMBLY_EXPECTED)
+    wanted = {sync_contract._ASSEMBLY_EXPECTED[t](
+        sync_contract.PROBE_DB, sync_contract.PROBE_NOVA_DB) for t in tokens}
+    assert len(wanted) > 1
+
+
+# ---------------------------------------------------------------------------
 # The redaction pair. Same shape as above: every test expecting silence is
 # paired with one expecting noise, over the same input.
 # ---------------------------------------------------------------------------
