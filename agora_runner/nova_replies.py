@@ -194,10 +194,10 @@ def _entry_for(cycle):
     """
     single = journal_entry_markdown(cycle)
     if single:
-        for entry in parse_journal(single, strip_header=False):
+        for entry in parse_journal(single):
             if entry.get("cycle") == cycle:
                 return entry
-    for entry in parse_journal(journal_markdown(), strip_header=False):
+    for entry in parse_journal(journal_markdown()):
         if entry.get("cycle") == cycle:
             return entry
     return None

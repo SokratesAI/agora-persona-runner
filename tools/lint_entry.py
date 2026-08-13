@@ -183,14 +183,15 @@ def lint(name, content):
     # one thing and see two.
     normalised = normalise_entry(path, content)
     # One entry document, so there is no preamble to cut off the front --
-    # `strip_header=False`, the same argument the site and the reply
-    # lookup pass. This used to be a plain call, and a `## Entries` line in
+    # `parse_journal`, the entries-body parser, same as the site and the
+    # reply lookup. This used to call the whole-file parser, and a
+    # `## Entries` line in
     # an entry's prose therefore cut the entry's own heading off and left
     # nothing to parse. There was a whole rule here refusing such an entry
     # outright; it is gone with the hazard that justified it (runner#135),
     # because the cost of keeping it was refusing a cycle that wrote a true
     # sentence about the append command `prompt.md` step 6 mandates.
-    entries = parse_journal(normalised, strip_header=False)
+    entries = parse_journal(normalised)
     if not entries:
         findings.append(
             "unparseable: the site could not read a single entry out of this "

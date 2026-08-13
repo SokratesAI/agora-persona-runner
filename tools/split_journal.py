@@ -33,6 +33,7 @@ from agora_runner.nova_journal import (
     assemble_entries,
     entry_filename,
     parse_journal,
+    parse_journal_file,
     split_entries,
 )
 from agora_runner.vault import vault_read_path, vault_write_path
@@ -62,19 +63,20 @@ def verify(markdown, files):
     (which loses one silently, since the second write wins), and the
     reassembled text can parse differently from the original.
     """
-    original = parse_journal(markdown)
+    original = parse_journal_file(markdown)
     if len(files) != len(original):
         raise SystemExit(
             f"refusing to write: {len(original)} entries parsed but "
             f"{len(files)} files planned -- two entries share a filename"
         )
-    # `strip_header=False` on this side only. `markdown` above is a whole
-    # `journal.md` and its preamble is real; the reassembled files are an
-    # entries body with none. Reading both the same way is what the site
-    # used to do, and it is why an entry quoting `## Entries` could delete
-    # its neighbours -- here it would abort the migration instead, with
-    # "renders differently" pointing at an entry that is perfectly fine.
-    rebuilt = parse_journal(assemble_entries(files), strip_header=False)
+    # Two different parsers on the two sides, deliberately. `markdown`
+    # above is a whole `journal.md` and its preamble is real; the
+    # reassembled files are an entries body with none. Reading both the
+    # same way is what the site used to do, and it is why an entry quoting
+    # `## Entries` could delete its neighbours -- here it would abort the
+    # migration instead, with "renders differently" pointing at an entry
+    # that is perfectly fine.
+    rebuilt = parse_journal(assemble_entries(files))
     if rebuilt != original:
         for before, after in zip(original, rebuilt):
             if before != after:
