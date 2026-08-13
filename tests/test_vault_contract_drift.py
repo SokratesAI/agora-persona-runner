@@ -75,6 +75,17 @@ def test_a_changed_routing_folder_is_drift():
     assert "NOVA_DB_TARGETS" in drifted
 
 
+def test_a_routing_tuple_turned_into_a_list_is_drift():
+    """Same strings, different brackets. `db_for` hands these to
+    `str.startswith`, which takes a tuple and raises TypeError on a list --
+    so this is a crash in the other pod, not a style difference, and a
+    value-only comparison would call it in sync."""
+    other = _mutated(
+        'NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n)',
+        'NOVA_DB_FOLDERS = [\n    "projects/sokrates/projects/agora/nova/",\n]')
+    assert "NOVA_DB_FOLDERS" in vault_contract.compare(RUNNER_SOURCE, other)
+
+
 def test_a_changed_health_probe_path_is_drift():
     other = _mutated('"projects/sokrates/projects/nova/issues.md",',
                      '"projects/sokrates/projects/agora/issues.md",')

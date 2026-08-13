@@ -59,6 +59,9 @@ CONTRACT_FUNCTIONS = (
 )
 
 
+_UNEVALUATED = object()
+
+
 class ContractNameMissing(LookupError):
     """A name the contract requires is not defined at module level.
 
@@ -114,9 +117,17 @@ def _normalise_value(node, defined, seen=()):
     instead, which compares fine and is the honest answer.
     """
     try:
-        return json.dumps(ast.literal_eval(node), sort_keys=True, default=str)
+        value = ast.literal_eval(node)
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-        pass
+        value = _UNEVALUATED
+    if value is not _UNEVALUATED:
+        # The type name is part of the answer, not decoration. JSON renders a
+        # tuple and a list identically, and these tuples are handed straight
+        # to `str.startswith`, which accepts a tuple and raises TypeError on a
+        # list. One copy switching the brackets is a crash in the other pod
+        # that a value-only comparison would call in sync.
+        return "%s:%s" % (type(value).__name__,
+                          json.dumps(value, sort_keys=True, default=str))
     if isinstance(node, ast.Name) and node.id in defined and node.id not in seen:
         return _normalise_value(defined[node.id], defined, seen + (node.id,))
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
