@@ -506,8 +506,12 @@
         // See stopPolling: a render discards this drawer, and this is how
         // its poll is discarded with it.
         fetch("/api/comments")
-          .then(function (r) { return r.json(); })
+          .then(json)
           .then(function (payload) { paint(target.pick(payload)); })
+          // `watch(true)` is the keep-waiting path, and a 500 used to walk
+          // straight past it: the error body parsed, `pick` found nothing
+          // in it, and the drawer stopped polling as though it had been
+          // told the reply was not coming.
           .catch(function () { watch(true); });
       }, 8000);
       livePolls.push(timer);
@@ -544,11 +548,18 @@
           delete drafts[target.key];
           fit();
           status.textContent = "saved";
+          // The save already succeeded; this only repaints the bubbles to
+          // include it. Swallowed on purpose, and it is the one place in
+          // this file where swallowing is right: letting it reach the
+          // `.catch` below would replace "saved" with an error message
+          // for a comment that is safely written, and he would send it
+          // again.
           return fetch("/api/comments")
-            .then(function (r) { return r.json(); })
+            .then(json)
             .then(function (payload) {
               paint(target.pick(payload));
-            });
+            })
+            .catch(function () {});
         })
         .catch(function (err) {
           status.textContent = String(err.message || err);

@@ -1238,6 +1238,27 @@ describe("commenting on a cycle", () => {
     assert.equal(timers.queued.length, 0, "nothing left scheduled once the reply is in");
   });
 
+  test("a server error mid-wait keeps the drawer waiting instead of giving up", async () => {
+    /* The drawer's `.catch` is the keep-waiting path, and a 500 used to
+     * walk straight past it: the error body parsed, `pick` found no reply
+     * in it, and the drawer stopped as though it had been told the reply
+     * was not coming. He would have been left looking at a comment that
+     * had quietly given up on itself. */
+    let timers;
+    const w = await loadSite("/", {
+      comments: withPending(57),
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const card = cardFor(w, 57);
+    w.fetch = (url) => (String(url).includes("/api/comments")
+      ? res({ error: "the comments file is unreadable" }, 502)
+      : res({}));
+
+    await timers.fire();
+    assert.ok(card.querySelector(".comment-waiting"), "still waiting after a 502");
+    assert.ok(timers.queued.length > 0, "and still scheduled to try again");
+  });
+
   test("navigating while a reply is coming does not leave two pollers", async () => {
     /* A render throws every drawer away and builds new ones. The discarded
      * drawer's poll has to go with it, or every tap he makes while waiting
