@@ -163,6 +163,33 @@ def _body(live, spec):
     return parts
 
 
+def _split_title(archive, spec):
+    """(everything through the archive's title line, the rest), or None.
+
+    **`split_at_heading` rather than `archive.split(spec.archive_title)`,
+    and the difference is a reproduction rather than a worry.** These
+    files all carry a `maintenance:` line quoting their own structure back
+    at whichever cycle opens them; the moment one of them names its own
+    title -- which is `comments.md`'s exact shape, and one sentence away
+    in `digest-archive.md`, whose frontmatter already discusses its own
+    headings -- a substring split cuts *inside the frontmatter*.
+
+    Measured on this fixture, before the fix: four archived entries where
+    there were two, one of them the fragment `title is append only.\\n---`;
+    the rolling cycle line inserted above the frontmatter's closing `---`
+    where no reader can see it; and the frontmatter itself written back
+    severed mid-sentence with that `---` gone. The site concatenates this
+    archive onto the digest Edvard opens, so the fragment renders on his
+    page as a cycle line.
+
+    **`verify` passed all of that**, which is the part worth keeping in
+    mind before trusting it elsewhere: it compares `_archived(archive)`
+    against `_archived(new_archive)`, so a splitter that is wrong the same
+    way on both sides agrees with itself.
+    """
+    return split_at_heading(archive, spec.archive_title)
+
+
 def _archived(archive, spec):
     if not archive.strip():
         return []
@@ -178,7 +205,13 @@ def _archived(archive, spec):
     # that bullet on any archive not yet carrying a real heading,
     # truncating it. Only a heading in the one position that makes it a
     # heading counts.
-    body = archive.split(spec.archive_title, 1)[-1]
+    #
+    # A titleless archive falls back to reading the whole file as body,
+    # which is what the substring version did. `plan` refuses that file by
+    # name before ever getting here, so this is the defensive branch and
+    # not a supported input.
+    split = _split_title(archive, spec)
+    body = archive if split is None else split[1]
     if spec.archive_section:
         stripped = body.lstrip("\n")
         if stripped.startswith(spec.archive_section):
@@ -195,10 +228,17 @@ def _archive_header(archive, spec):
     place the next time it is rolled instead of staying unreadable to its
     own page forever.
     """
-    if spec.archive_title in archive:
-        header = archive.split(spec.archive_title, 1)[0] + spec.archive_title + "\n\n"
-    else:
+    split = _split_title(archive, spec)
+    if split is None:
         header = spec.archive_frontmatter + spec.archive_title + "\n\n"
+    else:
+        # `split[0]` already ends with the title's own line and its
+        # newline, so this is the previous `head + title + "\n\n"` with
+        # the title no longer re-appended from the spec -- an archive
+        # whose real heading differs from the spec only in case or inner
+        # whitespace now keeps what it had rather than being silently
+        # restyled.
+        header = split[0].rstrip("\n") + "\n\n"
     if spec.archive_section:
         header += spec.archive_section + "\n\n"
     return header
@@ -231,7 +271,12 @@ def plan(live, archive, spec, keep=None):
     if len(entries) <= keep:
         return live, archive
 
-    if archive.strip() and spec.archive_title not in archive:
+    # Heading-aware for the same reason `_split_title` is: an archive whose
+    # frontmatter merely *names* the title passed this check as a substring
+    # and then got cut inside that frontmatter. Refusing by name is the
+    # right end of that file -- it is malformed, and guessing where its
+    # entries begin is what produced the splice.
+    if archive.strip() and _split_title(archive, spec) is None:
         raise RollError(
             f"refusing to roll: archive has no {spec.archive_title!r} title"
         )
