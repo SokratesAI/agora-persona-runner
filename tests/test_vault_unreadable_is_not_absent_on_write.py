@@ -6,6 +6,13 @@ places: `vault_write_path` and the fallback lookup inside `_vault_put_raw`
 both did `existing if status == 200 else None`, so a 500, a 503 or a 401 on
 the pre-write lookup made a live document look absent.
 
+There is one lookup now, not two fixed ones. `vault_write_path`'s lookup was
+`_vault_put_raw`'s own question asked a frame early and handed down, and
+`_vault_put_raw` re-asks it whenever what it gets is None -- so on an absent
+file the same GET ran twice. A mutation check reverting only the outer site
+failed nothing, which is what exposed it as a duplicate rather than a half.
+It is deleted; every test below now reaches the single lookup.
+
 It was filed as degrading safely, on the grounds that the resulting PUT
 carries no `_rev` and 409s against the live document. That is true of
 exactly one of the two shapes it takes, and it is the shape this loop uses
@@ -93,10 +100,10 @@ def test_a_conditional_write_no_longer_lands_with_the_ctime_wiped():
 
 
 def test_the_inner_lookup_refuses_on_its_own():
-    """`_vault_put_raw` re-looks-up whenever it is handed `existing=None`,
-    which is every call from `vault_write_path` against a file that really
-    is absent, plus any direct caller. Fixing only the outer site would
-    leave the same conflation one frame down."""
+    """The one lookup, reached directly rather than through
+    `vault_write_path`. `_vault_put_raw` is called straight by the routing
+    tests and by `split_journal`, so it has to refuse on its own and not
+    only because a caller checked first."""
     couch = _couch_with_unreadable()
     with patch.object(vault, "couch_req", couch.req):
         result = vault._vault_put_raw(PATH, MINE, existing=None)

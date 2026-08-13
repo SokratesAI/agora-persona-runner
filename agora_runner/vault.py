@@ -782,12 +782,15 @@ def vault_write_path(path, content, if_rev=_ANY_REV):
     Edvard like duplicated folders). Enforcing lowercase everywhere
     (Edvard's call, 2026-07-24) makes `_id` and `path` structurally
     identical by construction, closing this bug class for good."""
-    lower_id = path.lower()
-    try:
-        existing = _doc_to_overwrite(lower_id)
-    except VaultUnreadableDocument as e:
-        return f"FAILED(unreadable: {e})"
-    return _vault_put_raw(path, content, existing, if_rev=if_rev)
+    # The pre-write lookup that used to sit here is gone rather than fixed.
+    # It asked `_vault_put_raw`'s own question one frame early and then handed
+    # the answer down -- and `_vault_put_raw` re-asks it whenever what it gets
+    # is None, so on a file that really is absent this GET ran twice. Writing
+    # the missing/unreadable fix into both was writing it twice too: a
+    # mutation check reverting only this site failed nothing, because the
+    # lookup below caught every case anyway. One lookup, one place, one
+    # answer, and no second copy to drift.
+    return _vault_put_raw(path, content, if_rev=if_rev)
 
 
 def vault_append_path(path, content, after_marker=""):
