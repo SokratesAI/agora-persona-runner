@@ -39,8 +39,10 @@ import pytest
 
 from agora_runner import nova_capture, nova_journal, nova_replies, nova_site, nova_sources, vault
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
+from agora_runner.vault import VaultFiles
 from agora_runner.nova_journal import (
     JOURNAL_DIR,
+    JOURNAL_PATH,
     assemble_entries,
     normalise_entry,
     synthetic_heading,
@@ -70,13 +72,33 @@ def _fixture(name):
 
 
 @pytest.fixture(autouse=True)
-def _no_split_journal_by_default():
+def _split_the_journal_fixture_into_documents():
     """Every test that sets up a journal does it by patching
-    `vault_read_path` with a whole-file fixture, which describes a vault
-    that has not been split yet. Saying so once here keeps those tests
-    about what they were about, and stops an unmocked `vault_bulk_fetch`
-    reaching for the network -- conftest blocks that outright. The split
-    tests below override this explicitly.
+    `vault_read_path` with a whole-file fixture. This splits that fixture
+    into the per-entry documents the site actually reads, so those tests
+    describe today's vault rather than the one that existed before
+    2026-08-09.
+
+    It used to hand `vault_bulk_fetch` an empty folder instead, which sent
+    all 27 of them down `journal_markdown`'s archive fallback. That
+    fallback was deleted this cycle because `journal.md` was emptied on
+    2026-08-10 and it could only ever return zero entries -- so the tests
+    were pinning a branch production can no longer take, and a test suite
+    that green-lights a dead path is how the next cycle learns to call it.
+    The split is `tools.split_journal.plan`, the same one the migration
+    used, and `test_the_split_reassembles_into_an_identical_entry_list`
+    pins that it parses to exactly what the monolith parsed to -- so
+    nothing below changes meaning by arriving this way.
+
+    Reading the markdown through `nova_sources.vault_read_path` at call
+    time rather than capturing it here is what keeps each test's own
+    `patch.object` in charge: whatever it installs is what gets split,
+    including a `None` (an empty vault) and a `side_effect` that raises
+    (a database that would not answer, which must still reach the caller
+    as an error).
+
+    Tests that patch `vault_bulk_fetch` themselves override this, and the
+    network stays blocked either way -- conftest refuses it outright.
 
     `vault_list_ids` is here for the same reason -- it is the other half of
     the same lookup -- and `_ensure_worker` is here because patching the
@@ -89,7 +111,14 @@ def _no_split_journal_by_default():
     Not starting the thread is the only version of this that is not a
     race. Tests that care what `enqueue_reply` was called with patch it
     themselves, which wins over this."""
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})), \
+    from tools.split_journal import plan
+
+    def _bulk(prefix, with_mtimes=False):
+        markdown = nova_sources.vault_read_path(JOURNAL_PATH) if prefix == JOURNAL_DIR else None
+        files = VaultFiles(plan(markdown) if markdown else {})
+        return (files, {}) if with_mtimes else files
+
+    with patch.object(nova_sources, "vault_bulk_fetch", side_effect=_bulk), \
             patch.object(nova_sources, "vault_list_ids", return_value=[]), \
             patch.object(nova_replies, "_ensure_worker"):
         yield
@@ -1748,31 +1777,65 @@ def test_an_entry_quoting_the_entries_marker_does_not_delete_the_newer_cards():
     assert "is the marker that command needs." in payload["entries"][1]["body"]
 
 
-def test_the_archive_fallback_still_drops_its_own_preamble():
-    """`journal_markdown` now cuts the archive's preamble itself, so both of
-    its branches hand back the same kind of thing and the site never has to
-    guess which it got. The preamble is still instructions rather than
-    content and still must not become a card -- and it legitimately opens
-    with a `### ` heading documenting the entry format, which is exactly
-    why no rule read off the text can find this boundary.
+def test_the_journal_never_reads_the_emptied_archive_again():
+    """`journal.md` is a 614-byte signpost, not a journal, and has been
+    since 2026-08-10.
 
-    A reviewer called this vacuous, on the grounds that it gives the same
-    answer as the code did before the change. It does, and that is the
-    point: the archive path is meant to be unchanged. What it pins is the
-    *pairing* that now produces it -- `journal_markdown` stripping and the
-    site passing `strip_header=False` -- and it is the only test in the
-    suite that fails when the stripping is dropped from `journal_markdown`
-    (measured, 1 failed of 1670). Compared against the old code it looks
-    like it agrees either way; compared against a mutation of the new
-    code, which is the question, it bites."""
+    `journal_markdown` used to fall back to it when the folder came back
+    empty. The two facts together are what made that dangerous: the branch
+    only ran when the folder read had *failed*, and the thing it fell back
+    to could no longer answer, so the failure rendered as a journal with
+    nothing in it. Pinned with the real file's shape -- a preamble that
+    deliberately opens with a `### ` heading documenting the entry format,
+    which the old fallback had to work to avoid turning into a card.
+
+    An empty folder is now an empty journal, full stop, and nothing reads
+    `JOURNAL_PATH` at all."""
     archive = (
         "# Journal\n\nWrite entries like:\n\n### 2026-01-01 00:00 (Oslo) — Cycle 0\n\n"
-        "## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\nReal entry."
+        "Nothing here to read, and nothing to append."
     )
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})), \
-            patch.object(nova_sources, "vault_read_path", return_value=archive):
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(), {})), \
+            patch.object(nova_sources, "vault_read_path", return_value=archive) as read:
         payload = nova_site.journal_payload()
-    assert [e["cycle"] for e in payload["entries"]] == [1]
+    assert payload["entries"] == []
+    assert JOURNAL_PATH not in [call.args[0] for call in read.call_args_list]
+
+
+def test_a_folder_the_vault_could_not_fully_read_is_an_error_not_an_empty_journal():
+    """The failure the fallback was hiding, stated directly.
+
+    `vault_bulk_fetch` reports a database it could not reach on
+    `.unreadable` and returns whatever else it got. For the journal that
+    is not a partial answer a reader can use -- an entry list missing an
+    unknown number of entries is indistinguishable from a loop that did
+    not run -- so this is the one caller that must refuse it. The reason
+    travels with the refusal, because "the journal is empty" and "the
+    journal database would not answer" need to look different to whoever
+    opens the page."""
+    files = VaultFiles(
+        {JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nThe half that survived."},
+        unreadable=["_all_docs include_docs batch failed on database 'nova' (503)"],
+    )
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(files, {})):
+        with pytest.raises(RuntimeError, match="could not be fully read"):
+            nova_sources.journal_markdown()
+        with pytest.raises(RuntimeError, match=r"database 'nova' \(503\)"):
+            nova_sources.journal_markdown()
+
+
+def test_a_journal_the_vault_could_not_read_is_a_502_rather_than_an_empty_feed():
+    """End to end, because the raise is only worth anything if the server
+    turns it into something a reader can see. `nova_site`'s handler already
+    maps an exception to a 502 carrying the message -- this pins that the
+    journal endpoint reaches it rather than serving 200 with no entries."""
+    files = VaultFiles(unreadable=["content chunk batch failed on database 'nova' (500)"])
+    nova_site.reset_cache()
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(files, {})):
+        status, _, body = _get("/api/journal")
+    nova_site.reset_cache()
+    assert status == 502
+    assert "database 'nova'" in json.loads(body)["error"]
 
 
 def test_a_document_with_no_heading_at_all_gets_one_from_its_filename():
@@ -2051,13 +2114,18 @@ def test_the_site_reads_the_per_entry_documents_when_they_exist():
         monolith.assert_not_called()
 
 
-def test_the_site_falls_back_to_the_archive_before_the_migration_runs():
-    # The deploy and the migration are two separate acts and either can
-    # land first. Until the folder has anything in it, the monolith is
-    # still the journal.
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})), \
-            patch.object(nova_sources, "vault_read_path", return_value="### Cycle 1\n\nArchive."):
-        assert "Archive." in nova_site.journal_markdown()
+def test_the_folder_is_the_only_journal_source_there_is():
+    # There was a second one, for exactly as long as the migration needed
+    # it: the deploy and the split were two separate acts and either could
+    # land first, so until the folder had anything in it the monolith was
+    # still the journal. Both landed on 2026-08-09 and the monolith was
+    # emptied the day after, which turned the safety net into a hole --
+    # see `test_the_journal_never_reads_the_emptied_archive_again`.
+    with patch.object(nova_sources, "vault_bulk_fetch") as bulk, \
+            patch.object(nova_sources, "vault_read_path") as monolith:
+        bulk.return_value = (VaultFiles(), {})
+        assert nova_site.journal_markdown() == ""
+        monolith.assert_not_called()
 
 
 # --- compression -----------------------------------------------------------
