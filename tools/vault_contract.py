@@ -29,31 +29,39 @@ copies explain themselves to different readers and always have. What is
 compared is the value of each constant and the syntax tree of each function
 body -- so a reworded comment is silence and a changed number is noise.
 
-**What this does NOT cover, stated here because the list above reads like
-it does.** Only module-level names are compared. The bridge keeps
-`db_for`, `dbs_for_prefix`, `assemble`, `_put_raw` and `database_health` as
-methods on `VaultClient` while the runner has them as plain functions, so
-none of them can be named here at all -- `extract_contract` would raise on
-every bridge run. The consequence, reproduced by the second reader on this
-diff rather than guessed: delete the `lowered in NOVA_DB_FILES` branch of
-the bridge's `db_for` and this tool still prints `16 names in sync`, while
-`journal-digest.md` stops resolving to Nova's database on that copy. The
-routing *inputs* are pinned; the routing *decision* is not.
+Syntax comparison alone cannot see any of that, because only module-level
+names are compared. The bridge keeps `db_for`, `dbs_for_prefix`,
+`assemble`, `_put_raw` and `database_health` as methods on `VaultClient`
+while the runner has them as plain functions, so none of them can be named
+in the tables below at all -- `extract_contract` would raise on every
+bridge run. The consequence, reproduced by the second reader on the diff
+that added this file rather than guessed: delete the `lowered in
+NOVA_DB_FILES` branch of the bridge's `db_for` and the name comparison
+still prints `16 names in sync`, while `journal-digest.md` stops resolving
+to Nova's database on that copy. The routing *inputs* were pinned; the
+routing *decision* was not.
 
-The two also already disagree about something outside these names, found
-the same way: the runner's `vault_assemble` recomputes `db_for(...)` and
-ignores `_SRC_DB_KEY`, while the bridge's `assemble` prefers the database
-the document was actually read from. Not live-exploitable today -- no
-runner caller stamps that key before assembling -- but it is exactly the
-divergence this file exists to catch, sitting next to it.
+So there is a second comparison, added in Cycle 169 and run by the same
+command: `compare_routing` imports both files, configures each copy the way
+its own process configures it, and puts one table of paths and prefixes
+through both. It compares answers rather than syntax, so it does not care
+that one is a method and the other a function -- which is the whole reason
+it exists. It covers `db_for` and `dbs_for_prefix` under both database
+configurations (routing on, and routing off, which is a separate early
+return in both copies).
 
-Closing either gap means comparing behaviour instead of syntax: import both
-copies and run one table of paths through each. `HEALTH_PROBE_PATHS` is
-already that table, and `database_health()` in both copies already reports
-what each resolved. That is a separate build; it is filed, not done.
+**What is still not covered**, stated here rather than left to be
+rediscovered: chunk assembly picks its database from `_SRC_DB_KEY` in both
+copies as of Cycle 169, and nothing checks that automatically -- doing so
+means faking CouchDB, not calling a pure function. `_put_raw`,
+`database_health` and the rest of the class are unpinned for the same
+reason.
 """
 import ast
+import importlib
+import importlib.util
 import json
+import os
 import sys
 
 # Names that must mean the same thing in both copies. Where the two spell a
@@ -215,6 +223,201 @@ def compare(left_source, right_source):
     return sorted(n for n in left if left[n] != right[n])
 
 
+# ---------------------------------------------------------------------------
+# Behaviour: same question, both copies, compare the answers.
+# ---------------------------------------------------------------------------
+
+# The two database names handed to both copies. Deliberately NOT the live
+# `obsidian`/`nova`: if a copy ever stopped taking its configuration where
+# this tool supplies it -- reading the environment inside `db_for`, say --
+# every answer would come back as a live name instead, and
+# `_routing_answers` raises rather than reporting a clean run. An instrument
+# that cannot fail is the one thing this file is not allowed to be.
+PROBE_DB = "probe-edvard-db"
+PROBE_NOVA_DB = "probe-nova-db"
+
+# Both copies open with `if not <nova db>: return <db>`, so routing-off is a
+# second, separately-written branch and gets its own pass.
+ROUTING_CONFIGS = ((PROBE_DB, PROBE_NOVA_DB), (PROBE_DB, ""))
+
+# Paths beyond the shared `HEALTH_PROBE_PATHS`, which is read off the runner
+# copy at run time so this table cannot fall behind it. These are the edges
+# that tuple does not carry: the empty and absent path both copies guard
+# with `(path or "")`, the lowercasing every route depends on, and a folder
+# name that is a prefix of Nova's folder without being inside it.
+EXTRA_PROBE_PATHS = (
+    "",
+    None,
+    "PROJECTS/Sokrates/Projects/Agora/NOVA/journal/191-cycle-169.md",
+    "projects/sokrates/projects/agora/nova",
+    "projects/sokrates/projects/agora/novaX/file.md",
+    "projects/sokrates/projects/nova/notes.md",
+    "unrelated/file.md",
+)
+
+# `dbs_for_prefix` has three branches -- inside Nova's folder, an ancestor
+# of it, everything else -- and the ancestor one is why a whole-vault
+# listing does not quietly lose every Nova file.
+PROBE_PREFIXES = (
+    "",
+    None,
+    "projects/",
+    "projects/sokrates/projects/agora/",
+    "projects/sokrates/projects/agora/nova/",
+    "projects/sokrates/projects/agora/nova/journal/",
+    "projects/sokrates/projects/agora/journal-digest.md",
+    "projects/sokrates/projects/agora/journal-digest.md.bak",
+    "projects/sokrates/projects/nova/",
+    "unrelated/",
+)
+
+
+class ContractRouterMissing(LookupError):
+    """A copy does not expose routing this tool can drive.
+
+    Same reasoning as `ContractNameMissing`: a router that cannot be found
+    is not a routing difference, and reporting it as one would let a
+    renamed function read as agreement.
+    """
+
+
+def _load_module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ContractRouterMissing("cannot import %s" % (path,))
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec so a copy that imports itself by name resolves,
+    # and so `importlib.reload` has something to work with.
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _runner_router(path, db, nova_db):
+    """The runner copy, configured the way its own process configures it.
+
+    `agora_runner/vault.py` does `from agora_runner.config import COUCHDB_DB,
+    COUCHDB_NOVA_DB`, which copies the values at import, and config reads the
+    environment at *its* import. So both have to be re-executed, in that
+    order, or the second configuration below silently reuses the first.
+    """
+    os.environ["COUCHDB_DB"] = db
+    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    importlib.reload(importlib.import_module("agora_runner.config"))
+    module = _load_module(path, "_vault_contract_runner")
+    try:
+        return module.db_for, module.dbs_for_prefix
+    except AttributeError as exc:
+        raise ContractRouterMissing(
+            "%s: no module-level %s" % (path, exc.name)) from exc
+
+
+def _bridge_router(path, db, nova_db):
+    """The bridge copy, likewise: `VaultClient.__init__` reads `CDB_*`.
+
+    The real constructor rather than a hand-built instance, because which
+    env var each copy reads is part of what may drift. The three credential
+    vars are required by `_env` and unused by routing; nothing here opens a
+    socket.
+    """
+    os.environ.update({
+        "CDB_BASE": "http://vault-contract.invalid",
+        "CDB_USER": "probe",
+        "CDB_PASS": "probe",
+        "CDB_DB": db,
+        "CDB_NOVA_DB": nova_db,
+    })
+    module = _load_module(path, "_vault_contract_bridge")
+    client_class = getattr(module, "VaultClient", None)
+    if client_class is None:
+        raise ContractRouterMissing("%s: no VaultClient" % (path,))
+    client = client_class()
+    try:
+        return client.db_for, client.dbs_for_prefix
+    except AttributeError as exc:
+        raise ContractRouterMissing(
+            "%s: VaultClient has no %s" % (path, exc.name)) from exc
+
+
+def _routing_answers(db_for_fn, dbs_for_prefix_fn, paths):
+    """`{question: answer}` for one copy under one configuration."""
+    answers = {}
+    for path in paths:
+        answers["db_for(%r)" % (path,)] = db_for_fn(path)
+    for prefix in PROBE_PREFIXES:
+        answers["dbs_for_prefix(%r)" % (prefix,)] = list(dbs_for_prefix_fn(prefix))
+    return answers
+
+
+def _check_the_probe_reached_both(agreed, db, nova_db):
+    """Raise if the two copies agreed on a database this tool never supplied.
+
+    Agreement is the only answer this comparison can get wrong by luck. If
+    both copies say `obsidian` no matter what they are configured with --
+    because one reads the environment at call time, or both were handed a
+    default -- then every question matches and the run reports a clean
+    comparison it never actually made. A *difference* needs no such guard:
+    it is reported as drift above whatever the names are.
+
+    So this states what it observed and not why. A stray name has more than
+    one cause and this tool cannot tell them apart from here.
+    """
+    allowed = {db, nova_db} - {""}
+    for question, answer in sorted(agreed.items()):
+        named = [answer] if isinstance(answer, str) else answer
+        stray = [n for n in named if n not in allowed]
+        if stray:
+            raise ContractRouterMissing(
+                "both copies answered %s with %r, which is not a database "
+                "this comparison configured (%s). Two copies agreeing on a "
+                "name neither was given is not evidence that they agree -- "
+                "refusing to report a comparison that may not have reached "
+                "either of them" % (question, stray, sorted(allowed)))
+
+
+def compare_routing(runner_path, bridge_path):
+    """Routing questions the two copies answer differently, ascending.
+
+    Empty means every path and prefix in the tables above resolved to the
+    same database in both, under both configurations. This is what the name
+    comparison structurally cannot do: routing lives in a method on one side
+    and a plain function on the other, so no AST comparison can pair them.
+    """
+    drifted = []
+    for db, nova_db in ROUTING_CONFIGS:
+        runner = _runner_router(runner_path, db, nova_db)
+        bridge = _bridge_router(bridge_path, db, nova_db)
+        paths = tuple(sys.modules["_vault_contract_runner"].HEALTH_PROBE_PATHS)
+        paths += EXTRA_PROBE_PATHS
+        left = _routing_answers(*runner, paths)
+        right = _routing_answers(*bridge, paths)
+        label = "routing on" if nova_db else "routing off"
+        drifted += [
+            ("%s: %s" % (label, q), left[q], right[q])
+            for q in sorted(left) if left[q] != right[q]
+        ]
+        _check_the_probe_reached_both(
+            {q: left[q] for q in left if left[q] == right[q]}, db, nova_db)
+    return drifted
+
+
+_ADVICE = (
+    "\nThese two files are hand-synced copies of one client against one\n"
+    "database. Write the change into both, or move the name out of\n"
+    "CONTRACT_CONSTANTS/CONTRACT_FUNCTIONS in tools/vault_contract.py\n"
+    "and say in the journal why it is allowed to differ."
+)
+
+
+_ROUTING_ADVICE = (
+    "\nThe two copies sent the same path to different databases. That is a\n"
+    "file being read from, or written into, the wrong store -- not a\n"
+    "formatting difference. Fix the copy that is wrong; there is no\n"
+    "table in tools/vault_contract.py to relax, because both processes\n"
+    "have to agree on this to share one CouchDB at all."
+)
+
+
 def _report(name, left_label, left, right_label, right):
     return "\n".join([
         "  %s" % name,
@@ -237,18 +440,40 @@ def main(argv=None):
         print("vault contract: %s" % exc, file=sys.stderr)
         return 2
     drifted = sorted(n for n in left if left[n] != right[n])
-    if not drifted:
-        print("vault contract: %d names in sync" % len(left))
+    if drifted:
+        print("vault contract: %d of %d names have drifted between\n"
+              "  %s\n  %s\n" % (len(drifted), len(left), left_path, right_path),
+              file=sys.stderr)
+        for name in drifted:
+            print(_report(name, left_path, left, right_path, right), file=sys.stderr)
+        print(_ADVICE, file=sys.stderr)
+        return 1
+    # Flushed because the failure below prints to stderr, which is not
+    # buffered: without this the CI log reports the routing drift above the
+    # "in sync" line it followed, which reads as the opposite of what ran.
+    print("vault contract: %d names in sync" % len(left), flush=True)
+
+    # Both comparisons or neither: the name half passing is exactly the
+    # state that read as "in sync" while a deleted routing branch went
+    # unnoticed, so returning 0 above would reinstate that.
+    try:
+        routed = compare_routing(left_path, right_path)
+    except ContractRouterMissing as exc:
+        print("vault routing: %s" % exc, file=sys.stderr)
+        return 2
+    if not routed:
+        print("vault routing: every probed path and prefix resolved the same "
+              "in both copies")
         return 0
-    print("vault contract: %d of %d names have drifted between\n"
-          "  %s\n  %s\n" % (len(drifted), len(left), left_path, right_path),
-          file=sys.stderr)
-    for name in drifted:
-        print(_report(name, left_path, left, right_path, right), file=sys.stderr)
-    print("\nThese two files are hand-synced copies of one client against one\n"
-          "database. Write the change into both, or move the name out of\n"
-          "CONTRACT_CONSTANTS/CONTRACT_FUNCTIONS in tools/vault_contract.py\n"
-          "and say in the journal why it is allowed to differ.", file=sys.stderr)
+    print("\nvault routing: %d question(s) answered differently between\n"
+          "  %s\n  %s\n" % (len(routed), left_path, right_path), file=sys.stderr)
+    for question, left_answer, right_answer in routed:
+        print("\n".join([
+            "  %s" % question,
+            "    %s: %r" % (left_path, left_answer),
+            "    %s: %r" % (right_path, right_answer),
+        ]), file=sys.stderr)
+    print(_ROUTING_ADVICE, file=sys.stderr)
     return 1
 
 

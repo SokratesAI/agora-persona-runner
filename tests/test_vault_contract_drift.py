@@ -133,3 +133,174 @@ def test_a_reworded_comment_or_docstring_is_not_drift():
     assert opening, "test assumes _split_chunks is documented"
     redocumented = _mutated(opening, "A completely different explanation.")
     assert vault_contract.compare(RUNNER_SOURCE, redocumented) == []
+
+
+# --- routing behaviour ------------------------------------------------------
+#
+# The name comparison above cannot reach routing at all: `db_for` is a method
+# on `VaultClient` in the bridge and a plain function in the runner, so no
+# module-level AST pairing can name it. `compare_routing` drives both copies
+# instead. Same discipline as above -- every test that expects silence is
+# paired with one that expects noise over the same input.
+
+BRIDGE_STUB = '''
+import os
+
+NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",)
+NOVA_DB_FILES = ("projects/sokrates/projects/agora/journal-digest.md",)
+NOVA_DB_TARGETS = NOVA_DB_FOLDERS + NOVA_DB_FILES
+
+
+class VaultClient:
+    def __init__(self):
+        self.db = os.environ["CDB_DB"]
+        self.nova_db = os.environ.get("CDB_NOVA_DB", "")
+
+    def db_for(self, path):
+        if not self.nova_db:
+            return self.db
+        lowered = (path or "").lower()
+        if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:
+            return self.nova_db
+        return self.db
+
+    def dbs_for_prefix(self, prefix):
+        if not self.nova_db:
+            return [self.db]
+        lowered = (prefix or "").lower()
+        if lowered.startswith(NOVA_DB_FOLDERS):
+            return [self.nova_db]
+        if any(t.startswith(lowered) for t in NOVA_DB_TARGETS):
+            return [self.db, self.nova_db]
+        return [self.db]
+'''
+
+
+def _bridge_copy(tmp_path, source=None, old=None, new=None):
+    """A second copy of the routing rule on disk, optionally mutated.
+
+    A stub rather than the real bridge file, which lives in another
+    repository and is not present in this test run -- the cross-repo
+    comparison is CI's job (the `vault-drift` job checks both out). What is
+    testable here is that `compare_routing` reports a difference when there
+    is one and silence when there is not, and for that the stub has to be a
+    faithful copy of the rule: it is written above to match
+    `agora_runner/vault.py`, and the first test below is what keeps it
+    honest -- if the runner's routing changes and the stub does not, that
+    test goes red rather than the check quietly comparing something else.
+    """
+    source = BRIDGE_STUB if source is None else source
+    if old is not None:
+        assert old in source, "mutation target %r is gone; fix this test" % (old,)
+        source = source.replace(old, new, 1)
+    path = tmp_path / "vault_tool.py"
+    path.write_text(source, encoding="utf-8")
+    return str(path)
+
+
+def test_the_two_copies_route_every_probed_path_the_same_way(tmp_path):
+    assert vault_contract.compare_routing(
+        vault.__file__, _bridge_copy(tmp_path)) == []
+
+
+def test_the_exact_gap_the_name_comparison_could_not_see(tmp_path):
+    """Delete the exact-file branch from one copy's `db_for` and the name
+    comparison still says every name is in sync, because the tuple it reads
+    is untouched -- that is what the second reader proved on #152.
+    `journal-digest.md` is the file Edvard actually opens."""
+    other = _bridge_copy(
+        tmp_path,
+        old="if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:",
+        new="if lowered.startswith(NOVA_DB_FOLDERS):")
+    drifted = vault_contract.compare_routing(vault.__file__, other)
+    questions = [q for q, _, _ in drifted]
+    assert questions == [
+        "routing on: db_for('projects/sokrates/projects/agora/journal-digest.md')"]
+    _, runner_answer, bridge_answer = drifted[0]
+    assert runner_answer == vault_contract.PROBE_NOVA_DB
+    assert bridge_answer == vault_contract.PROBE_DB
+
+
+def test_a_prefix_that_straddles_both_databases_is_drift(tmp_path):
+    """The ancestor branch: a listing of `projects/` has to query both
+    databases or it quietly loses every file Nova owns."""
+    other = _bridge_copy(
+        tmp_path,
+        old="""        if any(t.startswith(lowered) for t in NOVA_DB_TARGETS):
+            return [self.db, self.nova_db]
+""",
+        new="")
+    questions = [q for q, _, _ in vault_contract.compare_routing(vault.__file__, other)]
+    assert "routing on: dbs_for_prefix('projects/')" in questions
+    assert "routing on: dbs_for_prefix('')" in questions
+
+
+def test_dropping_the_lowercase_is_drift(tmp_path):
+    """A LiveSync document id is the lowercased path, so a copy that stopped
+    lowercasing routes every capitalised path to the wrong database."""
+    other = _bridge_copy(tmp_path,
+                         old='lowered = (path or "").lower()',
+                         new='lowered = (path or "")')
+    questions = [q for q, _, _ in vault_contract.compare_routing(vault.__file__, other)]
+    assert questions == [
+        "routing on: db_for('PROJECTS/Sokrates/Projects/Agora/NOVA/"
+        "journal/191-cycle-169.md')"]
+
+
+def test_the_routing_off_configuration_is_compared_too(tmp_path):
+    """`if not nova_db: return db` is a separately written early return in
+    both copies and is the whole behaviour before the migration. A copy that
+    lost it is drift no path in the routing-on pass can show, because with
+    routing on the branch never runs."""
+    other = _bridge_copy(
+        tmp_path,
+        old="""        if not self.nova_db:
+            return self.db
+        lowered = (path or "").lower()""",
+        new='        lowered = (path or "").lower()')
+    questions = [q for q, _, _ in vault_contract.compare_routing(vault.__file__, other)]
+    assert questions, "the routing-off pass reported nothing"
+    assert all(q.startswith("routing off:") for q in questions), questions
+
+
+def test_a_copy_with_no_router_is_an_error_not_agreement(tmp_path):
+    """Same reasoning as `ContractNameMissing`: a router that cannot be
+    found is not a routing difference, and returning `[]` here would let a
+    renamed function read as two copies agreeing."""
+    other = _bridge_copy(tmp_path, old="    def db_for(self, path):",
+                         new="    def db_for_path(self, path):")
+    with pytest.raises(vault_contract.ContractRouterMissing):
+        vault_contract.compare_routing(vault.__file__, other)
+
+
+def test_two_copies_agreeing_on_a_database_neither_was_given_is_an_error():
+    """The one way this comparison can be wrong by luck, and the reason it
+    is checked at all: if both copies ignored the configuration -- reading
+    the environment at call time, say -- every question would match and the
+    run would report a comparison it never made. Driven directly, because
+    reproducing it through two files means breaking both of them the same
+    way, which is the assumption under test."""
+    agreed = {"db_for('x')": "obsidian"}
+    with pytest.raises(vault_contract.ContractRouterMissing) as caught:
+        vault_contract._check_the_probe_reached_both(
+            agreed, vault_contract.PROBE_DB, vault_contract.PROBE_NOVA_DB)
+    assert "obsidian" in str(caught.value)
+
+    # And it stays quiet on an answer that was configured, or the test above
+    # only shows that it raises on everything.
+    vault_contract._check_the_probe_reached_both(
+        {"db_for('x')": vault_contract.PROBE_NOVA_DB},
+        vault_contract.PROBE_DB, vault_contract.PROBE_NOVA_DB)
+
+
+def test_a_difference_is_reported_as_drift_rather_than_as_incomparable(tmp_path):
+    """A copy that routes somewhere neither database name covers is a
+    finding, not a refusal. The guard above only covers agreement, because
+    when the two answers differ there is nothing luck could have hidden --
+    and reporting that as 'not comparable' would bury the useful half."""
+    other = _bridge_copy(tmp_path,
+                         old="        return self.nova_db",
+                         new='        return "somewhere-else"')
+    drifted = vault_contract.compare_routing(vault.__file__, other)
+    assert any(a == "somewhere-else" or a == ["somewhere-else"]
+               for _, _, a in drifted), drifted
