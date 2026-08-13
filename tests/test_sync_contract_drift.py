@@ -588,16 +588,24 @@ def test_a_straddling_prefix_narrowed_in_both_copies_is_caught(tmp_path):
 def _observed_answers(runner_path, bridge_path):
     """`{(db, nova_db, paths): {question: answer}}` as the copies really
     answer, with no expectation applied -- what `compare_routing` collects
-    before it checks anything."""
+    before it checks anything.
+
+    Both copies are driven and the rows they agree on are what comes back,
+    which is the same set `compare_routing` hands its checks. Driving only
+    the runner and calling the result "what the copies answer" would be a
+    smaller version of the mistake this helper was written to fix.
+    """
     observed = {}
     with sync_contract._process_state_restored():
         for db, nova_db in sync_contract.ROUTING_CONFIGS:
             runner = sync_contract._runner_router(runner_path, db, nova_db)
-            sync_contract._bridge_router(bridge_path, db, nova_db)
+            bridge = sync_contract._bridge_router(bridge_path, db, nova_db)
             paths = tuple(sys.modules["_sync_contract_runner"].HEALTH_PROBE_PATHS)
             paths += sync_contract.EXTRA_PROBE_PATHS
-            observed[(db, nova_db, paths)] = sync_contract._routing_answers(
-                *runner, paths)
+            left = sync_contract._routing_answers(*runner, paths)
+            right = sync_contract._routing_answers(*bridge, paths)
+            observed[(db, nova_db, paths)] = {
+                q: left[q] for q in left if left[q] == right[q]}
     return observed
 
 
