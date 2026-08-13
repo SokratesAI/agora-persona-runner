@@ -66,6 +66,28 @@ def test_find_heading_skips_the_frontmatter_mention():
     assert at > 3
 
 
+def test_find_heading_skips_a_heading_that_is_a_whole_line_of_frontmatter():
+    """The frontmatter skip and the whole-line match each stop the real
+    2026-08-13 bug on their own, so neither can be seen by mutating the
+    other away -- both survive alone and the pair only fails when both are
+    broken. This is the case only the frontmatter skip catches: YAML block
+    scalars are multi-line, so a `contract:` written as one puts a bare
+    `## New` on a line of its own inside the frontmatter."""
+    lines = [
+        "---",
+        "contract: |",
+        "  A cycle reads",
+        "## New",
+        "  every cycle.",
+        "---",
+        "",
+        "## New",
+        "",
+        "x",
+    ]
+    assert find_heading(lines, "## New") == 7
+
+
 def test_find_heading_skips_a_fenced_example():
     lines = ["# T", "", "```", "## New", "```", "", "## New", "", "x"].copy()
     assert find_heading(lines, "## New") == 6
@@ -192,6 +214,14 @@ def test_the_verifier_catches_a_frontmatter_edit_it_did_not_intend(monkeypatch):
     monkeypatch.setattr(module, "find_heading", lambda lines, heading: 3)
     with pytest.raises(AckError, match="frontmatter changed"):
         _ack()
+
+
+def test_no_blank_line_is_gained_or_lost_around_the_move():
+    """Whitespace is not cosmetic here: the site ends a card at a blank line,
+    so a block that drags its trailing blanks along and then gets another
+    one appended splits into two cards on Edvard's screen."""
+    out = _ack()
+    assert "\n\n\n" not in out
 
 
 def test_writing_it_twice_is_refused_the_second_time():

@@ -131,7 +131,14 @@ def acknowledge(markdown, cycle, stamp, note, note_stamp):
     if note:
         block = block + ["", f"#### Nova · {note_stamp}", "", note]
 
-    rest = lines[:first] + lines[last:]
+    # Cutting the block leaves its blank line behind next to the blank line
+    # that preceded it. Two in a row is not cosmetic in this vault: a blank
+    # line is where a card ends, so a doubled one splits what is left into
+    # a second, empty card on Edvard's screen.
+    tail = lines[last:]
+    while tail and not tail[0].strip() and first > 0 and not lines[first - 1].strip():
+        tail.pop(0)
+    rest = lines[:first] + tail
     # Re-find the destination in `rest`: removing the block moved every line
     # below it up, and reusing an index taken before the cut is how an
     # off-by-one becomes a comment in the wrong section.
@@ -154,6 +161,13 @@ def _verify(original, updated, before, cycle, stamp, note):
         )
 
     after = {_key(c): c for c in parse_comments(updated)}
+    # The one rule here with no test that can reach it, said plainly rather
+    # than dressed in a test that proves nothing: the block always starts at
+    # a `###` heading and is reinserted whole, so under any bounds error the
+    # count is conserved and one of the checks below fires first. It is kept
+    # anyway because the failure it names is the one that actually happened
+    # -- text landing where `parse_comments` cannot see it changes the count,
+    # and that is the cheapest true statement about the file there is.
     if set(after) != set(before):
         lost = sorted(str(k) for k in set(before) - set(after))
         gained = sorted(str(k) for k in set(after) - set(before))
