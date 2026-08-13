@@ -82,10 +82,26 @@ configuration. Agreement alone is worthless here: both copies dropping the
 `_SRC_DB_KEY` branch would agree on every row of the table, and that is
 precisely the drift Cycle 169 found by hand.
 
+A fourth, added in Cycle 174, covers writes: `compare_writes` drives each
+copy's `_put_raw` with its whole CouchDB seam replaced by a fake that
+answers from a script, so the answer to every question is the *sequence of
+requests the copy made* plus the string it returned. Like assembly and
+unlike routing, it states what the answers should be rather than only that
+the two agree -- and here that is not a refinement but the entire point.
+Every decision it asks about has one legitimate-looking alternative, so two
+copies that drifted the same way agree on the whole table. Cycle 167 fixed
+one of these decisions in both copies by hand in the same hour.
+
+The one thing `compare_writes` deliberately does not compare is the wording
+of `FAILED(unreadable: ...)`; see `_collapse_prose` for why that is a false
+alarm rather than a check.
+
 **What is still not covered**, stated here rather than left to be
-rediscovered: `_put_raw`, `database_health` and the rest of the class are
-unpinned, because driving them means faking CouchDB responses rather than
-recording one argument.
+rediscovered: `database_health` and the rest of the class are unpinned. The
+write fake does not extend to it for free -- it is a third seam again,
+since the runner hands `couch_req` a bare database name with no document
+after it and the bridge reaches `_req` without going through
+`VaultClient._doc` -- so it needs its own driver rather than another row.
 
 And the disclosure the earlier version of this docstring carried, kept
 because dropping it was a step down in candour on the very diff that
@@ -101,11 +117,14 @@ Both are real reasons; neither is "a user saw this break".
 """
 import ast
 import contextlib
+import copy
 import importlib
 import importlib.util
 import json
 import os
 import sys
+import time
+import urllib.parse
 
 # Names that must mean the same thing in both copies. Where the two spell a
 # name differently, the alias is listed second; the comparison is by the
@@ -326,7 +345,8 @@ _PROBE_ENV = ("COUCHDB_DB", "COUCHDB_NOVA_DB",
 _PROBE_MODULES = ("_sync_contract_runner", "_sync_contract_bridge",
                   "_sync_contract_runner_redact", "_sync_contract_bridge_redact",
                   "_sync_contract_runner_assemble",
-                  "_sync_contract_bridge_assemble")
+                  "_sync_contract_bridge_assemble",
+                  "_sync_contract_runner_write", "_sync_contract_bridge_write")
 
 
 @contextlib.contextmanager
@@ -753,6 +773,492 @@ def compare_assembly(runner_path, bridge_path):
 
 
 # ---------------------------------------------------------------------------
+# Writes: the last unpinned half of the vault pair, and the first probe that
+# needs a fake rather than a recorder.
+# ---------------------------------------------------------------------------
+#
+# Routing and assembly could be driven by replacing one collaborator with
+# something that writes down its argument. A write cannot: `_put_raw` asks
+# CouchDB three separate questions and every decision it makes is a reaction
+# to an answer. So this replaces the whole seam -- `couch_req` in the runner,
+# `VaultClient._doc` in the bridge -- with a fake that answers from a script
+# and records what it was asked, and the answer to each question is the
+# *sequence of requests the copy made plus the string it returned*.
+#
+# This is the second of the two probe shapes, and unmistakably so. Every
+# decision below has exactly one legitimate alternative -- carry `ctime`
+# forward or stamp it now, honour `if_rev` or the lookup, treat a chunk 409
+# as success or as failure -- and both alternatives are real, configured,
+# plausible answers. Two copies that drifted the same way agree on the whole
+# table. That is not hypothetical either: Cycle 167 fixed exactly one of
+# these decisions (the lookup that carries `ctime`) in both copies by hand in
+# the same hour, and a check that only asked whether they agreed would have
+# been green the whole time it was broken. So `_WRITE_QUESTIONS` states the
+# expected request sequence for every row, and `_check_the_write_probe_bites`
+# holds both copies to it.
+
+# The write probe's clock. `ctime` and `mtime` are `int(time.time() * 1000)`
+# in both copies, so without freezing this the two copies disagree by
+# whatever the wall clock did between them -- and, worse, the one decision
+# this probe exists to pin (an existing document's `ctime` survives the
+# overwrite) is invisible when "now" and "then" are both just numbers.
+_WRITE_NOW = 1755100000.0
+_WRITE_NOW_MS = int(_WRITE_NOW * 1000)
+
+# Deliberately far in the past and nowhere near `_WRITE_NOW`, so a row that
+# expects the old value cannot pass by coincidence.
+_WRITE_OLD_CTIME = 1600000000000
+_WRITE_OLD_REV = "3-alreadythere"
+_WRITE_CALLER_REV = "9-whatthecallerread"
+
+# One chunk: `CHUNK_MIN_BYTES` is 2048 in both copies and this is far under
+# it, which keeps every expected request sequence readable. Chunking itself
+# is `_split_chunks`, already pinned by the syntax comparison.
+_WRITE_CONTENT = "### 2026-01-01 00:00 (Oslo) -- probe\n\nPR: none | Outcome: probe\n"
+_WRITE_SIZE = len(_WRITE_CONTENT.encode("utf-8"))
+
+# Inside Nova's folder, so both copies must resolve every request in the row
+# to Nova's database -- including the chunk PUT, which takes an explicit
+# database rather than a route. A chunk written to the other store is a file
+# doc pointing at chunks nobody can fetch, which reads as corruption.
+_WRITE_PATH = "projects/sokrates/projects/agora/nova/journal/900-cycle-900.md"
+_WRITE_MIXED_CASE_PATH = (
+    "Projects/Sokrates/Projects/Agora/Nova/Journal/900-Cycle-900.md")
+
+# Tokens the normaliser substitutes in, so the expected sequences below are
+# literals a reader can check rather than values computed twice.
+_CHUNK = "<chunk>"
+_NOVA = "<nova db>"
+
+# `if_rev` is a three-way argument whose "unconditional" value is a private
+# module-level sentinel, so the table names it and each copy's own object is
+# looked up when the row runs.
+_WRITE_UNCONDITIONAL = "<unconditional>"
+
+
+class ContractWriterMissing(LookupError):
+    """A copy does not expose a write this tool can drive.
+
+    Same reasoning as `ContractRouterMissing`, and the same consequence: a
+    copy that could not be driven has not been compared, and a comparison
+    that silently covered one copy is worse than no comparison.
+    """
+
+
+def _write_doc(_rev=None, ctime=_WRITE_NOW_MS, path=_WRITE_PATH):
+    """The file document a healthy write PUTs, as both copies build it."""
+    doc = {
+        "_id": path, "path": path, "data": "", "children": [_CHUNK],
+        "size": _WRITE_SIZE, "ctime": ctime, "mtime": _WRITE_NOW_MS,
+        "type": "plain", "eden": {},
+    }
+    if _rev is not None:
+        doc["_rev"] = _rev
+    return doc
+
+
+def _write_chunk_doc():
+    return {"_id": _CHUNK, "data": _WRITE_CONTENT, "type": "leaf",
+            "children": []}
+
+
+def _lookup(path=_WRITE_PATH):
+    return ("GET", _NOVA, path, None)
+
+
+def _chunk_scan():
+    return ("POST", _NOVA, "_all_docs", {"keys": [_CHUNK]})
+
+
+def _chunk_write():
+    return ("PUT", _NOVA, _CHUNK, _write_chunk_doc())
+
+
+# `(status, body)` for each of the four things the fake is asked. `_ALL_DOCS`
+# is a token rather than a body because the answer has to echo the chunk ids
+# it was handed, and those are content hashes this table does not know.
+_ABSENT = (404, {"error": "not_found"})
+_PRESENT = (200, {"_id": _WRITE_PATH, "_rev": _WRITE_OLD_REV,
+                  "ctime": _WRITE_OLD_CTIME, "mtime": _WRITE_OLD_CTIME,
+                  "children": [], "type": "plain"})
+_OK = (201, {"ok": True})
+
+_WRITE_SCRIPT_DEFAULTS = {
+    "lookup": _ABSENT, "chunks": "none", "chunk_put": _OK, "doc_put": _OK,
+}
+
+
+def _script(**overrides):
+    out = dict(_WRITE_SCRIPT_DEFAULTS)
+    out.update(overrides)
+    return out
+
+
+# `(label, path, if_rev, script, expected return, expected requests)`.
+#
+# Every row is a decision with a documented failure behind it, and the
+# expected column is what makes agreement mean something. Read it as: this is
+# what a correct client does, not merely what both copies happen to do.
+_WRITE_QUESTIONS = (
+    # The baseline. Order matters as much as content: the existence scan
+    # comes before the chunk PUT, or the dedup that stops an append leaving
+    # a second copy of the file behind is not happening.
+    ("new file, unconditional",
+     _WRITE_PATH, _WRITE_UNCONDITIONAL, _script(),
+     "written",
+     (_lookup(), _chunk_scan(), _chunk_write(),
+      ("PUT", _NOVA, _WRITE_PATH, _write_doc()))),
+
+    # Cycle 167's bug, and the one row that would have been green under an
+    # agreement-only check while both copies were wrong. Losing this makes
+    # every overwritten file claim it was created today, silently, on a write
+    # that succeeds.
+    ("overwrite carries the old ctime forward and adopts its revision",
+     _WRITE_PATH, _WRITE_UNCONDITIONAL, _script(lookup=_PRESENT),
+     "written",
+     (_lookup(), _chunk_scan(), _chunk_write(),
+      ("PUT", _NOVA, _WRITE_PATH,
+       _write_doc(_rev=_WRITE_OLD_REV, ctime=_WRITE_OLD_CTIME)))),
+
+    # The conditional-write contract (bridge#48): what the caller read beats
+    # what the pre-write lookup found. A copy that let the lookup win is the
+    # silent clobber `if_rev` was added to stop -- and it still returns
+    # "written", so nothing anywhere reports it.
+    ("if_rev beats the lookup, and ctime still survives",
+     _WRITE_PATH, _WRITE_CALLER_REV, _script(lookup=_PRESENT),
+     "written",
+     (_lookup(), _chunk_scan(), _chunk_write(),
+      ("PUT", _NOVA, _WRITE_PATH,
+       _write_doc(_rev=_WRITE_CALLER_REV, ctime=_WRITE_OLD_CTIME)))),
+
+    # `if_rev=None` means "there should be nothing here". The document must
+    # go out with no `_rev` at all, which is how CouchDB is asked to refuse.
+    # Sending the found revision instead turns "create if absent" into
+    # "overwrite whatever is there", which is the loser of a two-cycle race
+    # having its entry disappear.
+    ("if_rev=None sends no revision even when one was found",
+     _WRITE_PATH, None, _script(lookup=_PRESENT),
+     "written",
+     (_lookup(), _chunk_scan(), _chunk_write(),
+      ("PUT", _NOVA, _WRITE_PATH, _write_doc(ctime=_WRITE_OLD_CTIME)))),
+
+    # A database that will not answer must not be read as an empty slot.
+    # Nothing may be written at all -- not even a chunk, which is why the
+    # expected sequence is one request long.
+    ("a lookup that fails writes nothing",
+     _WRITE_PATH, _WRITE_UNCONDITIONAL, _script(lookup=(500, {})),
+     "FAILED(unreadable: <error>)",
+     (_lookup(),)),
+
+    # The dedup. A chunk already in the store holds exactly this text,
+    # because the id is the hash of the text -- rewriting it is the write
+    # amplification chunking exists to remove.
+    ("a chunk that already exists is not rewritten",
+     _WRITE_PATH, _WRITE_UNCONDITIONAL, _script(chunks="all"),
+     "written",
+     (_lookup(), _chunk_scan(), ("PUT", _NOVA, _WRITE_PATH, _write_doc()))),
+
+    # A 409 on a content-addressed id means somebody else stored this exact
+    # text between the scan and the PUT. Treating it as failure aborts a
+    # perfectly good write, and does so most often on the common path.
+    ("a 409 on a chunk is success",
+     _WRITE_PATH, _WRITE_UNCONDITIONAL, _script(chunk_put=(409, {})),
+     "written",
+     (_lookup(), _chunk_scan(), _chunk_write(),
+      ("PUT", _NOVA, _WRITE_PATH, _write_doc()))),
+
+    # The opposite, and the more dangerous direction: a chunk that genuinely
+    # failed must stop the file document. A file doc pointing at a chunk that
+    # is not there is `VaultIncompleteDocument`, which is silent until
+    # somebody reads the file.
+    ("a chunk that fails stops the file document",
+     _WRITE_PATH, _WRITE_UNCONDITIONAL, _script(chunk_put=(500, {})),
+     "FAILED(chunk <chunk>: 500)",
+     (_lookup(), _chunk_scan(), _chunk_write())),
+
+    # 409 is the only status where retrying is right rather than a spin, so
+    # it is named and not just numbered. `vault_tool.py` turns this string
+    # into exit code 3, which is what `--if-rev-file` callers branch on.
+    ("a 409 on the file document is named, not numbered",
+     _WRITE_PATH, _WRITE_UNCONDITIONAL, _script(doc_put=(409, {})),
+     "FAILED(409 conflict: %s changed since it was read)" % _WRITE_PATH,
+     (_lookup(), _chunk_scan(), _chunk_write(),
+      ("PUT", _NOVA, _WRITE_PATH, _write_doc()))),
+
+    ("any other failure on the file document is reported as itself",
+     _WRITE_PATH, _WRITE_UNCONDITIONAL, _script(doc_put=(503, {})),
+     "FAILED(503)",
+     (_lookup(), _chunk_scan(), _chunk_write(),
+      ("PUT", _NOVA, _WRITE_PATH, _write_doc()))),
+
+    # Every id in this vault is lowercase, because LiveSync wrote most of
+    # them. A copy that stored the caller's casing creates a second document
+    # for a file that already exists, and the two clients then disagree about
+    # which one is the file.
+    ("the path is lowered before anything is looked up or stored",
+     _WRITE_MIXED_CASE_PATH, _WRITE_UNCONDITIONAL, _script(),
+     "written",
+     (_lookup(), _chunk_scan(), _chunk_write(),
+      ("PUT", _NOVA, _WRITE_PATH, _write_doc()))),
+)
+
+
+class _FakeCouch:
+    """Answers a `_put_raw` from a script and records what it was asked.
+
+    The two copies reach this through different seams -- a module-level
+    function taking `"<db>/<quoted id>"` and a method taking them apart --
+    so both are normalised to `(method, db, doc id, body)` before anything is
+    recorded. What that normalisation drops is the URL quoting, which is
+    `urllib.parse.quote(..., safe="")` in both and is not what this probe is
+    about.
+    """
+
+    def __init__(self, file_doc_id, script):
+        self.file_doc_id = file_doc_id
+        self.script = script
+        self.log = []
+
+    def request(self, method, db, doc_id, body):
+        # Deep-copied because both copies build the document once and hand
+        # the same object down; recording the reference would let a later
+        # mutation rewrite history.
+        self.log.append((method, db, doc_id, copy.deepcopy(body)))
+        if method == "GET":
+            return self.script["lookup"]
+        if doc_id == "_all_docs":
+            keys = list((body or {}).get("keys", ()))
+            if self.script["chunks"] == "all":
+                return (200, {"rows": [{"key": k, "value": {"rev": "1-x"}}
+                                       for k in keys]})
+            return (200, {"rows": [{"key": k, "error": "not_found"}
+                                   for k in keys]})
+        if doc_id == self.file_doc_id:
+            return self.script["doc_put"]
+        return self.script["chunk_put"]
+
+
+@contextlib.contextmanager
+def _write_clock_frozen():
+    """`time.time` pinned to `_WRITE_NOW` for the duration.
+
+    Process-global and restored in a `finally`, for the reason
+    `_process_state_restored` gives about `agora_runner.config`: this tool
+    runs inside the runner's own test suite, and a clock left frozen would
+    be a failure with no connection to the test that caused it.
+    """
+    saved = time.time
+    time.time = lambda: _WRITE_NOW
+    try:
+        yield
+    finally:
+        time.time = saved
+
+
+def _runner_writer(path, db, nova_db):
+    """`(ask, chunk_id)` for the runner copy, configured as its own process."""
+    os.environ["COUCHDB_DB"] = db
+    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    importlib.reload(importlib.import_module("agora_runner.config"))
+    module = _load_module(path, "_sync_contract_runner_write")
+    for name in ("_vault_put_raw", "couch_req", "_chunk_id_for", "_ANY_REV"):
+        if not hasattr(module, name):
+            raise ContractWriterMissing("%s: no module-level %s" % (path, name))
+
+    def ask(probe_path, if_rev, script):
+        fake = _FakeCouch(probe_path.lower(), script)
+
+        def couch_req(method, req_path, body=None, timeout=60):
+            # `"<db>/<quoted doc id>"`. The id is a vault path full of
+            # slashes, but `quote(safe="")` escapes every one of them, so the
+            # first slash is always the database boundary.
+            req_db, _, quoted = req_path.partition("/")
+            return fake.request(method, req_db,
+                                urllib.parse.unquote(quoted), body)
+
+        module.couch_req = couch_req
+        rev = module._ANY_REV if if_rev == _WRITE_UNCONDITIONAL else if_rev
+        result = module._vault_put_raw(probe_path, _WRITE_CONTENT, if_rev=rev)
+        return result, tuple(fake.log)
+
+    return ask, module._chunk_id_for(_WRITE_CONTENT.encode("utf-8"))
+
+
+def _bridge_writer(path, db, nova_db):
+    """`(ask, chunk_id)` for the bridge copy.
+
+    The fake goes on the *instance*, shadowing the bound method without
+    touching the class, exactly as `_bridge_assembler` does -- so a second
+    `VaultClient` built later in the same interpreter is the real one.
+    """
+    os.environ.update({
+        "CDB_BASE": "http://vault-contract.invalid",
+        "CDB_USER": "probe",
+        "CDB_PASS": "probe",
+        "CDB_DB": db,
+        "CDB_NOVA_DB": nova_db,
+    })
+    module = _load_module(path, "_sync_contract_bridge_write")
+    client_class = getattr(module, "VaultClient", None)
+    if client_class is None:
+        raise ContractWriterMissing("%s: no VaultClient" % (path,))
+    if not hasattr(module, "_ANY_REV"):
+        raise ContractWriterMissing("%s: no module-level _ANY_REV" % (path,))
+    client = client_class()
+    for name in ("_put_raw", "_doc", "_chunk_id_for"):
+        if not hasattr(client, name):
+            raise ContractWriterMissing(
+                "%s: VaultClient has no %s" % (path, name))
+
+    def ask(probe_path, if_rev, script):
+        fake = _FakeCouch(probe_path.lower(), script)
+        client._doc = lambda method, doc_id, body=None, db=None: fake.request(
+            method, db or client.db_for(doc_id), doc_id, body)
+        rev = module._ANY_REV if if_rev == _WRITE_UNCONDITIONAL else if_rev
+        result = client._put_raw(probe_path, _WRITE_CONTENT, if_rev=rev)
+        return result, tuple(fake.log)
+
+    return ask, client._chunk_id_for(_WRITE_CONTENT.encode("utf-8"))
+
+
+def _collapse_prose(result):
+    """The one part of a write's answer the two copies may word differently.
+
+    `FAILED(unreadable: ...)` carries whatever `VaultUnreadableDocument` was
+    raised with, and that sentence is an explanation aimed at whoever reads
+    the log -- the same category as the comments and docstrings the syntax
+    comparison strips, and for the same reason. The two copies happen to word
+    it identically today, by hand, with nothing holding them there, so
+    comparing it would report the first reworded exception as drift.
+
+    What is not collapsed is everything the contract is actually made of: the
+    `FAILED(` prefix every caller branches on, the `unreadable` reason that
+    tells it apart from a conflict, and -- the part that does the real work
+    on this row -- the requests that were and were not made.
+    """
+    if result.startswith("FAILED(unreadable:"):
+        return "FAILED(unreadable: <error>)"
+    return result
+
+
+def _write_answers(ask):
+    """`{question: (returned string, requests made)}` for one copy.
+
+    The chunk id and the database name are left raw, because this is what
+    the drift comparison runs on: two copies that hash the same bytes to
+    different ids, or send one request to the wrong store, differ here and
+    are meant to. What is *not* left raw is `_collapse_prose`'s one string --
+    see there for why comparing it would be a false alarm rather than a
+    check.
+    """
+    answers = {}
+    for label, probe_path, if_rev, script, _, _ in _WRITE_QUESTIONS:
+        result, log = ask(probe_path, if_rev, script)
+        answers[label] = (_collapse_prose(result), log)
+    return answers
+
+
+def _normalised(answer, chunk_id, nova_db):
+    """One raw answer with this copy's chunk id and database name tokenised.
+
+    Only for the correctness check. The tokens are what let
+    `_WRITE_QUESTIONS` state an expected request sequence as a literal
+    instead of recomputing one -- and a recomputed expectation is how a table
+    ends up agreeing with the bug it was meant to catch.
+    """
+    result, log = answer
+
+    def token(value):
+        if value == chunk_id:
+            return _CHUNK
+        if value == nova_db:
+            return _NOVA
+        return value
+
+    def body(value):
+        if isinstance(value, dict):
+            return {k: body(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [body(v) for v in value]
+        return token(value)
+
+    # Already through `_collapse_prose` -- the answers this is handed are the
+    # ones the drift comparison ran on, so collapsing again here would be a
+    # second copy of that decision to keep in sync.
+    result = result.replace(chunk_id, _CHUNK)
+    return result, tuple(
+        (method, token(req_db), token(doc_id), body(req_body))
+        for method, req_db, doc_id, req_body in log
+    )
+
+
+def _check_the_write_probe_bites(agreed, chunk_id, nova_db):
+    """Raise if the two copies agreed on a write that is simply wrong.
+
+    Every decision in `_WRITE_QUESTIONS` has a legitimate-looking
+    alternative, so agreement alone is free here in a way it is not for
+    routing. Runs only on rows the two copies agreed about, for the reason
+    `compare_routing` gives: a named difference must not be replaced by an
+    instrumentation error.
+    """
+    for label, _, _, _, want_result, want_log in _WRITE_QUESTIONS:
+        if label not in agreed:
+            continue
+        got_result, got_log = _normalised(agreed[label], chunk_id, nova_db)
+        if (got_result, got_log) != (want_result, tuple(want_log)):
+            raise ContractWriterMissing(
+                "both copies answered %r with %r making %r, expected %r "
+                "making %r. Two copies that drifted the same way agree on "
+                "every row of this table, so agreement is not evidence here "
+                "-- refusing to report a comparison whose answers are wrong "
+                "in both"
+                % (label, got_result, got_log, want_result, tuple(want_log)))
+
+
+def compare_writes(runner_path, bridge_path):
+    """Write questions the two copies answer differently, ascending.
+
+    Empty means both copies made the same sequence of CouchDB requests and
+    returned the same string on every row, under both database
+    configurations, *and* that sequence was the right one.
+    """
+    drifted = []
+    agreed = {}
+    with _process_state_restored(), _write_clock_frozen():
+        for db, nova_db in ROUTING_CONFIGS:
+            runner_ask, runner_chunk = _runner_writer(runner_path, db, nova_db)
+            bridge_ask, bridge_chunk = _bridge_writer(bridge_path, db, nova_db)
+            left = _write_answers(runner_ask)
+            right = _write_answers(bridge_ask)
+            label = "writes, routing on" if nova_db else "writes, routing off"
+            drifted += [
+                ("%s: %s" % (label, q), left[q], right[q])
+                for q in sorted(left) if left[q] != right[q]
+            ]
+            if runner_chunk != bridge_chunk:
+                drifted.append(
+                    ("%s: chunk id for identical bytes" % label,
+                     runner_chunk, bridge_chunk))
+            agreed[(db, nova_db, runner_chunk)] = {
+                q: left[q] for q in left if left[q] == right[q]}
+    if not drifted:
+        for (db, nova_db, chunk_id), answers in agreed.items():
+            _check_the_write_probe_bites(answers, chunk_id, nova_db or db)
+    return drifted
+
+
+_WRITE_ADVICE = (
+    "\nThe two vault clients no longer write the same way. Every row of this\n"
+    "table is a decision that succeeds either way and reports nothing when\n"
+    "it is wrong -- a creation date silently reset, a conditional write that\n"
+    "quietly overwrote the winner, a file document pointing at a chunk that\n"
+    "was never stored. Write the change into both copies, or drop the row\n"
+    "from _WRITE_QUESTIONS in tools/sync_contract.py and say in the journal\n"
+    "why the two clients are allowed to write differently."
+)
+
+
+# ---------------------------------------------------------------------------
 # Redaction: the second hand-synced pair, and a pure function of its input.
 # ---------------------------------------------------------------------------
 
@@ -1089,8 +1595,9 @@ def check_vault_pair(left_path, right_path):
         # as over-claiming, one direction friendlier. Second reader on #156.
         print("vault assembly: %d probed reads resolved to the same database "
               "in both copies"
-              % (len(_assembly_questions("_probe")) * len(ROUTING_CONFIGS)))
-        return 0
+              % (len(_assembly_questions("_probe")) * len(ROUTING_CONFIGS)),
+              flush=True)
+        return _check_writes(left_path, right_path)
     print("\nvault assembly: %d question(s) answered differently between\n"
           "  %s\n  %s\n" % (len(assembled), left_path, right_path),
           file=sys.stderr)
@@ -1101,6 +1608,34 @@ def check_vault_pair(left_path, right_path):
             "    %s: %r" % (right_path, right_answer),
         ]), file=sys.stderr)
     print(_ASSEMBLY_ADVICE, file=sys.stderr)
+    return 1
+
+
+def _check_writes(left_path, right_path):
+    """The fourth and last stage of the vault pair. Reached only when the
+    three before it passed, for the reason each of those gives: any stage
+    returning 0 on its own reinstates a partial "in sync" line.
+    """
+    try:
+        drifted = compare_writes(left_path, right_path)
+    except (ContractWriterMissing, ContractRouterMissing) as exc:
+        print("vault writes: %s" % exc, file=sys.stderr)
+        return 2
+    if not drifted:
+        print("vault writes: %d probed writes made the same requests in both "
+              "copies" % (len(_WRITE_QUESTIONS) * len(ROUTING_CONFIGS)),
+              flush=True)
+        return 0
+    print("\nvault writes: %d question(s) answered differently between\n"
+          "  %s\n  %s\n" % (len(drifted), left_path, right_path),
+          file=sys.stderr)
+    for question, left_answer, right_answer in drifted:
+        print("\n".join([
+            "  %s" % question,
+            "    %s: %r" % (left_path, left_answer),
+            "    %s: %r" % (right_path, right_answer),
+        ]), file=sys.stderr)
+    print(_WRITE_ADVICE, file=sys.stderr)
     return 1
 
 
