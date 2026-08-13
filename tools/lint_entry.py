@@ -47,6 +47,7 @@ ignore.
 """
 
 import argparse
+import re
 import sys
 
 from agora_runner.nova_journal import (
@@ -63,8 +64,6 @@ from agora_runner.nova_journal import (
 # Edvard's own first message -- so a filename that does not match is not
 # a finding, it just means there is no second statement of the cycle
 # number to check the heading against.
-import re
-
 _FILENAME_CYCLE_RE = re.compile(r"\A\d+-cycle-(\d+)(?:-|\.)")
 
 
