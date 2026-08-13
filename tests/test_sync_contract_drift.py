@@ -1078,7 +1078,7 @@ def test_every_row_of_the_table_is_actually_asked(tmp_path):
     assert len(want) * len(sync_contract.ROUTING_CONFIGS) == 22
 
 
-def test_the_success_line_counts_what_actually_ran(capsys, tmp_path):
+def test_the_success_line_counts_what_actually_ran(tmp_path):
     """The Cycle 156 bug itself, which no test in this file had ever pinned.
 
     The assembly probe's success line multiplied its row count by the
@@ -1091,8 +1091,11 @@ def test_the_success_line_counts_what_actually_ran(capsys, tmp_path):
     uses, so re-deriving it in the message cannot make this agree.
     """
     runner_path, bridge_path = _write_pair(tmp_path)
-    assert sync_contract._check_writes(runner_path, bridge_path) == 0
-    assert "vault writes: 22 probed writes" in capsys.readouterr().out
+    stage = next(s for s in sync_contract._VAULT_STAGES
+                 if s.label == "vault writes")
+    assert sync_contract.compare_writes(runner_path, bridge_path) == []
+    assert stage.summary(runner_path, bridge_path) == (
+        "22 probed writes made the same requests in both copies")
 
 
 def test_losing_the_ctime_carry_forward_on_one_side_is_drift(tmp_path):
@@ -1240,8 +1243,262 @@ def test_the_clock_is_put_back_even_when_the_comparison_raises(tmp_path):
     assert time.time is before
 
 
-def test_the_writes_stage_runs_after_the_three_before_it(tmp_path):
-    """`check_vault_pair` reaching exit 0 without running this stage is the
-    partial "in sync" line every earlier stage was written to prevent."""
-    source = open(sync_contract.__file__, encoding="utf-8").read()
-    assert "return _check_writes(left_path, right_path)" in source
+# ---------------------------------------------------------------------------
+# The fifth stage: what each copy reports about the databases it can reach.
+# ---------------------------------------------------------------------------
+
+# The real bridge's `database_health`, on top of the routing stub above --
+# same discipline as `BRIDGE_WRITE_STUB`, and the first test below is what
+# keeps it honest. It reaches CouchDB through the module-level `_req` rather
+# than through `_doc`, which is exactly why this stage needed its own driver.
+BRIDGE_HEALTH_STUB = BRIDGE_STUB + '''
+import urllib.parse
+
+HEALTH_TIMEOUT_SECONDS = 5
+# The runner's own list, not a shortened one: `routes` is part of the report
+# both copies return, so a stub probing different paths would report drift
+# that has nothing to do with health.
+HEALTH_PROBE_PATHS = ''' + repr(vault.HEALTH_PROBE_PATHS) + '''
+
+
+def _req(method, base, db, auth, path, body=None, timeout=60):
+    raise AssertionError("the driver replaces this")
+
+
+def _database_health(self):
+    names = {"main": self.db}
+    if self.nova_db:
+        names["nova"] = self.nova_db
+    databases = {}
+    for role, name in names.items():
+        entry = {"name": name, "reachable": False, "doc_count": None, "error": None}
+        try:
+            status, info = _req("GET", self.base, urllib.parse.quote(name, safe=""),
+                                self.auth, "", timeout=HEALTH_TIMEOUT_SECONDS)
+            if status == 200:
+                entry["reachable"] = True
+                entry["doc_count"] = info.get("doc_count")
+            else:
+                entry["error"] = f"HTTP {status}"
+        except Exception as e:
+            entry["error"] = str(e)[:200]
+        databases[role] = entry
+    return {
+        "routing_enabled": bool(self.nova_db),
+        "databases": databases,
+        "routes": [{"path": p, "database": self.db_for(p)} for p in HEALTH_PROBE_PATHS],
+    }
+
+
+VaultClient.database_health = _database_health
+VaultClient.base = "http://vault-contract.invalid"
+VaultClient.auth = "probe"
+'''
+
+# The decisions each mutation below breaks. Both copies carry them at their
+# own indent, which is the difference that makes a syntax comparison useless
+# here and is why this is driven rather than parsed.
+_REACHABLE_RUNNER = '                entry["reachable"] = True'
+_REACHABLE_BRIDGE = '                entry["reachable"] = True'
+_COUNT_RUNNER = '                entry["doc_count"] = info.get("doc_count")'
+_COUNT_BRIDGE = '                entry["doc_count"] = info.get("doc_count")'
+_TRUNCATE = '            entry["error"] = str(e)[:200]'
+_SHORT_TIMEOUT_RUNNER = "                timeout=HEALTH_TIMEOUT_SECONDS,"
+_SHORT_TIMEOUT_BRIDGE = 'self.auth, "", timeout=HEALTH_TIMEOUT_SECONDS)'
+_ROUTING_FLAG = '        "routing_enabled": bool(self.nova_db),'
+
+
+def _health_pair(tmp_path, runner=(None, None), bridge=(None, None)):
+    """`(runner path, bridge path)`, each optionally mutated once."""
+    runner_path = str(tmp_path / "runner_vault.py")
+    source = RUNNER_SOURCE
+    if runner[0] is not None:
+        source = _mutated(runner[0], runner[1])
+    open(runner_path, "w", encoding="utf-8").write(source)
+    return runner_path, _bridge_copy(
+        tmp_path, source=BRIDGE_HEALTH_STUB, old=bridge[0], new=bridge[1])
+
+
+def test_the_two_copies_report_health_the_same_way(tmp_path):
+    assert sync_contract.compare_health(*_health_pair(tmp_path)) == []
+
+
+def test_both_database_configurations_are_driven_for_health(tmp_path):
+    """Routing on and routing off decide how many stores are probed at all,
+    so a run that drove one of them would report a whole number for half a
+    client."""
+    runner_path, bridge_path = _health_pair(
+        tmp_path, bridge=(_SHORT_TIMEOUT_BRIDGE, 'self.auth, "", timeout=60)'))
+    drifted = sync_contract.compare_health(runner_path, bridge_path)
+    labels = {q.split(":")[0] for q, _, _ in drifted}
+    assert labels == {"health, routing on", "health, routing off"}
+
+
+def test_every_health_question_is_actually_asked(tmp_path):
+    """The count the success line prints is the count that ran -- asserted
+    against the answer keys rather than against the same arithmetic the
+    message uses, because the message is what is under test."""
+    runner_path, bridge_path = _health_pair(tmp_path)
+    asked = []
+    original = sync_contract._health_answers
+
+    def spy(ask):
+        answers = original(ask)
+        asked.append(sorted(answers))
+        return answers
+
+    sync_contract._health_answers = spy
+    try:
+        assert sync_contract.compare_health(runner_path, bridge_path) == []
+    finally:
+        sync_contract._health_answers = original
+    want = sorted(row[0] for row in sync_contract._HEALTH_QUESTIONS)
+    assert asked == [want] * (2 * len(sync_contract.ROUTING_CONFIGS))
+    assert len(want) * len(sync_contract.ROUTING_CONFIGS) == 12
+
+
+@pytest.mark.parametrize("old,new", [
+    # A 404 reported as a reachable database: the friendliest possible lie,
+    # and the page it feeds is what a migration is judged by.
+    ("            if status == 200:", "            if status >= 200:"),
+    # A missing doc_count read as zero rather than unknown.
+    (_COUNT_BRIDGE, '                entry["doc_count"] = info.get("doc_count", 0)'),
+    # The error text no longer truncated -- one CouchDB traceback becomes the
+    # whole status payload.
+    (_TRUNCATE, '            entry["error"] = str(e)'),
+    # The short probe timeout replaced by the 60s default every other call
+    # uses, which is the whole reason the constant exists.
+    (_SHORT_TIMEOUT_BRIDGE, 'self.auth, "", timeout=60)'),
+])
+def test_a_broken_health_report_in_one_copy_is_drift(tmp_path, old, new):
+    assert sync_contract.compare_health(
+        *_health_pair(tmp_path, bridge=(old, new))) != []
+
+
+def test_the_second_store_is_still_probed_after_the_first_one_raises(tmp_path):
+    """The row that matters most during a migration. A copy that let the
+    exception out of the loop reports nothing about the database files are
+    being moved *into* -- and it still returns a well-formed report."""
+    runner_path, bridge_path = _health_pair(
+        tmp_path, bridge=("        except Exception as e:",
+                          "            break\n        except Exception as e:"))
+    assert sync_contract.compare_health(runner_path, bridge_path) != []
+
+
+def test_the_guard_fires_when_both_copies_are_wrong_the_same_way(tmp_path):
+    """Agreement is not evidence here. Break both copies identically and the
+    comparison must refuse to report a clean run rather than return []."""
+    runner_path, bridge_path = _health_pair(
+        tmp_path,
+        runner=(_COUNT_RUNNER,
+                '                entry["doc_count"] = info.get("doc_count", 0)'),
+        bridge=(_COUNT_BRIDGE,
+                '                entry["doc_count"] = info.get("doc_count", 0)'))
+    with pytest.raises(sync_contract.ContractHealthMissing) as exc:
+        sync_contract.compare_health(runner_path, bridge_path)
+    assert "agreement is not evidence" in str(exc.value)
+
+
+def test_both_copies_dropping_the_routes_table_is_an_error(tmp_path):
+    """The report's routing table is what says where files are *going*
+    during a migration. Two copies that both stopped returning it agree on
+    an empty list, so the drift comparison alone would call that in sync."""
+    runner_path, bridge_path = _health_pair(
+        tmp_path,
+        runner=('        "routes": [{"path": p, "database": db_for(p)} '
+                'for p in HEALTH_PROBE_PATHS],', '        "routes": [],'),
+        bridge=('        "routes": [{"path": p, "database": self.db_for(p)} '
+                'for p in HEALTH_PROBE_PATHS],', '        "routes": [],'))
+    with pytest.raises(sync_contract.ContractHealthMissing) as exc:
+        sync_contract.compare_health(runner_path, bridge_path)
+    assert "agreement is not evidence" in str(exc.value)
+
+
+def test_a_copy_with_no_health_report_is_undrivable_not_in_sync(tmp_path):
+    """Same reasoning as every other stage: a renamed method is a "cannot
+    compare", never a comparison that found nothing."""
+    runner_path, bridge_path = _health_pair(
+        tmp_path, bridge=("VaultClient.database_health = _database_health",
+                          "VaultClient.gone = _database_health"))
+    with pytest.raises(sync_contract.ContractHealthMissing):
+        sync_contract.compare_health(runner_path, bridge_path)
+
+
+def test_every_stage_of_the_vault_pair_is_reachable_from_the_list():
+    """The list is the point of the refactor: a stage that is not in it is a
+    check that silently stops running, and the old shape hid exactly that
+    behind four functions calling each other by name."""
+    labels = [s.label for s in sync_contract._VAULT_STAGES]
+    assert labels == ["vault contract", "vault routing", "vault assembly",
+                      "vault writes", "vault health"]
+    for stage in sync_contract._VAULT_STAGES:
+        assert callable(stage.compare)
+        assert stage.errors and all(
+            issubclass(e, Exception) for e in stage.errors)
+        assert stage.advice.strip()
+
+
+def test_the_pair_stops_at_the_first_stage_that_drifts(capsys):
+    """Every stage or none, which is the whole reason the list exists.
+
+    Driven through a substituted stage list rather than through the real
+    five: the point under test is the loop, and building five genuinely
+    comparable copies to exercise it would test the drivers instead.
+    """
+    ran = []
+
+    def clean(_l, _r):
+        ran.append("clean")
+        return []
+
+    def dirty(_l, _r):
+        ran.append("dirty")
+        return [("a question", "left", "right")]
+
+    def never(_l, _r):
+        ran.append("never")
+        return []
+
+    stage = sync_contract._VaultStage
+    saved = sync_contract._VAULT_STAGES
+    sync_contract._VAULT_STAGES = (
+        stage("first", clean, (LookupError,), "advice", lambda l, r: "ok"),
+        stage("second", dirty, (LookupError,), "the advice", lambda l, r: "ok"),
+        stage("third", never, (LookupError,), "advice", lambda l, r: "ok"),
+    )
+    try:
+        assert sync_contract.check_vault_pair("left.py", "right.py") == 1
+    finally:
+        sync_contract._VAULT_STAGES = saved
+    assert ran == ["clean", "dirty"]
+    out = capsys.readouterr()
+    assert "first: ok" in out.out
+    assert "third" not in out.out
+    assert "a question" in out.err and "the advice" in out.err
+
+
+def test_a_stage_that_cannot_be_driven_is_two_not_one(capsys):
+    """An unreadable copy is "cannot compare", never a comparison that found
+    nothing -- and the stages after it do not get to report success."""
+    ran = []
+
+    def missing(_l, _r):
+        raise sync_contract.ContractHealthMissing("renamed")
+
+    def never(_l, _r):
+        ran.append("never")
+        return []
+
+    stage = sync_contract._VaultStage
+    saved = sync_contract._VAULT_STAGES
+    sync_contract._VAULT_STAGES = (
+        stage("first", missing, (sync_contract.ContractHealthMissing,),
+              "advice", lambda l, r: "ok"),
+        stage("second", never, (LookupError,), "advice", lambda l, r: "ok"),
+    )
+    try:
+        assert sync_contract.check_vault_pair("left.py", "right.py") == 2
+    finally:
+        sync_contract._VAULT_STAGES = saved
+    assert ran == []
+    assert "first: renamed" in capsys.readouterr().err
