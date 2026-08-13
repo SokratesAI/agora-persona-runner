@@ -196,24 +196,28 @@ def test_the_shapes_that_actually_reached_the_vault(name, entry, expected):
     assert _kinds(lint(name, entry)) == expected
 
 
-def test_an_entries_marker_is_named_rather_than_reported_as_unparseable():
-    """A reviewer found this as a false positive and it is a real defect.
+def test_an_entry_that_quotes_the_entries_marker_is_accepted():
+    """This used to be refused, and the refusal was right at the time: the
+    site cut the whole assembled corpus at the first `## Entries` line, so
+    one such line inside one entry deleted every newer entry from the feed.
+    runner#135 fixed that at the parser, and the rule went with it.
 
-    `parse_journal` keeps only what follows the first `## Entries` line,
-    and `assemble_entries` joins every entry into one blob before calling
-    it, so this line inside one entry drops every newer entry from the
-    corpus. This journal is self-referential about its own parser, so it
-    is a line a cycle would plausibly write.
-    """
+    Keeping it would have meant refusing an entry for writing a true
+    sentence about the append command `prompt.md` step 6 tells every cycle
+    to use -- a rule with no danger left behind it, on the one subject this
+    journal is guaranteed to keep writing about.
+
+    The assertion that matters is the second one: `lint` parses a single
+    entry document, which has no preamble, so it must pass
+    `strip_header=False` or the marker cuts this entry's own heading off
+    and the document reports as `unparseable` instead."""
     entry = (
         "### Cycle 152 — 2026-08-13 02:00 Oslo\n\n"
         "The marker matters here:\n\n## Entries\n\nis what the old file used.\n\n"
         "---\nPR: #133 | Outcome: merged\n"
     )
     findings = lint("168-cycle-152.md", entry)
-    assert _kinds(findings) == ["marker"]
-    assert "every entry newer than yours" in findings[0]
-    assert "unparseable" not in findings[0]
+    assert findings == []
 
 
 def test_the_same_marker_in_backticks_is_fine():
