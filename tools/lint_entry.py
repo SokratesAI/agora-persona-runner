@@ -298,7 +298,11 @@ def main(argv=None):
     if not findings:
         print(f"lint_entry: {name} renders as written.")
         return 0
-    print(f"lint_entry: {name} would be repaired by the site, not read:", file=sys.stderr)
+    # Not "would be repaired by the site": that was true of every check
+    # this tool had when it was written, and the stamp check is the
+    # first one whose finding the site cannot repair -- a heading dated
+    # ahead of the clock renders exactly as written and sorts wrongly.
+    print(f"lint_entry: {name} should not be written as it stands:", file=sys.stderr)
     for finding in findings:
         print(f"  - {finding}", file=sys.stderr)
     return 1

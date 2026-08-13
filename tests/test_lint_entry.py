@@ -169,7 +169,7 @@ def test_main_exits_zero_on_a_good_entry_and_one_on_a_bad_one(tmp_path, capsys):
     bad = tmp_path / "169-cycle-153.md"
     bad.write_text(GOOD.replace("### Cycle", "## Cycle"), encoding="utf-8")
     assert main([str(bad)]) == 1
-    assert "would be repaired" in capsys.readouterr().err
+    assert "should not be written as it stands" in capsys.readouterr().err
 
 
 def test_main_uses_the_name_it_will_be_written_under(tmp_path):
