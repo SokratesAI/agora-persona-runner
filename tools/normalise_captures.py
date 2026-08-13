@@ -57,6 +57,7 @@ output would *not* leave it alone. See the guard there.
 import argparse
 import sys
 
+from agora_runner.md_sections import split_at_heading
 from tools.rolling import RollError, join_bullets, split_bullets
 from tools.roll_captures import MARKER, _CYCLE_RE, check_newest_first
 
@@ -167,13 +168,12 @@ def merge(top, bottom):
 
 def normalise(live):
     """The whole file, entries reordered, everything else untouched."""
-    index = live.find(MARKER)
-    if index < 0:
+    parts = split_at_heading(live, MARKER)
+    if parts is None:
         raise RollError(
             f"refusing to normalise: no {MARKER.strip()!r} section in this file"
         )
-    cut = index + len(MARKER)
-    head, body = live[:cut], live[cut:]
+    head, body = parts
     entries = split_bullets(body)
     try:
         check_newest_first(entries)
@@ -231,8 +231,8 @@ def main(argv=None):
     if out == live:
         print("already newest-first, nothing to normalise")
         return 0
-    moved = sum(1 for a, b in zip(split_bullets(live.split(MARKER, 1)[-1]),
-                                  split_bullets(out.split(MARKER, 1)[-1])) if a != b)
+    moved = sum(1 for a, b in zip(split_bullets(split_at_heading(live, MARKER)[1]),
+                                  split_bullets(split_at_heading(out, MARKER)[1])) if a != b)
     print(f"{args.live}: {moved} entries move, {len(live)} -> {len(out)} bytes")
     if args.dry_run:
         return 0

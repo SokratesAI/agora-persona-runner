@@ -35,6 +35,7 @@ whichever vault client that pod actually has.
 
 import argparse
 
+from agora_runner.md_sections import split_at_heading
 
 
 class RollSpec:
@@ -146,14 +147,20 @@ def join_bullets(entries):
 
 
 def _body(live, spec):
-    """(everything up to and including the marker, everything after)."""
-    index = live.find(spec.marker)
-    if index < 0:
+    """(everything up to and including the marker, everything after).
+
+    `split_at_heading` rather than `live.find(spec.marker)`: the marker is
+    a heading, and a heading is a whole line outside the frontmatter and
+    outside any fenced block. Nova writes prose about its own machinery
+    into these files every hour, so a paragraph naming `## Digest` is not
+    a hypothetical -- see `md_sections.split_at_heading`.
+    """
+    parts = split_at_heading(live, spec.marker)
+    if parts is None:
         raise RollError(
             f"refusing to roll: no {spec.marker.strip()!r} section in the live file"
         )
-    cut = index + len(spec.marker)
-    return live[:cut], live[cut:]
+    return parts
 
 
 def _archived(archive, spec):

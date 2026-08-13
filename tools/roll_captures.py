@@ -60,6 +60,7 @@ that is still load-bearing:
 import re
 import sys
 
+from agora_runner.md_sections import split_at_heading
 from agora_runner.nova_boards import parse_notes
 from tools import rolling
 from tools.rolling import RollError, RollSpec, join_bullets, split_bullets
@@ -195,7 +196,7 @@ def _check_render(live, archive, kept, new_live, new_archive):
     against a half-applied run. The archive is parsed separately and
     appended, the same way `nova_site.board_payload` consumes it.
     """
-    rejoined = live[: live.find(MARKER) + len(MARKER)] + "\n" + join_bullets(kept) + "\n"
+    rejoined = split_at_heading(live, MARKER)[0] + "\n" + join_bullets(kept) + "\n"
     before = [note["text"] for note in parse_notes(rejoined)]
     after = [note["text"] for note in parse_notes(new_live)] + [
         note["text"] for note in parse_notes(new_archive)

@@ -38,6 +38,19 @@ _SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
 _FENCE_RE = re.compile(r"^[ \t]*(?P<fence>```+|~~~+)")
 
 
+def _normalise(line):
+    """A heading line reduced to what markdown actually renders.
+
+    Runs of whitespace collapse, because `##  Digest` and `## Digest` are
+    the same heading to every renderer and to Edvard, and differ to
+    `str.find`. This docstring used to promise whitespace tolerance while
+    only stripping the ends -- a hand-edit in Obsidian that widened the
+    gap after the hashes made `roll_digest` refuse to run on a file that
+    was not malformed.
+    """
+    return " ".join(line.lower().split())
+
+
 def _skippable(lines):
     """Line indexes that cannot hold a heading: frontmatter and fenced code.
 
@@ -83,10 +96,10 @@ def find_heading(lines, heading):
     lower down is a malformed file, and picking the first keeps this
     agreeing with every parser that reads top to bottom.
     """
-    wanted = heading.strip().lower()
+    wanted = _normalise(heading)
     skip = _skippable(lines)
     for i, line in enumerate(lines):
-        if i not in skip and line.strip().lower() == wanted:
+        if i not in skip and _normalise(line) == wanted:
             return i
     return None
 
@@ -107,3 +120,28 @@ def section_bounds(lines, heading):
         if i not in skip and _SECTION_RE.match(lines[i]):
             return at + 1, i
     return at + 1, len(lines)
+
+
+def split_at_heading(text, heading):
+    """(text up to and including the heading's own line, the rest), or None.
+
+    The rolling scripts all want this one shape: keep the top of the file
+    verbatim, rewrite what is below a heading. Each of them reached for
+    `text.find("\\n## Digest\\n")` to get it, which is the substring search
+    this module exists to replace -- and on 2026-08-13 at 08:13 it fired
+    for real. A cycle wrote a sentence into **Next cycle** naming the
+    marker `roll_digest` searches for, with real newlines around it
+    instead of escaped ones; the script then cut there, read the rest of
+    the Next cycle list as digest lines, and refused to roll. Refusing was
+    the correct end of a wrong cut.
+
+    The heading line's trailing newline goes with the head, so the body
+    starts at the first character below it and the two halves still
+    concatenate back to the input.
+    """
+    lines = text.split("\n")
+    at = find_heading(lines, heading)
+    if at is None:
+        return None
+    cut = sum(len(line) + 1 for line in lines[: at + 1])
+    return text[:cut], text[cut:]
