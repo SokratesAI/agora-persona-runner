@@ -2,6 +2,11 @@
 
     python3 -m tools.mirror_journal --dir /data/workspace/journal-mirror
 
+Run it from the **bridge** pod (`Bash`). `/app/bridge/vault_tool.py`
+exists only there; the runner pod has no vault client at all, and a
+cycle that reaches for this from `terminal_exec` gets `No such file or
+directory` (`prompt.md`, "The two shells are not interchangeable").
+
 Four cycles running have been saved by checking a change against the
 *real* journal instead of against fixtures tidier than it: Cycle 149's
 gap detector would have accused three cycles that had written; Cycle
