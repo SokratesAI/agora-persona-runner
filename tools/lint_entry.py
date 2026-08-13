@@ -1,0 +1,217 @@
+"""Check a journal entry before it is written, while the author can fix it.
+
+Six cycles have shipped an entry the site could not render properly --
+three broke the heading rule and three the footer rule -- and every
+repair so far has been code that reads the mistake back afterwards.
+`normalise_entry` promotes a `## ` heading and synthesises one from the
+filename when there is none (Cycle 150); `stray_footer` lifts a `PR: ...`
+line the cycle bolded and put at the top (Cycle 151). Both work, and
+both are guesses made by something that was not there when the entry was
+written. The author was. An entry is written once and never edited, so
+the only moment a mistake is cheap to correct is before the `put`.
+
+    python3 -m tools.lint_entry entry.md --path '<vault path>'
+
+Exits 0 when the document renders as written, 1 when a repair would be
+needed, 2 when it could not be read. `prompt.md` step 7 chains the `put`
+behind it with `&&`, so a failed check does not write.
+
+**It reports where the renderer would have to repair the document; it
+does not restate the renderer's rules.** That distinction is the whole
+design. A linter carrying its own copy of what a valid entry looks like
+is a seventh statement of the rules, free to drift from the six already
+in `nova_journal.py`, and a linter that disagrees with the parser is
+worse than no linter. So every check here runs the real function and
+compares: heading by calling `normalise_entry`, footer by calling
+`parse_journal` and then `stray_footer`.
+
+Measured against all 166 live entries (2026-08-13): 3 fail the heading
+check, 3 the footer check, 1 the cycle-number check, and the other 162
+pass untouched. That measurement is also why there is no rule here
+requiring the `---` above the footer, which `personality.md` asks for
+and 17 live entries do not have -- 14 of them because they carry the
+`Reviewer: n findings` line the review rubric asks for, in the place the
+rule would go. `_FOOTER_RE` was deliberately changed to make that rule
+optional (Cycle 104's card showed no PR for a cycle that had merged
+one). A check written from the prose alone would fail a sixth of the
+real journal, which is how a linter becomes something cycles learn to
+ignore.
+"""
+
+import argparse
+import sys
+
+from agora_runner.nova_journal import (
+    _ENTRY_HEADING_RE,
+    _FOOTER_RE,
+    JOURNAL_DIR,
+    normalise_entry,
+    parse_journal,
+    stray_footer,
+)
+
+# `<seq>-cycle-<n>.md`, and the `-addendum` suffixes twelve live files
+# carry. Entry 004 has no cycle token at all and never will -- it is
+# Edvard's own first message -- so a filename that does not match is not
+# a finding, it just means there is no second statement of the cycle
+# number to check the heading against.
+import re
+
+_FILENAME_CYCLE_RE = re.compile(r"\A\d+-cycle-(\d+)(?:-|\.)")
+
+
+def _heading_finding(path, content):
+    """The document does not start where `parse_journal` looks for a start."""
+    normalised = normalise_entry(path, content)
+    if normalised == (content or "").strip():
+        return None
+    first = ((content or "").strip().split("\n") or [""])[0]
+    return (
+        "heading: this document does not begin with its `### ` heading, so "
+        "the site would repair it rather than read it. Its first line is "
+        f"{first[:70]!r}. Write the entry starting `### ` on line 1, with no "
+        "frontmatter and exactly three hashes -- two makes the whole hour "
+        "render as the tail of the previous cycle's card."
+    )
+
+
+def _raw_body(normalised):
+    """The entry body exactly as `parse_journal` slices it, before any repair.
+
+    One document is one entry, so this is everything after the first
+    `### ` line. It has to be recomputed rather than read off the parsed
+    entry because `parse_journal` hands back a body with the footer
+    already removed -- by the strict rule *or* by the repair, and it does
+    not say which.
+    """
+    heading = _ENTRY_HEADING_RE.search(normalised)
+    return normalised[heading.end():].strip() if heading else normalised.strip()
+
+
+def _footer_finding(body):
+    """The `PR: ... | Outcome: ...` line is not where the renderer reads it.
+
+    Applies `_FOOTER_RE` directly, which is the only way to see the
+    answer. Asking the parsed entry whether it has a `pr` cannot fail:
+    `parse_journal` falls back to `stray_footer` when the strict rule
+    misses, so by the time it returns, a repaired entry and a correct one
+    are indistinguishable. The first version of this check did exactly
+    that and reported nothing on all three of the live entries whose
+    missing PR badge Edvard could see -- a negative result that was
+    guaranteed in advance.
+    """
+    if _FOOTER_RE.search(body):
+        return None
+    _, pr, _ = stray_footer(body)
+    if pr:
+        return (
+            "footer: the `PR: ... | Outcome: ...` line is in the document but "
+            "not at the end of it, so the site would have to move it to give "
+            "this cycle a badge. Put it bare on the last line, not bolded and "
+            "not wrapped across two lines."
+        )
+    return (
+        "footer: no `PR: ... | Outcome: ...` line the site can read, so this "
+        "cycle's card would show no PR and no outcome -- which reads as an "
+        "hour that shipped nothing. Add it as the last line, e.g. "
+        "`PR: #123 | Outcome: merged`, or `PR: none | Outcome: ...`."
+    )
+
+
+def _cycle_finding(name, entry):
+    """The heading and the filename disagree about which cycle this is.
+
+    Read off the parsed entry's `cycle`, not its `title` -- `parse_heading`
+    classifies each segment of a heading independently and lifts the cycle
+    number *out* of the title, so searching the title reports every
+    correctly written entry as having no cycle number. Caught by running
+    this against the live folder, where the first version failed Cycle
+    151's own entry.
+
+    Only meaningful once the heading itself is right, which is why the
+    caller skips it otherwise: `normalise_entry` synthesises a missing
+    heading *from the filename*, so after a repair the two agree by
+    construction and this check would report nothing however wrong the
+    document was.
+    """
+    declared = _FILENAME_CYCLE_RE.match(name)
+    if not declared:
+        return None
+    want = int(declared.group(1))
+    found = entry.get("cycle")
+    if found == want:
+        return None
+    return (
+        f"cycle: the filename says cycle {want} and the heading says "
+        f"{found if found is not None else 'no cycle number'}. The gap "
+        "detector counts cycles from the filenames and the cards title "
+        "themselves from the headings, so a disagreement puts one cycle's "
+        "words under another cycle's name."
+    )
+
+
+def lint(name, content):
+    """`(filename, text)` -> a list of findings, empty when it renders as written."""
+    if not (content or "").strip():
+        return ["empty: there is nothing in this file to write."]
+    path = JOURNAL_DIR + name
+    findings = []
+    heading = _heading_finding(path, content)
+    if heading:
+        findings.append(heading)
+    # Every later check reads the document the way the site does, which
+    # means through the repair -- otherwise a bad heading would report
+    # itself a second time as a missing footer, and the cycle would fix
+    # one thing and see two.
+    entries = parse_journal(normalise_entry(path, content))
+    if not entries:
+        findings.append(
+            "unparseable: the site could not read a single entry out of this "
+            "document, even after repair."
+        )
+        return findings
+    entry = entries[0]
+    normalised = normalise_entry(path, content)
+    if len(entries) > 1:
+        findings.append(
+            f"split: this document holds {len(entries)} `### ` headings, so it "
+            "would render as that many separate cards. One entry per file."
+        )
+    footer = _footer_finding(_raw_body(normalised))
+    if footer:
+        findings.append(footer)
+    if not heading:
+        cycle = _cycle_finding(name, entry)
+        if cycle:
+            findings.append(cycle)
+    return findings
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("file", help="the entry as written, on local disk")
+    ap.add_argument(
+        "--name",
+        help="the filename it will be written under, if it differs from the "
+        "local one (e.g. 168-cycle-152.md)",
+    )
+    args = ap.parse_args(argv)
+    try:
+        with open(args.file, encoding="utf-8") as fh:
+            content = fh.read()
+    except OSError as exc:
+        print(f"lint_entry: cannot read {args.file}: {exc}", file=sys.stderr)
+        return 2
+    name = args.name or args.file.rsplit("/", 1)[-1]
+    findings = lint(name, content)
+    if not findings:
+        print(f"lint_entry: {name} renders as written.")
+        return 0
+    print(f"lint_entry: {name} would be repaired by the site, not read:", file=sys.stderr)
+    for finding in findings:
+        print(f"  - {finding}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())
