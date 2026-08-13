@@ -2838,6 +2838,25 @@ describe("a hole in the record is visible in the feed", () => {
       assert.equal(kids[gap - 1].id, "cycle-58");
     });
 
+  /* One addendum can leapfrog any number of newer cards, not just one --
+   * the sequence number is simply the next one free when the addendum is
+   * written. Anchoring on the numerically smallest card newer than the
+   * hole would put the marker back above two cards that are newer than
+   * it; the last such card in the feed is the one that holds. */
+  test("a hole never lands above a card newer than it, however scrambled",
+    async () => {
+      const window = await loadSite("/",
+        { journal: () => reordered([57, 62, 60, 50], [55]) });
+      assert.equal(gaps(window).length, 1);
+      const kids = positions(window);
+      const gap = kids.findIndex((n) => n.classList.contains("cycle-gap"));
+      for (const id of ["cycle-57", "cycle-62", "cycle-60"]) {
+        const at = kids.findIndex((n) => n.id === id);
+        assert.ok(at >= 0 && at < gap, id + " is newer than the hole and sits below it");
+      }
+      assert.equal(kids[gap + 1].id, "cycle-50");
+    });
+
   test("a hole older than everything loaded is left for the older page",
     async () => {
       const window = await loadSite("/",

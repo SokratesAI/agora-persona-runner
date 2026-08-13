@@ -1214,9 +1214,12 @@
      * filed after the next cycle has already written puts a lower number
      * above a higher one. Reading the gap off the previous card then
      * announced "Cycles 142, 143 ran and wrote no entry" with 144's own
-     * card sitting underneath it. So each hole is anchored directly under
-     * the oldest card that is still newer than it, wherever that card has
-     * ended up, and is drawn only when the window also holds a card older
+     * card sitting underneath it. So the invariant is the one a reader can
+     * actually check by scrolling: **a hole is never drawn above a card
+     * newer than it.** Each one is anchored under the *last* card in the
+     * feed that is newer than the hole -- not the numerically smallest
+     * such card, which in a scrambled feed can still have two newer cards
+     * below it. It is drawn only when the window also holds a card older
      * than the hole: a gap that runs off either end of the window belongs
      * to entries nobody has loaded yet, and pinning it to the edge would
      * claim a boundary this page cannot see. */
