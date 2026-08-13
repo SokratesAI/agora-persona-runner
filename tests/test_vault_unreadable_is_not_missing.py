@@ -125,6 +125,30 @@ def test_the_boards_page_stops_short_too(couch):
         nova_sources.board_markdown("issues")
 
 
+def test_the_audit_read_never_blocks_a_repairing_overwrite(couch, monkeypatch):
+    """The one caller where raising would be *worse* than the old silent
+    `None`, and the one I nearly shipped broken.
+
+    `vault_write` is a full overwrite, which is how a persona repairs a
+    damaged file. Its pre-read exists only to give the Activity feed a
+    before/after diff, and `_before_snapshot` already caught
+    `VaultIncompleteDocument` so the audit log could never stand between a
+    persona and the repair. A new failed-read exception that escaped that
+    `except` would have put it there — for a database that is flaky on one
+    read and fine on the write immediately after.
+
+    Same reasoning as the matching test in
+    `test_vault_refuses_partial_documents.py`; this is the other exception.
+    """
+    from agora_runner import tools_dispatch
+
+    couch({PRESENT: (503, {"error": "unavailable"})})
+    monkeypatch.setattr(tools_dispatch, "vault_read_path", vault.vault_read_path)
+    before = tools_dispatch._before_snapshot(PRESENT)
+    assert "unreadable" in before
+    assert "503" in before
+
+
 def test_a_missing_digest_archive_still_reads_as_no_archive(couch):
     """The other half of the boundary, and the one a careless fix breaks:
     `digest_markdown` joins two files and the archive legitimately does
