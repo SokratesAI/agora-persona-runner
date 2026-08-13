@@ -415,6 +415,20 @@ pre code { background: none; padding: 0; }
 
 .pr-link:hover { text-decoration: underline; }
 
+/* The board reference beside the PR one. Same row, same size, and
+ * deliberately the same link treatment -- the difference between them is
+ * where they go, not how important they are, and giving the internal one
+ * its own colour would say otherwise. */
+.board { color: var(--dim); font-size: 0.82rem; }
+
+.board-link {
+  color: var(--accent);
+  text-decoration: none;
+  padding: 0.5rem 0;
+}
+
+.board-link:hover { text-decoration: underline; }
+
 .badge {
   font-size: 0.72rem;
   letter-spacing: 0.06em;

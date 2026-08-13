@@ -54,6 +54,7 @@ from agora_runner.nova_journal import (
     parse_heading,
     parse_journal,
     parse_journal_file,
+    parse_board_refs,
     parse_pr_refs,
     render_blocks,
     render_inline,
@@ -1274,6 +1275,100 @@ def test_the_payload_carries_the_pr_spans_the_client_reads():
         payload = nova_site.journal_payload()
     assert payload["entries"]
     assert all("prSpans" in entry for entry in payload["entries"])
+
+
+# --- The `Board:` field becomes links into Edvard's own boards -------------
+
+
+@pytest.mark.parametrize(
+    "field, expected",
+    [
+        ("idea #68", [("idea #68", "/ideas#68")]),
+        ("issue #71", [("issue #71", "/issues#71")]),
+        ("Idea #68", [("Idea #68", "/ideas#68")]),
+        ("ideas #68", [("ideas #68", "/ideas#68")]),
+        ("issue #71, idea #62", [("issue #71", "/issues#71"), ("idea #62", "/ideas#62")]),
+        ("idea #68 (the linking half)", [("idea #68", "/ideas#68")]),
+    ],
+)
+def test_a_board_reference_resolves_to_the_page_that_holds_it(field, expected):
+    links = [(s["text"], s["url"]) for s in parse_board_refs(field) if s["kind"] == "link"]
+    assert links == expected
+
+
+@pytest.mark.parametrize("field", ["#68", "none", "", "68", "idea 68", "PR #68"])
+def test_a_board_field_with_no_word_and_number_makes_no_link(field):
+    """A bare `#68` is the one shape that must stay plain text. In the `PR:`
+    field a bare number has exactly one meaning; here it could be either
+    board, and the two are different pages -- so guessing sends Edvard to a
+    real write-up that is not the one the cycle worked on."""
+    spans = parse_board_refs(field)
+    assert not [s for s in spans if s["kind"] == "link"]
+    assert "".join(s["text"] for s in spans) == field
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["idea #68", "issue #71, idea #62", "idea #68 (the linking half)", "#68", "none"],
+)
+def test_no_board_field_loses_a_character(field):
+    """Same invariant as the PR field: linkifying adds structure and never
+    edits. Without this the check above passes on a parser that drops the
+    text it could not place."""
+    assert "".join(s["text"] for s in parse_board_refs(field)) == field
+
+
+@pytest.mark.parametrize(
+    "footer, pr, board, outcome",
+    [
+        ("PR: #160 | Board: idea #68 | Outcome: merged", "#160", "idea #68", "merged"),
+        ("PR: #160 | Outcome: merged", "#160", "", "merged"),
+        ("PR: none | Board: issue #71 | Outcome: shipped", "none", "issue #71", "shipped"),
+        # The field is free text like the two beside it.
+        (
+            "PR: #1, bridge#2 | Board: idea #68, issue #71 | Outcome: merged",
+            "#1, bridge#2",
+            "idea #68, issue #71",
+            "merged",
+        ),
+    ],
+)
+def test_the_footer_reads_three_fields_and_two_of_them_are_required(
+    footer, pr, board, outcome
+):
+    entry = parse_journal(f"### 2026-08-13 22:00 (Oslo) — Cycle 176\n\nBody.\n\n---\n{footer}")[0]
+    assert (entry["pr"], entry["board"], entry["outcome"]) == (pr, board, outcome)
+
+
+def test_a_board_field_survives_a_footer_the_site_has_to_move():
+    """`stray_footer` repairs the three live entries that put the footer in
+    the wrong place. It carries four fields now, and a repaired entry that
+    silently dropped its board reference would be the harder bug to see --
+    the card renders, just without the link."""
+    body = "**PR: #160 | Board: idea #68 | Outcome: merged**\n\nThe cycle went like this."
+    entry = parse_journal(f"### 2026-08-13 22:00 (Oslo) — Cycle 176\n\n{body}")[0]
+    assert (entry["pr"], entry["board"], entry["outcome"]) == ("#160", "idea #68", "merged")
+    assert "PR:" not in entry["body"]
+
+
+def test_a_pipe_in_the_pr_field_is_not_mistaken_for_a_board_field():
+    """The board group sits between two fields that were already there, so
+    the risk it introduces is to the ones it did not change. `Outcome:` is
+    what closes the footer, and nothing before it may claim to be a board
+    unless it says so."""
+    entry = parse_journal(
+        "### 2026-08-13 22:00 (Oslo) — Cycle 176\n\nBody.\n\n---\n"
+        "PR: #160 | see also #161 | Outcome: merged"
+    )[0]
+    assert entry["pr"] == "#160 | see also #161"
+    assert entry["board"] == ""
+
+
+def test_the_payload_carries_the_board_spans_the_client_reads():
+    with patch.object(nova_sources, "vault_read_path", return_value=_fixture("journal_sample.md")):
+        payload = nova_site.journal_payload()
+    assert payload["entries"]
+    assert all("board" in entry and "boardSpans" in entry for entry in payload["entries"])
 
 
 # --- The contract with the browser tests ----------------------------------

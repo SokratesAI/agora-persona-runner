@@ -583,6 +583,111 @@ describe("PR references are links", () => {
   });
 });
 
+describe("a journal card names the board item it worked on", () => {
+  /* Edvard, ideas.md #68: "Journal cards in Nova should mark the issue or
+   * idea number they worked on like they do with the prs. With links."
+   *
+   * No live entry carries the field yet -- it starts from the next one
+   * written, because backfilling 197 entries would be inventing a record
+   * rather than keeping one -- so the payload here is the real one with the
+   * field added to its first card. */
+  const withBoard = (board, spans) => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries[0].board = board;
+    journal.entries[0].boardSpans = spans;
+    return journal;
+  };
+
+  test("the reference renders as a link into the app, not out to GitHub", async () => {
+    const window = await loadSite("/", {
+      journal: () => withBoard("idea #68", [
+        { kind: "link", text: "idea #68", url: "/ideas#68" },
+      ]),
+    });
+    const link = cards(window)[0].querySelector(".board .board-link");
+    assert.equal(link.textContent, "idea #68");
+    assert.equal(link.getAttribute("href"), "/ideas#68");
+    // The half that would be wrong by default: `renderSpans` sends every
+    // link to a new tab, which for one of our own pages means leaving the
+    // PWA to arrive back inside it.
+    assert.equal(link.getAttribute("target"), null);
+  });
+
+  test("the text around the references survives, and a card without the field shows nothing", async () => {
+    const window = await loadSite("/", {
+      journal: () => withBoard("issue #71 and idea #62", [
+        { kind: "link", text: "issue #71", url: "/issues#71" },
+        { kind: "text", text: " and " },
+        { kind: "link", text: "idea #62", url: "/ideas#62" },
+      ]),
+    });
+    assert.equal(cards(window)[0].querySelector(".board").textContent, "issue #71 and idea #62");
+    assert.equal(cards(window)[1].querySelector(".board"), null);
+  });
+
+  test("a payload from an older build has no board and renders no badge", async () => {
+    const window = await loadSite();
+    assert.equal(window.document.querySelectorAll(".board").length, 0);
+  });
+});
+
+describe("a board link opens the row it names", () => {
+  test("/issues#57 opens that row rather than only landing on the page", async () => {
+    const window = await loadSite("/issues#57");
+    const row = window.document.getElementById("item-57");
+    assert.ok(row, "the row the URL named is not on the page");
+    assert.equal(row.querySelector(".item-head").getAttribute("aria-expanded"), "true");
+    assert.equal(row.querySelector(".item-body").hidden, false);
+  });
+
+  test("a done item still opens, because a URL beats the default filter", async () => {
+    /* The failure this exists for: the board opens on `Open`, and an item a
+     * journal entry worked on is usually already done -- so the link would
+     * land on the right page showing everything except the thing it pointed
+     * at, with nothing saying why. */
+    const window = await loadSite("/issues#51");
+    const row = window.document.getElementById("item-51");
+    assert.ok(row, "a done item the URL named was filtered off the page");
+    assert.equal(row.querySelector(".item-head").getAttribute("aria-expanded"), "true");
+    const on = [...window.document.querySelectorAll(".filter.on")].map((c) => c.textContent);
+    assert.ok(on.some((label) => label.startsWith("All")), "the filter did not give way: " + on);
+  });
+
+  test("a number that is on no row changes nothing", async () => {
+    const window = await loadSite("/issues#9999");
+    assert.equal(window.document.querySelectorAll(".item-head[aria-expanded='true']").length, 0);
+    const on = [...window.document.querySelectorAll(".filter.on")].map((c) => c.textContent);
+    assert.ok(on.some((label) => label.startsWith("Open")), "a stale number moved the filter");
+  });
+
+  test("no hash leaves every row closed", async () => {
+    const window = await loadSite("/issues");
+    assert.equal(window.document.querySelectorAll(".item-head[aria-expanded='true']").length, 0);
+  });
+
+  test("tapping a filter afterwards does not drag the row back open", async () => {
+    /* The hash is consumed once per navigation, not on every render. Read
+     * on each render, closing the row and pressing a chip would reopen it,
+     * which is a page that argues with the person using it. */
+    const window = await loadSite("/issues#57");
+    click(window, window.document.getElementById("item-57").querySelector(".item-head"));
+    assert.equal(
+      window.document.getElementById("item-57").querySelector(".item-head")
+        .getAttribute("aria-expanded"),
+      "false",
+    );
+    const all = [...window.document.querySelectorAll(".filter")]
+      .filter((chip) => chip.textContent.startsWith("All"))[0];
+    click(window, all);
+    assert.equal(
+      window.document.getElementById("item-57").querySelector(".item-head")
+        .getAttribute("aria-expanded"),
+      "false",
+      "the hash reopened a row the reader had closed",
+    );
+  });
+});
+
 describe("the Needs Edvard box", () => {
   test("stays hidden when the section says a bolded nothing", async () => {
     // The live digest has said `**Nothing.**` since the box shipped, and the

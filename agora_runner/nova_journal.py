@@ -79,8 +79,20 @@ _SEGMENT_SPLIT_RE = re.compile(r"[ \t]+—[ \t]+")
 # footer format mid-prose and then ends with its real footer matches the
 # *quoted* one, and `outcome` swallows everything from there to the end of
 # the entry. No live entry does that today. Do not add the flag.
+#
+# `Board:` is the third field and the only optional one (Edvard, ideas.md
+# #68: "Journal cards in Nova should mark the issue or idea number they
+# worked on like they do with the prs. With links."). It sits between the
+# other two rather than after them because `outcome` is anchored to `$`
+# and every entry ever written ends on it; a field after `Outcome:` would
+# be swallowed by that group instead of parsed. Optional because 197
+# entries predate it and none of them can be rewritten -- rule 3 -- and
+# because a cycle that did not work from the board should say nothing
+# rather than invent a number.
 _FOOTER_RE = re.compile(
-    r"\n(?:-{3,}[ \t]*\n)?PR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*Outcome:[ \t]*(?P<outcome>.+?)[ \t]*$",
+    r"\n(?:-{3,}[ \t]*\n)?PR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*"
+    r"(?:Board:[ \t]*(?P<board>.+?)[ \t]*\|[ \t]*)?"
+    r"Outcome:[ \t]*(?P<outcome>.+?)[ \t]*$",
     re.IGNORECASE,
 )
 # The repair side of `_FOOTER_RE`, and deliberately a separate pattern:
@@ -90,6 +102,7 @@ _FOOTER_RE = re.compile(
 # is safe.
 _STRAY_FOOTER_RE = re.compile(
     r"\A[ \t]*\*{0,2}[ \t]*PR:[ \t]*(?P<pr>.+?)[ \t]*\|[ \t]*"
+    r"(?:Board:[ \t]*(?P<board>.+?)[ \t]*\|[ \t]*)?"
     r"Outcome:[ \t]*(?P<outcome>.+?)[ \t]*\*{0,2}[ \t]*\Z",
     re.IGNORECASE,
 )
@@ -104,7 +117,7 @@ _RULE_ONLY_RE = re.compile(r"\A[ \t]*-{3,}[ \t]*\Z")
 
 
 def stray_footer(body):
-    """One entry body -> `(body, pr, outcome)` with a misplaced footer lifted.
+    """One entry body -> `(body, pr, board, outcome)`, misplaced footer lifted.
 
     `personality.md` asks for one rigid line at the very end of an entry:
     `PR: ... | Outcome: ...`, bare, under a `---`. Three of the 165 live
@@ -151,7 +164,7 @@ def stray_footer(body):
 
     blocks = list(_paragraphs(lines))
     if not blocks:
-        return body, "", ""
+        return body, "", "", ""
     ends = (blocks[0][0], blocks[-1][1])
 
     hits = []
@@ -181,10 +194,10 @@ def stray_footer(body):
         if match:
             hits.append((start, end, match))
     if len(hits) != 1:
-        return body, "", ""
+        return body, "", "", ""
     start, end, match = hits[0]
     rest = "\n".join(lines[:start] + lines[end:]).strip()
-    return rest, match.group("pr"), match.group("outcome")
+    return rest, match.group("pr"), match.group("board") or "", match.group("outcome")
 
 
 def _paragraphs(lines):
@@ -447,6 +460,42 @@ def parse_pr_refs(pr):
     return spans
 
 
+# The `Board:` field -> the same span shape, with one difference that is
+# the whole reason it is a second function rather than an argument: the
+# href is *internal*. An idea number is a row on Edvard's own board,
+# which this app already renders at `/ideas` and `/ideas#68`, so the link
+# stays inside the PWA instead of opening a browser tab at GitHub.
+#
+# It follows `parse_pr_refs`'s rule about not guessing, and applies it
+# harder. A bare `#68` is deliberately left as plain text: in the `PR:`
+# field a bare number has one meaning (this repo), but here it could be
+# either board, and the two are different pages. So the word is required.
+# Written `idea #68` or `issue #71`, comma-separated, plural tolerated.
+_BOARD_REF_RE = re.compile(r"\b(?P<kind>idea|issue)s?[ \t]*#(?P<num>\d+)", re.IGNORECASE)
+
+
+def parse_board_refs(board):
+    """The `Board:` field -> spans, every `idea #68` carrying an app path."""
+    text = board or ""
+    spans = []
+    cursor = 0
+    for match in _BOARD_REF_RE.finditer(text):
+        page = "/ideas" if match.group("kind").lower() == "idea" else "/issues"
+        if match.start() > cursor:
+            spans.append({"kind": "text", "text": text[cursor:match.start()]})
+        spans.append(
+            {
+                "kind": "link",
+                "text": match.group(0),
+                "url": f"{page}#{match.group('num')}",
+            }
+        )
+        cursor = match.end()
+    if cursor < len(text):
+        spans.append({"kind": "text", "text": text[cursor:]})
+    return spans
+
+
 # Edvard, issues.md 2026-08-09: "Would be fun to use some emojis to
 # represent what was done that cycle."
 #
@@ -640,14 +689,15 @@ def parse_journal(markdown, times_by_cycle=None):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
         raw_body = text[start:end].strip()
 
-        pr = outcome = ""
+        pr = board = outcome = ""
         footer = _FOOTER_RE.search(raw_body)
         if footer:
             pr = footer.group("pr")
+            board = footer.group("board") or ""
             outcome = footer.group("outcome")
             raw_body = raw_body[: footer.start()].rstrip()
         else:
-            raw_body, pr, outcome = stray_footer(raw_body)
+            raw_body, pr, board, outcome = stray_footer(raw_body)
 
         entry = parse_heading(match.group(1))
         cycle = entry["cycle"]
@@ -672,6 +722,8 @@ def parse_journal(markdown, times_by_cycle=None):
         entry["briefSpans"] = render_inline(split_brief(_first_paragraph(raw_body))[0])
         entry["pr"] = pr
         entry["prSpans"] = parse_pr_refs(pr)
+        entry["board"] = board
+        entry["boardSpans"] = parse_board_refs(board)
         entry["outcome"] = label
         entry["outcomeDetail"] = detail
         entries.append(entry)
