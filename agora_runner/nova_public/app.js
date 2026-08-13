@@ -621,6 +621,12 @@
     var settled = settledPart(ordered);
 
     var card = el("article", "entry");
+    /* Edvard, comments board at cycle 156, asking for an eight-cycle report
+     * card: "They should appear like a journal card, but stand out in both
+     * color and form to show that they are just summaries." The server
+     * decides which entries those are (`nova_journal.parse_heading`); this
+     * only carries its answer into the class, so the two cannot drift. */
+    if (entry.kind === "report") card.className = "entry is-report";
     if (entry.cycle !== null && entry.cycle !== undefined) {
       card.id = "cycle-" + entry.cycle;
     }

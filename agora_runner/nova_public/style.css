@@ -9,6 +9,10 @@
   --accent: #7aa2f7;
   --good: #7bd88f;
   --warn: #e8b75c;
+  /* Report cards only -- see `.entry.is-report`. Deliberately not one of
+   * the four above: those all already mean something about an outcome. */
+  --report: #c9a2f7;
+  --report-bg: #1e1a29;
 }
 
 * { box-sizing: border-box; }
@@ -184,6 +188,27 @@ pre code { background: none; padding: 0; }
    * it. Anchors keep the pointer they already had. */
   cursor: pointer;
 }
+
+/* The eight-cycle report (Edvard, comments board at cycle 156): "They
+ * should appear like a journal card, but stand out in both color and form
+ * to show that they are just summaries."
+ *
+ * Both, deliberately, because colour alone is not a difference everyone can
+ * see: the form half is a flat card with a thick left rule and no rounding
+ * on that edge, so it reads as a divider between runs of cycles even in
+ * greyscale. The colour is `--report`, a warm tone nothing else on the page
+ * uses -- `--accent` is links, `--good` and `--warn` are outcome pills, and
+ * borrowing any of them would say "this card succeeded" instead of "this
+ * card is a summary". */
+.entry.is-report {
+  background: var(--report-bg);
+  border-color: var(--report);
+  border-left: 4px solid var(--report);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.entry.is-report .cycle-link { color: var(--report); }
 
 /* Collapsed by default (Edvard, issues.md 2026-08-09): the median entry is
  * 4830 characters, which is about 115 lines on a phone, and there are 57 of

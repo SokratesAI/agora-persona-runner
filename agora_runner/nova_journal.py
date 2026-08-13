@@ -262,6 +262,23 @@ def is_empty_needs(text):
     return plain.rstrip(".").strip() in _EMPTY_NEEDS
 
 
+# Edvard, on the comments board at Cycle 156: "every 8 cycles (at 06:00,
+# 14:00 & 22:00) I want a report like you just did for the last 8 cycles.
+# They should appear like a journal card, but stand out in both color and
+# form to show that they are just summaries."
+#
+# A report is a journal document like any other, so the feed already
+# carries it -- what it needs is to say so. The declaration is the whole
+# heading segment and nothing less: an anchored match on a fixed shape,
+# on a heading rather than on prose, and only for an entry that carries no
+# cycle number of its own. Every lesson in this file about guessing from
+# text is about *bodies*, which are free prose; a heading is already
+# parsed for structure. A cycle whose entry is titled "Report on the last
+# eight cycles" is still an ordinary card, because that is not this shape.
+_REPORT_TITLE_RE = re.compile(r"\AReport[ \t]+·[ \t]+Cycles[ \t]+\d+[–-]\d+\Z")
+REPORT_EMOJI = "📋"
+
+
 def _is_metadata_only(segment):
     """True if a heading segment carries only a date/time and punctuation."""
     rest = _DATE_RE.sub("", segment)
@@ -296,11 +313,18 @@ def parse_heading(heading):
             continue
         prose.append(segment)
 
+    cycle = int(cycle_match.group(1)) if cycle_match else None
+    title = " — ".join(prose)
     return {
-        "cycle": int(cycle_match.group(1)) if cycle_match else None,
+        "cycle": cycle,
         "date": date_match.group(0) if date_match else "",
         "time": time_match.group(0) if time_match else "",
-        "title": " — ".join(prose),
+        "title": title,
+        # "cycle" or "report" -- the card's shape, decided here so that
+        # every consumer of an entry gets the same answer. See
+        # `_REPORT_TITLE_RE` for why the declaration is safe to read off a
+        # heading when it would not be safe to read off a body.
+        "kind": "report" if cycle is None and _REPORT_TITLE_RE.match(title) else "cycle",
     }
 
 
@@ -500,6 +524,13 @@ def assign_emoji(entries):
         weights.append(math.log(1 + total / found) if found else 0.0)
 
     for entry, text in zip(entries, haystacks):
+        # A report is about eight other cycles, so its text is a mixture of
+        # all of their topics and the scorer would pick whichever of them
+        # happened to be loudest -- a different emoji every eight hours for
+        # a card that is always the same kind of thing.
+        if entry.get("kind") == "report":
+            entry["emoji"] = REPORT_EMOJI
+            continue
         opening = (entry.get("body", "") or "").split("\n\n", 1)[0].lower()
         if _INCIDENT_RE.search(opening):
             entry["emoji"] = _INCIDENT_EMOJI
