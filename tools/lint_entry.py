@@ -52,8 +52,6 @@ import sys
 from agora_runner.nova_journal import (
     _ENTRY_HEADING_RE,
     _FOOTER_RE,
-    _FRONTMATTER_RE,
-    _LEADING_HEADING_RE,
     JOURNAL_DIR,
     normalise_entry,
     parse_journal,
@@ -68,20 +66,6 @@ from agora_runner.nova_journal import (
 import re
 
 _FILENAME_CYCLE_RE = re.compile(r"\A\d+-cycle-(\d+)(?:-|\.)")
-
-
-def _has_own_heading(content):
-    """Did the cycle write a heading at all, or will one be synthesised?
-
-    The two repair branches in `normalise_entry` are not equivalent for
-    anything downstream. A heading at the wrong depth is *promoted*, so
-    the words -- including the cycle number -- are the author's. A missing
-    heading is *synthesised from the filename*, so the cycle number agrees
-    with the filename by construction and nothing can be learned by
-    comparing them.
-    """
-    text = _FRONTMATTER_RE.sub("", (content or "").strip(), count=1).lstrip()
-    return bool(_LEADING_HEADING_RE.match(text))
 
 
 def _heading_finding(path, content):
@@ -152,10 +136,11 @@ def _cycle_finding(name, entry):
     this against the live folder, where the first version failed Cycle
     151's own entry.
 
-    Only meaningful when the cycle wrote a heading of its own: a
-    synthesised one is built *from the filename*, so the two agree by
-    construction and the caller skips this. A promoted one carries the
-    author's own words and can disagree, so it does not.
+    Safe to run on a repaired document as well as a correct one: a
+    synthesised heading is built *from* the filename, so it agrees by
+    construction, and a promoted one carries the author's own words and
+    can genuinely disagree. See the comment at the call site for why
+    there is no guard in front of this.
     """
     declared = _FILENAME_CYCLE_RE.match(name)
     if not declared:
@@ -203,18 +188,23 @@ def lint(name, content):
     footer = _footer_finding(_raw_body(normalised))
     if footer:
         findings.append(footer)
-    # Suppressed only when the heading was synthesised rather than
-    # promoted -- see `_has_own_heading`. A blanket `if not heading`
-    # here reported nothing for `## Cycle 153` in a file named
-    # `...-152.md`, which has two real and independent defects, so the
-    # author would fix the hash count and only then discover the number
-    # was wrong too. A mutation that removed the guard entirely failed
-    # no test, which is what exposed it: the case the tests used was the
-    # synthesised one, where the guard cannot be reached.
-    if _has_own_heading(content):
-        cycle = _cycle_finding(name, entry)
-        if cycle:
-            findings.append(cycle)
+    # Runs unconditionally, and that is a measurement rather than an
+    # oversight. This started as a blanket "skip when the heading is
+    # broken", which hid the wrong cycle number in `## Cycle 153` inside
+    # `...-152.md` -- two real, independent defects, so the author fixed
+    # the hash count and only then learned the number was wrong. The
+    # narrower replacement, skipping only a *synthesised* heading, then
+    # survived having the guard deleted entirely: `synthetic_heading`
+    # builds the heading out of the filename, so the two agree by
+    # construction for every name shape in the folder, and a filename
+    # with no cycle token returns above. The guard could not change an
+    # answer, so it is gone rather than tested -- an unreachable branch
+    # and a blind test look identical in a mutation report and need
+    # opposite fixes. The invariant it leaned on is pinned instead, by
+    # `test_a_synthesised_heading_cannot_disagree_with_the_filename`.
+    cycle = _cycle_finding(name, entry)
+    if cycle:
+        findings.append(cycle)
     return findings
 
 
