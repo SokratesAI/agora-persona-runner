@@ -357,6 +357,16 @@ class ContractRouterMissing(LookupError):
 
 
 def _load_module(path, name):
+    """The file at `path`, imported under `name`.
+
+    The `spec is None` guard below does not cover a path that simply is not
+    there: `spec_from_file_location` happily builds a spec for a file that
+    does not exist, and the failure only surfaces from `exec_module` as a
+    bare `FileNotFoundError`. So a repo that moved `redact.py` produced a
+    Python traceback in the CI log rather than the exit code 2 this tool
+    documents. Second reader on #154; the author had hit the same traceback
+    by hand ten minutes earlier and read past it.
+    """
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ContractRouterMissing("cannot import %s" % (path,))
@@ -364,7 +374,11 @@ def _load_module(path, name):
     # Registered before exec so a copy that imports itself by name resolves,
     # and so `importlib.reload` has something to work with.
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except OSError as exc:
+        sys.modules.pop(name, None)
+        raise ContractRouterMissing("cannot read %s: %s" % (path, exc)) from exc
     return module
 
 
@@ -667,7 +681,9 @@ def check_vault_pair(left_path, right_path):
     try:
         left = extract_contract(open(left_path, encoding="utf-8").read())
         right = extract_contract(open(right_path, encoding="utf-8").read())
-    except ContractNameMissing as exc:
+    # OSError as well: a copy that moved is a legible "cannot read", not a
+    # traceback in the CI log. Same reasoning as `_load_module`.
+    except (ContractNameMissing, OSError) as exc:
         print("vault contract: %s" % exc, file=sys.stderr)
         return 2
     drifted = sorted(n for n in left if left[n] != right[n])
@@ -712,7 +728,9 @@ def check_redaction_pair(left_path, right_path):
     """Exit code for the redaction pair: 0 in sync, 1 drift, 2 undrivable."""
     try:
         drifted = compare_redaction(left_path, right_path)
-    except ContractRedactorMissing as exc:
+    # ContractRouterMissing too: `_load_module` is shared, so an unreadable
+    # path arrives as that one even on this pair.
+    except (ContractRedactorMissing, ContractRouterMissing) as exc:
         print("redaction: %s" % exc, file=sys.stderr)
         return 2
     if not drifted:
