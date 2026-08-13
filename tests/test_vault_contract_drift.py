@@ -16,6 +16,11 @@ So every test below that expects silence is paired with one that expects
 noise, over the same input.
 """
 import ast
+import importlib
+import os
+import sys
+import os
+import sys
 
 import pytest
 
@@ -304,3 +309,75 @@ def test_a_difference_is_reported_as_drift_rather_than_as_incomparable(tmp_path)
     drifted = vault_contract.compare_routing(vault.__file__, other)
     assert any(a == "somewhere-else" or a == ["somewhere-else"]
                for _, _, a in drifted), drifted
+
+
+@pytest.fixture
+def restored_config():
+    """Puts `agora_runner.config` and the probe env back after the test.
+
+    The tests below deliberately leave a sentinel in both, so they have to
+    clean up after themselves or they are the pollution they are checking
+    for.
+    """
+    from agora_runner import config
+
+    saved = {k: os.environ.get(k) for k in vault_contract._PROBE_ENV}
+    try:
+        yield config
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        importlib.reload(config)
+
+
+SENTINEL_DB = "sentinel-not-a-probe-db"
+
+
+def test_the_comparison_puts_the_process_back_how_it_found_it(
+        tmp_path, restored_config):
+    """Driving two clients means setting the environment they read and
+    reloading `agora_runner.config`, which is process-global state a dozen
+    other tests import. Measured before the restore existed:
+    `config.COUCHDB_DB` was left reading `probe-edvard-db` for the rest of
+    the interpreter, and the suite stayed green only because no test that
+    depends on it happened to run afterwards.
+
+    The sentinel is the point. The first version of this test snapshotted
+    the environment immediately before the call and compared it after --
+    which passes with the restore deleted, because an earlier test in the
+    same session has already polluted it and the snapshot is of the
+    polluted value. It compared the bug to itself. A literal the
+    comparison cannot move is the only assertion that survives.
+    """
+    os.environ["COUCHDB_DB"] = SENTINEL_DB
+    os.environ.pop("COUCHDB_NOVA_DB", None)
+    importlib.reload(restored_config)
+    assert restored_config.COUCHDB_DB == SENTINEL_DB, "the sentinel never took"
+
+    vault_contract.compare_routing(vault.__file__, _bridge_copy(tmp_path))
+
+    assert os.environ["COUCHDB_DB"] == SENTINEL_DB
+    assert "COUCHDB_NOVA_DB" not in os.environ
+    assert restored_config.COUCHDB_DB == SENTINEL_DB
+    assert restored_config.COUCHDB_NOVA_DB == ""
+    assert not set(vault_contract._PROBE_MODULES) & set(sys.modules)
+
+
+def test_the_process_is_put_back_even_when_the_comparison_raises(
+        tmp_path, restored_config):
+    """The restore is in a `finally` and this is what says so. A cleanup
+    that only runs on the happy path is absent exactly when the run that
+    needed it went wrong."""
+    os.environ["COUCHDB_DB"] = SENTINEL_DB
+    importlib.reload(restored_config)
+
+    broken = _bridge_copy(tmp_path, old="    def db_for(self, path):",
+                          new="    def db_for_path(self, path):")
+    with pytest.raises(vault_contract.ContractRouterMissing):
+        vault_contract.compare_routing(vault.__file__, broken)
+
+    assert os.environ["COUCHDB_DB"] == SENTINEL_DB
+    assert restored_config.COUCHDB_DB == SENTINEL_DB

@@ -58,6 +58,7 @@ means faking CouchDB, not calling a pure function. `_put_raw`,
 reason.
 """
 import ast
+import contextlib
 import importlib
 import importlib.util
 import json
@@ -272,6 +273,52 @@ PROBE_PREFIXES = (
 )
 
 
+# The environment variables the two copies are configured through, and the
+# module names this tool loads them under. Both have to be put back: run
+# from the command line the process exits immediately and nothing notices,
+# but the test suite calls `compare_routing` in the same interpreter as
+# every other test, and `agora_runner.config` is a module of constants that
+# a dozen of them import.
+_PROBE_ENV = ("COUCHDB_DB", "COUCHDB_NOVA_DB",
+              "CDB_BASE", "CDB_USER", "CDB_PASS", "CDB_DB", "CDB_NOVA_DB")
+_PROBE_MODULES = ("_vault_contract_runner", "_vault_contract_bridge")
+
+
+@contextlib.contextmanager
+def _process_state_restored():
+    """Put the environment, `sys.modules` and `agora_runner.config` back.
+
+    Driving two copies of a client means configuring them the way their own
+    processes are configured, which is process-global state, and
+    `agora_runner.config` reads it once at import -- so this reloads it,
+    which replaces the values every other importer of that module sees.
+    Measured before this existed: `config.COUCHDB_DB` was left reading
+    `probe-edvard-db` for the remainder of the interpreter. Nothing failed,
+    because no test that depends on it happened to run afterwards. That is
+    the kind of green that stops being green when somebody adds a test in
+    the wrong alphabetical position.
+    """
+    saved_env = {k: os.environ.get(k) for k in _PROBE_ENV}
+    saved_modules = {k: sys.modules.get(k) for k in _PROBE_MODULES}
+    try:
+        yield
+    finally:
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        for name, module in saved_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+        # After the environment is back, not before -- this re-reads it.
+        config = sys.modules.get("agora_runner.config")
+        if config is not None:
+            importlib.reload(config)
+
+
 class ContractRouterMissing(LookupError):
     """A copy does not expose routing this tool can drive.
 
@@ -384,20 +431,21 @@ def compare_routing(runner_path, bridge_path):
     and a plain function on the other, so no AST comparison can pair them.
     """
     drifted = []
-    for db, nova_db in ROUTING_CONFIGS:
-        runner = _runner_router(runner_path, db, nova_db)
-        bridge = _bridge_router(bridge_path, db, nova_db)
-        paths = tuple(sys.modules["_vault_contract_runner"].HEALTH_PROBE_PATHS)
-        paths += EXTRA_PROBE_PATHS
-        left = _routing_answers(*runner, paths)
-        right = _routing_answers(*bridge, paths)
-        label = "routing on" if nova_db else "routing off"
-        drifted += [
-            ("%s: %s" % (label, q), left[q], right[q])
-            for q in sorted(left) if left[q] != right[q]
-        ]
-        _check_the_probe_reached_both(
-            {q: left[q] for q in left if left[q] == right[q]}, db, nova_db)
+    with _process_state_restored():
+        for db, nova_db in ROUTING_CONFIGS:
+            runner = _runner_router(runner_path, db, nova_db)
+            bridge = _bridge_router(bridge_path, db, nova_db)
+            paths = tuple(sys.modules["_vault_contract_runner"].HEALTH_PROBE_PATHS)
+            paths += EXTRA_PROBE_PATHS
+            left = _routing_answers(*runner, paths)
+            right = _routing_answers(*bridge, paths)
+            label = "routing on" if nova_db else "routing off"
+            drifted += [
+                ("%s: %s" % (label, q), left[q], right[q])
+                for q in sorted(left) if left[q] != right[q]
+            ]
+            _check_the_probe_reached_both(
+                {q: left[q] for q in left if left[q] == right[q]}, db, nova_db)
     return drifted
 
 
