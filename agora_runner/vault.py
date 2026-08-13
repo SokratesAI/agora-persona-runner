@@ -906,16 +906,28 @@ def fetch_vault_context(paths):
                 return "\n\n".join(sections)
             try:
                 content = vault_read_path(target)
-            except VaultIncompleteDocument as e:
-                # One damaged file must not kill the run. This function
-                # builds the prompt for every heartbeat -- including Nova's
-                # own cycle -- and it is called before run_heartbeat's try
-                # block, on a bare daemon thread. An exception escaping here
-                # takes the thread down with no reply posted, no audit chip,
-                # and the heartbeat's lastResult stuck on "running" forever.
-                # That is a worse silence than the splice this exception
-                # exists to prevent, so it degrades the same way a missing
-                # file already does -- one visible marker, keep going.
+            except (VaultIncompleteDocument, VaultUnreadableDocument) as e:
+                # One damaged or unreachable file must not kill the run.
+                # This function builds the prompt for every heartbeat --
+                # including Nova's own cycle -- and it is called before
+                # run_heartbeat's try block, on a bare daemon thread. An
+                # exception escaping here takes the thread down with no
+                # reply posted, no audit chip, and the heartbeat's
+                # lastResult stuck on "running" forever. That is a worse
+                # silence than the splice this exception exists to prevent,
+                # so it degrades the same way a missing file already does --
+                # one visible marker, keep going.
+                #
+                # `VaultUnreadableDocument` joined this list with the
+                # exception itself (#148) and it is the more likely of the
+                # two by far: a chunk-damaged file is rare and permanent,
+                # while a CouchDB 500 is transient and hits whatever read
+                # is in flight. Catching only the rare one would have meant
+                # a transient blip on any heartbeat's `vaultPaths` silently
+                # killing an entire cycle -- strictly worse than the empty
+                # page this PR set out to fix. The marker says which
+                # happened, because a reader of the prompt needs to know
+                # whether the file is broken or the database was.
                 sections.append(f"### {target}\n[unreadable: {e}]")
                 continue
             if content is None:

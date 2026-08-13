@@ -604,7 +604,9 @@ def _store(cycle, text, stamp=None):
             # any more: only a 404 reaches here, and an unreadable database
             # raises out of the read above (`VaultUnreadableDocument`), which
             # the caller reports as a failed save. The bridge's copy of the
-            # client is the half of that filing still open.
+            # client was fixed in the same cycle (agora-claude-bridge#49);
+            # what is still open is that nothing detects drift between the
+            # two, which is filed rather than claimed fixed here.
             current = ""
         updated = insert_comment(current, cycle, body, stamp)
         try:

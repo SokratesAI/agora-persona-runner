@@ -90,11 +90,13 @@ def test_an_unreadable_document_raises_instead_of_reading_as_missing(couch, stat
     assert str(status) in message
 
 
-def test_the_error_is_a_runtimeerror_so_the_site_reports_it(couch):
-    """`nova_site`'s handlers catch `Exception` and send a 502 carrying
-    `str(e)`. That is what turns this into a page saying what broke rather
-    than a page saying nothing happened, and it is inherited, not
-    re-implemented -- same as `VaultIncompleteDocument` beside it."""
+def test_the_error_is_a_runtimeerror(couch):
+    """Named for what it checks and nothing more. It asserts the base
+    class, which is what makes `nova_site`'s handlers map this to a 502 --
+    but the mapping itself is covered generically for any `RuntimeError`
+    by `test_nova_site.py::test_a_vault_failure_is_reported_as_502`, and
+    this test never touches `nova_site`. The previous name claimed the
+    half it does not establish."""
     assert issubclass(vault.VaultUnreadableDocument, RuntimeError)
 
 
@@ -123,6 +125,30 @@ def test_the_boards_page_stops_short_too(couch):
     couch({nova_sources.BOARD_PATHS["issues"]["edvard"]: (500, {})})
     with pytest.raises(vault.VaultUnreadableDocument):
         nova_sources.board_markdown("issues")
+
+
+def test_a_heartbeats_vault_context_survives_an_unreadable_file(couch):
+    """The worst case this change could have created, and the reviewer's
+    first finding.
+
+    `fetch_vault_context` builds the prompt for every heartbeat, including
+    Nova's own cycle. It runs on a bare daemon thread, *before*
+    `run_heartbeat`'s try block, so an exception escaping it takes the
+    thread down with no reply, no audit chip, and `lastResult` stuck on
+    "running" forever. Its own comment says exactly that -- about
+    `VaultIncompleteDocument`, the only exception it caught.
+
+    A CouchDB 500 is transient and hits whatever read is in flight, so
+    this is the *more* likely of the two. Leaving it uncaught would have
+    traded an empty comments board for entire cycles vanishing silently,
+    which is strictly the worse bug.
+    """
+    couch({PRESENT: (503, {"error": "unavailable"})})
+    context = vault.fetch_vault_context([PRESENT])
+    assert "unreadable" in context
+    assert "503" in context
+    # And it kept going rather than returning at the first bad file.
+    assert PRESENT in context
 
 
 def test_the_audit_read_never_blocks_a_repairing_overwrite(couch, monkeypatch):
