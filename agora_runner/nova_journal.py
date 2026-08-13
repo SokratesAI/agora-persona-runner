@@ -217,6 +217,30 @@ _DIGEST_LINE_RE = re.compile(
 # The lookahead keeps the blank-line split as well, so a paragraph that
 # is not a digest line (the section's own prose) still separates normally.
 _DIGEST_SPLIT_RE = re.compile(r"\n[ \t]*\n|\n(?=\*\*Cycle[ \t]+\d+\*\*[ \t]*\()")
+
+
+def split_digest_entries(text):
+    """Where one digest line ends and the next begins -- the only answer.
+
+    Exported rather than kept private because `tools/roll_digest.py` has
+    to agree with this file about where a card ends, and for a while it
+    did not: it split on blank lines alone, which is the rule the comment
+    above records as already broken. The two statements of one rule then
+    drifted in the direction that hides itself. A digest holding two cards
+    written without a blank line between them shows both on the site and
+    counts as *one* entry to the roller, so a file of 14 real cards looks
+    like 12, sits under the keep-12 cap, and rolls nothing -- no error, no
+    output, the file Edvard reads growing forever, which is the single
+    thing that script exists to prevent. Measured before this was moved:
+    exactly that, silently.
+
+    So there is one splitter now, and `parse_digest` below is a caller of
+    it rather than the owner of it. Anything that needs to know where a
+    digest line ends imports this; nothing re-derives it.
+    """
+    return [p.strip() for p in _DIGEST_SPLIT_RE.split(text) if p.strip()]
+
+
 # What "Needs Edvard" says when it has nothing in it. Item 3 of idea #34
 # wants that section completely invisible rather than showing the word
 # "Nothing", so the emptiness test lives here next to the parsing.
@@ -775,10 +799,7 @@ def parse_digest(markdown):
     sections = _sections(markdown)
     needs = sections.get("needs edvard", "")
     lines = []
-    for paragraph in _DIGEST_SPLIT_RE.split(sections.get("digest", "")):
-        paragraph = paragraph.strip()
-        if not paragraph:
-            continue
+    for paragraph in split_digest_entries(sections.get("digest", "")):
         match = _DIGEST_LINE_RE.match(paragraph)
         if match:
             text = " ".join(match.group("text").split())

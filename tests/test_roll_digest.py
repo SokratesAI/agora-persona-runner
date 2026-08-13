@@ -102,6 +102,38 @@ def test_a_line_the_parser_cannot_read_is_moved_rather_than_dropped():
     assert "Third, again." in archive
 
 
+def test_two_cards_written_without_a_blank_line_between_them_still_roll():
+    # The failure this pins is a silent no-op, not a wrong answer. The site
+    # ends a card at a `**Cycle N** (` whether or not a blank line precedes
+    # it -- it has since Cycle 65 lost its card to exactly that -- and this
+    # script used to end one only at a blank line. So a digest whose cards
+    # are merged reads as fewer entries than the site shows, drops under the
+    # keep, and rolls nothing: no error, no output, the file Edvard reads
+    # growing forever.
+    merged = LIVE.replace(
+        "— Fourth.\n\n**Cycle 3**",
+        "— Fourth.\n**Cycle 3**",
+    )
+    assert [l["cycle"] for l in parse_digest(merged)["lines"]] == [5, 4, 3, 2, 1]
+    live, archive = plan(merged, ARCHIVE, keep=2)
+    assert [l["cycle"] for l in parse_digest(live)["lines"]] == [5, 4]
+    assert "Cycle 3" in archive and "Cycle 3" not in live
+
+
+def test_a_merge_between_two_lines_that_both_stay_is_repaired_in_place():
+    # Deliberately merges the two newest, so the roll's own split point
+    # cannot be what separates them -- both survive in the live file, and
+    # the only thing that can put a blank line back between them is the
+    # rejoin. The test above cannot see this: there the merged pair
+    # straddles the keep boundary and lands in two different files, so
+    # they come apart whether or not anything was repaired.
+    merged = LIVE.replace("— Fifth.\n\n**Cycle 4**", "— Fifth.\n**Cycle 4**")
+    live, archive = plan(merged, ARCHIVE, keep=2)
+    assert "— Fifth.\n**Cycle 4**" not in live
+    assert "— Fifth.\n\n**Cycle 4**" in live
+    assert [l["cycle"] for l in parse_digest(live)["lines"]] == [5, 4]
+
+
 def test_an_archive_that_could_hide_needs_edvard_is_refused():
     bad = ARCHIVE.replace(ARCHIVE_TITLE, ARCHIVE_TITLE + "\n\n## Digest")
     with pytest.raises(SystemExit, match="level-two heading"):
