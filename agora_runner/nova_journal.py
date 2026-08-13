@@ -550,10 +550,11 @@ def parse_journal(markdown, times_by_cycle=None, strip_header=True):
     format and legitimately contains one
     (`test_a_heading_in_the_preamble_does_not_become_an_entry`).
 
-    So the callers that hold an entries body -- `journal_markdown`, and
-    the single-document fetch behind a comment reply -- pass
-    `strip_header=False`, and the ones holding a real `journal.md`
-    (`split_journal`, `lint_entry`) keep the default.
+    So every caller that holds an entries body passes `strip_header=False`
+    -- the site's feed, both halves of the comment-reply lookup, and
+    `lint_entry`, which checks one entry document. The default is for the
+    one caller that really does hold a whole `journal.md`: `split_journal`,
+    the migration that cut the archive into the folder in the first place.
 
     `times_by_cycle` (from `entry_times`) overrides the date and time a
     cycle typed into its own `### ` heading with the vault's write time

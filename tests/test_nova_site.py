@@ -1706,7 +1706,17 @@ def test_the_archive_fallback_still_drops_its_own_preamble():
     guess which it got. The preamble is still instructions rather than
     content and still must not become a card -- and it legitimately opens
     with a `### ` heading documenting the entry format, which is exactly
-    why no rule read off the text can find this boundary."""
+    why no rule read off the text can find this boundary.
+
+    A reviewer called this vacuous, on the grounds that it gives the same
+    answer as the code did before the change. It does, and that is the
+    point: the archive path is meant to be unchanged. What it pins is the
+    *pairing* that now produces it -- `journal_markdown` stripping and the
+    site passing `strip_header=False` -- and it is the only test in the
+    suite that fails when the stripping is dropped from `journal_markdown`
+    (measured, 1 failed of 1670). Compared against the old code it looks
+    like it agrees either way; compared against a mutation of the new
+    code, which is the question, it bites."""
     archive = (
         "# Journal\n\nWrite entries like:\n\n### 2026-01-01 00:00 (Oslo) — Cycle 0\n\n"
         "## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\nReal entry."
@@ -1950,6 +1960,26 @@ def test_the_migration_refuses_to_write_when_two_entries_collide():
     files = {JOURNAL_DIR + "001-cycle-5.md": "### Cycle 5\n\nOne."}
     with pytest.raises(SystemExit, match="share a filename"):
         verify(markdown, files)
+
+
+def test_the_migration_does_not_refuse_an_entry_that_quotes_the_marker():
+    """`verify` parses two different kinds of thing and must read each as
+    what it is: `markdown` is a real `journal.md` with a real preamble,
+    and `assemble_entries(files)` is an entries body with none. Reading
+    both the same way is the bug this PR is about, and here it surfaces
+    as a false accusation rather than a lost card -- the split aborts with
+    "renders differently" pointing at an entry that is perfectly fine, and
+    `main` has no handler, so the tool is simply unusable against a folder
+    containing such an entry. Found by the reviewer, who reproduced it."""
+    from tools.split_journal import verify
+
+    markdown = (
+        "# Journal\n\nPreamble.\n\n## Entries\n\n"
+        "### Cycle 5\n\nOne.\n\n"
+        "### Cycle 4\n\nI appended my captures:\n\n## Entries\n\nis the marker.\n"
+    )
+    files = dict(_plan(markdown))
+    assert verify(markdown, files) == 2
 
 
 def test_the_migration_refuses_to_write_when_an_entry_would_render_differently():
