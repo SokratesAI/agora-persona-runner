@@ -19,8 +19,7 @@ import ast
 import importlib
 import os
 import sys
-import os
-import sys
+import time
 
 import pytest
 
@@ -895,3 +894,292 @@ def test_the_pair_is_registered_so_the_cli_actually_runs_it():
     labels = [label for label, _, _ in sync_contract.PAIRS]
     assert "ci workflow" in labels
     assert set(labels) <= set(sync_contract._CHECKERS)
+
+
+# ---------------------------------------------------------------------------
+# Writes: the last unpinned half of the vault pair.
+# ---------------------------------------------------------------------------
+
+# Module-level names `_put_raw` needs before the class body is executed --
+# `_ANY_REV` is a default argument, so it has to exist by then.
+_WRITE_PRELUDE = '''
+import time
+
+
+class VaultUnreadableDocument(Exception):
+    pass
+
+
+_ANY_REV = object()
+
+
+def _split_chunks(content):
+    """One chunk. The probe's content is far under CHUNK_MIN_BYTES and real
+    chunking is pinned by the syntax comparison, so a faithful stub here
+    would be a second copy of something already checked."""
+    return [content] if content else []
+'''
+
+# A faithful copy of `VaultClient._put_raw` and the three collaborators it
+# reaches CouchDB through, in the bridge's own shape. A stub rather than the
+# real file for the reason `_bridge_copy` gives -- the other repo is not
+# present in this test run and the cross-repo comparison is CI's job. What
+# keeps it honest is the first test below: if the runner's write changes and
+# this does not, that test goes red rather than the check quietly comparing
+# something else.
+BRIDGE_WRITE_STUB = _WRITE_PRELUDE + BRIDGE_STUB + '''
+    def _doc(self, method, doc_id, body=None, db=None):
+        raise AssertionError("the probe is meant to replace this")
+
+    def _chunk_id_for(self, content_bytes):
+        try:
+            import xxhash
+            return f"h:{xxhash.xxh64(content_bytes).hexdigest()}"
+        except Exception:
+            import hashlib
+            return f"h:{hashlib.sha256(content_bytes).hexdigest()[:16]}"
+
+    def _existing_chunk_ids(self, chunk_ids, db):
+        keys = sorted(set(chunk_ids))
+        if not keys:
+            return set()
+        status, body = self._doc("POST", "_all_docs", {"keys": keys}, db=db)
+        if status != 200:
+            return set()
+        return {
+            row["key"] for row in body.get("rows", [])
+            if "error" not in row and not (row.get("value") or {}).get("deleted")
+        }
+
+    def _doc_to_overwrite(self, doc_id, db=None):
+        status, doc = self._doc("GET", doc_id, db=db)
+        if status == 200:
+            return doc
+        if status == 404:
+            return None
+        raise VaultUnreadableDocument(f"{doc_id}: HTTP {status}")
+
+    def _put_raw(self, path, content, existing=None, if_rev=_ANY_REV):
+        path = path.lower()
+        db = self.db_for(path)
+        now_ms = int(time.time() * 1000)
+        content_bytes = content.encode("utf-8")
+        chunk_texts = _split_chunks(content)
+        chunk_ids = [self._chunk_id_for(t.encode("utf-8")) for t in chunk_texts]
+        if existing is None:
+            try:
+                existing = self._doc_to_overwrite(path, db=db)
+            except VaultUnreadableDocument as e:
+                return f"FAILED(unreadable: {e})"
+        already = self._existing_chunk_ids(chunk_ids, db)
+        written = set()
+        for chunk_id, text in zip(chunk_ids, chunk_texts):
+            if chunk_id in already or chunk_id in written:
+                continue
+            chunk = {"_id": chunk_id, "data": text, "type": "leaf", "children": []}
+            chunk_status, _ = self._doc("PUT", chunk_id, chunk, db=db)
+            if chunk_status == 409:
+                written.add(chunk_id)
+                continue
+            if chunk_status not in (200, 201):
+                return f"FAILED(chunk {chunk_id}: {chunk_status})"
+            written.add(chunk_id)
+        doc = {
+            "_id": path, "path": path, "data": "", "children": chunk_ids,
+            "size": len(content_bytes), "ctime": now_ms, "mtime": now_ms,
+            "type": "plain", "eden": {},
+        }
+        if existing is not None:
+            doc["_rev"] = existing["_rev"]
+            doc["ctime"] = existing.get("ctime", now_ms)
+        if if_rev is not _ANY_REV:
+            if if_rev is None:
+                doc.pop("_rev", None)
+            else:
+                doc["_rev"] = if_rev
+        status, _ = self._doc("PUT", path, doc, db=db)
+        if status in (200, 201):
+            return "written"
+        if status == 409:
+            return f"FAILED(409 conflict: {path} changed since it was read)"
+        return f"FAILED({status})"
+'''
+
+# The decisions each mutation below breaks, in each copy's own shape. The
+# runner has them at one indent and the bridge at two, which is the same
+# difference that made a syntax comparison useless here.
+_CTIME_RUNNER = '        doc["ctime"] = existing.get("ctime", now_ms)'
+_CTIME_BRIDGE = '            doc["ctime"] = existing.get("ctime", now_ms)'
+_IFREV_RUNNER = "    if if_rev is not _ANY_REV:"
+_IFREV_BRIDGE = "        if if_rev is not _ANY_REV:"
+_CHUNK409_RUNNER = "        if chunk_status == 409:"
+_CHUNK409_BRIDGE = "            if chunk_status == 409:"
+_LOWER_RUNNER = "    path = path.lower()"
+_LOWER_BRIDGE = "        path = path.lower()"
+
+
+def _write_pair(tmp_path, runner=(None, None), bridge=(None, None)):
+    """`(runner path, bridge path)`, each optionally mutated once."""
+    runner_path = str(tmp_path / "runner_vault.py")
+    source = RUNNER_SOURCE
+    if runner[0] is not None:
+        source = _mutated(runner[0], runner[1])
+    open(runner_path, "w", encoding="utf-8").write(source)
+    return runner_path, _bridge_copy(
+        tmp_path, source=BRIDGE_WRITE_STUB, old=bridge[0], new=bridge[1])
+
+
+def test_the_two_copies_write_every_probe_the_same_way(tmp_path):
+    assert sync_contract.compare_writes(*_write_pair(tmp_path)) == []
+
+
+def test_the_probe_actually_drives_every_row_under_both_configurations(
+        tmp_path):
+    """The count the success line claims is the count that ran.
+
+    Written because the assembly probe's line understated its own run by
+    half and nothing noticed until a second reader read the arithmetic.
+    """
+    runner_path, bridge_path = _write_pair(
+        tmp_path, bridge=(_LOWER_BRIDGE, "        path = path"))
+    drifted = sync_contract.compare_writes(runner_path, bridge_path)
+    labels = {q.split(":")[0] for q, _, _ in drifted}
+    assert labels == {"writes, routing on", "writes, routing off"}
+
+
+def test_losing_the_ctime_carry_forward_on_one_side_is_drift(tmp_path):
+    """Cycle 167's bug, which nothing prevented coming back.
+
+    The write still succeeds and still returns "written". The only visible
+    trace is that every overwritten file claims it was created today.
+    """
+    drifted = sync_contract.compare_writes(*_write_pair(
+        tmp_path, bridge=(_CTIME_BRIDGE, "            pass")))
+    assert [q for q, _, _ in drifted if "carries the old ctime" in q]
+
+
+def test_both_copies_losing_the_ctime_carry_forward_is_an_error(tmp_path):
+    """The reason this probe states expected answers instead of only
+    comparing. Both copies wrong the same way agree on every row."""
+    with pytest.raises(sync_contract.ContractWriterMissing) as caught:
+        sync_contract.compare_writes(*_write_pair(
+            tmp_path,
+            runner=(_CTIME_RUNNER, "        pass"),
+            bridge=(_CTIME_BRIDGE, "            pass")))
+    assert "agreement is not evidence" in str(caught.value)
+
+
+def test_letting_the_lookup_beat_if_rev_on_one_side_is_drift(tmp_path):
+    """The silent clobber `if_rev` exists to stop: the write succeeds, the
+    caller is told "written", and the entry it raced disappears."""
+    drifted = sync_contract.compare_writes(*_write_pair(
+        tmp_path, bridge=(_IFREV_BRIDGE, "        if False:")))
+    questions = [q for q, _, _ in drifted]
+    assert [q for q in questions if "if_rev beats the lookup" in q]
+    assert [q for q in questions if "if_rev=None" in q]
+
+
+def test_both_copies_ignoring_if_rev_is_an_error_not_agreement(tmp_path):
+    with pytest.raises(sync_contract.ContractWriterMissing):
+        sync_contract.compare_writes(*_write_pair(
+            tmp_path,
+            runner=(_IFREV_RUNNER, "    if False:"),
+            bridge=(_IFREV_BRIDGE, "        if False:")))
+
+
+def test_treating_a_chunk_conflict_as_failure_on_one_side_is_drift(tmp_path):
+    drifted = sync_contract.compare_writes(*_write_pair(
+        tmp_path, bridge=(_CHUNK409_BRIDGE, "            if False:")))
+    assert [q for q, _, _ in drifted if "409 on a chunk" in q]
+
+
+def test_both_copies_treating_a_chunk_conflict_as_failure_is_an_error(
+        tmp_path):
+    with pytest.raises(sync_contract.ContractWriterMissing):
+        sync_contract.compare_writes(*_write_pair(
+            tmp_path,
+            runner=(_CHUNK409_RUNNER, "        if False:"),
+            bridge=(_CHUNK409_BRIDGE, "            if False:")))
+
+
+def test_pointing_the_file_document_at_a_chunk_that_failed_is_an_error(
+        tmp_path):
+    """The failure that is silent until somebody reads the file. Both copies
+    doing it agree, so only the expected sequence catches it."""
+    with pytest.raises(sync_contract.ContractWriterMissing):
+        sync_contract.compare_writes(*_write_pair(
+            tmp_path,
+            runner=('            return f"FAILED(chunk {chunk_id}: {chunk_status})"',
+                    "            written.add(chunk_id)"),
+            bridge=('                return f"FAILED(chunk {chunk_id}: {chunk_status})"',
+                    "                written.add(chunk_id)")))
+
+
+def test_a_copy_that_stops_lowering_the_path_is_drift(tmp_path):
+    drifted = sync_contract.compare_writes(*_write_pair(
+        tmp_path, bridge=(_LOWER_BRIDGE, "        path = path")))
+    assert [q for q, _, _ in drifted if "lowered before anything" in q]
+
+
+def test_skipping_the_existence_scan_is_drift(tmp_path):
+    """Not a wrong answer -- a missing request. The write still returns
+    "written" and still stores the right bytes; what it loses is the dedup
+    that stops an append leaving a second copy of the file behind."""
+    drifted = sync_contract.compare_writes(*_write_pair(
+        tmp_path, bridge=("        keys = sorted(set(chunk_ids))\n"
+                          "        if not keys:\n"
+                          "            return set()",
+                          "        return set()")))
+    assert drifted
+
+
+def test_a_chunk_id_that_differs_for_identical_bytes_is_drift(tmp_path):
+    """Two copies that hash the same text differently stop reusing each
+    other's chunks, which brings the write amplification straight back."""
+    drifted = sync_contract.compare_writes(*_write_pair(
+        tmp_path, bridge=('            return f"h:{xxhash.xxh64(content_bytes).hexdigest()}"',
+                          '            return "h:notthesame"')))
+    assert [q for q, _, _ in drifted if "chunk id for identical bytes" in q]
+
+
+def test_a_copy_with_no_writer_is_an_error_not_agreement(tmp_path):
+    runner_path, _ = _write_pair(tmp_path)
+    bridge_path = _bridge_copy(tmp_path, source=BRIDGE_STUB)
+    with pytest.raises(sync_contract.ContractWriterMissing):
+        sync_contract.compare_writes(runner_path, bridge_path)
+
+
+def test_real_write_drift_is_not_masked_by_the_guard(tmp_path):
+    """Same shape as #153's finding on routing: a run that finds a real
+    difference must report it rather than an instrumentation error, even
+    when the rows the two agreed on are also wrong."""
+    drifted = sync_contract.compare_writes(*_write_pair(
+        tmp_path,
+        runner=(_CTIME_RUNNER, "        pass"),
+        bridge=(_LOWER_BRIDGE, "        path = path")))
+    questions = [q for q, _, _ in drifted]
+    assert [q for q in questions if "lowered before anything" in q]
+    assert [q for q in questions if "carries the old ctime" in q]
+
+
+def test_the_clock_is_put_back_after_the_comparison(tmp_path):
+    before = time.time
+    sync_contract.compare_writes(*_write_pair(tmp_path))
+    assert time.time is before
+    assert time.time() > sync_contract._WRITE_NOW
+
+
+def test_the_clock_is_put_back_even_when_the_comparison_raises(tmp_path):
+    before = time.time
+    runner_path, _ = _write_pair(tmp_path)
+    with pytest.raises(sync_contract.ContractWriterMissing):
+        sync_contract.compare_writes(
+            runner_path, _bridge_copy(tmp_path, source=BRIDGE_STUB))
+    assert time.time is before
+
+
+def test_the_writes_stage_runs_after_the_three_before_it(tmp_path):
+    """`check_vault_pair` reaching exit 0 without running this stage is the
+    partial "in sync" line every earlier stage was written to prevent."""
+    source = open(sync_contract.__file__, encoding="utf-8").read()
+    assert "return _check_writes(left_path, right_path)" in source
