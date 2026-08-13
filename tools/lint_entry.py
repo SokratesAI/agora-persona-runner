@@ -1,8 +1,9 @@
 """Check a journal entry before it is written, while the author can fix it.
 
-Six cycles have shipped an entry the site could not render properly --
-three broke the heading rule and three the footer rule -- and every
-repair so far has been code that reads the mistake back afterwards.
+Four live documents cannot be rendered as written -- six breakages in
+all, three of the heading rule and three of the footer rule, with two
+documents failing both -- and every repair so far has been code that
+reads the mistake back afterwards.
 `normalise_entry` promotes a `## ` heading and synthesises one from the
 filename when there is none (Cycle 150); `stray_footer` lifts a `PR: ...`
 line the cycle bolded and put at the top (Cycle 151). Both work, and
@@ -37,9 +38,9 @@ detector counts that cycle from the filename, so the two halves of the
 site disagree and nothing anywhere raises an error. That measurement is
 also why there is no rule here
 requiring the `---` above the footer, which `personality.md` asks for
-and 17 live entries do not have -- 14 of them because they carry the
-`Reviewer: n findings` line the review rubric asks for, in the place the
-rule would go. `_FOOTER_RE` was deliberately changed to make that rule
+and 17 live entries do not have -- every one of those 17 because it
+carries the `Reviewer: n findings` line the review rubric asks for, in
+the place the rule would go. `_FOOTER_RE` was deliberately changed to make that rule
 optional (Cycle 104's card showed no PR for a cycle that had merged
 one). A check written from the prose alone would fail a sixth of the
 real journal, which is how a linter becomes something cycles learn to
@@ -82,6 +83,36 @@ def _heading_finding(path, content):
     )
 
 
+def _marker_finding(normalised):
+    """A line that would truncate the whole journal, not just this entry.
+
+    `parse_journal` opens with `markdown.partition("\n## Entries")` and
+    keeps only what follows -- the frozen `journal.md` carried its
+    instructions above that heading. `assemble_entries` joins every entry
+    document into one blob and hands it to the same function, and adds no
+    marker of its own, so a `## Entries` line written inside any single
+    entry silently drops every newer entry from the corpus, not merely
+    this one.
+
+    A reviewer found this as a false positive: the checker reported
+    `unparseable` for an otherwise perfect entry, because it was calling
+    `parse_journal` on one document, where the partition rule means
+    nothing. The rule is real at render time though, and the damage is
+    much larger than one card, so this is reported as itself rather than
+    worked around.
+    """
+    if "\n## Entries" not in "\n" + normalised:
+        return None
+    return (
+        "marker: this entry contains a line beginning `## Entries`. Every "
+        "entry document is joined into one blob before parsing, and the "
+        "parser keeps only what follows the first such line -- so this "
+        "would drop every entry newer than yours from the journal, not "
+        "just break this card. Indent it, fence it, or write it inline in "
+        "backticks."
+    )
+
+
 def _raw_body(normalised):
     """The entry body exactly as `parse_journal` slices it, before any repair.
 
@@ -91,8 +122,18 @@ def _raw_body(normalised):
     already removed -- by the strict rule *or* by the repair, and it does
     not say which.
     """
-    heading = _ENTRY_HEADING_RE.search(normalised)
-    return normalised[heading.end():].strip() if heading else normalised.strip()
+    headings = list(_ENTRY_HEADING_RE.finditer(normalised))
+    if not headings:
+        return normalised.strip()
+    start = headings[0].end()
+    # Bounded by the next heading, exactly as `parse_journal` bounds each
+    # entry. Taking everything to the end instead let a document with two
+    # headings pass the footer check on the *second* entry's footer, since
+    # `_FOOTER_RE` anchors to the end of what it is given -- so a first
+    # entry with no footer at all reported nothing. Masked by the `split`
+    # finding today, and still the parser disagreeing with the checker.
+    end = headings[1].start() if len(headings) > 1 else len(normalised)
+    return normalised[start:end].strip()
 
 
 def _footer_finding(body):
@@ -170,7 +211,12 @@ def lint(name, content):
     # means through the repair -- otherwise a bad heading would report
     # itself a second time as a missing footer, and the cycle would fix
     # one thing and see two.
-    entries = parse_journal(normalise_entry(path, content))
+    normalised = normalise_entry(path, content)
+    marker = _marker_finding(normalised)
+    if marker:
+        findings.append(marker)
+        return findings
+    entries = parse_journal(normalised)
     if not entries:
         findings.append(
             "unparseable: the site could not read a single entry out of this "
@@ -178,7 +224,6 @@ def lint(name, content):
         )
         return findings
     entry = entries[0]
-    normalised = normalise_entry(path, content)
     if len(entries) > 1:
         findings.append(
             f"split: this document holds {len(entries)} `### ` headings, so it "

@@ -194,3 +194,42 @@ def test_the_shapes_that_actually_reached_the_vault(name, entry, expected):
     and every one of them was found afterwards, by Edvard or by a cycle
     reading the folder, never by anything at write time."""
     assert _kinds(lint(name, entry)) == expected
+
+
+def test_an_entries_marker_is_named_rather_than_reported_as_unparseable():
+    """A reviewer found this as a false positive and it is a real defect.
+
+    `parse_journal` keeps only what follows the first `## Entries` line,
+    and `assemble_entries` joins every entry into one blob before calling
+    it, so this line inside one entry drops every newer entry from the
+    corpus. This journal is self-referential about its own parser, so it
+    is a line a cycle would plausibly write.
+    """
+    entry = (
+        "### Cycle 152 — 2026-08-13 02:00 Oslo\n\n"
+        "The marker matters here:\n\n## Entries\n\nis what the old file used.\n\n"
+        "---\nPR: #133 | Outcome: merged\n"
+    )
+    findings = lint("168-cycle-152.md", entry)
+    assert _kinds(findings) == ["marker"]
+    assert "every entry newer than yours" in findings[0]
+    assert "unparseable" not in findings[0]
+
+
+def test_the_same_marker_in_backticks_is_fine():
+    """Live entries already quote it inline; only a line start truncates."""
+    entry = GOOD.replace("Something real", "The `## Entries` marker, inline. Something real")
+    assert lint("168-cycle-152.md", entry) == []
+
+
+def test_the_footer_check_is_bounded_to_this_entry_not_the_document():
+    """Two headings, the first with no footer and the second ending
+    correctly. Taking the body to the end of the document let
+    `_FOOTER_RE`'s end-anchor match the *second* entry's footer, so a
+    missing footer on the first went unreported."""
+    entry = (
+        "### Cycle 152 — 2026-08-13 02:00 Oslo\n\nNo footer on this one.\n\n"
+        "### Cycle 152 — 2026-08-13 02:30 Oslo\n\nBody.\n\n---\nPR: #133 | Outcome: merged\n"
+    )
+    kinds = _kinds(lint("168-cycle-152.md", entry))
+    assert "footer" in kinds and "split" in kinds
