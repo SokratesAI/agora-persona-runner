@@ -705,6 +705,53 @@ _ANY_REV = object()
 APPEND_ATTEMPTS = 3
 
 
+def _doc_to_overwrite(doc_id, db=None):
+    """The document a write is about to replace, or None if there is none.
+
+    The third and last copy of the missing/unreadable conflation the reads
+    lost in #148. Both write sites did `existing if status == 200 else None`,
+    so a 500, a 503 or a 401 on the pre-write lookup made a live document
+    look absent. Only a 404 means absent here, exactly as in
+    `vault_read_path_rev`; anything else raises and the caller turns it into
+    a `FAILED(...)` string.
+
+    It raises rather than returning a sentinel because "absent" and
+    "unreadable" already have a shared vocabulary on the read side, and the
+    point of this fix is that they are one question with one answer. It is
+    caught at both write entry points rather than allowed to escape, because
+    the write contract is a string -- `vault_write_path` returning "written"
+    or "FAILED(...)" is what every caller branches on, and #148's reviewer
+    caught this exact function about to raise onto the bare thread that runs
+    every heartbeat.
+
+    What the old behaviour actually cost, in the two shapes it took:
+
+    - With a real `if_rev` -- every journal entry, every digest write, every
+      comment reply, every `nova_capture` board edit -- `doc["_rev"]` comes
+      from the caller, so the PUT *succeeds*. The only thing `existing`
+      still carries at that point is `ctime`, which silently became "now".
+      A successful write that quietly rewrites the file's creation time is
+      the failure nobody would ever notice.
+    - With `if_rev=None` or unconditional, the PUT goes out with no `_rev`
+      and 409s against the live document. Safe, but misattributed: the
+      caller is told the file "changed since it was read" when nothing
+      changed and the database was refusing to answer. That string is load
+      bearing -- `_write_exit` turns it into exit 3, `vault_append_path`
+      and `nova_comments` retry on it, and `prompt.md` step 7 tells a cycle
+      that exit 3 means re-read and try again. Retrying is the one wrong
+      response to a 500.
+    """
+    status, existing = couch_get_doc(doc_id, db)
+    if status == 200:
+        return existing
+    if status == 404:
+        return None
+    raise VaultUnreadableDocument(
+        f"{doc_id}: CouchDB answered HTTP {status} — refusing to treat a "
+        "document it will not let this client read as one that is not there"
+    )
+
+
 def vault_write_path(path, content, if_rev=_ANY_REV):
     """LiveSync v0.25+ chunked write, mirroring vault_tool.seed_file.
 
@@ -736,10 +783,11 @@ def vault_write_path(path, content, if_rev=_ANY_REV):
     (Edvard's call, 2026-07-24) makes `_id` and `path` structurally
     identical by construction, closing this bug class for good."""
     lower_id = path.lower()
-    status, existing = couch_get_doc(lower_id)
-    return _vault_put_raw(
-        path, content, existing if status == 200 else None, if_rev=if_rev
-    )
+    try:
+        existing = _doc_to_overwrite(lower_id)
+    except VaultUnreadableDocument as e:
+        return f"FAILED(unreadable: {e})"
+    return _vault_put_raw(path, content, existing, if_rev=if_rev)
 
 
 def vault_append_path(path, content, after_marker=""):
@@ -818,8 +866,13 @@ def _vault_put_raw(path, content, existing=None, if_rev=_ANY_REV):
     lower_id = path
 
     if existing is None:
-        status, found = couch_get_doc(lower_id, db)
-        existing = found if status == 200 else None
+        # Reached both when the caller genuinely found nothing and when the
+        # caller never looked, so it has to answer the same question the
+        # same way rather than falling back to the old conflation.
+        try:
+            existing = _doc_to_overwrite(lower_id, db)
+        except VaultUnreadableDocument as e:
+            return f"FAILED(unreadable: {e})"
 
     # Chunks are content-addressed, so one that already exists holds
     # exactly this text and does not need rewriting -- that reuse is the
