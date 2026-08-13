@@ -320,6 +320,11 @@ def add_reply(cycle, stamp, text, reply_stamp=None):
         updated = insert_reply(current, cycle, stamp, body, reply_stamp)
         if updated is None:
             return False, f"no comment on cycle {cycle} at {stamp} left to reply to"
+        try:
+            _verify_replied(current, updated, cycle, stamp, body)
+        except WriteRefused as refused:
+            log(f"nova-comment refused replying to cycle {cycle}: {refused}")
+            return False, str(refused)
         result = vault_write_path(COMMENTS_PATH, updated, if_rev=rev)
         if result == "written":
             log(f"nova-comment replied to cycle {cycle} at {stamp}")
@@ -382,6 +387,127 @@ def parse_comments(markdown):
             current["lines"].append(line)
     flush()
     return out
+
+
+class WriteRefused(Exception):
+    """This write would damage the file, so it is not attempted.
+
+    The message is read by a human -- it goes to the app as the reason a
+    comment could not be saved -- so it says what changed, not which
+    function noticed.
+    """
+
+
+def frontmatter(text):
+    """The frontmatter block including both `---` lines, or "" if there is none.
+
+    Byte-identical frontmatter is the cheapest true statement there is
+    about a write to this file, because the 2026-08-13 damage was text
+    spliced *into* the frontmatter: `contract:` quotes both headings back
+    at whoever opens the file, so a search for `## Acknowledged` that is
+    not anchored to a whole line finds the sentence 320 characters before
+    the heading. `md_sections` stops the searches this repo owns from
+    doing that; this stops the write regardless of how it went wrong.
+    """
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return "\n".join(lines[: i + 1])
+    return ""
+
+
+def comment_index(markdown):
+    """`{(cycle, stamp): comment}` -- what a write is checked against."""
+    return {(c["cycle"], c["stamp"]): c for c in parse_comments(markdown)}
+
+
+# Every field `parse_comments` reports about a comment. A bystander that
+# kept its text and its section but lost the reply Nova wrote it is still a
+# comment the write damaged, so all four are compared, not the one or two a
+# given write is about.
+COMPARED_FIELDS = ("text", "acknowledged", "reply", "replyStamp")
+
+
+def verify_write(original, updated, exempt=()):
+    """Refuse unless the frontmatter and every comment outside `exempt` survived.
+
+    The half of the check that is the same for all three writers -- adding
+    a comment, replying to one, moving one to `## Acknowledged`. Each
+    caller then proves its own intended change on top; this proves that
+    nothing else happened. Raises `WriteRefused`, returns
+    `(before, after)` so the caller does not parse twice.
+
+    `exempt` is the keys the caller is deliberately changing. Everything
+    else, including keys that appear or vanish, is damage: text landing
+    where `parse_comments` cannot see it changes the set, which is exactly
+    what a comment inside the frontmatter looks like from here.
+    """
+    if frontmatter(updated) != frontmatter(original):
+        raise WriteRefused(
+            "the frontmatter changed -- this is the 2026-08-13 bug and the "
+            "write is refused; nothing written"
+        )
+
+    before = comment_index(original)
+    after = comment_index(updated)
+    exempt = set(exempt)
+    lost = sorted(str(k) for k in set(before) - set(after) - exempt)
+    gained = sorted(str(k) for k in set(after) - set(before) - exempt)
+    if lost or gained:
+        raise WriteRefused(
+            f"the set of comments changed (lost {lost}, gained {gained}) -- "
+            "nothing written"
+        )
+    for key, was in before.items():
+        if key in exempt:
+            continue
+        now = after[key]
+        if [now[f] for f in COMPARED_FIELDS] != [was[f] for f in COMPARED_FIELDS]:
+            raise WriteRefused(f"{key} changed too -- nothing written")
+    return before, after
+
+
+def _verify_added(original, updated, cycle, stamp, body):
+    """Refuse unless `updated` is `original` plus exactly this one comment.
+
+    `insert_comment` is string surgery on the one file Edvard talks to
+    this loop through, it runs unattended every time he types into the
+    app, and until this existed nothing between it and the vault could
+    tell a good result from a damaged one. Refusing is the right direction
+    to fail in here: the app reports the failure and his text is still in
+    the box, where a silent corruption loses a comment invisibly -- which
+    is how the 2026-08-13 one was found, by accident, by a cycle doing
+    something else.
+    """
+    key = (cycle, stamp)
+    _, after = verify_write(original, updated, exempt={key})
+    if key not in after:
+        raise WriteRefused(
+            f"the new comment on {_heading_label(cycle)} at {stamp!r} is not "
+            "readable back -- nothing written"
+        )
+    if key in comment_index(original):
+        raise WriteRefused(f"{key} was already in the file -- nothing written")
+    added = after[key]
+    if added["text"] != body:
+        raise WriteRefused(f"{key} did not keep the text as typed -- nothing written")
+    if added["acknowledged"]:
+        raise WriteRefused(f"{key} landed under {ACKNOWLEDGED_HEADING} -- nothing written")
+
+
+def _verify_replied(original, updated, cycle, stamp, reply):
+    """Refuse unless exactly the named comment gained exactly this reply."""
+    key = (cycle, stamp)
+    before, after = verify_write(original, updated, exempt={key})
+    if key not in before or key not in after:
+        raise WriteRefused(f"{key} is not in both versions -- nothing written")
+    was, now = before[key], after[key]
+    if now["text"] != was["text"]:
+        raise WriteRefused(f"{key}'s text changed -- nothing written")
+    if now["reply"] != reply:
+        raise WriteRefused(f"{key} did not read back the reply -- nothing written")
 
 
 def _oldest_first(comments):
@@ -477,8 +603,13 @@ def _store(cycle, text, stamp=None):
             # is the same failed-read-looks-empty class filed against both
             # clients, not a distinction this code can actually make.
             current = ""
-        result = vault_write_path(
-            COMMENTS_PATH, insert_comment(current, cycle, body, stamp), if_rev=rev)
+        updated = insert_comment(current, cycle, body, stamp)
+        try:
+            _verify_added(current, updated, cycle, stamp, body)
+        except WriteRefused as refused:
+            log(f"nova-comment refused writing {target}: {refused}")
+            return False, str(refused)
+        result = vault_write_path(COMMENTS_PATH, updated, if_rev=rev)
         if result == "written":
             log(f"nova-comment stored on {target}")
             return True, f"commented on {target}"

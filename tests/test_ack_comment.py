@@ -258,15 +258,21 @@ def test_a_bystander_losing_its_reply_is_refused(monkeypatch):
     """`_verify` promises every other comment is untouched. Before this it
     compared only text and section, so a bystander stripped of the reply Nova
     wrote it passed as unchanged."""
-    import tools.ack_comment as module
+    # The parse the checks run on lives in `nova_comments` now, shared with
+    # the two writers that run unattended -- so this patches it where it is
+    # defined rather than where `ack_comment` imported it, and keys off the
+    # text rather than a call count, because `acknowledge` parses the
+    # original twice and the updated once.
+    import agora_runner.nova_comments as module
 
     real = module.parse_comments
-    calls = []
+    seen = []
 
     def strip_a_reply(markdown):
         out = [dict(c) for c in real(markdown)]
-        calls.append(1)
-        if len(calls) > 1:  # the "after" parse only, so the two disagree
+        if not seen:
+            seen.append(markdown)
+        if markdown != seen[0]:  # the "after" parse only, so the two disagree
             for c in out:
                 if c["cycle"] == 120:
                     c["reply"] = ""

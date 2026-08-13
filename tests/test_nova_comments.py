@@ -30,6 +30,10 @@ from agora_runner.nova_comments import (
     needs_comments,
     format_stamp,
     insert_comment,
+    # Bound here rather than reached through the module, so a test that
+    # patches the module attribute can still call the real one without
+    # recursing into its own replacement.
+    insert_reply,
     parse_comments,
 )
 
@@ -714,3 +718,155 @@ def test_a_comment_that_loses_a_real_race_keeps_the_one_that_landed():
     assert couch.rejected == 1, "the losing write must have been refused"
     assert [c["text"] for c in parse_comments(couch.text(COMMENTS_PATH))] == \
         ["mine", "landed first"]
+
+
+# --- the write is checked before it leaves ---------------------------------
+#
+# `insert_comment` and `insert_reply` are string surgery on the one file
+# Edvard talks to this loop through, and both run unattended -- one every
+# time he types into the app, one every time the reply worker answers. Until
+# these existed, nothing between them and the vault could tell a good result
+# from a damaged one. `ack_comment` has had that check since Cycle 159; the
+# writers that actually run every hour did not.
+
+
+def _broken_writer(name, replacement):
+    """Patch one of the two inserters to return damage instead of a good file."""
+    return patch.object(nova_comments, name, replacement)
+
+
+def test_a_comment_that_lands_inside_the_frontmatter_is_not_written():
+    """The 2026-08-13 damage exactly: text spliced into the frontmatter, where
+    the app's parser cannot see it and neither can the next cycle."""
+    def splices_into_the_frontmatter(markdown, cycle, text, stamp):
+        return markdown.replace(
+            "type: log", f"type: log\n### Cycle {cycle} · {stamp}\n\n{text}", 1)
+
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
+            patch.object(nova_comments, "vault_write_path") as write, \
+            _broken_writer("insert_comment", splices_into_the_frontmatter):
+        ok, message = add_comment(63, "hello", stamp="2026-08-09 23:00")
+    assert not ok
+    assert "frontmatter" in message
+    write.assert_not_called()
+
+
+def test_a_comment_that_eats_an_existing_one_is_not_written():
+    def drops_a_bystander(markdown, cycle, text, stamp):
+        good = insert_comment(markdown, cycle, text, stamp)
+        return good.replace("great research, keep it up!", "")
+
+    with patch.object(nova_comments, "vault_read_path_rev",
+                      return_value=(ONE_COMMENT, REV)), \
+            patch.object(nova_comments, "vault_write_path") as write, \
+            _broken_writer("insert_comment", drops_a_bystander):
+        ok, message = add_comment(64, "hello", stamp="2026-08-09 23:00")
+    assert not ok
+    assert "changed too" in message
+    write.assert_not_called()
+
+
+def test_a_comment_filed_under_acknowledged_is_not_written():
+    """Landing under the wrong heading is silent: it reads as already dealt
+    with, so no cycle ever answers it."""
+    def files_it_as_done(markdown, cycle, text, stamp):
+        return markdown.replace(
+            ACKNOWLEDGED_HEADING,
+            f"{ACKNOWLEDGED_HEADING}\n\n### Cycle {cycle} · {stamp}\n\n{text}\n", 1)
+
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
+            patch.object(nova_comments, "vault_write_path") as write, \
+            _broken_writer("insert_comment", files_it_as_done):
+        ok, message = add_comment(63, "hello", stamp="2026-08-09 23:00")
+    assert not ok
+    assert ACKNOWLEDGED_HEADING in message
+    write.assert_not_called()
+
+
+def test_a_comment_stored_with_the_text_altered_is_not_written():
+    """His words are the whole point of the file -- `clean_comment_text` is
+    the only thing allowed to touch them, and it runs before this."""
+    def rewraps_it(markdown, cycle, text, stamp):
+        return insert_comment(markdown, cycle, text.replace("\n", " "), stamp)
+
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
+            patch.object(nova_comments, "vault_write_path") as write, \
+            _broken_writer("insert_comment", rewraps_it):
+        ok, message = add_comment(63, "one\ntwo", stamp="2026-08-09 23:00")
+    assert not ok
+    assert "text as typed" in message
+    write.assert_not_called()
+
+
+def test_an_ordinary_comment_still_goes_through_untouched():
+    """The guard has to be invisible when nothing is wrong, or it is just a
+    new way to lose what he typed."""
+    with patch.object(nova_comments, "vault_read_path_rev",
+                      return_value=(ONE_COMMENT, REV)), \
+            patch.object(nova_comments, "vault_write_path",
+                         return_value="written") as write:
+        ok, message = add_comment(64, "second thoughts", stamp="2026-08-09 23:00")
+    assert ok, message
+    written = write.call_args[0][1]
+    assert [c["text"] for c in parse_comments(written)] == [
+        "second thoughts", "great research, keep it up!",
+        "the heartbeat measurement was the useful bit\n\nCycle 61 acted on this."]
+
+
+def test_a_needs_edvard_reply_is_checked_the_same_way():
+    """`None` is a real key here, not a missing one -- an exempt set that
+    mishandled it would let the whole check pass vacuously."""
+    def splices_into_the_frontmatter(markdown, cycle, text, stamp):
+        return markdown.replace("type: log", f"type: log\n{text}", 1)
+
+    with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
+            patch.object(nova_comments, "vault_write_path") as write, \
+            _broken_writer("insert_comment", splices_into_the_frontmatter):
+        ok, message = add_needs_comment("do the second one", stamp="2026-08-09 23:00")
+    assert not ok
+    write.assert_not_called()
+
+
+def test_a_reply_that_damages_the_comment_it_answers_is_not_written():
+    """The reply worker runs on its own thread, minutes after he has closed
+    the app -- a bad write here is seen by nobody."""
+    def eats_his_text(markdown, cycle, stamp, reply, reply_stamp):
+        return markdown.replace("great research, keep it up!",
+                                f"#### Nova · {reply_stamp}\n\n{reply}")
+
+    with patch.object(nova_comments, "vault_read_path_rev",
+                      return_value=(ONE_COMMENT, REV)), \
+            patch.object(nova_comments, "vault_write_path") as write, \
+            _broken_writer("insert_reply", eats_his_text):
+        ok, message = add_reply(63, "2026-08-09 22:40", "thanks",
+                                reply_stamp="2026-08-09 23:00")
+    assert not ok
+    assert "text changed" in message
+    write.assert_not_called()
+
+
+def test_a_reply_landing_on_the_wrong_comment_is_not_written():
+    def answers_the_wrong_one(markdown, cycle, stamp, reply, reply_stamp):
+        return insert_reply(markdown, 60, "2026-08-09 18:50", reply, reply_stamp)
+
+    with patch.object(nova_comments, "vault_read_path_rev",
+                      return_value=(ONE_COMMENT, REV)), \
+            patch.object(nova_comments, "vault_write_path") as write, \
+            _broken_writer("insert_reply", answers_the_wrong_one):
+        ok, message = add_reply(63, "2026-08-09 22:40", "thanks",
+                                reply_stamp="2026-08-09 23:00")
+    assert not ok
+    write.assert_not_called()
+
+
+def test_an_ordinary_reply_still_goes_through_untouched():
+    with patch.object(nova_comments, "vault_read_path_rev",
+                      return_value=(ONE_COMMENT, REV)), \
+            patch.object(nova_comments, "vault_write_path",
+                         return_value="written") as write:
+        ok, message = add_reply(63, "2026-08-09 22:40", "thanks",
+                                reply_stamp="2026-08-09 23:00")
+    assert ok, message
+    stored = [c for c in parse_comments(write.call_args[0][1]) if c["cycle"] == 63][0]
+    assert stored["text"] == "great research, keep it up!"
+    assert stored["reply"] == "thanks"
