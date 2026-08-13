@@ -2,7 +2,7 @@
 
 `prompt.md` step 1a tells every cycle to read `## New`, act on what
 Edvard said, then "move each one under `## Acknowledged` with one line
-saying what it did". That instruction has been carried out by hand, in
+on what you did". That instruction has been carried out by hand, in
 a throwaway script, once an hour, for weeks -- and on 2026-08-13 at
 07:06 one of those scripts spliced Edvard's newest comment into the
 middle of the file's YAML frontmatter, because it looked for
@@ -31,11 +31,19 @@ either pod with whichever client that pod has:
     python3 /app/bridge/vault_tool.py put '<comments>' c.md --if-rev-file /tmp/c.rev
 
 It refuses rather than guesses. Before writing it re-parses its own
-output and checks three things: the frontmatter is byte-identical, the
-set of comments is unchanged apart from the one named, and that one
-moved from new to acknowledged carrying Edvard's text unaltered. A move
-that cannot prove all three is not written, and the file on disk is left
-exactly as it was found.
+output and checks that the frontmatter is byte-identical, that the set
+of comments is unchanged, that the one named moved from new to
+acknowledged carrying Edvard's text and its existing reply unaltered,
+and that every other comment is untouched in all four of those
+respects. A move that cannot prove all of it is not written, and the
+file on disk is left exactly as it was found.
+
+What it deliberately does *not* prove is anything about blank lines,
+because `parse_comments` cannot see them -- and the first version of
+this tool left a doubled blank line behind at the cut, which is where a
+card ends on Edvard's screen. That is pinned by a test on the output
+text rather than by `_verify`, and the distinction is worth keeping in
+mind before trusting the verifier with a new kind of damage.
 """
 
 import argparse
@@ -185,11 +193,16 @@ def _verify(original, updated, before, cycle, stamp, note):
     if note and note not in moved["reply"]:
         raise AckError(f"{target} lost the note -- nothing written")
 
+    # Every field `parse_comments` reports, not just the two the move is
+    # about. A bystander that kept its text and its section but lost the
+    # reply Nova wrote it is still a comment this tool damaged, and a check
+    # narrower than the docstring's promise is the promise being wrong.
+    fields = ("text", "acknowledged", "reply", "replyStamp")
     for key, was in before.items():
         if key == target:
             continue
         now = after[key]
-        if (now["text"], now["acknowledged"]) != (was["text"], was["acknowledged"]):
+        if [now[f] for f in fields] != [was[f] for f in fields]:
             raise AckError(f"{key} changed too -- nothing written")
 
 

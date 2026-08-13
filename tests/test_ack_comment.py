@@ -3,10 +3,21 @@ corrupt the file the way the hand-rolled version did on 2026-08-13.
 
 The fixture below is not invented. It is the shape of the real
 `comments.md`: a `contract:` line in the frontmatter that quotes both
-`## New` and `## Acknowledged` back at the reader, 320 characters before
-either heading actually appears. Every test here would pass against a
-substring search too, except the ones that name it -- which is why the
-real bug survived a file whose parser had been correct all along.
+`## New` and `## Acknowledged` back at the reader, at character 305, well
+before either heading actually appears -- the 2026-08-13 splice landed at
+320, immediately after that mention.
+
+**Be honest about what most of these tests pin.** Measured, not assumed:
+reverting `md_sections` to the plain whole-line matcher `nova_comments`
+already had before this change leaves 19 of them green. That is not a
+flaw in them -- they pin the move itself, which had no tests at all
+because it had no code, only a script a cycle retyped every hour -- but
+it means they are not evidence for the frontmatter and fence skips.
+Whole-line matching alone defeats the real `contract:` line, because it
+is one long sentence; only a raw substring search collides with it, and
+no code in this repo ever did that. The three that genuinely need the new
+logic say so in their names, and `test_acknowledge_survives_a_block_scalar
+_contract` is the only one that needs it through the whole command.
 """
 
 import pytest
@@ -214,6 +225,59 @@ def test_the_verifier_catches_a_frontmatter_edit_it_did_not_intend(monkeypatch):
     monkeypatch.setattr(module, "find_heading", lambda lines, heading: 3)
     with pytest.raises(AckError, match="frontmatter changed"):
         _ack()
+
+
+BLOCK_SCALAR = FIXTURE.replace(
+    CONTRACT,
+    "contract: |\n"
+    "  A cycle reads\n"
+    "## New\n"
+    "  at the start of every cycle, then moves what it acted on under\n"
+    "## Acknowledged\n"
+    "  with one line on what it did.",
+)
+
+
+def test_acknowledge_survives_a_block_scalar_contract():
+    """The whole command, not just `find_heading`, on the one frontmatter
+    shape whole-line matching cannot save you from. A YAML block scalar puts
+    bare `## New` and `## Acknowledged` lines inside the frontmatter, so the
+    pre-diff matcher finds both of them first and files Edvard's comment
+    into the file's own header -- which is the 2026-08-13 failure, reached
+    through the real entry point."""
+    out = acknowledge(
+        BLOCK_SCALAR, 156, "2026-08-13 06:44", "Boarded.", "2026-08-13 08:10"
+    )
+    assert out.split("\n---\n")[0] == BLOCK_SCALAR.split("\n---\n")[0]
+    moved = [c for c in parse_comments(out) if c["cycle"] == 156][0]
+    assert moved["acknowledged"]
+    assert out.index("### Cycle 156") > out.index("\n## Acknowledged\n\n### Cycle")
+
+
+def test_a_bystander_losing_its_reply_is_refused(monkeypatch):
+    """`_verify` promises every other comment is untouched. Before this it
+    compared only text and section, so a bystander stripped of the reply Nova
+    wrote it passed as unchanged."""
+    import tools.ack_comment as module
+
+    real = module.parse_comments
+    calls = []
+
+    def strip_a_reply(markdown):
+        out = [dict(c) for c in real(markdown)]
+        calls.append(1)
+        if len(calls) > 1:  # the "after" parse only, so the two disagree
+            for c in out:
+                if c["cycle"] == 120:
+                    c["reply"] = ""
+        return out
+
+    monkeypatch.setattr(module, "parse_comments", strip_a_reply)
+    src = FIXTURE.replace("### Cycle 120 · 2026-08-11 22:26\n\nAgain, go",
+                          "### Cycle 120 · 2026-08-11 22:26\n\nAgain, go\n\n"
+                          "#### Nova · 2026-08-11 22:30\n\nDone.")
+    with pytest.raises(AckError, match="changed too"):
+        acknowledge(src, 156, "2026-08-13 06:44", "x", "2026-08-13 08:10")
 
 
 def test_no_blank_line_is_gained_or_lost_around_the_move():
