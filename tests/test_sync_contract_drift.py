@@ -1033,18 +1033,43 @@ def test_the_two_copies_write_every_probe_the_same_way(tmp_path):
     assert sync_contract.compare_writes(*_write_pair(tmp_path)) == []
 
 
-def test_the_probe_actually_drives_every_row_under_both_configurations(
-        tmp_path):
-    """The count the success line claims is the count that ran.
-
-    Written because the assembly probe's line understated its own run by
-    half and nothing noticed until a second reader read the arithmetic.
-    """
+def test_both_database_configurations_are_driven(tmp_path):
+    """Routing on and routing off are separate early returns in both copies,
+    so a probe that only ran one of them would cover half the client while
+    reporting a whole number."""
     runner_path, bridge_path = _write_pair(
         tmp_path, bridge=(_LOWER_BRIDGE, "        path = path"))
     drifted = sync_contract.compare_writes(runner_path, bridge_path)
     labels = {q.split(":")[0] for q, _, _ in drifted}
     assert labels == {"writes, routing on", "writes, routing off"}
+
+
+def test_every_row_of_the_table_is_actually_asked(tmp_path):
+    """The count `_check_writes` prints is the count that ran.
+
+    Written because the assembly probe's success line understated its own
+    run by half and nothing noticed until a second reader read the
+    arithmetic. Asserting against the answer keys rather than against the
+    same arithmetic the message uses -- the message is what is under test.
+    """
+    runner_path, bridge_path = _write_pair(tmp_path)
+    asked = []
+    original = sync_contract._write_answers
+
+    def spy(ask):
+        answers = original(ask)
+        asked.append(sorted(answers))
+        return answers
+
+    sync_contract._write_answers = spy
+    try:
+        assert sync_contract.compare_writes(runner_path, bridge_path) == []
+    finally:
+        sync_contract._write_answers = original
+    want = sorted(row[0] for row in sync_contract._WRITE_QUESTIONS)
+    # One entry per copy per configuration, every one of them the whole table.
+    assert asked == [want] * (2 * len(sync_contract.ROUTING_CONFIGS))
+    assert len(want) * len(sync_contract.ROUTING_CONFIGS) == 22
 
 
 def test_losing_the_ctime_carry_forward_on_one_side_is_drift(tmp_path):
@@ -1130,7 +1155,12 @@ def test_skipping_the_existence_scan_is_drift(tmp_path):
                           "        if not keys:\n"
                           "            return set()",
                           "        return set()")))
-    assert drifted
+    # Named rows, not just "something differed": the scan disappearing shows
+    # up on every row that expects it, and a bare truthiness assertion would
+    # also pass if the mutation had broken something else entirely.
+    questions = [q for q, _, _ in drifted]
+    assert [q for q in questions if "new file, unconditional" in q]
+    assert [q for q in questions if "already exists is not rewritten" in q]
 
 
 def test_a_chunk_id_that_differs_for_identical_bytes_is_drift(tmp_path):
