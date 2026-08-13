@@ -634,11 +634,101 @@ def compare_redaction(runner_path, bridge_path):
     return drifted
 
 
+# ---------------------------------------------------------------------------
+# The CI workflows: their shipping half, which is one pipeline written twice
+# ---------------------------------------------------------------------------
+#
+# `.github/workflows/build.yaml` exists in both repos and most of it differs
+# on purpose: one compiles `agora_runner`, the other `bridge`, and only the
+# runner has a browser suite. What may not differ is everything from the
+# secret scan down to the manifest commit -- the concurrency group that stops
+# two merges racing, the image and config-repo names, the build-push job and
+# the update-manifest job. Those were deliberately written against
+# `${{ github.event.repository.name }}` so the two copies could be textually
+# identical, which is what makes comparing them cheap.
+#
+# The comparison is on the PARSED workflow, not the source. That is not a
+# nicety: the two files carry different prose around the same steps (the race
+# comment above `concurrency` is written from each repo's point of view), and
+# a text diff is 100% noise. Parsing drops comments for free and leaves the
+# steps, which is the only part that runs.
+WORKFLOW_PROBES = (
+    # YAML 1.1 reads a bare `on:` as the boolean True, so this key is looked
+    # up both ways. Every parser in this repo has hit that at least once.
+    ("triggers", lambda doc: doc.get("on", doc.get(True))),
+    ("concurrency", lambda doc: doc.get("concurrency")),
+    ("image and config repo", lambda doc: doc.get("env")),
+    ("secret scan", lambda doc: _workflow_step(doc, "test", "Secret scan")),
+    ("build-push job", lambda doc: doc.get("jobs", {}).get("build-push")),
+    ("update-manifest job", lambda doc: doc.get("jobs", {}).get("update-manifest")),
+    # Not the jobs' contents -- just that neither copy has quietly lost one of
+    # the four. An extra repo-specific job is allowed and does not drift.
+    ("pipeline jobs", lambda doc: sorted(
+        set(doc.get("jobs", {})) & {"test", "vault-drift", "build-push", "update-manifest"})),
+)
+
+
+class ContractWorkflowUnreadable(LookupError):
+    """A copy could not be parsed, or a probe found nothing in either copy.
+
+    The second half is the one that matters. Every probe here reads a key out
+    of a mapping and `None == None`, so a job renamed on both sides -- or a
+    probe written against a key that never existed -- reports agreement
+    without having compared anything. Cycle 53's lesson in one guard: a
+    negative result only counts if a positive result was possible.
+    """
+
+
+def _workflow_step(doc, job, step_name):
+    """The one step called `step_name` in `job`, or None if there isn't one."""
+    for step in doc.get("jobs", {}).get(job, {}).get("steps", []) or []:
+        if isinstance(step, dict) and step.get("name") == step_name:
+            return step
+    return None
+
+
+def _parse_workflow(path):
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - exercised in CI, not here
+        raise ContractWorkflowUnreadable(
+            "pyyaml is not installed, so the workflow pair cannot be parsed "
+            "(pip install pyyaml)") from exc
+    try:
+        with open(path, encoding="utf-8") as handle:
+            doc = yaml.safe_load(handle)
+    except (OSError, yaml.YAMLError) as exc:
+        raise ContractWorkflowUnreadable("%s: %s" % (path, exc)) from exc
+    if not isinstance(doc, dict):
+        raise ContractWorkflowUnreadable("%s: not a workflow mapping" % (path,))
+    return doc
+
+
+def compare_workflow(left_path, right_path):
+    """[(label, left answer, right answer)] for every probe that disagrees."""
+    left, right = _parse_workflow(left_path), _parse_workflow(right_path)
+    drifted, blind = [], []
+    for label, probe in WORKFLOW_PROBES:
+        left_answer, right_answer = probe(left), probe(right)
+        if left_answer is None and right_answer is None:
+            blind.append(label)
+        elif left_answer != right_answer:
+            drifted.append((label, left_answer, right_answer))
+    if blind:
+        raise ContractWorkflowUnreadable(
+            "%s found nothing in either copy, so %s comparing nothing: the "
+            "key was renamed on both sides, or never existed. Fix the probe "
+            "in WORKFLOW_PROBES." % (
+                ", ".join(blind), "they are" if len(blind) > 1 else "it is"))
+    return drifted
+
+
 # (label, path inside the runner, path inside the bridge). The CLI takes the
 # two repository roots and joins these, so a new pair is one line here.
 PAIRS = (
     ("vault client", "agora_runner/vault.py", "bridge/vault_tool.py"),
     ("redaction", "agora_runner/redact.py", "bridge/redact.py"),
+    ("ci workflow", ".github/workflows/build.yaml", ".github/workflows/build.yaml"),
 )
 
 
@@ -749,9 +839,48 @@ def check_redaction_pair(left_path, right_path):
     return 1
 
 
+_WORKFLOW_ADVICE = (
+    "\nThe two build pipelines disagree about a part that is meant to be one\n"
+    "pipeline written twice. Everything from the secret scan down to the\n"
+    "manifest commit is repo-independent by construction, so a difference\n"
+    "here is one repo shipping under rules the other does not -- an\n"
+    "unserialised merge race, an unscanned commit, a digest written\n"
+    "differently. Write the change into both, or drop the probe from\n"
+    "WORKFLOW_PROBES in tools/sync_contract.py and say in the journal why\n"
+    "the two pipelines are allowed to differ there."
+)
+
+
+def check_workflow_pair(left_path, right_path):
+    """Exit code for the CI workflow pair: 0 in sync, 1 drift, 2 unreadable."""
+    try:
+        drifted = compare_workflow(left_path, right_path)
+    except ContractWorkflowUnreadable as exc:
+        print("ci workflow: %s" % exc, file=sys.stderr)
+        return 2
+    if not drifted:
+        # Flushed for the reason `check_vault_pair` gives: stdout is buffered
+        # in CI and stderr is not, so an unflushed success line lands after
+        # the next pair's failure and reads as though it followed it.
+        print("ci workflow: %d probes match in both pipelines"
+              % len(WORKFLOW_PROBES), flush=True)
+        return 0
+    print("\nci workflow: %d probe(s) differ between\n  %s\n  %s\n"
+          % (len(drifted), left_path, right_path), file=sys.stderr)
+    for label, left_answer, right_answer in drifted:
+        print("\n".join([
+            "  %s" % label,
+            "    %s: %r" % (left_path, left_answer),
+            "    %s: %r" % (right_path, right_answer),
+        ]), file=sys.stderr)
+    print(_WORKFLOW_ADVICE, file=sys.stderr)
+    return 1
+
+
 _CHECKERS = {
     "vault client": check_vault_pair,
     "redaction": check_redaction_pair,
+    "ci workflow": check_workflow_pair,
 }
 
 
