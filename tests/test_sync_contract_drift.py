@@ -505,7 +505,12 @@ def test_a_pattern_dropped_from_one_copy_is_drift(tmp_path):
     drifted = sync_contract.compare_redaction(redact.__file__, other)
     labels = [label for label, _, _ in drifted]
     assert "named value, quoted json" in labels, labels
-    label, left_answer, right_answer = [d for d in drifted if d[0] == labels[0]][0]
+    # Named, not `drifted[0]`. Only one probe drifts under this mutation
+    # today, so indexing would pass -- and would silently start checking a
+    # different probe's answers the moment another JSON-shaped probe is
+    # added to the table.
+    _, left_answer, right_answer = [
+        d for d in drifted if d[0] == "named value, quoted json"][0]
     assert "[redacted:" in left_answer
     assert "[redacted:" not in right_answer
 
