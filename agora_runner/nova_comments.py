@@ -92,6 +92,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from agora_runner.log import log
+from agora_runner.md_sections import find_heading, section_bounds
 from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 COMMENTS_PATH = "projects/sokrates/projects/agora/nova/resources/comments.md"
@@ -182,19 +183,13 @@ def _section_bounds(lines, heading):
     """(start, end) of the body of `heading`, or None if it is absent.
 
     `start` is the line after the heading; `end` is the next `##` heading
-    or end of file.
+    or end of file. Frontmatter and fenced code are skipped at both ends --
+    this file's own `contract:` line quotes both headings back at the
+    reader, and a cycle's throwaway script matching that quote is what put
+    Edvard's newest comment inside the frontmatter on 2026-08-13. See
+    `md_sections`.
     """
-    start = None
-    for i, line in enumerate(lines):
-        if start is None:
-            if line.strip().lower() == heading.lower():
-                start = i + 1
-            continue
-        if _SECTION_RE.match(line):
-            return start, i
-    if start is None:
-        return None
-    return start, len(lines)
+    return section_bounds(lines, heading)
 
 
 def insert_comment(markdown, cycle, text, stamp):
@@ -214,11 +209,7 @@ def insert_comment(markdown, cycle, text, stamp):
     if bounds is None:
         # No `## New` at all. Put it above `## Acknowledged` if that
         # exists, so the two stay in their documented order.
-        ack = None
-        for i, line in enumerate(lines):
-            if line.strip().lower() == ACKNOWLEDGED_HEADING.lower():
-                ack = i
-                break
+        ack = find_heading(lines, ACKNOWLEDGED_HEADING)
         section = [NEW_HEADING, ""] + block
         if ack is not None:
             return "\n".join(lines[:ack] + section + lines[ack:])
