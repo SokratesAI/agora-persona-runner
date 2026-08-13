@@ -916,8 +916,14 @@ _ANY_REV = object()
 def _split_chunks(content):
     """One chunk. The probe's content is far under CHUNK_MIN_BYTES and real
     chunking is pinned by the syntax comparison, so a faithful stub here
-    would be a second copy of something already checked."""
-    return [content] if content else []
+    would be a second copy of something already checked.
+
+    Empty content is `[""]` and not `[]`, which is what both real copies
+    return -- a detail no row exercises today and the reason it is written
+    down anyway: the first row to write an empty file would otherwise see
+    the runner produce one chunk and this stub produce none, and read a
+    fixture's shortcut as drift in the client."""
+    return [content] if content else [""]
 '''
 
 # A faithful copy of `VaultClient._put_raw` and the three collaborators it
@@ -1070,6 +1076,23 @@ def test_every_row_of_the_table_is_actually_asked(tmp_path):
     # One entry per copy per configuration, every one of them the whole table.
     assert asked == [want] * (2 * len(sync_contract.ROUTING_CONFIGS))
     assert len(want) * len(sync_contract.ROUTING_CONFIGS) == 22
+
+
+def test_the_success_line_counts_what_actually_ran(capsys, tmp_path):
+    """The Cycle 156 bug itself, which no test in this file had ever pinned.
+
+    The assembly probe's success line multiplied its row count by the
+    configurations for a while and then did not, and nothing went red --
+    every test here asserts on the comparison's return value, and none of
+    them reads what the check prints. A count that understates its own run
+    is a check quietly under-claiming, which is the same class of thing as
+    over-claiming with the friendlier direction. Asserted against the number
+    of driven writes rather than against the same arithmetic the message
+    uses, so re-deriving it in the message cannot make this agree.
+    """
+    runner_path, bridge_path = _write_pair(tmp_path)
+    assert sync_contract._check_writes(runner_path, bridge_path) == 0
+    assert "vault writes: 22 probed writes" in capsys.readouterr().out
 
 
 def test_losing_the_ctime_carry_forward_on_one_side_is_drift(tmp_path):
