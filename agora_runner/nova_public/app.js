@@ -2022,7 +2022,7 @@
    * pointer to hover with -- pointerdown counts, which is why this listens
    * for that as well as for pointermove.
    */
-  function attachHover(chart, box, points) {
+  function attachHover(chart, box, points, when) {
     if (!points.length) return;
     var rule = svgEl("line", {
       y1: box.y0, y2: box.y1, stroke: AXIS_INK, "stroke-width": 1,
@@ -2052,7 +2052,11 @@
       rule.setAttribute("x2", best.x);
       rule.style.opacity = "1";
       tip.textContent = "";
-      tip.appendChild(el("p", "chart-tip-when", fmtStamp(best.at)));
+      // `when` overrides the stamp for a series whose x is a date rather
+      // than a moment: the retro ledger stores days, so the default would
+      // print "14 Aug, 02:00" -- a real-looking time that corresponds to
+      // nothing, invented by the midnight-UTC conversion.
+      tip.appendChild(el("p", "chart-tip-when", (when || fmtStamp)(best.at)));
       best.lines.forEach(function (line) {
         var row = el("p", "chart-tip-row");
         row.appendChild(el("span", "chart-tip-swatch"));
@@ -2495,7 +2499,7 @@
           };
         }),
       };
-    }));
+    }), fmtDay);
 
     var legend = el("div", "chart-legend");
     series.forEach(function (line) {

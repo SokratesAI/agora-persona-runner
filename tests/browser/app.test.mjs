@@ -3240,6 +3240,24 @@ describe("the retrospective page", () => {
     assert.deepEqual(on, ["/retro"]);
   });
 
+  test("the hover label names a day, never an invented time of day", async () => {
+    // The ledger stores dates and the payload converts them to midnight
+    // UTC, so the shared tooltip's default stamp would print "14 Aug,
+    // 02:00" in Oslo -- a real-looking time that corresponds to nothing.
+    // jsdom lays nothing out, so the overlay's box has to be supplied for
+    // the handler to get past its own zero-width guard.
+    const window = await loadSite("/retro", { retro: twoRetros });
+    const svg = window.document.querySelector(".chart-svg");
+    svg.getBoundingClientRect = () => ({ left: 0, width: 360, top: 0, height: 168 });
+    const overlay = window.document.querySelector(".chart-overlay");
+    const move = new window.Event("pointermove", { bubbles: true });
+    move.clientX = 359;
+    overlay.dispatchEvent(move);
+    const label = window.document.querySelector(".chart-tip-when").textContent;
+    assert.doesNotMatch(label, /\d{1,2}:\d{2}/, `a time of day was invented: ${label}`);
+    assert.match(label, /14/, `the newest retro's day is missing: ${label}`);
+  });
+
   test("a 502 on the retro page reaches the retro page's own message", async () => {
     const window = await loadSite("/retro", { retroStatus: 502 });
     assert.match(feedText(window), /Could not load the retrospectives/);

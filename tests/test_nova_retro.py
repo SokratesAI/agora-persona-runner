@@ -17,6 +17,7 @@ import json
 import pytest
 
 from agora_runner import nova_retro, nova_sources
+from tools import append_retro
 from agora_runner.nova_retro import (
     RetroError,
     SCORE_KEYS,
@@ -250,9 +251,99 @@ def test_the_source_fetch_reads_the_ledger_path(monkeypatch):
     )
     assert nova_sources.retro_ledger_json() == '{"retros": []}'
     assert asked == [nova_retro.RETRO_LEDGER_PATH]
-    assert nova_retro.RETRO_LEDGER_PATH.endswith("nova/resources/retro-ledger.json")
+    # The whole literal, not a suffix. The prefix is the half a typo would
+    # live in, and `prompt.md` tells the retro cycle to `get` this exact
+    # string -- so the two sides of that agreement are pinned here.
+    assert nova_retro.RETRO_LEDGER_PATH == (
+        "projects/sokrates/projects/agora/nova/resources/retro-ledger.json"
+    )
 
 
 def test_a_missing_document_reaches_the_shaping_as_empty_text(monkeypatch):
     monkeypatch.setattr(nova_sources, "vault_read_path", lambda path: None)
     assert nova_sources.retro_ledger_json() == ""
+
+
+# --- the CLI, and the seam only the first retro ever crosses -----------
+
+
+def test_the_vault_clients_not_found_line_reads_as_an_absent_ledger(tmp_path):
+    """`vault_tool.py get` on a path that does not exist exits 0 and prints
+    `[not found: <path>]`, measured against the real client on the real
+    path on 2026-08-14, before the first retro ran.
+
+    The documented flow redirects that straight into `ledger.json`, so the
+    *first* append is handed a file containing a sentence rather than an
+    empty one -- and without this it dies on "the existing ledger will not
+    parse", which is the one run with no previous ledger to blame. This is
+    a literal from another program, so it is pinned as a literal."""
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(
+        "[not found: projects/sokrates/projects/agora/nova/resources/retro-ledger.json]\n",
+        encoding="utf-8",
+    )
+    assert append_retro.main(["--ledger", str(ledger), "--row", _row_file(tmp_path)]) == 0
+    assert json.loads(ledger.read_text(encoding="utf-8"))["retros"][0]["cycle"] == 181
+
+
+def test_a_ledger_that_only_opens_with_the_phrase_is_not_discarded(tmp_path):
+    """The counterpart, and the reason the pattern anchors its *end*: a
+    document that merely opens with that sentence must not be read as
+    absent, because "absent" here means "start a new file" -- and the new
+    file would replace every retro ever written.
+
+    Written as a document that begins with the sentinel, not one that
+    merely contains it: `re.match` anchors the start on its own, so a test
+    using a mention buried mid-file passes with or without any anchor at
+    all, and pins nothing."""
+    ledger = tmp_path / "ledger.json"
+    before = ("[not found: retro-ledger.json]\n"
+              + json.dumps({"retros": [row(date="2026-08-07", cycle=120)]}))
+    ledger.write_text(before, encoding="utf-8")
+    # Refused, and the file left exactly as it was. Being told a document
+    # is unreadable is the right answer to a document that is; quietly
+    # starting a new one is how the previous retros disappear.
+    assert append_retro.main(["--ledger", str(ledger), "--row", _row_file(tmp_path)]) == 2
+    assert ledger.read_text(encoding="utf-8") == before
+
+
+def test_a_bad_row_exits_non_zero_and_writes_nothing(tmp_path):
+    """A refusal that still rewrote the file would be worse than no
+    validator, and an exit code nobody set would let the shell's `&&` carry
+    a broken ledger into the vault."""
+    ledger = tmp_path / "ledger.json"
+    before = json.dumps({"retros": [row(date="2026-08-07", cycle=120)]})
+    ledger.write_text(before, encoding="utf-8")
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(row(scores={"going": 7, "effectiveness": 6, "mood": 8})),
+                   encoding="utf-8")
+    assert append_retro.main(["--ledger", str(ledger), "--row", str(bad)]) == 2
+    assert ledger.read_text(encoding="utf-8") == before
+
+
+def _row_file(tmp_path):
+    path = tmp_path / "row.json"
+    path.write_text(json.dumps(row()), encoding="utf-8")
+    return str(path)
+
+
+# --- the two sides of one key list, in two languages -------------------
+
+
+def test_the_page_styles_exactly_the_scores_the_server_defines():
+    """`SCORE_KEYS` is the stated single source of truth and the browser
+    cannot import it. `app.js` maps each key to a colour and a stroke
+    width, and falls back to the "going" style for anything unknown -- so a
+    key added or renamed on this side would draw a fourth line identical to
+    the first, with every browser test still green.
+
+    Read out of the file as text because that is the only wire between the
+    two: nothing else in this repo would notice them disagreeing."""
+    import re as _re
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public" / "app.js"
+    block = _re.search(r"var RETRO_SERIES = \{(.*?)\n  \};", source.read_text(encoding="utf-8"), _re.S)
+    assert block, "RETRO_SERIES is gone from app.js, or no longer looks like an object literal"
+    styled = _re.findall(r"^\s{4}(\w+):", block.group(1), _re.M)
+    assert styled == [key for key, _ in SCORE_KEYS]

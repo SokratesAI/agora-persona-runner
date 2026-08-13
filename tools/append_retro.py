@@ -39,16 +39,35 @@ empty" would delete every previous retro on the way past.
 import argparse
 import json
 import os
+import re
 import sys
 
 from agora_runner.nova_retro import RetroError, append, load
+
+
+# What `vault_tool.py get` writes to stdout for a path that does not
+# exist. It exits 0 and prints this, so the documented flow
+# (`get > ledger.json` then this tool) hands the *first* retro a file
+# containing a sentence rather than an empty one -- measured 2026-08-14
+# against the real client, on the real path, before the first retro ran.
+# Without this the very first append would die on "the existing ledger
+# will not parse", which is the one run that has no previous ledger to
+# blame.
+#
+# It has to match the *whole* document, which is what the trailing `\s*$`
+# is for -- `re.match` anchors the start for free, so the end is the only
+# anchor doing work here. Without it, a real ledger that merely opened
+# with that sentence would read as absent, and "absent" here means "start
+# a new file", which replaces every retro ever written.
+_ABSENT_RE = re.compile(r"\[not found: [^\]]*\]\s*$")
 
 
 def _read(path):
     if not os.path.exists(path):
         return ""
     with open(path, encoding="utf-8") as handle:
-        return handle.read()
+        text = handle.read()
+    return "" if _ABSENT_RE.match(text) else text
 
 
 def main(argv=None):
