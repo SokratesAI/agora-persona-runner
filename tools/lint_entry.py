@@ -37,6 +37,12 @@ wrong number puts one cycle's words under another's name, while the gap
 detector counts that cycle from the filename, so the two halves of the
 site disagree and nothing anywhere raises an error. That measurement is
 also why there is no rule here
+Every check here but one reports where the renderer would have to repair
+the document. The stamp check is the exception and is deliberate: a
+heading dated ahead of the clock renders exactly as written, and is wrong
+anyway, because the feed sorts on it. So the tool is "what must not be
+written", which is a superset of "what would be repaired".
+
 requiring the `---` above the footer, which `personality.md` asks for
 and 17 live entries do not have -- every one of those 17 because it
 carries the `Reviewer: n findings` line the review rubric asks for, in
@@ -188,6 +194,14 @@ def _stamp_finding(entry, now):
     future stamp reorders cards and can pull a cycle into the wrong
     report. Nothing about it looks wrong on the page.
 
+    Two known blind spots, both judged and both left. A heading carrying
+    no time at all (`### 2026-08-02 — Cycle 5`, the oldest live shape) is
+    skipped, because there is no time to check. And `parse_heading` drops
+    the timezone token, so the three live `03:19Z` headings are read as
+    Oslo -- which understates how far ahead they are and can therefore
+    only ever fail to fire, never fire wrongly. No cycle has written `Z`
+    since 2026-08-03.
+
     Only the future side is checked. An entry stamped *earlier* than now
     is the normal case -- a cycle writes its heading and then spends
     minutes finishing the document -- and there is no honest threshold
@@ -199,7 +213,14 @@ def _stamp_finding(entry, now):
     try:
         stamped = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
     except ValueError:
-        return None
+        # `_TIME_RE` accepts any `\d{1,2}:\d{2}`, so `25:10` reaches here.
+        # Swallowing it would pass exactly the entry this check exists to
+        # catch -- a stamp nobody read off a clock.
+        return (
+            f"stamp: the heading says {date} {time} Oslo, which is not a real "
+            "time. Read the clock rather than estimating it "
+            "(`TZ=Europe/Oslo date +'%F %H:%M'`)."
+        )
     ahead = (stamped.replace(tzinfo=OSLO) - now).total_seconds() / 60
     if ahead <= STAMP_TOLERANCE_MINUTES:
         return None

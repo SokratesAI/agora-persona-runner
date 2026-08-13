@@ -22,7 +22,7 @@ from datetime import datetime
 from agora_runner.config import OSLO
 from tools.lint_entry import lint, main
 
-GOOD = """### Cycle 152 — 2026-08-13 02:00 Oslo
+GOOD = """### Cycle 152 — 2026-08-01 02:00 Oslo
 
 Something real happened and here is the honest account of it.
 
@@ -91,7 +91,7 @@ def test_a_broken_heading_is_reported_once_not_twice():
     the same defect three ways is how a cycle fixes one thing and sees the
     count go up.
     """
-    entry = GOOD.replace("### Cycle 152 — 2026-08-13 02:00 Oslo\n\n", "")
+    entry = GOOD.replace("### Cycle 152 — 2026-08-01 02:00 Oslo\n\n", "")
     assert _kinds(lint("168-cycle-152.md", entry)) == ["heading"]
 
 
@@ -99,7 +99,7 @@ def test_footer_bolded_at_the_top_is_caught():
     """Cycles 146 and 147, verbatim in shape. The site repairs it; the badge
     is right and the author is not there to be told."""
     entry = (
-        "### Cycle 152 — 2026-08-13 02:00 Oslo\n\n"
+        "### Cycle 152 — 2026-08-01 02:00 Oslo\n\n"
         "**PR: #133 | Outcome: merged**\n\n"
         "Something real happened and here is the honest account of it.\n"
     )
@@ -119,7 +119,7 @@ def test_footer_hard_wrapped_is_caught():
 
 
 def test_missing_footer_says_so_differently_than_a_misplaced_one():
-    entry = "### Cycle 152 — 2026-08-13 02:00 Oslo\n\nNo footer at all.\n"
+    entry = "### Cycle 152 — 2026-08-01 02:00 Oslo\n\nNo footer at all.\n"
     findings = lint("168-cycle-152.md", entry)
     assert _kinds(findings) == ["footer"]
     assert "reads as an hour that shipped nothing" in findings[0]
@@ -129,7 +129,7 @@ def test_a_quoted_footer_in_a_code_fence_is_not_mistaken_for_the_real_one():
     """`personality.md` states the footer format as a fenced block, so an
     entry quoting it is a thing a cycle would plausibly write."""
     entry = (
-        "### Cycle 152 — 2026-08-13 02:00 Oslo\n\n"
+        "### Cycle 152 — 2026-08-01 02:00 Oslo\n\n"
         "The rule says to end with:\n\n"
         "```\nPR: #23 | Outcome: merged\n```\n\n"
         "and I did not.\n"
@@ -215,7 +215,7 @@ def test_an_entry_that_quotes_the_entries_marker_is_accepted():
     `strip_header=False` or the marker cuts this entry's own heading off
     and the document reports as `unparseable` instead."""
     entry = (
-        "### Cycle 152 — 2026-08-13 02:00 Oslo\n\n"
+        "### Cycle 152 — 2026-08-01 02:00 Oslo\n\n"
         "The marker matters here:\n\n## Entries\n\nis what the old file used.\n\n"
         "---\nPR: #133 | Outcome: merged\n"
     )
@@ -235,8 +235,8 @@ def test_the_footer_check_is_bounded_to_this_entry_not_the_document():
     `_FOOTER_RE`'s end-anchor match the *second* entry's footer, so a
     missing footer on the first went unreported."""
     entry = (
-        "### Cycle 152 — 2026-08-13 02:00 Oslo\n\nNo footer on this one.\n\n"
-        "### Cycle 152 — 2026-08-13 02:30 Oslo\n\nBody.\n\n---\nPR: #133 | Outcome: merged\n"
+        "### Cycle 152 — 2026-08-01 02:00 Oslo\n\nNo footer on this one.\n\n"
+        "### Cycle 152 — 2026-08-01 02:30 Oslo\n\nBody.\n\n---\nPR: #133 | Outcome: merged\n"
     )
     kinds = _kinds(lint("168-cycle-152.md", entry))
     assert "footer" in kinds and "split" in kinds
@@ -279,3 +279,29 @@ def test_a_heading_stamped_earlier_passes():
     a slow cycle from a backdated one.
     """
     assert lint("175-cycle-158.md", _stamped("06:40"), now=NOW) == []
+
+
+def test_an_impossible_time_is_caught_rather_than_swallowed():
+    """`_TIME_RE` accepts `\\d{1,2}:\\d{2}`, so `25:10` parses as a stamp.
+
+    It is the exact shape of the mistake this check exists for -- a time
+    nobody read off a clock -- and returning None on the parse failure
+    passed it.
+    """
+    findings = lint("175-cycle-158.md", _stamped("25:10"), now=NOW)
+    assert len(findings) == 1
+    assert findings[0].startswith("stamp:")
+    assert "not a real time" in findings[0]
+
+
+def test_the_shared_fixture_does_not_depend_on_when_the_suite_runs():
+    """`GOOD` was stamped with the day it was written, and roughly twenty
+    tests here lint it without passing `now`.
+
+    Every one of those would have reported a spurious stamp finding at any
+    instant before that heading's own time -- green afterwards purely
+    because the calendar had moved on. Pinning it at a fixed instant is
+    what makes the rest of this file mean the same thing on every run.
+    """
+    assert lint("168-cycle-152.md", GOOD) == []
+    assert lint("168-cycle-152.md", GOOD, now=datetime(2027, 1, 1, tzinfo=OSLO)) == []
