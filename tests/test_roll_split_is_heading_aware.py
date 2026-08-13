@@ -5,9 +5,15 @@
 `text.find("\\n## Digest\\n")`, which is the same search with the same blind
 spots, and they run against the two files Edvard actually opens.
 
-Every test here is written so that it fails when the tool goes back to
-`str.find`. That is the whole point: a test that passes either way pins
-nothing, and this file exists precisely because three of them did.
+**Five of the six tests here fail when the tool goes back to `str.find`,
+and the sixth is named as the exception.** That count is the claim, and
+it is checked rather than asserted -- an earlier draft of this docstring
+said "every test", which was false for three of them at the time and
+would have stayed false silently. `test_a_file_with_no_such_heading_is_
+still_refused_by_name` is the deliberate exception: it passes either way
+because it is not about the fix, it is about the refactor turning a `-1`
+return into a `None`, which without a caller check is a `TypeError`
+instead of the named refusal these scripts are run by hand on.
 """
 
 import pytest
@@ -90,7 +96,13 @@ def test_a_digest_marker_quoted_in_frontmatter_is_not_the_section():
 
 def test_verification_of_that_digest_passes_its_own_check_render():
     """`_check_render` rebuilds the input around the same marker, so it
-    has to agree with `plan` about where the section starts."""
+    has to agree with `plan` about where the section starts.
+
+    Deliberately assertion-free: the whole claim is that `verify` does not
+    raise, and there is nothing else to compare it against that `plan` did
+    not also produce. With the substring search restored it raises, which
+    is what makes this a test rather than a smoke run.
+    """
     live = DIGEST_WITH_MARKER_IN_FRONTMATTER
     roll_digest.verify(live, "", *roll_digest.plan(live, "", keep=2))
 
