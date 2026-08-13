@@ -116,6 +116,7 @@ because the two copies agreeing is the property this file exists to keep.
 Both are real reasons; neither is "a user saw this break".
 """
 import ast
+import collections
 import contextlib
 import copy
 import importlib
@@ -346,7 +347,9 @@ _PROBE_MODULES = ("_sync_contract_runner", "_sync_contract_bridge",
                   "_sync_contract_runner_redact", "_sync_contract_bridge_redact",
                   "_sync_contract_runner_assemble",
                   "_sync_contract_bridge_assemble",
-                  "_sync_contract_runner_write", "_sync_contract_bridge_write")
+                  "_sync_contract_runner_write", "_sync_contract_bridge_write",
+                  "_sync_contract_runner_health",
+                  "_sync_contract_bridge_health")
 
 
 @contextlib.contextmanager
@@ -1259,6 +1262,335 @@ _WRITE_ADVICE = (
 
 
 # ---------------------------------------------------------------------------
+# Database health: what each copy reports about the stores it can reach.
+# ---------------------------------------------------------------------------
+#
+# The fifth seam, and it is a third one rather than another row in
+# `_WRITE_QUESTIONS`: the runner asks CouchDB through the module-level
+# `couch_req` with a bare database name and no document after it, and the
+# bridge goes straight to the module-level `_req` rather than through
+# `VaultClient._doc`. Neither of the two drivers above reaches it.
+#
+# It is worth pinning because it is the instrument every migration is read
+# through -- `nova_site` puts it on the status page -- and every decision in
+# it fails silently in the friendly direction. A copy that reported an
+# unreachable database as reachable, or a missing `doc_count` as zero, or
+# gave up on the second store after the first one raised, would look
+# perfectly healthy on the page while being wrong about the thing the page
+# exists to answer.
+
+
+class ContractHealthMissing(LookupError):
+    """A copy does not expose a database health report this tool can drive."""
+
+
+_HEALTH_MAIN = "<main db>"
+# Not the number. Both copies set 5 today and the point of the constant is
+# that it is far below the 60s default, not that it is 5 -- pinning the
+# value would report a deliberate, correctly-paired retune as drift.
+_HEALTH_SHORT = "<health timeout>"
+
+
+def _entry(name, reachable, doc_count, error):
+    return {"name": name, "reachable": reachable,
+            "doc_count": doc_count, "error": error}
+
+
+# The routes list is pinned by `compare_routing`, which probes `db_for` over
+# exactly these paths. Restating the databases here would be a second copy of
+# that table to keep in sync -- so the correctness check collapses it to a
+# count and the drift comparison still runs on the values.
+_HEALTH_ROUTES = "<routes>"
+
+_HEALTH_BOOM = ConnectionResetError("connection reset by peer")
+_HEALTH_LONG = RuntimeError("x" * 500)
+
+_HEALTH_QUESTIONS = (
+    # The baseline, and the row that pins `doc_count` coming from CouchDB's
+    # own field rather than being recounted.
+    ("both databases answer",
+     {"main": (200, {"doc_count": 4211}), "nova": (200, {"doc_count": 77})},
+     ({"routing_enabled": True,
+       "databases": {"main": _entry(_HEALTH_MAIN, True, 4211, None),
+                     "nova": _entry(_NOVA, True, 77, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
+     ({"routing_enabled": False,
+       "databases": {"main": _entry(_HEALTH_MAIN, True, 4211, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
+
+    # A database that answers something other than 200 is not reachable. The
+    # plausible alternative -- it replied, so mark it reachable and put the
+    # status in `error` -- reads as a healthy store on the page.
+    ("a non-200 is unreachable, with the status kept",
+     {"main": (404, {"error": "not_found"}), "nova": (200, {"doc_count": 77})},
+     ({"routing_enabled": True,
+       "databases": {"main": _entry(_HEALTH_MAIN, False, None, "HTTP 404"),
+                     "nova": _entry(_NOVA, True, 77, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
+     ({"routing_enabled": False,
+       "databases": {"main": _entry(_HEALTH_MAIN, False, None, "HTTP 404")},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
+
+    # The row that matters most during a migration: the first store failing
+    # must not stop the second one being probed. A copy that let the
+    # exception out, or broke the loop, reports nothing about the database
+    # the migration is moving files *into*.
+    ("a raise on the first store still probes the second",
+     {"main": _HEALTH_BOOM, "nova": (200, {"doc_count": 77})},
+     ({"routing_enabled": True,
+       "databases": {"main": _entry(_HEALTH_MAIN, False, None,
+                                    "connection reset by peer"),
+                     "nova": _entry(_NOVA, True, 77, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
+     ({"routing_enabled": False,
+       "databases": {"main": _entry(_HEALTH_MAIN, False, None,
+                                    "connection reset by peer")},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
+
+    # An error message is truncated to 200 characters. Unbounded, one
+    # CouchDB traceback is the whole status payload.
+    ("a long error is cut to 200 characters",
+     {"main": _HEALTH_LONG, "nova": (200, {"doc_count": 77})},
+     ({"routing_enabled": True,
+       "databases": {"main": _entry(_HEALTH_MAIN, False, None, "x" * 200),
+                     "nova": _entry(_NOVA, True, 77, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
+     ({"routing_enabled": False,
+       "databases": {"main": _entry(_HEALTH_MAIN, False, None, "x" * 200)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
+
+    # A 200 with no `doc_count` is reachable and unknown, not reachable and
+    # empty. Zero is the friendly-looking alternative and it is the one that
+    # reads, on the status page, as a database that lost every document.
+    ("a 200 without doc_count is unknown, not zero",
+     {"main": (200, {}), "nova": (200, {"doc_count": 77})},
+     ({"routing_enabled": True,
+       "databases": {"main": _entry(_HEALTH_MAIN, True, None, None),
+                     "nova": _entry(_NOVA, True, 77, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
+     ({"routing_enabled": False,
+       "databases": {"main": _entry(_HEALTH_MAIN, True, None, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
+
+    # Routing off is a configuration, not a fault: there is no second store
+    # to report and nothing is asked about one. The alternative -- report
+    # `nova` as unreachable -- is an alarm on a healthy single-database
+    # process, and the whole run under this configuration says so.
+    ("both stores healthy, which routing off reports as one",
+     {"main": (200, {"doc_count": 4211}), "nova": (200, {"doc_count": 77})},
+     ({"routing_enabled": True,
+       "databases": {"main": _entry(_HEALTH_MAIN, True, 4211, None),
+                     "nova": _entry(_NOVA, True, 77, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
+     ({"routing_enabled": False,
+       "databases": {"main": _entry(_HEALTH_MAIN, True, 4211, None)},
+       "routes": _HEALTH_ROUTES},
+      (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
+)
+
+
+class _FakeInfo:
+    """Answers a database-info GET from a script and records what was asked.
+
+    Keyed by role rather than by database name, so one row of
+    `_HEALTH_QUESTIONS` drives both configurations. What is *recorded* is the
+    database name the copy actually sent, because that is the half a wrong
+    answer shows up in.
+    """
+
+    def __init__(self, script, db, nova_db):
+        self.by_name = {db: script["main"]}
+        if nova_db:
+            self.by_name[nova_db] = script["nova"]
+        self.log = []
+
+    def request(self, method, db, timeout):
+        self.log.append((method, db, timeout))
+        if db not in self.by_name:
+            raise ContractHealthMissing(
+                "a copy asked for database %r, which this comparison did not "
+                "configure (%s)" % (db, sorted(self.by_name)))
+        answer = self.by_name[db]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _runner_health(path, db, nova_db):
+    """`(ask, timeout)` for the runner copy, configured as its own process."""
+    os.environ["COUCHDB_DB"] = db
+    os.environ["COUCHDB_NOVA_DB"] = nova_db
+    importlib.reload(importlib.import_module("agora_runner.config"))
+    module = _load_module(path, "_sync_contract_runner_health")
+    for name in ("database_health", "couch_req", "HEALTH_TIMEOUT_SECONDS"):
+        if not hasattr(module, name):
+            raise ContractHealthMissing("%s: no module-level %s" % (path, name))
+
+    def ask(script):
+        fake = _FakeInfo(script, db, nova_db)
+
+        # The runner sends the database name as the whole path -- there is no
+        # document, which is what makes CouchDB answer with the db info.
+        def couch_req(method, req_path, body=None, timeout=60):
+            return fake.request(method, urllib.parse.unquote(req_path), timeout)
+
+        module.couch_req = couch_req
+        return module.database_health(), tuple(fake.log)
+
+    return ask, module.HEALTH_TIMEOUT_SECONDS
+
+
+def _bridge_health(path, db, nova_db):
+    """`(ask, timeout)` for the bridge copy.
+
+    `_req` is replaced on the freshly loaded module rather than on the class
+    or the instance: the bridge's `database_health` calls it directly, not
+    through `_doc`, which is the seam the write driver reaches it by and the
+    reason this needs a driver of its own.
+    """
+    os.environ.update({
+        "CDB_BASE": "http://vault-contract.invalid",
+        "CDB_USER": "probe",
+        "CDB_PASS": "probe",
+        "CDB_DB": db,
+        "CDB_NOVA_DB": nova_db,
+    })
+    module = _load_module(path, "_sync_contract_bridge_health")
+    client_class = getattr(module, "VaultClient", None)
+    if client_class is None:
+        raise ContractHealthMissing("%s: no VaultClient" % (path,))
+    if not hasattr(module, "HEALTH_TIMEOUT_SECONDS"):
+        raise ContractHealthMissing(
+            "%s: no module-level HEALTH_TIMEOUT_SECONDS" % (path,))
+    client = client_class()
+    if not hasattr(client, "database_health"):
+        raise ContractHealthMissing(
+            "%s: VaultClient has no database_health" % (path,))
+
+    def ask(script):
+        fake = _FakeInfo(script, db, nova_db)
+        module._req = (
+            lambda method, base, req_db, auth, req_path, body=None, timeout=60:
+            fake.request(method, urllib.parse.unquote(req_db), timeout))
+        return client.database_health(), tuple(fake.log)
+
+    return ask, module.HEALTH_TIMEOUT_SECONDS
+
+
+def _health_answers(ask):
+    """`{question: (report, requests made)}` for one copy."""
+    return {row[0]: ask(row[1]) for row in _HEALTH_QUESTIONS}
+
+
+def _health_normalised(answer, db, nova_db, timeout):
+    """One raw answer with this copy's names and short timeout tokenised.
+
+    Only for the correctness check -- the drift comparison runs on the raw
+    answers, so two copies configured alike that disagree on a database name
+    or a timeout differ there and are meant to.
+    """
+    report, log = answer
+
+    def token(value):
+        if nova_db and value == nova_db:
+            return _NOVA
+        if value == db:
+            return _HEALTH_MAIN
+        if value == timeout:
+            return _HEALTH_SHORT
+        return value
+
+    return (
+        {"routing_enabled": report.get("routing_enabled"),
+         "databases": {role: {k: token(v) for k, v in entry.items()}
+                       for role, entry in report.get("databases", {}).items()},
+         # Collapsed on purpose -- see `_HEALTH_ROUTES`.
+         "routes": _HEALTH_ROUTES if report.get("routes") else report.get("routes")},
+        tuple((method, token(req_db), token(req_timeout))
+              for method, req_db, req_timeout in log),
+    )
+
+
+def _check_the_health_probe_bites(agreed, db, nova_db, timeout, routing_on):
+    """Raise if the two copies agreed on a health report that is simply wrong.
+
+    Same reasoning as `_check_the_write_probe_bites`: every row here has a
+    legitimate-looking alternative that raises no error and shows up as a
+    healthier-looking status page, so two copies broken the same way agree on
+    all of them.
+    """
+    for label, _, want_on, want_off in _HEALTH_QUESTIONS:
+        if label not in agreed:
+            continue
+        want_report, want_log = want_on if routing_on else want_off
+        got = _health_normalised(agreed[label], db, nova_db, timeout)
+        if got != (want_report, tuple(want_log)):
+            raise ContractHealthMissing(
+                "both copies answered %r with %r, expected %r. Two copies "
+                "that drifted the same way agree on every row of this table, "
+                "so agreement is not evidence here -- refusing to report a "
+                "comparison whose answers are wrong in both"
+                % (label, got, (want_report, tuple(want_log))))
+
+
+def compare_health(runner_path, bridge_path):
+    """Health questions the two copies answer differently, ascending.
+
+    Empty means both copies reported the same thing about the same databases,
+    having asked the same questions with the same timeout, under both
+    configurations -- *and* that what they reported was right.
+    """
+    drifted = []
+    agreed = {}
+    with _process_state_restored():
+        for db, nova_db in ROUTING_CONFIGS:
+            runner_ask, runner_timeout = _runner_health(runner_path, db, nova_db)
+            bridge_ask, bridge_timeout = _bridge_health(bridge_path, db, nova_db)
+            left = _health_answers(runner_ask)
+            right = _health_answers(bridge_ask)
+            label = "health, routing on" if nova_db else "health, routing off"
+            drifted += [
+                ("%s: %s" % (label, q), left[q], right[q])
+                for q in sorted(left) if left[q] != right[q]
+            ]
+            if runner_timeout != bridge_timeout:
+                drifted.append(
+                    ("%s: probe timeout" % label, runner_timeout, bridge_timeout))
+            agreed[(db, nova_db, runner_timeout)] = {
+                q: left[q] for q in left if left[q] == right[q]}
+    # Only when nothing drifted, for the reason `compare_routing` gives: a
+    # named difference must not be replaced by an instrumentation error.
+    if not drifted:
+        for (db, nova_db, timeout), answers in agreed.items():
+            _check_the_health_probe_bites(
+                answers, db, nova_db, timeout, bool(nova_db))
+    return drifted
+
+
+_HEALTH_ADVICE = (
+    "\nThe two vault clients no longer report the same thing about the\n"
+    "databases they can reach. This is the instrument a migration is read\n"
+    "through, and every row of this table fails in the friendly direction:\n"
+    "an unreachable store reported as reachable, a missing doc_count read as\n"
+    "zero, a probe abandoned after the first store raised. Write the change\n"
+    "into both copies, or drop the row from _HEALTH_QUESTIONS in\n"
+    "tools/sync_contract.py and say in the journal why the two clients are\n"
+    "allowed to answer differently.\n"
+)
+
+
+# ---------------------------------------------------------------------------
 # Redaction: the second hand-synced pair, and a pure function of its input.
 # ---------------------------------------------------------------------------
 
@@ -1504,14 +1836,6 @@ _ROUTING_ADVICE = (
 )
 
 
-def _report(name, left_label, left, right_label, right):
-    return "\n".join([
-        "  %s" % name,
-        "    %s: %s" % (left_label, left[name]),
-        "    %s: %s" % (right_label, right[name]),
-    ])
-
-
 _REDACTION_ADVICE = (
     "\nThe two copies of redact() answered the same string differently. One\n"
     "of them is publishing something the other strips, or stripping\n"
@@ -1532,111 +1856,105 @@ _ASSEMBLY_ADVICE = (
 )
 
 
-def check_vault_pair(left_path, right_path):
-    """Exit code for the vault client pair: 0 in sync, 1 drift, 2 unreadable."""
-    try:
-        left = extract_contract(open(left_path, encoding="utf-8").read())
-        right = extract_contract(open(right_path, encoding="utf-8").read())
+def compare_names(left_path, right_path):
+    """Contract names the two copies define differently, ascending.
+
+    Wrapped into the same `(question, left, right)` shape every other stage
+    returns, so `_VAULT_STAGES` can be a list rather than four functions each
+    calling the next one by name.
+    """
+    left = extract_contract(open(left_path, encoding="utf-8").read())
+    right = extract_contract(open(right_path, encoding="utf-8").read())
+    return [(n, left[n], right[n]) for n in sorted(left) if left[n] != right[n]]
+
+
+def _name_count(left_path, _right_path):
+    """How many names the comparison ran on. Re-parses rather than carrying
+    a count out of `compare_names`, so that stays a plain function of its
+    arguments -- it is called directly by the tests. Only on the success
+    path, once, in a tool that runs once per build.
+    """
+    return len(extract_contract(open(left_path, encoding="utf-8").read()))
+
+
+# (label, compare, the exceptions that mean "cannot drive this", advice,
+# what to print when it passes). Every stage returns the same
+# `(question, left answer, right answer)` rows, so `check_vault_pair` is one
+# loop -- which is the point of the list existing. Four stages that each
+# called the next one by name meant a fifth was an edit to the fourth, and
+# the fifth is `health` below.
+#
+# Order is names, routing, assembly, writes, health: cheapest and most
+# specific first, so the CI log names a renamed constant as a renamed
+# constant rather than as whatever the drivers below make of it.
+_VaultStage = collections.namedtuple(
+    "_VaultStage", "label compare errors advice summary")
+
+_VAULT_STAGES = (
     # OSError as well: a copy that moved is a legible "cannot read", not a
     # traceback in the CI log. Same reasoning as `_load_module`.
-    except (ContractNameMissing, OSError) as exc:
-        print("vault contract: %s" % exc, file=sys.stderr)
-        return 2
-    drifted = sorted(n for n in left if left[n] != right[n])
-    if drifted:
-        print("vault contract: %d of %d names have drifted between\n"
-              "  %s\n  %s\n" % (len(drifted), len(left), left_path, right_path),
-              file=sys.stderr)
-        for name in drifted:
-            print(_report(name, left_path, left, right_path, right), file=sys.stderr)
-        print(_ADVICE, file=sys.stderr)
-        return 1
-    # Flushed because the failure below prints to stderr, which is not
-    # buffered: without this the CI log reports the routing drift above the
-    # "in sync" line it followed, which reads as the opposite of what ran.
-    print("vault contract: %d names in sync" % len(left), flush=True)
-
-    # Both comparisons or neither: the name half passing is exactly the
-    # state that read as "in sync" while a deleted routing branch went
-    # unnoticed, so returning 0 above would reinstate that.
-    try:
-        routed = compare_routing(left_path, right_path)
-    except ContractRouterMissing as exc:
-        print("vault routing: %s" % exc, file=sys.stderr)
-        return 2
-    if routed:
-        print("\nvault routing: %d question(s) answered differently between\n"
-              "  %s\n  %s\n" % (len(routed), left_path, right_path),
-              file=sys.stderr)
-        for question, left_answer, right_answer in routed:
-            print("\n".join([
-                "  %s" % question,
-                "    %s: %r" % (left_path, left_answer),
-                "    %s: %r" % (right_path, right_answer),
-            ]), file=sys.stderr)
-        print(_ROUTING_ADVICE, file=sys.stderr)
-        return 1
-    print("vault routing: every probed path and prefix resolved the same "
-          "in both copies", flush=True)
-
-    # Third and last: where each copy goes looking for a document's chunks.
-    # All three or none, for the reason the routing half gives -- the two
-    # halves above passing is exactly the state that read as "in sync" while
-    # assembly recomputed a route it had been handed.
-    try:
-        assembled = compare_assembly(left_path, right_path)
-    except (ContractAssemblerMissing, ContractRouterMissing) as exc:
-        print("vault assembly: %s" % exc, file=sys.stderr)
-        return 2
-    if not assembled:
-        # Questions times configurations, because every row is driven under
-        # both. Counting the rows alone understated the run by half, which
-        # is a check under-claiming what it did -- the same class of thing
-        # as over-claiming, one direction friendlier. Second reader on #156.
-        print("vault assembly: %d probed reads resolved to the same database "
-              "in both copies"
-              % (len(_assembly_questions("_probe")) * len(ROUTING_CONFIGS)),
-              flush=True)
-        return _check_writes(left_path, right_path)
-    print("\nvault assembly: %d question(s) answered differently between\n"
-          "  %s\n  %s\n" % (len(assembled), left_path, right_path),
-          file=sys.stderr)
-    for question, left_answer, right_answer in assembled:
-        print("\n".join([
-            "  %s" % question,
-            "    %s: %r" % (left_path, left_answer),
-            "    %s: %r" % (right_path, right_answer),
-        ]), file=sys.stderr)
-    print(_ASSEMBLY_ADVICE, file=sys.stderr)
-    return 1
+    _VaultStage("vault contract", compare_names, (ContractNameMissing, OSError),
+                _ADVICE,
+                lambda l, r: "%d names in sync" % _name_count(l, r)),
+    _VaultStage("vault routing", compare_routing, (ContractRouterMissing,),
+                _ROUTING_ADVICE,
+                lambda l, r: "every probed path and prefix resolved the same "
+                             "in both copies"),
+    # Questions times configurations, because every row is driven under both.
+    # Counting the rows alone understated the run by half, which is a check
+    # under-claiming what it did -- the same class of thing as over-claiming,
+    # one direction friendlier. Second reader on #156.
+    _VaultStage("vault assembly", compare_assembly,
+                (ContractAssemblerMissing, ContractRouterMissing),
+                _ASSEMBLY_ADVICE,
+                lambda l, r: "%d probed reads resolved to the same database in "
+                        "both copies"
+                        % (len(_assembly_questions("_probe"))
+                           * len(ROUTING_CONFIGS))),
+    _VaultStage("vault writes", compare_writes,
+                (ContractWriterMissing, ContractRouterMissing), _WRITE_ADVICE,
+                lambda l, r: "%d probed writes made the same requests in both copies"
+                        % (len(_WRITE_QUESTIONS) * len(ROUTING_CONFIGS))),
+    _VaultStage("vault health", compare_health,
+                (ContractHealthMissing, ContractRouterMissing), _HEALTH_ADVICE,
+                lambda l, r: "%d probed health reports agreed in both copies"
+                        % (len(_HEALTH_QUESTIONS) * len(ROUTING_CONFIGS))),
+)
 
 
-def _check_writes(left_path, right_path):
-    """The fourth and last stage of the vault pair. Reached only when the
-    three before it passed, for the reason each of those gives: any stage
-    returning 0 on its own reinstates a partial "in sync" line.
+def check_vault_pair(left_path, right_path):
+    """Exit code for the vault client pair: 0 in sync, 1 drift, 2 unreadable.
+
+    Every stage or none. A stage returning 0 on its own is exactly the state
+    that read as "in sync" while a deleted routing branch went unnoticed, so
+    the loop only reaches the next one by falling through this one.
     """
-    try:
-        drifted = compare_writes(left_path, right_path)
-    except (ContractWriterMissing, ContractRouterMissing) as exc:
-        print("vault writes: %s" % exc, file=sys.stderr)
-        return 2
-    if not drifted:
-        print("vault writes: %d probed writes made the same requests in both "
-              "copies" % (len(_WRITE_QUESTIONS) * len(ROUTING_CONFIGS)),
+    for stage in _VAULT_STAGES:
+        try:
+            drifted = stage.compare(left_path, right_path)
+        except stage.errors as exc:
+            print("%s: %s" % (stage.label, exc), file=sys.stderr)
+            return 2
+        if drifted:
+            print("\n%s: %d question(s) answered differently between\n"
+                  "  %s\n  %s\n"
+                  % (stage.label, len(drifted), left_path, right_path),
+                  file=sys.stderr)
+            for question, left_answer, right_answer in drifted:
+                print("\n".join([
+                    "  %s" % question,
+                    "    %s: %r" % (left_path, left_answer),
+                    "    %s: %r" % (right_path, right_answer),
+                ]), file=sys.stderr)
+            print(stage.advice, file=sys.stderr)
+            return 1
+        # Flushed because the failure above prints to stderr, which is not
+        # buffered: without this the CI log reports the next stage's drift
+        # above the "in sync" line it followed, which reads as the opposite
+        # of what ran.
+        print("%s: %s" % (stage.label, stage.summary(left_path, right_path)),
               flush=True)
-        return 0
-    print("\nvault writes: %d question(s) answered differently between\n"
-          "  %s\n  %s\n" % (len(drifted), left_path, right_path),
-          file=sys.stderr)
-    for question, left_answer, right_answer in drifted:
-        print("\n".join([
-            "  %s" % question,
-            "    %s: %r" % (left_path, left_answer),
-            "    %s: %r" % (right_path, right_answer),
-        ]), file=sys.stderr)
-    print(_WRITE_ADVICE, file=sys.stderr)
-    return 1
+    return 0
 
 
 def check_redaction_pair(left_path, right_path):
