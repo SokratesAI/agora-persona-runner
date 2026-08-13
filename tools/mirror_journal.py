@@ -87,8 +87,12 @@ def _fetcher(vault_tool, folder):
         if not out.strip() or out.startswith("[not found"):
             raise RuntimeError(out.strip()[:80] or "empty body")
         tmp = path.with_suffix(".part")
-        tmp.write_text(out)
-        tmp.rename(path)
+        try:
+            tmp.write_text(out)
+            tmp.rename(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
     return run
 
 

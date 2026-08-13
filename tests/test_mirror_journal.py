@@ -118,6 +118,8 @@ def test_a_write_that_dies_halfway_leaves_nothing_to_skip(monkeypatch, tmp_path)
         fetch("001-cycle-3.md", tmp_path / "001-cycle-3.md")
     assert not (tmp_path / "001-cycle-3.md").exists(), (
         "a torn write left a document the next run will treat as finished")
+    assert not list(tmp_path.glob("*.part")), (
+        "the half-written body was left behind, once per interrupted fetch")
 
 
 def test_the_directory_is_created_on_a_first_run(tmp_path):
