@@ -1202,32 +1202,57 @@
      * from 126 to 129 -- so the gap is put back exactly where he was
      * already looking, rather than summarised in a counter at the top.
      *
-     * The server decides what counts as missing; this only asks whether a
-     * number it already listed falls between two adjacent cards. That
-     * matters because a window is a contiguous slice of the corpus but an
-     * unnumbered entry is not: filling in every number between two cards
-     * from the client's own arithmetic would invent gaps for Edvard's own
-     * notes, which have no cycle number to be missing. */
+     * The server decides what counts as missing; this only decides where
+     * to put it. That matters because a window is a contiguous slice of
+     * the corpus but an unnumbered entry is not: filling in every number
+     * between two cards from the client's own arithmetic would invent gaps
+     * for Edvard's own notes, which have no cycle number to be missing.
+     *
+     * Where a hole belongs is decided by the cycle numbers, not by which
+     * two cards happen to be adjacent. The feed is not sorted by cycle: a
+     * card takes the position of its cycle's *newest* part, so an addendum
+     * filed after the next cycle has already written puts a lower number
+     * above a higher one. Reading the gap off the previous card then
+     * announced "Cycles 142, 143 ran and wrote no entry" with 144's own
+     * card sitting underneath it. So the invariant is the one a reader can
+     * actually check by scrolling: **a hole is never drawn above a card
+     * newer than it.** Each one is anchored under the *last* card in the
+     * feed that is newer than the hole -- not the numerically smallest
+     * such card, which in a scrambled feed can still have two newer cards
+     * below it. It is drawn only when the window also holds a card older
+     * than the hole: a gap that runs off either end of the window belongs
+     * to entries nobody has loaded yet, and pinning it to the edge would
+     * claim a boundary this page cannot see. */
     var missing = {};
     (journal.status && journal.status.missingCycles || []).forEach(function (n) {
       missing[n] = true;
     });
-    var previousCycle = null;
-    groups.forEach(function (parts) {
+    var cycles = groups.map(function (parts) { return parts[0].cycle; });
+    var markers = {};
+    Object.keys(missing).forEach(function (key) {
+      var n = Number(key);
+      var above = -1;
+      cycles.forEach(function (cycle, i) {
+        if (typeof cycle === "number" && cycle > n) above = i;
+      });
+      /* No guard for `above` finding nothing: a hole newer than every card
+       * anchors to -1, and the render loop below only ever asks for indexes
+       * it is drawing, so it is dropped there. A guard here would be a
+       * branch no observation could distinguish. */
+      var below = cycles.some(function (cycle) {
+        return typeof cycle === "number" && cycle < n;
+      });
+      if (!below) return;
+      (markers[above] = markers[above] || []).push(n);
+    });
+    groups.forEach(function (parts, index) {
       var cycle = parts[0].cycle;
-      if (previousCycle !== null && typeof cycle === "number") {
-        var gap = [];
-        for (var n = cycle + 1; n < previousCycle; n++) {
-          if (missing[n]) gap.push(n);
-        }
-        if (gap.length) {
-          feed.appendChild(el("p", "cycle-gap", gap.length === 1
-            ? "Cycle " + gap[0] + " ran and wrote no entry"
-            : "Cycles " + gap.join(", ") + " ran and wrote no entry"));
-        }
-      }
-      if (typeof cycle === "number") previousCycle = cycle;
       feed.appendChild(renderEntry(parts, byCycle[cycle], commentsByCycle[String(cycle)]));
+      if (!markers[index]) return;
+      var gap = markers[index].sort(function (a, b) { return a - b; });
+      feed.appendChild(el("p", "cycle-gap", gap.length === 1
+        ? "Cycle " + gap[0] + " ran and wrote no entry"
+        : "Cycles " + gap.join(", ") + " ran and wrote no entry"));
     });
 
     /* `total` is the whole corpus, `entries.length` is what came back in
