@@ -17,6 +17,9 @@ being useless:
 
 import pytest
 
+from datetime import datetime
+
+from agora_runner.config import OSLO
 from tools.lint_entry import lint, main
 
 GOOD = """### Cycle 152 — 2026-08-13 02:00 Oslo
@@ -237,3 +240,42 @@ def test_the_footer_check_is_bounded_to_this_entry_not_the_document():
     )
     kinds = _kinds(lint("168-cycle-152.md", entry))
     assert "footer" in kinds and "split" in kinds
+
+
+# --- the stamp, which two consecutive cycles got wrong ---------------------
+
+NOW = datetime(2026, 8, 13, 7, 23, tzinfo=OSLO)
+
+
+def _stamped(time):
+    return (
+        f"### 2026-08-13 {time} (Oslo) — Cycle 158\n\n"
+        "Something real happened and here is the honest account of it.\n\n"
+        "---\nPR: #141 | Outcome: merged\n"
+    )
+
+
+def test_a_heading_stamped_in_the_future_is_caught():
+    """Cycle 157 was 34 minutes ahead, Cycle 158 twenty -- both guessed.
+
+    The stamp is not decoration: the feed sorts on it and the eight-cycle
+    report selects on it, so a heading dated ahead of the clock reorders
+    cards and can pull a cycle into the wrong report.
+    """
+    findings = lint("175-cycle-158.md", _stamped("07:43"), now=NOW)
+    assert len(findings) == 1
+    assert findings[0].startswith("stamp:")
+    assert "20 minutes from now" in findings[0]
+
+
+def test_a_heading_stamped_now_passes():
+    assert lint("175-cycle-158.md", _stamped("07:23"), now=NOW) == []
+
+
+def test_a_heading_stamped_earlier_passes():
+    """The normal case: the heading is written, then the entry takes minutes.
+
+    Only the future side is checked, because no honest threshold separates
+    a slow cycle from a backdated one.
+    """
+    assert lint("175-cycle-158.md", _stamped("06:40"), now=NOW) == []

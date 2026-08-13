@@ -50,7 +50,9 @@ ignore.
 import argparse
 import re
 import sys
+from datetime import datetime
 
+from agora_runner.config import OSLO
 from agora_runner.nova_journal import (
     _ENTRY_HEADING_RE,
     _FOOTER_RE,
@@ -168,8 +170,54 @@ def _cycle_finding(name, entry):
     )
 
 
-def lint(name, content):
-    """`(filename, text)` -> a list of findings, empty when it renders as written."""
+# Minutes a heading's stamp may sit ahead of the clock before it is a
+# guess rather than a stamp. The entry is written and linted seconds
+# apart in the same pod, so the honest tolerance is small; this is wide
+# enough that nothing about the order of those two steps can trip it.
+STAMP_TOLERANCE_MINUTES = 3
+
+
+def _stamp_finding(entry, now):
+    """The heading claims a time the cycle has not reached yet.
+
+    Two cycles running have stamped a heading from memory instead of
+    reading a clock -- Cycle 157 by 34 minutes and Cycle 158 by 20, the
+    second while writing down the first as a bug. It is a quiet failure
+    in both directions: the feed sorts on these stamps, and the eight-
+    cycle report picks which cycles it covers by reading them, so a
+    future stamp reorders cards and can pull a cycle into the wrong
+    report. Nothing about it looks wrong on the page.
+
+    Only the future side is checked. An entry stamped *earlier* than now
+    is the normal case -- a cycle writes its heading and then spends
+    minutes finishing the document -- and there is no honest threshold
+    that separates that from a backdated one.
+    """
+    date, time = entry.get("date"), entry.get("time")
+    if not date or not time:
+        return None
+    try:
+        stamped = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    ahead = (stamped.replace(tzinfo=OSLO) - now).total_seconds() / 60
+    if ahead <= STAMP_TOLERANCE_MINUTES:
+        return None
+    return (
+        f"stamp: the heading says {date} {time} Oslo, which is {round(ahead)} "
+        f"minutes from now. Read the clock rather than estimating it "
+        f"(`TZ=Europe/Oslo date +'%F %H:%M'`) -- the feed sorts on this "
+        "stamp and the eight-cycle report selects on it."
+    )
+
+
+def lint(name, content, now=None):
+    """`(filename, text)` -> a list of findings, empty when it renders as written.
+
+    `now` is injected rather than read here so the stamp check is testable
+    at a fixed instant; the CLI passes nothing and gets the real clock.
+    """
+    now = now or datetime.now(OSLO)
     if not (content or "").strip():
         return ["empty: there is nothing in this file to write."]
     path = JOURNAL_DIR + name
@@ -224,6 +272,9 @@ def lint(name, content):
     cycle = _cycle_finding(name, entry)
     if cycle:
         findings.append(cycle)
+    stamp = _stamp_finding(entry, now)
+    if stamp:
+        findings.append(stamp)
     return findings
 
 
