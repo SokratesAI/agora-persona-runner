@@ -1414,6 +1414,66 @@ def test_both_copies_dropping_the_routes_table_is_an_error(tmp_path):
     assert "agreement is not evidence" in str(exc.value)
 
 
+def test_the_reported_difference_names_only_what_differs():
+    """A whole health report is ~900 characters and a drifted row prints two
+    of them, so the CI log has to be diffed by eye to find the one field
+    that moved. Asserted against the narrowed structure, not against a
+    length -- a shorter message that lost the field would pass that."""
+    left = {"routing_enabled": True,
+            "databases": {"main": {"name": "db", "doc_count": 4211}},
+            "routes": [{"path": "a", "database": "db"}]}
+    right = {"routing_enabled": True,
+             "databases": {"main": {"name": "db", "doc_count": 0}},
+             "routes": [{"path": "a", "database": "db"}]}
+    assert sync_contract._differences_only(left, right) == (
+        {"databases": {"main": {"doc_count": 4211}}},
+        {"databases": {"main": {"doc_count": 0}}})
+
+
+def test_a_field_one_copy_stopped_returning_is_named_not_dropped():
+    """The narrowing walks both sides, so a key present on one only has to
+    survive it -- that is a whole field disappearing from the report."""
+    got = sync_contract._differences_only(
+        {"a": 1, "reachable": True}, {"a": 1})
+    assert got == ({"reachable": True}, {"reachable": "<missing>"})
+
+
+def test_identical_answers_narrow_to_nothing():
+    assert sync_contract._differences_only({"a": 1}, {"a": 1}) == (
+        sync_contract._SAME, sync_contract._SAME)
+
+
+@pytest.mark.parametrize("old,new", [
+    ("            if status == 200:", "            if status >= 200:"),
+    (_COUNT_BRIDGE, '                entry["doc_count"] = info.get("doc_count", 0)'),
+    (_TRUNCATE, '            entry["error"] = str(e)'),
+    (_SHORT_TIMEOUT_BRIDGE, 'self.auth, "", timeout=60)'),
+])
+def test_the_narrowing_never_makes_a_real_difference_look_equal(
+        tmp_path, old, new):
+    """The one way a message that prints less could be worse than one that
+    prints too much. Every drifted row must still print two unequal sides."""
+    drifted = sync_contract.compare_health(
+        *_health_pair(tmp_path, bridge=(old, new)))
+    assert drifted
+    for _, left, right in drifted:
+        assert left != right
+
+
+def test_the_drift_rows_are_narrowed_before_they_are_printed(tmp_path):
+    """`_differences_only` existing is not the same as it being used, and the
+    row the CI log prints is the one that matters."""
+    drifted = sync_contract.compare_health(*_health_pair(
+        tmp_path, bridge=(_SHORT_TIMEOUT_BRIDGE, 'self.auth, "", timeout=60)')))
+    assert drifted
+    for _, left, right in drifted:
+        # The report half is identical under this mutation -- only the
+        # recorded timeout moved -- so an un-narrowed row carries the whole
+        # routes table here and a narrowed one carries `<same>`.
+        assert sync_contract._SAME in repr(left)
+        assert "routes" not in repr(left)
+
+
 def test_a_copy_with_no_health_report_is_undrivable_not_in_sync(tmp_path):
     """Same reasoning as every other stage: a renamed method is a "cannot
     compare", never a comparison that found nothing."""

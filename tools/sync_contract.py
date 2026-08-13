@@ -1493,6 +1493,43 @@ def _health_answers(ask):
     return {row[0]: ask(row[1]) for row in _HEALTH_QUESTIONS}
 
 
+# What a whole health report prints to is ~900 characters, most of it the
+# routes table, and a drifted row prints two of them. Twelve rows of that is
+# a CI log a human has to diff by eye to find a `5` that became a `60`.
+# Every other stage answers with a short string or a request tuple, which is
+# why this narrowing lives here and not in `check_vault_pair`.
+_SAME = "<same>"
+
+
+def _differences_only(left, right):
+    """`left` and `right` with everything they agree on replaced by `<same>`.
+
+    Structure-preserving, so the shape of the answer still reads as an
+    answer. Only ever applied to a pair already known to differ, and only to
+    what is *printed* -- the comparison itself runs on the whole answer, so
+    nothing here can make two different answers look equal.
+    """
+    if left == right:
+        return _SAME, _SAME
+    if isinstance(left, dict) and isinstance(right, dict):
+        out_left, out_right = {}, {}
+        for key in sorted(set(left) | set(right)):
+            if key not in left or key not in right:
+                out_left[key] = left.get(key, "<missing>")
+                out_right[key] = right.get(key, "<missing>")
+                continue
+            sub_left, sub_right = _differences_only(left[key], right[key])
+            if sub_left != _SAME or sub_right != _SAME:
+                out_left[key], out_right[key] = sub_left, sub_right
+        return out_left, out_right
+    if (isinstance(left, (list, tuple)) and isinstance(right, (list, tuple))
+            and len(left) == len(right)):
+        pairs = [_differences_only(a, b) for a, b in zip(left, right)]
+        kind = type(left) if type(left) is type(right) else list
+        return kind(p[0] for p in pairs), kind(p[1] for p in pairs)
+    return left, right
+
+
 def _health_normalised(answer, db, nova_db, timeout):
     """One raw answer with this copy's names and short timeout tokenised.
 
@@ -1561,7 +1598,7 @@ def compare_health(runner_path, bridge_path):
             right = _health_answers(bridge_ask)
             label = "health, routing on" if nova_db else "health, routing off"
             drifted += [
-                ("%s: %s" % (label, q), left[q], right[q])
+                ("%s: %s" % (label, q),) + _differences_only(left[q], right[q])
                 for q in sorted(left) if left[q] != right[q]
             ]
             if runner_timeout != bridge_timeout:
