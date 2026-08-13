@@ -1769,7 +1769,7 @@ def test_an_entry_quoting_the_entries_marker_does_not_delete_the_newer_cards():
         ),
         JOURNAL_DIR + "001-cycle-1.md": "### Cycle 1\n\nOldest.",
     }
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(files, {})):
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})):
         payload = nova_site.journal_payload()
     assert [e["cycle"] for e in payload["entries"]] == [3, 2, 1]
     # Not just present: the quoting entry keeps the text it was quoting,
@@ -2108,7 +2108,7 @@ def test_the_migration_refuses_to_write_when_an_entry_would_render_differently()
 def test_the_site_reads_the_per_entry_documents_when_they_exist():
     with patch.object(nova_sources, "vault_bulk_fetch") as bulk, \
             patch.object(nova_sources, "vault_read_path") as monolith:
-        bulk.return_value = ({JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nSplit."}, {})
+        bulk.return_value = (VaultFiles({JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nSplit."}), {})
         assert "Split." in nova_site.journal_markdown()
         bulk.assert_called_once_with(JOURNAL_DIR, with_mtimes=True)
         monolith.assert_not_called()

@@ -59,11 +59,16 @@ def journal_markdown(with_times=False):
     actually written instead of the stamp the cycle typed by hand.
     """
     files, mtimes = vault_bulk_fetch(JOURNAL_DIR, with_mtimes=True)
-    unreadable = getattr(files, "unreadable", ())
-    if unreadable:
+    # `files.unreadable`, not `getattr(files, "unreadable", ())`. The
+    # tolerant form would be one more silent fallback in the function
+    # whose whole point is deleting one: a caller or a test handing this a
+    # plain dict would skip the check and get the old behaviour back,
+    # quietly. `vault_bulk_fetch` returns a `VaultFiles` and nothing else
+    # does, so an AttributeError here is a wrong mock saying so out loud.
+    if files.unreadable:
         raise RuntimeError(
             f"journal folder {JOURNAL_DIR} could not be fully read: "
-            + "; ".join(unreadable)
+            + "; ".join(files.unreadable)
         )
     entries = assemble_entries(files)
     times = entry_times(mtimes) if entries else {}
