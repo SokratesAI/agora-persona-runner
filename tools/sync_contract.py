@@ -1296,11 +1296,20 @@ def _entry(name, reachable, doc_count, error):
             "doc_count": doc_count, "error": error}
 
 
-# The routes list is pinned by `compare_routing`, which probes `db_for` over
-# exactly these paths. Restating the databases here would be a second copy of
-# that table to keep in sync -- so the correctness check collapses it to a
-# count and the drift comparison still runs on the values.
-_HEALTH_ROUTES = "<routes>"
+# `compare_routing` owns the per-path mapping: it probes `db_for` over exactly
+# these paths, so restating which path goes where would be a second copy of
+# that table. What it does *not* cover is this list comprehension -- a copy
+# that built `routes` from `self.db` instead of `self.db_for(p)` would send
+# every path to one store while `db_for` kept answering correctly, and the
+# second reader on #158 demonstrated that the old collapse (any non-empty
+# list -> one token) scored that for free in both copies.
+#
+# So routes normalise to `(how many, which databases were named)` -- the two
+# things this stage can state without owning the mapping. The count is a
+# literal rather than `len(HEALTH_PROBE_PATHS)`: probing more paths is a
+# deliberate change to what the health report covers, and it should require
+# editing the row that says so.
+_HEALTH_ROUTE_COUNT = 5
 
 _HEALTH_BOOM = ConnectionResetError("connection reset by peer")
 _HEALTH_LONG = RuntimeError("x" * 500)
@@ -1313,11 +1322,11 @@ _HEALTH_QUESTIONS = (
      ({"routing_enabled": True,
        "databases": {"main": _entry(_HEALTH_MAIN, True, 4211, None),
                      "nova": _entry(_NOVA, True, 77, None)},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN, _NOVA))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
      ({"routing_enabled": False,
        "databases": {"main": _entry(_HEALTH_MAIN, True, 4211, None)},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN,))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
 
     # A database that answers something other than 200 is not reachable. The
@@ -1328,11 +1337,11 @@ _HEALTH_QUESTIONS = (
      ({"routing_enabled": True,
        "databases": {"main": _entry(_HEALTH_MAIN, False, None, "HTTP 404"),
                      "nova": _entry(_NOVA, True, 77, None)},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN, _NOVA))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
      ({"routing_enabled": False,
        "databases": {"main": _entry(_HEALTH_MAIN, False, None, "HTTP 404")},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN,))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
 
     # The row that matters most during a migration: the first store failing
@@ -1345,12 +1354,12 @@ _HEALTH_QUESTIONS = (
        "databases": {"main": _entry(_HEALTH_MAIN, False, None,
                                     "connection reset by peer"),
                      "nova": _entry(_NOVA, True, 77, None)},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN, _NOVA))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
      ({"routing_enabled": False,
        "databases": {"main": _entry(_HEALTH_MAIN, False, None,
                                     "connection reset by peer")},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN,))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
 
     # An error message is truncated to 200 characters. Unbounded, one
@@ -1360,11 +1369,11 @@ _HEALTH_QUESTIONS = (
      ({"routing_enabled": True,
        "databases": {"main": _entry(_HEALTH_MAIN, False, None, "x" * 200),
                      "nova": _entry(_NOVA, True, 77, None)},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN, _NOVA))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
      ({"routing_enabled": False,
        "databases": {"main": _entry(_HEALTH_MAIN, False, None, "x" * 200)},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN,))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
 
     # A 200 with no `doc_count` is reachable and unknown, not reachable and
@@ -1375,28 +1384,18 @@ _HEALTH_QUESTIONS = (
      ({"routing_enabled": True,
        "databases": {"main": _entry(_HEALTH_MAIN, True, None, None),
                      "nova": _entry(_NOVA, True, 77, None)},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN, _NOVA))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
      ({"routing_enabled": False,
        "databases": {"main": _entry(_HEALTH_MAIN, True, None, None)},
-       "routes": _HEALTH_ROUTES},
+       "routes": (_HEALTH_ROUTE_COUNT, (_HEALTH_MAIN,))},
       (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
 
-    # Routing off is a configuration, not a fault: there is no second store
-    # to report and nothing is asked about one. The alternative -- report
-    # `nova` as unreachable -- is an alarm on a healthy single-database
-    # process, and the whole run under this configuration says so.
-    ("both stores healthy, which routing off reports as one",
-     {"main": (200, {"doc_count": 4211}), "nova": (200, {"doc_count": 77})},
-     ({"routing_enabled": True,
-       "databases": {"main": _entry(_HEALTH_MAIN, True, 4211, None),
-                     "nova": _entry(_NOVA, True, 77, None)},
-       "routes": _HEALTH_ROUTES},
-      (("GET", _HEALTH_MAIN, _HEALTH_SHORT), ("GET", _NOVA, _HEALTH_SHORT))),
-     ({"routing_enabled": False,
-       "databases": {"main": _entry(_HEALTH_MAIN, True, 4211, None)},
-       "routes": _HEALTH_ROUTES},
-      (("GET", _HEALTH_MAIN, _HEALTH_SHORT),))),
+    # Routing off is a configuration, not a fault: nothing is asked about a
+    # second store and none is reported. That is stated by row 1's
+    # routing-off expectation rather than by a row of its own -- an earlier
+    # version of this table had both, byte for byte identical apart from the
+    # label, which inflated the run count without probing anything new.
 )
 
 
@@ -1552,8 +1551,12 @@ def _health_normalised(answer, db, nova_db, timeout):
         {"routing_enabled": report.get("routing_enabled"),
          "databases": {role: {k: token(v) for k, v in entry.items()}
                        for role, entry in report.get("databases", {}).items()},
-         # Collapsed on purpose -- see `_HEALTH_ROUTES`.
-         "routes": _HEALTH_ROUTES if report.get("routes") else report.get("routes")},
+         # `(how many, which databases)` -- see `_HEALTH_ROUTE_COUNT` for
+         # what this can state and what `compare_routing` owns instead.
+         "routes": (
+             len(report.get("routes") or ()),
+             tuple(sorted({token(r.get("database"))
+                           for r in (report.get("routes") or ())})))},
         tuple((method, token(req_db), token(req_timeout))
               for method, req_db, req_timeout in log),
     )
@@ -1924,19 +1927,25 @@ def _name_count(left_path, _right_path):
 # Order is names, routing, assembly, writes, health: cheapest and most
 # specific first, so the CI log names a renamed constant as a renamed
 # constant rather than as whatever the drivers below make of it.
+# `render` is how a drifted answer is printed. The four driven stages answer
+# with short scalars and tuples, where `repr` is what makes an empty string or
+# a trailing space visible. The names stage answers with a normalised *source
+# body*, which is multi-line -- `repr` turns a readable diff into one escaped
+# string, which is what the unified loop did until the second reader on #158
+# read the two outputs side by side.
 _VaultStage = collections.namedtuple(
-    "_VaultStage", "label compare errors advice summary")
+    "_VaultStage", "label compare errors advice summary render")
 
 _VAULT_STAGES = (
     # OSError as well: a copy that moved is a legible "cannot read", not a
     # traceback in the CI log. Same reasoning as `_load_module`.
     _VaultStage("vault contract", compare_names, (ContractNameMissing, OSError),
                 _ADVICE,
-                lambda l, r: "%d names in sync" % _name_count(l, r)),
+                lambda l, r: "%d names in sync" % _name_count(l, r), str),
     _VaultStage("vault routing", compare_routing, (ContractRouterMissing,),
                 _ROUTING_ADVICE,
                 lambda l, r: "every probed path and prefix resolved the same "
-                             "in both copies"),
+                             "in both copies", repr),
     # Questions times configurations, because every row is driven under both.
     # Counting the rows alone understated the run by half, which is a check
     # under-claiming what it did -- the same class of thing as over-claiming,
@@ -1947,15 +1956,16 @@ _VAULT_STAGES = (
                 lambda l, r: "%d probed reads resolved to the same database in "
                         "both copies"
                         % (len(_assembly_questions("_probe"))
-                           * len(ROUTING_CONFIGS))),
+                           * len(ROUTING_CONFIGS)), repr),
     _VaultStage("vault writes", compare_writes,
                 (ContractWriterMissing, ContractRouterMissing), _WRITE_ADVICE,
                 lambda l, r: "%d probed writes made the same requests in both copies"
-                        % (len(_WRITE_QUESTIONS) * len(ROUTING_CONFIGS))),
+                        % (len(_WRITE_QUESTIONS) * len(ROUTING_CONFIGS)), repr),
     _VaultStage("vault health", compare_health,
                 (ContractHealthMissing, ContractRouterMissing), _HEALTH_ADVICE,
                 lambda l, r: "%d probed health reports agreed in both copies"
-                        % (len(_HEALTH_QUESTIONS) * len(ROUTING_CONFIGS))),
+                             % (len(_HEALTH_QUESTIONS) * len(ROUTING_CONFIGS)),
+                repr),
 )
 
 
@@ -1980,8 +1990,8 @@ def check_vault_pair(left_path, right_path):
             for question, left_answer, right_answer in drifted:
                 print("\n".join([
                     "  %s" % question,
-                    "    %s: %r" % (left_path, left_answer),
-                    "    %s: %r" % (right_path, right_answer),
+                    "    %s: %s" % (left_path, stage.render(left_answer)),
+                    "    %s: %s" % (right_path, stage.render(right_answer)),
                 ]), file=sys.stderr)
             print(stage.advice, file=sys.stderr)
             return 1
