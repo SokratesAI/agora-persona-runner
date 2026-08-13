@@ -136,6 +136,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The CI-workflow pair is compared as parsed YAML rather than as text,
+      # so this job needs pyyaml even though the other two pairs do not.
+      - run: pip install pyyaml
       - run: python -m tools.sync_contract . .bridge
 
   build-push:

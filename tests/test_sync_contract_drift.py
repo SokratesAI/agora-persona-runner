@@ -579,3 +579,127 @@ def test_every_probe_that_claims_to_be_a_credential_is_one(tmp_path):
     for label, text, must_change in sync_contract.REDACTION_PROBES:
         out = redact.redact(text)
         assert (out != text) == must_change, label
+
+
+# ---------------------------------------------------------------------------
+# The third pair: the two CI workflows (Cycle 172)
+# ---------------------------------------------------------------------------
+#
+# The bridge's copy lives in another repository, so as with the other two
+# pairs these mutate a copy of the live file rather than a stub. A stub
+# workflow is the double that agrees with whatever it is handed, and it would
+# also hide the thing this pair is for: the probes have to keep resolving
+# against the real file as it is actually written.
+
+WORKFLOW_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(sync_contract.__file__))),
+    ".github", "workflows", "build.yaml")
+WORKFLOW_SOURCE = open(WORKFLOW_PATH, encoding="utf-8").read()
+
+
+def _workflow_copy(tmp_path, old=None, new=None, name="build_copy.yaml"):
+    source = WORKFLOW_SOURCE
+    if old is not None:
+        assert old in source, "mutation target %r is gone; fix this test" % (old,)
+        source = source.replace(old, new, 1)
+    path = tmp_path / name
+    path.write_text(source, encoding="utf-8")
+    return str(path)
+
+
+def test_two_identical_pipelines_agree_on_every_probe(tmp_path):
+    assert sync_contract.compare_workflow(
+        WORKFLOW_PATH, _workflow_copy(tmp_path)) == []
+
+
+def test_every_probe_finds_something_in_the_live_workflow():
+    """The guard against a comparison of two Nones.
+
+    `compare_workflow` raises when a probe reads nothing on both sides, so
+    this is really a check that the raise cannot be provoked by the file as
+    it stands -- rename a job and the pair goes yellow, not green.
+    """
+    doc = sync_contract._parse_workflow(WORKFLOW_PATH)
+    for label, probe in sync_contract.WORKFLOW_PROBES:
+        assert probe(doc) is not None, label
+
+
+def test_a_changed_concurrency_group_is_drift(tmp_path):
+    """The merge race the group exists to stop, reintroduced on one side."""
+    other = _workflow_copy(tmp_path, old="  group: build-${{ github.ref }}",
+                           new="  group: build-${{ github.sha }}")
+    drifted = sync_contract.compare_workflow(WORKFLOW_PATH, other)
+    assert [label for label, _, _ in drifted] == ["concurrency"]
+
+
+def test_cancel_in_progress_flipped_on_one_side_is_drift(tmp_path):
+    other = _workflow_copy(tmp_path, old="  cancel-in-progress: false",
+                           new="  cancel-in-progress: true")
+    assert [label for label, _, _ in
+            sync_contract.compare_workflow(WORKFLOW_PATH, other)] == ["concurrency"]
+
+
+def test_the_gap_this_pair_found_on_its_first_run(tmp_path):
+    """The bridge's secret scan had no failure guidance and the runner's did.
+
+    Not a hypothetical: this is what the pair reported the first time it ran,
+    on 2026-08-13. gitleaks reads git history, so the difference is which
+    repo tells you to fix a leak before it reaches main and becomes a history
+    rewrite.
+    """
+    scan = "          gitleaks detect --source . --no-banner --redact"
+    start = WORKFLOW_SOURCE.index(scan + " || {")
+    end = WORKFLOW_SOURCE.index("\n          }\n", start) + len("\n          }\n")
+    other = _workflow_copy(tmp_path, old=WORKFLOW_SOURCE[start:end], new=scan + "\n")
+    assert [label for label, _, _ in
+            sync_contract.compare_workflow(WORKFLOW_PATH, other)] == ["secret scan"]
+
+
+def test_a_language_specific_test_step_is_not_drift(tmp_path):
+    """The half that is meant to differ. The bridge compiles a different
+    package and has no browser suite; if that read as drift the pair would be
+    red permanently and somebody would delete it."""
+    other = _workflow_copy(tmp_path, old="      - run: python -m compileall agora_runner run.py",
+                           new="      - run: python -m compileall bridge run.py")
+    assert sync_contract.compare_workflow(WORKFLOW_PATH, other) == []
+
+
+def test_a_reworded_comment_is_not_drift(tmp_path):
+    """Why this pair is parsed rather than diffed: the race comment above
+    `concurrency` is written from each repo's point of view on purpose."""
+    other = _workflow_copy(tmp_path, old="# Measured 2026-08-12 in the bridge",
+                           new="# Measured on some other day somewhere else")
+    assert sync_contract.compare_workflow(WORKFLOW_PATH, other) == []
+
+
+def test_a_dropped_pipeline_job_is_drift(tmp_path):
+    other = _workflow_copy(tmp_path, old="  vault-drift:", new="  vault-drift-disabled:")
+    assert [label for label, _, _ in
+            sync_contract.compare_workflow(WORKFLOW_PATH, other)] == ["pipeline jobs"]
+
+
+def test_a_job_renamed_on_both_sides_is_an_error_not_agreement(tmp_path):
+    """The failure mode every probe here is one line away from.
+
+    Both probes read `jobs["build-push"]`; rename it in both copies and both
+    read None, which compares equal. That is a green check that compared
+    nothing, and it is exactly Cycle 53's mistake in miniature.
+    """
+    mutation = dict(old="  build-push:", new="  build-and-push:")
+    a = _workflow_copy(tmp_path, name="a.yaml", **mutation)
+    b = _workflow_copy(tmp_path, name="b.yaml", **mutation)
+    with pytest.raises(sync_contract.ContractWorkflowUnreadable) as caught:
+        sync_contract.compare_workflow(a, b)
+    assert "build-push job" in str(caught.value)
+
+
+def test_an_unparseable_workflow_is_exit_two_not_a_traceback(tmp_path):
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("jobs:\n  test:\n   - a\n  - b\n", encoding="utf-8")
+    assert sync_contract.check_workflow_pair(WORKFLOW_PATH, str(broken)) == 2
+
+
+def test_the_pair_is_registered_so_the_cli_actually_runs_it():
+    labels = [label for label, _, _ in sync_contract.PAIRS]
+    assert "ci workflow" in labels
+    assert set(labels) <= set(sync_contract._CHECKERS)
