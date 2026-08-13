@@ -612,6 +612,27 @@ def test_real_assembly_drift_is_not_masked_by_the_guard(tmp_path):
     ]
 
 
+def test_the_assembly_comparison_puts_the_process_back_too(
+        tmp_path, restored_config):
+    """It configures both copies out of the environment exactly as
+    `compare_routing` does, and loads two more modules. The restore is
+    shared, so this asserts the shared restore actually covers them --
+    `_PROBE_MODULES` is a list somebody has to remember to add to, and the
+    routing test above cannot notice a name it never loads."""
+    os.environ["COUCHDB_DB"] = SENTINEL_DB
+    os.environ.pop("COUCHDB_NOVA_DB", None)
+    importlib.reload(restored_config)
+    assert restored_config.COUCHDB_DB == SENTINEL_DB, "the sentinel never took"
+
+    sync_contract.compare_assembly(*_assemble_pair(tmp_path))
+
+    assert os.environ["COUCHDB_DB"] == SENTINEL_DB
+    assert "COUCHDB_NOVA_DB" not in os.environ
+    assert restored_config.COUCHDB_DB == SENTINEL_DB
+    assert "_sync_contract_runner_assemble" not in sys.modules
+    assert "_sync_contract_bridge_assemble" not in sys.modules
+
+
 def test_the_probe_table_would_notice_a_copy_that_hardcoded_one_database():
     """Every expectation token is used, and under routing-on they do not all
     resolve to the same name. A table whose rows all expect one database is
