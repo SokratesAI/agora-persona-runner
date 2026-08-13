@@ -12,8 +12,15 @@ Every file in this family carries a `maintenance:` or `contract:` line
 quoting its own structure back at whichever cycle opens it -- that is how
 a cycle learns the rules -- so a frontmatter naming its own title is the
 normal shape of these files, not a hypothetical.
-`digest-archive.md`'s frontmatter already discusses its own headings and
-is one sentence away from it.
+
+**No real archive names its own title today**, and the second reader was
+right to make that precise: an earlier draft of this docstring called
+`digest-archive.md` "one sentence away", which overstates it. What that
+file's `maintenance:` line discusses is the *opposite* heading -- "No
+`##` heading anywhere in this file" -- and it never mentions the
+level-one title at all. This is a latent bug in a file family whose
+convention invites it, not a live one; old and new code produce
+byte-identical output on all three real archives.
 
 **Reproduced before it was fixed**, on `test_a_frontmatter_naming_the_
 archive_title`'s fixture: four archived entries where there were two, one
@@ -30,15 +37,19 @@ is wrong the same way on both sides agrees with itself and reports the
 roll as sound. A guard sharing its instrument with the thing it guards is
 the one shape that costs more than no guard.
 
-All six tests here fail with the substring searches restored, and the
-three halves of the change break **separately and disjointly**, measured
-one at a time rather than reasoned about: reverting `_archived` /
-`_archive_header` fails four, `plan`'s presence test fails one,
-`archive_title`'s scan fails one, and 4 + 1 + 1 is the whole file. No
-test here is carried by a half it is not named for.
+Six of the seven tests here fail with the substring searches restored,
+and the three halves of the change break **separately and disjointly**,
+measured one at a time rather than reasoned about: reverting `_archived`
+/ `_archive_header` fails four, `plan`'s presence test fails one,
+`archive_title`'s scan fails one, and 4 + 1 + 1 accounts for all six. No
+test there is carried by a half it is not named for. The seventh,
+`test_an_archive_keeps_its_own_title_line_rather_than_the_specs`, is not
+a mutation test and is named as the exception: it pins a behaviour the
+fix *created* rather than one it restored, so there is no "before" for it
+to differ from.
 
-A seventh test was written and deleted rather than shipped: it put a
-`# Nova — Something Else` inside a fenced block to pin `find_title`
+One further test was written and **deleted rather than shipped**: it put
+a `# Nova — Something Else` inside a fenced block to pin `find_title`
 skipping fences, and it passed under all three mutations. The title of
 these files is always the first `# ` line below the frontmatter, so no
 fence can precede it and first-match wins with or without the fix. The
@@ -209,3 +220,28 @@ def test_a_yaml_comment_in_the_frontmatter_is_not_the_live_files_title():
     )
     assert find_title(live) == "# Nova — Issues"
     assert roll_captures.archive_title(live) == "# Nova — Issues Archive"
+
+
+def test_an_archive_keeps_its_own_title_line_rather_than_the_specs():
+    """`_archive_header` writes back what the file had, verbatim.
+
+    **This became reachable with the fix and the second reader was right
+    that nothing pinned it.** It read the old code correctly -- there,
+    `plan`'s guard and `_archive_header`'s branch were the same exact
+    substring test, so a title differing in case was refused before any
+    header was built and the behaviour was dead. `find_heading` is
+    case-insensitive and whitespace-tolerant, so under the fix the guard
+    *finds* that title, the roll proceeds, and which of the two spellings
+    gets written is a live question with a real answer.
+
+    The archive's own is the right one: these files are hand-edited in
+    Obsidian, and silently restyling a heading Edvard typed is an edit
+    nobody asked for in a file the site renders.
+    """
+    archive = DIGEST_ARCHIVE_NAMING_ITS_TITLE.replace(
+        "# Journal — Digest Archive\n\n**Cycle 2**",
+        "# journal — DIGEST archive\n\n**Cycle 2**",
+    )
+    _, new_archive = roll_digest.plan(DIGEST_LIVE, archive, keep=2)
+    titles = [line for line in new_archive.split("\n") if line.startswith("# ")]
+    assert titles == ["# journal — DIGEST archive"]

@@ -170,9 +170,17 @@ def _split_title(archive, spec):
     and the difference is a reproduction rather than a worry.** These
     files all carry a `maintenance:` line quoting their own structure back
     at whichever cycle opens them; the moment one of them names its own
-    title -- which is `comments.md`'s exact shape, and one sentence away
-    in `digest-archive.md`, whose frontmatter already discusses its own
-    headings -- a substring split cuts *inside the frontmatter*.
+    title -- which is `comments.md`'s exact shape -- a substring split
+    cuts *inside the frontmatter*.
+
+    **No archive names its own title today**, and the second reader was
+    right to make this precise: an earlier draft called
+    `digest-archive.md` "one sentence away", which overstates it. What
+    that file's `maintenance:` line actually discusses is the *opposite*
+    heading -- "No `##` heading anywhere in this file" -- and it never
+    mentions the level-one title at all. So this is a latent bug in a file
+    family whose convention invites it, not a live one, and old and new
+    code produce byte-identical output on all three real archives.
 
     Measured on this fixture, before the fix: four archived entries where
     there were two, one of them the fragment `title is append only.\\n---`;
