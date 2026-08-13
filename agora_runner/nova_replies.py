@@ -84,7 +84,7 @@ from agora_runner.nova_journal import parse_journal
 from agora_runner.nova_sources import (
     comments_markdown,
     journal_entry_markdown,
-    journal_markdown,
+    journal_folder_best_effort,
 )
 from agora_runner.tools_mcp import grant as grant_mcp, revoke as revoke_mcp
 
@@ -214,9 +214,19 @@ def _entry_for(cycle):
         for entry in parse_journal(single):
             if entry.get("cycle") == cycle:
                 return entry
-    for entry in parse_journal(journal_markdown()):
+    markdown, unreadable = journal_folder_best_effort()
+    for entry in parse_journal(markdown):
         if entry.get("cycle") == cycle:
             return entry
+    if unreadable:
+        # Found nothing *and* could not see all of it. Returning None here
+        # would tell Edvard "no journal entry for cycle N" about a cycle
+        # that may well have written one, which is the wrong answer stated
+        # confidently -- the same shape as the empty feed this PR deleted.
+        raise RuntimeError(
+            f"no entry found for cycle {cycle}, and the journal folder "
+            "could not be fully read: " + "; ".join(unreadable)
+        )
     return None
 
 

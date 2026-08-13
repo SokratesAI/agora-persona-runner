@@ -28,9 +28,13 @@ from agora_runner.config import OSLO
 
 JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
 # One document per entry, which is where entries live as of 2026-08-09.
-# JOURNAL_PATH is the frozen archive it was split out of, and is still
-# read as a fallback so the two orderings of "migrate" and "deploy" both
-# work -- see `journal_markdown` in nova_site.py.
+# JOURNAL_PATH is the frozen archive it was split out of. It was read as a
+# fallback until 2026-08-13, so the two orderings of "migrate" and "deploy"
+# both worked; the file was emptied on 2026-08-10, which left the fallback
+# able to return only zero entries on the one branch that reached it, so it
+# is gone -- see `journal_markdown` in nova_sources.py. Nothing on any
+# hourly path reads JOURNAL_PATH now; `tools/split_journal.py` is the last
+# caller and only ever ran once.
 JOURNAL_DIR = "projects/sokrates/projects/agora/nova/journal/"
 DIGEST_PATH = "projects/sokrates/projects/agora/journal-digest.md"
 # The digest lines that have rolled off the live file. Same split as the

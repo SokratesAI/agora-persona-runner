@@ -75,6 +75,32 @@ def journal_markdown(with_times=False):
     return (entries, times) if with_times else entries
 
 
+def journal_folder_best_effort():
+    """`(entries, unreadable)` -- the folder without the refusal above.
+
+    `journal_markdown` refuses a partial read because its caller renders
+    the whole feed, and an entry list missing an unknown number of entries
+    is indistinguishable from a loop that did not run. `_entry_for` is
+    looking for **one identifiable entry**, and can tell whether it found
+    it, so the same partial read is a perfectly good answer there whenever
+    the entry it wants is in the half that arrived.
+
+    Raised by the reviewer on #147: routing that caller through the
+    refusing version turned a chunk failure on some unrelated 2026-08-09
+    entry into a failed reply to a comment on today's card. Two functions
+    rather than a flag, because this repo has already paid for the flag
+    version -- Cycle 156 deleted one whose default was the destructive
+    answer while 34 of its 35 call sites wanted the other. A name at the
+    call site says which question is being asked and cannot be omitted.
+
+    The caller must do something with `unreadable`. Handing it back rather
+    than logging it here is the point: "I did not find it" and "I did not
+    find it and I could not see all of it" are different answers, and only
+    the caller knows which one it is about to state."""
+    files, _ = vault_bulk_fetch(JOURNAL_DIR, with_mtimes=True)
+    return assemble_entries(files), list(files.unreadable)
+
+
 def journal_entry_markdown(cycle):
     """Just the newest entry document for one cycle, or None.
 
