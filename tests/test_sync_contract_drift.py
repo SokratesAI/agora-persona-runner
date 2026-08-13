@@ -1051,7 +1051,7 @@ def test_both_database_configurations_are_driven(tmp_path):
 
 
 def test_every_row_of_the_table_is_actually_asked(tmp_path):
-    """The count `_check_writes` prints is the count that ran.
+    """The count the writes stage prints is the count that ran.
 
     Written because the assembly probe's success line understated its own
     run by half and nothing noticed until a second reader read the
