@@ -37,6 +37,12 @@ wrong number puts one cycle's words under another's name, while the gap
 detector counts that cycle from the filename, so the two halves of the
 site disagree and nothing anywhere raises an error. That measurement is
 also why there is no rule here
+Every check here but one reports where the renderer would have to repair
+the document. The stamp check is the exception and is deliberate: a
+heading dated ahead of the clock renders exactly as written, and is wrong
+anyway, because the feed sorts on it. So the tool is "what must not be
+written", which is a superset of "what would be repaired".
+
 requiring the `---` above the footer, which `personality.md` asks for
 and 17 live entries do not have -- every one of those 17 because it
 carries the `Reviewer: n findings` line the review rubric asks for, in
@@ -50,7 +56,9 @@ ignore.
 import argparse
 import re
 import sys
+from datetime import datetime
 
+from agora_runner.config import OSLO
 from agora_runner.nova_journal import (
     _ENTRY_HEADING_RE,
     _FOOTER_RE,
@@ -168,8 +176,69 @@ def _cycle_finding(name, entry):
     )
 
 
-def lint(name, content):
-    """`(filename, text)` -> a list of findings, empty when it renders as written."""
+# Minutes a heading's stamp may sit ahead of the clock before it is a
+# guess rather than a stamp. The entry is written and linted seconds
+# apart in the same pod, so the honest tolerance is small; this is wide
+# enough that nothing about the order of those two steps can trip it.
+STAMP_TOLERANCE_MINUTES = 3
+
+
+def _stamp_finding(entry, now):
+    """The heading claims a time the cycle has not reached yet.
+
+    Two cycles running have stamped a heading from memory instead of
+    reading a clock -- Cycle 157 by 34 minutes and Cycle 158 by 20, the
+    second while writing down the first as a bug. It is a quiet failure
+    in both directions: the feed sorts on these stamps, and the eight-
+    cycle report picks which cycles it covers by reading them, so a
+    future stamp reorders cards and can pull a cycle into the wrong
+    report. Nothing about it looks wrong on the page.
+
+    Two known blind spots, both judged and both left. A heading carrying
+    no time at all (`### 2026-08-02 — Cycle 5`, the oldest live shape) is
+    skipped, because there is no time to check. And `parse_heading` drops
+    the timezone token, so the three live `03:19Z` headings are read as
+    Oslo -- which understates how far ahead they are and can therefore
+    only ever fail to fire, never fire wrongly. No cycle has written `Z`
+    since 2026-08-03.
+
+    Only the future side is checked. An entry stamped *earlier* than now
+    is the normal case -- a cycle writes its heading and then spends
+    minutes finishing the document -- and there is no honest threshold
+    that separates that from a backdated one.
+    """
+    date, time = entry.get("date"), entry.get("time")
+    if not date or not time:
+        return None
+    try:
+        stamped = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        # `_TIME_RE` accepts any `\d{1,2}:\d{2}`, so `25:10` reaches here.
+        # Swallowing it would pass exactly the entry this check exists to
+        # catch -- a stamp nobody read off a clock.
+        return (
+            f"stamp: the heading says {date} {time} Oslo, which is not a real "
+            "time. Read the clock rather than estimating it "
+            "(`TZ=Europe/Oslo date +'%F %H:%M'`)."
+        )
+    ahead = (stamped.replace(tzinfo=OSLO) - now).total_seconds() / 60
+    if ahead <= STAMP_TOLERANCE_MINUTES:
+        return None
+    return (
+        f"stamp: the heading says {date} {time} Oslo, which is {round(ahead)} "
+        f"minutes from now. Read the clock rather than estimating it "
+        f"(`TZ=Europe/Oslo date +'%F %H:%M'`) -- the feed sorts on this "
+        "stamp and the eight-cycle report selects on it."
+    )
+
+
+def lint(name, content, now=None):
+    """`(filename, text)` -> a list of findings, empty when it renders as written.
+
+    `now` is injected rather than read here so the stamp check is testable
+    at a fixed instant; the CLI passes nothing and gets the real clock.
+    """
+    now = now or datetime.now(OSLO)
     if not (content or "").strip():
         return ["empty: there is nothing in this file to write."]
     path = JOURNAL_DIR + name
@@ -224,6 +293,9 @@ def lint(name, content):
     cycle = _cycle_finding(name, entry)
     if cycle:
         findings.append(cycle)
+    stamp = _stamp_finding(entry, now)
+    if stamp:
+        findings.append(stamp)
     return findings
 
 
@@ -247,7 +319,11 @@ def main(argv=None):
     if not findings:
         print(f"lint_entry: {name} renders as written.")
         return 0
-    print(f"lint_entry: {name} would be repaired by the site, not read:", file=sys.stderr)
+    # Not "would be repaired by the site": that was true of every check
+    # this tool had when it was written, and the stamp check is the
+    # first one whose finding the site cannot repair -- a heading dated
+    # ahead of the clock renders exactly as written and sorts wrongly.
+    print(f"lint_entry: {name} should not be written as it stands:", file=sys.stderr)
     for finding in findings:
         print(f"  - {finding}", file=sys.stderr)
     return 1
