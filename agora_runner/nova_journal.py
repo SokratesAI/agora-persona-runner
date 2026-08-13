@@ -1202,12 +1202,37 @@ def build_status(entries, known_cycles=None):
     per request in `nova_site.journal_page` instead. `lastWrittenAt` is
     the measured input it needs, carried as a fact rather than a
     judgement so both layers read one clock and one stamp.
+
+    **The newest document is not the newest cycle, and neither field may
+    assume it is.** Two things break that assumption and both are now
+    routine. A report (step 6c) is a document with no cycle number that
+    lands *after* the entry of the cycle that wrote it, so reading the
+    header off `entries[0]` puts `Outcome: report` and `PR: none` on the
+    front page three times a day -- the loop's own summary rendered as a
+    cycle that shipped nothing. And an addendum written after a later
+    cycle's entry carries the earlier number, so taking the first number
+    in document order walks the header backwards. `latest` therefore skips
+    reports, and the cycle number is the highest written rather than the
+    newest filed.
+
+    **Those two are one decision, not two.** Filtering reports out of
+    `latest` and taking `max` for the number fixes each symptom on its own
+    and still lets the header describe two different cycles at once: with
+    an addendum to 128 filed after 129's entry, the number reads 129 while
+    the outcome, PR and time are all 128's. So `latest` is the newest
+    document *belonging to the cycle the header names*, which is what
+    makes all four fields one statement about one cycle.
     """
     from agora_runner.cycle_health import gaps_between
 
     dated = [e for e in entries if e["date"]]
     numbered = [e for e in entries if e["cycle"] is not None]
-    latest = entries[0] if entries else None
+    cycles = [e for e in entries if e.get("kind") != "report"]
+    newest_cycle = max((e["cycle"] for e in numbered), default=None)
+    # Document order inside one cycle, so a cycle's own addendum wins over
+    # the entry it amends -- it is that cycle's latest word.
+    of_newest = [e for e in cycles if e["cycle"] == newest_cycle]
+    latest = (of_newest or cycles or entries or [None])[0]
     running_days = 0
     if dated:
         from datetime import date
@@ -1221,7 +1246,7 @@ def build_status(entries, known_cycles=None):
     written_at = _newest_written_at(entries)
 
     return {
-        "cycle": numbered[0]["cycle"] if numbered else None,
+        "cycle": newest_cycle,
         "lastWokeDate": latest["date"] if latest else "",
         "lastWokeTime": latest["time"] if latest else "",
         "lastPr": latest["pr"] if latest else "",
