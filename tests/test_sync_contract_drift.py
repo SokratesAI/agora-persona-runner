@@ -1135,10 +1135,19 @@ def test_skipping_the_existence_scan_is_drift(tmp_path):
 
 def test_a_chunk_id_that_differs_for_identical_bytes_is_drift(tmp_path):
     """Two copies that hash the same text differently stop reusing each
-    other's chunks, which brings the write amplification straight back."""
+    other's chunks, which brings the write amplification straight back.
+
+    The mutation replaces the whole method rather than the xxhash line it
+    first targeted. `_chunk_id_for` picks xxhash if it can import it and
+    falls back to sha256 if it cannot, and CI has no xxhash -- so mutating
+    the fast path left the method computing a perfectly correct id, and this
+    test passed on the author's box and failed in the build. A mutation
+    aimed at a branch is only as honest as the environment that takes it.
+    """
     drifted = sync_contract.compare_writes(*_write_pair(
-        tmp_path, bridge=('            return f"h:{xxhash.xxh64(content_bytes).hexdigest()}"',
-                          '            return "h:notthesame"')))
+        tmp_path, bridge=("    def _chunk_id_for(self, content_bytes):\n",
+                          "    def _chunk_id_for(self, content_bytes):\n"
+                          '        return "h:notthesame"\n')))
     assert [q for q, _, _ in drifted if "chunk id for identical bytes" in q]
 
 
