@@ -17,6 +17,7 @@ noise, over the same input.
 """
 import ast
 import importlib
+import re
 import os
 import sys
 import time
@@ -887,7 +888,44 @@ def test_a_job_renamed_on_both_sides_is_an_error_not_agreement(tmp_path):
 def test_an_unparseable_workflow_is_exit_two_not_a_traceback(tmp_path):
     broken = tmp_path / "broken.yaml"
     broken.write_text("jobs:\n  test:\n   - a\n  - b\n", encoding="utf-8")
-    assert sync_contract.check_workflow_pair(WORKFLOW_PATH, str(broken)) == 2
+    assert sync_contract.check_pair(sync_contract._WORKFLOW_STAGES, WORKFLOW_PATH, str(broken)) == 2
+
+
+def test_every_registered_pair_is_a_stage_list_the_one_loop_can_drive(capsys):
+    """The three pairs used to be three hand-written copies of the same
+    printing loop, and `main` picked one by name. Now they are stage lists
+    and `check_pair` is the only copy -- so a pair registered as anything
+    else, or a stage missing a field the loop reads, is a CLI that crashes
+    on a repo rather than a CLI that reports on it.
+    """
+    for label, stages in sync_contract._CHECKERS.items():
+        assert all(isinstance(s, sync_contract._Stage) for s in stages), label
+        for stage in stages:
+            assert callable(stage.compare) and callable(stage.render), label
+            assert isinstance(stage.advice, str) and stage.advice, label
+            assert issubclass(tuple(stage.errors)[0], Exception), label
+
+
+def test_a_drifting_redaction_pair_exits_one_through_the_shared_loop(
+        tmp_path, capsys):
+    """Redaction was its own copy of the loop, with its own drift wording and
+    -- alone of the three -- a success line printed without `flush`, which is
+    the thing both other copies carried a comment explaining. Driving it
+    through `check_pair` is what makes those one decision instead of three.
+    """
+    other = _redact_copy(tmp_path,
+                         old=r'r"(\"?\s*[=:]\s*\"?)"',
+                         new=r'r"(\s*[=:]\s*\"?)"')
+    assert sync_contract.check_pair(
+        sync_contract._REDACTION_STAGES, redact.__file__, other) == 1
+    err = capsys.readouterr().err
+    assert "redaction: 1 question(s) answered differently" in err
+    assert "named value, quoted json" in err
+    assert "WORKFLOW_PROBES" not in err   # the other pair's advice
+    # Rendered with `repr`, as the hand-written copy's `%r` did. A redacted
+    # string differs from its neighbour by a marker and by whitespace, and
+    # `str` hides the whitespace half of that.
+    assert re.search(r": '.*'$", err, re.M), err
 
 
 def test_the_pair_is_registered_so_the_cli_actually_runs_it():
@@ -1448,7 +1486,7 @@ def test_a_multi_line_names_drift_stays_readable(capsys):
     a readable diff into one escaped string. Every driven stage answers with
     short scalars, where `repr` is what makes a trailing space visible -- so
     the loop asks the stage, rather than picking one for all five."""
-    stage = sync_contract._VaultStage
+    stage = sync_contract._Stage
     saved = sync_contract._VAULT_STAGES
     body = "def f():\n    return 1\n"
     sync_contract._VAULT_STAGES = (
@@ -1456,7 +1494,7 @@ def test_a_multi_line_names_drift_stays_readable(capsys):
               (LookupError,), "advice", lambda l, r: "ok", str),
     )
     try:
-        assert sync_contract.check_vault_pair("l.py", "r.py") == 1
+        assert sync_contract.check_pair(sync_contract._VAULT_STAGES, "l.py", "r.py") == 1
     finally:
         sync_contract._VAULT_STAGES = saved
     err = capsys.readouterr().err
@@ -1639,7 +1677,7 @@ def test_the_pair_stops_at_the_first_stage_that_drifts(capsys):
         ran.append("never")
         return []
 
-    stage = sync_contract._VaultStage
+    stage = sync_contract._Stage
     saved = sync_contract._VAULT_STAGES
     sync_contract._VAULT_STAGES = (
         stage("first", clean, (LookupError,), "advice",
@@ -1650,7 +1688,7 @@ def test_the_pair_stops_at_the_first_stage_that_drifts(capsys):
               lambda l, r: "ok", repr),
     )
     try:
-        assert sync_contract.check_vault_pair("left.py", "right.py") == 1
+        assert sync_contract.check_pair(sync_contract._VAULT_STAGES, "left.py", "right.py") == 1
     finally:
         sync_contract._VAULT_STAGES = saved
     assert ran == ["clean", "dirty"]
@@ -1672,7 +1710,7 @@ def test_a_stage_that_cannot_be_driven_is_two_not_one(capsys):
         ran.append("never")
         return []
 
-    stage = sync_contract._VaultStage
+    stage = sync_contract._Stage
     saved = sync_contract._VAULT_STAGES
     sync_contract._VAULT_STAGES = (
         stage("first", missing, (sync_contract.ContractHealthMissing,),
@@ -1681,7 +1719,7 @@ def test_a_stage_that_cannot_be_driven_is_two_not_one(capsys):
               lambda l, r: "ok", repr),
     )
     try:
-        assert sync_contract.check_vault_pair("left.py", "right.py") == 2
+        assert sync_contract.check_pair(sync_contract._VAULT_STAGES, "left.py", "right.py") == 2
     finally:
         sync_contract._VAULT_STAGES = saved
     assert ran == []
