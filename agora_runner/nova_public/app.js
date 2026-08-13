@@ -1322,8 +1322,12 @@
    */
   var lastPayload = { journal: null, digest: null };
 
-  /* Every `.catch` on a GET in this file already appends a written
+  /* Four `.catch` blocks on GETs in this file already append a written
    * "Could not load ..." line, and until now not one of them could fire.
+   * The other two GET catches recover rather than report -- the feed's
+   * comments read degrades to null, the drawer's poll keeps waiting --
+   * and those could not fire either.
+   *
    * `fetch` rejects only when the request never completed; a 500 or a 502
    * is a perfectly successful response, and the error body the server
    * sends is valid JSON, so `r.json()` resolved and the page went on to
