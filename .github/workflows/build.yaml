@@ -103,6 +103,41 @@ jobs:
         working-directory: tests/browser
         timeout-minutes: 5
 
+  # agora_runner/vault.py and bridge/vault_tool.py in agora-claude-bridge are
+  # two hand-written copies of one client against one CouchDB. Cycles 136-142,
+  # 148, 151 and 167 each wrote the same fix into both by hand, and nothing
+  # has ever noticed when one of them was missed. tools/vault_contract.py
+  # compares the sixteen names that must agree -- routing, chunking, append
+  # placement -- ignoring the prose around them, which differs by design.
+  #
+  # This is the only job that needs the other repository, so it is separate
+  # from `test`: if the App token cannot reach the bridge, that failure is
+  # legible on its own line instead of turning the whole unit suite red.
+  # It does not gate build-push, deliberately -- drift between the two
+  # clients is a fact about both repos, not a reason to stop shipping this
+  # one, and a check that blocks deploys is a check somebody deletes.
+  vault-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate installation token scoped to the bridge repo only
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ORG_APP_ID }}
+          private-key: ${{ secrets.ORG_APP_PRIVATE_KEY }}
+          owner: SokratesAI
+          repositories: agora-claude-bridge
+      - uses: actions/checkout@v4
+        with:
+          repository: SokratesAI/agora-claude-bridge
+          token: ${{ steps.app-token.outputs.token }}
+          path: .bridge
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m tools.vault_contract agora_runner/vault.py .bridge/bridge/vault_tool.py
+
   build-push:
     if: github.ref == 'refs/heads/main'
     needs: test
