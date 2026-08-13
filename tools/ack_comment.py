@@ -53,28 +53,15 @@ from agora_runner.md_sections import find_heading, section_bounds
 from agora_runner.nova_comments import (
     ACKNOWLEDGED_HEADING,
     NEW_HEADING,
+    WriteRefused,
+    comment_index,
     format_stamp,
-    parse_comments,
+    verify_write,
 )
 
 
 class AckError(Exception):
     """Refusing to write. The message is for a human, so it says what to do."""
-
-
-def _key(comment):
-    return (comment["cycle"], comment["stamp"])
-
-
-def _frontmatter(text):
-    """The frontmatter block including both `---` lines, or "" if there is none."""
-    lines = text.split("\n")
-    if not lines or lines[0].strip() != "---":
-        return ""
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            return "\n".join(lines[: i + 1])
-    return ""
 
 
 def _block_bounds(lines, start, end, cycle, stamp):
@@ -118,7 +105,7 @@ def acknowledge(markdown, cycle, stamp, note, note_stamp):
     know about both.
     """
     lines = (markdown or "").split("\n")
-    before = {_key(c): c for c in parse_comments(markdown)}
+    before = comment_index(markdown)
 
     new_bounds = section_bounds(lines, NEW_HEADING)
     if new_bounds is None:
@@ -161,21 +148,24 @@ def acknowledge(markdown, cycle, stamp, note, note_stamp):
 
 
 def _verify(original, updated, before, cycle, stamp, note):
-    """Refuse the write unless exactly the intended change happened."""
-    if _frontmatter(updated) != _frontmatter(original):
-        raise AckError(
-            "the frontmatter changed -- this is the 2026-08-13 bug and the "
-            "write is refused; nothing written"
-        )
+    """Refuse the write unless exactly the intended change happened.
 
-    after = {_key(c): c for c in parse_comments(updated)}
-    # The one rule here with no test that can reach it, said plainly rather
-    # than dressed in a test that proves nothing: the block always starts at
-    # a `###` heading and is reinserted whole, so under any bounds error the
-    # count is conserved and one of the checks below fires first. It is kept
-    # anyway because the failure it names is the one that actually happened
-    # -- text landing where `parse_comments` cannot see it changes the count,
-    # and that is the cheapest true statement about the file there is.
+    The frontmatter and the bystanders are `nova_comments.verify_write`,
+    shared with the two writers that run unattended -- adding a comment
+    and replying to one. There must be one definition of "nothing else in
+    this file changed", because all three writers are string surgery on
+    the same document and the damage they can do is identical. What stays
+    here is the part only a *move* can check.
+
+    Note that the move is not in the exempt set: acknowledging a comment
+    must not create or destroy one, so the set of keys is required to be
+    conserved exactly, which is stricter than the two writers can be.
+    """
+    target = (cycle, stamp)
+    try:
+        _, after = verify_write(original, updated, exempt={target})
+    except WriteRefused as refused:
+        raise AckError(str(refused)) from None
     if set(after) != set(before):
         lost = sorted(str(k) for k in set(before) - set(after))
         gained = sorted(str(k) for k in set(after) - set(before))
@@ -184,7 +174,6 @@ def _verify(original, updated, before, cycle, stamp, note):
             "nothing written"
         )
 
-    target = (cycle, stamp)
     moved = after[target]
     if not moved["acknowledged"]:
         raise AckError(f"{target} did not end up under {ACKNOWLEDGED_HEADING}")
@@ -192,18 +181,6 @@ def _verify(original, updated, before, cycle, stamp, note):
         raise AckError(f"{target}'s text changed -- nothing written")
     if note and note not in moved["reply"]:
         raise AckError(f"{target} lost the note -- nothing written")
-
-    # Every field `parse_comments` reports, not just the two the move is
-    # about. A bystander that kept its text and its section but lost the
-    # reply Nova wrote it is still a comment this tool damaged, and a check
-    # narrower than the docstring's promise is the promise being wrong.
-    fields = ("text", "acknowledged", "reply", "replyStamp")
-    for key, was in before.items():
-        if key == target:
-            continue
-        now = after[key]
-        if [now[f] for f in fields] != [was[f] for f in fields]:
-            raise AckError(f"{key} changed too -- nothing written")
 
 
 def main(argv=None):
