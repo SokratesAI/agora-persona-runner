@@ -1670,6 +1670,53 @@ def test_frontmatter_is_stripped_instead_of_rendering_as_text():
     assert entries[1]["body"] == "Body."
 
 
+def test_an_entry_quoting_the_entries_marker_does_not_delete_the_newer_cards():
+    """The trap this loop builds for itself: `prompt.md` step 6 tells every
+    cycle to append its captures under the `## Entries` marker, so a cycle
+    writing honestly about that command puts the marker at the start of a
+    line in its own prose. `parse_journal` used to partition on it whatever
+    the source was, and the folder has no preamble to partition off -- so
+    the cut landed inside Cycle 2's body and everything *above* it went in
+    the bin. Above means newer. Measured 2026-08-13 before the fix: three
+    documents in, one card out, and the survivor was the oldest.
+
+    This goes through `journal_payload` rather than `parse_journal`
+    directly, because the fix is which argument the site passes and a test
+    that passes it itself would pin nothing.
+    """
+    files = {
+        JOURNAL_DIR + "003-cycle-3.md": "### Cycle 3\n\nNewest.",
+        JOURNAL_DIR + "002-cycle-2.md": (
+            "### Cycle 2\n\nI appended my captures:\n\n"
+            "## Entries\n\nis the marker that command needs."
+        ),
+        JOURNAL_DIR + "001-cycle-1.md": "### Cycle 1\n\nOldest.",
+    }
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(files, {})):
+        payload = nova_site.journal_payload()
+    assert [e["cycle"] for e in payload["entries"]] == [3, 2, 1]
+    # Not just present: the quoting entry keeps the text it was quoting,
+    # rather than being kept by having the offending half trimmed off it.
+    assert "is the marker that command needs." in payload["entries"][1]["body"]
+
+
+def test_the_archive_fallback_still_drops_its_own_preamble():
+    """`journal_markdown` now cuts the archive's preamble itself, so both of
+    its branches hand back the same kind of thing and the site never has to
+    guess which it got. The preamble is still instructions rather than
+    content and still must not become a card -- and it legitimately opens
+    with a `### ` heading documenting the entry format, which is exactly
+    why no rule read off the text can find this boundary."""
+    archive = (
+        "# Journal\n\nWrite entries like:\n\n### 2026-01-01 00:00 (Oslo) — Cycle 0\n\n"
+        "## Entries\n\n### 2026-08-09 01:00 (Oslo) — Cycle 1\n\nReal entry."
+    )
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})), \
+            patch.object(nova_sources, "vault_read_path", return_value=archive):
+        payload = nova_site.journal_payload()
+    assert [e["cycle"] for e in payload["entries"]] == [1]
+
+
 def test_a_document_with_no_heading_at_all_gets_one_from_its_filename():
     files = {
         JOURNAL_DIR + "070-cycle-65.md": "### Cycle 65\n\nNeighbour.",
