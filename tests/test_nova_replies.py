@@ -73,21 +73,32 @@ No -- it came back verbatim.
 _SAME = object()
 
 
-def _sources(journal=ENTRY_MD, comments=THREAD_MD, single=_SAME):
+def _sources(journal=ENTRY_MD, comments=THREAD_MD, single=_SAME, unreadable=()):
     """The two vault reads behind a reply, stubbed.
 
     `journal_entry_markdown` is the path production actually takes, so it
-    carries the entry by default and `journal_markdown` is the fallback.
+    carries the entry by default and the folder read is the fallback.
     Passing `single=None` is how a test forces the fallback: that is what
-    the pre-split archive looks like, and what any disagreement between a
-    filename and its document looks like.
+    any disagreement between a filename and its document looks like -- a
+    tombstone, a heading that parses to a different cycle, a file added by
+    hand without the `NNN-cycle-M` shape.
+
+    `unreadable` is what the folder read could not see, which the fallback
+    has to weigh against whether it found the entry anyway. It defaults to
+    empty because that is the ordinary case, and it is a parameter rather
+    than a fixed `()` because leaving it fixed is what kept the raise on
+    that path untestable -- the reviewer on #147 found the old helper had
+    stubbed the whole question away.
     """
     return (
         patch.object(
             nova_replies, "journal_entry_markdown",
             return_value=journal if single is _SAME else single,
         ),
-        patch.object(nova_replies, "journal_markdown", return_value=journal),
+        patch.object(
+            nova_replies, "journal_folder_best_effort",
+            return_value=(journal, list(unreadable)),
+        ),
         patch.object(nova_replies, "comments_markdown", return_value=comments),
     )
 
@@ -422,10 +433,10 @@ def test_pending_carries_the_time_it_was_asked_for():
 # --- what the lookup costs, and where the seconds go -----------------------
 
 
-def _reply_with(single=_SAME, journal=ENTRY_MD, bridge=None):
+def _reply_with(single=_SAME, journal=ENTRY_MD, bridge=None, unreadable=()):
     """One `reply_to(80, ...)`, with both journal sources and the bridge
     stubbed. Returns the two source mocks and the log lines it emitted."""
-    entry_src, journal_src, comments = _sources(journal=journal, single=single)
+    entry_src, journal_src, comments = _sources(journal=journal, single=single, unreadable=unreadable)
     logged = []
     bridge = bridge or {"return_value": (200, {"text": "sure"})}
     with entry_src as entry_mock, journal_src as journal_mock, comments, \
@@ -444,6 +455,49 @@ def test_finding_the_entry_reads_one_document_not_the_whole_folder():
     entry_mock, journal_mock, _, _ = _reply_with()
     entry_mock.assert_called_once_with(80)
     assert not journal_mock.called, "the whole journal was fetched anyway"
+
+
+def test_a_partly_unreadable_folder_still_replies_when_the_entry_is_in_it():
+    """The page and the reply want different things from a broken read.
+
+    `journal_markdown` refuses a partial read outright, because it renders
+    the whole feed and cannot tell a short list from a complete one. This
+    caller wants one identifiable entry and can see whether it got it, so
+    a chunk failure on some unrelated 2026-08-09 entry must not stop a
+    reply to a comment on today's card. Raised by the reviewer on #147,
+    where routing this through the refusing version did exactly that."""
+    _, _, _, result = _reply_with(
+        single=None,
+        unreadable=["content chunk batch failed on database 'nova' (503)"],
+    )
+    assert result == (True, "replied")
+
+
+def test_a_missing_entry_is_an_error_when_the_folder_was_only_half_read():
+    """The other side of the same call, and the one that keeps it honest.
+
+    Not finding the entry in a complete read is a fact worth stating. Not
+    finding it in a read that lost a database is a guess, and returning
+    None there would put "no journal entry for cycle 80" on the card about
+    a cycle that may well have written one -- the same confident wrong
+    answer as the empty feed this PR deleted, one page along."""
+    from agora_runner import nova_sources
+
+    with patch.object(nova_replies, "journal_entry_markdown", return_value=None), \
+            patch.object(
+                nova_replies, "journal_folder_best_effort",
+                return_value=("### 2026-08-10 01:00 (Oslo) — Cycle 12\n\nSomeone else.", ["lost db 'nova'"]),
+            ):
+        with pytest.raises(RuntimeError, match="could not be fully read"):
+            nova_replies._entry_for(80)
+    # And with nothing lost, the same absence is reported as an absence.
+    with patch.object(nova_replies, "journal_entry_markdown", return_value=None), \
+            patch.object(
+                nova_replies, "journal_folder_best_effort",
+                return_value=("### 2026-08-10 01:00 (Oslo) — Cycle 12\n\nSomeone else.", []),
+            ):
+        assert nova_replies._entry_for(80) is None
+    assert nova_sources.journal_folder_best_effort is not None
 
 
 def test_the_whole_journal_is_still_read_when_there_is_no_entry_document():

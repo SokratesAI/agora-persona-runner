@@ -182,6 +182,7 @@ def test_the_payload_takes_the_written_set_from_the_filenames():
     from unittest.mock import patch
 
     from agora_runner import nova_sources, nova_site
+    from agora_runner.vault import VaultFiles
 
     docs = {
         JOURNAL_DIR + "164-cycle-148.md":
@@ -194,7 +195,7 @@ def test_the_payload_takes_the_written_set_from_the_filenames():
     mtimes = {path: 1786000000000 for path in docs}
 
     with patch.object(nova_sources, "vault_bulk_fetch",
-                      return_value=(docs, mtimes)):
+                      return_value=(VaultFiles(docs), mtimes)):
         status = nova_site.journal_payload()["status"]
 
     assert status["missingCycles"] == [], (

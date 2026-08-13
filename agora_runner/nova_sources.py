@@ -19,9 +19,7 @@ from agora_runner.nova_journal import (
     DIGEST_ARCHIVE_PATH,
     DIGEST_PATH,
     JOURNAL_DIR,
-    JOURNAL_PATH,
     assemble_entries,
-    entries_body,
     entry_seq,
     entry_times,
     file_cycle,
@@ -31,38 +29,76 @@ from agora_runner.vault import vault_bulk_fetch, vault_list_ids, vault_read_path
 
 
 def journal_markdown(with_times=False):
-    """The entries, from the per-entry documents, falling back to the
-    monolith.
+    """The entries, from the per-entry documents. One source, no fallback.
 
-    Both sources are read the same number of round trips:
     `vault_bulk_fetch` pulls a whole folder with two batched `_all_docs`
     POSTs regardless of how many files are in it, so splitting 70 entries
     into 70 documents costs the site nothing. What it buys is on the
     other side -- a Nova cycle needs the newest three entries and used to
     have to read all 291KB to get them.
 
-    The fallback is what makes the migration safe in either order: until
-    the folder exists this returns the archive, and once it does the
-    archive is ignored.
+    **This used to fall back to `journal.md` and that fallback is why
+    this raises now.** It made the 2026-08-09 migration safe in either
+    order -- until the folder existed the archive answered, and once it
+    did the archive was ignored. But the archive was emptied on
+    2026-08-10, so from that day the fallback could only ever return zero
+    entries, and the branch that ran it was the branch where the folder
+    read had *failed*. A lost database therefore rendered as a journal
+    Nova had never written anything into: the one shape a reader cannot
+    tell from the truth, on the page whose whole job is showing that the
+    loop is running. `vault_bulk_fetch` has reported exactly this on
+    `.unreadable` since Cycle 136 and this caller was throwing it away.
+
+    So the read either succeeds or says why it did not. An empty folder
+    still returns `""` -- that is a real answer and a new vault gives it
+    -- while a folder that could not be read raises, which `nova_site`'s
+    handler turns into a 502 carrying this message.
 
     `with_times` also returns `{cycle: [(date, time), ...]}` from the
     documents' own mtimes, so the card can show when an entry was
-    actually written instead of the stamp the cycle typed by hand. The
-    archive has no per-entry files and so no times; its headings are all
-    the site ever had for those.
+    actually written instead of the stamp the cycle typed by hand.
     """
     files, mtimes = vault_bulk_fetch(JOURNAL_DIR, with_mtimes=True)
+    # `files.unreadable`, not `getattr(files, "unreadable", ())`. The
+    # tolerant form would be one more silent fallback in the function
+    # whose whole point is deleting one: a caller or a test handing this a
+    # plain dict would skip the check and get the old behaviour back,
+    # quietly. `vault_bulk_fetch` returns a `VaultFiles` and nothing else
+    # does, so an AttributeError here is a wrong mock saying so out loud.
+    if files.unreadable:
+        raise RuntimeError(
+            f"journal folder {JOURNAL_DIR} could not be fully read: "
+            + "; ".join(files.unreadable)
+        )
     entries = assemble_entries(files)
     times = entry_times(mtimes) if entries else {}
-    # Always an entries body, never a whole `journal.md`. The folder is
-    # one already; the archive gets its preamble cut here, so that both
-    # branches return the same kind of thing and every caller can parse
-    # with `parse_journal`. Leaving the archive whole would mean the
-    # return type depended on which branch ran, and the caller would have
-    # to strip a preamble that is only sometimes there -- which is the
-    # guess that made an entry quoting `## Entries` eat the newer cards.
-    markdown = entries or entries_body(vault_read_path(JOURNAL_PATH) or "")
-    return (markdown, times) if with_times else markdown
+    return (entries, times) if with_times else entries
+
+
+def journal_folder_best_effort():
+    """`(entries, unreadable)` -- the folder without the refusal above.
+
+    `journal_markdown` refuses a partial read because its caller renders
+    the whole feed, and an entry list missing an unknown number of entries
+    is indistinguishable from a loop that did not run. `_entry_for` is
+    looking for **one identifiable entry**, and can tell whether it found
+    it, so the same partial read is a perfectly good answer there whenever
+    the entry it wants is in the half that arrived.
+
+    Raised by the reviewer on #147: routing that caller through the
+    refusing version turned a chunk failure on some unrelated 2026-08-09
+    entry into a failed reply to a comment on today's card. Two functions
+    rather than a flag, because this repo has already paid for the flag
+    version -- Cycle 156 deleted one whose default was the destructive
+    answer while 34 of its 35 call sites wanted the other. A name at the
+    call site says which question is being asked and cannot be omitted.
+
+    The caller must do something with `unreadable`. Handing it back rather
+    than logging it here is the point: "I did not find it" and "I did not
+    find it and I could not see all of it" are different answers, and only
+    the caller knows which one it is about to state."""
+    files, _ = vault_bulk_fetch(JOURNAL_DIR, with_mtimes=True)
+    return assemble_entries(files), list(files.unreadable)
 
 
 def journal_entry_markdown(cycle):

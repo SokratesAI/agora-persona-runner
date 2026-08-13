@@ -28,7 +28,8 @@ from agora_runner import nova_site, nova_sources  # noqa: E402
 from agora_runner.nova_boards import BOARD_PATHS  # noqa: E402
 from agora_runner.nova_comments import COMMENTS_PATH  # noqa: E402
 from agora_runner.nova_costs import COST_LEDGER_PATH  # noqa: E402
-from agora_runner.nova_journal import JOURNAL_PATH  # noqa: E402
+from agora_runner.nova_journal import JOURNAL_DIR, JOURNAL_PATH  # noqa: E402
+from agora_runner.vault import VaultFiles  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures")
 PAYLOAD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "payload.json")
@@ -66,8 +67,21 @@ def build_payload():
     def fake_read(path):
         return by_path.get(path, digest_md)
 
+    # The journal arrives as the per-entry folder, because that is the only
+    # place the site reads it from -- `journal_markdown`'s archive fallback
+    # was deleted once `journal.md` was emptied. Handing this an empty
+    # folder used to work by falling through to `JOURNAL_PATH` above, and
+    # the browser fixture would now regenerate with an empty feed.
+    from tools.split_journal import plan
+
+    journal_files = VaultFiles(plan(by_path[JOURNAL_PATH]))
+
+    def fake_bulk(prefix, with_mtimes=False):
+        files = journal_files if prefix == JOURNAL_DIR else VaultFiles()
+        return (files, {}) if with_mtimes else files
+
     with patch.object(nova_sources, "vault_read_path", side_effect=fake_read), \
-            patch.object(nova_sources, "vault_bulk_fetch", return_value=({}, {})):
+            patch.object(nova_sources, "vault_bulk_fetch", side_effect=fake_bulk):
         board = nova_site.board_payload("issues")
         journal = nova_site.journal_payload()
         return {
