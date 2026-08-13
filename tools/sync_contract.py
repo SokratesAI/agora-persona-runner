@@ -82,10 +82,26 @@ configuration. Agreement alone is worthless here: both copies dropping the
 `_SRC_DB_KEY` branch would agree on every row of the table, and that is
 precisely the drift Cycle 169 found by hand.
 
+A fourth, added in Cycle 174, covers writes: `compare_writes` drives each
+copy's `_put_raw` with its whole CouchDB seam replaced by a fake that
+answers from a script, so the answer to every question is the *sequence of
+requests the copy made* plus the string it returned. Like assembly and
+unlike routing, it states what the answers should be rather than only that
+the two agree -- and here that is not a refinement but the entire point.
+Every decision it asks about has one legitimate-looking alternative, so two
+copies that drifted the same way agree on the whole table. Cycle 167 fixed
+one of these decisions in both copies by hand in the same hour.
+
+The one thing `compare_writes` deliberately does not compare is the wording
+of `FAILED(unreadable: ...)`; see `_collapse_prose` for why that is a false
+alarm rather than a check.
+
 **What is still not covered**, stated here rather than left to be
-rediscovered: `_put_raw`, `database_health` and the rest of the class are
-unpinned, because driving them means faking CouchDB responses rather than
-recording one argument.
+rediscovered: `database_health` and the rest of the class are unpinned. The
+write fake does not extend to it for free -- it is a third seam again,
+since the runner hands `couch_req` a bare database name with no document
+after it and the bridge reaches `_req` without going through
+`VaultClient._doc` -- so it needs its own driver rather than another row.
 
 And the disclosure the earlier version of this docstring carried, kept
 because dropping it was a step down in candour on the very diff that
