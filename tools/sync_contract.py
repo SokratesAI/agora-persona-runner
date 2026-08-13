@@ -859,8 +859,11 @@ def check_workflow_pair(left_path, right_path):
         print("ci workflow: %s" % exc, file=sys.stderr)
         return 2
     if not drifted:
+        # Flushed for the reason `check_vault_pair` gives: stdout is buffered
+        # in CI and stderr is not, so an unflushed success line lands after
+        # the next pair's failure and reads as though it followed it.
         print("ci workflow: %d probes match in both pipelines"
-              % len(WORKFLOW_PROBES))
+              % len(WORKFLOW_PROBES), flush=True)
         return 0
     print("\nci workflow: %d probe(s) differ between\n  %s\n  %s\n"
           % (len(drifted), left_path, right_path), file=sys.stderr)
