@@ -381,3 +381,81 @@ def test_the_process_is_put_back_even_when_the_comparison_raises(
 
     assert os.environ["COUCHDB_DB"] == SENTINEL_DB
     assert restored_config.COUCHDB_DB == SENTINEL_DB
+
+
+def _runner_copy(tmp_path, old, new):
+    """A mutated copy of the runner client, importable from tmp_path.
+
+    Needed only by the test below, which requires *both* copies wrong the
+    same way -- a guard that fires on agreement cannot be reached by
+    breaking one side, because the other side keeps answering correctly and
+    the pair is recorded as drift instead.
+    """
+    source = open(vault.__file__, encoding="utf-8").read()
+    assert old in source, "mutation target %r is gone; fix this test" % (old,)
+    path = tmp_path / "runner_vault.py"
+    path.write_text(source.replace(old, new, 1), encoding="utf-8")
+    return str(path)
+
+
+# A path both copies will be made to answer with an unconfigured database.
+# `db_for` lowercases, so this is what the id would really be.
+_STRAY = "projects/sokrates/projects/nova/notes.md"
+
+# The same early return in each copy's own indentation: a module-level
+# function in the runner, a method in the bridge. That difference is the
+# whole reason `compare_routing` exists, so the fixtures have to carry it.
+_STRAY_RUNNER = '    if lowered == "%s":\n        return "obsidian"\n' % _STRAY
+_STRAY_BRIDGE = '        if lowered == "%s":\n            return "obsidian"\n' % _STRAY
+
+
+def test_real_drift_is_not_masked_by_the_probe_guard(tmp_path):
+    """Second reader on #153. The guard used to raise inside the
+    configuration loop, so a run that found real routing drift under one
+    configuration and tripped the guard under the next reported an
+    instrumentation error and discarded the routing bug it had already
+    found -- a finding replaced by its own safety net.
+
+    Reaching that needs both copies broken: the guard fires on *agreement*
+    on a database neither was given, so breaking one side alone is recorded
+    as drift and never reaches it. Both copies here answer `obsidian` for
+    one path whatever they are configured with -- the real shape of a copy
+    reading its own environment -- and the bridge additionally loses the
+    exact-file branch, which is genuine drift on a different path.
+    """
+    runner = _runner_copy(
+        tmp_path,
+        old='    lowered = (path or "").lower()\n',
+        new='    lowered = (path or "").lower()\n' + _STRAY_RUNNER)
+    bridge = _bridge_copy(
+        tmp_path,
+        source=BRIDGE_STUB.replace(
+            '        lowered = (path or "").lower()\n',
+            '        lowered = (path or "").lower()\n' + _STRAY_BRIDGE, 1),
+        old="if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:",
+        new="if lowered.startswith(NOVA_DB_FOLDERS):")
+
+    drifted = vault_contract.compare_routing(runner, bridge)
+
+    questions = [q for q, _, _ in drifted]
+    assert questions == [
+        "routing on: db_for('projects/sokrates/projects/agora/journal-digest.md')"
+    ], questions
+
+
+def test_the_guard_still_fires_when_there_is_no_drift_to_report(tmp_path):
+    """The other half, or the test above only shows the guard was removed.
+    Same two copies, without the bridge-side drift: now nothing differs,
+    the agreement on `obsidian` is the only signal left, and it must
+    raise."""
+    runner = _runner_copy(
+        tmp_path,
+        old='    lowered = (path or "").lower()\n',
+        new='    lowered = (path or "").lower()\n' + _STRAY_RUNNER)
+    bridge = _bridge_copy(tmp_path, source=BRIDGE_STUB.replace(
+        '        lowered = (path or "").lower()\n',
+        '        lowered = (path or "").lower()\n' + _STRAY_BRIDGE, 1))
+
+    with pytest.raises(vault_contract.ContractRouterMissing) as caught:
+        vault_contract.compare_routing(runner, bridge)
+    assert "obsidian" in str(caught.value)

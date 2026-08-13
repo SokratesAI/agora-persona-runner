@@ -453,7 +453,7 @@ def vault_assemble(doc, path=None, db=None):
         # was never written. An intact file would report itself corrupt.
         #
         # `_vault_file_docs` has stamped `_SRC_DB_KEY` since Cycle 121 and
-        # `vault_read_all` has honoured it since; this function recomputed
+        # `vault_bulk_fetch` has honoured it since; this function recomputed
         # the route instead, which is drift the bridge's `assemble` did not
         # have. Found by the second reader on #152, fixed here.
         db = db or doc.get(_SRC_DB_KEY) or db_for(

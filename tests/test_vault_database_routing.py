@@ -281,7 +281,7 @@ def test_assemble_prefers_the_database_the_doc_was_actually_read_from():
     """The drift the second reader found on #152, fixed in Cycle 169.
 
     `_vault_file_docs` stamps `_SRC_DB_KEY` with the database each doc
-    really came out of, and `vault_read_all` has honoured it since Cycle
+    really came out of, and `vault_bulk_fetch` has honoured it since Cycle
     121 -- but `vault_assemble` recomputed the route from the path
     instead, while the bridge's `assemble` preferred the stamp. The two
     agree in steady state and disagree during a migration, which is

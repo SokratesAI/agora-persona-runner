@@ -56,6 +56,18 @@ copies as of Cycle 169, and nothing checks that automatically -- doing so
 means faking CouchDB, not calling a pure function. `_put_raw`,
 `database_health` and the rest of the class are unpinned for the same
 reason.
+
+And the disclosure the earlier version of this docstring carried, kept
+because dropping it was a step down in candour on the very diff that
+claimed to fix the divergence: the runner half of that `_SRC_DB_KEY` fix
+is **not live-exploitable today and changes nothing for a running
+process.** `vault_assemble`'s only production caller is
+`vault_read_path_rev`, whose doc comes from `couch_get_doc`, which does not
+stamp the key -- so the new branch falls through to the old behaviour on
+every real read. It matters during a migration, when `_vault_file_docs`
+stamps docs out of whichever database really held them, and it matters now
+because the two copies agreeing is the property this file exists to keep.
+Both are real reasons; neither is "a user saw this break".
 """
 import ast
 import contextlib
@@ -431,6 +443,7 @@ def compare_routing(runner_path, bridge_path):
     and a plain function on the other, so no AST comparison can pair them.
     """
     drifted = []
+    agreed = {}
     with _process_state_restored():
         for db, nova_db in ROUTING_CONFIGS:
             runner = _runner_router(runner_path, db, nova_db)
@@ -444,8 +457,19 @@ def compare_routing(runner_path, bridge_path):
                 ("%s: %s" % (label, q), left[q], right[q])
                 for q in sorted(left) if left[q] != right[q]
             ]
-            _check_the_probe_reached_both(
-                {q: left[q] for q in left if left[q] == right[q]}, db, nova_db)
+            agreed[(db, nova_db)] = {
+                q: left[q] for q in left if left[q] == right[q]}
+    # After every configuration, and only when nothing drifted. The guard
+    # exists to stop *agreement* being reported as a clean comparison, so a
+    # run that already found real drift has nothing left for it to protect
+    # -- and raising here would replace a named routing bug with an
+    # instrumentation error, which is a finding masked by its own safety
+    # net. Second reader on #153 caught that; it used to raise inside the
+    # loop, so drift found under one configuration was discarded by a guard
+    # tripping under the next.
+    if not drifted:
+        for (db, nova_db), answers in agreed.items():
+            _check_the_probe_reached_both(answers, db, nova_db)
     return drifted
 
 
