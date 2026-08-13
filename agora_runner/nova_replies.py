@@ -186,11 +186,28 @@ def _entry_for(cycle):
     `journal_markdown` assembles newest-first and this takes the first
     match.
 
-    The fallback is not dead code and must stay: it is the only path for
-    the pre-2026-08-09 archive (`journal.md`, no per-entry documents), and
-    it is what covers every way the filename can disagree with the
-    document -- a tombstone, a heading that parses to a different cycle,
-    a file added by hand without the `NNN-cycle-M` shape.
+    The fallback is not dead code and must stay, but it now rests on one
+    justification rather than two. It used to be the only path to the
+    pre-2026-08-09 archive as well -- that half died when
+    `journal_markdown`'s own archive fallback was deleted, because
+    `journal.md` had been empty since 2026-08-10 and it no longer reads
+    it. Said here rather than left standing: a fallback whose stated
+    reason is false is how the deleted one survived three days past its
+    usefulness.
+
+    What is still true is the half that matters. `journal_entry_markdown`
+    is a targeted lookup and returns None for every way a filename can
+    disagree with its document -- a tombstone, a heading that parses to a
+    different cycle, a file added by hand without the `NNN-cycle-M`
+    shape -- and this reads the assembled folder, where those entries are
+    present and findable by heading.
+
+    One behaviour change worth naming, because it reaches Edvard's screen:
+    a journal folder the vault could not fully read now raises here
+    instead of quietly finding nothing. `_run_once` catches it and records
+    the message, so he gets a failed reply carrying the reason rather than
+    "no journal entry for cycle N", which was a wrong answer stated
+    confidently.
     """
     single = journal_entry_markdown(cycle)
     if single:
