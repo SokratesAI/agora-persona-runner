@@ -1190,6 +1190,18 @@
     });
 
     feed.textContent = "";
+    /* The comments read is tolerated on purpose -- the journal is the page,
+     * and a comments failure should cost the bubbles, not the feed. But
+     * tolerating it silently is what made a 502 look like "nobody has
+     * commented", which is a different and much more convincing lie than
+     * "this did not load". The `json` check above turns the failure into a
+     * null; this is the only thing that says so on screen.
+     *
+     * `null` is reachable only from that catch: the endpoint answers with
+     * an object, and a 304 is never asked for on this one. */
+    if (comments === null) {
+      feed.appendChild(el("p", "empty", "Comments could not be loaded — the entries below are complete, the replies are not."));
+    }
     if (wanted !== null) {
       var back = el("a", "back", "← all cycles");
       back.href = "/";
@@ -1299,6 +1311,36 @@
    */
   var lastPayload = { journal: null, digest: null };
 
+  /* Every `.catch` on a GET in this file already appends a written
+   * "Could not load ..." line, and until now not one of them could fire.
+   * `fetch` rejects only when the request never completed; a 500 or a 502
+   * is a perfectly successful response, and the error body the server
+   * sends is valid JSON, so `r.json()` resolved and the page went on to
+   * render an object with no `entries` in it. That is the whole reason a
+   * server error has always looked like an empty page rather than a
+   * message: the messages were there, the condition that reaches them
+   * never was.
+   *
+   * Note this is the read side only. The POSTs below check `result.ok`
+   * out of the parsed body and so already surface a failure -- by luck
+   * rather than design, since an error body happens not to carry `ok`.
+   */
+  function json(r) {
+    if (r.ok) return r.json();
+    // The server's own message when it sent one, because "the digest file
+    // is not valid markdown" is worth more on screen than "HTTP 500". The
+    // body is not guaranteed to be JSON at all (a proxy's 502 page is
+    // not), so failing to read it falls back to the status.
+    return r.json().then(
+      function (body) {
+        throw new Error((body && (body.error || body.message)) || "HTTP " + r.status);
+      },
+      function () {
+        throw new Error("HTTP " + r.status);
+      }
+    );
+  }
+
   function fetchVersioned(url, key) {
     var known = lastPayload[key] && lastPayload[key].version;
     // `no-store` keeps this the only conditional request in play. Neither
@@ -1312,8 +1354,12 @@
       // 304 carries no body. Returning the remembered payload keeps every
       // caller working on a whole object, so `render` and the version
       // comparison in `poll` need to know nothing about any of this.
+      // Checked before `json` and it has to stay that way: a 304 is not
+      // `ok`, so an ok-check in front of this would turn every successful
+      // conditional poll -- the common case, once the page has loaded
+      // once -- into an error.
       if (r.status === 304 && lastPayload[key]) return lastPayload[key];
-      return r.json().then(function (body) {
+      return json(r).then(function (body) {
         lastPayload[key] = body;
         return body;
       });
@@ -1349,7 +1395,7 @@
       // a comments read that fails should cost the bubbles, not the feed.
       // Not conditional: it is uncached and unversioned on purpose, because
       // it changes underneath itself while a reply is being written.
-      fetch("/api/comments").then(function (r) { return r.json(); }).catch(function () { return null; }),
+      fetch("/api/comments").then(json).catch(function () { return null; }),
     ]);
   }
 
@@ -1436,7 +1482,7 @@
       if (!blocks) {
         body.appendChild(el("p", "empty", "Loading…"));
         fetch("/api/board?name=" + board + "&item=" + item.number)
-          .then(function (r) { return r.json(); })
+          .then(json)
           .then(function (payload) {
             boardState.details[board + ":" + item.number] =
               ((payload && payload.item) || {}).blocks || [];
@@ -1727,7 +1773,7 @@
       boardState.notes = BOARD_NOTES;
     }
     fetch("/api/board?name=" + board + "&limit=" + boardState.notes)
-      .then(function (r) { return r.json(); })
+      .then(json)
       .then(function (payload) {
         // Two taps in quick succession leave two fetches in flight, and
         // before there were three views to land on, whichever resolved
@@ -2215,7 +2261,7 @@
 
   function loadCosts() {
     fetch("/api/costs")
-      .then(function (r) { return r.json(); })
+      .then(json)
       .then(function (payload) {
         // The same guard the board fetch carries: two taps in quick
         // succession leave two fetches in flight and the loser must not
