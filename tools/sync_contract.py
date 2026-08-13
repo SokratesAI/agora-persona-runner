@@ -1535,6 +1535,15 @@ def _health_normalised(answer, db, nova_db, timeout):
     Only for the correctness check -- the drift comparison runs on the raw
     answers, so two copies configured alike that disagree on a database name
     or a timeout differ there and are meant to.
+
+    Every key the report carries comes through, rather than three known ones
+    being rebuilt into a fresh dict. A whitelist here is the shape that bit
+    #158 one level down: a field added to the report was invisible to
+    `_HEALTH_QUESTIONS`, and a field added to *both* copies at once is the
+    only case those expectations exist for, since identical copies score as
+    in sync. `routes` is the one key that cannot come through raw -- see
+    `_HEALTH_ROUTE_COUNT` for what this stage can state about it and what
+    `compare_routing` owns instead.
     """
     report, log = answer
 
@@ -1547,16 +1556,24 @@ def _health_normalised(answer, db, nova_db, timeout):
             return _HEALTH_SHORT
         return value
 
+    def body(value):
+        if isinstance(value, dict):
+            return {k: body(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [body(v) for v in value]
+        return token(value)
+
+    normalised = {}
+    for key in report:
+        if key == "routes":
+            routes = report.get("routes") or ()
+            normalised[key] = (
+                len(routes),
+                tuple(sorted({token(r.get("database")) for r in routes})))
+        else:
+            normalised[key] = body(report[key])
     return (
-        {"routing_enabled": report.get("routing_enabled"),
-         "databases": {role: {k: token(v) for k, v in entry.items()}
-                       for role, entry in report.get("databases", {}).items()},
-         # `(how many, which databases)` -- see `_HEALTH_ROUTE_COUNT` for
-         # what this can state and what `compare_routing` owns instead.
-         "routes": (
-             len(report.get("routes") or ()),
-             tuple(sorted({token(r.get("database"))
-                           for r in (report.get("routes") or ())})))},
+        normalised,
         tuple((method, token(req_db), token(req_timeout))
               for method, req_db, req_timeout in log),
     )
