@@ -442,9 +442,22 @@ def _fetch_chunks(chunk_ids, db):
     }
 
 
-def vault_assemble(doc, path=None):
+def vault_assemble(doc, path=None, db=None):
     kids = doc.get("children") or []
     if kids:
+        # Where the doc actually came FROM, never where db_for predicts it
+        # should be. Those two agree in steady state and disagree during a
+        # migration -- which is exactly when a doc's chunks would be looked
+        # up in a database that does not hold them, and a chunk that is
+        # merely in the other database is indistinguishable from one that
+        # was never written. An intact file would report itself corrupt.
+        #
+        # `_vault_file_docs` has stamped `_SRC_DB_KEY` since Cycle 121 and
+        # `vault_bulk_fetch` has honoured it since; this function recomputed
+        # the route instead, which is drift the bridge's `assemble` did not
+        # have. Found by the second reader on #152, fixed here.
+        db = db or doc.get(_SRC_DB_KEY) or db_for(
+            path or doc.get("path") or doc.get("_id"))
         # One request for every chunk, not one per chunk. This reduces a
         # regression that chunked writes (Cycle 117) introduce; it does not
         # erase it, and the honest numbers belong here rather than in a
@@ -454,11 +467,7 @@ def vault_assemble(doc, path=None):
         # get slower for nova_site to read -- roughly 9ms to 196ms -- and
         # this recovers about a third of that. The trade is deliberate: the
         # write side was leaving a full dead copy behind on every save.
-        # The chunks live wherever their file doc lives. `path` is the
-        # routing key and the doc carries it, so a caller that fetched
-        # this doc out of either database gets the matching chunks with
-        # no extra argument to forget.
-        by_id = _fetch_chunks(kids, db_for(path or doc.get("path") or doc.get("_id")))
+        by_id = _fetch_chunks(kids, db)
         out = []
         missing = []
         for chunk_id in kids:

@@ -275,3 +275,51 @@ def test_a_failing_database_is_logged_not_swallowed():
             patch.object(vault, "log", lambda m: lines.append(m)):
         vault.vault_list_ids("projects/")
     assert any("nova" in m and "503" in m for m in lines), lines
+
+
+def test_assemble_prefers_the_database_the_doc_was_actually_read_from():
+    """The drift the second reader found on #152, fixed in Cycle 169.
+
+    `_vault_file_docs` stamps `_SRC_DB_KEY` with the database each doc
+    really came out of, and `vault_bulk_fetch` has honoured it since Cycle
+    121 -- but `vault_assemble` recomputed the route from the path
+    instead, while the bridge's `assemble` preferred the stamp. The two
+    agree in steady state and disagree during a migration, which is
+    exactly when a doc's chunks would be looked up in a database that does
+    not hold them. A chunk that is merely in the other database is
+    indistinguishable from one that was never written, so an intact file
+    reports itself corrupt.
+    """
+    seen = []
+
+    def fake_couch_req(method, path, body=None):
+        seen.append(path)
+        return 200, {"rows": [{"key": "h:ddd", "doc": {"data": "moved"}}]}
+
+    # A Nova-owned path whose doc was read out of Edvard's database, which
+    # is what a half-finished migration looks like. Routing by path says
+    # `nova`; the stamp says where the chunks really are.
+    doc = {"_id": NOVA_FILE, "path": NOVA_FILE, "children": ["h:ddd"],
+           vault._SRC_DB_KEY: vault.COUCHDB_DB}
+    with _routing_on(), patch.object(vault, "couch_req", fake_couch_req):
+        assert vault.vault_assemble(doc, NOVA_FILE) == "moved"
+    assert seen and seen[0].startswith(f"{vault.COUCHDB_DB}/"), seen
+
+
+def test_an_explicit_database_beats_both_the_stamp_and_the_path():
+    """The parameter exists so a caller that already knows is not second
+    guessed -- same signature as the bridge's `assemble`. Separate test
+    from the one above because they are separate branches of one `or`
+    chain, and a test named for the stamp that actually passes on the
+    parameter pins neither."""
+    seen = []
+
+    def fake_couch_req(method, path, body=None):
+        seen.append(path)
+        return 200, {"rows": [{"key": "h:eee", "doc": {"data": "explicit"}}]}
+
+    doc = {"_id": HIS_FILE, "path": HIS_FILE, "children": ["h:eee"],
+           vault._SRC_DB_KEY: vault.COUCHDB_DB}
+    with _routing_on(), patch.object(vault, "couch_req", fake_couch_req):
+        assert vault.vault_assemble(doc, HIS_FILE, db="nova") == "explicit"
+    assert seen and seen[0].startswith("nova/"), seen
