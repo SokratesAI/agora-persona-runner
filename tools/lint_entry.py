@@ -83,36 +83,6 @@ def _heading_finding(path, content):
     )
 
 
-def _marker_finding(normalised):
-    """A line that would truncate the whole journal, not just this entry.
-
-    `parse_journal` opens with `markdown.partition("\n## Entries")` and
-    keeps only what follows -- the frozen `journal.md` carried its
-    instructions above that heading. `assemble_entries` joins every entry
-    document into one blob and hands it to the same function, and adds no
-    marker of its own, so a `## Entries` line written inside any single
-    entry silently drops every newer entry from the corpus, not merely
-    this one.
-
-    A reviewer found this as a false positive: the checker reported
-    `unparseable` for an otherwise perfect entry, because it was calling
-    `parse_journal` on one document, where the partition rule means
-    nothing. The rule is real at render time though, and the damage is
-    much larger than one card, so this is reported as itself rather than
-    worked around.
-    """
-    if "\n## Entries" not in "\n" + normalised:
-        return None
-    return (
-        "marker: this entry contains a line beginning `## Entries`. Every "
-        "entry document is joined into one blob before parsing, and the "
-        "parser keeps only what follows the first such line -- so this "
-        "would drop every entry newer than yours from the journal, not "
-        "just break this card. Indent it, fence it, or write it inline in "
-        "backticks."
-    )
-
-
 def _raw_body(normalised):
     """The entry body exactly as `parse_journal` slices it, before any repair.
 
@@ -212,11 +182,15 @@ def lint(name, content):
     # itself a second time as a missing footer, and the cycle would fix
     # one thing and see two.
     normalised = normalise_entry(path, content)
-    marker = _marker_finding(normalised)
-    if marker:
-        findings.append(marker)
-        return findings
-    entries = parse_journal(normalised)
+    # One entry document, so there is no preamble to cut off the front --
+    # `strip_header=False`, the same argument the site and the reply
+    # lookup pass. This used to be a plain call, and a `## Entries` line in
+    # an entry's prose therefore cut the entry's own heading off and left
+    # nothing to parse. There was a whole rule here refusing such an entry
+    # outright; it is gone with the hazard that justified it (runner#135),
+    # because the cost of keeping it was refusing a cycle that wrote a true
+    # sentence about the append command `prompt.md` step 6 mandates.
+    entries = parse_journal(normalised, strip_header=False)
     if not entries:
         findings.append(
             "unparseable: the site could not read a single entry out of this "

@@ -247,6 +247,39 @@ def test_a_missing_entry_gives_up_before_calling_the_model():
     assert not post.called and not store.called
 
 
+def test_an_entry_quoting_the_entries_marker_is_still_found_to_reply_about():
+    """Same defect as the feed's, and it lands here twice: both the targeted
+    single-document fetch and the whole-folder fallback hold an entries body
+    with no preamble, and `parse_journal` used to cut both at the first
+    `## Entries` line it saw. An entry that quotes the marker -- which this
+    loop's own instructions tell every cycle to write about -- had the whole
+    heading cut off the front of it, so it parsed to no entries at all and
+    the reply gave up with "no journal entry" on the one card Edvard was
+    actually replying to.
+
+    Each path is starved of the other rather than just exercised, and that
+    is the whole test. The first version gave both paths the entry, and
+    breaking the targeted fetch failed nothing -- the fallback quietly
+    answered for it, so the assertion held while the path under test was
+    returning nothing at all. A rescued path is an untested path."""
+    entry_md = (
+        "### 2026-08-10 13:00 (Oslo) — Cycle 80\n\n"
+        "I appended my captures:\n\n## Entries\n\nis the marker it needs.\n"
+    )
+    cases = {
+        # The targeted single-document fetch, with an empty fallback under it.
+        "targeted": dict(single=entry_md, journal=""),
+        # The whole-folder fallback, with the targeted fetch declining.
+        "fallback": dict(single=None, journal=entry_md),
+    }
+    for name, kwargs in cases.items():
+        entry, journal, comments = _sources(**kwargs)
+        with entry, journal, comments:
+            found = nova_replies._entry_for(80)
+        assert found is not None and found["cycle"] == 80, name
+        assert "is the marker it needs." in found["body"], name
+
+
 def test_a_missing_comment_gives_up_before_calling_the_model():
     entry, journal, comments = _sources()
     with entry, journal, comments, \

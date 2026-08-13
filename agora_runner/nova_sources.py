@@ -21,6 +21,7 @@ from agora_runner.nova_journal import (
     JOURNAL_DIR,
     JOURNAL_PATH,
     assemble_entries,
+    entries_body,
     entry_seq,
     entry_times,
     file_cycle,
@@ -53,7 +54,14 @@ def journal_markdown(with_times=False):
     files, mtimes = vault_bulk_fetch(JOURNAL_DIR, with_mtimes=True)
     entries = assemble_entries(files)
     times = entry_times(mtimes) if entries else {}
-    markdown = entries or (vault_read_path(JOURNAL_PATH) or "")
+    # Always an entries body, never a whole `journal.md`. The folder is
+    # one already; the archive gets its preamble cut here, so that both
+    # branches return the same kind of thing and every caller can parse
+    # with `strip_header=False`. Leaving the archive whole would mean the
+    # return type depended on which branch ran, and the caller would have
+    # to strip a preamble that is only sometimes there -- which is the
+    # guess that made an entry quoting `## Entries` eat the newer cards.
+    markdown = entries or entries_body(vault_read_path(JOURNAL_PATH) or "")
     return (markdown, times) if with_times else markdown
 
 

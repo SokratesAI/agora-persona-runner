@@ -234,7 +234,11 @@ def journal_payload():
     is not allowed to interpret -- sending both is the same text twice.
     """
     markdown, times = journal_markdown(with_times=True)
-    entries = parse_journal(markdown, times)
+    # `journal_markdown` always hands back an entries body -- no preamble
+    # from either source -- so there is nothing to strip, and asking the
+    # parser to look for one lets an entry that quotes `## Entries` in its
+    # prose cut every newer entry off the front of the feed.
+    entries = parse_journal(markdown, times, strip_header=False)
     # `times` is keyed by the cycle number in the *filename*, which is the
     # only reliable answer to "did this cycle write an entry": the heading
     # is written by hand and the filename is not, so the two disagree

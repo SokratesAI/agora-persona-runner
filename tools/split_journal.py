@@ -68,7 +68,13 @@ def verify(markdown, files):
             f"refusing to write: {len(original)} entries parsed but "
             f"{len(files)} files planned -- two entries share a filename"
         )
-    rebuilt = parse_journal(assemble_entries(files))
+    # `strip_header=False` on this side only. `markdown` above is a whole
+    # `journal.md` and its preamble is real; the reassembled files are an
+    # entries body with none. Reading both the same way is what the site
+    # used to do, and it is why an entry quoting `## Entries` could delete
+    # its neighbours -- here it would abort the migration instead, with
+    # "renders differently" pointing at an entry that is perfectly fine.
+    rebuilt = parse_journal(assemble_entries(files), strip_header=False)
     if rebuilt != original:
         for before, after in zip(original, rebuilt):
             if before != after:

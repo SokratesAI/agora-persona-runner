@@ -529,11 +529,32 @@ def _first_paragraph(body):
     return ""
 
 
-def parse_journal(markdown, times_by_cycle=None):
+def parse_journal(markdown, times_by_cycle=None, strip_header=True):
     """`journal.md` -> a list of entries in the order they appear (newest first).
 
-    Everything above `## Entries` is the file's own instructions to the
-    next cycle, not content, so it is dropped.
+    `strip_header` says whether `markdown` is a whole `journal.md`, whose
+    preamble above `## Entries` is the file's own instructions to the next
+    cycle rather than content, or an entries body that has no preamble at
+    all. **It is a fact about the source and cannot be recovered from the
+    text**, which is the whole reason it is a parameter: every entry is
+    free prose, this loop's own instructions tell each cycle to write
+    about the `## Entries` marker, and an entry that quotes it at the
+    start of a line is indistinguishable from the real preamble boundary.
+    Passed the folder's assembled entries with the default, the partition
+    fires inside somebody's prose and silently drops every *newer* entry
+    -- measured 2026-08-13, three entry documents in and one card out, the
+    two lost being the two at the top of the feed.
+
+    Guarding on "no `### ` heading above the marker" was tried and does
+    not work either: `journal.md`'s preamble documents the entry heading
+    format and legitimately contains one
+    (`test_a_heading_in_the_preamble_does_not_become_an_entry`).
+
+    So every caller that holds an entries body passes `strip_header=False`
+    -- the site's feed, both halves of the comment-reply lookup, and
+    `lint_entry`, which checks one entry document. The default is for the
+    one caller that really does hold a whole `journal.md`: `split_journal`,
+    the migration that cut the archive into the folder in the first place.
 
     `times_by_cycle` (from `entry_times`) overrides the date and time a
     cycle typed into its own `### ` heading with the vault's write time
@@ -546,8 +567,11 @@ def parse_journal(markdown, times_by_cycle=None):
     """
     if not markdown:
         return []
-    _, marker, body = markdown.partition("\n## Entries")
-    text = body if marker else markdown
+    if strip_header:
+        _, marker, body = markdown.partition("\n## Entries")
+        text = body if marker else markdown
+    else:
+        text = markdown
 
     headings = list(_ENTRY_HEADING_RE.finditer(text))
     entries = []
@@ -658,8 +682,16 @@ def entry_seq(path):
 
 def assemble_entries(files):
     """`{path: content}` from `JOURNAL_DIR` -> one newest-first markdown
-    blob, shaped exactly like `journal.md`'s entries half so that
-    `parse_journal` cannot tell the two sources apart."""
+    blob, shaped exactly like `journal.md`'s **entries half**.
+
+    Not like `journal.md` itself: there is no preamble here, and this
+    docstring used to state "so that `parse_journal` cannot tell the two
+    sources apart" as the goal. That sentence was the bug. The two sources
+    genuinely differ in one respect -- whether a preamble has to be cut
+    off the front -- and a parser that cannot tell them apart has to guess
+    from the text, which is exactly how an entry quoting `## Entries` in
+    its prose deleted every newer card. The caller knows which source it
+    holds; `parse_journal`'s `strip_header` is how it says so."""
     ordered = sorted(files.items(), key=lambda kv: (-entry_seq(kv[0]), kv[0]))
     normalised = (normalise_entry(path, content) for path, content in ordered)
     return "\n\n".join(text for text in normalised if text)
