@@ -136,12 +136,14 @@ from agora_runner.nova_replies import (
 )
 from agora_runner.nova_boards import BOARD_PATHS, parse_board, parse_notes
 from agora_runner.nova_costs import costs_payload as shape_costs
+from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_sources import (
     board_markdown,
     comments_markdown,
     cost_ledger_json,
     digest_markdown,
     journal_markdown,
+    retro_ledger_json,
 )
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
@@ -382,6 +384,23 @@ def costs_payload():
     cut is by time, not by count.
     """
     return shape_costs(cost_ledger_json())
+
+
+def retros_payload():
+    """Every Friday retrospective, scores and prose (issues.md, 2026-08-13).
+
+    Same shape of endpoint as `costs_payload` -- one fetch, one reshape,
+    JSON in and JSON out -- and cached for a weaker reason than that one:
+    this document changes once a *week*, not once an hour, so the cache
+    is almost always serving something that cannot have moved.
+
+    Not warmed at startup, unlike the journal and the digest. Warming
+    buys back the cold build for the page a visitor lands on, and nobody
+    lands here on a cold load: it is reached from the nav, by which time
+    the process is warm. Spending a vault read at every process start for
+    a page opened once a week is the wrong side of that trade.
+    """
+    return shape_retros(retro_ledger_json())
 
 
 def board_page(payload, limit=None, item=None):
@@ -1006,7 +1025,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # one entry (item 4). The server has no per-cycle view -- it serves
         # the same shell and app.js reads the path -- but the URL must
         # resolve, or the link is dead on a cold load.
-        if path == "/" or path.startswith("/cycle/") or path in ("/issues", "/ideas", "/costs"):
+        if path == "/" or path.startswith("/cycle/") or path in (
+            "/issues",
+            "/ideas",
+            "/costs",
+            "/retro",
+        ):
             self._send_static("index.html")
             return
         if path in STATIC_ROUTES:
@@ -1024,6 +1048,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/costs":
                 self._send_cached_json("costs", costs_payload)
+                return
+            if path == "/api/retro":
+                self._send_cached_json("retro", retros_payload)
                 return
             if path == "/api/comments":
                 # Deliberately not cached. It is 6KB and 20-78ms against

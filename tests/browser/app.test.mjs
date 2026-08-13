@@ -112,7 +112,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, digestStatus = 200, unparsable = false, digest, comments, install, journal, board, costs } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, digestStatus = 200, unparsable = false, digest, comments, install, journal, board, costs, retro } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -137,6 +137,12 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
     }
     if (url.includes("/api/costs")) {
       return res(costs || payload.costs, costsStatus);
+    }
+    if (url.includes("/api/retro")) {
+      // No fixture default: the retro ledger is empty until the first
+      // Friday, so "nothing supplied" has to mean the empty page rather
+      // than a body no live server has ever sent.
+      return res(retro || { scoreKeys: [], range: [1, 10], retros: [] }, retroStatus);
     }
     if (url.includes("/api/board")) {
       // Two shapes off one route, told apart the way the server tells
@@ -2753,7 +2759,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/costs"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/costs", "/retro"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -3129,5 +3135,131 @@ describe("a server error is shown, not rendered as emptiness", () => {
   test("a 502 on the costs page reaches the costs page's own message", async () => {
     const window = await loadSite("/costs", { costsStatus: 502 });
     assert.match(feedText(window), /Could not load the costs/);
+  });
+});
+
+/* The retrospective page (Edvard, issues.md 2026-08-13).
+ *
+ * The chart is SVG built with createElementNS, so jsdom can be asked what
+ * was actually drawn -- which is the half of this page that no Python test
+ * reaches. The assertions are about marks and their positions rather than
+ * about the presence of a <figure>: a chart that renders an empty box
+ * passes every test that only counts elements. */
+describe("the retrospective page", () => {
+  // Scoped to this suite, the same way the error-message suite scopes its
+  // own -- there is no file-level helper to reuse.
+  const feedText = (window) => window.document.getElementById("feed").textContent;
+
+  const twoRetros = {
+    scoreKeys: [
+      { key: "going", label: "How it's going" },
+      { key: "effectiveness", label: "How effective" },
+      { key: "feeling", label: "Overall feeling" },
+    ],
+    range: [1, 10],
+    retros: [
+      {
+        at: Date.UTC(2026, 7, 7), date: "2026-08-07", cycle: 120,
+        scores: { going: 5, effectiveness: 5, feeling: 6 },
+        overall: "Finding its feet.", good: "Ships most cycles.", bad: "Re-derives too much.",
+        changes: ["Read the pace number before picking."],
+      },
+      {
+        at: Date.UTC(2026, 7, 14), date: "2026-08-14", cycle: 181,
+        scores: { going: 7, effectiveness: 6, feeling: 8 },
+        overall: "Steady, and finally measurable.", good: "The drift checks hold.",
+        bad: "Still re-reads its own memory every hour.", changes: [],
+      },
+    ],
+  };
+
+  test("an empty ledger is a page that says so, not an error", async () => {
+    const window = await loadSite("/retro");
+    assert.match(feedText(window), /The first retrospective runs on a Friday morning/);
+    assert.equal(window.document.querySelectorAll(".retro-card").length, 0);
+    assert.doesNotMatch(feedText(window), /Could not load/);
+  });
+
+  test("one line per score, drawn with a dot at every real retro", async () => {
+    const window = await loadSite("/retro", { retro: twoRetros });
+    const paths = [...window.document.querySelectorAll(".chart-svg path")];
+    assert.equal(paths.length, 3, "three scores, three lines");
+    // Two retros, so every path is a single segment: one M and one L. A
+    // path that swallowed the second point would still be a <path>.
+    paths.forEach((p) => {
+      assert.equal((p.getAttribute("d").match(/[ML]/g) || []).join(""), "ML");
+    });
+    assert.equal(window.document.querySelectorAll(".chart-svg circle").length, 6);
+  });
+
+  test("a higher score sits higher on the axis", async () => {
+    // The one assertion that catches an inverted y, which every other test
+    // on this page passes happily.
+    const window = await loadSite("/retro", { retro: twoRetros });
+    const feeling = [...window.document.querySelectorAll(".chart-svg path")][2];
+    const [, y1, , y2] = feeling.getAttribute("d").match(/-?[\d.]+/g).map(Number);
+    assert.ok(y2 < y1, `8/10 must be drawn above 6/10, got ${y1} then ${y2}`);
+  });
+
+  test("the legend names all three, so identity never rests on colour", async () => {
+    const window = await loadSite("/retro", { retro: twoRetros });
+    const labels = [...window.document.querySelectorAll(".legend-label")].map((n) => n.textContent);
+    assert.deepEqual(labels, ["How it's going", "How effective", "Overall feeling"]);
+  });
+
+  test("a single retro still draws, rather than collapsing its own x-axis", async () => {
+    // One retro is a domain with no width, so every x would be NaN and the
+    // dots would vanish. This is the state the page ships in for a week.
+    const window = await loadSite("/retro", {
+      retro: { ...twoRetros, retros: [twoRetros.retros[0]] },
+    });
+    const dots = [...window.document.querySelectorAll(".chart-svg circle")];
+    assert.equal(dots.length, 3);
+    dots.forEach((dot) => {
+      assert.ok(Number.isFinite(Number(dot.getAttribute("cx"))), "x must be a number");
+    });
+  });
+
+  test("the cards read newest first and carry the prose, not just the scores", async () => {
+    const window = await loadSite("/retro", { retro: twoRetros });
+    const cards = [...window.document.querySelectorAll(".retro-card")];
+    assert.equal(cards.length, 2);
+    assert.match(cards[0].textContent, /2026-08-14/);
+    assert.match(cards[0].textContent, /Steady, and finally measurable\./);
+    assert.match(cards[0].textContent, /Still re-reads its own memory every hour\./);
+    // The newest retro chose no changes, so its card must not sprout an
+    // empty heading; the older one did, and must show it.
+    assert.doesNotMatch(cards[0].textContent, /What I am changing/);
+    assert.match(cards[1].textContent, /What I am changing/);
+    assert.match(cards[1].textContent, /Read the pace number before picking\./);
+  });
+
+  test("the nav marks Retro as the current page", async () => {
+    const window = await loadSite("/retro", { retro: twoRetros });
+    const on = [...window.document.querySelectorAll(".nav-tab.on")].map((a) => a.getAttribute("href"));
+    assert.deepEqual(on, ["/retro"]);
+  });
+
+  test("the hover label names a day, never an invented time of day", async () => {
+    // The ledger stores dates and the payload converts them to midnight
+    // UTC, so the shared tooltip's default stamp would print "14 Aug,
+    // 02:00" in Oslo -- a real-looking time that corresponds to nothing.
+    // jsdom lays nothing out, so the overlay's box has to be supplied for
+    // the handler to get past its own zero-width guard.
+    const window = await loadSite("/retro", { retro: twoRetros });
+    const svg = window.document.querySelector(".chart-svg");
+    svg.getBoundingClientRect = () => ({ left: 0, width: 360, top: 0, height: 168 });
+    const overlay = window.document.querySelector(".chart-overlay");
+    const move = new window.Event("pointermove", { bubbles: true });
+    move.clientX = 359;
+    overlay.dispatchEvent(move);
+    const label = window.document.querySelector(".chart-tip-when").textContent;
+    assert.doesNotMatch(label, /\d{1,2}:\d{2}/, `a time of day was invented: ${label}`);
+    assert.match(label, /14/, `the newest retro's day is missing: ${label}`);
+  });
+
+  test("a 502 on the retro page reaches the retro page's own message", async () => {
+    const window = await loadSite("/retro", { retroStatus: 502 });
+    assert.match(feedText(window), /Could not load the retrospectives/);
   });
 });

@@ -3175,6 +3175,36 @@ def test_the_costs_page_and_its_endpoint_both_answer():
     assert shell_status == 200 and b"<!doctype html>" in shell.lower()
 
 
+def test_the_retro_page_and_its_endpoint_both_answer():
+    """The same pair, for the same reason: `nova_retro`'s own tests call
+    the shaping directly and the browser tests stub `fetch`, so nothing
+    else here would notice `/retro` or `/api/retro` disappearing and the
+    nav tab 404ing on his phone.
+
+    The empty case is asserted alongside the full one because it is the
+    state this ships in -- the first retrospective has not run yet, and a
+    502 on a nav tab from the day it appears until Friday morning is the
+    realistic failure, not a malformed ledger."""
+    ledger = json.dumps({"retros": [{
+        "date": "2026-08-14", "cycle": 181,
+        "scores": {"going": 7, "effectiveness": 6, "feeling": 8},
+        "overall": "Steady.", "good": "Ships.", "bad": "Repeats itself.", "changes": [],
+    }]})
+    with patch.object(nova_sources, "vault_read_path", return_value=ledger):
+        nova_site.reset_cache()
+        status, _, body = _get("/api/retro")
+        shell_status, _, shell = _get("/retro")
+    assert status == 200
+    assert json.loads(body)["retros"][0]["scores"]["feeling"] == 8
+    assert shell_status == 200 and b"<!doctype html>" in shell.lower()
+
+    with patch.object(nova_sources, "vault_read_path", return_value=None):
+        nova_site.reset_cache()
+        empty_status, _, empty = _get("/api/retro")
+    assert empty_status == 200
+    assert json.loads(empty)["retros"] == []
+
+
 # --- /api/health -------------------------------------------------------
 #
 # The endpoint exists because verifying a database flip used to cost a

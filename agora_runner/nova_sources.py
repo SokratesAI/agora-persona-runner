@@ -15,6 +15,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_costs import COST_LEDGER_PATH
+from agora_runner.nova_retro import RETRO_LEDGER_PATH
 from agora_runner.nova_journal import (
     DIGEST_ARCHIVE_PATH,
     DIGEST_PATH,
@@ -192,6 +193,22 @@ def cost_ledger_json():
     page with nothing on it rather than a 502.
     """
     return vault_read_path(COST_LEDGER_PATH) or ""
+
+
+def retro_ledger_json():
+    """The Friday retrospective ledger, raw.
+
+    The second JSON fetch on this server, and the one written by a cycle
+    rather than by a publisher: `tools/append_retro.py` adds a row on
+    Friday mornings and nothing else touches it. Shaping is
+    `nova_retro.retros_payload`, which does no I/O.
+
+    `""` before the first retro has ever run, which the shaping turns
+    into a page with nothing on it rather than a 502 -- the same split
+    `cost_ledger_json` draws, and it matters more here, because this
+    ledger is empty by design until the first Friday.
+    """
+    return vault_read_path(RETRO_LEDGER_PATH) or ""
 
 
 def board_markdown(name):

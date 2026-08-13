@@ -1098,3 +1098,61 @@ blockquote {
 .share-fill { display: block; height: 100%; border-radius: 4px; }
 .share-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
 .share-note { margin: 0.4rem 0 0; color: var(--dim); font-size: 0.78rem; }
+
+/* Retrospectives (Edvard, issues.md 2026-08-13). One card per Friday,
+ * built out of the journal card's shape rather than a new one -- it is
+ * the same kind of object (a dated thing Nova wrote) and does not toggle,
+ * which is the only reason it is not `.entry` itself. */
+.retro-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1.1rem;
+}
+
+.retro-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.retro-date { margin: 0; font-size: 1rem; }
+.retro-cycle { margin: 0; color: var(--dim); font-size: 0.8rem; }
+
+.retro-scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.8rem;
+}
+
+.retro-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.retro-pill-label { color: var(--dim); }
+.retro-pill-value { font-variant-numeric: tabular-nums; }
+
+/* The overall feeling, which he called the most important metric, so it
+ * is set larger than the prose under it rather than filed alongside it. */
+.retro-overall { margin: 0 0 0.6rem; font-size: 1rem; line-height: 1.5; }
+
+.retro-sub {
+  margin: 0.8rem 0 0.2rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.retro-text { margin: 0; line-height: 1.55; }
+.retro-changes { margin: 0.2rem 0 0; padding-left: 1.1rem; line-height: 1.55; }
+.retro-change { margin: 0.15rem 0; }
