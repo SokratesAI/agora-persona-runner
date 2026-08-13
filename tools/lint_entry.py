@@ -65,6 +65,7 @@ from agora_runner.nova_journal import (
     JOURNAL_DIR,
     normalise_entry,
     parse_journal,
+    parse_board_refs,
     stray_footer,
 )
 
@@ -128,7 +129,7 @@ def _footer_finding(body):
     """
     if _FOOTER_RE.search(body):
         return None
-    _, pr, _ = stray_footer(body)
+    _, pr, _, _ = stray_footer(body)
     if pr:
         return (
             "footer: the `PR: ... | Outcome: ...` line is in the document but "
@@ -141,6 +142,33 @@ def _footer_finding(body):
         "cycle's card would show no PR and no outcome -- which reads as an "
         "hour that shipped nothing. Add it as the last line, e.g. "
         "`PR: #123 | Outcome: merged`, or `PR: none | Outcome: ...`."
+    )
+
+
+def _board_finding(body):
+    """A `Board:` field the site cannot turn into a single link.
+
+    Optional, so silence is the common answer and never a finding. But a
+    field that is present and unlinkable is the one shape worth refusing:
+    `parse_board_refs` leaves anything it cannot place as plain text, on
+    purpose, so `Board: #68` renders as the literal characters `#68` and
+    looks exactly like a working reference until Edvard taps it. The
+    entry is written once and never edited, so this is the last moment
+    that is cheap to fix.
+    """
+    match = _FOOTER_RE.search(body)
+    if not match:
+        return None  # already reported by `_footer_finding`
+    board = (match.group("board") or "").strip()
+    if not board:
+        return None
+    if any(span["kind"] == "link" for span in parse_board_refs(board)):
+        return None
+    return (
+        f"board: `Board: {board}` carries no `idea #N` or `issue #N` the site "
+        "can link, so it would render as plain text. Write the word and the "
+        "number -- `Board: idea #68`, `Board: issue #71, idea #62` -- or drop "
+        "the field, which is optional and means this cycle worked off-board."
     )
 
 
@@ -273,9 +301,13 @@ def lint(name, content, now=None):
             f"split: this document holds {len(entries)} `### ` headings, so it "
             "would render as that many separate cards. One entry per file."
         )
-    footer = _footer_finding(_raw_body(normalised))
+    raw = _raw_body(normalised)
+    footer = _footer_finding(raw)
     if footer:
         findings.append(footer)
+    board = _board_finding(raw)
+    if board:
+        findings.append(board)
     # Runs unconditionally, and that is a measurement rather than an
     # oversight. This started as a blanket "skip when the heading is
     # broken", which hid the wrong cycle number in `## Cycle 153` inside

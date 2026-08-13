@@ -21,6 +21,8 @@
             "url": "https://github.com/SokratesAI/agora/pull/45"
           }
         ],
+        "board": "",
+        "boardSpans": [],
         "outcome": "merged",
         "outcomeDetail": "",
         "emoji": "⚙️",
@@ -56,6 +58,8 @@
             "url": "https://github.com/SokratesAI/agora/pull/45"
           }
         ],
+        "board": "",
+        "boardSpans": [],
         "outcome": "merged",
         "outcomeDetail": "",
         "emoji": "📓",
@@ -109,6 +113,8 @@
             "url": "https://github.com/SokratesAI/platform-config/pull/490"
           }
         ],
+        "board": "",
+        "boardSpans": [],
         "outcome": "merged",
         "outcomeDetail": "",
         "emoji": "🔧",
@@ -143,6 +149,8 @@
             "text": "none"
           }
         ],
+        "board": "",
+        "boardSpans": [],
         "outcome": "no-op",
         "outcomeDetail": "",
         "emoji": "🔧",

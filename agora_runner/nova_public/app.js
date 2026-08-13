@@ -230,10 +230,20 @@
         // the text here -- same reason nothing in this file touches
         // innerHTML. New tab because leaving the PWA for GitHub and having
         // to navigate back is the worse of the two on a phone.
-        var anchor = el("a", "pr-link", span.text);
+        //
+        // Unless it is one of our own pages: a `Board:` reference points at
+        // `/ideas#68`, which is this app. Opening that in a tab would be
+        // the same wrong answer in the other direction, and the delegated
+        // handler at the bottom of this file already routes `a[href^='/']`
+        // through pushState, so an internal link only has to *not* say
+        // `target`.
+        var internal = String(span.url || "").charAt(0) === "/";
+        var anchor = el("a", internal ? "board-link" : "pr-link", span.text);
         anchor.href = span.url;
-        anchor.target = "_blank";
-        anchor.rel = "noopener noreferrer";
+        if (!internal) {
+          anchor.target = "_blank";
+          anchor.rel = "noopener noreferrer";
+        }
         parent.appendChild(anchor);
       } else parent.appendChild(document.createTextNode(span.text));
     });
@@ -941,6 +951,7 @@
    *  disagreement and puts the duplicate straight back. */
   function sameOutcome(a, b) {
     return (a.pr || "") === (b.pr || "")
+      && (a.board || "") === (b.board || "")
       && (a.outcome || "") === (b.outcome || "")
       && (a.outcomeDetail || "") === (b.outcomeDetail || "");
   }
@@ -956,6 +967,15 @@
       if (entry.prSpans && entry.prSpans.length) renderSpans(pr, entry.prSpans);
       else pr.textContent = entry.pr;
       row.appendChild(pr);
+    }
+    // The board item this cycle worked on, when it named one (ideas.md
+    // #68). Same shape as the PR badge beside it, and the same fallback
+    // for a payload from an older build; the difference is where it goes.
+    if (entry.board) {
+      var board = el("span", "board");
+      if (entry.boardSpans && entry.boardSpans.length) renderSpans(board, entry.boardSpans);
+      else board.textContent = entry.board;
+      row.appendChild(board);
     }
     if (entry.outcomeDetail) row.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
     return row;
@@ -1480,6 +1500,9 @@
    * the first time a row is opened and memory after that. */
   function renderBoardItem(board, item) {
     var row = el("article", "item item-" + item.statusKey);
+    // What `/ideas#68` scrolls to. One board per page, so the number is
+    // unique on screen.
+    row.id = "item-" + item.number;
     var head = el("button", "item-head");
     head.type = "button";
     head.setAttribute("aria-expanded", boardState.open === item.number ? "true" : "false");
@@ -1779,6 +1802,47 @@
     );
   }
 
+  /* `/ideas#68` -> that row open, and scrolled to. A journal card's board
+   * badge links here (ideas.md #68): "Journal cards in Nova should mark
+   * the issue or idea number they worked on ... With links." The point of
+   * the link is the write-up, not the page it sits on.
+   *
+   * Consumed once per navigation rather than on every render, so tapping
+   * a filter chip afterwards does not drag the page back to the row the
+   * URL named. `boardHashPending` carries it from here to after the DOM
+   * exists, because the row cannot be scrolled to before it is built.
+   *
+   * The filter is the part that would otherwise fail silently. The board
+   * opens on `Open`, and an item a journal entry worked on is often
+   * already ✅ Done, so the row the URL names is not on screen at all --
+   * the link would land on the right page showing everything except the
+   * thing it was pointing at. A URL is more specific than a default, so
+   * the default gives way. */
+  var boardHashPending = null;
+
+  function applyBoardHash(payload) {
+    var wanted = /^#(\d+)$/.exec(window.location.hash || "");
+    if (!wanted) return;
+    var number = parseInt(wanted[1], 10);
+    var target = ((payload && payload.items) || []).filter(function (item) {
+      return item.number === number;
+    })[0];
+    // No such item: leave the page exactly as it would have rendered. A
+    // stale or mistyped number is not a reason to open something else.
+    if (!target) return;
+    boardState.tab = "edvard";
+    boardState.open = number;
+    if (!currentFilter().match(target)) boardState.filter = "all";
+    boardHashPending = number;
+  }
+
+  function scrollToBoardHash() {
+    if (boardHashPending === null) return;
+    var row = document.getElementById("item-" + boardHashPending);
+    boardHashPending = null;
+    if (row && row.scrollIntoView) row.scrollIntoView();
+  }
+
   function loadBoard(board) {
     // Which row is open and how far back the notes go belong to the board
     // being looked at, not to the session: carried across, tapping from
@@ -1799,7 +1863,9 @@
         // nav highlights Ideas, because `markNav` reads the URL and this
         // did not.
         if (route(window.location.pathname).board !== board) return;
+        applyBoardHash(payload);
         renderBoard(board, payload);
+        scrollToBoardHash();
       })
       .catch(function (err) {
         markNav();

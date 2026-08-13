@@ -305,3 +305,44 @@ def test_the_shared_fixture_does_not_depend_on_when_the_suite_runs():
     """
     assert lint("168-cycle-152.md", GOOD) == []
     assert lint("168-cycle-152.md", GOOD, now=datetime(2027, 1, 1, tzinfo=OSLO)) == []
+
+
+# --- The optional `Board:` field ------------------------------------------
+
+
+def test_a_board_field_the_site_can_link_passes():
+    entry = GOOD.replace("PR: #133 | Outcome: merged", "PR: #133 | Board: idea #68 | Outcome: merged")
+    assert lint("168-cycle-152.md", entry) == []
+
+
+def test_no_board_field_is_never_a_finding():
+    """It is optional, and a cycle that did not work off the board should
+    say nothing rather than invent a number. 197 entries predate the field
+    and every one of them must still pass."""
+    assert lint("168-cycle-152.md", GOOD) == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["#68", "68", "the journal-card idea", "idea 68"],
+)
+def test_a_board_field_with_nothing_linkable_is_caught(field):
+    """The failure this exists for: `parse_board_refs` leaves what it cannot
+    place as plain text, on purpose, so `Board: #68` renders as the literal
+    characters and looks like a working reference until Edvard taps it. An
+    entry is written once and never edited, so this is the last cheap
+    moment."""
+    entry = GOOD.replace(
+        "PR: #133 | Outcome: merged", f"PR: #133 | Board: {field} | Outcome: merged"
+    )
+    findings = lint("168-cycle-152.md", entry)
+    assert _kinds(findings) == ["board"]
+    assert field in findings[0]
+
+
+def test_a_missing_footer_is_not_also_reported_as_a_bad_board():
+    """Same rule as the heading: one defect, one finding. The board check
+    reads the same match `_footer_finding` did, so an entry with no footer
+    at all must report only that."""
+    entry = "### Cycle 152 — 2026-08-01 02:00 Oslo\n\nNo footer here at all.\n"
+    assert _kinds(lint("168-cycle-152.md", entry)) == ["footer"]
