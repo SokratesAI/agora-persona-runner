@@ -45,28 +45,34 @@ from agora_runner.log import log
 STALL_CHECK_SECONDS = 300
 
 
-def nova_conversation_id(heartbeats):
-    """The conversation Nova's cycle heartbeat is bound to right now.
+def nova_conversation(heartbeats):
+    """`(conversation_id, push)` for Nova's cycle heartbeat, or `(None, True)`.
 
     Read from the live heartbeat rather than configured, because the
     heartbeat rotates Nova into a new conversation every cycle -- an id
     baked into a manifest would be correct for one hour and then point at
     a conversation Edvard has stopped reading.
 
-    The filter is `cycle_health.nova_cadence_minutes`' filter, for the same
-    reasons it gives: enabled, pointed at Nova, and not workflow-bound,
-    because a workflow heartbeat runs a multi-step round that writes no
-    journal entry and so has nothing to do with the silence being measured.
-    """
-    from agora_runner.config import NOVA_PERSONA_ID
+    **`push` comes off the same heartbeat, and the first version of this
+    threw it away.** `pushNotifications: false` is the switch Edvard asked
+    for on 2026-08-14 and got the same day (#178): a muted heartbeat still
+    posts, it just does not buzz. A notice that ignores it defeats the mute
+    for the one case a mute cannot distinguish from nothing happening,
+    which is silence -- the exact thing this module exists to report.
+    Absent is `True`, matching `heartbeats.run_heartbeat`: only a literal
+    `false` mutes, so every heartbeat created before that field keeps
+    notifying.
 
-    for heartbeat in heartbeats or []:
-        if (heartbeat.get("enabled")
-                and not heartbeat.get("workflowId")
-                and heartbeat.get("personaId") == NOVA_PERSONA_ID
-                and heartbeat.get("conversationId")):
-            return heartbeat["conversationId"]
-    return None
+    The heartbeat filter is `cycle_health.nova_cycle_heartbeats` rather
+    than a third hand-written copy of the same three conditions.
+    """
+    from agora_runner.cycle_health import nova_cycle_heartbeats
+
+    for heartbeat in nova_cycle_heartbeats(heartbeats):
+        if heartbeat.get("conversationId"):
+            return (heartbeat["conversationId"],
+                    heartbeat.get("pushNotifications") is not False)
+    return None, True
 
 
 def notice_text(status):
@@ -81,18 +87,18 @@ def notice_text(status):
     when = status.get("lastWokeTime") or ""
     date = status.get("lastWokeDate") or ""
     stamped = " ".join(part for part in (date, when) if part)
-    who = f"Cycle {cycle}" if cycle is not None else "The last cycle"
+    who = f"Cycle {cycle}" if cycle is not None else "the last cycle"
     plural = "interval" if intervals == 1 else "intervals"
     lines = [
-        f"I have stopped. {who} wrote the last journal entry"
-        + (f" at {stamped}" if stamped else "")
+        f"Nova has stopped writing. The last journal entry is {who}'s"
+        + (f", written at {stamped}" if stamped else "")
         + f", and that is {intervals} heartbeat {plural} ago with nothing since.",
         "",
         "A dead cycle posts no reply, so silence looks the same as a quiet "
         "hour from your phone — this message is the difference. Worth a look "
-        "at the runner pod in `agents`.",
+        "at the agora-persona-runner pod.",
         "",
-        "You will not get another one of these until a cycle writes again.",
+        "No more of these until a cycle writes again.",
     ]
     return "\n".join(lines)
 
@@ -140,12 +146,25 @@ class StallWatch:
     def tick(self, now=None):
         """Do a check if one is due. Returns True if a message was posted.
 
+        **The first tick after construction checks nothing**, and that is
+        not laziness. `_live_status` asks `cached_payload("journal", ...)`,
+        which on a cold cache is a 3-5s vault fetch and parse -- and the
+        first tick lands about a second after `start_nova_site()` has kicked
+        off the warming thread, so the two would contend on `_build_lock`
+        and this one would block the loop that watches for SIGTERM for the
+        whole window. Waiting one interval costs at most five minutes of
+        notice on a stall that was already underway before the pod booted,
+        against blocking the site's shutdown path on every single start.
+
         Never raises. This runs inside the site's shutdown loop, and a
         transient failure reaching Agora or the vault must cost a check,
         not the process serving Edvard's app.
         """
         now = time.monotonic() if now is None else now
-        if self._checked_at is not None and now - self._checked_at < self._interval:
+        if self._checked_at is None:
+            self._checked_at = now
+            return False
+        if now - self._checked_at < self._interval:
             return False
         self._checked_at = now
         try:
@@ -153,11 +172,11 @@ class StallWatch:
             if verdict is None:
                 return False
             key, text = verdict
-            conversation_id = nova_conversation_id(self._heartbeats())
+            conversation_id, push = nova_conversation(self._heartbeats())
             if not conversation_id:
                 log("stall notice: no conversation bound to Nova's heartbeat")
                 return False
-            status = self._post(conversation_id, text)
+            status = self._post(conversation_id, text, push)
             if status not in (200, 201):
                 # Deliberately not recorded as notified: a post that failed
                 # sent nothing, so the next check should try again rather
@@ -188,8 +207,13 @@ def _live_heartbeats():
     return body.get("heartbeats") or []
 
 
-def _live_post(conversation_id, text):
+def _live_post(conversation_id, text, push):
     from agora_runner.conversations import notify
 
-    status, _message_id = notify(conversation_id, text, "Nova", system=True, push=True)
+    # `system=True` keeps this out of every LLM context (turns.py), so a
+    # later Nova turn cannot read "Nova has stopped writing" as its own
+    # prior utterance. Sender is "Agora" rather than "Nova" for the same
+    # reason `conversations.back_off` uses it: the loop is dead, so this is
+    # the platform speaking about Nova, not Nova speaking.
+    status, _message_id = notify(conversation_id, text, "Agora", system=True, push=push)
     return status
