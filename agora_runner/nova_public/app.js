@@ -413,6 +413,25 @@
    * survives the re-render that discards the box. See `renderComments`. */
   var drafts = {};
 
+  /* "40 seconds" / "3 minutes" / "1 hour 5 minutes" -- how long a reply has
+   * been in flight. Deliberately coarse above a minute: the point is to let
+   * Edvard tell a slow answer from a stuck one, and a ticking second count
+   * reads as a stopwatch on something he cannot hurry. Anything missing or
+   * nonsensical falls back to "a moment", because a wait line that renders
+   * "NaN minutes" is worse than the fixed sentence it replaced. */
+  function waitedFor(seconds) {
+    var total = Math.floor(Number(seconds));
+    if (!isFinite(total) || total < 0) return "a moment";
+    if (total < 60) return total + " second" + (total === 1 ? "" : "s");
+    var minutes = Math.floor(total / 60);
+    if (minutes < 60) return minutes + " minute" + (minutes === 1 ? "" : "s");
+    var hours = Math.floor(minutes / 60);
+    var rest = minutes % 60;
+    var text = hours + " hour" + (hours === 1 ? "" : "s");
+    if (rest) text += " " + rest + " minute" + (rest === 1 ? "" : "s");
+    return text;
+  }
+
   function renderComments(container, target, comments) {
     var drawer = el("div", "comment-drawer");
 
@@ -483,10 +502,17 @@
           });
           after = reply;
         } else if (comment.replyWaiting) {
-          /* Past the server's threshold this is a queue, not a reply being
-           * written -- a cycle holds the bridge's single CLI lock for up to
-           * 45 minutes. Say that instead of a spinner that looks stuck. */
-          after = el("p", "comment-waiting", "Queued behind a running cycle — the answer appears here on its own.");
+          /* Past the server's threshold, so this is no longer a reply being
+           * written in the ordinary way -- but nothing here knows why, and
+           * this line used to claim it did ("Queued behind a running
+           * cycle"). Replies take a parallel lane past the bridge lock
+           * almost always, so that cause was usually false. Report the one
+           * fact the server has -- how long it has been -- and name no
+           * cause; the elapsed time is also what tells him apart a slow
+           * answer from a stuck one, which the fixed sentence never could. */
+          after = el("p", "comment-waiting",
+            "Still working on this — " + waitedFor(comment.replyWaitingSeconds) +
+            " so far. The answer appears here on its own.");
         } else if (comment.replyPending) {
           after = el("p", "comment-waiting", "Nova is replying…");
         } else if (comment.replyFailed) {

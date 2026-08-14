@@ -2556,6 +2556,33 @@ def test_a_long_wait_is_shown_as_queued_not_as_a_reply_being_written():
     assert fresh["replyPending"] is True and fresh["replyWaiting"] is False
 
 
+def test_a_waiting_reply_carries_how_long_it_has_waited():
+    """The card used to name a cause the server cannot see -- "queued behind
+    a running cycle" -- when the bridge takes a parallel lane except in the
+    refresh window. The elapsed second is what this server actually knows,
+    so it is what goes out."""
+    stored = (
+        "## New\n\n"
+        "### Cycle 57 \u00b7 2026-08-09 16:02\n\nwaiting on this one\n\n"
+        "### Cycle 55 \u00b7 2026-08-09 13:10\n\nanswered\n"
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={
+                (57, "2026-08-09 16:02"): time.time() - 185,
+            }), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    payload = json.loads(body)
+    waiting = payload["byCycle"]["57"][0]
+    assert waiting["replyWaiting"] is True
+    # Wall-clock passes between the patch and the read, so pin the band.
+    assert 185 <= waiting["replyWaitingSeconds"] <= 190
+    # A comment nobody is waiting on reports zero, never a negative or a
+    # stray clock reading the card would render as a real wait.
+    assert payload["byCycle"]["55"][0]["replyWaitingSeconds"] == 0
+
+
 def test_a_reply_that_failed_says_so_instead_of_vanishing():
     stored = "## New\n\n### Cycle 57 \u00b7 2026-08-09 16:02\n\nno answer coming\n"
     with patch.object(nova_sources, "vault_read_path", return_value=stored), \

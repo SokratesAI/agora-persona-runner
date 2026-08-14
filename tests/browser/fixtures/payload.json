@@ -254,6 +254,7 @@
           "acknowledged": true,
           "replyPending": false,
           "replyWaiting": false,
+          "replyWaitingSeconds": 0,
           "replyFailed": false
         },
         {
@@ -265,6 +266,7 @@
           "acknowledged": false,
           "replyPending": false,
           "replyWaiting": false,
+          "replyWaitingSeconds": 0,
           "replyFailed": false
         }
       ],
@@ -278,6 +280,7 @@
           "acknowledged": false,
           "replyPending": false,
           "replyWaiting": false,
+          "replyWaitingSeconds": 0,
           "replyFailed": false
         }
       ]
