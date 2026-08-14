@@ -1,7 +1,12 @@
 """Edvard changing a rating a cycle wrote (`issues.md` capture, 2026-08-14)."""
 
 import agora_runner.nova_capture as nova_capture
-from agora_runner.nova_boards import PRIORITY_LABELS, parse_board, set_row_priority
+from agora_runner.nova_boards import (
+    OUTDATED_STATUS,
+    PRIORITY_LABELS,
+    parse_board,
+    set_row_priority,
+)
 
 BOARD = """---
 type: board
@@ -191,3 +196,27 @@ def test_the_javascript_rating_list_is_byte_identical_to_the_python_one():
     # `json.loads` and not a hand-rolled split: it refuses an escape that is
     # not real JSON, which is the exact class of bug this test exists for.
     assert json.loads(found.group(1)) == list(PRIORITY_LABELS.values())
+
+
+def test_an_outdated_row_is_refused_a_rating_the_same_way_a_done_one_is():
+    """`⚫ Outdated` is the fifth status, from Edvard's `issues.md` #85.
+
+    It means the row will never be built, which is a closed row -- so it
+    takes no rating, for the same reason `✅ Done` takes none: a priority
+    chip on it says somebody is still deciding when to do it.
+
+    The emoji is deliberately not switched on anywhere; `status_key`
+    strips it and reads the word, so this passes on `⚫ Outdated` and on
+    a hand-typed `Outdated` alike.
+    """
+    board = BOARD.replace(
+        "| [[#59 — Small pickings\\|59]] | Small pickings | ⚪ Backlog | 08-11 |",
+        "| [[#59 — Small pickings\\|59]] | Small pickings | " + OUTDATED_STATUS + " | 08-11 |",
+    )
+    assert OUTDATED_STATUS in board, "the fixture row was not rewritten"
+    row = [i for i in parse_board(board)["items"] if i["number"] == 59][0]
+    assert row["statusKey"] == "outdated"
+    assert set_row_priority(board, 59, "🟠 High") is None
+    # And an open row in the same file still writes, so the refusal above
+    # is the status and not the fixture.
+    assert set_row_priority(board, 57, "🟠 High") is not None

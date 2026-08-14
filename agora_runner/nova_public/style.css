@@ -1164,6 +1164,11 @@ body.nav-open { overflow: hidden; }
 .chip-in-progress { color: var(--warn); border-color: var(--warn); }
 .chip-backlog { color: var(--dim); }
 .chip-done { color: var(--good); border-color: var(--good); }
+/* Outdated is dimmer than backlog and struck through -- it is the only
+   status that means "this will never happen", and it must not be mistaken
+   for done at a glance. It spends no colour, because the three that do are
+   all states the row is still alive in. */
+.chip-outdated { color: var(--dim); opacity: 0.7; text-decoration: line-through; }
 
 /* Priority sits beside the status chip, so it must not read as a second
    status. Filled rather than outlined, and the four ratings step down in

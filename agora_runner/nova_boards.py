@@ -102,6 +102,23 @@ def status_key(status):
     return words or "none"
 
 
+# The fifth status, and the exact cell text a cycle writes it as.
+# Edvard, `issues.md` #85: *"Some of them are implemented and some of them
+# are outdated. We need to clean it up. Maybe we need a new status called
+# 'outdated', so i can go through them and delete them myself."* So the
+# split of labour is his: a cycle proposes, he deletes. Nothing here sets
+# it -- the sweep is a vault edit -- but the string lives beside
+# `PRIORITY_LABELS` so the app's `chip-outdated` and this file cannot
+# drift into two different spellings of the same status.
+OUTDATED_STATUS = "⚫ Outdated"
+
+# The statuses that mean the row is finished with, either way. A finished
+# row takes no rating: `set_row_priority` already refused `done` because a
+# chip on a shipped item is noise, and "will never be built" is the same
+# state for the same reason.
+_CLOSED_STATUS_KEYS = frozenset({"done", "outdated"})
+
+
 # Edvard's four ratings, and the words he actually used for them:
 # "low, medium, high, immediately priority" (`ideas.md` capture,
 # 2026-08-14). "immediately" is his word and "immediate" is the one a
@@ -249,7 +266,7 @@ def set_row_priority(markdown, number, priority):
         found = _ROW_NUMBER_RE.search(cells[0])
         if not found or int(found.group(1)) != number:
             continue
-        if status_key(cells[2]) == "done":
+        if status_key(cells[2]) in _CLOSED_STATUS_KEYS:
             return None
         # Appended, never inserted -- the same reason `parse_board` reads
         # it at index 4. A row that never had a fifth cell grows one here,

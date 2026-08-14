@@ -637,6 +637,81 @@ describe("a journal card names the board item it worked on", () => {
   });
 });
 
+describe("an outdated row leaves Open without claiming it shipped", () => {
+  /* Edvard, issues.md #85: "Some of them are implemented and some of them
+   * are outdated. We need to clean it up. Maybe we need a new status called
+   * 'outdated', so i can go through them and delete them myself." A cycle
+   * writes the status; he deletes the row. So the two things that have to
+   * hold are that it leaves Open — otherwise the pile he asked to shrink
+   * does not shrink — and that it does not land in Done, which would read
+   * as shipped. */
+  const outdatedBoard = () => {
+    const board = JSON.parse(JSON.stringify(payload.board));
+    board.items[1].status = "⚫ Outdated";
+    board.items[1].statusKey = "outdated";
+    // `item=` is a tap on one row and answers with a different shape, so
+    // it falls through to the fixture's own reply rather than the list.
+    return (url) => (url.includes("item=") ? null : board);
+  };
+  const rows = (window) =>
+    [...window.document.querySelectorAll(".item")].map((r) => r.id);
+  const on = (window) =>
+    [...window.document.querySelectorAll(".filter")]
+      .filter((chip) => chip.textContent.startsWith(chip.dataset ? chip.textContent : ""))
+      .map((chip) => chip.textContent);
+
+  test("Open drops it, and Done does not pick it up", async () => {
+    const window = await loadSite("/issues", { board: outdatedBoard() });
+    const number = payload.board.items[1].number;
+    assert.ok(!rows(window).includes("item-" + number),
+      "an outdated row was still listed under Open: " + rows(window).join(","));
+    const done = [...window.document.querySelectorAll(".filter")]
+      .filter((chip) => chip.textContent.startsWith("Done"))[0];
+    click(window, done);
+    assert.ok(!rows(window).includes("item-" + number),
+      "an outdated row was counted as shipped under Done");
+  });
+
+  test("its own filter is the list he goes through", async () => {
+    const window = await loadSite("/issues", { board: outdatedBoard() });
+    const number = payload.board.items[1].number;
+    const chip = [...window.document.querySelectorAll(".filter")]
+      .filter((c) => c.textContent.startsWith("Outdated"))[0];
+    assert.ok(chip, "there is no Outdated filter to go through: " + on(window).join(","));
+    click(window, chip);
+    assert.deepEqual(rows(window), ["item-" + number]);
+  });
+
+  test("the tally counts it as neither open nor done", async () => {
+    const window = await loadSite("/issues", { board: outdatedBoard() });
+    const line = window.document.querySelector(".status-line").textContent;
+    const total = payload.board.items.length;
+    assert.ok(/1 outdated/.test(line), "the tally hid it: " + line);
+    assert.ok(!new RegExp(total - 1 + " open").test(line),
+      "an outdated row was still tallied as open: " + line);
+  });
+
+  test("it gets no rating picker, because the server would refuse one", async () => {
+    /* `set_row_priority` refuses a closed row, and outdated is closed. A
+     * picker drawn here would be a control whose only outcome is a
+     * rejection — the same reason a done row has never had one. */
+    const number = payload.board.items[1].number;
+    const window = await loadSite("/issues#" + number, { board: outdatedBoard() });
+    const row = window.document.getElementById("item-" + number);
+    assert.ok(row, "the row the URL named was filtered off the page");
+    assert.equal(row.querySelector(".item-prio-edit"), null,
+      "an outdated row was offered a rating the server will not write");
+    // The selector is the one the picker actually renders, not a guess:
+    // an open row in the same payload must still have it, or this test
+    // would pass against a picker that had simply been renamed.
+    const openRow = window.document.getElementById(
+      "item-" + payload.board.items[0].number);
+    click(window, openRow.querySelector(".item-head"));
+    assert.ok(openRow.querySelector(".item-prio-edit"),
+      "the selector matches nothing at all, so the assertion above is vacuous");
+  });
+});
+
 describe("a board link opens the row it names", () => {
   test("/issues#57 opens that row rather than only landing on the page", async () => {
     const window = await loadSite("/issues#57");
