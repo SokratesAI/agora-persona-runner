@@ -1564,9 +1564,29 @@
     desc: false,
   };
 
+  /* `outdated` is the fifth status, from issues.md #85: "Some of them are
+   * implemented and some of them are outdated. We need to clean it up.
+   * Maybe we need a new status called 'outdated', so i can go through them
+   * and delete them myself." A cycle sets it; only he acts on it. So it
+   * has to leave Open -- a row nobody will ever build is not open work, and
+   * leaving it there is the pile he asked to shrink -- without becoming
+   * Done, which would claim it shipped. It gets its own filter instead,
+   * because "go through them myself" is a list he has to be able to reach.
+   * Nothing here touches the hold-menu: edit and delete are ungated on
+   * every row and always have been, which `delete_row`'s own docstring
+   * gives the reason for -- "deleting a finished item is the most likely
+   * thing Edvard wants". So an outdated row stays deletable because there
+   * was never a gate, not because this filter spared it. */
+  function isOutdated(item) { return item.statusKey === "outdated"; }
+
   var FILTERS = [
-    { key: "open", label: "Open", match: function (i) { return i.statusKey !== "done"; } },
+    {
+      key: "open",
+      label: "Open",
+      match: function (i) { return i.statusKey !== "done" && !isOutdated(i); },
+    },
     { key: "done", label: "Done", match: function (i) { return i.statusKey === "done"; } },
+    { key: "outdated", label: "Outdated", match: isOutdated },
     { key: "all", label: "All", match: function () { return true; } },
   ];
 
@@ -1636,7 +1656,7 @@
       label: "Untouched " + STALE_DAYS + "d",
       match: function (i) {
         var age = itemAgeDays(i);
-        return age !== null && age > STALE_DAYS && i.statusKey !== "done";
+        return age !== null && age > STALE_DAYS && i.statusKey !== "done" && !isOutdated(i);
       },
     },
     {
@@ -1757,7 +1777,13 @@
   function renderBoardStatus(board, payload) {
     var titles = boardTitles(board);
     var items = (payload && payload.items) || [];
-    var open = items.filter(function (i) { return i.statusKey !== "done"; }).length;
+    /* Three buckets, not two. The tally used to derive `done` as
+     * `total - open`, so the moment a row went outdated it would have been
+     * counted as shipped -- the one reading that must never happen, since
+     * outdated means the opposite. */
+    var outdated = items.filter(isOutdated).length;
+    var done = items.filter(function (i) { return i.statusKey === "done"; }).length;
+    var open = items.length - done - outdated;
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
     /* The page name is bold and the counts are not -- Edvard, issues.md #83:
@@ -1769,7 +1795,8 @@
     var line = el("p", "status-line");
     line.appendChild(el("strong", "status-page", titles.page));
     line.appendChild(document.createTextNode(
-      " — " + open + " open, " + (items.length - open) + " done, "
+      " — " + open + " open, " + done + " done, "
+        + (outdated ? outdated + " outdated, " : "")
         + ((payload && payload.notesTotal) || 0) + " of my own notes"
     ));
     statusEl.appendChild(line);
@@ -2081,7 +2108,11 @@
       // and `item.done` alone is not that test -- it only means the row
       // is in the `## Done` table, and most finished rows never move
       // there. `statusKey` is what the server refuses on.
-      if (!item.done && item.statusKey !== "done") {
+      // An outdated row is closed the same way, and the server refuses a
+      // rating on it for the same reason (`_CLOSED_STATUS_KEYS` in
+      // `nova_boards.py`). Drawing the picker anyway would offer a control
+      // whose only outcome is a rejection.
+      if (!item.done && item.statusKey !== "done" && !isOutdated(item)) {
         body.appendChild(renderPriorityPicker(board, item));
       }
       var blocks = boardState.details[board + ":" + item.number];
