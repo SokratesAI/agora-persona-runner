@@ -1470,6 +1470,17 @@
     notes: BOARD_NOTES,
     open: null,
     details: {},
+    // The three halves of ideas.md #70/#71, kept on one state object
+    // because they compose: search cuts the list down, the toggles cut
+    // it further, sort orders what is left. `query` is what is typed;
+    // `matches` is what the server said about the write-ups for that
+    // exact string, or null when no answer is in yet.
+    query: "",
+    matches: null,
+    matchedQuery: null,
+    toggles: {},
+    sort: "filed",
+    desc: false,
   };
 
   var FILTERS = [
@@ -1477,6 +1488,180 @@
     { key: "done", label: "Done", match: function (i) { return i.statusKey === "done"; } },
     { key: "all", label: "All", match: function () { return true; } },
   ];
+
+  /* The extra filters, on top of Open/Done/All rather than instead of it
+   * -- Edvard, ideas.md #71: "filter the list based on different
+   * parameters like date, this week, priority etc. Invent 5-6 more."
+   * These are the ones I wrote back to him that need no data the page
+   * does not already hold. They are toggles and they AND together, so
+   * "unrated and untouched for a week" is one tap each rather than a
+   * combination somebody has to have thought of in advance. */
+  var STALE_DAYS = 7;
+  var WEEK_DAYS = 7;
+
+  /* `updated` is the board table's fourth column and it carries **no
+   * year** -- every row on both live files reads `08-14`, not
+   * `2026-08-14`. The first version of this required `YYYY-MM-DD`, which
+   * matches nothing on either board, so both date filters and the Age
+   * sort would have shipped silently dead with every test green. That is
+   * the Cycle 190 failure exactly, and this time the fixture is what
+   * caught it.
+   *
+   * A bare `MM-DD` is this year unless that puts it in the future, in
+   * which case it is last year's -- a board written in December and read
+   * in January is the only case that matters and it is real. A day or
+   * two of future is tolerated rather than rolled back a year, because a
+   * timezone difference between the writer and the reader is far more
+   * likely than a row filed eleven months ahead. Both shapes are
+   * accepted so a later change to the column does not break this again.
+   */
+  var FUTURE_GRACE_DAYS = 2;
+
+  function itemAgeDays(item) {
+    var text = (item.updated || "").trim();
+    var stamp = null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      stamp = Date.parse(text + "T00:00:00Z");
+    } else if (/^\d{2}-\d{2}$/.test(text)) {
+      var now = new Date();
+      stamp = Date.parse(now.getUTCFullYear() + "-" + text + "T00:00:00Z");
+      if (!isNaN(stamp) && stamp - now.getTime() > FUTURE_GRACE_DAYS * 86400000) {
+        stamp = Date.parse(now.getUTCFullYear() - 1 + "-" + text + "T00:00:00Z");
+      }
+    }
+    // A row with no date has no age rather than an age of zero --
+    // returning 0 would make it the newest thing on the board, which is
+    // the opposite of true.
+    if (stamp === null || isNaN(stamp)) return null;
+    return Math.floor((Date.now() - stamp) / 86400000);
+  }
+
+  var TOGGLES = [
+    {
+      key: "unrated",
+      label: "Unrated",
+      match: function (i) { return !i.priority; },
+    },
+    {
+      key: "week",
+      label: "This week",
+      match: function (i) {
+        var age = itemAgeDays(i);
+        return age !== null && age <= WEEK_DAYS;
+      },
+    },
+    {
+      key: "stale",
+      label: "Untouched " + STALE_DAYS + "d",
+      match: function (i) {
+        var age = itemAgeDays(i);
+        return age !== null && age > STALE_DAYS && i.statusKey !== "done";
+      },
+    },
+    {
+      key: "worked",
+      label: "Nova worked on it",
+      // `where` is the `## Done` table's PR column, and `statusKey`
+      // carries "in progress" for a row a cycle has started. Both mean
+      // this loop has actually touched the row, which is the backwards
+      // reading of the board links in ideas.md #68.
+      match: function (i) { return !!i.where || i.statusKey === "in-progress"; },
+    },
+  ];
+
+  /* Sort fields. `filed` is the number, which is the order the board is
+   * already in and therefore the one that has to stay the default --
+   * changing what an unsorted board looks like is not what #70 asked
+   * for. Priority sorts by the rank of the chip, and unrated sorts
+   * *last* in both directions, deliberately: "nobody has looked at this"
+   * is not a low priority, it is the absence of one, and #69 already
+   * settled that it must not fall into a bucket. */
+  var PRIORITY_RANK = { immediately: 4, high: 3, medium: 2, low: 1 };
+
+  var SORTS = [
+    /* Not the number: the file's own row order, which is what the board
+     * has always shown and is not the same thing -- `## Board` is
+     * newest-first and `## Done` is appended after it, so #51 sits below
+     * #56 while being the lower number. Sorting by the number instead
+     * reordered the default view, which is a change #70 did not ask for
+     * and which three existing tests caught. `index` is stamped on in
+     * `visibleItems` before anything filters the list. */
+    { key: "filed", label: "Filed", value: function (i) { return i.index; } },
+    {
+      key: "priority",
+      label: "Priority",
+      value: function (i) { return PRIORITY_RANK[i.priorityKey] || 0; },
+      unrated: function (i) { return !i.priority; },
+    },
+    {
+      key: "age",
+      label: "Age",
+      value: function (i) {
+        var age = itemAgeDays(i);
+        return age === null ? 0 : -age;
+      },
+      unrated: function (i) { return itemAgeDays(i) === null; },
+    },
+    { key: "status", label: "Status", value: function (i) { return i.statusKey || ""; } },
+    { key: "title", label: "Title", value: function (i) { return (i.title || "").toLowerCase(); } },
+  ];
+
+  function currentSort() {
+    return SORTS.filter(function (s) { return s.key === boardState.sort; })[0] || SORTS[0];
+  }
+
+  function sortItems(items) {
+    var sort = currentSort();
+    var dir = boardState.desc ? -1 : 1;
+    // `slice` because `payload.items` is the cached list every other
+    // render reads; sorting in place would make the order depend on
+    // which tab you looked at first.
+    return items.slice().sort(function (a, b) {
+      if (sort.unrated) {
+        var au = sort.unrated(a), bu = sort.unrated(b);
+        // Always last, whichever way the arrow points -- so `dir` is
+        // deliberately not applied here.
+        if (au !== bu) return au ? 1 : -1;
+      }
+      var av = sort.value(a), bv = sort.value(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      // Ties fall back to the file's row order so the sort is total and
+      // a re-render never reshuffles rows that compare equal.
+      return (a.index - b.index) * dir;
+    });
+  }
+
+  /* The list Edvard is actually looking at: status filter, then the
+   * toggles, then the search, then the order. Search is last of the
+   * cuts because it is the only one that can be waiting on the server:
+   * until `matches` holds an answer for the string in the box, the title
+   * match stands alone, so typing narrows the list immediately and the
+   * write-up hits arrive a moment later rather than the box doing
+   * nothing until they do. */
+  function visibleItems(items) {
+    // The file's row order, stamped on before anything cuts the list
+    // down, so a filtered view still sorts and breaks ties the way the
+    // whole board would. Stamped on the row itself rather than on a
+    // copy: `renderPriorityPicker` writes back to the object it was
+    // handed, and a copy would take that write with it.
+    items.forEach(function (item, index) { item.index = index; });
+    var shown = items.filter(currentFilter().match);
+    TOGGLES.forEach(function (toggle) {
+      if (boardState.toggles[toggle.key]) shown = shown.filter(toggle.match);
+    });
+    var query = boardState.query.trim().toLowerCase();
+    if (query) {
+      var matched = boardState.matchedQuery === query && boardState.matches
+        ? boardState.matches
+        : [];
+      shown = shown.filter(function (i) {
+        return (i.title || "").toLowerCase().indexOf(query) !== -1
+          || matched.indexOf(i.number) !== -1;
+      });
+    }
+    return sortItems(shown);
+  }
 
   function boardTitles(board) {
     return board === "ideas"
@@ -1797,8 +1982,62 @@
       wrap.appendChild(box);
     }
 
-    var chips = el("div", "filters");
     var items = payload.items || [];
+    wrap.appendChild(renderBoardControls(board, payload, items));
+
+    var shown = visibleItems(items);
+    if (!shown.length) {
+      wrap.appendChild(el(
+        "p", "empty",
+        boardState.query.trim() ? "Nothing matches “" + boardState.query.trim() + "”."
+          : "Nothing here."
+      ));
+    }
+    shown.forEach(function (item) { wrap.appendChild(renderBoardItem(board, item)); });
+    return wrap;
+  }
+
+  /* The search box, the filter chips and the sort control, in that order
+   * -- Edvard's two asks (ideas.md #70 and #71) are one strip on the
+   * page because they are one question: which rows do I want, and in
+   * what order. Rebuilt on every board render like everything else here,
+   * so the focus and caret in the search input have to be put back by
+   * hand; `searchFocus` is what remembers them across a keystroke. */
+  var searchFocus = null;
+
+  function renderBoardControls(board, payload, items) {
+    var bar = el("div", "board-controls");
+
+    var search = el("div", "board-search");
+    var input = document.createElement("input");
+    input.type = "search";
+    input.className = "board-search-input";
+    input.placeholder = "Search titles and write-ups";
+    input.setAttribute("aria-label", "Search this board");
+    input.value = boardState.query;
+    input.addEventListener("input", function () {
+      boardState.query = input.value;
+      searchFocus = input.selectionStart;
+      runBoardSearch(board, payload);
+      renderBoard(board, payload);
+    });
+    search.appendChild(input);
+    if (boardState.query) {
+      var clear = el("button", "board-search-clear", "×");
+      clear.type = "button";
+      clear.setAttribute("aria-label", "Clear the search");
+      clear.addEventListener("click", function () {
+        boardState.query = "";
+        boardState.matches = null;
+        boardState.matchedQuery = null;
+        searchFocus = null;
+        renderBoard(board, payload);
+      });
+      search.appendChild(clear);
+    }
+    bar.appendChild(search);
+
+    var chips = el("div", "filters");
     FILTERS.forEach(function (filter) {
       var count = items.filter(filter.match).length;
       var chip = el("button", "filter" + (filter.key === boardState.filter ? " on" : ""),
@@ -1811,12 +2050,109 @@
       });
       chips.appendChild(chip);
     });
-    wrap.appendChild(chips);
+    TOGGLES.forEach(function (toggle) {
+      var on = !!boardState.toggles[toggle.key];
+      // Counted against the status filter rather than the whole board,
+      // so "Unrated (0)" under Done means what it says instead of
+      // advertising rows the current view cannot show.
+      var count = items.filter(currentFilter().match).filter(toggle.match).length;
+      var chip = el("button", "filter filter-extra" + (on ? " on" : ""),
+        toggle.label + " (" + count + ")");
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", on ? "true" : "false");
+      chip.addEventListener("click", function () {
+        boardState.toggles[toggle.key] = !on;
+        renderBoard(board, payload);
+      });
+      chips.appendChild(chip);
+    });
+    bar.appendChild(chips);
 
-    var shown = items.filter(currentFilter().match);
-    if (!shown.length) wrap.appendChild(el("p", "empty", "Nothing here."));
-    shown.forEach(function (item) { wrap.appendChild(renderBoardItem(board, item)); });
-    return wrap;
+    /* "on each option, on a horisontal line, a description of the option
+     * ('priority') and on the right side of it a button with a
+     * upwards/downwards facing arrow to click and have it turn (with
+     * clockwise animation) which flips the order of the sorting."
+     *
+     * A native `<select>` cannot hold a button inside an option, so the
+     * row is the sort field on the left and one arrow on the right --
+     * which is the same control he described, minus a per-option arrow
+     * that would have meant five directions for one list. Tapping the
+     * arrow flips the order and it rotates to show it. */
+    var sortRow = el("div", "board-sort");
+    sortRow.appendChild(el("span", "board-sort-label", "Sort"));
+    var select = document.createElement("select");
+    select.className = "board-sort-select";
+    select.setAttribute("aria-label", "Sort this board by");
+    SORTS.forEach(function (sort) {
+      var option = document.createElement("option");
+      option.value = sort.key;
+      option.textContent = sort.label;
+      if (sort.key === boardState.sort) option.selected = true;
+      select.appendChild(option);
+    });
+    select.addEventListener("change", function () {
+      boardState.sort = select.value;
+      renderBoard(board, payload);
+    });
+    sortRow.appendChild(select);
+    var arrow = el("button", "board-sort-dir" + (boardState.desc ? " desc" : ""), "↑");
+    arrow.type = "button";
+    arrow.setAttribute("aria-pressed", boardState.desc ? "true" : "false");
+    arrow.setAttribute(
+      "aria-label",
+      boardState.desc ? "Sorted descending — tap for ascending"
+        : "Sorted ascending — tap for descending"
+    );
+    arrow.addEventListener("click", function () {
+      boardState.desc = !boardState.desc;
+      renderBoard(board, payload);
+    });
+    sortRow.appendChild(arrow);
+    bar.appendChild(sortRow);
+
+    if (searchFocus !== null) {
+      // After `feed` has the node. Deferred because focusing a detached
+      // element does nothing and the caret would jump to the end.
+      var caret = searchFocus;
+      searchFocus = null;
+      setTimeout(function () {
+        input.focus();
+        try { input.setSelectionRange(caret, caret); } catch (e) { /* not all inputs allow it */ }
+      }, 0);
+    }
+    return bar;
+  }
+
+  /* The write-up half of the search. Titles are matched in the page
+   * because the page has them; the detail bodies are 60KB and never come
+   * down with the list, so the server is asked instead. Debounced, and
+   * the answer is stamped with the query it answered -- a slow reply for
+   * "bad" must not be shown as the result for "badge". */
+  var searchTimer = null;
+
+  function runBoardSearch(board, payload) {
+    var query = boardState.query.trim().toLowerCase();
+    if (searchTimer) clearTimeout(searchTimer);
+    if (!query) {
+      boardState.matches = null;
+      boardState.matchedQuery = null;
+      return;
+    }
+    searchTimer = setTimeout(function () {
+      fetch("/api/board?name=" + board + "&q=" + encodeURIComponent(query))
+        .then(json)
+        .then(function (result) {
+          if (!result || result.query !== query) return;
+          boardState.matches = result.matches || [];
+          boardState.matchedQuery = query;
+          renderBoard(board, payload);
+        })
+        .catch(function () {
+          // A failed search leaves the title matches standing rather
+          // than emptying the board: fewer rows than there should be is
+          // recoverable, a page that says "nothing matches" is not.
+        });
+    }, 200);
   }
 
   function renderBoardNova(board, payload) {

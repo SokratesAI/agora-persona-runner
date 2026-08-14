@@ -3357,3 +3357,165 @@ describe("the capture row does not scramble", () => {
     assert.match(shared[0].style.cssText, /min-height:\s*44px/);
   });
 });
+
+/* Edvard, ideas.md #71: "Ability to search through issues or ideas. Also
+ * filter the list based on different parameters like date, this week,
+ * priority etc." and #70: "Lets me sort issues and ideas ... make sure
+ * its both upwards and downwards option ... a button with a
+ * upwards/downwards facing arrow to click and have it turn". */
+describe("searching, filtering and sorting a board", () => {
+  const rows = (window) =>
+    [...window.document.querySelectorAll(".item-number")].map((n) => n.textContent);
+  const chip = (window, prefix) =>
+    [...window.document.querySelectorAll(".filter")]
+      .filter((c) => c.textContent.startsWith(prefix))[0];
+
+  /* The write-up half of the search is debounced then fetched, so it
+   * lands two turns of the event loop later. `captureTimers` is for the
+   * poll intervals; this is a one-shot `setTimeout` on the real clock. */
+  const settle = () => new Promise((r) => setTimeout(r, 260));
+
+  const typeSearch = (window, text) => {
+    const input = window.document.querySelector(".board-search-input");
+    input.value = text;
+    input.dispatchEvent(new window.Event("input"));
+    return input;
+  };
+
+  test("typing narrows to title matches without waiting for the server", async () => {
+    const window = await loadSite("/issues");
+    typeSearch(window, "gemini");
+    assert.deepEqual(rows(window), ["#58"]);
+  });
+
+  test("a write-up match the page cannot see arrives from the server", async () => {
+    /* The whole reason the search is not purely client-side: "cache" is
+     * in no row title, only in #57's detail body, which the list payload
+     * deliberately never carries. */
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("q=") ? { query: "cache", matches: [57] } : null),
+    });
+    typeSearch(window, "cache");
+    // Nothing matches on title, so the page is empty until the answer lands.
+    assert.deepEqual(rows(window), []);
+    await settle();
+    assert.deepEqual(rows(window), ["#57"]);
+  });
+
+  test("a stale answer for an older query is thrown away", async () => {
+    /* A reply for "cach" must never be shown as the result for "cache" --
+     * the row it names may not match what is in the box any more. */
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("q=") ? { query: "cach", matches: [57] } : null),
+    });
+    typeSearch(window, "cache");
+    await settle();
+    assert.deepEqual(rows(window), []);
+  });
+
+  test("clearing the search puts every row back", async () => {
+    const window = await loadSite("/issues");
+    typeSearch(window, "gemini");
+    click(window, window.document.querySelector(".board-search-clear"));
+    assert.deepEqual(rows(window), ["#57", "#58"]);
+  });
+
+  test("the unrated chip finds the rows no one has rated", async () => {
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        if (url.includes("q=") || url.includes("item=")) return null;
+        const board = JSON.parse(JSON.stringify(payload.board));
+        board.items[0].priority = "🟠 High";
+        board.items[0].priorityKey = "high";
+        return board;
+      },
+    });
+    click(window, chip(window, "Unrated"));
+    assert.deepEqual(rows(window), ["#58"]);
+  });
+
+  test("the toggles and the status filter compose rather than replace", async () => {
+    const window = await loadSite("/issues");
+    click(window, chip(window, "All"));
+    click(window, chip(window, "Nova worked on it"));
+    // #51 carries a `where` (it landed somewhere); #57 is in progress.
+    assert.deepEqual(rows(window).sort(), ["#51", "#57"]);
+  });
+
+  test("the arrow flips the order and says which way it points", async () => {
+    const window = await loadSite("/issues");
+    click(window, chip(window, "All"));
+    const before = rows(window);
+    const arrow = window.document.querySelector(".board-sort-dir");
+    // Ascending to start: the board's own row order, which is what it
+    // showed before #70 and must keep showing until something is tapped.
+    assert.equal(arrow.getAttribute("aria-pressed"), "false");
+    assert.ok(!arrow.className.includes("desc"), "the arrow started rotated");
+    click(window, arrow);
+    const after = window.document.querySelector(".board-sort-dir");
+    assert.equal(after.getAttribute("aria-pressed"), "true");
+    assert.ok(after.className.includes("desc"), "the arrow did not turn");
+    assert.deepEqual(rows(window), before.slice().reverse());
+    click(window, window.document.querySelector(".board-sort-dir"));
+    assert.deepEqual(rows(window), before, "a second tap did not come back");
+  });
+
+  test("sorting by priority puts unrated last whichever way the arrow points", async () => {
+    /* ideas.md #69 settled that unrated is the absence of a priority, not
+     * a low one. Both directions, because "last in one and first in the
+     * other" is exactly the bucket that decision refused. */
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        if (url.includes("q=") || url.includes("item=")) return null;
+        const board = JSON.parse(JSON.stringify(payload.board));
+        board.items[0].priority = "⚪ Low";
+        board.items[0].priorityKey = "low";
+        board.items[1].priority = "🔴 Immediately";
+        board.items[1].priorityKey = "immediately";
+        return board;
+      },
+    });
+    click(window, chip(window, "All"));
+    const select = window.document.querySelector(".board-sort-select");
+    select.value = "priority";
+    select.dispatchEvent(new window.Event("change"));
+    // Ascending: Low, then Immediately, then the two nobody has rated.
+    assert.deepEqual(rows(window), ["#57", "#58", "#56", "#51"]);
+    click(window, window.document.querySelector(".board-sort-dir"));
+    // Descending flips the rated rows and leaves the unrated ones last.
+    assert.deepEqual(rows(window).slice(0, 2), ["#58", "#57"]);
+    assert.deepEqual(rows(window).slice(2).sort(), ["#51", "#56"]);
+  });
+
+  test("a board dated MM-DD still has an age, which is what the date filters read", async () => {
+    /* Every row on both live boards reads `08-14`, with no year. A parser
+     * that wanted `YYYY-MM-DD` would match none of them and both date
+     * filters would be silently empty with every test green. */
+    const window = await loadSite("/issues");
+    const week = chip(window, "This week");
+    const stale = chip(window, "Untouched");
+    const counted = (c) => Number(c.textContent.match(/\((\d+)\)/)[1]);
+    assert.ok(
+      counted(week) + counted(stale) > 0,
+      "no open row had a readable date: " + week.textContent + " " + stale.textContent,
+    );
+  });
+
+  test("the default order is the file's, which is not the number's", async () => {
+    /* The board is `## Board` newest-first with `## Done` appended after
+     * it, so #51 sits *below* #56 while being the lower number. Sorting by
+     * the number looks identical on the default Open view -- 57, 58 either
+     * way -- which is how the first version of this shipped: it reordered
+     * the All view and every existing test still passed. */
+    const window = await loadSite("/issues");
+    click(window, chip(window, "All"));
+    assert.deepEqual(rows(window), ["#57", "#58", "#56", "#51"]);
+  });
+
+  test("a search that matches nothing says what it was looking for", async () => {
+    const window = await loadSite("/issues");
+    typeSearch(window, "zzzznothing");
+    assert.deepEqual(rows(window), []);
+    assert.match(window.document.querySelector(".empty").textContent, /zzzznothing/);
+  });
+});
