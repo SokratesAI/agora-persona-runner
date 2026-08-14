@@ -3206,7 +3206,14 @@
      * first -- most captures are a sentence he wants written down, not a
      * rating exercise, and forcing a choice would put a decision in front
      * of the box he types into. It resets after a send for the same
-     * reason: the next thought is not the same urgency by default. */
+     * reason: the next thought is not the same urgency by default.
+     *
+     * No "Priority" text in the control itself (Edvard, 2026-08-14: it
+     * should read as one of the row's buttons, not a form field) -- only
+     * the ball, or a dash for unrated, so it is exactly as wide whichever
+     * rating is picked. The word is still there for a screen reader, on
+     * the visually-hidden <label> this select is already bound to and on
+     * each option's accessible name. */
     var prioEl = document.createElement("select");
     prioEl.className = "capture-prio";
     prioEl.id = "capture-prio";
@@ -3214,7 +3221,8 @@
     PRIORITIES.forEach(function (label) {
       var option = document.createElement("option");
       option.value = label;
-      option.textContent = label || "Unrated";
+      option.textContent = label ? label.split(" ")[0] : "–";
+      option.setAttribute("aria-label", label || "Unrated");
       prioEl.appendChild(option);
     });
     /* Its own row above the buttons, not a fourth item beside them --
