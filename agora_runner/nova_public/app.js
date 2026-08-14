@@ -1698,6 +1698,16 @@
    * compares it to the Python side, because nothing else could. */
   var PRIORITIES = ["", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"];
 
+  /* Parallel to `PRIORITIES`, mirroring `nova_boards.priority_key` --
+   * the CSS class suffix each rating carries (`.prio-high` etc). The
+   * server sends `item.priorityKey` for a row's *current* rating, but a
+   * picker's chip trigger has to relabel itself the instant something
+   * else is picked, before any server round trip, so it needs the same
+   * mapping client-side. Only board-row triggers use it (`chipStyle`
+   * below); the capture box's trigger shows a glyph, never a class that
+   * depends on which rating is selected. */
+  var PRIORITY_KEYS = ["", "low", "medium", "high", "immediate"];
+
   /* A small custom dropdown, not a native <select> -- Edvard, 2026-08-14:
    * the closed control must show only the glyph (or a dash), but the open
    * list must still spell out each rating's word. No native form control
@@ -1708,13 +1718,9 @@
    * wordless as the box).
    *
    * One popup, shared by every picker on the page, appended straight to
-   * <body> rather than living under each trigger. A board row's trigger
-   * sits inside `.item`, which clips overflow to keep its rounded
-   * corners -- a popup nested there would be cut off the moment it grew
-   * past the card's edge, and the capture box's trigger is the last thing
-   * on its row with no room to its right for a popup anchored by normal
-   * flow. Position is real viewport coordinates instead, read off the
-   * trigger's own rect when it opens. */
+   * <body> rather than living under each trigger, and centered on the
+   * viewport rather than anchored to whichever trigger opened it -- see
+   * the comment on `openMenu` below for why. */
   var prioMenuOverlay = null;
   var prioMenuBackdrop = null;
   function getPrioMenuOverlay() {
@@ -1729,30 +1735,56 @@
     return prioMenuOverlay;
   }
 
-  /* `triggerClass` picks which shape the button wears --
-   * `.prio-select-board`'s square corners inside a card, or
-   * `.capture-prio`'s circle beside the capture buttons -- both already
-   * exist as CSS and are unchanged by this; only the element they style
-   * moved from a <select> to a <button>. `onPick` may return a promise;
-   * the trigger disables and the glyph updates optimistically while it
-   * settles, and a rejection reverts the glyph to what it was before the
-   * click rather than showing a choice that was never saved. */
+  /* Two ways the trigger can look, picked by `opts.chipStyle`:
+   *
+   * The default (the capture box) is `opts.triggerClass` -- a fixed-shape
+   * button, `.capture-prio`'s circle, showing only the glyph. That is the
+   * shape a fresh, usually-unrated capture needs.
+   *
+   * `chipStyle: true` (board rows) is the opposite: Edvard, 2026-08-14,
+   * after the ball-only version shipped there -- "i liked the old issue
+   * priority status better... make it into a button that opens the
+   * modal, but the visual design is not changed from the old design."
+   * The old design (cycle 171) was a read-only `.chip.prio.prio-<key>`
+   * spelling out the rating in full, shown only when a row had one at
+   * all. This keeps exactly that classing and text, on a <button>
+   * instead of a <span>, plus an "Unrated" chip for rows that have
+   * nothing yet -- the one thing the read-only original could not do,
+   * because there was nothing to tap to give it a first rating.
+   *
+   * `onPick` may return a promise; the trigger disables and the label
+   * updates optimistically while it settles, and a rejection reverts it
+   * to what it was before the click rather than showing a choice that
+   * was never saved. */
   function buildPrioPicker(opts) {
     var current = opts.current || "";
     function glyph(label) { return label ? label.split(" ")[0] : "–"; }
+    function keyOf(label) {
+      var i = PRIORITIES.indexOf(label);
+      return i === -1 ? "" : PRIORITY_KEYS[i];
+    }
 
     var trigger = document.createElement("button");
     trigger.type = "button";
-    trigger.className = opts.triggerClass;
     if (opts.triggerId) trigger.id = opts.triggerId;
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-expanded", "false");
     trigger.setAttribute("aria-label", opts.ariaLabel);
-    trigger.textContent = glyph(current);
+
+    function render(label) {
+      if (opts.chipStyle) {
+        trigger.className = label ? ("chip prio prio-" + keyOf(label)) : "chip prio";
+        trigger.textContent = label || "Unrated";
+      } else {
+        trigger.className = opts.triggerClass;
+        trigger.textContent = glyph(label);
+      }
+    }
+    render(current);
 
     function setValue(label) {
       current = label;
-      trigger.textContent = glyph(label);
+      render(label);
     }
 
     function pick(label) {
@@ -1829,7 +1861,7 @@
   }
 
   /* The rating cell of one boarded row, as something Edvard can change --
-   * the row's own priority indicator in `.item-head-row`, not a second
+   * the row's own priority indicator in `.item-meta-row`, not a second
    * control hidden inside the write-up (Edvard, 2026-08-14: "on issues and
    * ideas the priority button should be the priority tag instead, not a
    * separate button"). `note` is a sibling element the caller places; this
@@ -1843,7 +1875,7 @@
     return buildPrioPicker({
       current: item.priority || "",
       ariaLabel: "Priority of #" + item.number,
-      triggerClass: "prio-select prio-select-board",
+      chipStyle: true,
       onPick: function (chosen) {
         note.textContent = "Saving…";
         return fetch("/api/board/priority", {
@@ -1878,42 +1910,57 @@
     // unique on screen.
     row.id = "item-" + item.number;
 
-    // A button (the toggle) cannot contain another button (the priority
-    // trigger) -- nested interactive controls are invalid HTML and a real
-    // browser will not parse them the way the DOM here assumes. `head`
-    // stays the toggle and the tap target for everything it still holds;
-    // `headRow` is what actually lays out level with it, and is the new
-    // home for the priority control (Edvard, 2026-08-14: "on issues and
-    // ideas the priority button should be the priority tag instead, not a
-    // separate button").
-    var headRow = el("div", "item-head-row");
-    var head = el("button", "item-head");
-    head.type = "button";
+    // A <button> (the toggle) cannot contain another <button> (the
+    // priority trigger) -- nested interactive controls are invalid HTML.
+    // That ruled out a real <button> for `head` once the priority trigger
+    // needed to sit inside it, level with the status chip (Edvard,
+    // 2026-08-14: "the priority status button needs to be placed on the
+    // same horizontal as the progress status, on its right side" -- a
+    // sibling next to the whole head, tried first, could only ever line
+    // up with the head's first line, not specifically the status chip's).
+    // `role="button"` plus a manual Enter/Space handler below is what a
+    // <div> needs to behave like the <button> it replaced.
+    var head = el("div", "item-head");
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
     head.setAttribute("aria-expanded", boardState.open === item.number ? "true" : "false");
-    head.appendChild(el("span", "item-number", "#" + item.number));
-    head.appendChild(el("span", "item-title", item.title));
-    head.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
-    if (item.updated) head.appendChild(el("span", "item-updated", item.updated));
-    headRow.appendChild(head);
+
+    var titleRow = el("div", "item-title-row");
+    titleRow.appendChild(el("span", "item-number", "#" + item.number));
+    titleRow.appendChild(el("span", "item-title", item.title));
+    head.appendChild(titleRow);
+
+    // Status and priority on one line, priority pinned to its right --
+    // `justify-content: space-between` in style.css is what does that,
+    // now that both chips are finally siblings in the same flex row
+    // instead of one living outside the head entirely.
+    var metaRow = el("div", "item-meta-row");
+    metaRow.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
 
     // Every rating on both boards was set by a cycle, not by Edvard
-    // (issues.md capture, 2026-08-14). A finished row keeps a read-only
-    // glyph if it has one and nothing if it does not -- unrated getting no
-    // chip at all, rather than a grey "none" one, is what tells Edvard
-    // which open rows still want a rating; a done row is not one he is
-    // going to visit for that. `item.done` alone is not the editable test,
-    // it only means the row is in the `## Done` table and most finished
-    // rows never move there -- `statusKey` is what the server refuses a
-    // write on.
+    // (issues.md capture, 2026-08-14). A finished row keeps the original
+    // cycle-171 read-only chip if it has a rating and nothing if it does
+    // not -- unrated getting no chip at all, rather than a grey "none"
+    // one, is what tells Edvard which open rows still want a rating; a
+    // done row is not one he is going to visit for that. `item.done`
+    // alone is not the editable test, it only means the row is in the
+    // `## Done` table and most finished rows never move there --
+    // `statusKey` is what the server refuses a write on.
     var editable = !item.done && item.statusKey !== "done";
     var prioNote = el("span", "item-prio-note", "");
     if (editable) {
-      headRow.appendChild(renderPriorityPicker(board, item, prioNote).el);
-      headRow.appendChild(prioNote);
+      metaRow.appendChild(renderPriorityPicker(board, item, prioNote).el);
     } else if (item.priority) {
-      headRow.appendChild(el("span", "prio-select-board", item.priority.split(" ")[0]));
+      metaRow.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
     }
-    row.appendChild(headRow);
+    head.appendChild(metaRow);
+    if (editable) head.appendChild(prioNote);
+
+    // Below the status/priority line rather than beside it (Edvard,
+    // 2026-08-14: "the date should be placed below them").
+    if (item.updated) head.appendChild(el("span", "item-updated", item.updated));
+
+    row.appendChild(head);
 
     var body = el("div", "item-body");
     if (boardState.open !== item.number) body.hidden = true;
@@ -1945,7 +1992,7 @@
       renderBlocks(body, blocks);
     }
 
-    head.addEventListener("click", function () {
+    function toggle() {
       var opening = boardState.open !== item.number;
       // One open row at a time. These write-ups run to several screens
       // and a page of them all open is the scroll problem issues.md #42
@@ -1960,15 +2007,21 @@
       for (var i = 0; i < others.length; i++) {
         if (others[i] === head) continue;
         others[i].setAttribute("aria-expanded", "false");
-        // `.item-body` is a sibling of `.item-head-row`, not of `.item-head`
-        // itself, now that the priority trigger sits beside the toggle
-        // rather than inside it -- `closest(".item")` is the row either way.
         others[i].closest(".item").querySelector(".item-body").hidden = true;
       }
       boardState.open = opening ? item.number : null;
       head.setAttribute("aria-expanded", opening ? "true" : "false");
       body.hidden = !opening;
       if (opening) fill();
+    }
+    head.addEventListener("click", toggle);
+    // `role="button"` on a <div> gets none of a real <button>'s built-in
+    // keyboard activation -- Space and Enter do nothing without this.
+    head.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
     });
     if (boardState.open === item.number) fill();
     return row;

@@ -124,9 +124,12 @@ pre code { background: none; padding: 0; }
  * it is now the fourth item in that group, appended last in app.js so it
  * lands after Note. The label that named it stays in the document for a
  * screen reader; `.visually-hidden` on it is what takes it off screen.
- * Its sizing override lives with `.prio-select-board`'s, next to the
- * shared rule it overrides -- see the comment there for why that
- * placement matters. */
+ * Its sizing override (`.capture-prio` below) lives next to the shared
+ * `.prio-select` rule it overrides -- see the comment there for why that
+ * placement matters. The board row's own trigger used to have a sibling
+ * override here too; it does not any more, because it went back to being
+ * `.chip.prio` (Edvard, 2026-08-14: "the visual design is not changed
+ * from the old design") rather than a fixed-shape circle. */
 
 .capture-actions {
   display: flex;
@@ -1074,61 +1077,68 @@ body.nav-open { overflow: hidden; }
   overflow: hidden;
 }
 
-/* A <button> (the toggle) cannot contain another <button> (the priority
- * trigger) -- nested interactive controls are invalid HTML, and rely on
- * whatever a real browser's parser happens to do with them rather than
- * what this file assumes. `.item-head-row` is what actually lays the row
- * out; `.item-head` stays the toggle and keeps the tap target issues.md
- * #43 asked for ("i want to click anywhere on it to expand/close it") on
- * everything it still holds. Its own right padding moved to the row, so
- * the trigger sits flush with the card's edge instead of leaving a gap
- * where the old padding used to be. */
-.item-head-row {
+/* `role="button"` on a <div>, not a real <button> -- Edvard, 2026-08-14:
+ * "the priority status button needs to be placed on the same horizontal
+ * as the progress status, on its right side." That put the priority
+ * trigger inside the same row as the status chip, and a <button> (the
+ * toggle this used to be) cannot contain another <button> (the priority
+ * trigger) -- nested interactive controls are invalid HTML. `tabindex`
+ * and the keydown handler in app.js are what a <div> needs to make up
+ * for the keyboard activation a real <button> gets for free. Still the
+ * tap target issues.md #43 asked for ("i want to click anywhere on it to
+ * expand/close it") on everything it holds -- three stacked rows now
+ * instead of one wrapped block, but still one element, so the padding
+ * that makes it tappable still surrounds all three. */
+.item-head {
   display: flex;
-  align-items: flex-start;
-  gap: 0.3rem;
-  padding-right: 0.9rem;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.7rem 0.9rem;
+  cursor: pointer;
 }
 
-.item-head {
+.item-title-row {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: 0.4rem 0.6rem;
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 0.7rem 0 0.7rem 0.9rem;
-  background: none;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
 }
 
-/* Pushed down to line up with `.item-head`'s own top padding, since these
- * sit outside it now rather than inside as more chips on the same line. */
-.item-head-row > .prio-select-board {
-  flex: 0 0 auto;
-  margin-top: 0.7rem;
+/* Status on the left, priority pinned to the right -- the one thing a
+ * single wrapped flex line could not do reliably, because the priority
+ * chip needed to stay level with status specifically, not just with
+ * whichever line of the head happened to wrap last. */
+.item-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
-.item-head-row > .item-prio-note {
-  align-self: center;
-  margin-top: 0.7rem;
-}
+.item-prio-note { align-self: center; }
 
 .item-number { color: var(--dim); font-variant-numeric: tabular-nums; }
 .item-title { flex: 1 1 60%; }
+/* Its own row below status/priority (Edvard, 2026-08-14: "the date
+ * should be placed below them") rather than trailing the status chip. */
 .item-updated { color: var(--dim); font-size: 0.85rem; }
 
+/* Also a <button>'s class since the board row's priority chip became one
+ * (Edvard, 2026-08-14: "make it into a button that opens the modal, but
+ * the visual design is not changed from the old design") -- `background`,
+ * `font` and `cursor` are here only because a <button> has its own
+ * defaults for all three that a <span> never had, and this rule has to
+ * cancel them out to look the same as it always did. */
 .chip {
   padding: 0.1rem 0.5rem;
   border-radius: 999px;
+  font: inherit;
   font-size: 0.8rem;
   border: 1px solid var(--line);
+  background: none;
   color: var(--dim);
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .chip-in-progress { color: var(--warn); border-color: var(--warn); }
@@ -1144,6 +1154,12 @@ body.nav-open { overflow: hidden; }
 .prio-high { color: var(--danger); border-color: var(--danger); }
 .prio-medium { color: var(--warn); border-color: var(--warn); }
 .prio-low { color: var(--dim); border-color: var(--line); font-weight: 400; }
+
+/* The one thing the read-only original never needed: a sign that tapping
+ * this chip did something. Only the board row's chip is ever a trigger
+ * with `aria-expanded` on it at all -- the capture box's and a done row's
+ * are not -- so this cannot light up a chip that was never interactive. */
+.chip.prio[aria-expanded="true"] { border-color: var(--accent); }
 
 .item-body { padding: 0 0.9rem 0.8rem; border-top: 1px solid var(--line); }
 .item-where { color: var(--dim); font-size: 0.9rem; }
@@ -1342,28 +1358,24 @@ blockquote {
 .retro-changes { margin: 0.2rem 0 0; padding-left: 1.1rem; line-height: 1.55; }
 .retro-change { margin: 0.15rem 0; }
 
-/* The rating pickers -- issues.md capture, 2026-08-14. Sized like the
-   chips they set rather than like a form control, so a board row does not
-   suddenly look like a settings page when it is opened.
-
-   **This rule is shared by both pickers**, and that is deliberate: the one
-   in the capture box and the one inside an expanded board row are the same
-   control set in two places, and they should not drift apart. So a change
-   here lands on both, and the second one has to be argued for rather than
-   inherited. Cycle 191 raised the height and was caught by its reviewer
-   doing exactly that -- changing the board row while writing a comment
-   about the capture box.
-
-   The height stays chip-shaped and stops being chip-sized. Keeping the
-   pill radius, the border and the 0.85rem type is what the paragraph above
-   is really protecting; the 30px a select defaults to here is not part of
-   that, it is just a select's default. And it is below the 44px iOS touch
-   minimum this stylesheet already holds every button to -- which matters
-   more on the board row than in the capture box, because that is the
-   picker he reaches for to correct one of the 71 ratings Cycle 188 guessed
-   on his behalf. A chip is read; a picker is tapped. */
-.capture-prio,
-.prio-select {
+/* The capture box's rating picker -- issues.md capture, 2026-08-14. Sized
+ * like the chips it sets rather than like a form control, so it does not
+ * read as a settings field next to `.capture-btn`'s plain pills.
+ *
+ * This used to be `.capture-prio, .prio-select` -- one rule shared with
+ * the board row's picker, deliberately, so the two could not drift apart
+ * silently. The board row's went back to being `.chip.prio` (Edvard,
+ * 2026-08-14: "i liked the old issue priority status better... the
+ * visual design is not changed from the old design"), which has its own
+ * sizing already (`.chip` above) and no longer has anything in common
+ * with this one to protect against drifting. `.prio-select` is the name
+ * that rule still answers to in a couple of comments nearby; nothing
+ * renders with that class any more.
+ *
+ * 44px is the iOS touch-target minimum this stylesheet holds every
+ * button to -- the 30px a select defaulted to here (back when this was a
+ * <select>) was under it. */
+.capture-prio {
   font: inherit;
   font-size: 0.85rem;
   min-height: 44px;
@@ -1375,32 +1387,11 @@ blockquote {
 }
 .item-prio-note { font-size: 0.8rem; opacity: 0.8; }
 
-/* Both pickers now hold one glyph -- a ball, or a dash for unrated --
- * rather than a word, so both get a fixed-width, centred override layered
- * on the shared rule above instead of the pill that grows with its old
- * text content. They still diverge in one way each: the board row's
- * borrows `.capture-act`'s square-ish, flat-background shape, because that
- * is the button language the rest of an expanded row already uses; the
- * capture box's keeps the shared rule's 999px radius, because at a fixed
- * 44px square that is a circle, and it sits beside `.capture-btn`'s own
- * pills rather than beside `.capture-act`. Neither rule touches the other
- * picker: each selector is its own class, so a future change to one is
- * still a change to one. */
-.prio-select-board {
-  width: 44px;
-  padding: 0;
-  border-radius: 0.5rem;
-  background: none;
-  text-align: center;
-  text-align-last: center;
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  cursor: pointer;
-}
-
-.prio-select-board:hover:not(:disabled) { border-color: var(--accent); }
-
+/* It holds one glyph -- a ball, or a dash for unrated -- rather than a
+ * word, so it is fixed-width and centred instead of a pill that grows
+ * with text content. 999px from the rule above, at a fixed 44px square,
+ * is a circle, which is why this does not also set its own radius; it
+ * sits beside `.capture-btn`'s own pills. */
 .capture-prio {
   width: 44px;
   padding: 0;
@@ -1414,8 +1405,6 @@ blockquote {
 }
 
 .capture-prio:hover:not(:disabled) { border-color: var(--accent); }
-
-.prio-select-board[aria-expanded="true"],
 .capture-prio[aria-expanded="true"] { border-color: var(--accent); }
 
 /* The backdrop and popup both pickers open, appended to <body> and
