@@ -212,3 +212,36 @@ def test_the_repo_copy_of_shot_js_is_the_one_that_runs(tmp_path, monkeypatch):
         pathlib.Path(see_page.__file__).resolve().parent / "browser" / "shot.js"
     ).read_text(encoding="utf-8")
     assert stale.read_text(encoding="utf-8") == fresh
+
+
+def test_the_base_reaches_the_browser(tmp_path, monkeypatch):
+    """A `--base` that is parsed and then not passed on renders the live site.
+
+    That is the worst possible failure for this flag: the cycle believes it
+    is looking at its own branch and is actually looking at `main`.
+    """
+    seen = {}
+
+    def fake_render(paths, root=None, base=see_page.DEFAULT_BASE, width=None):
+        seen.update(base=base, paths=paths, width=width)
+        return [_row(path=p) for p in paths]
+
+    monkeypatch.setattr(see_page, "render", fake_render)
+    monkeypatch.setattr(see_page, "browser_root", lambda: tmp_path)
+    assert see_page.main(["--base", "http://127.0.0.1:8099", "--width", "1280", "/retro"]) == 0
+    assert seen == {"base": "http://127.0.0.1:8099", "paths": ["/retro"], "width": 1280}
+    assert see_page.main(["/retro"]) == 0
+    assert seen["base"] == see_page.DEFAULT_BASE
+
+
+def test_the_base_is_what_shot_js_is_told_to_open(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["site"] = kwargs["env"].get("NOVA_SITE")
+        return SimpleNamespace(stdout=json.dumps(_row()), stderr="")
+
+    monkeypatch.setattr(see_page, "render_env", lambda root: {})
+    monkeypatch.setattr(see_page.subprocess, "run", fake_run)
+    see_page.render(["/"], root=tmp_path, base="http://nova-site-preview:8083")
+    assert seen["site"] == "http://nova-site-preview:8083"
