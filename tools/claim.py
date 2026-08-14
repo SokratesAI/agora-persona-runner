@@ -1,0 +1,106 @@
+"""Take a handoff item before you work on it, so an overlapping cycle can't.
+
+Edvard, `issues.md` #74 — two cycles that overlap both read the same
+**Next cycle** list and both do the same item. The decision lives in
+`agora_runner.nova_claims`; this is the CLI, and the atomicity is
+CouchDB's, which is why the `get`/`put` pair below is not optional.
+
+Take an item:
+
+    cd /data/workspace/agora-persona-runner
+    C='projects/sokrates/projects/agora/nova/resources/claims.json'
+    python3 /app/bridge/vault_tool.py get "$C" --rev-file /tmp/claim.$$.rev > claims.json
+    python3 -m tools.claim take --ledger claims.json --item confirm-deploy-171 \
+      --cycle 189 --note 'handoff item 1' \
+      && python3 /app/bridge/vault_tool.py put "$C" claims.json --if-rev-file /tmp/claim.$$.rev
+
+Release it when you are done, the same way with `release`.
+
+Exit codes are the whole interface: **0 the item is yours, 2 somebody
+else has it or already did it, 1 something is wrong**. So the `&&` above
+means an unclaimed item is never written back as claimed, and a refusal
+never touches the vault. If the `put` exits 3 you lost the
+compare-and-swap to a cycle that claimed something in between -- start
+over from the `get`, because your local `claims.json` was built on text
+that no longer exists.
+
+`list` prints the ledger without changing it and always exits 0.
+"""
+
+import argparse
+import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from agora_runner.nova_claims import ClaimError, dumps, load, release, summarise, take
+
+OSLO = ZoneInfo("Europe/Oslo")
+
+#: A refusal is not an error -- it is the answer the caller asked for, and
+#: it has to be distinguishable from a broken ledger, because one means
+#: "pick another item" and the other means "stop and look".
+REFUSED_EXIT = 2
+
+
+def _read(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return ""
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Claim a handoff item so an overlapping cycle does not repeat it.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("action", choices=["take", "release", "list"])
+    parser.add_argument("--ledger", required=True, help="path to claims.json")
+    parser.add_argument("--item", help="claim slug, e.g. confirm-deploy-171")
+    parser.add_argument("--cycle", type=int, help="the cycle number doing the work")
+    parser.add_argument("--note", help="what the item is, in a few words")
+    parser.add_argument("--outcome", help="on release: what happened")
+    args = parser.parse_args(argv)
+
+    now = datetime.now(OSLO)
+    try:
+        ledger = load(_read(args.ledger))
+    except ClaimError as exc:
+        print(f"claim: {exc}", file=sys.stderr)
+        return 1
+
+    if args.action == "list":
+        print(summarise(ledger, now))
+        return 0
+
+    if not args.item or args.cycle is None:
+        print(f"claim: {args.action} needs --item and --cycle", file=sys.stderr)
+        return 1
+
+    try:
+        if args.action == "take":
+            ok, message = take(ledger, args.item, args.cycle, now, note=args.note)
+        else:
+            ok, message = release(ledger, args.item, args.cycle, now, outcome=args.outcome)
+    except ClaimError as exc:
+        print(f"claim: {exc}", file=sys.stderr)
+        return 1
+
+    if not ok:
+        # Leave the ledger file exactly as it was read. The documented flow
+        # puts the vault write behind `&&`, but a caller who ignores the
+        # exit code still must not be able to write a refusal back as a
+        # grant.
+        print(message, file=sys.stderr)
+        return REFUSED_EXIT
+
+    with open(args.ledger, "w", encoding="utf-8") as handle:
+        handle.write(dumps(ledger))
+    print(message)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
