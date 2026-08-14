@@ -43,10 +43,12 @@ from datetime import datetime, timedelta
 from agora_runner.config import OSLO
 from agora_runner.nova_journal import file_cycle
 
-# The heartbeat is `every@60m` (Edvard cut it from 72m on 2026-08-09,
-# wanting a more aggressive loop). Passed in rather than imported so a
-# caller that knows the live schedule can say so, and so the tests do not
-# have to be rewritten the next time he changes it -- it has changed twice.
+# The last-resort fallback, not the truth. `nova_cadence_minutes` below is
+# the truth, and this is what a caller measures in when that returns `None`
+# -- Agora unreachable, or a schedule with no single interval. It says
+# `every@60m` because that is what Edvard set on 2026-08-09; he has changed
+# the cadence four times since 2026-08-08, so treat any agreement between
+# this number and reality as luck.
 HEARTBEAT_MINUTES = 60
 
 # One extra interval before calling the newest cycle dead. A cycle runs
@@ -58,6 +60,55 @@ HEARTBEAT_MINUTES = 60
 # because the only thing to do about it is go looking for work that isn't
 # there.
 STALL_GRACE_INTERVALS = 2
+
+
+def nova_cadence_minutes():
+    """Minutes between Nova's own heartbeat runs, live from Agora, or `None`.
+
+    `None` means "no honest answer": Agora unreachable, no enabled
+    heartbeat pointed at Nova, or a `cron@`/`daily@` schedule that has no
+    single interval. The caller falls back to `HEARTBEAT_MINUTES` rather
+    than inventing one.
+
+    The **shortest** interval when more than one enabled heartbeat targets
+    Nova, because any of them dispatching writes a journal entry -- so the
+    rate entries should appear at is the fastest of them, and measuring
+    silence against a slower one would wait through a dead cycle before
+    saying anything. There is one such heartbeat today; picking the first
+    match would be arbitrary the day there are two.
+
+    Lives here, beside the constant it replaces, because both callers are
+    asking the same question for the same reason and #166/#167 answered it
+    twice. `nova_site` asks it for the badge Edvard reads and caches the
+    answer off the request path; `heartbeats.nova_health_note` asks it for
+    the line handed to a waking cycle. That second caller has one
+    heartbeat's schedule in hand and used only that, which is a different
+    question -- "how often does *this* heartbeat run" rather than "how
+    often does an entry get written" -- and the two answers diverge the
+    day Nova has a second enabled heartbeat.
+    """
+    from agora_runner.config import NOVA_PERSONA_ID
+    from agora_runner.http_util import agora_internal
+    from agora_runner.turns import schedule_minutes
+
+    status, body = agora_internal("GET", "/heartbeats")
+    if status != 200:
+        return None
+    minutes = [
+        schedule_minutes(hb.get("schedule", ""))
+        for hb in (body.get("heartbeats") or [])
+        # `workflowId` excluded, not just filtered for tidiness: a
+        # workflow-bound heartbeat dispatches `run_workflow_heartbeat`, a
+        # multi-step conversation round that writes no journal entry, and
+        # `create_heartbeat` requires a `personaId` on those too. One
+        # pointed at Nova at a faster cadence -- a workflow left enabled,
+        # say -- would have this measuring silence in intervals nothing
+        # writes in, which is the false stall #72 exists to prevent.
+        if (hb.get("enabled") and not hb.get("workflowId")
+                and hb.get("personaId") == NOVA_PERSONA_ID)
+    ]
+    usable = [m for m in minutes if m]
+    return min(usable) if usable else None
 
 
 def cycles_written(paths):

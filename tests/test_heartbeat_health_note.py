@@ -33,6 +33,31 @@ def fake_journal(monkeypatch, mtimes, unreadable=()):
     monkeypatch.setattr(vault, "vault_bulk_list", lambda prefix: (files, mtimes))
 
 
+def fake_heartbeats(monkeypatch, *heartbeats, status=200, raises=None):
+    """Stand in for the `/heartbeats` read `nova_cadence_minutes` does."""
+    def agora_internal(method, path, payload=None):
+        if raises is not None:
+            raise raises
+        return status, {"heartbeats": list(heartbeats)}
+
+    monkeypatch.setattr("agora_runner.http_util.agora_internal", agora_internal)
+
+
+@pytest.fixture(autouse=True)
+def no_live_agora(monkeypatch):
+    """No test in this file may reach the network to learn the cadence.
+
+    Without this they still passed, for the wrong reason: `agora_internal`
+    raised connection-refused against a localhost Agora that is not there,
+    the guard in `nova_health_note` swallowed it, and every assertion below
+    was really pinning the *fallback* path. Answering with an empty list is
+    the same fallback, chosen rather than inherited -- a test that would
+    change its mind if the box it ran on happened to have an Agora is not
+    pinning anything.
+    """
+    fake_heartbeats(monkeypatch)
+
+
 def entry(cycle, when):
     return {f"{100 + cycle:03d}-cycle-{cycle}.md": int(when.timestamp() * 1000)}
 
@@ -231,6 +256,60 @@ def test_a_slower_cadence_does_not_cry_stall_every_single_run(monkeypatch):
 
     silent_for_three_hours()
     assert "heartbeat intervals" in nova_health_note(NOVA, since, "every@60m")
+
+
+def test_the_unit_is_how_often_an_entry_is_written_not_how_often_this_one_runs(monkeypatch):
+    """The divergence #166 left behind, and the reason the lookup is shared.
+
+    Two enabled heartbeats point at Nova, and the slow one is the one
+    firing. Entries arrive at the *faster* rate, so 100 minutes of quiet is
+    five intervals and not one -- reading `schedule` off the heartbeat in
+    hand answers the narrower question and waits through four dead cycles
+    before saying anything.
+
+    `every@6h` against `every@20m` on purpose: the two answers have to
+    differ by more than the grace window or this pins nothing.
+    """
+    fake_heartbeats(
+        monkeypatch,
+        {"id": "a", "personaId": NOVA_PERSONA_ID, "schedule": "every@6h",
+         "enabled": True},
+        {"id": "b", "personaId": NOVA_PERSONA_ID, "schedule": "every@20m",
+         "enabled": True},
+    )
+    fake_journal(monkeypatch, {**entry(150, NOW - timedelta(hours=9)),
+                               **entry(151, NOW - timedelta(minutes=100))})
+    note = nova_health_note(NOVA, (NOW - timedelta(hours=10)).isoformat(), "every@6h")
+    assert "no entry for 5 heartbeat intervals" in note
+
+
+def test_an_unreachable_agora_costs_the_unit_and_not_the_measurement(monkeypatch):
+    """The guard, pinned against its own removal -- not against the diff.
+
+    Worth stating because the distinction is easy to lose: this test passes
+    on the commit *before* the lookup existed, and that is not a defect. A
+    guard around a call can only be tested where the call is; revert the
+    whole change and there is no failure to survive, so it agrees. What it
+    does pin is the mutation that actually threatens it -- drop the inner
+    `except` while keeping the lookup and this fails, landing in the outer
+    one. The sibling test above is what fails on a full revert.
+
+    `http_json` catches `HTTPError`, not `URLError`, so Agora being down
+    *raises* out of the cadence lookup -- and the agora pod does roll, four
+    `Connection refused` lines over 20 seconds on 2026-08-14. Without the
+    inner `except` that raise lands in the outer one and the whole journal
+    check is replaced by a failure line, trading a real finding about a
+    dead cycle for the label its interval would have carried. `schedule` is
+    already in hand and cannot fail, so there is a right answer available.
+    """
+    fake_heartbeats(monkeypatch, raises=OSError("Connection refused"))
+    fake_journal(monkeypatch, {**entry(150, NOW - timedelta(minutes=280)),
+                               **entry(151, NOW - timedelta(minutes=220))})
+    note = nova_health_note(NOVA, (NOW - timedelta(hours=6)).isoformat(), "every@110m")
+    assert "failed to run" not in note
+    # Measured in `schedule`, the fallback, not in the 60-minute constant:
+    # 220 minutes is 2 intervals at 110 and would be 3 at 60.
+    assert "no entry for 2 heartbeat intervals" in note
 
 
 def test_a_schedule_with_no_single_interval_falls_back_to_the_constant(monkeypatch):
