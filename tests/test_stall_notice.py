@@ -10,7 +10,7 @@ import pytest
 
 from agora_runner.config import NOVA_PERSONA_ID
 from agora_runner.stall_notice import (
-    StallWatch, due, notice_text, nova_conversation_id,
+    StallWatch, due, notice_text, nova_conversation,
 )
 
 
@@ -85,28 +85,43 @@ def test_one_interval_is_not_pluralised():
 def test_a_missing_cycle_number_does_not_print_none():
     text = notice_text(_status(cycle=None))
     assert "None" not in text
-    assert "The last cycle" in text
+    assert "the last cycle" in text
 
 
 # -- nova_conversation_id() ---------------------------------------------
 
 def test_picks_the_conversation_nova_is_bound_to_right_now():
-    assert nova_conversation_id([
+    assert nova_conversation([
         _heartbeat(personaId="someone-else", conversationId="conv-other"),
         _heartbeat(conversationId="conv-nova"),
-    ]) == "conv-nova"
+    ]) == ("conv-nova", True)
 
 
 def test_ignores_a_disabled_or_workflow_bound_heartbeat():
     # A workflow heartbeat writes no journal entry, so it has nothing to do
     # with the silence being measured -- and a disabled one is not running.
-    assert nova_conversation_id([_heartbeat(enabled=False)]) is None
-    assert nova_conversation_id([_heartbeat(workflowId="wf-1")]) is None
+    assert nova_conversation([_heartbeat(enabled=False)]) == (None, True)
+    assert nova_conversation([_heartbeat(workflowId="wf-1")]) == (None, True)
 
 
 def test_no_heartbeats_at_all_is_not_a_crash():
-    assert nova_conversation_id([]) is None
-    assert nova_conversation_id(None) is None
+    assert nova_conversation([]) == (None, True)
+    assert nova_conversation(None) == (None, True)
+
+
+def test_a_muted_heartbeat_still_gets_the_message_without_the_buzz():
+    # Edvard's #79, shipped the same day: pushNotifications:false mutes the
+    # phone, it does not withhold the message. A stall notice that ignored
+    # it would defeat the mute for the one case a mute cannot tell apart
+    # from nothing happening.
+    assert nova_conversation([_heartbeat(pushNotifications=False)]) == ("conv-1", False)
+
+
+def test_a_heartbeat_without_the_field_still_notifies():
+    # Every heartbeat created before #79 has no such field, and absent must
+    # read as notify -- only a literal false mutes.
+    assert nova_conversation([_heartbeat()])[1] is True
+    assert nova_conversation([_heartbeat(pushNotifications=True)])[1] is True
 
 
 # -- StallWatch: the rate limiter and the failure paths ------------------
@@ -125,8 +140,8 @@ class _Recorder:
     def heartbeats(self):
         return [_heartbeat()]
 
-    def post(self, conversation_id, text):
-        self.posts.append((conversation_id, text))
+    def post(self, conversation_id, text, push):
+        self.posts.append((conversation_id, text, push))
         return self.result
 
 
@@ -138,9 +153,10 @@ def _watch(rec, interval=300):
 def test_posts_once_then_stays_quiet_however_often_it_is_ticked():
     rec = _Recorder(_status())
     watch = _watch(rec)
-    assert watch.tick(now=0.0) is True
+    assert watch.tick(now=0.0) is False, "the first tick must not build a cold cache"
+    assert watch.tick(now=300.0) is True
     # A whole day of checks at the real interval, same stall throughout.
-    for step in range(1, 290):
+    for step in range(2, 290):
         assert watch.tick(now=step * 300.0) is False
     assert len(rec.posts) == 1
     assert rec.posts[0][0] == "conv-1"
@@ -149,21 +165,28 @@ def test_posts_once_then_stays_quiet_however_often_it_is_ticked():
 def test_a_tick_inside_the_interval_does_not_even_check():
     rec = _Recorder(_status(stalled=False))
     watch = _watch(rec)
-    watch.tick(now=0.0)
-    assert rec.checks == 1
-    for step in range(1, 300):
+    for step in range(0, 300):
         watch.tick(now=float(step))
-    assert rec.checks == 1, "the site's 1s shutdown loop must not cost 300 checks"
+    assert rec.checks == 0, "the site's 1s shutdown loop must not cost 300 checks"
     watch.tick(now=300.0)
-    assert rec.checks == 2
+    assert rec.checks == 1
+
+
+def test_the_first_tick_never_touches_the_journal_cache():
+    # It lands ~1s after start_nova_site kicked off the warming thread; a
+    # cold cached_payload build there blocks the SIGTERM poll for seconds.
+    rec = _Recorder(_status())
+    _watch(rec).tick(now=123.4)
+    assert rec.checks == 0
 
 
 def test_a_failed_post_is_retried_rather_than_counted_as_announced():
     rec = _Recorder(_status(), result=503)
     watch = _watch(rec)
     assert watch.tick(now=0.0) is False
+    assert watch.tick(now=300.0) is False
     rec.result = 200
-    assert watch.tick(now=300.0) is True
+    assert watch.tick(now=600.0) is True
     assert len(rec.posts) == 2
 
 
@@ -171,7 +194,8 @@ def test_no_bound_conversation_posts_nothing_and_stays_armed():
     rec = _Recorder(_status())
     rec.heartbeats = lambda: []
     watch = _watch(rec)
-    assert watch.tick(now=0.0) is False
+    watch.tick(now=0.0)
+    assert watch.tick(now=300.0) is False
     assert rec.posts == []
 
 
@@ -184,7 +208,8 @@ def test_a_broken_check_costs_a_check_not_the_site():
         raise RuntimeError("vault said no")
 
     watch = StallWatch(check=boom, heartbeats=rec.heartbeats, post=rec.post)
-    assert watch.tick(now=0.0) is False
+    watch.tick(now=0.0)
+    assert watch.tick(now=300.0) is False
     assert rec.posts == []
 
 
@@ -206,12 +231,36 @@ def test_the_site_process_actually_ticks_it():
 
     from agora_runner import nova_site_main
 
+    # Split on comment markers first: `# watch.tick()` would satisfy a bare
+    # substring check while the notifier did nothing at all.
     source = inspect.getsource(nova_site_main.main)
-    assert "watch.tick()" in source
-    assert "StallWatch()" in source
+    live = "\n".join(line.split("#")[0] for line in source.splitlines())
+    assert "watch.tick()" in live
+    assert "StallWatch()" in live
 
 
 @pytest.mark.parametrize("code", [200, 201])
 def test_both_success_codes_count_as_posted(code):
     rec = _Recorder(_status(), result=code)
-    assert _watch(rec).tick(now=0.0) is True
+    watch = _watch(rec)
+    watch.tick(now=0.0)
+    assert watch.tick(now=300.0) is True
+
+
+def test_the_live_post_speaks_as_agora_and_honours_the_mute(monkeypatch):
+    # The one place the push flag actually reaches the wire, and the only
+    # test that would notice `push=True` being hardcoded back in.
+    from agora_runner import conversations, stall_notice
+
+    seen = {}
+
+    def fake_notify(conversation_id, text, sender, system=False, push=True,
+                    thinking=False):
+        seen.update(conversation=conversation_id, sender=sender, system=system,
+                    push=push)
+        return 200, "m1"
+
+    monkeypatch.setattr(conversations, "notify", fake_notify)
+    assert stall_notice._live_post("conv-1", "text", False) == 200
+    assert seen == {"conversation": "conv-1", "sender": "Agora",
+                    "system": True, "push": False}
