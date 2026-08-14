@@ -716,7 +716,10 @@ def test_a_capture_reaches_the_vault_through_the_real_request_path():
         status, _, body = _post("/api/capture", {"target": "issues", "text": "the app needs a restart"})
     assert status == 200
     assert json.loads(body)["ok"] is True
-    cap.assert_called_once_with("issues", "the app needs a restart")
+    # The unrated default reaches `capture` explicitly rather than by
+    # omission, so this pins that an unrated capture still writes his words
+    # and nothing else -- tests/test_board_priority.py covers a rated one.
+    cap.assert_called_once_with("issues", "the app needs a restart", "")
 
 
 def test_editing_a_capture_reaches_the_vault_through_the_real_request_path():
@@ -3377,7 +3380,7 @@ def test_a_capture_is_in_the_board_on_the_very_next_request():
                       side_effect=lambda name: (live["text"], "", "")):
         assert _board_captures() == ["an older capture"]
 
-        def _write(target, text):
+        def _write(target, text, priority=""):
             live["text"] = live["text"].replace(
                 "- \n", f"- {text}\n- \n", 1
             )

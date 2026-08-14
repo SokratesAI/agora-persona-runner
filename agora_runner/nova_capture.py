@@ -45,6 +45,7 @@ capture at all.
 """
 
 from agora_runner.log import log
+from agora_runner.nova_boards import PRIORITY_LABELS, set_row_priority
 from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 # These three moved out of `projects/sokrates/projects/agora/` on
@@ -300,18 +301,29 @@ def insert_captures(markdown, bullets):
     return "\n".join(lines[:start] + block + lines[end:])
 
 
-def capture(target, text):
+def capture(target, text, priority=""):
     """Append a capture to `issues.md` or `ideas.md`. Returns (ok, message).
 
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
     client sends is ever used to address a vault document.
+
+    `priority` rides at the front of the bullet as its emoji, and only on
+    the first bullet: a paste that splits into four lines is one thought
+    Edvard rated once, not four items each rated separately. It is the
+    same rating vocabulary the board column uses, checked against
+    `PRIORITY_LABELS` here as well as at the endpoint, because this is the
+    function that decides what characters land in his file.
     """
     path = CAPTURE_TARGETS.get(target)
     if path is None:
         return False, f"unknown target: {target!r}"
+    if priority and priority not in PRIORITY_LABELS.values():
+        return False, f"unknown priority: {priority!r}"
     bullets = clean_capture_text(text or "")
     if not bullets:
         return False, "nothing to capture"
+    if priority:
+        bullets[0] = priority.split(" ", 1)[0] + " " + bullets[0]
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):
@@ -329,4 +341,41 @@ def capture(target, text):
         if "409" not in result:
             break
     log(f"nova-capture failed writing to {target}: {result}")
+    return False, f"could not write to {target}: {result}"
+
+
+def set_priority(target, number, priority):
+    """Change one boarded row's rating. Returns (ok, message).
+
+    The third write path on this site, and the first that edits something
+    *I* wrote rather than something Edvard wrote. Same read-modify-write
+    and same 409 retry as `capture` and `amend`, for the same reason: a
+    cycle boarding these very files is the concurrent writer, and it is
+    the one most likely to be running, since boarding is what step 6 of
+    every cycle does.
+
+    `set_row_priority` returning `None` is not a write failure and is not
+    retried -- the row is gone, done, or the rating is not one of the four.
+    Re-reading would return the same answer and a 409 loop around it would
+    just spin, which is the distinction `amend` draws too.
+    """
+    path = CAPTURE_TARGETS.get(target)
+    if path is None:
+        return False, f"unknown target: {target!r}"
+
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(path)
+        if current is None:
+            return False, f"{path} not found"
+        updated = set_row_priority(current, number, priority)
+        if updated is None:
+            return False, f"#{number} is not an open row on {target}"
+        result = vault_write_path(path, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture rated #{number} on {target} as {priority or '(unrated)'}")
+            return True, f"#{number} is now {priority or 'unrated'}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed rating #{number} on {target}: {result}")
     return False, f"could not write to {target}: {result}"
