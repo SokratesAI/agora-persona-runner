@@ -343,8 +343,14 @@ def comments_payload():
             comment["replyWaiting"] = (
                 asked_at is not None and (now - asked_at) >= WAITING_AFTER_SECONDS
             )
+            # Clamped, because both ends of that subtraction are `time.time()`
+            # and a wall clock can step backwards -- an NTP correction between
+            # `enqueue` and this read would put a negative number on the wire.
+            # The one consumer today happens to treat that as "a moment", so
+            # this is about the payload being honest on its own rather than
+            # about the current card: a wait cannot have lasted -50 seconds.
             comment["replyWaitingSeconds"] = (
-                int(now - asked_at) if asked_at is not None else 0
+                max(0, int(now - asked_at)) if asked_at is not None else 0
             )
             # And when it is not coming at all, say so rather than letting
             # the line disappear as if the answer had arrived.
