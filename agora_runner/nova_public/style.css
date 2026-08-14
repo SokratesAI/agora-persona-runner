@@ -1212,7 +1212,12 @@ blockquote {
 .prio-select {
   font: inherit;
   font-size: 0.85rem;
-  padding: 0.3rem 0.5rem;
+  /* 44px is the iOS touch-target minimum, same as the capture buttons.
+     A select's own default height is 30px here, which is the one place a
+     picker sized "like the chip it sets" went too far: a chip is read and
+     a picker is tapped. */
+  min-height: 44px;
+  padding: 0.3rem 0.75rem;
   border-radius: 999px;
   border: 1px solid var(--line, #3a3a3a);
   background: var(--card, #1c1c1c);
