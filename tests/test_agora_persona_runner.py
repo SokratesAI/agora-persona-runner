@@ -6854,3 +6854,73 @@ def test_workflow_round_declares_itself_unattended(runner):
         )
 
     assert captured["unattended"] is True
+
+
+def test_schedule_minutes_is_the_one_definition_of_an_every_interval():
+    """Extracted from `schedule_due` so `cycle_health` measures a stalled
+    loop in the interval that is actually running, rather than in a
+    constant nobody updates when Edvard changes the cadence."""
+    from agora_runner.turns import schedule_minutes
+
+    assert schedule_minutes("every@40m") == 40
+    assert schedule_minutes("every@60m") == 60
+    assert schedule_minutes("every@6h") == 360
+    # The anchor says *when* the grid lands, never how long the wait is.
+    assert schedule_minutes("every@60m@19:00") == 60
+    assert schedule_minutes("every@6h@12:00") == 360
+
+
+def test_schedule_minutes_refuses_everything_with_no_single_interval():
+    """`None` rather than a guess. A `cron@` heartbeat genuinely has no
+    interval, and both callers have to decide what to do about that --
+    `schedule_due` computes the occurrence instead, `nova_health_note`
+    falls back to the constant."""
+    from agora_runner.turns import schedule_minutes
+
+    for schedule in ("cron@0 8 * * 1-5", "daily@08:00", "", None, "hourly",
+                     "every@", "every@abc", "every@m", "every@-5m", "every@0m"):
+        assert schedule_minutes(schedule) is None, schedule
+
+
+def test_a_hand_edited_every_schedule_no_longer_takes_the_poll_loop_down():
+    """`every@abc` used to raise ValueError straight out of `schedule_due`,
+    which runs inside the loop that polls *every* heartbeat -- so one bad
+    schedule stopped all the others. The cron@ branch has guarded against
+    exactly this since it was written; this branch never did.
+
+    `every@0m` is the same guard from the other side: it made `delta` zero,
+    so the heartbeat read as due on every single pass of the poll loop.
+    """
+    ran = _oslo("2026-08-08T12:00:00").isoformat()
+    now = _oslo("2026-08-09T12:00:00")
+
+    assert not schedule_due("every@abc", ran, ran, now)
+    assert not schedule_due("every@", ran, ran, now)
+    assert not schedule_due("every@0m", ran, ran, now)
+    # A day later on a valid schedule is still due -- the guard is narrow.
+    assert schedule_due("every@6h", ran, ran, now)
+
+
+def test_run_heartbeat_hands_the_journal_health_check_its_own_schedule(runner):
+    """The wire, not the calculation.
+
+    `cycle_health` measures a silent loop in heartbeat intervals, and
+    `nova_health_note` takes the interval from the schedule it is handed.
+    Nothing pinned `run_heartbeat` actually handing one over -- so dropping
+    the argument at the call site left every test of the calculation green
+    while the check went back to measuring against a 60-minute constant,
+    which is the exact bug. A reintroduction with no failure anywhere is
+    the one shape a mutation check exists to catch.
+    """
+    seen = {}
+
+    def spy(persona, previous_run_at, schedule=None):
+        seen["schedule"] = schedule
+        return ""
+
+    with patch.object(runner.heartbeats, "nova_health_note", side_effect=spy):
+        _heartbeat_run(runner, {
+            "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+            "schedule": "every@40m@19:00", "name": "Nova"})
+
+    assert seen["schedule"] == "every@40m@19:00"

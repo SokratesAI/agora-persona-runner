@@ -189,7 +189,7 @@ def _parse_run_at(stamp):
     return parsed
 
 
-def nova_health_note(persona, previous_run_at):
+def nova_health_note(persona, previous_run_at, schedule=None):
     """The journal self-check, as a line for Nova's own heartbeat, or `""`.
 
     Edvard, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not
@@ -213,18 +213,38 @@ def nova_health_note(persona, previous_run_at):
     would be meaningless in front of anyone else's heartbeat, and wrapped
     because a self-check is never worth losing a cycle over -- if the vault
     read fails, the cycle should still run, and step 1 will notice.
+
+    **`schedule` is this heartbeat's own, and it is the unit the stall is
+    measured in.** "No entry for 2 heartbeat intervals" is only a true
+    sentence if the interval is the one actually running.
+    `cycle_health.HEARTBEAT_MINUTES` is a constant, and its own comment
+    says to pass the live schedule in instead -- nothing ever did, so the
+    check has been measuring against 60 minutes no matter what the
+    heartbeat said. That constant has been right by luck since 2026-08-12,
+    when Edvard moved the cadence to 40 minutes and back. At 40 it would
+    have waited 120 minutes to report a dead cycle instead of 80, letting
+    a second cycle die before saying anything about the first; at a slower
+    cadence than 60 it fails the other way and cries stall every single
+    run, which is the false alarm issue #72 says would make the check
+    worth less than nothing. `None` for a `cron@` or `daily@` heartbeat,
+    which has no single interval -- the constant is the honest fallback
+    there, and no such heartbeat is Nova's today.
     """
     if (persona or {}).get("id") != NOVA_PERSONA_ID:
         return ""
     try:
-        from agora_runner.cycle_health import describe, heartbeat_findings
+        from agora_runner.cycle_health import (
+            HEARTBEAT_MINUTES, describe, heartbeat_findings,
+        )
         from agora_runner.nova_journal import JOURNAL_DIR
+        from agora_runner.turns import schedule_minutes
         from agora_runner.vault import vault_bulk_list
 
         files, mtimes = vault_bulk_list(JOURNAL_DIR)
         line = describe(heartbeat_findings(
             list(files), mtimes, datetime.now(OSLO),
             _parse_run_at(previous_run_at),
+            schedule_minutes(schedule) or HEARTBEAT_MINUTES,
             unreadable=getattr(files, "unreadable", ()),
         ))
     except Exception as e:
@@ -339,7 +359,7 @@ def run_heartbeat(heartbeat):
     # Before the vault context and after the task, so a cycle reads what it
     # was asked to do and then what went wrong last hour -- the second only
     # ever changes how it does the first.
-    health = nova_health_note(persona, previous_run_at)
+    health = nova_health_note(persona, previous_run_at, heartbeat.get("schedule"))
     if health:
         extra_parts.append(health)
     if heartbeat.get("vaultPaths"):
