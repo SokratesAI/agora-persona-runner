@@ -406,3 +406,62 @@ def test_immediately_and_immediate_are_one_bucket():
     assert priority_key("Immediately") == "immediate"
     assert priority_key("🔴 immediate") == "immediate"
     assert priority_key("") == ""
+
+
+def test_search_matches_the_write_up_and_not_only_the_title(board_md, notes_md):
+    """The point of doing this server-side (ideas.md #71).
+
+    "visualisations" appears nowhere in any row title -- it is inside
+    #57's quoted detail body, which `board_page` strips from the list.
+    A client-side search over what the page holds could not find it.
+    """
+    with _serve(board_md, notes_md):
+        status, _, body = _get("/api/board?name=issues&q=visualisations")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["matches"] == [57]
+    assert payload["query"] == "visualisations"
+    # Rows are not resent: the page already has them and only wants to
+    # know which ones matched.
+    assert "items" not in payload
+
+
+def test_search_is_case_insensitive_and_covers_titles_too(board_md, notes_md):
+    with _serve(board_md, notes_md):
+        _, _, body = _get("/api/board?name=issues&q=GEMINI")
+    assert json.loads(body)["matches"] == [58]
+
+
+def test_an_empty_search_matches_nothing_rather_than_everything(board_md, notes_md):
+    """Answering "" with all 71 rows looks exactly like a working search."""
+    with _serve(board_md, notes_md):
+        _, _, body = _get("/api/board?name=issues&q=%20%20")
+    assert json.loads(body)["matches"] == []
+
+
+def test_a_search_that_hits_nothing_says_so(board_md, notes_md):
+    with _serve(board_md, notes_md):
+        _, _, body = _get("/api/board?name=issues&q=zzzznotinthisfile")
+    assert json.loads(body)["matches"] == []
+
+
+def test_the_search_blob_never_goes_out_with_a_page(board_md, notes_md):
+    """It is every write-up on the board again, lowercased -- the exact
+    payload `details` is stripped to avoid. All three page shapes."""
+    with _serve(board_md, notes_md):
+        for url in (
+            "/api/board?name=issues&limit=2",
+            "/api/board?name=issues",
+            "/api/board?name=issues&item=57",
+        ):
+            _, _, body = _get(url)
+            assert "searchText" not in json.loads(body), url
+
+
+def test_two_different_searches_do_not_share_one_etag(board_md, notes_md):
+    """The cache is keyed per variant. Without `q` in the key, the second
+    query would be served a 304 against the first query's answer."""
+    with _serve(board_md, notes_md):
+        _, _, first = _get("/api/board?name=issues&q=gemini")
+        _, _, second = _get("/api/board?name=issues&q=visualisations")
+    assert json.loads(first)["version"] != json.loads(second)["version"]

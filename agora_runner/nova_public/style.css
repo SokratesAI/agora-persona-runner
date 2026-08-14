@@ -850,6 +850,7 @@ body.nav-open { overflow: hidden; }
  * 220ms after a tap. The shorthand resets both. */
 @media (prefers-reduced-motion: reduce) {
   .nav, .nav.open, .scrim, .scrim.open, .menu-bar { transition: none; }
+  .board-sort-dir { transition: none; }
 }
 
 .tabs, .filters {
@@ -875,6 +876,110 @@ body.nav-open { overflow: hidden; }
   color: var(--accent);
   border-color: var(--accent);
 }
+
+/* The search / filter / sort strip (ideas.md #70 and #71). Its own block
+ * above the rows so the whole strip scrolls away together rather than
+ * leaving a stray control behind, and `flex: 0` on the extra chips so
+ * they size to their own label instead of stretching like the three
+ * status chips -- "Nova worked on it" and "Unrated" are very different
+ * lengths and equal thirds made both look wrong. */
+.board-controls {
+  margin: 0 0 0.8rem;
+}
+
+.board-search {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+}
+
+.board-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* 44px, the tap-target floor every other control on this page is held
+   * to (issues.md, the capture-row fix on 2026-08-14). */
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  background: var(--card);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+.board-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.board-search-clear {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  background: var(--card);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.filter-extra {
+  flex: 0 1 auto;
+  font-size: 0.82rem;
+}
+
+.board-sort {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.8rem;
+}
+
+.board-sort-label {
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.board-sort-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.3rem 0.5rem;
+  background: var(--card);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+/* The arrow he asked for: "a button with a upwards/downwards facing
+ * arrow to click and have it turn (with clockwise animation) which flips
+ * the order of the sorting." One glyph, rotated rather than swapped, so
+ * the turn is the animation -- swapping ↑ for ↓ cannot be animated at
+ * all, and the rotation is what tells you the tap registered. */
+.board-sort-dir {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  background: var(--card);
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 1.05rem;
+  cursor: pointer;
+  transition: transform 220ms ease-in-out;
+  transform: rotate(0deg);
+}
+
+.board-sort-dir.desc {
+  transform: rotate(180deg);
+}
+
 
 .captures {
   border: 1px solid var(--warn);

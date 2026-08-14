@@ -390,6 +390,24 @@ def board_payload(name):
         ],
         "items": board["items"],
         "details": details,
+        # One lowercased blob per row: its title plus its whole write-up,
+        # in raw markdown. Edvard, ideas.md #71: "Ability to search
+        # through issues or ideas" -- and the first of the six kinds I
+        # wrote back to him was free text over the *detail*, not just the
+        # title, because a row title is four words and everything you
+        # would actually search for is in the body. The page cannot do
+        # that itself: `board_page` strips `details` from the list for
+        # the same reason it always has (60KB of the 68KB file), so the
+        # match has to happen on this side. Built here rather than per
+        # request so a search costs a substring scan over a dict the
+        # cache already holds, and stripped by `board_page` so it never
+        # goes out with the list.
+        "searchText": {
+            str(item["number"]): (
+                item["title"] + "\n" + board["details"].get(item["number"], "")
+            ).lower()
+            for item in board["items"]
+        },
         "notes": notes,
     }
 
@@ -434,12 +452,16 @@ def retros_payload():
     return shape_retros(retro_ledger_json())
 
 
-def board_page(payload, limit=None, item=None):
+def board_page(payload, limit=None, item=None, search=None):
     """One board, as the page actually asks for it.
 
-    Three shapes, and the split is the whole point of this endpoint:
+    Four shapes, and the split is the whole point of this endpoint:
 
     - `item=57` -- one detail body. This is what a tap on a row fetches.
+    - `search="badge"` -- just the numbers of the rows whose title or
+      write-up contains that text (ideas.md #71). Nothing else: the page
+      already holds every row, so the answer it is missing is only which
+      of them match, and sending rows back would double the list.
     - `limit=n` -- the list: every row (they are one line each, 60 of
       them, ~5KB in total) plus the newest `n` of my own notes and no
       detail bodies at all.
@@ -462,9 +484,27 @@ def board_page(payload, limit=None, item=None):
             "item": dict(row or {"number": item}, blocks=blocks or []),
             "found": blocks is not None or row is not None,
         }
+    if search is not None:
+        needle = search.strip().lower()
+        blobs = payload.get("searchText") or {}
+        # An empty query matches nothing rather than everything. The page
+        # only asks when Edvard has typed something, so "" here is a bug
+        # somewhere above, and answering it with all 71 rows would look
+        # exactly like a working search.
+        matches = (
+            sorted(int(n) for n, text in blobs.items() if needle in text)
+            if needle
+            else []
+        )
+        return {"name": payload.get("name"), "query": needle, "matches": matches}
     notes = payload.get("notes") or []
     page = dict(payload, notes=notes if limit is None else notes[:limit])
     page["notesTotal"] = len(notes)
+    # Never goes out with a page: it is every write-up on the board again,
+    # lowercased, which is the exact payload `details` is stripped to
+    # avoid. Dropped unconditionally rather than under `if limit`, because
+    # the no-argument shape is the pre-#85 client and it has no use for it.
+    page.pop("searchText", None)
     if limit is not None:
         page["details"] = {}
     return page
@@ -1120,8 +1160,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         item = _int_param(query, "item", None)
         limit = _int_param(query, "limit", None)
-        page = board_page(payload, limit=limit, item=item)
-        etag = page_etag(base, f"item={item}" if item is not None else f"limit={limit}")
+        search = (query.get("q") or [None])[0]
+        page = board_page(payload, limit=limit, item=item, search=search)
+        if search is not None:
+            variant = f"q={search}"
+        elif item is not None:
+            variant = f"item={item}"
+        else:
+            variant = f"limit={limit}"
+        etag = page_etag(base, variant)
         page["version"] = etag
         self._send_json_or_304(json.dumps(page), etag)
 
