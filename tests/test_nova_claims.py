@@ -331,3 +331,20 @@ def test_cli_list_never_changes_the_file(tmp_path):
 def test_cli_take_without_a_cycle_exits_one(tmp_path):
     path = write(tmp_path, "")
     assert claim_cli.main(["take", "--ledger", path, "--item", "a-real-item"]) == 1
+
+
+def test_a_usage_error_exits_one_not_two(tmp_path, capsys):
+    # 2 is "somebody else has it, pick another item, do not argue". A cycle
+    # that leaves the `<N>` placeholder unsubstituted, or drops `--ledger`,
+    # must not be told a free item was taken -- it would obey that and
+    # quietly skip the work it was sent to do. argparse's own default for a
+    # usage error is 2, which is why this needs a test at all.
+    path = write(tmp_path, "")
+    for argv in (
+        ["take", "--ledger", path, "--item", "a-real-item", "--cycle", "<N>"],
+        ["take", "--item", "a-real-item", "--cycle", "189"],
+        ["nonsense", "--ledger", path],
+    ):
+        with pytest.raises(SystemExit) as exit_info:
+            claim_cli.main(argv)
+        assert exit_info.value.code == 1, argv

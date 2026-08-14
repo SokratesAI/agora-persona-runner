@@ -42,6 +42,21 @@ OSLO = ZoneInfo("Europe/Oslo")
 REFUSED_EXIT = 2
 
 
+class _Parser(argparse.ArgumentParser):
+    """Argparse exits 2 on a usage error, and 2 is taken.
+
+    2 means "somebody else has this item", and `prompt.md` tells every
+    cycle to accept that answer without arguing. So a cycle that mistypes
+    `--cycle`, or leaves the `<N>` placeholder unsubstituted, or drops
+    `--ledger`, would be told a free item was taken -- and would silently
+    go and do something else, exactly the way it was instructed to. A
+    usage error is "stop and look", which is 1.
+    """
+
+    def error(self, message):
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
 def _read(path):
     try:
         with open(path, encoding="utf-8") as handle:
@@ -51,7 +66,7 @@ def _read(path):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         description="Claim a handoff item so an overlapping cycle does not repeat it.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
