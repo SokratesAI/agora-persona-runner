@@ -1323,6 +1323,47 @@ describe("commenting on a cycle", () => {
     assert.equal(card.querySelector(".comment-waiting").textContent, "Nova is replying…");
   });
 
+  test("a long wait reports how long it has been and blames nothing", async () => {
+    /* The line here used to read "Queued behind a running cycle", which is a
+     * cause the server cannot see: a reply takes the bridge's parallel lane
+     * except in the 15-minute window before an OAuth refresh, so the stated
+     * reason was usually false. What is left is the elapsed time, which is
+     * also the thing that separates a slow answer from a stuck one. */
+    const waiting = withPending(57);
+    waiting.byCycle["57"][0].replyWaiting = true;
+    waiting.byCycle["57"][0].replyWaitingSeconds = 185;
+    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
+    assert.match(text, /Still working on this — 3 minutes so far\./);
+    assert.doesNotMatch(text, /[Qq]ueued/);
+  });
+
+  test("a wait with no elapsed time still reads as a sentence", async () => {
+    /* An older server, or a payload that lost the field, must not put
+     * "NaN minutes" in front of him -- that is worse than the fixed
+     * sentence this replaced. */
+    const waiting = withPending(57);
+    waiting.byCycle["57"][0].replyWaiting = true;
+    delete waiting.byCycle["57"][0].replyWaitingSeconds;
+    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
+    assert.match(text, /Still working on this — a moment so far\./);
+    assert.doesNotMatch(text, /NaN|undefined/);
+  });
+
+  test("a null elapsed time reads as a moment, not as zero seconds", async () => {
+    /* Number(null) is 0, so a coercing guard lets a value the server never
+     * means to send render as a confident "0 seconds". The same hole passes
+     * [] and "" as zero and true as one. */
+    const waiting = withPending(57);
+    waiting.byCycle["57"][0].replyWaiting = true;
+    waiting.byCycle["57"][0].replyWaitingSeconds = null;
+    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
+    assert.match(text, /Still working on this — a moment so far\./);
+    assert.doesNotMatch(text, /0 seconds/);
+  });
+
   test("the page polls until the reply lands, then lets go", async () => {
     /* The poll is the only thing that turns "replying…" into the reply
      * without him reloading, and the only thing that stops. Both halves are

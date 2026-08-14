@@ -420,8 +420,10 @@ def test_a_new_attempt_clears_the_old_failure():
 
 
 def test_pending_carries_the_time_it_was_asked_for():
-    """The site needs the clock to tell "being written" from "queued behind
-    a cycle" -- without it there is only one state and it lies."""
+    """The site needs the clock to tell "being written" from "still going"
+    -- without it there is only one state and it lies. It is also what the
+    card now reports: the elapsed second, with no cause named, because the
+    cause is not something this side can see (issue #80)."""
     before = time.time()
     with patch.object(nova_replies, "_ensure_worker"):
         nova_replies.enqueue(80, "2026-08-10 13:54")

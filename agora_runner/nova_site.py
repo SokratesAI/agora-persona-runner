@@ -327,11 +327,30 @@ def comments_payload():
             comment["replyPending"] = asked_at is not None
             # Two different waits, and the card must not call the second one
             # the first: under the threshold a reply is genuinely being
-            # written, over it the bridge is busy with a cycle and this is a
-            # queue. Saying "Nova is replying…" for forty minutes is what
-            # Edvard reported as the conversation not working at all.
+            # written, over it something is holding it up. Saying "Nova is
+            # replying…" for forty minutes is what Edvard reported as the
+            # conversation not working at all.
+            #
+            # What this cannot see is *why* it is held up, and the card used
+            # to assert one anyway -- "Queued behind a running cycle". The
+            # bridge only serialises a reply behind a cycle when the OAuth
+            # refresh window is close (bridge `allow_concurrent` /
+            # `refresh_window_clear`, a 15-minute margin on a roughly
+            # 8-hourly refresh), so the stated cause is wrong the large
+            # majority of the time and nothing here is measuring it. The
+            # elapsed second is the thing this server actually knows, so it
+            # is what goes out; the card reports the wait and names no cause.
             comment["replyWaiting"] = (
                 asked_at is not None and (now - asked_at) >= WAITING_AFTER_SECONDS
+            )
+            # Clamped, because both ends of that subtraction are `time.time()`
+            # and a wall clock can step backwards -- an NTP correction between
+            # `enqueue` and this read would put a negative number on the wire.
+            # The one consumer today happens to treat that as "a moment", so
+            # this is about the payload being honest on its own rather than
+            # about the current card: a wait cannot have lasted -50 seconds.
+            comment["replyWaitingSeconds"] = (
+                max(0, int(now - asked_at)) if asked_at is not None else 0
             )
             # And when it is not coming at all, say so rather than letting
             # the line disappear as if the answer had arrived.
