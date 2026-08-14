@@ -138,6 +138,15 @@ pre code { background: none; padding: 0; }
    * off the edge where it cannot be tapped. What it may no longer do is
    * wrap *between* the buttons -- see `.capture-submit`. */
   flex-wrap: wrap;
+  /* Edvard, 2026-08-14: the button row read as left-aligned. `.capture-status`
+   * below is empty most of the time, and an empty flex item with
+   * `flex-grow` still claims the row's full width on its own wrapped
+   * line -- which pushes `.capture-submit` onto a line of its own, and a
+   * wrapped line's items default to `flex-start`, i.e. the left. This is
+   * what actually moves that second line's content to the right; the
+   * status item's `flex-grow` only matters once it holds real text and
+   * shares a line with the buttons. */
+  justify-content: flex-end;
 }
 
 /* The three targets plus the priority picker are one group, not siblings
@@ -1380,3 +1389,53 @@ blockquote {
 }
 
 .capture-prio:hover:not(:disabled) { border-color: var(--accent); }
+
+.prio-select-board[aria-expanded="true"],
+.capture-prio[aria-expanded="true"] { border-color: var(--accent); }
+
+/* The popup both pickers open, appended to <body> and positioned in
+ * app.js from the trigger's own coordinates -- see `getPrioMenuOverlay`
+ * for why it is not nested under the trigger. `position: fixed` so a
+ * scroll cannot leave it pointing at empty space; app.js closes it on
+ * scroll rather than re-tracking it, which is the simpler contract. */
+.prio-menu {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 9rem;
+  max-width: calc(100vw - 16px);
+  padding: 0.3rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Without this, `menu.hidden = true` in app.js does nothing visible: the
+ * `display: flex` above is author CSS and beats the UA stylesheet's
+ * `[hidden] { display: none }` in the cascade regardless of which was
+ * written first, so the popup stayed on screen, just no longer
+ * repositioned -- closeMenu() looked like it was doing nothing. */
+.prio-menu[hidden] {
+  display: none;
+}
+
+.prio-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  background: none;
+  border: 0;
+  border-radius: 0.4rem;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.prio-option:hover,
+.prio-option[aria-selected="true"] { background: var(--bg); }

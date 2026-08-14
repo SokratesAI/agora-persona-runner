@@ -3353,6 +3353,79 @@ describe("the capture row does not scramble", () => {
   });
 });
 
+/* `buildPrioPicker` in app.js, exercised through both surfaces it builds.
+ * The bug that motivated these: closing the popup (`menu.hidden = true`)
+ * silently did nothing, because `.prio-menu`'s own `display: flex` beat
+ * the UA stylesheet's `[hidden] { display: none }` in the cascade. Every
+ * structural test above kept passing throughout -- none of them opened
+ * the thing and looked at what was left on screen after a pick. */
+describe("the priority picker (buildPrioPicker)", () => {
+  test("the composer's picker opens with full words and closes to a bare glyph after a pick", async () => {
+    const window = await loadSite("/issues");
+    const trigger = window.document.getElementById("capture-prio");
+    assert.equal(trigger.textContent, "–", "the closed trigger should start on the dash");
+    click(window, trigger);
+    const menu = window.document.querySelector(".prio-menu");
+    assert.ok(menu, "no menu was opened");
+    assert.equal(menu.hidden, false, "the menu did not open");
+    assert.deepEqual(
+      [...menu.querySelectorAll(".prio-option")].map((o) => o.textContent),
+      ["– Unrated", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"],
+      "the open list must spell out each rating, unlike the closed button",
+    );
+    const high = [...menu.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
+    click(window, high);
+    assert.equal(trigger.textContent, "🟠", "the closed trigger should be back to a bare glyph");
+    assert.equal(menu.hidden, true, "the menu did not close after a pick");
+  });
+
+  test("the picked priority rides along with the next capture, then resets", async () => {
+    const window = await loadSite("/issues");
+    click(window, window.document.getElementById("capture-prio"));
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "🔴 Immediately"));
+    window.document.getElementById("capture-text").value = "ship the thing";
+    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].body.priority, "🔴 Immediately");
+    assert.equal(
+      window.document.getElementById("capture-prio").textContent, "–",
+      "the picker did not reset after a send",
+    );
+  });
+
+  test("picking a rating on a boarded row posts it and updates the glyph", async () => {
+    const window = await loadSite("/issues#57");
+    const trigger = window.document.getElementById("item-57").querySelector(".prio-select-board");
+    assert.ok(trigger, "the open row has no priority trigger");
+    assert.equal(trigger.textContent, "–", "#57 is unrated in the fixture");
+    click(window, trigger);
+    const low = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "⚪ Low");
+    click(window, low);
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/board/priority");
+    assert.ok(posted, "no write reached /api/board/priority");
+    assert.equal(posted.body.number, 57);
+    assert.equal(posted.body.priority, "⚪ Low");
+    assert.equal(trigger.textContent, "⚪", "the trigger did not adopt the new glyph");
+  });
+
+  test("a failed write reverts the glyph and reports the error, rather than keeping an unsaved choice", async () => {
+    const window = await loadSite("/issues#57");
+    window.postReply = { ok: false, message: "conflict" };
+    const row = window.document.getElementById("item-57");
+    const trigger = row.querySelector(".prio-select-board");
+    const before = trigger.textContent;
+    click(window, trigger);
+    const high = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
+    click(window, high);
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(trigger.textContent, before, "the glyph did not revert once the write failed");
+    assert.match(row.querySelector(".item-prio-note").textContent, /Could not save/);
+  });
+});
+
 /* Edvard, ideas.md #71: "Ability to search through issues or ideas. Also
  * filter the list based on different parameters like date, this week,
  * priority etc." and #70: "Lets me sort issues and ideas ... make sure

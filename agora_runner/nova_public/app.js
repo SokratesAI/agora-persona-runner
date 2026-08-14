@@ -1698,61 +1698,173 @@
    * compares it to the Python side, because nothing else could. */
   var PRIORITIES = ["", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"];
 
+  /* A small custom dropdown, not a native <select> -- Edvard, 2026-08-14:
+   * the closed control must show only the glyph (or a dash), but the open
+   * list must still spell out each rating's word. No native form control
+   * can show one thing closed and another open: a <select> renders its
+   * selected <option>'s own text in both the box and the popup, so a
+   * version of this built on <select> could satisfy one of those asks but
+   * never both -- which is exactly the bug he found (the popup was as
+   * wordless as the box).
+   *
+   * One popup, shared by every picker on the page, appended straight to
+   * <body> rather than living under each trigger. A board row's trigger
+   * sits inside `.item`, which clips overflow to keep its rounded
+   * corners -- a popup nested there would be cut off the moment it grew
+   * past the card's edge, and the capture box's trigger is the last thing
+   * on its row with no room to its right for a popup anchored by normal
+   * flow. Position is real viewport coordinates instead, read off the
+   * trigger's own rect when it opens. */
+  var prioMenuOverlay = null;
+  function getPrioMenuOverlay() {
+    if (prioMenuOverlay) return prioMenuOverlay;
+    prioMenuOverlay = el("div", "prio-menu");
+    prioMenuOverlay.setAttribute("role", "listbox");
+    prioMenuOverlay.hidden = true;
+    document.body.appendChild(prioMenuOverlay);
+    return prioMenuOverlay;
+  }
+
+  /* `triggerClass` picks which shape the button wears --
+   * `.prio-select-board`'s square corners inside a card, or
+   * `.capture-prio`'s circle beside the capture buttons -- both already
+   * exist as CSS and are unchanged by this; only the element they style
+   * moved from a <select> to a <button>. `onPick` may return a promise;
+   * the trigger disables and the glyph updates optimistically while it
+   * settles, and a rejection reverts the glyph to what it was before the
+   * click rather than showing a choice that was never saved. */
+  function buildPrioPicker(opts) {
+    var current = opts.current || "";
+    function glyph(label) { return label ? label.split(" ")[0] : "–"; }
+
+    var trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = opts.triggerClass;
+    if (opts.triggerId) trigger.id = opts.triggerId;
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-label", opts.ariaLabel);
+    trigger.textContent = glyph(current);
+
+    function setValue(label) {
+      current = label;
+      trigger.textContent = glyph(label);
+    }
+
+    function pick(label) {
+      closeMenu();
+      var previous = current;
+      setValue(label);
+      var result = opts.onPick(label);
+      if (result && typeof result.then === "function") {
+        trigger.disabled = true;
+        result.catch(function () { setValue(previous); }).then(function () { trigger.disabled = false; });
+      }
+    }
+
+    function openMenu() {
+      var menu = getPrioMenuOverlay();
+      menu.textContent = "";
+      menu.style.visibility = "hidden";
+      menu.hidden = false;
+      PRIORITIES.forEach(function (label) {
+        var item = document.createElement("button");
+        item.type = "button";
+        item.className = "prio-option";
+        item.setAttribute("role", "option");
+        item.textContent = label || "– Unrated";
+        item.setAttribute("aria-selected", label === current ? "true" : "false");
+        item.addEventListener("click", function (e) {
+          e.stopPropagation();
+          pick(label);
+        });
+        menu.appendChild(item);
+      });
+      var tr = trigger.getBoundingClientRect();
+      var mr = menu.getBoundingClientRect();
+      // Right edge of the menu lines up with the right edge of the
+      // trigger by default -- both pickers sit at the right of their row
+      // -- clamped so it cannot run off a narrow phone on either side.
+      var left = Math.min(Math.max(8, tr.right - mr.width), window.innerWidth - mr.width - 8);
+      var top = tr.bottom + 4;
+      if (top + mr.height > window.innerHeight - 8) top = tr.top - mr.height - 4;
+      menu.style.left = left + "px";
+      menu.style.top = Math.max(8, top) + "px";
+      menu.style.visibility = "visible";
+      menu.dataset.openFor = opts.ariaLabel;
+      trigger.setAttribute("aria-expanded", "true");
+      document.addEventListener("click", onDocClick, true);
+      document.addEventListener("keydown", onKeydown, true);
+      document.addEventListener("scroll", closeMenu, true);
+    }
+
+    function closeMenu() {
+      var menu = prioMenuOverlay;
+      if (!menu || menu.hidden) return;
+      menu.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+      document.removeEventListener("click", onDocClick, true);
+      document.removeEventListener("keydown", onKeydown, true);
+      document.removeEventListener("scroll", closeMenu, true);
+    }
+
+    function onDocClick(e) {
+      if (e.target === trigger) return;
+      if (prioMenuOverlay && prioMenuOverlay.contains(e.target)) return;
+      closeMenu();
+    }
+    function onKeydown(e) {
+      if (e.key === "Escape") { closeMenu(); trigger.focus(); }
+    }
+
+    trigger.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var alreadyOpenHere = prioMenuOverlay && !prioMenuOverlay.hidden
+        && prioMenuOverlay.dataset.openFor === opts.ariaLabel;
+      if (alreadyOpenHere) closeMenu(); else openMenu();
+    });
+
+    return { el: trigger, getValue: function () { return current; }, setValue: setValue };
+  }
+
   /* The rating cell of one boarded row, as something Edvard can change.
-   * The select is the whole control: no save button, because the only
+   * The picker is the whole control: no save button, because the only
    * action it can take is the one he just chose, and a button would be a
    * second thing to get wrong. It goes disabled while the write is in
    * flight so a double-tap cannot race two writes at one cell, and on
    * failure it snaps back to what the server still holds rather than
-   * showing a rating that was never written.
-   *
-   * No "Priority" label and no words in the box itself (Edvard, 2026-08-14:
-   * cycle 171's picker still read as a form field, not a control that
-   * matches the rest of the row). What is visible is the ball -- or a dash
-   * for unrated -- and nothing else, so the control is exactly as wide
-   * whichever rating is selected; the word survives as each option's
-   * accessible name, read out when the native picker opens. */
+   * showing a rating that was never written. */
   function renderPriorityPicker(board, item) {
     var wrap = el("p", "item-prio-edit");
-    var select = document.createElement("select");
-    select.className = "prio-select prio-select-board";
-    select.setAttribute("aria-label", "Priority of #" + item.number);
-    PRIORITIES.forEach(function (label) {
-      var option = document.createElement("option");
-      option.value = label;
-      option.textContent = label ? label.split(" ")[0] : "–";
-      option.setAttribute("aria-label", label || "Unrated");
-      if (label === (item.priority || "")) option.selected = true;
-      select.appendChild(option);
-    });
     var note = el("span", "item-prio-note", "");
-    select.addEventListener("change", function () {
-      var chosen = select.value;
-      var previous = item.priority || "";
-      select.disabled = true;
-      note.textContent = "Saving\u2026";
-      fetch("/api/board/priority", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: board, number: item.number, priority: chosen })
-      })
-        .then(json)
-        .then(function (payload) {
-          if (!payload || !payload.ok) throw new Error((payload && payload.message) || "failed");
-          item.priority = chosen;
-          note.textContent = "";
-          // The chip in the closed head is built from `item`, so the row
-          // has to be redrawn for the change to be visible without a
-          // reload -- which is the whole point of editing it here.
-          loadBoard(board);
+    var picker = buildPrioPicker({
+      current: item.priority || "",
+      ariaLabel: "Priority of #" + item.number,
+      triggerClass: "prio-select prio-select-board",
+      onPick: function (chosen) {
+        note.textContent = "Saving…";
+        return fetch("/api/board/priority", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: board, number: item.number, priority: chosen })
         })
-        .catch(function (err) {
-          select.value = previous;
-          note.textContent = "Could not save: " + err;
-        })
-        .then(function () { select.disabled = false; });
+          .then(json)
+          .then(function (payload) {
+            if (!payload || !payload.ok) throw new Error((payload && payload.message) || "failed");
+            item.priority = chosen;
+            note.textContent = "";
+            // The chip in the closed head is built from `item`, so the row
+            // has to be redrawn for the change to be visible without a
+            // reload -- which is the whole point of editing it here.
+            loadBoard(board);
+          })
+          .catch(function (err) {
+            note.textContent = "Could not save: " + err;
+            throw err;
+          });
+      },
     });
-    wrap.appendChild(select);
+    wrap.appendChild(picker.el);
     wrap.appendChild(note);
     return wrap;
   }
@@ -3208,22 +3320,16 @@
      * of the box he types into. It resets after a send for the same
      * reason: the next thought is not the same urgency by default.
      *
-     * No "Priority" text in the control itself (Edvard, 2026-08-14: it
-     * should read as one of the row's buttons, not a form field) -- only
-     * the ball, or a dash for unrated, so it is exactly as wide whichever
-     * rating is picked. The word is still there for a screen reader, on
-     * the visually-hidden <label> this select is already bound to and on
-     * each option's accessible name. */
-    var prioEl = document.createElement("select");
-    prioEl.className = "capture-prio";
-    prioEl.id = "capture-prio";
-    prioEl.setAttribute("aria-label", "Priority");
-    PRIORITIES.forEach(function (label) {
-      var option = document.createElement("option");
-      option.value = label;
-      option.textContent = label ? label.split(" ")[0] : "–";
-      option.setAttribute("aria-label", label || "Unrated");
-      prioEl.appendChild(option);
+     * `buildPrioPicker` (above) is what keeps the closed button wordless
+     * while the open list still spells out each rating -- a native
+     * <select> could not do both at once. onPick has nothing async to do
+     * here; the composer only remembers the choice until send() reads it. */
+    var prioPicker = buildPrioPicker({
+      current: "",
+      ariaLabel: "Priority",
+      triggerClass: "capture-prio",
+      triggerId: "capture-prio",
+      onPick: function () {},
     });
     /* Appended last, so it renders at the far right of the button row,
      * on the same line as Issue/Idea/Note (Edvard, 2026-08-14). issues.md
@@ -3233,7 +3339,8 @@
      * buttons on the first line. That measurement no longer holds: the
      * control is a fixed 44px circle now, not a word, so it rejoins the
      * group it was split out of. See `.capture-submit` in style.css. */
-    document.querySelector(".capture-submit").appendChild(prioEl);
+    document.querySelector(".capture-submit").appendChild(prioPicker.el);
+
 
     /* Edvard, issues.md 2026-08-09: "the input box for the Nova pwa is too
      * small and not rescalable so i can't see my entire input text if its
@@ -3266,13 +3373,13 @@
       fetch("/api/capture", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: target, text: text, priority: prioEl.value }),
+        body: JSON.stringify({ target: target, text: text, priority: prioPicker.getValue() }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
           if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
           textEl.value = "";
-          prioEl.value = "";
+          prioPicker.setValue("");
           fit();
           setStatus("saved to " + target, false);
           // The capture may be the top bullet of a file the feed shows.
