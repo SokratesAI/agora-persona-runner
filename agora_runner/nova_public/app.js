@@ -298,16 +298,25 @@
     return "badge";
   }
 
-  function renderStatus(status) {
-    statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
-
+  function statusParts(status) {
     var parts = [];
     if (status.cycle !== null && status.cycle !== undefined) parts.push("Cycle " + status.cycle);
     if (status.runningDays) parts.push("running " + status.runningDays + " days");
     if (status.lastWokeTime) parts.push("last woke " + status.lastWokeTime);
     else if (status.lastWokeDate) parts.push("last woke " + status.lastWokeDate);
-    statusEl.appendChild(el("p", "status-line", parts.join(" · ")));
+    return parts;
+  }
+
+  /* The last status the page actually managed to fetch, so a failed fetch
+   * can show it as stale instead of replacing it with nothing. */
+  var lastStatus = null;
+
+  function renderStatus(status) {
+    lastStatus = status;
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+
+    statusEl.appendChild(el("p", "status-line", statusParts(status).join(" · ")));
 
     if (status.lastOutcome) {
       var line = el("p", "status-sub");
@@ -332,6 +341,46 @@
         + hours + (hours === 1 ? " hour" : " hours")));
       statusEl.appendChild(quiet);
     }
+  }
+
+  /* Edvard, comments board 2026-08-14: "Or a display error if the fetch
+   * failed, also".
+   *
+   * The header's whole job is to say whether the loop is alive, and it was
+   * the one part of this page that said nothing at all when it could not
+   * find out. A first load that failed left "loading…" standing forever; a
+   * failed poll left the last good line up, unmarked, still asserting a
+   * cycle number and a wake time that nothing had confirmed since. Both of
+   * those read as health.
+   *
+   * That is worse than a missing feature, because the moment nova-site is
+   * unreachable is exactly the moment a stall badge would matter most: the
+   * page answers "everything is fine" with no evidence, at the one time it
+   * has none. Silence here is not neutral, it is the reassuring answer.
+   *
+   * The previous line is kept rather than blanked, explicitly marked as the
+   * last thing that was seen. Blanking it would throw away the only real
+   * information on screen, and "Cycle 197 · last woke 19:17" is worth
+   * having as long as it is not passed off as current. */
+  function renderStatusUnreachable(detail) {
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    if (lastStatus) {
+      var parts = statusParts(lastStatus);
+      if (parts.length) {
+        statusEl.appendChild(el("p", "status-line is-stale",
+          parts.join(" · ") + " — as of the last load"));
+      }
+    }
+    var line = el("p", "status-sub");
+    line.appendChild(el("span", "badge badge-error", "can't reach Nova"));
+    if (detail) line.appendChild(el("span", "status-pr", detail));
+    statusEl.appendChild(line);
+  }
+
+  function fetchFailureDetail(err) {
+    var text = (err && err.message) || String(err || "");
+    return text.replace(/^Error:\s*/, "");
   }
 
   function renderNeeds(digest, comments) {
@@ -3244,6 +3293,12 @@
       .catch(function (err) {
         feed.textContent = "";
         feed.appendChild(el("p", "empty", "Could not load the journal: " + err));
+        // Nothing else is on screen on a cold load -- the header is still
+        // saying "loading…" -- so this reports on the first failure. There
+        // is no previous answer to protect, and a header stuck on "loading…"
+        // is the least informative thing the page could leave up.
+        pollFailures = POLL_FAILURES_BEFORE_STALE;
+        renderStatusUnreachable(fetchFailureDetail(err));
       });
   }
 
@@ -3272,6 +3327,8 @@
    *   refreshed. That is the actual shape of his complaint.
    */
   var POLL_MS = 30000;
+  var POLL_FAILURES_BEFORE_STALE = 2;
+  var pollFailures = 0;
   var renderedVersion = null;
   var renderedComments = null;
   var pollTimer = null;
@@ -3303,6 +3360,14 @@
         var changed = version !== renderedVersion || comments !== renderedComments;
         // Re-checked after the fetch as well as before it: a request takes
         // long enough for him to have started typing during one.
+        // A poll that came back is the only thing that clears the header's
+        // error state, and it clears it by rendering the answer it just got
+        // -- below, or on the next change. Reset here rather than inside the
+        // `changed` branch: an unchanged payload is still a reachable
+        // server, and that is the case that would otherwise stay red
+        // forever once the loop went quiet.
+        if (pollFailures >= POLL_FAILURES_BEFORE_STALE) renderStatus(journal.status || {});
+        pollFailures = 0;
         if (changed && !typing()) {
           /* New entries land at the top, so a naive re-render shoves
            * whatever he was reading down the page by exactly the height
@@ -3314,7 +3379,19 @@
           if (top > 0) window.scrollTo(0, top + (document.body.scrollHeight - before));
         }
       })
-      .catch(function () { /* a failed poll is the previous page, not an error */ })
+      /* Not on the first failure, and the threshold is doing real work
+       * rather than hedging. A phone drops a single request routinely --
+       * waking the tab, changing network -- and turning the header red for
+       * one of those would be the same flash-and-retract Edvard reported in
+       * the first place. Two consecutive misses is 30 seconds of a server
+       * that is genuinely not answering, which is the thing worth showing
+       * and is not something a handover between cells produces. */
+      .catch(function (err) {
+        pollFailures += 1;
+        if (pollFailures >= POLL_FAILURES_BEFORE_STALE) {
+          renderStatusUnreachable(fetchFailureDetail(err));
+        }
+      })
       .then(schedulePoll);
   }
 
