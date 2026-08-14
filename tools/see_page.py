@@ -32,14 +32,24 @@ reads `COUCHDB_*` while the bridge pod holds the same credentials under
 
     COUCHDB_URL="$CDB_BASE" COUCHDB_USER="$CDB_USER" \
     COUCHDB_PASSWORD="$CDB_PASS" COUCHDB_DB="$CDB_DB" \
-    COUCHDB_NOVA_DB="$CDB_NOVA_DB" NOVA_PORT=8099 \
-    python3 -m agora_runner.nova_site_main
+    COUCHDB_NOVA_DB="$CDB_NOVA_DB" NOVA_PORT=8111 \
+    python3 run_nova_site.py
 
--- which serves the real page shell against the real vault. That is the
-`CouchDB answered HTTP 401` Cycle 192 stopped on. Note the part still
-unfinished: the shell renders, but `/api/journal` answered 404 on that
-local run and it is not yet known why, so a local render is trustworthy
-for layout and not yet for data.
+Measured against that server: `/` 200, `/api/health` 200, `/api/journal`
+200 at 1,489,522 bytes, `/api/board?name=issues` 200 at 523,422 with the
+real rows. So a local render is trustworthy for data, not only layout.
+That is the `CouchDB answered HTTP 401` Cycle 192 stopped on.
+
+**The first version of this paragraph said `python3 -m
+agora_runner.nova_site_main` and that command did nothing at all.** The
+module had no `__main__` guard, so it exited 0 with no output -- and the
+port happened to be answered by a leftover static file server from an
+earlier cycle, which serves `index.html` at `/` and a stdlib HTML 404 at
+every `/api/` path. That is a positive result on the one route that proves
+nothing and a negative on every route that would have proved something.
+The guard exists now, so both spellings work; the lesson that outlived it
+is that `/` returning the right page is not evidence the server under test
+is the one answering.
 
 ## Why the default width is a phone
 
