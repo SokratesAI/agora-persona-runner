@@ -3225,13 +3225,15 @@
       option.setAttribute("aria-label", label || "Unrated");
       prioEl.appendChild(option);
     });
-    /* Its own row above the buttons, not a fourth item beside them --
-     * Edvard, issues.md 2026-08-14: the four controls "are now just
-     * scrambled". Measured at 390px: the select is 136px wide because
-     * "🔴 Immediately" sets its intrinsic width, which left room for
-     * exactly one of the three buttons on the first line and pushed the
-     * other two onto a second. See `.capture-prio-row` in style.css. */
-    document.getElementById("capture-prio-row").appendChild(prioEl);
+    /* Appended last, so it renders at the far right of the button row,
+     * on the same line as Issue/Idea/Note (Edvard, 2026-08-14). issues.md
+     * 2026-08-14 split this into its own row above the buttons because at
+     * 390px the select was 136px wide -- "🔴 Immediately" set its
+     * intrinsic width -- which left room for exactly one of the three
+     * buttons on the first line. That measurement no longer holds: the
+     * control is a fixed 44px circle now, not a word, so it rejoins the
+     * group it was split out of. See `.capture-submit` in style.css. */
+    document.querySelector(".capture-submit").appendChild(prioEl);
 
     /* Edvard, issues.md 2026-08-09: "the input box for the Nova pwa is too
      * small and not rescalable so i can't see my entire input text if its
