@@ -16,14 +16,21 @@ that a cache can freeze.
 
 from datetime import datetime, timedelta
 
-from agora_runner.config import OSLO
+from agora_runner.config import NOVA_PERSONA_ID, OSLO
 from agora_runner.cycle_health import (
     STALL_GRACE_INTERVALS,
     gaps_between,
     missing_cycles,
 )
 from agora_runner.nova_journal import JOURNAL_DIR, build_status, parse_journal
-from agora_runner.nova_site import _with_silence, journal_page
+from agora_runner.nova_site import (
+    _fetch_cadence_minutes,
+    _refresh_cadence,
+    _with_silence,
+    cadence_minutes,
+    journal_page,
+    reset_cadence,
+)
 
 NOW = datetime(2026, 8, 12, 23, 0, tzinfo=OSLO)
 
@@ -228,14 +235,16 @@ def test_a_cycle_still_running_is_not_reported_as_dead():
     would be pinning nothing.
     """
     status = _with_silence(
-        build_status(_entries(129, 128)), now=NOW + timedelta(minutes=90))
+        build_status(_entries(129, 128)), now=NOW + timedelta(minutes=90),
+        minutes=60)
     assert status["stalled"] is False
     assert status["silentIntervals"] == 1
 
 
 def test_a_loop_that_has_gone_quiet_says_so():
     status = _with_silence(
-        build_status(_entries(129, 128)), now=NOW + timedelta(hours=3))
+        build_status(_entries(129, 128)), now=NOW + timedelta(hours=3),
+        minutes=60)
     assert status["stalled"] is True
     assert status["silentIntervals"] == 3
 
@@ -244,20 +253,23 @@ def test_the_grace_boundary_is_where_the_constant_says_it_is():
     entries = build_status(_entries(129, 128))
     hours = STALL_GRACE_INTERVALS
     assert _with_silence(
-        entries, now=NOW + timedelta(hours=hours, minutes=-1))["stalled"] is False
-    assert _with_silence(entries, now=NOW + timedelta(hours=hours))["stalled"] is True
+        entries, now=NOW + timedelta(hours=hours, minutes=-1),
+        minutes=60)["stalled"] is False
+    assert _with_silence(
+        entries, now=NOW + timedelta(hours=hours), minutes=60)["stalled"] is True
 
 
 def test_no_usable_stamp_is_not_reported_as_a_healthy_loop():
     """`None` and `0` are different answers and only one is reassurance."""
-    status = _with_silence(build_status([]))
+    status = _with_silence(build_status([]), minutes=60)
     assert status["silentIntervals"] is None
     assert status["stalled"] is False
 
 
 def test_an_entry_stamped_in_the_future_is_not_a_negative_silence():
     status = _with_silence(
-        build_status(_entries(129, 128)), now=NOW - timedelta(hours=5))
+        build_status(_entries(129, 128)), now=NOW - timedelta(hours=5),
+        minutes=60)
     assert status["silentIntervals"] == 0
     assert status["stalled"] is False
 
@@ -347,3 +359,267 @@ def test_build_status_never_reads_the_clock():
     status = build_status(_entries(129, 128))
     assert "stalled" not in status
     assert "silentIntervals" not in status
+
+
+# --- the cadence the silence is measured in --------------------------------
+#
+# Cycle 180 fixed this for the copy that talks to Nova (#166) by handing
+# `cycle_health` the schedule off the heartbeat being dispatched, and left
+# the copy that talks to Edvard reading `HEARTBEAT_MINUTES`. This process
+# has no heartbeat in hand -- it is a different pod from the poll loop --
+# so it has to ask Agora, and these pin what it does with the answer.
+
+
+class _FakeAgora:
+    """Stands in for `agora_internal`, recording what it was asked."""
+
+    def __init__(self, status=200, heartbeats=(), raises=None):
+        self.status = status
+        self.heartbeats = list(heartbeats)
+        self.raises = raises
+        self.calls = []
+
+    def __call__(self, method, path, payload=None):
+        self.calls.append((method, path))
+        if self.raises is not None:
+            raise self.raises
+        return self.status, {"heartbeats": self.heartbeats}
+
+
+def _hb(schedule, persona=NOVA_PERSONA_ID, enabled=True):
+    return {"id": "hb", "personaId": persona, "schedule": schedule,
+            "enabled": enabled}
+
+
+def _with_agora(monkeypatch, fake):
+    monkeypatch.setattr("agora_runner.http_util.agora_internal", fake)
+
+
+def test_the_silence_is_measured_in_the_live_cadence_not_the_constant():
+    """The bug. Ninety minutes of quiet is one interval at the hourly
+    cadence and two at the forty-minute one Edvard ran on 2026-08-13, and
+    the badge Edvard reads was answering with the first regardless.
+
+    Ninety and forty are chosen so the two answers differ: at any offset
+    under one interval both cadences say zero and the test pins nothing.
+    """
+    entries = build_status(_entries(129, 128))
+    assert _with_silence(
+        entries, now=NOW + timedelta(minutes=90), minutes=60
+    )["silentIntervals"] == 1
+    assert _with_silence(
+        entries, now=NOW + timedelta(minutes=90), minutes=40
+    )["silentIntervals"] == 2
+
+
+def test_a_faster_cadence_calls_a_dead_cycle_sooner():
+    """Not the same assertion as the one above: `silentIntervals` moving
+    is only interesting if it drags the badge across the threshold, which
+    is the thing on Edvard's screen. Two hours of quiet is healthy at the
+    hourly cadence and a stall at forty minutes.
+
+    Ninety minutes is the only window where the two disagree given a grace
+    of two intervals: under eighty neither has stalled, at a hundred and
+    twenty both have.
+    """
+    entries = build_status(_entries(129, 128))
+    assert STALL_GRACE_INTERVALS == 2, "the window below was picked around this"
+    assert _with_silence(
+        entries, now=NOW + timedelta(minutes=90), minutes=60)["stalled"] is False
+    assert _with_silence(
+        entries, now=NOW + timedelta(minutes=90), minutes=40)["stalled"] is True
+
+
+def test_a_slower_cadence_does_not_cry_stall_every_run():
+    """The other direction, and the one #72 says makes the check worth
+    less than nothing. At the six-hourly cadence this loop ran until
+    2026-08-08, three hours of quiet is half an interval, not three.
+    """
+    entries = build_status(_entries(129, 128))
+    assert _with_silence(
+        entries, now=NOW + timedelta(hours=3), minutes=360
+    )["silentIntervals"] == 0
+
+
+def test_the_cadence_comes_from_novas_own_enabled_heartbeat(monkeypatch):
+    fake = _FakeAgora(heartbeats=[
+        _hb("every@5m", persona="someone-else"),
+        _hb("every@10m", enabled=False),
+        _hb("every@40m@19:00"),
+    ])
+    _with_agora(monkeypatch, fake)
+    assert _fetch_cadence_minutes() == 40
+    assert fake.calls == [("GET", "/heartbeats")]
+
+
+def test_two_live_heartbeats_are_measured_at_the_faster_one(monkeypatch):
+    """Any of them dispatching writes an entry, so the rate entries should
+    appear at is the fastest -- picking the first match would wait through
+    a dead cycle whenever the list happened to be ordered the other way."""
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[
+        _hb("every@6h"), _hb("every@40m"),
+    ]))
+    assert _fetch_cadence_minutes() == 40
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[
+        _hb("every@40m"), _hb("every@6h"),
+    ]))
+    assert _fetch_cadence_minutes() == 40
+
+
+def test_a_schedule_with_no_single_interval_has_no_honest_answer(monkeypatch):
+    """`cron@`/`daily@` and anything unparseable. `None` rather than a
+    guess -- the caller falls back to the constant and says so."""
+    for schedule in ("cron@0 * * * *", "daily@07:00", "every@abc", "every@0m", ""):
+        _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb(schedule)]))
+        assert _fetch_cadence_minutes() is None, schedule
+
+
+def test_no_heartbeat_for_nova_at_all_is_not_a_cadence(monkeypatch):
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[]))
+    assert _fetch_cadence_minutes() is None
+
+
+def test_an_agora_that_answers_with_an_error_is_not_a_cadence(monkeypatch):
+    _with_agora(monkeypatch, _FakeAgora(status=503, heartbeats=[_hb("every@40m")]))
+    assert _fetch_cadence_minutes() is None
+
+
+def test_the_first_caller_gets_the_fallback_without_waiting(monkeypatch):
+    """The request path never blocks on Agora. A reader must not wait on a
+    network call to find out whether a badge is red -- serving the
+    constant cold is exactly what this did unconditionally before now."""
+    reset_cadence()
+    started = []
+    monkeypatch.setattr(
+        "agora_runner.nova_site.threading.Thread",
+        lambda **kw: started.append(kw) or _NoopThread())
+    assert cadence_minutes() == 60
+    assert len(started) == 1
+    assert started[0]["target"].__name__ == "_refresh_cadence"
+
+
+class _NoopThread:
+    def start(self):
+        pass
+
+
+def test_the_fetched_cadence_is_what_later_callers_measure_in(monkeypatch):
+    reset_cadence()
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb("every@40m")]))
+    _refresh_cadence()
+    assert cadence_minutes() == 40
+
+
+def test_a_fetch_that_raises_does_not_reach_the_reader(monkeypatch):
+    """A page that will not render because one badge's freshness could not
+    be established is a worse answer than the badge judged against the
+    fallback."""
+    reset_cadence()
+    _with_agora(monkeypatch, _FakeAgora(raises=OSError("connection refused")))
+    _refresh_cadence()
+    assert cadence_minutes() == 60
+
+
+def test_a_failed_fetch_is_not_retried_on_every_single_request(monkeypatch):
+    """The failure is cached the same as a success. Otherwise an Agora
+    outage turns every page load into a fresh connection attempt, which is
+    the poll loop this cache exists to not be."""
+    reset_cadence()
+    fake = _FakeAgora(raises=OSError("connection refused"))
+    _with_agora(monkeypatch, fake)
+    _refresh_cadence()
+    for _ in range(5):
+        assert cadence_minutes() == 60
+    assert len(fake.calls) == 1
+    ok = _FakeAgora(heartbeats=[_hb("every@40m")])
+    _with_agora(monkeypatch, ok)
+    for _ in range(5):
+        cadence_minutes()
+    assert ok.calls == []  # still inside CADENCE_FRESH_SECONDS
+
+
+def test_the_badge_uses_the_live_cadence_through_the_whole_page(monkeypatch):
+    """End to end rather than at `_with_silence`, because the parameter
+    defaulting to `None` is the wire: pass the constant in by accident and
+    every unit test above still passes while the page is unchanged."""
+    reset_cadence()
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb("every@40m")]))
+    _refresh_cadence()
+    payload = {"entries": [], "status": build_status(_entries(129, 128))}
+    page = journal_page(payload, now=NOW + timedelta(hours=2))
+    assert page["status"]["silentIntervals"] == 3
+    assert page["status"]["stalled"] is True
+
+
+def test_a_refresh_that_cannot_start_does_not_wedge_every_later_one(monkeypatch):
+    """The in-flight flag is set before the thread exists, so if the thread
+    never runs nothing clears it -- and the wedge is permanent and silent.
+    `Thread.start` raises when the OS refuses a thread, which is memory
+    pressure, and this platform has been OOM-killed twice.
+    """
+    reset_cadence()
+
+    class _RefusesToStart:
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(
+        "agora_runner.nova_site.threading.Thread", lambda **kw: _RefusesToStart())
+    assert cadence_minutes() == 60
+
+    # The next caller must still try, rather than sitting on a flag that
+    # says a refresh is already running when none is.
+    started = []
+    monkeypatch.setattr(
+        "agora_runner.nova_site.threading.Thread",
+        lambda **kw: started.append(kw) or _NoopThread())
+    assert cadence_minutes() == 60
+    assert len(started) == 1
+
+
+def test_a_workflow_heartbeat_pointed_at_nova_is_not_the_cycle_cadence(monkeypatch):
+    """A workflow-bound heartbeat dispatches `run_workflow_heartbeat`, a
+    conversation round that writes no journal entry, and it carries a
+    `personaId` like any other. Counting it would measure silence in
+    intervals nothing writes in -- the false stall #72 exists to prevent.
+
+    Five minutes against forty on purpose: the faster one wins the `min`,
+    so ignoring `workflowId` is the difference between 40 and 5 rather
+    than something the other heartbeat covers up.
+    """
+    workflow = dict(_hb("every@5m"), workflowId="wf-1")
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[workflow, _hb("every@40m")]))
+    assert _fetch_cadence_minutes() == 40
+
+    # And on its own it is not a cadence at all, rather than the shortest
+    # of a list of one.
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[workflow]))
+    assert _fetch_cadence_minutes() is None
+
+
+def test_the_badge_the_page_draws_moves_with_the_live_cadence(monkeypatch):
+    """The second end-to-end assertion, and the reason it exists is a
+    finding against this very diff: nine of the tests above hand
+    `_with_silence` a `minutes` literal, so they pin the arithmetic and
+    would all still pass with the default wired back to the constant. The
+    reviewer reverted exactly that and got 31 of 32 green. Coverage that
+    only one test carries is coverage in appearance.
+
+    So this drives `journal_page` -- the default path, no `minutes`
+    argument anywhere -- across the stall threshold in both directions,
+    off the cadence alone with the elapsed time held fixed.
+    """
+    entries = {"entries": [], "status": build_status(_entries(129, 128))}
+    ninety = NOW + timedelta(minutes=90)
+
+    reset_cadence()
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb("every@60m")]))
+    _refresh_cadence()
+    healthy = journal_page(entries, now=ninety)["status"]
+    assert (healthy["silentIntervals"], healthy["stalled"]) == (1, False)
+
+    reset_cadence()
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb("every@40m")]))
+    _refresh_cadence()
+    stalled = journal_page(entries, now=ninety)["status"]
+    assert (stalled["silentIntervals"], stalled["stalled"]) == (2, True)

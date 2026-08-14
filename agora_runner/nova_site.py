@@ -105,7 +105,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
-from agora_runner.config import NOVA_PORT, OSLO
+from agora_runner.config import NOVA_PERSONA_ID, NOVA_PORT, OSLO
 from agora_runner.log import log
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
@@ -646,6 +646,11 @@ def reset_cache():
         # in parallel, which is the one thing the lock exists to stop. The
         # dict is keyed by payload name, so it holds three entries in
         # production and never grows.
+    # Same reason, separate lock: a cadence fetched by one test is the
+    # stale value the next one reads, and unlike a payload it is a single
+    # number with no name to key an assertion off, so the leak would show
+    # up as an unrelated badge assertion failing.
+    reset_cadence()
 
 
 def _refresh(name, build):
@@ -725,7 +730,132 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None):
     }
 
 
-def _with_silence(status, now=None):
+# How long a fetched cadence is served before a background refresh is
+# started. Edvard changes the cadence by hand in Agora, not by deploying,
+# so this process cannot wait for a restart to notice -- but the value it
+# is tracking changes a few times a week at most, so anything shorter than
+# minutes would be a poll loop against Agora dressed up as a cache.
+CADENCE_FRESH_SECONDS = 300
+_cadence = None          # (minutes-or-None, fetched_at) once anything has been fetched
+_cadence_lock = threading.Lock()
+_cadence_refreshing = False
+
+
+def _fetch_cadence_minutes():
+    """Minutes between Nova's own heartbeat runs, live from Agora, or `None`.
+
+    `None` means "no honest answer": Agora unreachable, no enabled
+    heartbeat pointed at Nova, or a `cron@`/`daily@` schedule that has no
+    single interval. The caller falls back rather than inventing one.
+
+    The **shortest** interval when more than one enabled heartbeat targets
+    Nova, because any of them dispatching writes a journal entry -- so the
+    rate entries should appear at is the fastest of them, and measuring
+    silence against a slower one would wait through a dead cycle before
+    saying anything. There is one such heartbeat today; picking the first
+    match would be arbitrary the day there are two.
+    """
+    from agora_runner.http_util import agora_internal
+    from agora_runner.turns import schedule_minutes
+
+    status, body = agora_internal("GET", "/heartbeats")
+    if status != 200:
+        return None
+    minutes = [
+        schedule_minutes(hb.get("schedule", ""))
+        for hb in (body.get("heartbeats") or [])
+        # `workflowId` excluded, not just filtered for tidiness: a
+        # workflow-bound heartbeat dispatches `run_workflow_heartbeat`, a
+        # multi-step conversation round that writes no journal entry, and
+        # `create_heartbeat` requires a `personaId` on those too. One
+        # pointed at Nova at a faster cadence -- a workflow left enabled,
+        # say -- would have this measuring silence in intervals nothing
+        # writes in, which is the false stall #72 exists to prevent.
+        if (hb.get("enabled") and not hb.get("workflowId")
+                and hb.get("personaId") == NOVA_PERSONA_ID)
+    ]
+    usable = [m for m in minutes if m]
+    return min(usable) if usable else None
+
+
+def _refresh_cadence():
+    global _cadence, _cadence_refreshing
+    try:
+        minutes = _fetch_cadence_minutes()
+    except Exception as e:
+        # Never raised at a reader. A page that cannot render because the
+        # freshness of one badge could not be established is a worse
+        # answer than a badge judged against the fallback, which is
+        # exactly what this function did for its whole life before now.
+        log(f"nova-site: heartbeat cadence lookup failed: {e}")
+        minutes = None
+    with _cadence_lock:
+        _cadence = (minutes, time.time())
+        _cadence_refreshing = False
+
+
+def cadence_minutes():
+    """The interval `_with_silence` measures in -- live if known, else the constant.
+
+    **Never blocks and never touches the network on the request path.**
+    The first caller of a process gets `HEARTBEAT_MINUTES` and starts a
+    background fetch; every caller after the fetch lands gets the real
+    cadence, and a stale value is served while it is re-fetched. That is
+    the same stale-while-revalidate bargain as `cached_payload`, for the
+    same reason: this is called on every `/api/journal`, and a reader
+    should never wait on Agora to find out whether a badge is red.
+
+    Serving the fallback cold is not a compromise, it is the status quo --
+    `HEARTBEAT_MINUTES` is what this measured in unconditionally until
+    now, and it has been wrong twice, because the cadence is Edvard's to
+    change and he has changed it four times since 2026-08-08. #166 fixed
+    the copy that talks to Nova by handing it the live schedule from the
+    heartbeat being dispatched; this process has no heartbeat in hand, so
+    it has to ask.
+    """
+    global _cadence_refreshing
+
+    from agora_runner.cycle_health import HEARTBEAT_MINUTES
+
+    now = time.time()
+    with _cadence_lock:
+        entry = _cadence
+        stale = entry is None or now - entry[1] >= CADENCE_FRESH_SECONDS
+        if stale and not _cadence_refreshing:
+            _cadence_refreshing = True
+            thread = threading.Thread(
+                target=_refresh_cadence, name="nova-site-cadence", daemon=True
+            )
+        else:
+            thread = None
+    if thread is not None:
+        try:
+            thread.start()
+        except RuntimeError as e:
+            # The in-flight flag is set inside the lock, before the thread
+            # exists, so nothing else clears it if the thread never runs --
+            # and the wedge is permanent and silent: the badge would be
+            # frozen on the fallback for the life of the process with
+            # nothing in the logs after this line. `start` raises when the
+            # OS refuses a thread, which is memory pressure, and this
+            # platform has been OOM-killed twice (cycles 127 and 128).
+            with _cadence_lock:
+                _cadence_refreshing = False
+            log(f"nova-site: could not start the cadence refresh: {e}")
+    if entry is not None and entry[0]:
+        return entry[0]
+    return HEARTBEAT_MINUTES
+
+
+def reset_cadence():
+    """Forget the fetched cadence. For tests -- see `reset_cache`."""
+    global _cadence, _cadence_refreshing
+    with _cadence_lock:
+        _cadence = None
+        _cadence_refreshing = False
+
+
+def _with_silence(status, now=None, minutes=None):
     """`status` plus how long the loop has been quiet, judged right now.
 
     The live half of #72, and it is computed here rather than in
@@ -750,9 +880,16 @@ def _with_silence(status, now=None):
     `None` (no entry carries a usable write time) is deliberately not
     flattened into `0`: "nothing to judge" and "judged, and fine" are
     different answers, and only the second is reassurance.
-    """
-    from agora_runner.cycle_health import HEARTBEAT_MINUTES, STALL_GRACE_INTERVALS
 
+    `minutes` is the interval to divide by, defaulting to the live cadence
+    -- see `cadence_minutes`. It is a parameter so a test can state the
+    cadence it is testing against instead of arranging for a network call
+    to be answered.
+    """
+    from agora_runner.cycle_health import STALL_GRACE_INTERVALS
+
+    if minutes is None:
+        minutes = cadence_minutes()
     out = dict(status)
     written = out.get("lastWrittenAt") or ""
     silent = None
@@ -766,7 +903,7 @@ def _with_silence(status, now=None):
             # An entry stamped in the future is a clock disagreement, not a
             # stalled loop -- zero rather than a negative the client would
             # have to guard. The same call `cycle_health.stalled_for` makes.
-            silent = max(0, int(elapsed.total_seconds() // (HEARTBEAT_MINUTES * 60)))
+            silent = max(0, int(elapsed.total_seconds() // (minutes * 60)))
     out["silentIntervals"] = silent
     out["stalled"] = silent is not None and silent >= STALL_GRACE_INTERVALS
     return out
