@@ -46,6 +46,7 @@ capture at all.
 
 from agora_runner.log import log
 from agora_runner.nova_boards import (
+    BOARD_PATHS,
     PRIORITY_LABELS,
     delete_row,
     set_row_priority,
@@ -361,8 +362,20 @@ def _amend_board(target, number, mutate, what):
     `mutate` returning `None` is not a write failure and is never
     retried: the row is not there, or the new title is not writable. A
     re-read returns the same answer and a 409 loop around it would spin.
+
+    **The path comes from `BOARD_PATHS`, not `CAPTURE_TARGETS`, and that
+    is the reviewer's point rather than mine.** The two dicts hold the
+    same string for `issues` and `ideas` today and it is a coincidence:
+    `CAPTURE_TARGETS` also carries `notes`, which is not a board at all,
+    and `BOARD_PATHS` already splits his file from mine. Reading a board
+    row's path out of the capture dict works until one of them is
+    restructured for its own reasons, and then this writes somewhere else
+    with nothing to say so. `["edvard"]` is also the scope boundary he
+    set in #85 -- *"This is only for the ones i have reported"* -- said in
+    the addressing rather than checked separately.
     """
-    path = CAPTURE_TARGETS.get(target)
+    paths = BOARD_PATHS.get(target)
+    path = paths.get("edvard") if paths else None
     if path is None:
         return False, f"unknown target: {target!r}"
 

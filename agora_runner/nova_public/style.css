@@ -1116,11 +1116,14 @@ body.nav-open { overflow: hidden; }
   user-select: none;
 }
 
-/* Edit mode on a boarded row (issue #84): the title in a box where the
- * card's own line was, and save / cancel / delete under it. It replaces
- * the head rather than sitting beside it, so the row cannot be both a
- * thing you are editing and a thing you can tap open. */
-.item-edit { padding: 0.7rem 0.9rem; }
+/* Edit mode on a boarded row (issue #84): the title in a box under the
+ * card's own line, and save / cancel / delete below it. The head stays --
+ * the number and the chips are how he sees which row is in the box -- and
+ * only stops behaving like a button, which `app.js` enforces. This rule
+ * is the visible half of that: a control that no longer does anything
+ * should not still offer a pointer and a hover. */
+.item.is-editing .item-head { cursor: default; }
+.item-edit { padding: 0 0.9rem 0.7rem; }
 
 .item-edit-input {
   width: 100%;

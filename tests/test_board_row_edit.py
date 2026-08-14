@@ -52,6 +52,10 @@ Still part of #84, and the whole reason `_sections` was not widened.
 ## 51 — One way
 
 The finished one.
+
+## Notes
+
+Not a write-up, and not part of #51.
 """
 
 
@@ -80,6 +84,16 @@ def test_the_older_two_hash_shape_still_parses():
 def test_a_write_up_stops_at_the_next_item_and_not_before():
     assert "One way" not in parse_board(BOARD)["details"][84]
     assert "The finished one." in parse_board(BOARD)["details"][51]
+
+
+def test_a_write_up_also_stops_at_a_heading_that_is_not_an_item():
+    # The last block in the file has no next item to end it, so a section
+    # like `## Notes` is the only thing that closes it. Without that, the
+    # last write-up swallows the rest of the document -- and `delete_row`
+    # would then take the rest of the document with it.
+    assert "Not a write-up" not in parse_board(BOARD)["details"][51]
+    updated = delete_row(BOARD, 51)
+    assert "## Notes" in updated and "Not a write-up, and not part of #51." in updated
 
 
 # --- edit ---
@@ -249,3 +263,23 @@ def test_a_non_conflict_failure_is_not_retried(monkeypatch):
     ok, message = nova_capture.remove_row("issues", 84)
     assert not ok and "500 boom" in message
     assert len(calls) == 1
+
+
+def test_notes_is_not_a_board_and_the_row_writers_refuse_it(monkeypatch):
+    """The branch where `BOARD_PATHS` and `CAPTURE_TARGETS` actually differ.
+
+    They hold the same string for `issues` and `ideas`, so a test asking
+    which file was written passes under either lookup -- it compares the
+    code to a coincidence. `notes` is the difference: it is a capture
+    target and not a board, it has no `## Board` table, and under the
+    capture dict these two would resolve it and write to his notes file.
+    """
+    def refuse(*a, **k):
+        raise AssertionError("must not touch notes.md")
+
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", refuse)
+    monkeypatch.setattr(nova_capture, "vault_write_path", refuse)
+    for call in (lambda: nova_capture.edit_row("notes", 1, "Renamed"),
+                 lambda: nova_capture.remove_row("notes", 1)):
+        ok, message = call()
+        assert not ok and "unknown target" in message

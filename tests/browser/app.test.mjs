@@ -3839,8 +3839,15 @@ describe("holding a board row opens edit mode", () => {
     assert.equal(box.value, "More pages in the Nova app");
     assert.ok(act(row, "Save") && act(row, "Cancel") && act(row, "Delete"),
       "edit mode is missing one of save/cancel/delete");
-    assert.ok(row.querySelector(".item-head").hidden,
-      "the row is both editable and tappable at once");
+    // The head stays -- it is how he sees which row is in the box -- but
+    // it stops being a toggle. Asserting `hidden` here is what the first
+    // version did, and it passed in jsdom while the real browser showed
+    // the row still visible and still tappable: `.item-head` sets
+    // `display: flex`, which beats the `[hidden]` user-agent rule.
+    assert.ok(row.classList.contains("is-editing"));
+    click(window, row.querySelector(".item-head"));
+    assert.equal(row.querySelector(".item-head").getAttribute("aria-expanded"), "false",
+      "tapping the head while editing opened the write-up under the box");
   });
 
   test("the click that ends a hold does not also open the write-up", async () => {

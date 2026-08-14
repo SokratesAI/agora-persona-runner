@@ -2144,7 +2144,15 @@
         // way to be sure the card and the file agree.
         loadBoard(board);
       });
-      head.hidden = true;
+      // The head stays on screen and stops being a control. Hiding it was
+      // the first version and rendering the page killed it: `.item-head`
+      // sets `display: flex`, which beats the `[hidden]` user-agent rule,
+      // so it stayed visible and tappable in a real browser while jsdom --
+      // which loads no stylesheet -- reported it hidden and the test
+      // passed. Keeping it is also the better answer: the number and the
+      // chips are how he can see *which* row is in the box.
+      row.classList.add("is-editing");
+      head.setAttribute("aria-disabled", "true");
       row.insertBefore(editor.el, head.nextSibling);
       editor.focus();
     }
@@ -2158,6 +2166,9 @@
       // tap handler also run would open the write-up underneath the
       // editor that just appeared.
       if (held) { held = false; return; }
+      // While the editor is open the row is not a toggle. Without this the
+      // write-up opens underneath the box he is typing in.
+      if (row.querySelector(".item-edit")) return;
       var opening = boardState.open !== item.number;
       // One open row at a time. These write-ups run to several screens
       // and a page of them all open is the scroll problem issues.md #42

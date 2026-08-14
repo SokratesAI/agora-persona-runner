@@ -3699,3 +3699,45 @@ def test_a_failed_board_write_is_a_502():
         status, _, _ = _post(
             "/api/board/edit", {"target": "issues", "number": 84, "title": "x"})
     assert status == 502
+
+
+def test_a_stale_row_is_a_409_through_the_real_module_not_a_hand_typed_string():
+    """The reviewer's finding: `_send_json(409 …)` keys on the substring
+    `"is not a row"`, which `nova_capture._amend_board` composes. Every
+    other test here mocks that function and re-types the sentence, so the
+    two sides agree by inspection and nothing pins them. Rewording the
+    message would turn every stale row into a 502 -- "the vault failed",
+    when nothing failed -- and the page would retry instead of re-reading.
+
+    This one runs the real `remove_row` against a board that genuinely has
+    no #999, with only the vault stubbed out.
+    """
+    board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
+            "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(board, "3-abc")), \
+            patch.object(nova_capture, "vault_write_path") as write:
+        status, _, body = _post("/api/board/delete", {"target": "issues", "number": 999})
+    write.assert_not_called()
+    assert status == 409, "a row that is not there was reported as a vault failure"
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_board_edit_writes_to_his_file_and_not_to_novas_own_copy():
+    """One real path end to end: a request arrives, his file is written.
+
+    Note what this does *not* prove. It cannot tell `BOARD_PATHS` from
+    `CAPTURE_TARGETS`, because the two hold the same string for `issues`
+    -- swapping the lookup leaves this green. The branch where they differ
+    is `notes`, and it is pinned in `test_board_row_edit.py`."""
+    board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
+            "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
+    seen = {}
+    with patch.object(nova_capture, "vault_read_path_rev",
+                      side_effect=lambda p: seen.update(read=p) or (board, "3-abc")), \
+            patch.object(nova_capture, "vault_write_path",
+                         side_effect=lambda p, b, if_rev=None: seen.update(write=p) or "written"):
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 57, "title": "Renamed"})
+    assert status == 200
+    assert seen["read"] == "projects/sokrates/projects/nova/issues.md"
+    assert seen["write"] == "projects/sokrates/projects/nova/issues.md"
