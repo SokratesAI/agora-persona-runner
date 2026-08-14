@@ -1515,6 +1515,11 @@
     head.appendChild(el("span", "item-number", "#" + item.number));
     head.appendChild(el("span", "item-title", item.title));
     head.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
+    // Unrated rows get no chip at all rather than a grey "none" one:
+    // an empty space is what tells Edvard which rows still want a rating.
+    if (item.priority) {
+      head.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
+    }
     if (item.updated) head.appendChild(el("span", "item-updated", item.updated));
     row.appendChild(head);
 

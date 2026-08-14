@@ -310,6 +310,8 @@
         "statusKey": "in-progress",
         "updated": "08-11",
         "where": "",
+        "priority": "",
+        "priorityKey": "",
         "done": false
       },
       {
@@ -319,6 +321,8 @@
         "statusKey": "backlog",
         "updated": "08-11",
         "where": "",
+        "priority": "",
+        "priorityKey": "",
         "done": false
       },
       {
@@ -328,6 +332,8 @@
         "statusKey": "done",
         "updated": "08-10",
         "where": "",
+        "priority": "",
+        "priorityKey": "",
         "done": false
       },
       {
@@ -337,6 +343,8 @@
         "statusKey": "done",
         "updated": "08-10",
         "where": "inbox.md, identity.md, prompt.md",
+        "priority": "",
+        "priorityKey": "",
         "done": true
       }
     ],
@@ -392,6 +400,8 @@
       "statusKey": "in-progress",
       "updated": "08-11",
       "where": "",
+      "priority": "",
+      "priorityKey": "",
       "done": false,
       "blocks": [
         {

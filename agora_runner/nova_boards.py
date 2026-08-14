@@ -84,6 +84,44 @@ def status_key(status):
     return words or "none"
 
 
+# Edvard's four ratings, and the words he actually used for them:
+# "low, medium, high, immediately priority" (`ideas.md` capture,
+# 2026-08-14). "immediately" is his word and "immediate" is the one a
+# hand-edit is likely to reach for, so both land in the same bucket
+# rather than one of them falling off the sort.
+_PRIORITY_ALIASES = {"immediately": "immediate", "now": "immediate", "urgent": "immediate"}
+# Most urgent first, which is the order the boards are meant to read in.
+PRIORITY_ORDER = ("immediate", "high", "medium", "low")
+
+
+def priority_key(priority):
+    """`🔴 Immediately` -> `immediate`, for a CSS class and a sort.
+
+    Emoji-stripped and aliased the same way `status_key` is, and for the
+    same reason: the rating is written by hand, by Edvard, in Obsidian,
+    so it has to survive him typing a synonym or dropping the emoji. An
+    unrated row returns `""` rather than a bucket, because "nobody has
+    rated this" is a real state -- `prompt.md` tells a cycle to fill it
+    in, and inventing a default here would hide the ones it must visit.
+    """
+    words = _EMOJI_RE.sub(" ", priority or "").strip().lower()
+    words = re.sub(r"\s+", "-", words)
+    return _PRIORITY_ALIASES.get(words, words)
+
+
+def priority_rank(key):
+    """Sort position for a `priority_key`. Unrated sorts last, not first.
+
+    An unrated row is not urgent and it is not the least urgent either --
+    it is unknown. Sorting it last keeps it out of the way of the ratings
+    Edvard actually gave, which is the point of him giving them.
+    """
+    try:
+        return PRIORITY_ORDER.index(key)
+    except ValueError:
+        return len(PRIORITY_ORDER)
+
+
 # Obsidian's alias pipe, inside a wiki-link, inside a table cell:
 # `| [[#57 — More pages in the Nova app|57]] | More pages ... |`. Every
 # row of both live tables is written this way, so splitting a row on `|`
@@ -193,6 +231,12 @@ def parse_board(markdown):
                 if number in seen:
                     continue
                 seen.add(number)
+                # Priority is a fifth column on `## Board`, appended
+                # rather than inserted so every cell above keeps its
+                # index and an unrated file still parses. `## Done` has
+                # a different four-column shape and never carries one --
+                # a finished item has no priority left to argue about.
+                priority = cells[4] if (not done and len(cells) > 4) else ""
                 items.append({
                     "number": number,
                     "title": cells[1],
@@ -200,6 +244,8 @@ def parse_board(markdown):
                     "statusKey": "done" if done else status_key(cells[2]),
                     "updated": cells[3] if not done else cells[2],
                     "where": cells[3] if done else "",
+                    "priority": priority,
+                    "priorityKey": priority_key(priority),
                     "done": done,
                 })
             continue
