@@ -2531,10 +2531,11 @@ def test_the_comments_endpoint_says_which_replies_are_still_coming():
     assert answered["reply"] == "here you go"
 
 
-def test_a_long_wait_is_shown_as_queued_not_as_a_reply_being_written():
+def test_a_long_wait_is_flagged_rather_than_called_a_reply_being_written():
     """Edvard, on cycle 81: "Nova is replying..." should only be visible if
-    its actually working on replying". Past the threshold it is not working
-    on it -- it is behind a cycle's hold on the bridge's single CLI lock."""
+    its actually working on replying". Past the threshold something is
+    holding it up. Which thing is deliberately not asserted here -- see
+    comments_payload and issue #80."""
     stored = (
         "## New\n\n"
         "### Cycle 57 \u00b7 2026-08-09 16:02\n\nwaiting on this one\n\n"
