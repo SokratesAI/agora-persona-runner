@@ -21,10 +21,10 @@ from agora_runner.cycle_health import (
     STALL_GRACE_INTERVALS,
     gaps_between,
     missing_cycles,
+    nova_cadence_minutes,
 )
 from agora_runner.nova_journal import JOURNAL_DIR, build_status, parse_journal
 from agora_runner.nova_site import (
-    _fetch_cadence_minutes,
     _refresh_cadence,
     _with_silence,
     cadence_minutes,
@@ -448,7 +448,7 @@ def test_the_cadence_comes_from_novas_own_enabled_heartbeat(monkeypatch):
         _hb("every@40m@19:00"),
     ])
     _with_agora(monkeypatch, fake)
-    assert _fetch_cadence_minutes() == 40
+    assert nova_cadence_minutes() == 40
     assert fake.calls == [("GET", "/heartbeats")]
 
 
@@ -459,11 +459,11 @@ def test_two_live_heartbeats_are_measured_at_the_faster_one(monkeypatch):
     _with_agora(monkeypatch, _FakeAgora(heartbeats=[
         _hb("every@6h"), _hb("every@40m"),
     ]))
-    assert _fetch_cadence_minutes() == 40
+    assert nova_cadence_minutes() == 40
     _with_agora(monkeypatch, _FakeAgora(heartbeats=[
         _hb("every@40m"), _hb("every@6h"),
     ]))
-    assert _fetch_cadence_minutes() == 40
+    assert nova_cadence_minutes() == 40
 
 
 def test_a_schedule_with_no_single_interval_has_no_honest_answer(monkeypatch):
@@ -471,17 +471,17 @@ def test_a_schedule_with_no_single_interval_has_no_honest_answer(monkeypatch):
     guess -- the caller falls back to the constant and says so."""
     for schedule in ("cron@0 * * * *", "daily@07:00", "every@abc", "every@0m", ""):
         _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb(schedule)]))
-        assert _fetch_cadence_minutes() is None, schedule
+        assert nova_cadence_minutes() is None, schedule
 
 
 def test_no_heartbeat_for_nova_at_all_is_not_a_cadence(monkeypatch):
     _with_agora(monkeypatch, _FakeAgora(heartbeats=[]))
-    assert _fetch_cadence_minutes() is None
+    assert nova_cadence_minutes() is None
 
 
 def test_an_agora_that_answers_with_an_error_is_not_a_cadence(monkeypatch):
     _with_agora(monkeypatch, _FakeAgora(status=503, heartbeats=[_hb("every@40m")]))
-    assert _fetch_cadence_minutes() is None
+    assert nova_cadence_minutes() is None
 
 
 def test_the_first_caller_gets_the_fallback_without_waiting(monkeypatch):
@@ -589,12 +589,12 @@ def test_a_workflow_heartbeat_pointed_at_nova_is_not_the_cycle_cadence(monkeypat
     """
     workflow = dict(_hb("every@5m"), workflowId="wf-1")
     _with_agora(monkeypatch, _FakeAgora(heartbeats=[workflow, _hb("every@40m")]))
-    assert _fetch_cadence_minutes() == 40
+    assert nova_cadence_minutes() == 40
 
     # And on its own it is not a cadence at all, rather than the shortest
     # of a list of one.
     _with_agora(monkeypatch, _FakeAgora(heartbeats=[workflow]))
-    assert _fetch_cadence_minutes() is None
+    assert nova_cadence_minutes() is None
 
 
 def test_the_badge_the_page_draws_moves_with_the_live_cadence(monkeypatch):

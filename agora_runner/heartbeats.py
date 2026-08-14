@@ -214,37 +214,55 @@ def nova_health_note(persona, previous_run_at, schedule=None):
     because a self-check is never worth losing a cycle over -- if the vault
     read fails, the cycle should still run, and step 1 will notice.
 
-    **`schedule` is this heartbeat's own, and it is the unit the stall is
-    measured in.** "No entry for 2 heartbeat intervals" is only a true
-    sentence if the interval is the one actually running.
-    `cycle_health.HEARTBEAT_MINUTES` is a constant, and its own comment
-    says to pass the live schedule in instead -- nothing ever did, so the
-    check has been measuring against 60 minutes no matter what the
-    heartbeat said. That constant has been right by luck since 2026-08-12,
-    when Edvard moved the cadence to 40 minutes and back. At 40 it would
-    have waited 120 minutes to report a dead cycle instead of 80, letting
-    a second cycle die before saying anything about the first; at a slower
-    cadence than 60 it fails the other way and cries stall every single
-    run, which is the false alarm issue #72 says would make the check
-    worth less than nothing. `None` for a `cron@` or `daily@` heartbeat,
-    which has no single interval -- the constant is the honest fallback
-    there, and no such heartbeat is Nova's today.
+    **The unit the stall is measured in is how often an entry gets
+    written, not how often this heartbeat runs.** "No entry for 2
+    heartbeat intervals" is only a true sentence if the interval is the
+    one entries actually arrive at. `cycle_health.nova_cadence_minutes`
+    answers that, and it is the same call `nova_site` makes for the badge
+    -- the shortest of every enabled, non-workflow heartbeat pointed at
+    Nova, because any of them dispatching writes an entry.
+
+    #166 asked the narrower question instead, using `schedule`, this
+    heartbeat's own. With one heartbeat the two agree, and Nova has one
+    today; with two they diverge, and this side would be measuring in the
+    interval of whichever one happened to fire. `schedule` stays as the
+    middle fallback because it is already in hand and costs nothing: it
+    is right whenever Agora cannot be reached but this heartbeat is
+    running, which is exactly the case a network failure here produces.
+    `HEARTBEAT_MINUTES` is the last resort under both -- a `cron@` or
+    `daily@` heartbeat has no single interval, and no such heartbeat is
+    Nova's today.
     """
     if (persona or {}).get("id") != NOVA_PERSONA_ID:
         return ""
     try:
         from agora_runner.cycle_health import (
             HEARTBEAT_MINUTES, describe, heartbeat_findings,
+            nova_cadence_minutes,
         )
         from agora_runner.nova_journal import JOURNAL_DIR
         from agora_runner.turns import schedule_minutes
         from agora_runner.vault import vault_bulk_list
 
+        try:
+            cadence = nova_cadence_minutes()
+        except Exception as e:
+            # Deliberately not inside the outer `except`. Agora being
+            # unreachable *raises* rather than returning a status --
+            # `http_json` catches `HTTPError`, not `URLError` -- and the
+            # agora pod rolling is a real window, four `Connection
+            # refused` lines over 20 seconds on 2026-08-14. The vault read
+            # below is what this note exists for; letting a failed lookup
+            # of the *unit* discard the whole measurement would be trading
+            # the answer for its label, when `schedule` is already in hand
+            # and cannot fail.
+            log(f"cadence lookup failed, measuring in this heartbeat's own: {e}")
+            cadence = None
         files, mtimes = vault_bulk_list(JOURNAL_DIR)
         line = describe(heartbeat_findings(
             list(files), mtimes, datetime.now(OSLO),
             _parse_run_at(previous_run_at),
-            schedule_minutes(schedule) or HEARTBEAT_MINUTES,
+            cadence or schedule_minutes(schedule) or HEARTBEAT_MINUTES,
             unreadable=getattr(files, "unreadable", ()),
         ))
     except Exception as e:

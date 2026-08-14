@@ -105,7 +105,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
-from agora_runner.config import NOVA_PERSONA_ID, NOVA_PORT, OSLO
+from agora_runner.config import NOVA_PORT, OSLO
 from agora_runner.log import log
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
@@ -741,47 +741,12 @@ _cadence_lock = threading.Lock()
 _cadence_refreshing = False
 
 
-def _fetch_cadence_minutes():
-    """Minutes between Nova's own heartbeat runs, live from Agora, or `None`.
-
-    `None` means "no honest answer": Agora unreachable, no enabled
-    heartbeat pointed at Nova, or a `cron@`/`daily@` schedule that has no
-    single interval. The caller falls back rather than inventing one.
-
-    The **shortest** interval when more than one enabled heartbeat targets
-    Nova, because any of them dispatching writes a journal entry -- so the
-    rate entries should appear at is the fastest of them, and measuring
-    silence against a slower one would wait through a dead cycle before
-    saying anything. There is one such heartbeat today; picking the first
-    match would be arbitrary the day there are two.
-    """
-    from agora_runner.http_util import agora_internal
-    from agora_runner.turns import schedule_minutes
-
-    status, body = agora_internal("GET", "/heartbeats")
-    if status != 200:
-        return None
-    minutes = [
-        schedule_minutes(hb.get("schedule", ""))
-        for hb in (body.get("heartbeats") or [])
-        # `workflowId` excluded, not just filtered for tidiness: a
-        # workflow-bound heartbeat dispatches `run_workflow_heartbeat`, a
-        # multi-step conversation round that writes no journal entry, and
-        # `create_heartbeat` requires a `personaId` on those too. One
-        # pointed at Nova at a faster cadence -- a workflow left enabled,
-        # say -- would have this measuring silence in intervals nothing
-        # writes in, which is the false stall #72 exists to prevent.
-        if (hb.get("enabled") and not hb.get("workflowId")
-                and hb.get("personaId") == NOVA_PERSONA_ID)
-    ]
-    usable = [m for m in minutes if m]
-    return min(usable) if usable else None
-
-
 def _refresh_cadence():
     global _cadence, _cadence_refreshing
     try:
-        minutes = _fetch_cadence_minutes()
+        from agora_runner.cycle_health import nova_cadence_minutes
+
+        minutes = nova_cadence_minutes()
     except Exception as e:
         # Never raised at a reader. A page that cannot render because the
         # freshness of one badge could not be established is a worse
@@ -808,10 +773,10 @@ def cadence_minutes():
     Serving the fallback cold is not a compromise, it is the status quo --
     `HEARTBEAT_MINUTES` is what this measured in unconditionally until
     now, and it has been wrong twice, because the cadence is Edvard's to
-    change and he has changed it four times since 2026-08-08. #166 fixed
-    the copy that talks to Nova by handing it the live schedule from the
-    heartbeat being dispatched; this process has no heartbeat in hand, so
-    it has to ask.
+    change and he has changed it four times since 2026-08-08. The lookup
+    itself is `cycle_health.nova_cadence_minutes`, shared with the copy
+    that talks to Nova; what belongs here is only the caching, because
+    only this side is on a request path.
     """
     global _cadence_refreshing
 
