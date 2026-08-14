@@ -3535,3 +3535,25 @@ def test_a_report_entry_still_carries_its_outcome_and_body():
     assert entry["outcome"] == "report"
     assert entry["pr"] == "none"
     assert "Eight hours in plain language." in entry["body"]
+
+
+def test_the_server_routes_pages_off_the_shared_constant():
+    """`PAGE_ROUTES` must be what `do_GET` reads, not a description of it.
+
+    `site_check` walks this constant to decide which pages to smoke-test,
+    so the constant only buys anything if the server and the checker
+    cannot disagree. Re-hardcoding the list inside `do_GET` -- which is
+    where it lived until this landed -- leaves every other test in this
+    file green, because the behaviour for today's five routes is
+    identical. The only thing that catches it is asking the server about a
+    route that exists solely in the constant.
+    """
+    with patch.object(nova_site, "PAGE_ROUTES", nova_site.PAGE_ROUTES + ("/invented",)):
+        status, _, body = _get("/invented")
+    assert status == 200 and b"<!doctype html>" in body.lower(), (
+        "the server is not reading PAGE_ROUTES, so site_check is walking a list "
+        "that no longer describes what is routed"
+    )
+    # And with the patch gone it is a 404 again, so the assertion above is
+    # about the constant rather than about a server that serves anything.
+    assert _get("/invented")[0] == 404
