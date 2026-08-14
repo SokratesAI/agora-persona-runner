@@ -1519,17 +1519,24 @@
    * second thing to get wrong. It goes disabled while the write is in
    * flight so a double-tap cannot race two writes at one cell, and on
    * failure it snaps back to what the server still holds rather than
-   * showing a rating that was never written. */
+   * showing a rating that was never written.
+   *
+   * No "Priority" label and no words in the box itself (Edvard, 2026-08-14:
+   * cycle 171's picker still read as a form field, not a control that
+   * matches the rest of the row). What is visible is the ball -- or a dash
+   * for unrated -- and nothing else, so the control is exactly as wide
+   * whichever rating is selected; the word survives as each option's
+   * accessible name, read out when the native picker opens. */
   function renderPriorityPicker(board, item) {
     var wrap = el("p", "item-prio-edit");
-    wrap.appendChild(el("span", "item-prio-label", "Priority"));
     var select = document.createElement("select");
-    select.className = "prio-select";
+    select.className = "prio-select prio-select-board";
     select.setAttribute("aria-label", "Priority of #" + item.number);
     PRIORITIES.forEach(function (label) {
       var option = document.createElement("option");
       option.value = label;
-      option.textContent = label || "Unrated";
+      option.textContent = label ? label.split(" ")[0] : "–";
+      option.setAttribute("aria-label", label || "Unrated");
       if (label === (item.priority || "")) option.selected = true;
       select.appendChild(option);
     });
