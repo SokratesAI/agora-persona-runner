@@ -109,16 +109,50 @@ pre code { background: none; padding: 0; }
   border-color: var(--accent);
 }
 
+/* The priority picker gets its own row rather than a place in the button
+ * row -- Edvard, issues.md 2026-08-14: *"Ui is ugly for the priority
+ * rating. The issue, idea, note and priority dropdown are now just
+ * scrambled after the addition of the priority dropdown."*
+ *
+ * Measured in Chromium at 390px, which is the phone he reads this on, not
+ * the 1280px the screenshot tool used to default to: the select is 136px
+ * wide because "🔴 Immediately" sets a select's intrinsic width, and 136px
+ * left room for exactly one of the three buttons on the first line. So
+ * Issue sat alone against the right edge with Idea and Note below it on
+ * the left. Four controls do not fit one phone row; shrinking one of them
+ * would only move the wrap point, so the row is split instead. */
+.capture-prio-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.capture-prio-label {
+  color: var(--dim);
+  font-size: 0.82rem;
+}
+
 .capture-actions {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   margin-top: 0.5rem;
-  /* Three buttons rather than two since the Note button landed. Three
-   * 44px pills plus their gaps is ~250px, which fits a 390px phone and
-   * not a 320px one, so the row is allowed to wrap instead of pushing a
-   * button off the edge where it cannot be tapped. */
+  /* The status and the button group may still not fit together on a
+   * narrow phone, so the row is allowed to wrap rather than push a button
+   * off the edge where it cannot be tapped. What it may no longer do is
+   * wrap *between* the buttons -- see `.capture-submit`. */
   flex-wrap: wrap;
+}
+
+/* The three targets are one group, not three siblings of the status text.
+ * Three 44px pills plus their gaps is ~230px, which fits every phone this
+ * is opened on; keeping them in one flex item is what makes them wrap
+ * together or not at all. A fourth target would join this group rather
+ * than re-open the split. */
+.capture-submit {
+  display: flex;
+  gap: 0.5rem;
 }
 
 /* Pushes the buttons right and takes the slack, so they do not shift
@@ -1173,12 +1207,30 @@ blockquote {
 
 /* The rating pickers -- issues.md capture, 2026-08-14. Sized like the
    chips they set rather than like a form control, so a board row does not
-   suddenly look like a settings page when it is opened. */
+   suddenly look like a settings page when it is opened.
+
+   **This rule is shared by both pickers**, and that is deliberate: the one
+   in the capture box and the one inside an expanded board row are the same
+   control set in two places, and they should not drift apart. So a change
+   here lands on both, and the second one has to be argued for rather than
+   inherited. Cycle 191 raised the height and was caught by its reviewer
+   doing exactly that -- changing the board row while writing a comment
+   about the capture box.
+
+   The height stays chip-shaped and stops being chip-sized. Keeping the
+   pill radius, the border and the 0.85rem type is what the paragraph above
+   is really protecting; the 30px a select defaults to here is not part of
+   that, it is just a select's default. And it is below the 44px iOS touch
+   minimum this stylesheet already holds every button to -- which matters
+   more on the board row than in the capture box, because that is the
+   picker he reaches for to correct one of the 71 ratings Cycle 188 guessed
+   on his behalf. A chip is read; a picker is tapped. */
 .capture-prio,
 .prio-select {
   font: inherit;
   font-size: 0.85rem;
-  padding: 0.3rem 0.5rem;
+  min-height: 44px;
+  padding: 0.3rem 0.75rem;
   border-radius: 999px;
   border: 1px solid var(--line, #3a3a3a);
   background: var(--card, #1c1c1c);
