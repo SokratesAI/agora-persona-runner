@@ -655,6 +655,7 @@ describe("a board link opens the row it names", () => {
     const row = window.document.getElementById("item-51");
     assert.ok(row, "a done item the URL named was filtered off the page");
     assert.equal(row.querySelector(".item-head").getAttribute("aria-expanded"), "true");
+    click(window, window.document.querySelector(".board-filter-btn"));
     const on = [...window.document.querySelectorAll(".filter.on")].map((c) => c.textContent);
     assert.ok(on.some((label) => label.startsWith("All")), "the filter did not give way: " + on);
   });
@@ -662,6 +663,7 @@ describe("a board link opens the row it names", () => {
   test("a number that is on no row changes nothing", async () => {
     const window = await loadSite("/issues#9999");
     assert.equal(window.document.querySelectorAll(".item-head[aria-expanded='true']").length, 0);
+    click(window, window.document.querySelector(".board-filter-btn"));
     const on = [...window.document.querySelectorAll(".filter.on")].map((c) => c.textContent);
     assert.ok(on.some((label) => label.startsWith("Open")), "a stale number moved the filter");
   });
@@ -682,6 +684,7 @@ describe("a board link opens the row it names", () => {
         .getAttribute("aria-expanded"),
       "false",
     );
+    click(window, window.document.querySelector(".board-filter-btn"));
     const all = [...window.document.querySelectorAll(".filter")]
       .filter((chip) => chip.textContent.startsWith("All"))[0];
     click(window, all);
@@ -2393,6 +2396,7 @@ describe("the issues page", () => {
     assert.ok(open.includes("#57"), "an open item is missing from the default view");
     assert.ok(!open.includes("#51"), "a done item is in the default view");
 
+    click(window, window.document.querySelector(".board-filter-btn"));
     const all = [...window.document.querySelectorAll(".filter")]
       .filter((chip) => chip.textContent.startsWith("All"))[0];
     click(window, all);
@@ -3476,6 +3480,7 @@ describe("the priority picker (buildPrioPicker)", () => {
       },
     });
     const done = payload.board.items.find((i) => i.statusKey === "done");
+    click(window, window.document.querySelector(".board-filter-btn"));
     click(window, [...window.document.querySelectorAll(".filter")].find((c) => c.textContent.startsWith("All")));
     const row = window.document.getElementById("item-" + done.number);
     const indicator = row.querySelector(".item-meta-row > .chip.prio");
@@ -3494,6 +3499,7 @@ describe("the priority picker (buildPrioPicker)", () => {
     });
     const done = payload.board.items.find((i) => i.statusKey === "done" && !i.priority);
     assert.ok(done, "fixture has no unrated done row to test against");
+    click(window, window.document.querySelector(".board-filter-btn"));
     click(window, [...window.document.querySelectorAll(".filter")].find((c) => c.textContent.startsWith("All")));
     const row = window.document.getElementById("item-" + done.number);
     assert.equal(row.querySelector(".item-meta-row > .chip.prio"), null);
@@ -3508,9 +3514,21 @@ describe("the priority picker (buildPrioPicker)", () => {
 describe("searching, filtering and sorting a board", () => {
   const rows = (window) =>
     [...window.document.querySelectorAll(".item-number")].map((n) => n.textContent);
-  const chip = (window, prefix) =>
-    [...window.document.querySelectorAll(".filter")]
+  /* The filter and toggle buttons this suite reaches for all moved into
+   * the filter modal (Edvard, 2026-08-14: "make the filters into a
+   * modal... remove all the filter buttons"). `chip` opens it first if
+   * it is not already, so every existing call site in this file keeps
+   * working unchanged rather than needing its own "open the modal" step
+   * added by hand. */
+  const openFilters = (window) => {
+    const btn = window.document.querySelector(".board-filter-btn");
+    if (btn && btn.getAttribute("aria-expanded") !== "true") click(window, btn);
+  };
+  const chip = (window, prefix) => {
+    openFilters(window);
+    return [...window.document.querySelectorAll(".filter")]
       .filter((c) => c.textContent.startsWith(prefix))[0];
+  };
 
   /* The write-up half of the search is debounced then fetched, so it
    * lands two turns of the event loop later. `captureTimers` is for the

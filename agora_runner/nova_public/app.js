@@ -1481,6 +1481,13 @@
     toggles: {},
     sort: "filed",
     desc: false,
+    // Whether the filter modal (Edvard, 2026-08-14: "make the filters
+    // into a modal... remove all the filter buttons") is open, so a
+    // re-render triggered by tapping an option inside it -- every filter
+    // and toggle click already calls `renderBoard` -- knows to rebuild
+    // the modal's contents in place instead of leaving it showing stale
+    // counts and "on" states, or closing it under the reader's thumb.
+    filtersOpen: false,
   };
 
   var FILTERS = [
@@ -2196,6 +2203,110 @@
    * hand; `searchFocus` is what remembers them across a keystroke. */
   var searchFocus = null;
 
+  /* The status filters (Open/Done/All) and the extra toggles, as one
+   * group of buttons -- unchanged from when they lived directly on the
+   * page, down to the class names, so the only thing that moved is where
+   * this container ends up mounted. Rebuilt fresh on every call rather
+   * than cached, because a count or an "on" state can go stale the
+   * instant any of these buttons, or the status/board tabs above them,
+   * is tapped. */
+  function buildFilterChips(board, payload, items) {
+    var chips = el("div", "filters");
+    FILTERS.forEach(function (filter) {
+      var count = items.filter(filter.match).length;
+      var chip = el("button", "filter" + (filter.key === boardState.filter ? " on" : ""),
+        filter.label + " (" + count + ")");
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", filter.key === boardState.filter ? "true" : "false");
+      chip.addEventListener("click", function () {
+        boardState.filter = filter.key;
+        renderBoard(board, payload);
+      });
+      chips.appendChild(chip);
+    });
+    TOGGLES.forEach(function (toggle) {
+      var on = !!boardState.toggles[toggle.key];
+      // Counted against the status filter rather than the whole board,
+      // so "Unrated (0)" under Done means what it says instead of
+      // advertising rows the current view cannot show.
+      var count = items.filter(currentFilter().match).filter(toggle.match).length;
+      var chip = el("button", "filter filter-extra" + (on ? " on" : ""),
+        toggle.label + " (" + count + ")");
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", on ? "true" : "false");
+      chip.addEventListener("click", function () {
+        boardState.toggles[toggle.key] = !on;
+        renderBoard(board, payload);
+      });
+      chips.appendChild(chip);
+    });
+    return chips;
+  }
+
+  /* The filter modal -- Edvard, 2026-08-14: "make the filters into a
+   * modal same as the priority. remove all the filter buttons and place
+   * a new filter button... next to the arrow button on the search. the
+   * filter button opens a modal with the filter options."
+   *
+   * "Same as the priority" means the same shared popup and backdrop
+   * (`getPrioMenuOverlay`) and the same centred, wider `.prio-menu`
+   * chrome -- not the same *behaviour*. The priority popup is single-pick
+   * and closes itself the instant an option is chosen; these seven
+   * buttons compose (ideas.md #71 -- "unrated and untouched for a week"
+   * is one tap each) and closing after the first tap would undo the one
+   * thing that made them worth inventing. So this popup only closes on an
+   * outside tap, Escape, or its own close button, and stays open and
+   * live across every tap inside it -- each one already calls
+   * `renderBoard`, and `boardState.filtersOpen` is what tells the next
+   * `renderBoardControls` to refresh this popup's contents in place
+   * rather than leave it showing counts and "on" states from before the
+   * tap that just happened. */
+  function populateFiltersModal(board, payload, items) {
+    var overlay = getPrioMenuOverlay();
+    overlay.textContent = "";
+    overlay.removeAttribute("role");
+    overlay.dataset.openFor = "filters";
+    var head = el("div", "modal-head");
+    head.appendChild(el("h2", "modal-title", "Filters"));
+    var closeBtn = el("button", "modal-close", "×");
+    closeBtn.type = "button";
+    closeBtn.setAttribute("aria-label", "Close filters");
+    closeBtn.addEventListener("click", closeFiltersModal);
+    head.appendChild(closeBtn);
+    overlay.appendChild(head);
+    overlay.appendChild(buildFilterChips(board, payload, items));
+  }
+
+  var filtersModalHandlers = null;
+  function closeFiltersModal() {
+    if (!boardState.filtersOpen) return;
+    boardState.filtersOpen = false;
+    if (prioMenuOverlay) prioMenuOverlay.hidden = true;
+    if (prioMenuBackdrop) prioMenuBackdrop.hidden = true;
+    if (filtersModalHandlers) {
+      document.removeEventListener("click", filtersModalHandlers.onDocClick, true);
+      document.removeEventListener("keydown", filtersModalHandlers.onKeydown, true);
+      filtersModalHandlers = null;
+    }
+  }
+
+  function openFiltersModal(board, payload, items) {
+    boardState.filtersOpen = true;
+    populateFiltersModal(board, payload, items);
+    prioMenuBackdrop.hidden = false;
+    prioMenuOverlay.hidden = false;
+    function onDocClick(e) {
+      if (prioMenuOverlay.contains(e.target)) return;
+      closeFiltersModal();
+    }
+    function onKeydown(e) {
+      if (e.key === "Escape") closeFiltersModal();
+    }
+    filtersModalHandlers = { onDocClick: onDocClick, onKeydown: onKeydown };
+    document.addEventListener("click", onDocClick, true);
+    document.addEventListener("keydown", onKeydown, true);
+  }
+
   function renderBoardControls(board, payload, items) {
     var bar = el("div", "board-controls");
 
@@ -2227,37 +2338,6 @@
       search.appendChild(clear);
     }
     bar.appendChild(search);
-
-    var chips = el("div", "filters");
-    FILTERS.forEach(function (filter) {
-      var count = items.filter(filter.match).length;
-      var chip = el("button", "filter" + (filter.key === boardState.filter ? " on" : ""),
-        filter.label + " (" + count + ")");
-      chip.type = "button";
-      chip.setAttribute("aria-pressed", filter.key === boardState.filter ? "true" : "false");
-      chip.addEventListener("click", function () {
-        boardState.filter = filter.key;
-        renderBoard(board, payload);
-      });
-      chips.appendChild(chip);
-    });
-    TOGGLES.forEach(function (toggle) {
-      var on = !!boardState.toggles[toggle.key];
-      // Counted against the status filter rather than the whole board,
-      // so "Unrated (0)" under Done means what it says instead of
-      // advertising rows the current view cannot show.
-      var count = items.filter(currentFilter().match).filter(toggle.match).length;
-      var chip = el("button", "filter filter-extra" + (on ? " on" : ""),
-        toggle.label + " (" + count + ")");
-      chip.type = "button";
-      chip.setAttribute("aria-pressed", on ? "true" : "false");
-      chip.addEventListener("click", function () {
-        boardState.toggles[toggle.key] = !on;
-        renderBoard(board, payload);
-      });
-      chips.appendChild(chip);
-    });
-    bar.appendChild(chips);
 
     /* "on each option, on a horisontal line, a description of the option
      * ('priority') and on the right side of it a button with a
@@ -2299,7 +2379,36 @@
       renderBoard(board, payload);
     });
     sortRow.appendChild(arrow);
+
+    // Next to the arrow, as asked. Three bars of shrinking width -- the
+    // same ribbon shape the term "filter" usually draws as -- rather than
+    // a word, so it reads at a glance next to a row that is otherwise all
+    // icons and a select. `on` (an accent border, the same signal every
+    // other active control on this page already gives) fires only for the
+    // toggles: Open/Done/All always has exactly one of the three selected,
+    // so highlighting it here would light up on every load and mean
+    // nothing.
+    var anyToggleOn = TOGGLES.some(function (t) { return !!boardState.toggles[t.key]; });
+    var filterBtn = el("button", "board-filter-btn" + (anyToggleOn ? " on" : ""));
+    filterBtn.type = "button";
+    filterBtn.setAttribute("aria-haspopup", "dialog");
+    filterBtn.setAttribute("aria-expanded", boardState.filtersOpen ? "true" : "false");
+    filterBtn.setAttribute("aria-label", "Filters");
+    filterBtn.appendChild(el("span", "filter-bar"));
+    filterBtn.appendChild(el("span", "filter-bar"));
+    filterBtn.appendChild(el("span", "filter-bar"));
+    filterBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (boardState.filtersOpen) closeFiltersModal(); else openFiltersModal(board, payload, items);
+    });
+    sortRow.appendChild(filterBtn);
     bar.appendChild(sortRow);
+
+    // The modal is a standing popup, not rebuilt by this function's own
+    // return value -- keep it in step with whatever just changed (a tap
+    // inside it always re-runs this whole function) rather than let it
+    // show the counts and "on" states from before that tap.
+    if (boardState.filtersOpen) populateFiltersModal(board, payload, items);
 
     if (searchFocus !== null) {
       // After `feed` has the node. Deferred because focusing a detached

@@ -989,6 +989,74 @@ body.nav-open { overflow: hidden; }
   transform: rotate(180deg);
 }
 
+/* Opens the filter modal -- Edvard, 2026-08-14: "place a new filter
+ * button... next to the arrow button on the search." Same 44px square as
+ * `.board-sort-dir` beside it, same card/border language, so the two read
+ * as a matched pair of icon buttons rather than one control and one
+ * afterthought. `on` (an accent border) only when a toggle is active --
+ * see the comment in app.js on why Open/Done/All does not also light it. */
+.board-filter-btn {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  width: 44px;
+  min-height: 44px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.board-filter-btn.on,
+.board-filter-btn[aria-expanded="true"] { border-color: var(--accent); }
+
+/* Three shrinking bars -- the shape "filter" usually draws as -- built
+ * the same way `.menu-bar` builds the hamburger icon above: plain spans,
+ * sized and spaced by CSS rather than an image asset this app has none
+ * of. */
+.filter-bar {
+  height: 2px;
+  border-radius: 2px;
+  background: var(--text);
+}
+
+.filter-bar:nth-child(1) { width: 1.1rem; }
+.filter-bar:nth-child(2) { width: 0.75rem; }
+.filter-bar:nth-child(3) { width: 0.4rem; }
+
+.board-filter-btn.on .filter-bar,
+.board-filter-btn[aria-expanded="true"] .filter-bar { background: var(--accent); }
+
+/* The filter popup's own header -- the priority popup needs none, since
+ * picking an option closes it; this one stays open while several
+ * toggles compose, so it needs its own way to say "done" without a
+ * pointer that already knows to tap outside it. */
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+
+.modal-title { margin: 0; font-size: 1rem; }
+
+.modal-close {
+  min-width: 44px;
+  min-height: 44px;
+  background: none;
+  border: 0;
+  color: var(--dim);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal-close:hover { color: var(--text); }
+
 
 .captures {
   border: 1px solid var(--warn);
@@ -1104,14 +1172,15 @@ body.nav-open { overflow: hidden; }
   gap: 0.4rem 0.6rem;
 }
 
-/* Status on the left, priority pinned to the right -- the one thing a
- * single wrapped flex line could not do reliably, because the priority
- * chip needed to stay level with status specifically, not just with
- * whichever line of the head happened to wrap last. */
+/* Status and priority side by side on the left (Edvard, 2026-08-14: "the
+ * progress and the priority should both float left, not space between")
+ * -- the reason they are real siblings in one flex row at all, rather
+ * than two lines, is so the priority chip stays level with status
+ * specifically and not just with whichever line of the head happened to
+ * wrap last. */
 .item-meta-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
 }
 
