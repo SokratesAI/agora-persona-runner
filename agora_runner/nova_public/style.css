@@ -1237,5 +1237,27 @@ blockquote {
   color: inherit;
 }
 .item-prio-edit { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.6rem; }
-.item-prio-label { font-size: 0.8rem; opacity: 0.7; }
 .item-prio-note { font-size: 0.8rem; opacity: 0.8; }
+
+/* The board row's picker only, layered on the shared `.prio-select` rule
+ * above rather than replacing it -- the capture box's picker still shows
+ * words next to its own "Priority" label and keeps that rule's pill shape
+ * unchanged. Here the box holds one glyph (a ball, or a dash for
+ * unrated), so it is fixed-width and centred instead of growing with the
+ * text, and it borrows `.capture-act`'s square-ish, flat-background shape
+ * -- the same "just a button" language the rest of the row already uses --
+ * rather than the pill the status chip beside it uses. */
+.prio-select-board {
+  width: 44px;
+  padding: 0;
+  border-radius: 0.5rem;
+  background: none;
+  text-align: center;
+  text-align-last: center;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  cursor: pointer;
+}
+
+.prio-select-board:hover:not(:disabled) { border-color: var(--accent); }
