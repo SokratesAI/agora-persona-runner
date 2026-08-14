@@ -17,14 +17,14 @@ from agora_runner.nova_site import PAGE_ROUTES
 from tools import see_page
 
 
-def _root(tmp_path, *, fonts=True, libdirs=True, shot=True):
+def _root(tmp_path, *, fonts=True, libdirs=True, browsers=True):
     if libdirs:
         (tmp_path / "libdirs.txt").write_text("/sysroot/lib:/sysroot/usr/lib\n")
     if fonts:
         (tmp_path / "fontconf").mkdir()
         (tmp_path / "fontconf" / "fonts.conf").write_text("<fontconfig/>")
-    if shot:
-        (tmp_path / "shot.js").write_text("// stub")
+    if browsers:
+        (tmp_path / "browsers").mkdir()
     return tmp_path
 
 
@@ -79,7 +79,7 @@ def test_render_env_carries_every_load_bearing_variable(tmp_path):
     assert env["PLAYWRIGHT_BROWSERS_PATH"] == str(tmp_path / "browsers")
 
 
-@pytest.mark.parametrize("missing", ["fonts", "libdirs", "shot"])
+@pytest.mark.parametrize("missing", ["fonts", "libdirs", "browsers"])
 def test_a_half_built_sysroot_says_how_to_build_it(tmp_path, missing):
     """Missing fonts must fail loudly here rather than silently render nothing."""
     root = _root(tmp_path, **{missing: False})
@@ -189,3 +189,26 @@ def test_render_parses_one_json_object_per_page(tmp_path, monkeypatch):
     )
     rows = see_page.render(["/", "/retro"], root=_root(tmp_path))
     assert [r["path"] for r in rows] == ["/", "/retro"]
+
+
+def test_the_repo_copy_of_shot_js_is_the_one_that_runs(tmp_path, monkeypatch):
+    """`node shot.js` runs with cwd=root, and nothing installs it there.
+
+    `bootstrap.sh` builds the sysroot and does not mention `shot.js`, so the
+    copy beside the browser was hand-placed and is free to drift from the
+    repo. An edit to the file under review would then change nothing about
+    what runs -- and this module exists to show a cycle what it shipped.
+    """
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(stdout=json.dumps(_row()), stderr="")
+
+    monkeypatch.setattr(see_page, "render_env", lambda root: {})
+    monkeypatch.setattr(see_page.subprocess, "run", fake_run)
+    stale = tmp_path / "shot.js"
+    stale.write_text("// a copy some cycle left here in 2026")
+    see_page.render(["/"], root=tmp_path)
+    fresh = (
+        pathlib.Path(see_page.__file__).resolve().parent / "browser" / "shot.js"
+    ).read_text(encoding="utf-8")
+    assert stale.read_text(encoding="utf-8") == fresh

@@ -53,6 +53,7 @@ minutes if that directory is ever lost.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -100,7 +101,7 @@ def render_env(root: Path) -> dict:
     """
     libdirs = root / "libdirs.txt"
     fonts = root / "fontconf" / "fonts.conf"
-    for needed in (libdirs, fonts, root / "shot.js"):
+    for needed in (libdirs, fonts, root / "browsers"):
         if not needed.exists():
             raise BrowserMissing(BOOTSTRAP_HINT.format(root=root))
     env = dict(os.environ)
@@ -140,6 +141,14 @@ def render(paths, root=None, base=DEFAULT_BASE, width=PHONE_WIDTH) -> list:
     env = render_env(root)
     env["NOVA_SITE"] = base
     env["NOVA_WIDTH"] = str(width)
+    # `node shot.js` runs with cwd=root, so the script that actually runs
+    # is the copy in the sysroot and not the one in this repo. Nothing kept
+    # those in step -- `bootstrap.sh` does not install it, so the root copy
+    # was placed by hand once and has been whatever a cycle last left there.
+    # An edit to the version-controlled file would silently not take effect,
+    # which is the worst possible failure for the one tool whose whole job
+    # is showing a cycle what it really shipped. Copy it every run.
+    shutil.copyfile(Path(__file__).resolve().parent / "browser" / "shot.js", root / "shot.js")
     proc = subprocess.run(
         ["node", "shot.js", *paths],
         cwd=str(root),
