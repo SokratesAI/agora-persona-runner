@@ -68,9 +68,25 @@ def test_closing_a_row_clears_a_rating_set_row_priority_could_never_clear():
     assert set_row_priority(closed, 57, "🟠 High") is None
 
 
-def test_reopening_keeps_the_rating_cell_the_row_already_had():
-    reopened = set_row_status(BOARD, 57, "⚪ Backlog")
-    assert _row(reopened, 57)["priority"] == "🔵 Medium"
+def test_moving_between_two_open_statuses_keeps_the_rating():
+    moved = set_row_status(BOARD, 57, "⚪ Backlog")
+    assert _row(moved, 57)["status"] == "⚪ Backlog"
+    assert _row(moved, 57)["priority"] == "🔵 Medium"
+
+
+def test_reopening_a_closed_row_does_not_bring_its_rating_back():
+    # This test was named "reopening" and never closed the row first, so it
+    # only ever went In progress -> Backlog and could not reach the
+    # clearing branch at all. Doing it properly pins the consequence that
+    # actually matters: closing is lossy, so a reopened row comes back
+    # unrated and somebody has to rate it again.
+    closed = set_row_status(BOARD, 57, "✅ Done")
+    assert _row(closed, 57)["priority"] == ""
+    reopened = set_row_status(closed, 57, "🟡 In progress")
+    assert _row(reopened, 57)["status"] == "🟡 In progress"
+    assert _row(reopened, 57)["priority"] == ""
+    # ...and it is rateable again, which a closed row is not.
+    assert set_row_priority(reopened, 57, "🟠 High") is not None
 
 
 def test_touches_nothing_but_the_one_row():
@@ -115,7 +131,7 @@ def test_refuses_an_updated_stamp_carrying_a_table_delimiter():
 
 
 def test_the_live_green_tick_spelling_is_rewritten_to_the_one_everything_uses():
-    # `🟢 Done` is on issue #63 in the live file. It already reduces to
+    # `🟢 Done` is on issue #3 in the live file. It already reduces to
     # `done`, so the only thing at stake is that setting it again lands on
     # the ✅ spelling rather than adding a third one.
     assert status_key("🟢 Done") == "done"

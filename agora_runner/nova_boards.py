@@ -116,9 +116,12 @@ OUTDATED_STATUS = "⚫ Outdated"
 # reduces it to -- the same shape as `PRIORITY_LABELS`, and beside it for
 # the same reason: the app's `chip-outdated` class, `OUTDATED_STATUS` and
 # whatever a cycle types into the cell must not drift into three
-# spellings of one status. `🟢 Done` is live on issue #63 and reduces to
-# `done` here, so it is read correctly and rewritten to the ✅ spelling
-# the other 91 rows use if anything ever sets it again.
+# spellings of one status. `🟢 Done` is live on **issue #3** and reduces
+# to `done` here, so it is read correctly and rewritten to the ✅ spelling
+# the other 84 rows use if anything ever sets it again. (This comment
+# said #63 until the reviewer checked: #63 is a different row and is
+# already `✅ Done`. A cycle sweeping the board would have gone looking
+# for the stray spelling in the wrong place and left the real one alone.)
 STATUS_LABELS = {
     "backlog": "⚪ Backlog",
     "in-progress": "🟡 In progress",
