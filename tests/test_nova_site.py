@@ -3615,3 +3615,87 @@ def test_nova_site_main_is_runnable_as_a_module():
     source = (pathlib.Path(__file__).resolve().parent.parent / "agora_runner" / "nova_site_main.py").read_text()
     assert '__name__ == "__main__"' in source
     assert source.rstrip().endswith("main()")
+
+
+# --- POST /api/board/edit and /api/board/delete: Edvard's issue #84 ---
+# *"I need to be able to edit and especially delete boarded ideas and
+# issues from the agora app."* The same two boundaries as every other
+# write path here: `target` is a key into a dict of literal paths, never a
+# path, and the request must be unambiguous about which of the two things
+# it is asking for.
+
+def test_editing_a_boarded_row_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "edit_row", return_value=(True, "#84 edited on issues")) as ed:
+        status, _, body = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "A better title"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    ed.assert_called_once_with("issues", 84, "A better title")
+
+
+def test_deleting_a_boarded_row_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "remove_row", return_value=(True, "#68 deleted on ideas")) as rm:
+        status, _, body = _post(
+            "/api/board/delete", {"target": "ideas", "number": 68, "title": "surprise"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    # Whatever a client puts in `title` on the delete route is ignored, so
+    # a stray field can never turn a delete into an edit -- the same rule
+    # `/api/capture/delete` follows.
+    rm.assert_called_once_with("ideas", 68)
+
+
+def test_a_board_edit_with_a_blank_title_is_rejected_rather_than_deleting_the_row():
+    """The dangerous shape, and the reason there are two routes."""
+    with patch.object(nova_site, "edit_row") as ed, patch.object(nova_site, "remove_row") as rm:
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "   "})
+    assert status == 400
+    ed.assert_not_called()
+    rm.assert_not_called()
+
+
+def test_a_title_cannot_smuggle_a_cell_break_or_a_line_break_into_his_table():
+    for title in ["a | b", "a\nb"]:
+        with patch.object(nova_site, "edit_row") as ed:
+            status, _, _ = _post(
+                "/api/board/edit", {"target": "issues", "number": 84, "title": title})
+        assert status == 400, title
+        ed.assert_not_called()
+
+
+def test_board_amend_refuses_a_target_that_is_not_one_of_his_two_boards():
+    """Notably a path, and notably `notes` -- a capture target that is not
+    a board. Nothing a client sends addresses a vault document."""
+    for target in ["notes", "projects/sokrates/projects/nova/issues", "../secrets", 7]:
+        with patch.object(nova_site, "edit_row") as ed:
+            status, _, _ = _post(
+                "/api/board/edit", {"target": target, "number": 1, "title": "x"})
+        assert status == 400, target
+        ed.assert_not_called()
+
+
+def test_board_amend_refuses_a_number_that_is_not_a_positive_int():
+    # `True` is an int in Python and would address row 1.
+    for number in [True, 0, -1, "84", 8.4, None]:
+        with patch.object(nova_site, "remove_row") as rm:
+            status, _, _ = _post("/api/board/delete", {"target": "issues", "number": number})
+        assert status == 400, number
+        rm.assert_not_called()
+
+
+def test_a_row_that_moved_is_a_409_and_not_a_502():
+    """Nothing failed -- the row was renumbered or removed while the page
+    was open, and the page should re-read rather than retry."""
+    with patch.object(nova_site, "remove_row", return_value=(False, "#99 is not a row on issues")):
+        status, _, body = _post("/api/board/delete", {"target": "issues", "number": 99})
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_failed_board_write_is_a_502():
+    with patch.object(
+            nova_site, "edit_row", return_value=(False, "could not write to issues: 500 boom")):
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "x"})
+    assert status == 502

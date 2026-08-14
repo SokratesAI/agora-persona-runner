@@ -45,7 +45,12 @@ capture at all.
 """
 
 from agora_runner.log import log
-from agora_runner.nova_boards import PRIORITY_LABELS, set_row_priority
+from agora_runner.nova_boards import (
+    PRIORITY_LABELS,
+    delete_row,
+    set_row_priority,
+    set_row_title,
+)
 from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 # These three moved out of `projects/sokrates/projects/agora/` on
@@ -342,6 +347,74 @@ def capture(target, text, priority=""):
             break
     log(f"nova-capture failed writing to {target}: {result}")
     return False, f"could not write to {target}: {result}"
+
+
+def _amend_board(target, number, mutate, what):
+    """Read-modify-write one of Edvard's board files. Returns (ok, message).
+
+    The fourth and fifth write paths on this site share one loop rather
+    than copying `set_priority`'s a fourth and fifth time. The 409 retry
+    is the same and matters for the same reason -- a cycle boarding these
+    files in step 6 is the concurrent writer, and it is the one most
+    likely to be running.
+
+    `mutate` returning `None` is not a write failure and is never
+    retried: the row is not there, or the new title is not writable. A
+    re-read returns the same answer and a 409 loop around it would spin.
+    """
+    path = CAPTURE_TARGETS.get(target)
+    if path is None:
+        return False, f"unknown target: {target!r}"
+
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(path)
+        if current is None:
+            return False, f"{path} not found"
+        updated = mutate(current)
+        if updated is None:
+            return False, f"#{number} is not a row on {target}"
+        result = vault_write_path(path, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture {what} #{number} on {target}")
+            return True, f"#{number} {what} on {target}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed to {what} #{number} on {target}: {result}")
+    return False, f"could not write to {target}: {result}"
+
+
+def edit_row(target, number, title):
+    """Retitle one boarded row. Returns (ok, message).
+
+    Edvard, issue #84: *"I need to be able to edit and especially delete
+    boarded ideas and issues from the agora app. If i hold the card for
+    more than 1 second i get into edit mode and also have the option of
+    deleting, save or cancel the edit."*
+
+    **What "edit" means here is the title, and that is a judgement worth
+    stating.** A boarded card carries a title he wrote, a status and a
+    date I maintain, and a write-up that is my prose about his item. The
+    status already has a picker, the date is bookkeeping, and the
+    write-up is mine to be wrong in -- so the one thing on that card he
+    might want to correct and currently cannot is the sentence he typed.
+    If he wants the write-up editable too, that is one more field and he
+    can say so in a sentence.
+    """
+    return _amend_board(
+        target, number, lambda md: set_row_title(md, number, title), "edited")
+
+
+def remove_row(target, number):
+    """Delete one boarded row and its write-up. Returns (ok, message).
+
+    *"and especially delete"*. Irreversible from the app's side, which is
+    why the route is separate from the edit and why `app.js` asks first --
+    the same shape `/api/capture/delete` already has. It is not
+    irreversible in the vault: CouchDB keeps the revision, and Obsidian
+    LiveSync tombstones rather than removes.
+    """
+    return _amend_board(target, number, lambda md: delete_row(md, number), "deleted")
 
 
 def set_priority(target, number, priority):

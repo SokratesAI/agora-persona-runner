@@ -3801,3 +3801,159 @@ describe("the header says so when it cannot reach the server", () => {
     assert.ok(line.textContent.startsWith(before));
   });
 });
+
+/* Holding a boarded card -- Edvard's issue #84.
+ *
+ * *"I need to be able to edit and especially delete boarded ideas and
+ * issues from the agora app. If i hold the card for more than 1 second i
+ * get into edit mode and also have the option of deleting, save or cancel
+ * the edit."*
+ *
+ * These drive the real gesture through real events rather than calling
+ * the handler, because the whole feature is the difference between a tap
+ * and a hold and only the event sequence has that in it. */
+describe("holding a board row opens edit mode", () => {
+  const HOLD = 1000;
+  const press = (window, node, type) =>
+    node.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true }));
+  /** A whole press: down, the second Edvard asked for, then up and the
+   *  click a browser sends after it. */
+  const hold = async (window, node, ms = HOLD + 30) => {
+    press(window, node, "mousedown");
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    press(window, node, "mouseup");
+    click(window, node);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const head = (window, number) =>
+    window.document.getElementById("item-" + number).querySelector(".item-head");
+  const act = (row, label) =>
+    [...row.querySelectorAll(".capture-act")].filter((b) => b.textContent === label)[0];
+
+  test("a one-second hold turns the row into a box holding its own title", async () => {
+    const window = await loadSite("/issues");
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    const box = row.querySelector(".item-edit-input");
+    assert.ok(box, "no editor after a hold");
+    assert.equal(box.value, "More pages in the Nova app");
+    assert.ok(act(row, "Save") && act(row, "Cancel") && act(row, "Delete"),
+      "edit mode is missing one of save/cancel/delete");
+    assert.ok(row.querySelector(".item-head").hidden,
+      "the row is both editable and tappable at once");
+  });
+
+  test("the click that ends a hold does not also open the write-up", async () => {
+    /* The failure this exists for: a browser sends `click` after
+     * `mouseup`, so without the flag the row toggles open underneath the
+     * editor that just appeared. */
+    const window = await loadSite("/issues");
+    await hold(window, head(window, 57));
+    assert.equal(head(window, 57).getAttribute("aria-expanded"), "false");
+  });
+
+  test("an ordinary tap still opens the write-up and opens no editor", async () => {
+    const window = await loadSite("/issues");
+    const node = head(window, 57);
+    press(window, node, "mousedown");
+    press(window, node, "mouseup");
+    click(window, node);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(node.getAttribute("aria-expanded"), "true");
+    assert.equal(window.document.querySelector(".item-edit"), null,
+      "a tap opened edit mode");
+  });
+
+  test("letting go early cancels the hold, and leaves no timer behind", async () => {
+    /* Both halves matter. A press that ends at 200ms must not open the
+     * editor -- and the timer it started must be cleared, or it fires
+     * into a detached closure long after this test has finished, which
+     * this suite has already been broken by once. */
+    const window = await loadSite("/issues");
+    const node = head(window, 57);
+    press(window, node, "mousedown");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    press(window, node, "mouseup");
+    await new Promise((resolve) => setTimeout(resolve, HOLD + 100));
+    assert.equal(window.document.querySelector(".item-edit"), null,
+      "a short press opened edit mode later");
+  });
+
+  test("Save sends the row's number and the new title", async () => {
+    const window = await loadSite("/issues");
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    row.querySelector(".item-edit-input").value = "A better title";
+    click(window, act(row, "Save"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/board/edit");
+    assert.deepEqual(window.posted[0].body,
+      { target: "issues", number: 57, title: "A better title" });
+  });
+
+  test("Save on an untouched title posts nothing at all", async () => {
+    /* Opening the editor and thinking better of it is the common case,
+     * and it must not rewrite his file with the bytes it already holds. */
+    const window = await loadSite("/issues");
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    click(window, act(row, "Save"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0);
+  });
+
+  test("Delete asks first, and sends the number when it is allowed to", async () => {
+    const window = await loadSite("/issues");
+    window.confirm = () => true;
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    click(window, act(row, "Delete"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/board/delete");
+    assert.deepEqual(window.posted[0].body, { target: "issues", number: 57 });
+  });
+
+  test("a declined confirm deletes nothing", async () => {
+    const window = await loadSite("/issues");
+    window.confirm = () => false;
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    click(window, act(row, "Delete"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0, "a declined confirm still deleted");
+  });
+
+  test("a hold works on a touch screen too, which is where he asked for it", async () => {
+    const window = await loadSite("/issues");
+    const node = head(window, 57);
+    node.dispatchEvent(new window.Event("touchstart", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, HOLD + 30));
+    node.dispatchEvent(new window.Event("touchend", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.querySelector(".item-edit-input"), "no editor after a touch hold");
+  });
+
+  test("a hold that turns into a scroll cancels, rather than editing", async () => {
+    const window = await loadSite("/issues");
+    const node = head(window, 57);
+    node.dispatchEvent(new window.Event("touchstart", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    node.dispatchEvent(new window.Event("touchmove", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, HOLD + 100));
+    assert.equal(window.document.querySelector(".item-edit"), null,
+      "scrolling past a row opened edit mode");
+  });
+
+  test("the row's own text is not selectable, so a phone hold reaches the app", async () => {
+    /* jsdom applies no stylesheet, so this reads the sheet. A one-second
+     * hold on text is the browser's own gesture -- iOS pops the callout
+     * menu on top of the editor -- and turning it off is what makes the
+     * gesture reach this code at all. */
+    await loadSite("/issues");
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(sheet, /\.item-head\s*{[^}]*user-select:\s*none/);
+    assert.match(sheet, /\.item-head\s*{[^}]*-webkit-touch-callout:\s*none/);
+  });
+});
