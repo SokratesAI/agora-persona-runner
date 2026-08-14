@@ -90,12 +90,10 @@ def status_key(status):
 # hand-edit is likely to reach for, so both land in the same bucket
 # rather than one of them falling off the sort.
 _PRIORITY_ALIASES = {"immediately": "immediate", "now": "immediate", "urgent": "immediate"}
-# Most urgent first, which is the order the boards are meant to read in.
-PRIORITY_ORDER = ("immediate", "high", "medium", "low")
 
 
 def priority_key(priority):
-    """`🔴 Immediately` -> `immediate`, for a CSS class and a sort.
+    """`🔴 Immediately` -> `immediate`, for a CSS class and a filter.
 
     Emoji-stripped and aliased the same way `status_key` is, and for the
     same reason: the rating is written by hand, by Edvard, in Obsidian,
@@ -107,19 +105,6 @@ def priority_key(priority):
     words = _EMOJI_RE.sub(" ", priority or "").strip().lower()
     words = re.sub(r"\s+", "-", words)
     return _PRIORITY_ALIASES.get(words, words)
-
-
-def priority_rank(key):
-    """Sort position for a `priority_key`. Unrated sorts last, not first.
-
-    An unrated row is not urgent and it is not the least urgent either --
-    it is unknown. Sorting it last keeps it out of the way of the ratings
-    Edvard actually gave, which is the point of him giving them.
-    """
-    try:
-        return PRIORITY_ORDER.index(key)
-    except ValueError:
-        return len(PRIORITY_ORDER)
 
 
 # Obsidian's alias pipe, inside a wiki-link, inside a table cell:

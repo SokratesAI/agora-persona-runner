@@ -24,7 +24,6 @@ from agora_runner.nova_boards import (
     parse_board,
     parse_notes,
     priority_key,
-    priority_rank,
     status_key,
 )
 from tests.test_nova_site import _get
@@ -407,11 +406,3 @@ def test_immediately_and_immediate_are_one_bucket():
     assert priority_key("Immediately") == "immediate"
     assert priority_key("🔴 immediate") == "immediate"
     assert priority_key("") == ""
-
-
-def test_unrated_sorts_after_every_rating_not_before():
-    """Unknown is not the same as low. Sorting unrated first would put
-    every row nobody has looked at above the ones Edvard marked high."""
-    ranks = [priority_rank(k) for k in ("immediate", "high", "medium", "low", "")]
-    assert ranks == sorted(ranks)
-    assert ranks[-1] > ranks[-2]
