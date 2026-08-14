@@ -1572,8 +1572,11 @@
    * leaving it there is the pile he asked to shrink -- without becoming
    * Done, which would claim it shipped. It gets its own filter instead,
    * because "go through them myself" is a list he has to be able to reach.
-   * The hold-menu's edit/delete gate is `statusKey !== "done"`, so an
-   * outdated row stays deletable, which is the whole point of marking it. */
+   * Nothing here touches the hold-menu: edit and delete are ungated on
+   * every row and always have been, which `delete_row`'s own docstring
+   * gives the reason for -- "deleting a finished item is the most likely
+   * thing Edvard wants". So an outdated row stays deletable because there
+   * was never a gate, not because this filter spared it. */
   function isOutdated(item) { return item.statusKey === "outdated"; }
 
   var FILTERS = [

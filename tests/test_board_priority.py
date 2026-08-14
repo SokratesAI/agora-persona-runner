@@ -3,6 +3,7 @@
 import agora_runner.nova_capture as nova_capture
 from agora_runner.nova_boards import (
     OUTDATED_STATUS,
+    _CLOSED_STATUS_KEYS,
     PRIORITY_LABELS,
     parse_board,
     set_row_priority,
@@ -220,3 +221,32 @@ def test_an_outdated_row_is_refused_a_rating_the_same_way_a_done_one_is():
     # And an open row in the same file still writes, so the refusal above
     # is the status and not the fixture.
     assert set_row_priority(board, 57, "🟠 High") is not None
+
+
+def test_the_javascript_outdated_key_is_the_one_python_actually_derives():
+    """The reviewer's finding on runner#191, and it is the same shape as the
+    rating-list guard above.
+
+    `OUTDATED_STATUS` is the display text and it lives in one place. The
+    thing every branch actually tests is the *key* `status_key` reduces it
+    to -- and that word is written out by hand in three languages:
+    `_CLOSED_STATUS_KEYS` here, `isOutdated` in `app.js`, and
+    `.chip-outdated` in `style.css`. None of them derives it. So rewording
+    `OUTDATED_STATUS` would leave all three matching a status nothing
+    writes any more, with both suites green, which is exactly what the
+    comment beside it claims to have prevented.
+    """
+    from pathlib import Path
+
+    from agora_runner.nova_boards import OUTDATED_STATUS, status_key
+
+    key = status_key(OUTDATED_STATUS)
+    assert key == "outdated", f"the derived key moved: {key!r}"
+    assert key in _CLOSED_STATUS_KEYS
+
+    public = Path(__file__).resolve().parent.parent / "agora_runner" / "nova_public"
+    app_js = (public / "app.js").read_text(encoding="utf-8")
+    style = (public / "style.css").read_text(encoding="utf-8")
+    assert f'item.statusKey === "{key}"' in app_js, "app.js branches on a different key"
+    assert f'{{ key: "{key}", label: "Outdated"' in app_js, "the filter key does not match"
+    assert f".chip-{key} " in style, "the chip has no stylesheet rule under that key"

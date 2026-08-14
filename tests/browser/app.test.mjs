@@ -655,10 +655,8 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
   };
   const rows = (window) =>
     [...window.document.querySelectorAll(".item")].map((r) => r.id);
-  const on = (window) =>
-    [...window.document.querySelectorAll(".filter")]
-      .filter((chip) => chip.textContent.startsWith(chip.dataset ? chip.textContent : ""))
-      .map((chip) => chip.textContent);
+  const filterLabels = (window) =>
+    [...window.document.querySelectorAll(".filter")].map((chip) => chip.textContent);
 
   test("Open drops it, and Done does not pick it up", async () => {
     const window = await loadSite("/issues", { board: outdatedBoard() });
@@ -677,7 +675,7 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
     const number = payload.board.items[1].number;
     const chip = [...window.document.querySelectorAll(".filter")]
       .filter((c) => c.textContent.startsWith("Outdated"))[0];
-    assert.ok(chip, "there is no Outdated filter to go through: " + on(window).join(","));
+    assert.ok(chip, "there is no Outdated filter to go through: " + filterLabels(window).join(","));
     click(window, chip);
     assert.deepEqual(rows(window), ["item-" + number]);
   });
@@ -685,10 +683,15 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
   test("the tally counts it as neither open nor done", async () => {
     const window = await loadSite("/issues", { board: outdatedBoard() });
     const line = window.document.querySelector(".status-line").textContent;
-    const total = payload.board.items.length;
-    assert.ok(/1 outdated/.test(line), "the tally hid it: " + line);
-    assert.ok(!new RegExp(total - 1 + " open").test(line),
-      "an outdated row was still tallied as open: " + line);
+    /* Asserted as the whole string rather than as three separate regexes.
+     * The first version checked that the line did not say `3 open`, and
+     * neither the old tally nor the new one can ever produce that number
+     * -- the old one said `2 open` because it derived `done` independently
+     * -- so it was true in both states and pinned nothing. The fixture has
+     * 4 rows, 2 already done, 1 turned outdated here, which leaves 1 open;
+     * the old code said `2 open, 2 done` for the same payload. */
+    assert.match(line, /1 open, 2 done, 1 outdated, /,
+      "the tally does not split the three buckets: " + line);
   });
 
   test("it gets no rating picker, because the server would refuse one", async () => {
