@@ -63,8 +63,26 @@ _SECTION_RE = re.compile(r"^(#{1,2})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 # rather than out of the alias after the pipe -- the alias is a display
 # label and two rows in the live file spell it differently.
 _ROW_NUMBER_RE = re.compile(r"#(\d+)")
-# `## 57 — More pages in the Nova app` inside `# Details`.
-_DETAIL_RE = re.compile(r"^##[ \t]+(\d+)[ \t]*[—–-][ \t]*(.*?)[ \t]*$", re.MULTILINE)
+# A detail heading inside `# Details`, in either shape the live files use:
+# `## 57 — More pages in the Nova app` and `### #84 — Edit and delete a
+# boarded idea or issue by holding the card`.
+#
+# **The second shape was unreadable for twenty-one of Edvard's rows.** This
+# pattern was `^##[ \t]+(\d+)` -- two hashes, no `#` before the number --
+# and `_sections` only ever offered it `#`/`##` headings, so a `### #84`
+# write-up was not a section and never reached it. Measured against the
+# live files 2026-08-14: 21 of 85 issue rows and 4 of 72 idea rows had a
+# write-up in the file and showed *"No write-up yet -- only the board
+# row."* on the page, including every issue from #70 up. Whichever cycle
+# started writing `### #N —` changed the shape and nothing here noticed,
+# because a missing detail renders as a legitimate state rather than an
+# error.
+#
+# Both shapes are accepted rather than one normalised, because these are
+# Edvard's files: rewriting 87 headings to suit the parser is a large diff
+# through his prose to fix a regex.
+_DETAIL_RE = re.compile(
+    r"^(#{2,3})[ \t]+(#?)(\d+)[ \t]*[—–-][ \t]*(.*?)[ \t]*$", re.MULTILINE)
 # `- 2026-08-09 (Cycle 63) — the note itself`. Both halves optional: a
 # few of my own captures were written without either.
 _NOTE_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})?[ \t]*(?:\(Cycle[ \t]+(?P<cycle>\d+)\))?"
@@ -244,6 +262,163 @@ def set_row_priority(markdown, number, priority):
     return None
 
 
+def _detail_spans(markdown):
+    """`{number: (heading_line, body_start, end_line)}` for every write-up.
+
+    Scanned line-wise instead of through `_sections`, because the two
+    jobs genuinely differ. `_sections` exists to find `## Board` and
+    `## Done`, so it stops at depth two -- and a detail heading may be
+    depth three. Widening it to `#{1,3}` would have been the small change
+    and it is the wrong one: three write-ups in the live `ideas.md` carry
+    their own `### Where it lives` / `### The 20` / `### First slice`
+    subheadings, and a section splitter that treats those as new sections
+    would silently truncate the write-up at the first one.
+
+    So a block ends at the *next item* heading, or at any `#`/`##`
+    heading that is not one -- `# Details` itself, `## Board`, `## Done`.
+    Anything deeper stays inside the body where its author put it.
+
+    Returns line indices rather than text so the delete path and the
+    read path address a block the same way; `parse_board` slices the
+    body out of them.
+    """
+    lines = (markdown or "").split("\n")
+    starts = []
+    for index, line in enumerate(lines):
+        match = _DETAIL_RE.match(line)
+        if match:
+            starts.append((index, int(match.group(3))))
+            continue
+        shallow = _SECTION_RE.match(line)
+        if shallow:
+            # A non-item heading at depth 1 or 2 closes whatever is open.
+            starts.append((index, None))
+    spans = {}
+    for position, (index, number) in enumerate(starts):
+        if number is None:
+            continue
+        end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
+        # A number written twice keeps the first block, the same way
+        # `parse_board` keeps the first row for a number in both tables.
+        spans.setdefault(number, (index, index + 1, end))
+    return spans
+
+
+def _row_span(lines, number):
+    """`(index, cells)` for the `## Board` or `## Done` row numbered `number`.
+
+    Unlike `set_row_priority` this does not care which of the two tables
+    the row is in. Rating a finished item is meaningless, so that function
+    refuses one; deleting a finished item is the *most* likely thing
+    Edvard wants, since `## Done` is where the rows he has stopped caring
+    about accumulate.
+    """
+    in_table = False
+    for index, line in enumerate(lines):
+        heading = _SECTION_RE.match(line)
+        if heading:
+            in_table = (len(heading.group(1)) == 2
+                        and heading.group(2).strip().lower() in ("board", "done"))
+            continue
+        if not in_table or not line.strip().startswith("|"):
+            continue
+        masked = _WIKILINK_RE.sub(lambda m: m.group(0).replace("|", _ALIAS_PIPE), line.strip())
+        cells = [
+            cell.strip().replace(_ALIAS_PIPE, "|") for cell in masked.strip("|").split("|")
+        ]
+        if len(cells) < 4:
+            continue
+        found = _ROW_NUMBER_RE.search(cells[0])
+        if found and int(found.group(1)) == number:
+            return index, cells
+    return None, None
+
+
+# `[[#84 — Edit and delete a boarded card\|84]]` -- Obsidian's link from a
+# board row to its own write-up, and the only place a row's title appears
+# twice. The escaped pipe is how it survives being a table cell.
+_ROW_LINK_RE = re.compile(r"^\[\[#(\d+)[ \t]*[—–-][ \t]*(.*?)\\?\|(\d+)\]\]$")
+
+
+def set_row_title(markdown, number, title):
+    """Retitle one boarded row, in all three places at once. Or `None`.
+
+    Edvard, issue #84: *"I need to be able to edit and especially delete
+    boarded ideas and issues from the agora app."*
+
+    **A title is written three times in these files and only one of them
+    is on the page.** The table cell is what the board shows; the wiki-link
+    beside it repeats the title *as the link target*, because Obsidian
+    resolves a heading link by its text; and the `### #84 — ...` heading
+    over the write-up is that target. Rewriting the cell alone would leave
+    him a board that reads correctly in the app and, in Obsidian on his
+    phone, a row whose link goes nowhere and a write-up still carrying the
+    old title. That is a worse state than not offering the edit, so all
+    three move together or the file is not touched.
+
+    A row with no wiki-link and no write-up is still editable -- both
+    repetitions are optional and only the cell is required.
+
+    `None` means not written: no such row, or an empty title. An empty
+    title is a delete, and `delete_row` is a separate call for the same
+    reason `/api/capture/delete` is a separate route -- the destructive
+    one should never be reachable by a field arriving blank.
+    """
+    title = (title or "").strip()
+    if not title or "|" in title or "\n" in title:
+        return None
+    lines = (markdown or "").split("\n")
+    index, cells = _row_span(lines, number)
+    if index is None:
+        return None
+
+    link = _ROW_LINK_RE.match(cells[0])
+    if link:
+        cells[0] = f"[[#{number} — {title}\\|{link.group(3)}]]"
+    cells[1] = title
+    lines[index] = "| " + " | ".join(cells) + " |"
+
+    span = _detail_spans(markdown).get(number)
+    if span:
+        heading_line = span[0]
+        match = _DETAIL_RE.match(lines[heading_line])
+        # The hashes and the `#` before the number are kept exactly as
+        # they were found. Both shapes are live in his files and this is
+        # an edit to one title, not a migration.
+        lines[heading_line] = f"{match.group(1)} {match.group(2)}{number} — {title}"
+    return "\n".join(lines)
+
+
+def delete_row(markdown, number):
+    """Remove one boarded row and its write-up. Returns markdown, or `None`.
+
+    The other half of #84 -- *"and especially delete"* -- and the server
+    path #85 needs for the same reason.
+
+    **Both halves go, or neither.** A write-up whose row is gone is
+    unreachable from the page and invisible in the board tables, so
+    leaving it behind is not a conservative choice: it is an orphan that
+    only shows up the next time a cycle renumbers something. The row is
+    the thing Edvard is looking at when he asks for this, and the write-up
+    is mine.
+
+    The deletion is line-wise on the raw file, like `set_row_priority`,
+    so everything else comes back byte-identical. `None` if the number is
+    not on either table -- there is nothing to delete, which is a
+    different answer to Edvard than a failed write.
+    """
+    lines = (markdown or "").split("\n")
+    index, _ = _row_span(lines, number)
+    if index is None:
+        return None
+    drop = {index}
+    span = _detail_spans(markdown).get(number)
+    if span:
+        heading_line, _, end = span
+        drop.update(range(heading_line, end))
+    return "\n".join(line for i, line in enumerate(lines) if i not in drop)
+
+
 def _sections(markdown):
     """`[(level, title, body)]` for every `#`/`##` heading, in order."""
     found = []
@@ -333,9 +508,9 @@ def parse_board(markdown):
                     "done": done,
                 })
             continue
-        detail = _DETAIL_RE.match("## " + title) if level == 2 else None
-        if detail:
-            details[int(detail.group(1))] = body.strip()
+    lines = (markdown or "").split("\n")
+    for number, (_, body_start, end) in _detail_spans(markdown).items():
+        details[number] = "\n".join(lines[body_start:end]).strip()
     return {"captures": captures, "items": items, "details": details}
 
 

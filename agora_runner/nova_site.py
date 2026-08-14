@@ -113,6 +113,8 @@ from agora_runner.nova_capture import (
     amend,
     capture,
     clean_capture_text,
+    edit_row,
+    remove_row,
     set_priority,
 )
 from agora_runner.nova_comments import (
@@ -1433,6 +1435,75 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_board_amend(self, payload, delete):
+        """`/api/board/edit` and `/api/board/delete` -- issue #84.
+
+        *"I need to be able to edit and especially delete boarded ideas
+        and issues from the agora app."* Until now a row became read-only
+        the moment a cycle numbered it, so anything he typed and then
+        regretted could only be taken back in Obsidian.
+
+        **Two routes, for the reason `_post_amend` already gives**: an
+        edit arriving with a blank title is a bad request here, never a
+        quiet delete. The scope boundary is his too, from #85 -- *"This is
+        only for the ones i have reported"* -- and it falls out of the
+        addressing rather than being enforced separately: `target` keys
+        into his two board files, and my own capture files are not boarded
+        at all.
+
+        A number that is not on either table is a 409 and not a 502.
+        Nothing failed; the row moved or a cycle removed it, and the page
+        should re-read rather than retry.
+        """
+        target = payload.get("target")
+        number = payload.get("number")
+        title = "" if delete else payload.get("title")
+        if target not in BOARD_PATHS:
+            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
+            return
+        # `True` is an int in Python and would address row 1.
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            self._send_json(400, {"error": "number must be a positive integer"})
+            return
+        if not delete:
+            if not isinstance(title, str) or not title.strip():
+                self._send_json(400, {"error": "title must be a non-empty string"})
+                return
+            # A row is one line of a markdown table. Either character ends
+            # the edit somewhere the author did not mean it to.
+            if "|" in title or "\n" in title:
+                self._send_json(400, {"error": "a title cannot contain | or a line break"})
+                return
+
+        try:
+            if delete:
+                ok, message = remove_row(target, number)
+            else:
+                ok, message = edit_row(target, number, title)
+        except Exception as e:
+            log(f"nova-site board amend failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            invalidate("board:" + target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"{'Delete' if delete else 'Edit'} #{number} on {target} "
+            f"· {'ok' if ok else message}",
+            after=title[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        stale = "is not a row" in message
+        self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
     def _post_comment(self, payload):
         """`/api/comment` -- Edvard replying to one cycle (ideas.md #44).
 
@@ -1566,7 +1637,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment",
-            "/api/board/priority",
+            "/api/board/priority", "/api/board/edit", "/api/board/delete",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -1582,6 +1653,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/priority":
             self._post_priority(payload)
+            return
+        if path in ("/api/board/edit", "/api/board/delete"):
+            self._post_board_amend(payload, delete=path.endswith("delete"))
             return
         target = payload.get("target")
         text = payload.get("text")

@@ -1104,7 +1104,49 @@ body.nav-open { overflow: hidden; }
   font: inherit;
   text-align: left;
   cursor: pointer;
+  /* The row is also a one-second hold (issue #84), and on a phone a
+   * one-second hold on text is the browser's own gesture: iOS pops the
+   * selection handles and the callout menu, Android starts a selection.
+   * Both land on top of the editor the hold just opened. Turning them
+   * off here rather than calling `preventDefault` keeps the ordinary tap
+   * untouched -- the row is a `<button>`, so there is no text here he
+   * would ever want to select. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
+
+/* Edit mode on a boarded row (issue #84): the title in a box under the
+ * card's own line, and save / cancel / delete below it. The head stays --
+ * the number and the chips are how he sees which row is in the box -- and
+ * only stops behaving like a button, which `app.js` enforces. This rule
+ * is the visible half of that: a control that no longer does anything
+ * should not still offer a pointer and a hover. */
+.item.is-editing .item-head { cursor: default; }
+.item-edit { padding: 0 0.9rem 0.7rem; }
+
+.item-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+}
+
+.item-edit-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.item-edit-status { flex: 1 1 auto; color: var(--dim); font-size: 0.85rem; }
+.item-edit-status.is-error { color: var(--warn); }
 
 .item-number { color: var(--dim); font-variant-numeric: tabular-nums; }
 .item-title { flex: 1 1 60%; }

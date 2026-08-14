@@ -3615,3 +3615,129 @@ def test_nova_site_main_is_runnable_as_a_module():
     source = (pathlib.Path(__file__).resolve().parent.parent / "agora_runner" / "nova_site_main.py").read_text()
     assert '__name__ == "__main__"' in source
     assert source.rstrip().endswith("main()")
+
+
+# --- POST /api/board/edit and /api/board/delete: Edvard's issue #84 ---
+# *"I need to be able to edit and especially delete boarded ideas and
+# issues from the agora app."* The same two boundaries as every other
+# write path here: `target` is a key into a dict of literal paths, never a
+# path, and the request must be unambiguous about which of the two things
+# it is asking for.
+
+def test_editing_a_boarded_row_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "edit_row", return_value=(True, "#84 edited on issues")) as ed:
+        status, _, body = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "A better title"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    ed.assert_called_once_with("issues", 84, "A better title")
+
+
+def test_deleting_a_boarded_row_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "remove_row", return_value=(True, "#68 deleted on ideas")) as rm:
+        status, _, body = _post(
+            "/api/board/delete", {"target": "ideas", "number": 68, "title": "surprise"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    # Whatever a client puts in `title` on the delete route is ignored, so
+    # a stray field can never turn a delete into an edit -- the same rule
+    # `/api/capture/delete` follows.
+    rm.assert_called_once_with("ideas", 68)
+
+
+def test_a_board_edit_with_a_blank_title_is_rejected_rather_than_deleting_the_row():
+    """The dangerous shape, and the reason there are two routes."""
+    with patch.object(nova_site, "edit_row") as ed, patch.object(nova_site, "remove_row") as rm:
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "   "})
+    assert status == 400
+    ed.assert_not_called()
+    rm.assert_not_called()
+
+
+def test_a_title_cannot_smuggle_a_cell_break_or_a_line_break_into_his_table():
+    for title in ["a | b", "a\nb"]:
+        with patch.object(nova_site, "edit_row") as ed:
+            status, _, _ = _post(
+                "/api/board/edit", {"target": "issues", "number": 84, "title": title})
+        assert status == 400, title
+        ed.assert_not_called()
+
+
+def test_board_amend_refuses_a_target_that_is_not_one_of_his_two_boards():
+    """Notably a path, and notably `notes` -- a capture target that is not
+    a board. Nothing a client sends addresses a vault document."""
+    for target in ["notes", "projects/sokrates/projects/nova/issues", "../secrets", 7]:
+        with patch.object(nova_site, "edit_row") as ed:
+            status, _, _ = _post(
+                "/api/board/edit", {"target": target, "number": 1, "title": "x"})
+        assert status == 400, target
+        ed.assert_not_called()
+
+
+def test_board_amend_refuses_a_number_that_is_not_a_positive_int():
+    # `True` is an int in Python and would address row 1.
+    for number in [True, 0, -1, "84", 8.4, None]:
+        with patch.object(nova_site, "remove_row") as rm:
+            status, _, _ = _post("/api/board/delete", {"target": "issues", "number": number})
+        assert status == 400, number
+        rm.assert_not_called()
+
+
+def test_a_row_that_moved_is_a_409_and_not_a_502():
+    """Nothing failed -- the row was renumbered or removed while the page
+    was open, and the page should re-read rather than retry."""
+    with patch.object(nova_site, "remove_row", return_value=(False, "#99 is not a row on issues")):
+        status, _, body = _post("/api/board/delete", {"target": "issues", "number": 99})
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_failed_board_write_is_a_502():
+    with patch.object(
+            nova_site, "edit_row", return_value=(False, "could not write to issues: 500 boom")):
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "x"})
+    assert status == 502
+
+
+def test_a_stale_row_is_a_409_through_the_real_module_not_a_hand_typed_string():
+    """The reviewer's finding: `_send_json(409 …)` keys on the substring
+    `"is not a row"`, which `nova_capture._amend_board` composes. Every
+    other test here mocks that function and re-types the sentence, so the
+    two sides agree by inspection and nothing pins them. Rewording the
+    message would turn every stale row into a 502 -- "the vault failed",
+    when nothing failed -- and the page would retry instead of re-reading.
+
+    This one runs the real `remove_row` against a board that genuinely has
+    no #999, with only the vault stubbed out.
+    """
+    board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
+            "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(board, "3-abc")), \
+            patch.object(nova_capture, "vault_write_path") as write:
+        status, _, body = _post("/api/board/delete", {"target": "issues", "number": 999})
+    write.assert_not_called()
+    assert status == 409, "a row that is not there was reported as a vault failure"
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_board_edit_writes_to_his_file_and_not_to_novas_own_copy():
+    """One real path end to end: a request arrives, his file is written.
+
+    Note what this does *not* prove. It cannot tell `BOARD_PATHS` from
+    `CAPTURE_TARGETS`, because the two hold the same string for `issues`
+    -- swapping the lookup leaves this green. The branch where they differ
+    is `notes`, and it is pinned in `test_board_row_edit.py`."""
+    board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
+            "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
+    seen = {}
+    with patch.object(nova_capture, "vault_read_path_rev",
+                      side_effect=lambda p: seen.update(read=p) or (board, "3-abc")), \
+            patch.object(nova_capture, "vault_write_path",
+                         side_effect=lambda p, b, if_rev=None: seen.update(write=p) or "written"):
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 57, "title": "Renamed"})
+    assert status == 200
+    assert seen["read"] == "projects/sokrates/projects/nova/issues.md"
+    assert seen["write"] == "projects/sokrates/projects/nova/issues.md"

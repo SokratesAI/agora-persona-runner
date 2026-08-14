@@ -1958,6 +1958,95 @@
     return wrap;
   }
 
+  /* Edvard, issue #84: *"If i hold the card for more than 1 second i get
+   * into edit mode"*. His number, not a tuned one. */
+  var HOLD_MS = 1000;
+
+  /* The edit-mode panel a held row turns into: the title in a box, and
+   * save, cancel and delete.
+   *
+   * **A boarded row's title lives in three places and this only shows
+   * one of them.** The table cell is what the card renders; the wiki-link
+   * beside it and the `### #84 — ...` heading over the write-up repeat
+   * the same words for Obsidian's benefit. The server moves all three
+   * together, which is why this posts a title rather than a patch -- the
+   * page has no business knowing that his file says it three times.
+   */
+  function renderRowEditor(board, item, done) {
+    var panel = el("div", "item-edit");
+    var box = el("textarea", "item-edit-input");
+    box.value = item.title || "";
+    box.rows = 2;
+    box.setAttribute("aria-label", "Title of #" + item.number);
+    var actions = el("div", "item-edit-actions");
+    var status = el("span", "item-edit-status");
+    var save = el("button", "capture-act", "Save");
+    var cancel = el("button", "capture-act", "Cancel");
+    var del = el("button", "capture-act is-danger", "Delete");
+    save.type = "button";
+    cancel.type = "button";
+    del.type = "button";
+
+    function busy(on, label) {
+      save.disabled = on;
+      cancel.disabled = on;
+      del.disabled = on;
+      status.className = "item-edit-status";
+      status.textContent = on ? label : "";
+    }
+
+    function send(url, body) {
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          // Repaint from the file rather than patching the node: a row
+          // that has just been retitled or removed is not the row this
+          // closure was built from.
+          loadBoard(board);
+        })
+        .catch(function (err) {
+          status.textContent = String((err && (err.message || err)) || "failed");
+          status.className = "item-edit-status is-error";
+          busy(false, "");
+        });
+    }
+
+    save.addEventListener("click", function () {
+      var next = box.value.trim();
+      // Emptying the box is not how a row is deleted -- there is a
+      // button for that and it asks first, the same rule the capture
+      // editor follows.
+      if (!next || next === item.title) { done(); return; }
+      busy(true, "saving…");
+      send("/api/board/edit", { target: board, number: item.number, title: next });
+    });
+    cancel.addEventListener("click", done);
+    del.addEventListener("click", function () {
+      // The one thing on this page that cannot be undone from the page.
+      // A native confirm blocks the accident in one line; #6's modal is
+      // a different item and building half of it here would be worse
+      // than either.
+      if (!window.confirm("Delete #" + item.number + "?\n\n" + (item.title || ""))) return;
+      busy(true, "deleting…");
+      send("/api/board/delete", { target: board, number: item.number });
+    });
+
+    actions.appendChild(status);
+    actions.appendChild(save);
+    actions.appendChild(cancel);
+    actions.appendChild(del);
+    panel.appendChild(box);
+    panel.appendChild(actions);
+    return { el: panel, focus: function () { box.focus(); } };
+  }
+
   /* One row of Edvard's board. Closed it is the number, the title and a
    * status chip; open it reveals the write-up, which is a second request
    * the first time a row is opened and memory after that. */
@@ -2018,7 +2107,68 @@
       renderBlocks(body, blocks);
     }
 
+    /* The hold gesture. A press that lasts `HOLD_MS` opens the editor;
+     * anything shorter is the ordinary tap that opens the write-up.
+     *
+     * **The timer is cleared on every way a press can end, including the
+     * ones that are not "let go".** A `setTimeout` still pending when the
+     * node is gone fires into a detached closure -- and in the browser
+     * tests it fires inside whatever unrelated file happens to be running
+     * a second later, which is a real failure this suite has already had.
+     * So `end` runs on leave, on scroll, and on cancel, not just on up.
+     *
+     * **Mouse and touch both, because the same page is a phone and a
+     * laptop.** A touch device fires the mouse events too, after a delay,
+     * and both paths land in the same idempotent `start`/`end` pair, so
+     * the double delivery costs a cleared timer and nothing else.
+     */
+    var holdTimer = null;
+    var held = false;
+    function endHold() {
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    }
+    function startHold() {
+      endHold();
+      held = false;
+      holdTimer = setTimeout(function () {
+        holdTimer = null;
+        held = true;
+        openEditor();
+      }, HOLD_MS);
+    }
+    function openEditor() {
+      if (row.querySelector(".item-edit")) return;
+      var editor = renderRowEditor(board, item, function () {
+        // Cancel is a repaint too. The row's title may have changed under
+        // this card while the box was open, and re-rendering is the only
+        // way to be sure the card and the file agree.
+        loadBoard(board);
+      });
+      // The head stays on screen and stops being a control. Hiding it was
+      // the first version and rendering the page killed it: `.item-head`
+      // sets `display: flex`, which beats the `[hidden]` user-agent rule,
+      // so it stayed visible and tappable in a real browser while jsdom --
+      // which loads no stylesheet -- reported it hidden and the test
+      // passed. Keeping it is also the better answer: the number and the
+      // chips are how he can see *which* row is in the box.
+      row.classList.add("is-editing");
+      head.setAttribute("aria-disabled", "true");
+      row.insertBefore(editor.el, head.nextSibling);
+      editor.focus();
+    }
+    head.addEventListener("mousedown", startHold);
+    head.addEventListener("touchstart", startHold);
+    ["mouseup", "mouseleave", "touchend", "touchmove", "touchcancel"].forEach(
+      function (name) { head.addEventListener(name, endHold); });
+
     head.addEventListener("click", function () {
+      // A hold has already done something with this press; letting the
+      // tap handler also run would open the write-up underneath the
+      // editor that just appeared.
+      if (held) { held = false; return; }
+      // While the editor is open the row is not a toggle. Without this the
+      // write-up opens underneath the box he is typing in.
+      if (row.querySelector(".item-edit")) return;
       var opening = boardState.open !== item.number;
       // One open row at a time. These write-ups run to several screens
       // and a page of them all open is the scroll problem issues.md #42
