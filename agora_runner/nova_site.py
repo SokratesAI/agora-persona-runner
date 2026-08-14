@@ -162,6 +162,18 @@ STATIC_ROUTES = {
     "/icon.svg": "icon.svg",
 }
 
+# The page routes the server answers with the SPA shell. A module
+# constant rather than a literal inside `do_GET` because `site_check`
+# reads it: a smoke check that hand-copies this list stops testing the
+# server the moment someone adds a route to one copy and not the other,
+# and it would report success while doing it.
+#
+# `/cycle/<n>` is a prefix rather than an exact path, so it is matched
+# separately in `do_GET` and carries a representative path here for
+# anything walking the list.
+PAGE_ROUTES = ("/", "/issues", "/ideas", "/costs", "/retro")
+PAGE_ROUTE_PREFIXES = ("/cycle/",)
+
 # gzip's header and trailer are a fixed 18 bytes, so a short body comes
 # back *bigger*: `/api/comments` is 15 bytes on the live pod and gzips to
 # 35. Measured crossover on realistic JSON is around 100 bytes. The
@@ -1127,12 +1139,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # one entry (item 4). The server has no per-cycle view -- it serves
         # the same shell and app.js reads the path -- but the URL must
         # resolve, or the link is dead on a cold load.
-        if path == "/" or path.startswith("/cycle/") or path in (
-            "/issues",
-            "/ideas",
-            "/costs",
-            "/retro",
-        ):
+        if path in PAGE_ROUTES or path.startswith(PAGE_ROUTE_PREFIXES):
             self._send_static("index.html")
             return
         if path in STATIC_ROUTES:
