@@ -3603,3 +3603,15 @@ def test_the_server_routes_pages_off_the_shared_constant():
     # And with the patch gone it is a 404 again, so the assertion above is
     # about the constant rather than about a server that serves anything.
     assert _get("/invented")[0] == 404
+
+
+def test_nova_site_main_is_runnable_as_a_module():
+    """`python -m agora_runner.nova_site_main` must start a server, not exit 0.
+
+    Without the `__main__` guard the module imports, defines `main`, calls
+    nothing, and exits successfully with no output -- indistinguishable from
+    a server that started and died. Cycle 196 lost a third of an hour to it.
+    """
+    source = (pathlib.Path(__file__).resolve().parent.parent / "agora_runner" / "nova_site_main.py").read_text()
+    assert '__name__ == "__main__"' in source
+    assert source.rstrip().endswith("main()")

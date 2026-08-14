@@ -72,3 +72,15 @@ def main():
         server.shutdown()
         server.server_close()
     log("nova-site stopped")
+
+
+# The pod starts this through `run_nova_site.py`, so for months nothing
+# needed this guard. What it costs is a silent one: `python -m
+# agora_runner.nova_site_main` imports the module, defines `main`, calls
+# nothing, and exits 0 with no output -- which reads exactly like a server
+# that started and immediately died. Cycle 196 spent a third of its hour on
+# that, concluded the local run was broken, and merged the wrong command
+# into `tools/see_page`'s docstring before catching it. Both spellings work
+# now.
+if __name__ == "__main__":
+    main()
