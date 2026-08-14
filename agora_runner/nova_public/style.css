@@ -1207,15 +1207,28 @@ blockquote {
 
 /* The rating pickers -- issues.md capture, 2026-08-14. Sized like the
    chips they set rather than like a form control, so a board row does not
-   suddenly look like a settings page when it is opened. */
+   suddenly look like a settings page when it is opened.
+
+   **This rule is shared by both pickers**, and that is deliberate: the one
+   in the capture box and the one inside an expanded board row are the same
+   control set in two places, and they should not drift apart. So a change
+   here lands on both, and the second one has to be argued for rather than
+   inherited. Cycle 191 raised the height and was caught by its reviewer
+   doing exactly that -- changing the board row while writing a comment
+   about the capture box.
+
+   The height stays chip-shaped and stops being chip-sized. Keeping the
+   pill radius, the border and the 0.85rem type is what the paragraph above
+   is really protecting; the 30px a select defaults to here is not part of
+   that, it is just a select's default. And it is below the 44px iOS touch
+   minimum this stylesheet already holds every button to -- which matters
+   more on the board row than in the capture box, because that is the
+   picker he reaches for to correct one of the 71 ratings Cycle 188 guessed
+   on his behalf. A chip is read; a picker is tapped. */
 .capture-prio,
 .prio-select {
   font: inherit;
   font-size: 0.85rem;
-  /* 44px is the iOS touch-target minimum, same as the capture buttons.
-     A select's own default height is 30px here, which is the one place a
-     picker sized "like the chip it sets" went too far: a chip is read and
-     a picker is tapped. */
   min-height: 44px;
   padding: 0.3rem 0.75rem;
   border-radius: 999px;

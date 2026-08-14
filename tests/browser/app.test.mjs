@@ -3330,4 +3330,30 @@ describe("the capture row does not scramble", () => {
     assert.match(row.style.cssText, /flex-wrap:\s*wrap/, "the row must still wrap");
     assert.doesNotMatch(group.style.cssText, /flex-wrap/, "the button group may wrap again");
   });
+
+  /* The reviewer's finding, and the reason it is a test rather than a
+   * comment. `.prio-select` is the picker inside an expanded board row,
+   * built by `renderPriorityPicker` -- a different surface from the capture
+   * box, sharing one CSS rule with it. Cycle 191 changed that rule for
+   * capture-box reasons and moved the board row too, silently, with no test
+   * anywhere touching `.prio-select`. Sharing the rule is the right call;
+   * doing it without noticing is not. This fails if the two ever get their
+   * own sizes without someone deciding to give them their own sizes. */
+  test("the board row's picker is sized by the same rule as the capture box's", () => {
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const { window } = openWindow("<style>" + css + "</style>");
+    const rules = [...window.document.styleSheets[0].cssRules];
+    const shared = rules.filter(
+      (r) => r.selectorText && /(^|,\s*)\.prio-select(\s*,|$)/.test(r.selectorText),
+    );
+    assert.equal(shared.length, 1, "the board picker is styled in more than one place");
+    assert.match(shared[0].selectorText, /\.capture-prio/,
+      "the two pickers no longer share a rule, so they are free to drift");
+    // 44px is the iOS touch minimum this sheet holds every button to, and
+    // the board row is where he corrects a rating I guessed for him.
+    // `cssText`, not `.style.minHeight` -- jsdom parses the declaration
+    // into the text and exposes no property for it, so a property
+    // assertion reads `undefined` whatever the sheet says.
+    assert.match(shared[0].style.cssText, /min-height:\s*44px/);
+  });
 });
