@@ -109,34 +109,24 @@ pre code { background: none; padding: 0; }
   border-color: var(--accent);
 }
 
-/* The priority picker gets its own row rather than a place in the button
- * row -- Edvard, issues.md 2026-08-14: *"Ui is ugly for the priority
- * rating. The issue, idea, note and priority dropdown are now just
- * scrambled after the addition of the priority dropdown."*
+/* The priority picker briefly had its own row above the buttons --
+ * Edvard, issues.md 2026-08-14: *"Ui is ugly for the priority rating. The
+ * issue, idea, note and priority dropdown are now just scrambled after
+ * the addition of the priority dropdown."* Measured in Chromium at 390px:
+ * the select was 136px wide because "🔴 Immediately" set a select's
+ * intrinsic width, which left room for exactly one of the three buttons
+ * on the first line.
  *
- * Measured in Chromium at 390px, which is the phone he reads this on, not
- * the 1280px the screenshot tool used to default to: the select is 136px
- * wide because "🔴 Immediately" sets a select's intrinsic width, and 136px
- * left room for exactly one of the three buttons on the first line. So
- * Issue sat alone against the right edge with Idea and Note below it on
- * the left. Four controls do not fit one phone row; shrinking one of them
- * would only move the wrap point, so the row is split instead. */
-.capture-prio-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-/* The select itself no longer shows the word "Priority" or a rating's
- * name -- just the ball, or a dash for unrated (Edvard, 2026-08-14: it
- * should look like one of the row's buttons, not a form field), which is
- * why the 136px-wide-select measurement in the comment above no longer
- * applies -- "🔴 Immediately" set that width, and no option shows its word
- * anymore. The label above stays in the document for a screen reader;
- * `.visually-hidden` on it is what takes it off screen. Sizing override
- * lives with `.prio-select-board`'s, next to the shared rule it overrides
- * -- see the comment there for why that placement matters. */
+ * That stopped applying the same day: the select no longer shows a
+ * rating's word, only its glyph (a dash for unrated), so it is a fixed
+ * 44px circle rather than a text-sized pill, and Edvard asked for it back
+ * on the button row, at the far right. See `.capture-submit` below --
+ * it is now the fourth item in that group, appended last in app.js so it
+ * lands after Note. The label that named it stays in the document for a
+ * screen reader; `.visually-hidden` on it is what takes it off screen.
+ * Its sizing override lives with `.prio-select-board`'s, next to the
+ * shared rule it overrides -- see the comment there for why that
+ * placement matters. */
 
 .capture-actions {
   display: flex;
@@ -148,13 +138,24 @@ pre code { background: none; padding: 0; }
    * off the edge where it cannot be tapped. What it may no longer do is
    * wrap *between* the buttons -- see `.capture-submit`. */
   flex-wrap: wrap;
+  /* Edvard, 2026-08-14: the button row read as left-aligned. `.capture-status`
+   * below is empty most of the time, and an empty flex item with
+   * `flex-grow` still claims the row's full width on its own wrapped
+   * line -- which pushes `.capture-submit` onto a line of its own, and a
+   * wrapped line's items default to `flex-start`, i.e. the left. This is
+   * what actually moves that second line's content to the right; the
+   * status item's `flex-grow` only matters once it holds real text and
+   * shares a line with the buttons. */
+  justify-content: flex-end;
 }
 
-/* The three targets are one group, not three siblings of the status text.
- * Three 44px pills plus their gaps is ~230px, which fits every phone this
- * is opened on; keeping them in one flex item is what makes them wrap
- * together or not at all. A fourth target would join this group rather
- * than re-open the split. */
+/* The three targets plus the priority picker are one group, not siblings
+ * of the status text. Three 44px pills plus their gaps is ~230px, which
+ * fits every phone this is opened on; a fourth 44px circle plus its gap
+ * adds ~52px, for ~282px total -- still short of the 390px phone this is
+ * measured against. Keeping all four in one flex item is what makes them
+ * wrap together or not at all, rather than the picker stranding itself on
+ * a line of its own. */
 .capture-submit {
   display: flex;
   gap: 0.5rem;
@@ -1388,3 +1389,53 @@ blockquote {
 }
 
 .capture-prio:hover:not(:disabled) { border-color: var(--accent); }
+
+.prio-select-board[aria-expanded="true"],
+.capture-prio[aria-expanded="true"] { border-color: var(--accent); }
+
+/* The popup both pickers open, appended to <body> and positioned in
+ * app.js from the trigger's own coordinates -- see `getPrioMenuOverlay`
+ * for why it is not nested under the trigger. `position: fixed` so a
+ * scroll cannot leave it pointing at empty space; app.js closes it on
+ * scroll rather than re-tracking it, which is the simpler contract. */
+.prio-menu {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 9rem;
+  max-width: calc(100vw - 16px);
+  padding: 0.3rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Without this, `menu.hidden = true` in app.js does nothing visible: the
+ * `display: flex` above is author CSS and beats the UA stylesheet's
+ * `[hidden] { display: none }` in the cascade regardless of which was
+ * written first, so the popup stayed on screen, just no longer
+ * repositioned -- closeMenu() looked like it was doing nothing. */
+.prio-menu[hidden] {
+  display: none;
+}
+
+.prio-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  background: none;
+  border: 0;
+  border-radius: 0.4rem;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.prio-option:hover,
+.prio-option[aria-selected="true"] { background: var(--bg); }

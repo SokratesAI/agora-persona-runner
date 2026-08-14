@@ -3307,39 +3307,34 @@ describe("the retrospective page", () => {
 
 /* The capture row's layout. Edvard, issues.md 2026-08-14: *"Ui is ugly for
  * the priority rating. The issue, idea, note and priority dropdown are now
- * just scrambled after the addition of the priority dropdown."*
+ * just scrambled after the addition of the priority dropdown."* That was
+ * fixed the same day by giving the picker its own row above the buttons,
+ * while it still showed a rating's word and grew to 136px wide.
  *
- * jsdom lays nothing out, so none of these can see the wrap that made it
- * ugly -- that was measured in Chromium at 390px, and the fix is CSS. What
- * is real code, and what these pin, is the structure the CSS depends on:
- * the three target buttons are one group with nothing else inside it, and
- * the picker is somewhere else entirely. Either of those quietly reverting
- * puts the four controls back in one flex row, which is the thing that
- * wrapped 1+2 across two lines on his phone. */
+ * Edvard, 2026-08-14, later: once the picker shrank to a fixed 44px glyph
+ * he asked for it back on the button row, at the far right. jsdom lays
+ * nothing out, so none of these can see a wrap on a real phone -- that is
+ * measured in Chromium at 390px, and the fix is CSS. What is real code,
+ * and what these pin, is the structure the CSS depends on: the picker is
+ * the last child of the same group the three targets are in, appended
+ * after them in app.js rather than inserted, so it always renders at the
+ * right edge of the row rather than somewhere the flex order does not
+ * expect. */
 describe("the capture row does not scramble", () => {
-  test("the three targets are one group with nothing else in it", async () => {
+  test("the priority picker joins the targets as the last item in the group", async () => {
     const window = await loadSite("/");
     const group = window.document.querySelector(".capture-submit");
     assert.ok(group, "the buttons are no longer grouped");
+    const kids = [...group.children];
     assert.deepEqual(
-      [...group.children].map((el) => el.dataset.target),
+      kids.slice(0, 3).map((el) => el.dataset.target),
       ["issues", "ideas", "notes"],
-      "the button group holds something other than the three targets",
+      "the button group does not hold the three targets first",
     );
-  });
-
-  test("the picker is on its own row, not beside the buttons", async () => {
-    const window = await loadSite("/");
-    const picker = window.document.getElementById("capture-prio");
-    assert.ok(picker, "the priority picker is missing");
-    assert.equal(picker.parentNode.id, "capture-prio-row");
+    assert.equal(kids.length, 4, "the priority picker is not in the button group");
     assert.equal(
-      picker.closest(".capture-submit"), null,
-      "the picker is back inside the button group",
-    );
-    assert.equal(
-      picker.closest(".capture-actions"), null,
-      "the picker is back in the button row",
+      kids[3] && kids[3].id, "capture-prio",
+      "the picker is not the last (rightmost) item in the row",
     );
   });
 
@@ -3396,6 +3391,79 @@ describe("the capture row does not scramble", () => {
     // into the text and exposes no property for it, so a property
     // assertion reads `undefined` whatever the sheet says.
     assert.match(shared[0].style.cssText, /min-height:\s*44px/);
+  });
+});
+
+/* `buildPrioPicker` in app.js, exercised through both surfaces it builds.
+ * The bug that motivated these: closing the popup (`menu.hidden = true`)
+ * silently did nothing, because `.prio-menu`'s own `display: flex` beat
+ * the UA stylesheet's `[hidden] { display: none }` in the cascade. Every
+ * structural test above kept passing throughout -- none of them opened
+ * the thing and looked at what was left on screen after a pick. */
+describe("the priority picker (buildPrioPicker)", () => {
+  test("the composer's picker opens with full words and closes to a bare glyph after a pick", async () => {
+    const window = await loadSite("/issues");
+    const trigger = window.document.getElementById("capture-prio");
+    assert.equal(trigger.textContent, "–", "the closed trigger should start on the dash");
+    click(window, trigger);
+    const menu = window.document.querySelector(".prio-menu");
+    assert.ok(menu, "no menu was opened");
+    assert.equal(menu.hidden, false, "the menu did not open");
+    assert.deepEqual(
+      [...menu.querySelectorAll(".prio-option")].map((o) => o.textContent),
+      ["– Unrated", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"],
+      "the open list must spell out each rating, unlike the closed button",
+    );
+    const high = [...menu.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
+    click(window, high);
+    assert.equal(trigger.textContent, "🟠", "the closed trigger should be back to a bare glyph");
+    assert.equal(menu.hidden, true, "the menu did not close after a pick");
+  });
+
+  test("the picked priority rides along with the next capture, then resets", async () => {
+    const window = await loadSite("/issues");
+    click(window, window.document.getElementById("capture-prio"));
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "🔴 Immediately"));
+    window.document.getElementById("capture-text").value = "ship the thing";
+    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].body.priority, "🔴 Immediately");
+    assert.equal(
+      window.document.getElementById("capture-prio").textContent, "–",
+      "the picker did not reset after a send",
+    );
+  });
+
+  test("picking a rating on a boarded row posts it and updates the glyph", async () => {
+    const window = await loadSite("/issues#57");
+    const trigger = window.document.getElementById("item-57").querySelector(".prio-select-board");
+    assert.ok(trigger, "the open row has no priority trigger");
+    assert.equal(trigger.textContent, "–", "#57 is unrated in the fixture");
+    click(window, trigger);
+    const low = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "⚪ Low");
+    click(window, low);
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/board/priority");
+    assert.ok(posted, "no write reached /api/board/priority");
+    assert.equal(posted.body.number, 57);
+    assert.equal(posted.body.priority, "⚪ Low");
+    assert.equal(trigger.textContent, "⚪", "the trigger did not adopt the new glyph");
+  });
+
+  test("a failed write reverts the glyph and reports the error, rather than keeping an unsaved choice", async () => {
+    const window = await loadSite("/issues#57");
+    window.postReply = { ok: false, message: "conflict" };
+    const row = window.document.getElementById("item-57");
+    const trigger = row.querySelector(".prio-select-board");
+    const before = trigger.textContent;
+    click(window, trigger);
+    const high = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
+    click(window, high);
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(trigger.textContent, before, "the glyph did not revert once the write failed");
+    assert.match(row.querySelector(".item-prio-note").textContent, /Could not save/);
   });
 });
 
