@@ -6981,3 +6981,65 @@ def test_run_heartbeat_pushes_when_notifications_are_on(runner):
         "schedule": "every@1h", "name": "HB", "pushNotifications": True,
     })
     assert calls[0]["push"] is True
+
+
+# ---------------------------------------------------------------------------
+# The reviewer's finding on this change: run_heartbeat honoured
+# pushNotifications and run_workflow_heartbeat did not, while the Studio drew
+# the heartbeat as muted either way. A mute that lies is worse than no mute --
+# nothing on screen tells you it is not working.
+# ---------------------------------------------------------------------------
+
+def _run_workflow_heartbeat_capturing_push(runner, heartbeat, steps=None, sub_workflow=None):
+    steps = steps or [{"prompt": "", "loopCount": 1, "toolWhitelist": []}]
+    workflow = {"id": "wf1", "name": "Discuss", "steps": steps}
+    detail = {"personas": [{"personaId": "p1", "name": "A", "role": "curator"}], "messages": []}
+    persona = {"id": "p1", "name": "A", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    pushes = []
+
+    def fake_fetch_workflow(workflow_id):
+        return sub_workflow if sub_workflow and workflow_id == "sub1" else workflow
+
+    def fake_notify(conversation_id, text, sender, system=False, push=True, thinking=False):
+        pushes.append(push)
+        return 200, "mid-1"
+
+    with patch.object(runner.workflows, "fetch_workflow", side_effect=fake_fetch_workflow), \
+         patch.object(runner.workflows, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.workflows, "fetch_persona_uncached", return_value=persona), \
+         patch.object(runner.workflows, "generate_reply", return_value="a real reply"), \
+         patch.object(runner.workflows, "notify", side_effect=fake_notify), \
+         patch.object(runner.workflows, "audit"), \
+         patch.object(runner.workflows, "agora_internal", return_value=(200, {})):
+        runner.run_workflow_heartbeat(heartbeat)
+    return pushes
+
+
+def test_workflow_heartbeat_mutes_push_when_notifications_are_off(runner):
+    pushes = _run_workflow_heartbeat_capturing_push(runner, {
+        "id": "hb1", "name": "WF HB", "schedule": "every@1h",
+        "conversationId": "c1", "workflowId": "wf1", "pushNotifications": False,
+    })
+    assert pushes == [False]
+
+
+def test_workflow_heartbeat_pushes_when_field_is_absent(runner):
+    pushes = _run_workflow_heartbeat_capturing_push(runner, {
+        "id": "hb1", "name": "WF HB", "schedule": "every@1h",
+        "conversationId": "c1", "workflowId": "wf1",
+    })
+    assert pushes == [True]
+
+
+def test_workflow_heartbeat_mute_reaches_a_sub_workflow(runner):
+    """The engine recurses into workflowRef steps, so a flag threaded only
+    into the top level would leave every nested round still buzzing."""
+    pushes = _run_workflow_heartbeat_capturing_push(
+        runner,
+        {"id": "hb1", "name": "WF HB", "schedule": "every@1h",
+         "conversationId": "c1", "workflowId": "wf1", "pushNotifications": False},
+        steps=[{"prompt": "", "loopCount": 1, "toolWhitelist": [], "workflowRef": "sub1"}],
+        sub_workflow={"id": "sub1", "steps": [{"prompt": "inner", "loopCount": 1, "toolWhitelist": []}]},
+    )
+    assert pushes == [False]
