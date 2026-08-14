@@ -32,6 +32,7 @@ import time
 
 from agora_runner.log import log
 from agora_runner.nova_site import start_nova_site
+from agora_runner.stall_notice import StallWatch
 
 # Set by the SIGTERM/SIGINT handler, read by the loop below. A plain bool
 # rather than a threading.Event for the same reason main.py gives: a signal
@@ -60,8 +61,16 @@ def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
     server = start_nova_site()
+    # The stall notice rides this loop rather than getting a thread of its
+    # own: it does nothing 99% of the time, it must not run while the
+    # process is shutting down, and a check that costs a dict lookup does
+    # not need concurrency. `tick` rate-limits itself and never raises, so
+    # calling it once a second is the whole wiring. See stall_notice.py for
+    # why this lives in the site process and not in the runner.
+    watch = StallWatch()
     try:
         while not _shutdown_requested:
+            watch.tick()
             time.sleep(SHUTDOWN_POLL_SECONDS)
     finally:
         # serve_forever runs on a daemon thread, so shutdown() is called
