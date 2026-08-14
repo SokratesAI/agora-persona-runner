@@ -287,12 +287,24 @@ def test_cli_refusal_exits_two_and_leaves_the_file_byte_identical(tmp_path):
     # The documented flow puts the vault write behind `&&`, but a caller
     # that ignores the exit code still must not be able to write a refusal
     # back as a grant.
-    path = write(tmp_path, "")
-    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
-    before = open(path, encoding="utf-8").read()
+    #
+    # The seeded ledger is deliberately not in the formatting `dumps`
+    # produces -- one line, no trailing newline. Comparing bytes against a
+    # canonically-formatted file would pass whether or not the refusal
+    # wrote, because a refused `take` does not change the ledger it was
+    # handed; the only thing that proves nothing was written is a file that
+    # would come back *looking* different if it had been.
+    # `now` is the CLI's own wall clock here, not T0 -- a claim stamped at a
+    # fixed date would quietly stop being refused once it aged past the TTL,
+    # and this test would go green for the wrong reason on a later day.
+    now = datetime.now(OSLO).isoformat()
+    held = json.dumps(
+        {"claims": [{"item": "a-real-item", "cycle": 189, "state": "open", "at": now}]}
+    )
+    path = write(tmp_path, held)
     code = claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "190"])
     assert code == 2
-    assert open(path, encoding="utf-8").read() == before
+    assert open(path, encoding="utf-8").read() == held
 
 
 def test_cli_bad_slug_exits_one_not_two(tmp_path):
