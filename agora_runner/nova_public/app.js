@@ -1585,9 +1585,13 @@
       body.textContent = "";
       if (item.where) body.appendChild(el("p", "item-where", "Landed in " + item.where));
       // Every rating on both boards was set by a cycle, not by Edvard
-      // (issues.md capture, 2026-08-14). A done row gets no picker: that
-      // table has no rating column and the server refuses to add one.
-      if (!item.done) body.appendChild(renderPriorityPicker(board, item));
+      // (issues.md capture, 2026-08-14). A finished row gets no picker,
+      // and `item.done` alone is not that test -- it only means the row
+      // is in the `## Done` table, and most finished rows never move
+      // there. `statusKey` is what the server refuses on.
+      if (!item.done && item.statusKey !== "done") {
+        body.appendChild(renderPriorityPicker(board, item));
+      }
       var blocks = boardState.details[board + ":" + item.number];
       if (!blocks) {
         body.appendChild(el("p", "empty", "Loading…"));

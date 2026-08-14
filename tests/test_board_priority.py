@@ -15,6 +15,7 @@ type: board
 |---|------|--------|---------|---|
 | [[#57 — More pages\\|57]] | More pages | 🟡 In progress | 08-11 | 🔵 Medium |
 | [[#59 — Small pickings\\|59]] | Small pickings | ⚪ Backlog | 08-11 |
+| [[#76 — Already finished\\|76]] | Already finished | ✅ Done | 08-14 |
 
 ## Done
 
@@ -142,3 +143,12 @@ def test_an_unrated_capture_is_written_exactly_as_typed(monkeypatch):
         lambda path, body, if_rev=None: written.update(body=body) or "written")
     ok, _ = nova_capture.capture("issues", "plain thought")
     assert ok and "- plain thought" in written["body"]
+
+
+def test_a_finished_row_is_refused_even_though_it_sits_in_the_board_table():
+    """Most finished rows never move to `## Done` -- #76 is `✅ Done` in
+    `## Board`, and `parse_board` reports `done=False` for it. Rating one
+    would show a priority chip on a finished item."""
+    row = [i for i in parse_board(BOARD)["items"] if i["number"] == 76][0]
+    assert row["statusKey"] == "done" and row["done"] is False
+    assert set_row_priority(BOARD, 76, "🟠 High") is None

@@ -197,10 +197,13 @@ def set_row_priority(markdown, number, priority):
     three ways to get it: no row carries that number, the row is in
     `## Done`, or `priority` is not one of the four ratings. A caller
     cannot tell those apart and does not need to -- all three mean the
-    file must not be touched. Refusing a `## Done` row is not fussiness:
-    that table is four columns wide and a fifth cell would shift nothing
-    but would put a rating on a finished item, which `parse_board`
-    deliberately never reads back.
+    file must not be touched. Refusing a finished row is not fussiness,
+    and it is not enough to refuse the `## Done` table: most finished rows
+    never move there. `#76` is `✅ Done` and still sits in `## Board`,
+    where `parse_board` sets `done=False` and *would* read a fifth cell
+    back -- so accepting one here puts a rating chip on a finished item,
+    which is the one state Cycle 188 deliberately left empty. The status
+    cell is what decides, not which table the row is in.
 
     The rewrite is line-wise on the raw file rather than a reparse-and-
     render, because these files are Edvard's and everything I am not
@@ -228,6 +231,8 @@ def set_row_priority(markdown, number, priority):
         found = _ROW_NUMBER_RE.search(cells[0])
         if not found or int(found.group(1)) != number:
             continue
+        if status_key(cells[2]) == "done":
+            return None
         # Appended, never inserted -- the same reason `parse_board` reads
         # it at index 4. A row that never had a fifth cell grows one here,
         # so an unrated file does not have to be migrated first.
