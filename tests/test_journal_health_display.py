@@ -460,7 +460,6 @@ def test_two_live_heartbeats_are_measured_at_the_faster_one(monkeypatch):
         _hb("every@6h"), _hb("every@40m"),
     ]))
     assert _fetch_cadence_minutes() == 40
-    reset_cadence()
     _with_agora(monkeypatch, _FakeAgora(heartbeats=[
         _hb("every@40m"), _hb("every@6h"),
     ]))
@@ -576,3 +575,51 @@ def test_a_refresh_that_cannot_start_does_not_wedge_every_later_one(monkeypatch)
         lambda **kw: started.append(kw) or _NoopThread())
     assert cadence_minutes() == 60
     assert len(started) == 1
+
+
+def test_a_workflow_heartbeat_pointed_at_nova_is_not_the_cycle_cadence(monkeypatch):
+    """A workflow-bound heartbeat dispatches `run_workflow_heartbeat`, a
+    conversation round that writes no journal entry, and it carries a
+    `personaId` like any other. Counting it would measure silence in
+    intervals nothing writes in -- the false stall #72 exists to prevent.
+
+    Five minutes against forty on purpose: the faster one wins the `min`,
+    so ignoring `workflowId` is the difference between 40 and 5 rather
+    than something the other heartbeat covers up.
+    """
+    workflow = dict(_hb("every@5m"), workflowId="wf-1")
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[workflow, _hb("every@40m")]))
+    assert _fetch_cadence_minutes() == 40
+
+    # And on its own it is not a cadence at all, rather than the shortest
+    # of a list of one.
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[workflow]))
+    assert _fetch_cadence_minutes() is None
+
+
+def test_the_badge_the_page_draws_moves_with_the_live_cadence(monkeypatch):
+    """The second end-to-end assertion, and the reason it exists is a
+    finding against this very diff: nine of the tests above hand
+    `_with_silence` a `minutes` literal, so they pin the arithmetic and
+    would all still pass with the default wired back to the constant. The
+    reviewer reverted exactly that and got 31 of 32 green. Coverage that
+    only one test carries is coverage in appearance.
+
+    So this drives `journal_page` -- the default path, no `minutes`
+    argument anywhere -- across the stall threshold in both directions,
+    off the cadence alone with the elapsed time held fixed.
+    """
+    entries = {"entries": [], "status": build_status(_entries(129, 128))}
+    ninety = NOW + timedelta(minutes=90)
+
+    reset_cadence()
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb("every@60m")]))
+    _refresh_cadence()
+    healthy = journal_page(entries, now=ninety)["status"]
+    assert (healthy["silentIntervals"], healthy["stalled"]) == (1, False)
+
+    reset_cadence()
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb("every@40m")]))
+    _refresh_cadence()
+    stalled = journal_page(entries, now=ninety)["status"]
+    assert (stalled["silentIntervals"], stalled["stalled"]) == (2, True)

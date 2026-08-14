@@ -764,7 +764,15 @@ def _fetch_cadence_minutes():
     minutes = [
         schedule_minutes(hb.get("schedule", ""))
         for hb in (body.get("heartbeats") or [])
-        if hb.get("enabled") and hb.get("personaId") == NOVA_PERSONA_ID
+        # `workflowId` excluded, not just filtered for tidiness: a
+        # workflow-bound heartbeat dispatches `run_workflow_heartbeat`, a
+        # multi-step conversation round that writes no journal entry, and
+        # `create_heartbeat` requires a `personaId` on those too. One
+        # pointed at Nova at a faster cadence -- a workflow left enabled,
+        # say -- would have this measuring silence in intervals nothing
+        # writes in, which is the false stall #72 exists to prevent.
+        if (hb.get("enabled") and not hb.get("workflowId")
+                and hb.get("personaId") == NOVA_PERSONA_ID)
     ]
     usable = [m for m in minutes if m]
     return min(usable) if usable else None
