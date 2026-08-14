@@ -6924,3 +6924,60 @@ def test_run_heartbeat_hands_the_journal_health_check_its_own_schedule(runner):
             "schedule": "every@40m@19:00", "name": "Nova"})
 
     assert seen["schedule"] == "every@40m@19:00"
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-14, Edvard: "Did you fix the notification for agora heartbeats?
+# So i can turn them off?" -- pushNotifications:false on the heartbeat
+# mutes the phone push for its reply. The message is still posted.
+# ---------------------------------------------------------------------------
+
+def _run_heartbeat_capturing_push(runner, heartbeat):
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    calls = []
+
+    def fake_notify(conversation_id, text, sender, system=False, push=True, thinking=False):
+        calls.append({"text": text, "push": push})
+        return 200, "mid-1"
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", return_value="a real report"), \
+         patch.object(runner.heartbeats, "notify", side_effect=fake_notify), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+    return calls
+
+
+def test_run_heartbeat_mutes_push_when_notifications_are_off(runner):
+    """The reply must still be posted -- only the phone buzz is withheld,
+    exactly like quiet hours. Dropping the message instead would throw
+    away the cycle's whole reply, which is not what turning a
+    notification off means."""
+    calls = _run_heartbeat_capturing_push(runner, {
+        "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+        "schedule": "every@1h", "name": "HB", "pushNotifications": False,
+    })
+    assert [c["text"] for c in calls] == ["a real report"]
+    assert calls[0]["push"] is False
+
+
+def test_run_heartbeat_pushes_when_field_is_absent(runner):
+    """Absent means notify. Every heartbeat that existed before this field
+    was added has no such key, and must keep buzzing the phone."""
+    calls = _run_heartbeat_capturing_push(runner, {
+        "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+        "schedule": "every@1h", "name": "HB",
+    })
+    assert calls[0]["push"] is True
+
+
+def test_run_heartbeat_pushes_when_notifications_are_on(runner):
+    calls = _run_heartbeat_capturing_push(runner, {
+        "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+        "schedule": "every@1h", "name": "HB", "pushNotifications": True,
+    })
+    assert calls[0]["push"] is True
