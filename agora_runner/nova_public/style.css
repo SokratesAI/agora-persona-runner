@@ -70,6 +70,12 @@ pre code { background: none; padding: 0; }
 }
 
 .status-line { margin: 0.3rem 0 0; color: var(--dim); }
+
+/* The page name only, on the two board pages -- issues.md #83, "Make the
+ * header for issues and ideas bold". `--text` as well as the weight: bold
+ * at `--dim` is barely a change on a phone in the dark, which is where he
+ * reads this. */
+.status-page { color: var(--text); font-weight: 700; }
 .status-sub { margin: 0.6rem 0 0; display: flex; gap: 0.5rem; align-items: center; }
 .status-pr { color: var(--dim); font-size: 0.85rem; }
 
