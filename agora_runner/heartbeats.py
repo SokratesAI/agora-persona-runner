@@ -518,6 +518,12 @@ def run_heartbeat(heartbeat):
 # the day blocked, and up to 22 minutes of silence for anyone chatting
 # with any other persona. Same fix as the workflow one, same guard,
 # now applied to both paths.
+#
+# Those numbers are the 2026-08-09 cadence, kept because they are what
+# motivated the fix. They are not today's: Edvard has changed the
+# schedule four times since and it is every@60m@19:00 as of 2026-08-14.
+# Nothing here reads the cadence — `schedule_minutes` is the one place
+# that does — so this is a note, not a constant going stale.
 _heartbeat_threads = {}
 
 
