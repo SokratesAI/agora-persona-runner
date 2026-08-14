@@ -113,6 +113,7 @@ from agora_runner.nova_capture import (
     amend,
     capture,
     clean_capture_text,
+    set_priority,
 )
 from agora_runner.nova_comments import (
     add_comment,
@@ -134,7 +135,14 @@ from agora_runner.nova_replies import (
     failed as failed_replies,
     pending_since,
 )
-from agora_runner.nova_boards import BOARD_PATHS, parse_board, parse_notes
+from agora_runner.nova_boards import (
+    BOARD_PATHS,
+    PRIORITY_LABELS,
+    parse_board,
+    parse_notes,
+    priority_key,
+    split_capture_priority,
+)
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_sources import (
@@ -366,8 +374,19 @@ def board_payload(name):
         # text is how an edit or a delete addresses the bullet, since
         # `nova_capture.replace_capture` matches on text rather than on an
         # index that a cycle boarding the file would shift underneath it.
+        # `text` stays the raw bullet, rating glyph and all, because
+        # `nova_capture.replace_capture` matches an edit or a delete on
+        # exactly this string. The split is presentational: `body` is what
+        # the card shows and `priority` is the chip beside it.
         "captures": [
-            {"text": text, "blocks": render_blocks(text)} for text in board["captures"]
+            {
+                "text": text,
+                "body": split_capture_priority(text)[1],
+                "priority": split_capture_priority(text)[0],
+                "priorityKey": priority_key(split_capture_priority(text)[0]),
+                "blocks": render_blocks(split_capture_priority(text)[1]),
+            }
+            for text in board["captures"]
         ],
         "items": board["items"],
         "details": details,
@@ -1295,6 +1314,59 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "no longer" in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
+    def _post_priority(self, payload):
+        """`POST /api/board/priority` -- Edvard re-rating a row I rated.
+
+        His capture, 2026-08-14: *"i want that aswell ... when they are
+        boarded its possible for me to change the priority."* Every rating
+        on both boards today was set by Cycle 188, not by him, so this is
+        the first way he can disagree with one without opening Obsidian.
+
+        Same two boundaries as the capture box and for the same reason:
+        `target` is a key into a dict of literal paths, never a path, and
+        `priority` is checked against the four labels here rather than
+        written through -- a client cannot put arbitrary text into a cell
+        of his file. `number` is `int` only; `True` is an int in Python
+        and would address row 1, which is the trap `_post_amend` names.
+        """
+        target = payload.get("target")
+        number = payload.get("number")
+        priority = payload.get("priority")
+        if target not in BOARD_PATHS:
+            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
+            return
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            self._send_json(400, {"error": "number must be a positive integer"})
+            return
+        if priority not in PRIORITY_LABELS.values():
+            self._send_json(
+                400, {"error": f"priority must be one of {sorted(PRIORITY_LABELS.values())}"})
+            return
+
+        try:
+            ok, message = set_priority(target, number, priority)
+        except Exception as e:
+            log(f"nova-site priority failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            # The board Edvard is looking at now shows the old rating, and
+            # `app.js` reloads on the next tick -- exactly the staleness
+            # the capture box invalidates for.
+            invalidate("board:" + target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Rate #{number} on {target} \u00b7 {'ok' if ok else message}",
+            after=priority or "(unrated)",
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def _post_comment(self, payload):
         """`/api/comment` -- Edvard replying to one cycle (ideas.md #44).
 
@@ -1427,7 +1499,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._handle_mcp()
             return
         if path not in (
-            "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment"
+            "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment",
+            "/api/board/priority",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -1441,6 +1514,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path in ("/api/capture/edit", "/api/capture/delete"):
             self._post_amend(payload, delete=path.endswith("delete"))
             return
+        if path == "/api/board/priority":
+            self._post_priority(payload)
+            return
         target = payload.get("target")
         text = payload.get("text")
         if target not in CAPTURE_TARGETS:
@@ -1449,9 +1525,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if not isinstance(text, str):
             self._send_json(400, {"error": "text must be a string"})
             return
+        priority = payload.get("priority") or ""
+        if priority not in PRIORITY_LABELS.values():
+            self._send_json(
+                400, {"error": f"priority must be one of {sorted(PRIORITY_LABELS.values())}"})
+            return
 
         try:
-            ok, message = capture(target, text)
+            ok, message = capture(target, text, priority)
         except Exception as e:
             log(f"nova-site capture failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})

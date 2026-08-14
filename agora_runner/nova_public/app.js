@@ -1501,6 +1501,60 @@
     ));
   }
 
+  var PRIORITIES = ["", "\u26aa Low", "\U0001f535 Medium", "\U0001f7e0 High", "\U0001f534 Immediately"];
+
+  /* The rating cell of one boarded row, as something Edvard can change.
+   * The select is the whole control: no save button, because the only
+   * action it can take is the one he just chose, and a button would be a
+   * second thing to get wrong. It goes disabled while the write is in
+   * flight so a double-tap cannot race two writes at one cell, and on
+   * failure it snaps back to what the server still holds rather than
+   * showing a rating that was never written. */
+  function renderPriorityPicker(board, item) {
+    var wrap = el("p", "item-prio-edit");
+    wrap.appendChild(el("span", "item-prio-label", "Priority"));
+    var select = document.createElement("select");
+    select.className = "prio-select";
+    select.setAttribute("aria-label", "Priority of #" + item.number);
+    PRIORITIES.forEach(function (label) {
+      var option = document.createElement("option");
+      option.value = label;
+      option.textContent = label || "Unrated";
+      if (label === (item.priority || "")) option.selected = true;
+      select.appendChild(option);
+    });
+    var note = el("span", "item-prio-note", "");
+    select.addEventListener("change", function () {
+      var chosen = select.value;
+      var previous = item.priority || "";
+      select.disabled = true;
+      note.textContent = "Saving\u2026";
+      fetch("/api/board/priority", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: board, number: item.number, priority: chosen })
+      })
+        .then(json)
+        .then(function (payload) {
+          if (!payload || !payload.ok) throw new Error((payload && payload.message) || "failed");
+          item.priority = chosen;
+          note.textContent = "";
+          // The chip in the closed head is built from `item`, so the row
+          // has to be redrawn for the change to be visible without a
+          // reload -- which is the whole point of editing it here.
+          loadBoard(board);
+        })
+        .catch(function (err) {
+          select.value = previous;
+          note.textContent = "Could not save: " + err;
+        })
+        .then(function () { select.disabled = false; });
+    });
+    wrap.appendChild(select);
+    wrap.appendChild(note);
+    return wrap;
+  }
+
   /* One row of Edvard's board. Closed it is the number, the title and a
    * status chip; open it reveals the write-up, which is a second request
    * the first time a row is opened and memory after that. */
@@ -1530,6 +1584,10 @@
     function fill() {
       body.textContent = "";
       if (item.where) body.appendChild(el("p", "item-where", "Landed in " + item.where));
+      // Every rating on both boards was set by a cycle, not by Edvard
+      // (issues.md capture, 2026-08-14). A done row gets no picker: that
+      // table has no rating column and the server refuses to add one.
+      if (!item.done) body.appendChild(renderPriorityPicker(board, item));
       var blocks = boardState.details[board + ":" + item.number];
       if (!blocks) {
         body.appendChild(el("p", "empty", "Loading…"));
@@ -1601,6 +1659,12 @@
   function renderCapture(board, capture, index) {
     var one = el("div", "capture-item");
     var body = el("div", "capture-body");
+    // The rating he chose when he typed it, shown the same way a boarded
+    // row shows one, so an unboarded capture and a boarded item read
+    // alike. Unrated gets no chip -- the same rule as the board.
+    if (capture.priority) {
+      body.appendChild(el("span", "chip prio prio-" + capture.priorityKey, capture.priority));
+    }
     renderBlocks(body, capture.blocks || []);
     one.appendChild(body);
 
@@ -2759,6 +2823,26 @@
     var captureStatus = document.getElementById("capture-status");
     var buttons = Array.prototype.slice.call(form.querySelectorAll(".capture-btn"));
 
+    /* Edvard, issues.md 2026-08-14: "i want that aswell both when i input
+     * in the textbox in the Nova app". Unrated is the default and stays
+     * first -- most captures are a sentence he wants written down, not a
+     * rating exercise, and forcing a choice would put a decision in front
+     * of the box he types into. It resets after a send for the same
+     * reason: the next thought is not the same urgency by default. */
+    var prioEl = document.createElement("select");
+    prioEl.className = "capture-prio";
+    prioEl.id = "capture-prio";
+    prioEl.setAttribute("aria-label", "Priority");
+    PRIORITIES.forEach(function (label) {
+      var option = document.createElement("option");
+      option.value = label;
+      option.textContent = label || "Unrated";
+      prioEl.appendChild(option);
+    });
+    if (buttons.length && buttons[0].parentNode) {
+      buttons[0].parentNode.insertBefore(prioEl, buttons[0]);
+    }
+
     /* Edvard, issues.md 2026-08-09: "the input box for the Nova pwa is too
      * small and not rescalable so i can't see my entire input text if its
      * more than 3 lines." CSS `resize: vertical` was already there and does
@@ -2790,12 +2874,13 @@
       fetch("/api/capture", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: target, text: text }),
+        body: JSON.stringify({ target: target, text: text, priority: prioEl.value }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
           if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
           textEl.value = "";
+          prioEl.value = "";
           fit();
           setStatus("saved to " + target, false);
           // The capture may be the top bullet of a file the feed shows.

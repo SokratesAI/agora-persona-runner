@@ -91,6 +91,19 @@ def status_key(status):
 # rather than one of them falling off the sort.
 _PRIORITY_ALIASES = {"immediately": "immediate", "now": "immediate", "urgent": "immediate"}
 
+# The exact cell text a rating is written as, keyed by what `priority_key`
+# reduces it to. `""` clears the cell back to unrated, which has to stay
+# reachable: Cycle 188 rated all 71 open rows itself, so every rating on
+# both boards right now is mine, and "actually nobody has decided this"
+# is an answer Edvard must be able to give me back.
+PRIORITY_LABELS = {
+    "": "",
+    "low": "⚪ Low",
+    "medium": "🔵 Medium",
+    "high": "🟠 High",
+    "immediate": "🔴 Immediately",
+}
+
 
 def priority_key(priority):
     """`🔴 Immediately` -> `immediate`, for a CSS class and a filter.
@@ -143,6 +156,87 @@ def _table_rows(body):
             continue
         rows.append(cells)
     return rows
+
+
+def split_capture_priority(bullet):
+    """`🟠 text` -> `("🟠 High", "text")`. Unrated -> `("", bullet)`.
+
+    The other half of Edvard's capture: *"i want that aswell both when i
+    input in the textbox in the Nova app"*. A capture is a bare bullet in
+    his file and has nowhere to put a column, so the rating rides at the
+    front of the bullet as the one glyph the rating already is -- which
+    reads correctly in Obsidian, survives him editing the line by hand,
+    and is what a cycle lifts into the `Priority` cell when it boards the
+    item and strips from the title.
+
+    Matched on the emoji alone rather than on `emoji + word`, because the
+    bullet is his text from that point on and he may well rewrite the
+    word. Only a leading glyph counts: a rating is a prefix, and a 🔴 in
+    the middle of a sentence about a red dot is prose.
+    """
+    text = (bullet or "").strip()
+    for key, label in PRIORITY_LABELS.items():
+        if not key:
+            continue
+        glyph = label.split(" ", 1)[0]
+        if text.startswith(glyph):
+            return label, text[len(glyph):].strip()
+    return "", text
+
+
+def set_row_priority(markdown, number, priority):
+    """Rewrite one `## Board` row's rating cell. Returns markdown, or `None`.
+
+    Edvard's capture, `issues.md` 2026-08-14: *"You made it possible for
+    yourself to rate the priority of tasks, but i want that aswell both
+    when i input in the textbox in the Nova app, and when they are boarded
+    its possible for me to change the priority."* Until now the only way
+    to change a cell I had written was to open Obsidian.
+
+    `None` means "not written", never "written unchanged", and there are
+    three ways to get it: no row carries that number, the row is in
+    `## Done`, or `priority` is not one of the four ratings. A caller
+    cannot tell those apart and does not need to -- all three mean the
+    file must not be touched. Refusing a `## Done` row is not fussiness:
+    that table is four columns wide and a fifth cell would shift nothing
+    but would put a rating on a finished item, which `parse_board`
+    deliberately never reads back.
+
+    The rewrite is line-wise on the raw file rather than a reparse-and-
+    render, because these files are Edvard's and everything I am not
+    editing has to come back byte-identical -- his prose, his detail
+    sections, the blank lines the two files disagree about. Only the one
+    row is rebuilt, and only from cells that were already in it.
+    """
+    if priority not in PRIORITY_LABELS.values():
+        return None
+    lines = (markdown or "").split("\n")
+    in_board = False
+    for index, line in enumerate(lines):
+        heading = _SECTION_RE.match(line)
+        if heading:
+            in_board = len(heading.group(1)) == 2 and heading.group(2).strip().lower() == "board"
+            continue
+        if not in_board or not line.strip().startswith("|"):
+            continue
+        masked = _WIKILINK_RE.sub(lambda m: m.group(0).replace("|", _ALIAS_PIPE), line.strip())
+        cells = [
+            cell.strip().replace(_ALIAS_PIPE, "|") for cell in masked.strip("|").split("|")
+        ]
+        if len(cells) < 4:
+            continue
+        found = _ROW_NUMBER_RE.search(cells[0])
+        if not found or int(found.group(1)) != number:
+            continue
+        # Appended, never inserted -- the same reason `parse_board` reads
+        # it at index 4. A row that never had a fifth cell grows one here,
+        # so an unrated file does not have to be migrated first.
+        while len(cells) < 5:
+            cells.append("")
+        cells[4] = priority
+        lines[index] = "| " + " | ".join(cells) + " |"
+        return "\n".join(lines)
+    return None
 
 
 def _sections(markdown):
