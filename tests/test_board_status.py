@@ -105,6 +105,15 @@ def test_refuses_a_missing_row_and_a_status_i_did_not_offer():
     assert set_row_status(BOARD, 57, "") is None
 
 
+def test_refuses_an_updated_stamp_carrying_a_table_delimiter():
+    # `status` comes off a whitelist so it cannot carry one; `updated` is
+    # free text. A `|` gives the row an extra column and a newline splits
+    # it into two, and both land in Edvard's file looking deliberate.
+    assert set_row_status(BOARD, 57, "✅ Done", updated="08-15 | 🟠 High") is None
+    assert set_row_status(BOARD, 57, "✅ Done", updated="08-15\n| oops |") is None
+    assert set_row_status(BOARD, 57, "✅ Done", updated="08-15") is not None
+
+
 def test_the_live_green_tick_spelling_is_rewritten_to_the_one_everything_uses():
     # `🟢 Done` is on issue #63 in the live file. It already reduces to
     # `done`, so the only thing at stake is that setting it again lands on

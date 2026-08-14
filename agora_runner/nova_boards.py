@@ -326,6 +326,13 @@ def set_row_status(markdown, number, status, updated=None):
     """
     if status not in STATUS_LABELS.values():
         return None
+    # `status` is whitelisted above and cannot carry a delimiter; `updated`
+    # is free text from a caller and can. `set_row_title` refuses the same
+    # two characters for the same reason -- a `|` splits the row into an
+    # extra column and a newline splits it into two rows, and both land in
+    # Edvard's file looking like a table he wrote.
+    if updated is not None and ("|" in updated or "\n" in updated):
+        return None
     lines = (markdown or "").split("\n")
     index, cells = _row_span(lines, number, tables=("board",))
     if index is None:
