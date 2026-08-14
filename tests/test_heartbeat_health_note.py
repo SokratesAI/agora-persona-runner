@@ -284,7 +284,15 @@ def test_the_unit_is_how_often_an_entry_is_written_not_how_often_this_one_runs(m
 
 
 def test_an_unreachable_agora_costs_the_unit_and_not_the_measurement(monkeypatch):
-    """The regression this guard exists for.
+    """The guard, pinned against its own removal -- not against the diff.
+
+    Worth stating because the distinction is easy to lose: this test passes
+    on the commit *before* the lookup existed, and that is not a defect. A
+    guard around a call can only be tested where the call is; revert the
+    whole change and there is no failure to survive, so it agrees. What it
+    does pin is the mutation that actually threatens it -- drop the inner
+    `except` while keeping the lookup and this fails, landing in the outer
+    one. The sibling test above is what fails on a full revert.
 
     `http_json` catches `HTTPError`, not `URLError`, so Agora being down
     *raises* out of the cadence lookup -- and the agora pod does roll, four
