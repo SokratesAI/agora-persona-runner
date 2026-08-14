@@ -7,7 +7,9 @@ so a check built on status alone reports a healthy site.
 """
 
 import json
+import pathlib
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,14 +17,14 @@ from agora_runner.nova_site import PAGE_ROUTES
 from tools import see_page
 
 
-def _root(tmp_path, *, fonts=True, libdirs=True, shot=True):
+def _root(tmp_path, *, fonts=True, libdirs=True, browsers=True):
     if libdirs:
         (tmp_path / "libdirs.txt").write_text("/sysroot/lib:/sysroot/usr/lib\n")
     if fonts:
         (tmp_path / "fontconf").mkdir()
         (tmp_path / "fontconf" / "fonts.conf").write_text("<fontconfig/>")
-    if shot:
-        (tmp_path / "shot.js").write_text("// stub")
+    if browsers:
+        (tmp_path / "browsers").mkdir()
     return tmp_path
 
 
@@ -77,7 +79,7 @@ def test_render_env_carries_every_load_bearing_variable(tmp_path):
     assert env["PLAYWRIGHT_BROWSERS_PATH"] == str(tmp_path / "browsers")
 
 
-@pytest.mark.parametrize("missing", ["fonts", "libdirs", "shot"])
+@pytest.mark.parametrize("missing", ["fonts", "libdirs", "browsers"])
 def test_a_half_built_sysroot_says_how_to_build_it(tmp_path, missing):
     """Missing fonts must fail loudly here rather than silently render nothing."""
     root = _root(tmp_path, **{missing: False})
@@ -87,17 +89,66 @@ def test_a_half_built_sysroot_says_how_to_build_it(tmp_path, missing):
 
 
 def test_shot_name_matches_what_shot_js_writes():
-    """The printed PNG path is a promise; a mismatch sends the reader to nothing."""
-    assert see_page._shot_name("/") == "root"
-    assert see_page._shot_name("/retro") == "retro"
-    assert see_page._shot_name("/api/journal") == "api_journal"
+    """The printed PNG path is a promise; a mismatch sends the reader to nothing.
+
+    The width is in the name because two renders at two widths are the
+    point of having a width at all, and without it the second silently
+    overwrites the first -- so a cycle comparing a phone against a desktop
+    would be looking at the same picture twice.
+    """
+    assert see_page._shot_name("/", 390) == "root-390"
+    assert see_page._shot_name("/retro", 390) == "retro-390"
+    assert see_page._shot_name("/api/journal", 1280) == "api_journal-1280"
+
+
+def test_shot_js_builds_the_same_name_this_module_prints():
+    """The two sides of that promise are in two languages; read the other one."""
+    js = (
+        pathlib.Path(see_page.__file__).resolve().parent
+        / "browser" / "shot.js"
+    ).read_text(encoding="utf-8")
+    assert "`shots/${name}-${width}.png`" in js, js
+
+
+def test_the_default_width_is_the_phone_he_reads_this_on():
+    """1280 was the old default and is why a phone layout bug shipped."""
+    assert see_page.PHONE_WIDTH == 390
+
+
+def test_the_width_reaches_the_browser(tmp_path, monkeypatch):
+    """`--width` that is parsed and then not passed on is the silent failure."""
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["width"] = kwargs["env"].get("NOVA_WIDTH")
+        return SimpleNamespace(stdout=json.dumps(_row()), stderr="")
+
+    monkeypatch.setattr(see_page, "render_env", lambda root: {})
+    monkeypatch.setattr(see_page.subprocess, "run", fake_run)
+    see_page.render(["/"], root=tmp_path, width=1280)
+    assert seen["width"] == "1280"
+
+
+def test_main_passes_its_parsed_width_through_and_keeps_the_paths(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_render(paths, root=None, base=see_page.DEFAULT_BASE, width=None):
+        seen.update(paths=paths, width=width)
+        return [_row(path=p) for p in paths]
+
+    monkeypatch.setattr(see_page, "render", fake_render)
+    monkeypatch.setattr(see_page, "browser_root", lambda: tmp_path)
+    assert see_page.main(["--width", "1280", "/retro"]) == 0
+    assert seen == {"paths": ["/retro"], "width": 1280}
+    assert see_page.main(["/retro"]) == 0
+    assert seen["width"] == see_page.PHONE_WIDTH
 
 
 def test_default_paths_are_the_routes_the_server_actually_serves(tmp_path, monkeypatch):
     """No second page list. A route added to the server is rendered by this."""
     seen = {}
 
-    def fake_render(paths, root=None, base=see_page.DEFAULT_BASE):
+    def fake_render(paths, root=None, base=see_page.DEFAULT_BASE, width=None):
         seen["paths"] = paths
         return [_row(path=p) for p in paths]
 
@@ -138,3 +189,26 @@ def test_render_parses_one_json_object_per_page(tmp_path, monkeypatch):
     )
     rows = see_page.render(["/", "/retro"], root=_root(tmp_path))
     assert [r["path"] for r in rows] == ["/", "/retro"]
+
+
+def test_the_repo_copy_of_shot_js_is_the_one_that_runs(tmp_path, monkeypatch):
+    """`node shot.js` runs with cwd=root, and nothing installs it there.
+
+    `bootstrap.sh` builds the sysroot and does not mention `shot.js`, so the
+    copy beside the browser was hand-placed and is free to drift from the
+    repo. An edit to the file under review would then change nothing about
+    what runs -- and this module exists to show a cycle what it shipped.
+    """
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(stdout=json.dumps(_row()), stderr="")
+
+    monkeypatch.setattr(see_page, "render_env", lambda root: {})
+    monkeypatch.setattr(see_page.subprocess, "run", fake_run)
+    stale = tmp_path / "shot.js"
+    stale.write_text("// a copy some cycle left here in 2026")
+    see_page.render(["/"], root=tmp_path)
+    fresh = (
+        pathlib.Path(see_page.__file__).resolve().parent / "browser" / "shot.js"
+    ).read_text(encoding="utf-8")
+    assert stale.read_text(encoding="utf-8") == fresh

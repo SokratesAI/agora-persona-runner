@@ -10,8 +10,23 @@ This runs the page in headless Chromium and writes a PNG a cycle can then
 open with the `Read` tool, which displays images. So a cycle can see what
 it shipped.
 
-    python3 -m tools.see_page              # every route in PAGE_ROUTES
+    python3 -m tools.see_page              # every route, at phone width
     python3 -m tools.see_page /retro
+    python3 -m tools.see_page --width 1280 /retro
+
+## Why the default width is a phone
+
+Edvard reads this app on a phone. This tool rendered at 1280x1400 from the
+day it was built, and at 1280 the capture box's four controls sit on one
+comfortable line. At 390 the priority dropdown is 136px wide, which left
+room for exactly one of the three target buttons on the first line and
+pushed the other two onto a second -- which is what he filed on 2026-08-14
+as "the issue, idea, note and priority dropdown are now just scrambled".
+
+So a render at a width he never uses is not a check, it is a different
+page. The default is the phone; `--width` is there for the desktop case,
+which is the exception. The width is in the PNG's filename so two runs at
+two widths do not overwrite each other.
 
 **Run this from `Bash` (the bridge pod), which is the opposite of
 `site_check`.** The bridge pod is the one with `node`, and it reaches
@@ -38,6 +53,7 @@ minutes if that directory is ever lost.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +62,10 @@ from agora_runner.nova_site import PAGE_ROUTES
 
 DEFAULT_ROOT = Path("/data/workspace/nova-browser")
 DEFAULT_BASE = "http://nova-site:8083"
+
+# The narrow side of the phone this app is actually opened on. Not a
+# guess at a device: it is the width the layout bug was reproduced at.
+PHONE_WIDTH = 390
 
 # Below this many characters of rendered text, assume the page did not
 # really render. Calibrated against the failure rather than against the
@@ -81,7 +101,7 @@ def render_env(root: Path) -> dict:
     """
     libdirs = root / "libdirs.txt"
     fonts = root / "fontconf" / "fonts.conf"
-    for needed in (libdirs, fonts, root / "shot.js"):
+    for needed in (libdirs, fonts, root / "browsers"):
         if not needed.exists():
             raise BrowserMissing(BOOTSTRAP_HINT.format(root=root))
     env = dict(os.environ)
@@ -116,10 +136,19 @@ def problems(rows) -> list:
     return found
 
 
-def render(paths, root=None, base=DEFAULT_BASE) -> list:
+def render(paths, root=None, base=DEFAULT_BASE, width=PHONE_WIDTH) -> list:
     root = root or browser_root()
     env = render_env(root)
     env["NOVA_SITE"] = base
+    env["NOVA_WIDTH"] = str(width)
+    # `node shot.js` runs with cwd=root, so the script that actually runs
+    # is the copy in the sysroot and not the one in this repo. Nothing kept
+    # those in step -- `bootstrap.sh` does not install it, so the root copy
+    # was placed by hand once and has been whatever a cycle last left there.
+    # An edit to the version-controlled file would silently not take effect,
+    # which is the worst possible failure for the one tool whose whole job
+    # is showing a cycle what it really shipped. Copy it every run.
+    shutil.copyfile(Path(__file__).resolve().parent / "browser" / "shot.js", root / "shot.js")
     proc = subprocess.run(
         ["node", "shot.js", *paths],
         cwd=str(root),
@@ -135,9 +164,18 @@ def render(paths, root=None, base=DEFAULT_BASE) -> list:
 
 
 def main(argv=None) -> int:
-    paths = list(argv if argv is not None else sys.argv[1:]) or list(PAGE_ROUTES)
+    args = list(argv if argv is not None else sys.argv[1:])
+    width = PHONE_WIDTH
+    if "--width" in args:
+        at = args.index("--width")
+        # Fail loudly on a missing or unparseable value rather than
+        # silently rendering at the default -- a width that was asked for
+        # and quietly ignored is the failure this whole module is about.
+        width = int(args[at + 1])
+        del args[at : at + 2]
+    paths = args or list(PAGE_ROUTES)
     try:
-        rows = render(paths)
+        rows = render(paths, width=width)
     except (BrowserMissing, RuntimeError) as exc:
         print(exc)
         return 1
@@ -145,7 +183,7 @@ def main(argv=None) -> int:
     for row in rows:
         print(
             f"{row['path']:<12} {row['status']} {row['textLen']:>6} chars  "
-            f"{root / 'shots'}/{_shot_name(row['path'])}.png"
+            f"{root / 'shots'}/{_shot_name(row['path'], width)}.png"
         )
     found = problems(rows)
     for line in found:
@@ -153,13 +191,12 @@ def main(argv=None) -> int:
     return 1 if found else 0
 
 
-def _shot_name(path: str) -> str:
+def _shot_name(path: str, width: int = PHONE_WIDTH) -> str:
     """Mirror of the name `shot.js` gives a screenshot, so the printed path is real."""
-    if path == "/":
-        return "root"
     import re
 
-    return re.sub(r"\W+", "_", path).strip("_")
+    stem = "root" if path == "/" else re.sub(r"\W+", "_", path).strip("_")
+    return f"{stem}-{width}"
 
 
 if __name__ == "__main__":
