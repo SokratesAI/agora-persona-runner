@@ -9,6 +9,10 @@
   --accent: #7aa2f7;
   --good: #7bd88f;
   --warn: #e8b75c;
+  /* Priority chips only. Distinct from --warn so "high" and "medium" do
+   * not collapse into one colour, and light enough to carry --bg as its
+   * own text when filled. */
+  --danger: #f07178;
   /* Report cards only -- see `.entry.is-report`. Deliberately not one of
    * the four above: those all already mean something about an outcome. */
   --report: #c9a2f7;
@@ -959,6 +963,16 @@ body.nav-open { overflow: hidden; }
 .chip-in-progress { color: var(--warn); border-color: var(--warn); }
 .chip-backlog { color: var(--dim); }
 .chip-done { color: var(--good); border-color: var(--good); }
+
+/* Priority sits beside the status chip, so it must not read as a second
+   status. Filled rather than outlined, and the four ratings step down in
+   weight as well as hue -- red/green is the one pair a colour-blind
+   reader cannot separate, and status already spends green. */
+.prio { font-weight: 600; letter-spacing: 0.01em; }
+.prio-immediate { color: var(--bg); background: var(--danger); border-color: var(--danger); }
+.prio-high { color: var(--danger); border-color: var(--danger); }
+.prio-medium { color: var(--warn); border-color: var(--warn); }
+.prio-low { color: var(--dim); border-color: var(--line); font-weight: 400; }
 
 .item-body { padding: 0 0.9rem 0.8rem; border-top: 1px solid var(--line); }
 .item-where { color: var(--dim); font-size: 0.9rem; }

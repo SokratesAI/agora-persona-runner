@@ -23,6 +23,7 @@ from agora_runner.nova_boards import (
     BOARD_PATHS,
     parse_board,
     parse_notes,
+    priority_key,
     status_key,
 )
 from tests.test_nova_site import _get
@@ -331,3 +332,77 @@ def test_the_board_reads_the_same_file_the_capture_button_writes():
 
     for name, paths in BOARD_PATHS.items():
         assert paths["edvard"] == CAPTURE_TARGETS[name], name
+
+
+def test_priority_is_read_from_the_fifth_column():
+    """Edvard's rating, appended rather than inserted.
+
+    Appended so that every cell above it keeps its index: a board he has
+    not rated yet has four columns and must still parse, and it does --
+    see the test below. Inserting it anywhere else would have shifted
+    status and updated one to the right on every unrated row.
+    """
+    md = (
+        "## Board\n\n"
+        "| # | Idea | Status | Updated | Priority |\n"
+        "|---|------|--------|---------|----------|\n"
+        "| [[#68 — A thing\\|68]] | A thing | 🟡 In progress | 08-13 | 🔴 Immediately |\n"
+        "| [[#67 — Another\\|67]] | Another | ⚪ Backlog | 08-13 | Low |\n"
+    )
+    items = {i["number"]: i for i in parse_board(md)["items"]}
+    assert items[68]["priority"] == "🔴 Immediately"
+    assert items[68]["priorityKey"] == "immediate"
+    assert items[67]["priorityKey"] == "low"
+    # The columns it must not have disturbed.
+    assert items[68]["status"] == "🟡 In progress"
+    assert items[68]["updated"] == "08-13"
+    assert items[67]["title"] == "Another"
+
+
+def test_a_board_with_no_priority_column_still_parses():
+    """The state both live files are in until a cycle backfills them, and
+    the state a hand-edit can return one row to at any time."""
+    md = (
+        "## Board\n\n"
+        "| # | Idea | Status | Updated |\n"
+        "|---|------|--------|---------|\n"
+        "| [[#68 — A thing\\|68]] | A thing | 🟡 In progress | 08-13 |\n"
+    )
+    item = parse_board(md)["items"][0]
+    assert item["priority"] == ""
+    assert item["priorityKey"] == ""
+    assert item["status"] == "🟡 In progress"
+    assert item["updated"] == "08-13"
+
+
+def test_done_rows_never_take_a_priority():
+    """`## Done` is a four-column table with a different meaning in its
+    last two cells -- `updated` then `where`. Reading a fifth column there
+    would be reading a column that does not exist, and reading the fourth
+    as a priority would put the PR list in the chip."""
+    md = (
+        "## Done\n\n"
+        "| # | Idea | Updated | Where |\n"
+        "|---|------|---------|-------|\n"
+        "| [[#46 — Shipped\\|46]] | Shipped | 08-10 | #131, #133 |\n"
+        # Five cells: a row carried down from `## Board` with its rating
+        # still attached, which is what moving one by hand actually
+        # produces. The fifth cell must be ignored, not shown -- a done
+        # thing has no priority left to argue about.
+        "| [[#45 — Also shipped\\|45]] | Also shipped | 08-10 | #140 | 🔴 Immediately |\n"
+    )
+    items = {i["number"]: i for i in parse_board(md)["items"]}
+    assert items[46]["done"] is True
+    assert items[46]["priority"] == ""
+    assert items[46]["where"] == "#131, #133"
+    assert items[45]["priority"] == ""
+    assert items[45]["priorityKey"] == ""
+
+
+def test_immediately_and_immediate_are_one_bucket():
+    """"immediately" is the word Edvard used in the capture; "immediate"
+    is the word a hand-edit reaches for. A rating that fell into its own
+    bucket would sort last, which is the opposite of what it says."""
+    assert priority_key("Immediately") == "immediate"
+    assert priority_key("🔴 immediate") == "immediate"
+    assert priority_key("") == ""
