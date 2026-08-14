@@ -39,6 +39,7 @@ handoff; this module only ever compares the strings it is given.
 
 import json
 import re
+from datetime import datetime
 
 #: A claim goes stale after this long, and a later cycle may take it over.
 #: 45 minutes because that is the hard turn cap -- measured Cycle 82, and a
@@ -101,13 +102,11 @@ def dumps(ledger):
 
 
 def _minutes_between(earlier, later):
-    """Whole minutes from `earlier` to `later`, both aware datetimes."""
+    """Minutes from `earlier` to `later`, fractional, both aware datetimes."""
     return (later - earlier).total_seconds() / 60.0
 
 
 def _parse_at(row):
-    from datetime import datetime
-
     try:
         return datetime.fromisoformat(row["at"])
     except (KeyError, TypeError, ValueError) as exc:

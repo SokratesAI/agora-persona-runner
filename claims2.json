@@ -1,0 +1,12 @@
+{
+  "claims": [
+    {
+      "item": "claim-handoff-items",
+      "cycle": 189,
+      "state": "open",
+      "at": "2026-08-14T11:09:55.946985+02:00",
+      "note": "issue #74: a cycle claims a handoff item before it starts"
+    }
+  ]
+}
+
