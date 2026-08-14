@@ -75,13 +75,20 @@ def test_set_priority_writes_once_and_sends_the_revision_it_read(monkeypatch):
     seen = {}
     monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
 
+    calls = []
+
     def fake_write(path, body, if_rev=None):
+        # Counted, not just recorded: `seen` alone holds the *last* call, so
+        # a retry loop that failed to break on success would leave every
+        # assertion below still passing. The name of this test claims once.
+        calls.append(path)
         seen.update(path=path, body=body, if_rev=if_rev)
         return "written"
 
     monkeypatch.setattr(nova_capture, "vault_write_path", fake_write)
     ok, message = nova_capture.set_priority("issues", 57, "🟠 High")
     assert ok and "#57" in message
+    assert len(calls) == 1
     assert seen["if_rev"] == "7-abc"
     assert "🟠 High" in seen["body"]
 
@@ -152,3 +159,35 @@ def test_a_finished_row_is_refused_even_though_it_sits_in_the_board_table():
     row = [i for i in parse_board(BOARD)["items"] if i["number"] == 76][0]
     assert row["statusKey"] == "done" and row["done"] is False
     assert set_row_priority(BOARD, 76, "🟠 High") is None
+
+
+def test_the_javascript_rating_list_is_byte_identical_to_the_python_one():
+    """The one guard that could have caught the escape bug, and did not exist.
+
+    `app.js` holds its own copy of the four ratings because the browser
+    cannot import `nova_boards`. The server checks a submitted rating
+    against `PRIORITY_LABELS` and rejects anything else, and the picker
+    preselects by string equality against a row's existing rating -- so a
+    single wrong character on either side makes the feature look present
+    and fail on every write.
+
+    It did. The first version of that line was written with Python's
+    `\\U########` escape, which JavaScript does not have: it drops the
+    backslash and keeps the digits, so three of the four became strings
+    like `U0001f535 Medium`. No Python test executes `app.js` and no
+    browser test referenced the array, so both suites stayed green with
+    the feature dead for every rating except Low.
+    """
+    import json
+    import pathlib
+    import re
+
+    source = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "agora_runner" / "nova_public" / "app.js"
+    ).read_text(encoding="utf-8")
+    found = re.search(r"var PRIORITIES = (\[[^\]]*\]);", source)
+    assert found, "app.js no longer declares PRIORITIES as a single-line array"
+    # `json.loads` and not a hand-rolled split: it refuses an escape that is
+    # not real JSON, which is the exact class of bug this test exists for.
+    assert json.loads(found.group(1)) == list(PRIORITY_LABELS.values())

@@ -1501,7 +1501,17 @@
     ));
   }
 
-  var PRIORITIES = ["", "\u26aa Low", "\U0001f535 Medium", "\U0001f7e0 High", "\U0001f534 Immediately"];
+  /* The four ratings, spelled with the characters themselves rather than
+   * with escapes. They have to be byte-identical to `PRIORITY_LABELS` in
+   * `nova_boards.py` -- the server checks a submitted rating against that
+   * dict and rejects anything else, and a row already rated by a cycle is
+   * matched against this list to preselect the option. The first version
+   * of this line used Python's `\\U########` form, which is not a
+   * JavaScript escape at all: JS drops the backslash and keeps the digits,
+   * so three of the four became `U0001f535 Medium` and every write except
+   * Low failed. `tests/test_board_priority.py` now reads this line and
+   * compares it to the Python side, because nothing else could. */
+  var PRIORITIES = ["", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"];
 
   /* The rating cell of one boarded row, as something Edvard can change.
    * The select is the whole control: no save button, because the only
