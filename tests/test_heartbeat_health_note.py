@@ -187,3 +187,68 @@ def test_a_utc_boundary_is_compared_against_oslo_write_times_correctly(monkeypat
     just_after = (bracket + timedelta(minutes=5)).astimezone(timezone.utc)
     assert "134" in nova_health_note(NOVA, just_before.isoformat())
     assert nova_health_note(NOVA, just_after.isoformat()) == ""
+
+
+def test_the_stall_is_measured_in_this_heartbeat_s_own_interval(monkeypatch):
+    """The bug this closes: the check read a 60-minute constant while the
+    heartbeat ran at 40, so it waited 120 minutes to report a dead cycle
+    instead of 80 -- long enough for a second one to die first.
+
+    100 minutes of silence is 2 intervals at `every@40m` and 1 at
+    `every@60m`, and `STALL_GRACE_INTERVALS` is 2. Same journal, same
+    clock, two schedules, two answers.
+    """
+    def silent_for_100_minutes():
+        fake_journal(monkeypatch, {**entry(150, NOW - timedelta(minutes=160)),
+                                   **entry(151, NOW - timedelta(minutes=100))})
+
+    since = (NOW - timedelta(hours=1)).isoformat()
+
+    silent_for_100_minutes()
+    assert "no entry for 2 heartbeat intervals" in nova_health_note(
+        NOVA, since, "every@40m")
+
+    silent_for_100_minutes()
+    assert nova_health_note(NOVA, since, "every@60m") == ""
+
+
+def test_a_slower_cadence_does_not_cry_stall_every_single_run(monkeypatch):
+    """The other direction, and the one issue #72 says is disqualifying.
+
+    Three hours of silence is a healthy `every@6h` loop and a dead
+    `every@60m` one. Against the constant every 6-hourly run would have
+    reported a stall -- a false alarm every time, which trains its reader
+    to skip the line.
+    """
+    def silent_for_three_hours():
+        fake_journal(monkeypatch, {**entry(150, NOW - timedelta(hours=9)),
+                                   **entry(151, NOW - timedelta(hours=3))})
+
+    since = (NOW - timedelta(hours=7)).isoformat()
+
+    silent_for_three_hours()
+    assert nova_health_note(NOVA, since, "every@6h") == ""
+
+    silent_for_three_hours()
+    assert "heartbeat intervals" in nova_health_note(NOVA, since, "every@60m")
+
+
+def test_a_schedule_with_no_single_interval_falls_back_to_the_constant(monkeypatch):
+    """`cron@` and `daily@` have no interval to measure in, and neither
+    does a hand-edited `every@abc`. The constant is the honest fallback --
+    what must not happen is a crash or a zero, both of which reach a real
+    cycle's prompt through the `except` below as a scary failure line.
+    """
+    from agora_runner.cycle_health import HEARTBEAT_MINUTES
+
+    assert HEARTBEAT_MINUTES == 60
+    since = (NOW - timedelta(hours=1)).isoformat()
+
+    for schedule in ("cron@0 * * * *", "daily@08:00", "every@abc", "every@0m", None):
+        fake_journal(monkeypatch, {**entry(150, NOW - timedelta(minutes=280)),
+                                   **entry(151, NOW - timedelta(minutes=220))})
+        note = nova_health_note(NOVA, since, schedule)
+        # 220 minutes is 3 intervals at the 60-minute constant, so every one
+        # of these reports a stall rather than failing to answer.
+        assert "no entry for 3 heartbeat intervals" in note, schedule
+

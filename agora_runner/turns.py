@@ -224,6 +224,41 @@ def last_cron_occurrence(expr, now_utc):
     return None
 
 
+def schedule_minutes(schedule):
+    """How long an `every@` schedule waits between runs, in minutes, or `None`.
+
+    `None` for every other schedule kind and for anything unparseable: a
+    `cron@` or `daily@` heartbeat has no single interval, and neither does
+    `every@abc`, so there is no honest number to return and the caller has
+    to say what it wants to do about that.
+
+    Split out of `schedule_due` because a second caller needs the same
+    number for an unrelated reason. `cycle_health` measures a silent loop
+    in heartbeat intervals and had been reading a module constant to do it
+    -- a constant that has been wrong twice, because the cadence is
+    Edvard's to change and he has changed it four times since 2026-08-08.
+    One definition, two callers, same reason as `cycle_health.gaps_between`.
+
+    Zero and negative are `None` rather than themselves. `every@0m` is not
+    a schedule, and the two callers fail differently and badly on it: the
+    scheduler would report it due on every pass of the poll loop, and
+    `stalled_for` divides by it.
+    """
+    if not schedule or not schedule.startswith("every@"):
+        return None
+    amount, _, _anchor = schedule[len("every@"):].partition("@")
+    try:
+        value = int(amount[:-1])
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    # Anything that is not an explicit `m` is hours, which is what
+    # `schedule_due` has always done -- `every@6h` and `every@6x` are the
+    # same schedule to it, and this is not the change that fixes that.
+    return value if amount[-1] == "m" else value * 60
+
+
 def schedule_due(schedule, last_run_iso, created_iso, now_utc):
     """Idempotent due computation — no in-memory scheduler state, so a
     runner restart can never double-fire (critique on Decisions/0006).
@@ -240,9 +275,17 @@ def schedule_due(schedule, last_run_iso, created_iso, now_utc):
             return False
         return occurrence is not None and occurrence > floor
     if schedule.startswith("every@"):
-        amount, _, anchor = schedule[len("every@"):].partition("@")
-        value, unit = int(amount[:-1]), amount[-1]
-        delta = timedelta(minutes=value) if unit == "m" else timedelta(hours=value)
+        minutes = schedule_minutes(schedule)
+        if minutes is None:
+            # Same hazard and same answer as the cron@ guard above: a
+            # hand-edited schedule must not take the poll loop down and
+            # stop every OTHER heartbeat. This branch used to raise
+            # ValueError out of the loop on `every@abc` and report
+            # `every@0m` due on every pass; not firing is the safe
+            # direction for both.
+            return False
+        _amount, _, anchor = schedule[len("every@"):].partition("@")
+        delta = timedelta(minutes=minutes)
         if anchor:
             return last_anchored_occurrence(anchor, delta, now_utc) > floor
         return now_utc >= floor + delta
