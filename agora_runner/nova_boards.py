@@ -112,6 +112,23 @@ def status_key(status):
 # drift into two different spellings of the same status.
 OUTDATED_STATUS = "⚫ Outdated"
 
+# The exact cell text a status is written as, keyed by what `status_key`
+# reduces it to -- the same shape as `PRIORITY_LABELS`, and beside it for
+# the same reason: the app's `chip-outdated` class, `OUTDATED_STATUS` and
+# whatever a cycle types into the cell must not drift into three
+# spellings of one status. `🟢 Done` is live on **issue #3** and reduces
+# to `done` here, so it is read correctly and rewritten to the ✅ spelling
+# the other 84 rows use if anything ever sets it again. (This comment
+# said #63 until the reviewer checked: #63 is a different row and is
+# already `✅ Done`. A cycle sweeping the board would have gone looking
+# for the stray spelling in the wrong place and left the real one alone.)
+STATUS_LABELS = {
+    "backlog": "⚪ Backlog",
+    "in-progress": "🟡 In progress",
+    "done": "✅ Done",
+    "outdated": OUTDATED_STATUS,
+}
+
 # The statuses that mean the row is finished with, either way. A finished
 # row takes no rating: `set_row_priority` already refused `done` because a
 # chip on a shipped item is noise, and "will never be built" is the same
@@ -279,6 +296,59 @@ def set_row_priority(markdown, number, priority):
     return None
 
 
+def set_row_status(markdown, number, status, updated=None):
+    """Rewrite one row's status cell. Returns markdown, or `None`.
+
+    The missing sibling of `set_row_priority`, and the reason it is here:
+    Cycle 202 marked nine rows `⚫ Outdated` by splitting each row on `|`
+    by hand, because nothing in this module set a status. The first column
+    is a wiki-link containing an escaped `\\|`, so that split yields five
+    cells where the table has four and shifts every column one to the
+    right -- the file it was about to write had the row's *title* in the
+    status column. It caught that by diffing before the write. The sweep
+    of the remaining ~62 open rows is many more chances to make the same
+    mistake, so the split moves in here where `_row_span` already masks
+    that character.
+
+    **A closed row loses its rating.** `set_row_priority` refuses a `done`
+    or `outdated` row outright, so a status cell moving *into* one of them
+    would otherwise strand a chip that no call could ever clear again --
+    the two functions would disagree about whether a finished row can
+    carry a rating. It cannot; Cycle 188 rated 71 open rows and
+    deliberately left the finished ones blank.
+
+    `updated` writes the fourth cell, and `None` leaves it alone. The
+    caller passes it rather than this function reaching for a clock,
+    because these files use `MM-DD` in Oslo time and a module that
+    formats dates on its own is a module that formats them in UTC.
+
+    `None` means not written: no such row in `## Board`, or a status that
+    is not one of the four. A row in `## Done` is deliberately out of
+    reach -- see `_row_span`, whose two tables put a date where this one
+    writes a status.
+    """
+    if status not in STATUS_LABELS.values():
+        return None
+    # `status` is whitelisted above and cannot carry a delimiter; `updated`
+    # is free text from a caller and can. `set_row_title` refuses the same
+    # two characters for the same reason -- a `|` splits the row into an
+    # extra column and a newline splits it into two rows, and both land in
+    # Edvard's file looking like a table he wrote.
+    if updated is not None and ("|" in updated or "\n" in updated):
+        return None
+    lines = (markdown or "").split("\n")
+    index, cells = _row_span(lines, number, tables=("board",))
+    if index is None:
+        return None
+    cells[2] = status
+    if updated is not None:
+        cells[3] = updated
+    if status_key(status) in _CLOSED_STATUS_KEYS and len(cells) > 4:
+        cells[4] = ""
+    lines[index] = "| " + " | ".join(cells) + " |"
+    return "\n".join(lines)
+
+
 def _detail_spans(markdown):
     """`{number: (heading_line, body_start, end_line)}` for every write-up.
 
@@ -321,21 +391,31 @@ def _detail_spans(markdown):
     return spans
 
 
-def _row_span(lines, number):
+def _row_span(lines, number, tables=("board", "done")):
     """`(index, cells)` for the `## Board` or `## Done` row numbered `number`.
 
-    Unlike `set_row_priority` this does not care which of the two tables
-    the row is in. Rating a finished item is meaningless, so that function
-    refuses one; deleting a finished item is the *most* likely thing
-    Edvard wants, since `## Done` is where the rows he has stopped caring
-    about accumulate.
+    Unlike `set_row_priority` this does not care by default which of the
+    two tables the row is in. Rating a finished item is meaningless, so
+    that function refuses one; deleting a finished item is the *most*
+    likely thing Edvard wants, since `## Done` is where the rows he has
+    stopped caring about accumulate.
+
+    `tables` narrows it, and `set_row_status` is why it exists. **The two
+    tables do not share a column layout** -- `## Board` is
+    `# | Item | Status | Updated | Priority` and `## Done` is
+    `# | Item | Landed | Where`, so the third cell is a status in one and
+    a date in the other. A status write addressed at a `## Done` row
+    would land on the date, and `parse_board` derives that row's status
+    from the table it is in, so it would keep reporting `✅ Done` and the
+    corruption would be invisible on the page. Caught by a test written
+    to check the opposite behaviour.
     """
     in_table = False
     for index, line in enumerate(lines):
         heading = _SECTION_RE.match(line)
         if heading:
             in_table = (len(heading.group(1)) == 2
-                        and heading.group(2).strip().lower() in ("board", "done"))
+                        and heading.group(2).strip().lower() in tables)
             continue
         if not in_table or not line.strip().startswith("|"):
             continue
