@@ -3263,3 +3263,71 @@ describe("the retrospective page", () => {
     assert.match(feedText(window), /Could not load the retrospectives/);
   });
 });
+
+/* The capture row's layout. Edvard, issues.md 2026-08-14: *"Ui is ugly for
+ * the priority rating. The issue, idea, note and priority dropdown are now
+ * just scrambled after the addition of the priority dropdown."*
+ *
+ * jsdom lays nothing out, so none of these can see the wrap that made it
+ * ugly -- that was measured in Chromium at 390px, and the fix is CSS. What
+ * is real code, and what these pin, is the structure the CSS depends on:
+ * the three target buttons are one group with nothing else inside it, and
+ * the picker is somewhere else entirely. Either of those quietly reverting
+ * puts the four controls back in one flex row, which is the thing that
+ * wrapped 1+2 across two lines on his phone. */
+describe("the capture row does not scramble", () => {
+  test("the three targets are one group with nothing else in it", async () => {
+    const window = await loadSite("/");
+    const group = window.document.querySelector(".capture-submit");
+    assert.ok(group, "the buttons are no longer grouped");
+    assert.deepEqual(
+      [...group.children].map((el) => el.dataset.target),
+      ["issues", "ideas", "notes"],
+      "the button group holds something other than the three targets",
+    );
+  });
+
+  test("the picker is on its own row, not beside the buttons", async () => {
+    const window = await loadSite("/");
+    const picker = window.document.getElementById("capture-prio");
+    assert.ok(picker, "the priority picker is missing");
+    assert.equal(picker.parentNode.id, "capture-prio-row");
+    assert.equal(
+      picker.closest(".capture-submit"), null,
+      "the picker is back inside the button group",
+    );
+    assert.equal(
+      picker.closest(".capture-actions"), null,
+      "the picker is back in the button row",
+    );
+  });
+
+  test("the picker keeps a label a screen reader and a reader can both find", async () => {
+    const window = await loadSite("/");
+    const picker = window.document.getElementById("capture-prio");
+    const label = window.document.querySelector(".capture-prio-label");
+    assert.ok(label, "the priority row lost its visible label");
+    assert.equal(label.htmlFor, picker.id);
+  });
+
+  /* The one CSS claim worth a mechanical check: `.capture-actions` is
+   * allowed to wrap and `.capture-submit` is what stops the wrap landing
+   * between two buttons. A `flex-wrap: wrap` added to the group -- which
+   * looks harmless and would be the obvious thing to add if a fourth
+   * target ever made it tight -- reopens the exact bug. */
+  test("the button group is not itself allowed to wrap", () => {
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const { window } = openWindow("<style>" + css + "</style>");
+    const rules = [...window.document.styleSheets[0].cssRules];
+    const group = rules.find((r) => r.selectorText === ".capture-submit");
+    const row = rules.find((r) => r.selectorText === ".capture-actions");
+    assert.ok(group && row, "the capture row's rules are gone");
+    assert.equal(group.style.display, "flex");
+    // `cssText` rather than `.style.flexWrap`: jsdom's CSSOM parses the
+    // declaration into the text but exposes no property for it, so a
+    // property assertion here reads `undefined` whatever the sheet says
+    // and would pass with the bug back.
+    assert.match(row.style.cssText, /flex-wrap:\s*wrap/, "the row must still wrap");
+    assert.doesNotMatch(group.style.cssText, /flex-wrap/, "the button group may wrap again");
+  });
+});
