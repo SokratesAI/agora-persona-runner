@@ -1716,8 +1716,12 @@
    * flow. Position is real viewport coordinates instead, read off the
    * trigger's own rect when it opens. */
   var prioMenuOverlay = null;
+  var prioMenuBackdrop = null;
   function getPrioMenuOverlay() {
     if (prioMenuOverlay) return prioMenuOverlay;
+    prioMenuBackdrop = el("div", "prio-menu-backdrop");
+    prioMenuBackdrop.hidden = true;
+    document.body.appendChild(prioMenuBackdrop);
     prioMenuOverlay = el("div", "prio-menu");
     prioMenuOverlay.setAttribute("role", "listbox");
     prioMenuOverlay.hidden = true;
@@ -1762,11 +1766,15 @@
       }
     }
 
+    // Centered and full-width rather than anchored under the trigger
+    // (Edvard, 2026-08-14, after using the anchored version live: the
+    // native picker it replaced read as a real dialog, and a small
+    // anchored dropdown read as a lesser thing next to it) -- so CSS
+    // alone centers `.prio-menu`, and this only has to show it and the
+    // dimming backdrop behind it.
     function openMenu() {
       var menu = getPrioMenuOverlay();
       menu.textContent = "";
-      menu.style.visibility = "hidden";
-      menu.hidden = false;
       PRIORITIES.forEach(function (label) {
         var item = document.createElement("button");
         item.type = "button";
@@ -1780,34 +1788,27 @@
         });
         menu.appendChild(item);
       });
-      var tr = trigger.getBoundingClientRect();
-      var mr = menu.getBoundingClientRect();
-      // Right edge of the menu lines up with the right edge of the
-      // trigger by default -- both pickers sit at the right of their row
-      // -- clamped so it cannot run off a narrow phone on either side.
-      var left = Math.min(Math.max(8, tr.right - mr.width), window.innerWidth - mr.width - 8);
-      var top = tr.bottom + 4;
-      if (top + mr.height > window.innerHeight - 8) top = tr.top - mr.height - 4;
-      menu.style.left = left + "px";
-      menu.style.top = Math.max(8, top) + "px";
-      menu.style.visibility = "visible";
+      prioMenuBackdrop.hidden = false;
+      menu.hidden = false;
       menu.dataset.openFor = opts.ariaLabel;
       trigger.setAttribute("aria-expanded", "true");
       document.addEventListener("click", onDocClick, true);
       document.addEventListener("keydown", onKeydown, true);
-      document.addEventListener("scroll", closeMenu, true);
     }
 
     function closeMenu() {
       var menu = prioMenuOverlay;
       if (!menu || menu.hidden) return;
       menu.hidden = true;
+      prioMenuBackdrop.hidden = true;
       trigger.setAttribute("aria-expanded", "false");
       document.removeEventListener("click", onDocClick, true);
       document.removeEventListener("keydown", onKeydown, true);
-      document.removeEventListener("scroll", closeMenu, true);
     }
 
+    // The backdrop is not inside `prioMenuOverlay`, so a tap on it falls
+    // through to here and closes the popup like any other outside tap --
+    // no separate handler needed for "tap outside to dismiss".
     function onDocClick(e) {
       if (e.target === trigger) return;
       if (prioMenuOverlay && prioMenuOverlay.contains(e.target)) return;
@@ -1827,17 +1828,19 @@
     return { el: trigger, getValue: function () { return current; }, setValue: setValue };
   }
 
-  /* The rating cell of one boarded row, as something Edvard can change.
-   * The picker is the whole control: no save button, because the only
-   * action it can take is the one he just chose, and a button would be a
-   * second thing to get wrong. It goes disabled while the write is in
+  /* The rating cell of one boarded row, as something Edvard can change --
+   * the row's own priority indicator in `.item-head-row`, not a second
+   * control hidden inside the write-up (Edvard, 2026-08-14: "on issues and
+   * ideas the priority button should be the priority tag instead, not a
+   * separate button"). `note` is a sibling element the caller places; this
+   * only fills it in. No save button on the picker itself, because the
+   * only action it can take is the one just chosen, and a button would be
+   * a second thing to get wrong. It goes disabled while the write is in
    * flight so a double-tap cannot race two writes at one cell, and on
    * failure it snaps back to what the server still holds rather than
    * showing a rating that was never written. */
-  function renderPriorityPicker(board, item) {
-    var wrap = el("p", "item-prio-edit");
-    var note = el("span", "item-prio-note", "");
-    var picker = buildPrioPicker({
+  function renderPriorityPicker(board, item, note) {
+    return buildPrioPicker({
       current: item.priority || "",
       ariaLabel: "Priority of #" + item.number,
       triggerClass: "prio-select prio-select-board",
@@ -1853,9 +1856,9 @@
             if (!payload || !payload.ok) throw new Error((payload && payload.message) || "failed");
             item.priority = chosen;
             note.textContent = "";
-            // The chip in the closed head is built from `item`, so the row
-            // has to be redrawn for the change to be visible without a
-            // reload -- which is the whole point of editing it here.
+            // The trigger in the head is built from `item`, so the row has
+            // to be redrawn for the change to be visible without a reload
+            // -- which is the whole point of editing it here.
             loadBoard(board);
           })
           .catch(function (err) {
@@ -1864,9 +1867,6 @@
           });
       },
     });
-    wrap.appendChild(picker.el);
-    wrap.appendChild(note);
-    return wrap;
   }
 
   /* One row of Edvard's board. Closed it is the number, the title and a
@@ -1877,19 +1877,43 @@
     // What `/ideas#68` scrolls to. One board per page, so the number is
     // unique on screen.
     row.id = "item-" + item.number;
+
+    // A button (the toggle) cannot contain another button (the priority
+    // trigger) -- nested interactive controls are invalid HTML and a real
+    // browser will not parse them the way the DOM here assumes. `head`
+    // stays the toggle and the tap target for everything it still holds;
+    // `headRow` is what actually lays out level with it, and is the new
+    // home for the priority control (Edvard, 2026-08-14: "on issues and
+    // ideas the priority button should be the priority tag instead, not a
+    // separate button").
+    var headRow = el("div", "item-head-row");
     var head = el("button", "item-head");
     head.type = "button";
     head.setAttribute("aria-expanded", boardState.open === item.number ? "true" : "false");
     head.appendChild(el("span", "item-number", "#" + item.number));
     head.appendChild(el("span", "item-title", item.title));
     head.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
-    // Unrated rows get no chip at all rather than a grey "none" one:
-    // an empty space is what tells Edvard which rows still want a rating.
-    if (item.priority) {
-      head.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
-    }
     if (item.updated) head.appendChild(el("span", "item-updated", item.updated));
-    row.appendChild(head);
+    headRow.appendChild(head);
+
+    // Every rating on both boards was set by a cycle, not by Edvard
+    // (issues.md capture, 2026-08-14). A finished row keeps a read-only
+    // glyph if it has one and nothing if it does not -- unrated getting no
+    // chip at all, rather than a grey "none" one, is what tells Edvard
+    // which open rows still want a rating; a done row is not one he is
+    // going to visit for that. `item.done` alone is not the editable test,
+    // it only means the row is in the `## Done` table and most finished
+    // rows never move there -- `statusKey` is what the server refuses a
+    // write on.
+    var editable = !item.done && item.statusKey !== "done";
+    var prioNote = el("span", "item-prio-note", "");
+    if (editable) {
+      headRow.appendChild(renderPriorityPicker(board, item, prioNote).el);
+      headRow.appendChild(prioNote);
+    } else if (item.priority) {
+      headRow.appendChild(el("span", "prio-select-board", item.priority.split(" ")[0]));
+    }
+    row.appendChild(headRow);
 
     var body = el("div", "item-body");
     if (boardState.open !== item.number) body.hidden = true;
@@ -1898,14 +1922,6 @@
     function fill() {
       body.textContent = "";
       if (item.where) body.appendChild(el("p", "item-where", "Landed in " + item.where));
-      // Every rating on both boards was set by a cycle, not by Edvard
-      // (issues.md capture, 2026-08-14). A finished row gets no picker,
-      // and `item.done` alone is not that test -- it only means the row
-      // is in the `## Done` table, and most finished rows never move
-      // there. `statusKey` is what the server refuses on.
-      if (!item.done && item.statusKey !== "done") {
-        body.appendChild(renderPriorityPicker(board, item));
-      }
       var blocks = boardState.details[board + ":" + item.number];
       if (!blocks) {
         body.appendChild(el("p", "empty", "Loading…"));
@@ -1944,7 +1960,10 @@
       for (var i = 0; i < others.length; i++) {
         if (others[i] === head) continue;
         others[i].setAttribute("aria-expanded", "false");
-        others[i].parentNode.querySelector(".item-body").hidden = true;
+        // `.item-body` is a sibling of `.item-head-row`, not of `.item-head`
+        // itself, now that the priority trigger sits beside the toggle
+        // rather than inside it -- `closest(".item")` is the row either way.
+        others[i].closest(".item").querySelector(".item-body").hidden = true;
       }
       boardState.open = opening ? item.number : null;
       head.setAttribute("aria-expanded", opening ? "true" : "false");

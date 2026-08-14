@@ -3424,6 +3424,38 @@ describe("the priority picker (buildPrioPicker)", () => {
     assert.equal(trigger.textContent, before, "the glyph did not revert once the write failed");
     assert.match(row.querySelector(".item-prio-note").textContent, /Could not save/);
   });
+
+  test("a board row's priority trigger is in the head, so a closed row still shows it", async () => {
+    // Edvard, 2026-08-14: "on issues and ideas the priority button should
+    // be the priority tag instead, not a separate button" -- the old
+    // picker lived in `.item-body`, which only exists once a row opens.
+    const window = await loadSite("/issues");
+    const row = window.document.getElementById("item-57");
+    assert.equal(row.querySelector(".item-head").getAttribute("aria-expanded"), "false");
+    const trigger = row.querySelector(".item-head-row > .prio-select-board");
+    assert.ok(trigger, "the trigger is not beside the head, or the row waited to open first");
+    assert.equal(trigger.tagName, "BUTTON");
+  });
+
+  test("a done row shows a read-only glyph instead of a picker", async () => {
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        if (url.includes("q=") || url.includes("item=")) return null;
+        const board = JSON.parse(JSON.stringify(payload.board));
+        const done = board.items.find((i) => i.statusKey === "done");
+        done.priority = "🟠 High";
+        done.priorityKey = "high";
+        return board;
+      },
+    });
+    const done = payload.board.items.find((i) => i.statusKey === "done");
+    click(window, [...window.document.querySelectorAll(".filter")].find((c) => c.textContent.startsWith("All")));
+    const row = window.document.getElementById("item-" + done.number);
+    const indicator = row.querySelector(".item-head-row > .prio-select-board");
+    assert.ok(indicator, "no priority glyph on the done row");
+    assert.notEqual(indicator.tagName, "BUTTON", "a done row's priority glyph must not be a clickable trigger");
+    assert.equal(indicator.textContent, "🟠");
+  });
 });
 
 /* Edvard, ideas.md #71: "Ability to search through issues or ideas. Also
