@@ -821,7 +821,19 @@ def cadence_minutes():
         else:
             thread = None
     if thread is not None:
-        thread.start()
+        try:
+            thread.start()
+        except RuntimeError as e:
+            # The in-flight flag is set inside the lock, before the thread
+            # exists, so nothing else clears it if the thread never runs --
+            # and the wedge is permanent and silent: the badge would be
+            # frozen on the fallback for the life of the process with
+            # nothing in the logs after this line. `start` raises when the
+            # OS refuses a thread, which is memory pressure, and this
+            # platform has been OOM-killed twice (cycles 127 and 128).
+            with _cadence_lock:
+                _cadence_refreshing = False
+            log(f"nova-site: could not start the cadence refresh: {e}")
     if entry is not None and entry[0]:
         return entry[0]
     return HEARTBEAT_MINUTES

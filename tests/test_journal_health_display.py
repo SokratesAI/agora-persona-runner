@@ -550,3 +550,29 @@ def test_the_badge_uses_the_live_cadence_through_the_whole_page(monkeypatch):
     page = journal_page(payload, now=NOW + timedelta(hours=2))
     assert page["status"]["silentIntervals"] == 3
     assert page["status"]["stalled"] is True
+
+
+def test_a_refresh_that_cannot_start_does_not_wedge_every_later_one(monkeypatch):
+    """The in-flight flag is set before the thread exists, so if the thread
+    never runs nothing clears it -- and the wedge is permanent and silent.
+    `Thread.start` raises when the OS refuses a thread, which is memory
+    pressure, and this platform has been OOM-killed twice.
+    """
+    reset_cadence()
+
+    class _RefusesToStart:
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(
+        "agora_runner.nova_site.threading.Thread", lambda **kw: _RefusesToStart())
+    assert cadence_minutes() == 60
+
+    # The next caller must still try, rather than sitting on a flag that
+    # says a refresh is already running when none is.
+    started = []
+    monkeypatch.setattr(
+        "agora_runner.nova_site.threading.Thread",
+        lambda **kw: started.append(kw) or _NoopThread())
+    assert cadence_minutes() == 60
+    assert len(started) == 1
