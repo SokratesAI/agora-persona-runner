@@ -2142,6 +2142,12 @@
       fetch("/api/board?name=" + board + "&q=" + encodeURIComponent(query))
         .then(json)
         .then(function (result) {
+          // The same guard every other loader in this file carries, and
+          // for the same reason: a debounce plus a round trip is long
+          // enough to tap the nav, and without this the answer repaints
+          // the old board over whatever page is showing now, while
+          // `markNav` -- which reads the URL -- highlights the new one.
+          if (route(window.location.pathname).board !== board) return;
           if (!result || result.query !== query) return;
           boardState.matches = result.matches || [];
           boardState.matchedQuery = query;
@@ -2278,6 +2284,21 @@
       boardState.board = board;
       boardState.open = null;
       boardState.notes = BOARD_NOTES;
+      // The search belongs to the board too, and `matches` is the half
+      // that is actively wrong if it is carried over: it is a list of
+      // row *numbers*, answered by the server for the other file, and
+      // `visibleItems` would apply #58-from-Issues to whatever #58 is on
+      // Ideas. The chips and the sort field are reset alongside it
+      // because a box that still says "gemini" over a board that was
+      // never searched is the same lie in a quieter form. The sort
+      // deliberately goes back to the file's own order, so switching
+      // boards always lands on the view the board had before #70.
+      boardState.query = "";
+      boardState.matches = null;
+      boardState.matchedQuery = null;
+      boardState.toggles = {};
+      boardState.sort = "filed";
+      boardState.desc = false;
     }
     fetch("/api/board?name=" + board + "&limit=" + boardState.notes)
       .then(json)

@@ -3435,11 +3435,87 @@ describe("searching, filtering and sorting a board", () => {
   });
 
   test("the toggles and the status filter compose rather than replace", async () => {
+    /* Deliberately NOT under `All`: `All` matches everything, so ANDing a
+     * toggle onto it and running the toggle alone give the same answer,
+     * and the test would pass under a `replace` implementation too. Under
+     * `Open` they diverge -- #51 is done and carries a `where`, so it
+     * matches the toggle and must still be excluded by the status filter. */
     const window = await loadSite("/issues");
-    click(window, chip(window, "All"));
     click(window, chip(window, "Nova worked on it"));
-    // #51 carries a `where` (it landed somewhere); #57 is in progress.
+    assert.deepEqual(rows(window), ["#57"], "the status filter gave way to the toggle");
+    click(window, chip(window, "All"));
     assert.deepEqual(rows(window).sort(), ["#51", "#57"]);
+  });
+
+  test("switching boards drops a search answered for the other one", async () => {
+    /* `matches` is a list of row *numbers* the server answered for one
+     * file. Carried across, #58-from-Issues silently filters whatever #58
+     * happens to be on Ideas. */
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("q=") ? { query: "gemini", matches: [58] } : null),
+    });
+    typeSearch(window, "gemini");
+    await settle();
+    assert.deepEqual(rows(window), ["#58"]);
+    const ideas = [...window.document.querySelectorAll(".nav a")]
+      .filter((a) => a.getAttribute("href") === "/ideas")[0];
+    click(window, ideas);
+    await settle();
+    assert.equal(window.document.querySelector(".board-search-input").value, "");
+    assert.ok(rows(window).length > 1, "the other board's search still cut the list: " + rows(window));
+  });
+
+  test("the same word typed on the other board does not reuse the old answer", async () => {
+    /* Clearing `query` alone is not enough and the obvious test cannot
+     * see it: `matches` is only consulted when `matchedQuery` equals what
+     * is in the box, so the stale list stays invisible until the same
+     * word is typed again -- and then it filters the *other* file by row
+     * numbers answered for this one, before its own fetch lands. */
+    let asked = 0;
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        if (!url.includes("q=")) return null;
+        asked += 1;
+        // Only the first board's search ever answers, so anything the
+        // second board shows can only have come from the stale list.
+        return asked === 1 ? { query: "cache", matches: [57] } : { query: "never", matches: [] };
+      },
+    });
+    // "cache" is in no row title, so every row it shows can only have
+    // come from a server answer -- which is what makes the stale one
+    // visible. A word that also matches a title (like "gemini") would
+    // hide the bug behind a legitimate match, and this test caught that
+    // about itself before it caught anything about the code.
+    typeSearch(window, "cache");
+    await settle();
+    assert.deepEqual(rows(window), ["#57"]);
+    const ideas = [...window.document.querySelectorAll(".nav a")]
+      .filter((a) => a.getAttribute("href") === "/ideas")[0];
+    click(window, ideas);
+    await settle();
+    typeSearch(window, "cache");
+    assert.deepEqual(rows(window), [], "a stale answer filtered the board it was not asked about");
+  });
+
+  test("a search answered after you have navigated away does not repaint", async () => {
+    /* Every other loader in app.js checks the URL is still current before
+     * painting. A debounce plus a round trip is long enough to tap the
+     * nav, and without the guard the old board lands on top of the new
+     * page while the nav highlights the new one. */
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("q=") ? { query: "gemini", matches: [58] } : null),
+    });
+    typeSearch(window, "gemini");
+    // Navigate while the debounce is still pending -- no settle first.
+    const journal = [...window.document.querySelectorAll(".nav a")]
+      .filter((a) => a.getAttribute("href") === "/")[0];
+    click(window, journal);
+    await settle();
+    assert.equal(
+      window.document.querySelector(".board-search-input"),
+      null,
+      "the board repainted over the page navigated to",
+    );
   });
 
   test("the arrow flips the order and says which way it points", async () => {
