@@ -245,3 +245,15 @@ def test_the_base_is_what_shot_js_is_told_to_open(tmp_path, monkeypatch):
     monkeypatch.setattr(see_page.subprocess, "run", fake_run)
     see_page.render(["/"], root=tmp_path, base="http://nova-site-preview:8083")
     assert seen["site"] == "http://nova-site-preview:8083"
+
+
+def test_the_sysroot_installs_an_emoji_font():
+    """Tofu pills read as a broken stylesheet, so a screenshot without this lies.
+
+    The board draws its status and priority as emoji. Cycle 196 rendered the
+    issues page against a sysroot with only `fonts-dejavu-core` and got an
+    empty box in place of every pill -- a screenshot that misrepresents the
+    page is worse than none, because it gets acted on.
+    """
+    script = (pathlib.Path(see_page.__file__).resolve().parent / "browser" / "bootstrap.sh").read_text()
+    assert "fonts-noto-color-emoji" in script
