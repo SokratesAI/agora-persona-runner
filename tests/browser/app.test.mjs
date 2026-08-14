@@ -1351,6 +1351,19 @@ describe("commenting on a cycle", () => {
     assert.doesNotMatch(text, /NaN|undefined/);
   });
 
+  test("a null elapsed time reads as a moment, not as zero seconds", async () => {
+    /* Number(null) is 0, so a coercing guard lets a value the server never
+     * means to send render as a confident "0 seconds". The same hole passes
+     * [] and "" as zero and true as one. */
+    const waiting = withPending(57);
+    waiting.byCycle["57"][0].replyWaiting = true;
+    waiting.byCycle["57"][0].replyWaitingSeconds = null;
+    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
+    assert.match(text, /Still working on this — a moment so far\./);
+    assert.doesNotMatch(text, /0 seconds/);
+  });
+
   test("the page polls until the reply lands, then lets go", async () => {
     /* The poll is the only thing that turns "replying…" into the reply
      * without him reloading, and the only thing that stops. Both halves are

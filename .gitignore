@@ -20,3 +20,16 @@ node_modules/
 /live.md
 /live2.md
 /archive.md
+
+# Every other scratch file `prompt.md` tells a cycle to write into this
+# repo root, for exactly the reason above. The digest roll got its three
+# ignored after being committed twice; the claim ledger (step 2) and the
+# retro ledger (step 2's Friday block) were left out and `claims.json`
+# was then committed twice more -- deleted once in 084fbd6, and again by
+# Cycle 194, whose reviewer caught it in the PR. The list, not the habit,
+# is what stops this: any `get > <name>` in `prompt.md` that lands here
+# belongs in this file the day it is written.
+/claims.json
+/claims2.json
+/ledger.json
+/iss.md

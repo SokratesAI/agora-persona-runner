@@ -2584,6 +2584,21 @@ def test_a_waiting_reply_carries_how_long_it_has_waited():
     assert payload["byCycle"]["55"][0]["replyWaitingSeconds"] == 0
 
 
+def test_a_backwards_clock_step_does_not_put_a_negative_wait_on_the_wire():
+    """Both ends of the subtraction are `time.time()`, so an NTP correction
+    between enqueue and this read can invert it. A wait cannot have lasted
+    -50 seconds, whatever the consumer happens to do with one."""
+    stored = "## New\n\n### Cycle 57 \u00b7 2026-08-09 16:02\n\nasked\n"
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={
+                (57, "2026-08-09 16:02"): time.time() + 300,
+            }), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    assert json.loads(body)["byCycle"]["57"][0]["replyWaitingSeconds"] == 0
+
+
 def test_a_reply_that_failed_says_so_instead_of_vanishing():
     stored = "## New\n\n### Cycle 57 \u00b7 2026-08-09 16:02\n\nno answer coming\n"
     with patch.object(nova_sources, "vault_read_path", return_value=stored), \

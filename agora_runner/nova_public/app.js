@@ -420,7 +420,13 @@
    * nonsensical falls back to "a moment", because a wait line that renders
    * "NaN minutes" is worse than the fixed sentence it replaced. */
   function waitedFor(seconds) {
-    var total = Math.floor(Number(seconds));
+    /* `typeof` rather than `Number()` alone, because Number() is generous in
+     * exactly the directions that hurt: Number(null), Number([]) and
+     * Number("") are all 0, and Number(true) is 1, so a null the server
+     * never means to send would render as a confident "0 seconds". The
+     * comment above promises a fallback and this is what makes it true. */
+    if (typeof seconds !== "number") return "a moment";
+    var total = Math.floor(seconds);
     if (!isFinite(total) || total < 0) return "a moment";
     if (total < 60) return total + " second" + (total === 1 ? "" : "s");
     var minutes = Math.floor(total / 60);
