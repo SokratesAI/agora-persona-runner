@@ -1760,11 +1760,19 @@
     var open = items.filter(function (i) { return i.statusKey !== "done"; }).length;
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
-    statusEl.appendChild(el(
-      "p", "status-line",
-      titles.page + " — " + open + " open, " + (items.length - open) + " done, "
+    /* The page name is bold and the counts are not -- Edvard, issues.md #83:
+     * "Make the header for issues and ideas bold". The whole line used to be
+     * one dim string, so "Issues" read as part of the tally rather than as
+     * the title of the page you are on. Only the name moves; the counts stay
+     * `--dim` because they are what the name has to stand out against, and
+     * bolding both would be the same flat line again. */
+    var line = el("p", "status-line");
+    line.appendChild(el("strong", "status-page", titles.page));
+    line.appendChild(document.createTextNode(
+      " — " + open + " open, " + (items.length - open) + " done, "
         + ((payload && payload.notesTotal) || 0) + " of my own notes"
     ));
+    statusEl.appendChild(line);
   }
 
   /* The four ratings, spelled with the characters themselves rather than

@@ -2864,6 +2864,35 @@ describe("navigating away mid-fetch", () => {
   });
 });
 
+/* Edvard, issues.md #83: "Make the header for issues and ideas bold". The
+ * whole line was one dim string, so the page you were on read as part of
+ * the tally after it. Two assertions, because either alone passes on its
+ * own: the name has to be in the bold element, and the counts have to have
+ * stayed out of it. */
+describe("the board header", () => {
+  const head = (window) => window.document.querySelector(".status-line");
+
+  test("the page name is bold and the counts are not", async () => {
+    const window = await loadSite("/issues");
+    const strong = head(window).querySelector("strong.status-page");
+    assert.ok(strong, "the page name is not in a bold element");
+    assert.equal(strong.textContent, "Issues");
+    assert.ok(
+      !/open|done|notes/.test(strong.textContent),
+      "the tally was bolded along with the name",
+    );
+    assert.match(head(window).textContent, /^Issues — \d+ open, /);
+  });
+
+  test("the ideas page names itself too", async () => {
+    const window = await loadSite("/ideas");
+    assert.equal(
+      window.document.querySelector(".status-line strong.status-page").textContent,
+      "Ideas",
+    );
+  });
+});
+
 /* ---- The costs page (issues.md #57, page 2) ------------------------------
  *
  * Two charts of hand-written SVG, so what is worth pinning here is not
