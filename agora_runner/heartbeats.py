@@ -482,7 +482,17 @@ def run_heartbeat(heartbeat):
             result = "checked, nothing to report (not posted to chat)"
             silent = True
         else:
-            notify(conversation_id, reply, persona["name"])
+            # 2026-08-14, Edvard: "Did you fix the notification for agora
+            # heartbeats? So i can turn them off?" -- pushNotifications:false
+            # on the heartbeat posts the reply without the phone buzz. The
+            # message still lands in the conversation, same as quiet hours:
+            # withholding the message instead would throw the cycle's reply
+            # away, which is not what turning a notification off means.
+            # Absent is true, so every heartbeat created before this field
+            # keeps notifying, and only a literal false mutes -- matching the
+            # `push === false` check the notify route already does.
+            push = heartbeat.get("pushNotifications") is not False
+            notify(conversation_id, reply, persona["name"], push=push)
             result = f"replied {len(reply)} chars"
             if may_go_silent:
                 # Chip was withheld up front because this run might have

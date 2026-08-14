@@ -21,7 +21,7 @@ WORKFLOW_MAX_DEPTH = 5  # defense in depth — Agora already rejects a
 
 
 def run_workflow_steps(steps, conversation_id, detail, participants,
-                        last_speaker_idx=-1, depth=0):
+                        last_speaker_idx=-1, depth=0, push=True):
     """Decisions/0009 execution engine. One continuous round-robin turn
     pointer across step (and sub-workflow) boundaries — never resets, so
     a step never immediately repeats whoever just spoke — scoped, per
@@ -59,7 +59,7 @@ def run_workflow_steps(steps, conversation_id, detail, participants,
                 continue
             last_speaker_idx, sub_rounds, sub_replies = run_workflow_steps(
                 sub.get("steps", []), conversation_id, detail, participants,
-                last_speaker_idx, depth + 1,
+                last_speaker_idx, depth + 1, push,
             )
             rounds_run += sub_rounds
             replies_posted += sub_replies
@@ -123,7 +123,7 @@ def run_workflow_steps(steps, conversation_id, detail, participants,
                 log(f"workflow round failed (step {step_index + 1}, round {_round + 1}): {e}")
                 continue
             if not reply.strip().upper().startswith(HEARTBEAT_NO_REPORT_SENTINEL):
-                notify(conversation_id, reply, persona["name"])
+                notify(conversation_id, reply, persona["name"], push=push)
                 replies_posted += 1
     return last_speaker_idx, rounds_run, replies_posted
 
@@ -193,8 +193,16 @@ def run_workflow_heartbeat(heartbeat):
 
     result = ""
     try:
+        # A workflow heartbeat honours pushNotifications the same way a
+        # single-turn one does (2026-08-14). Without this the Studio would
+        # draw the heartbeat as muted while every round still buzzed the
+        # phone -- a mute that lies is worse than no mute, because there is
+        # nothing on screen to tell you it is not working. Every round of
+        # every step, and every sub-workflow, carries the same flag.
+        push = heartbeat.get("pushNotifications") is not False
         _idx, rounds_run, replies_posted = run_workflow_steps(
             workflow.get("steps", []), conversation_id, detail, participants,
+            push=push,
         )
         result = (
             f"workflow: {len(workflow.get('steps', []))} steps, {rounds_run} rounds, "
