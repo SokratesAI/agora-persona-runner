@@ -849,7 +849,9 @@
     /* A one-part cycle's title has nowhere else to go; a multi-part cycle's
      * titles are the subheadings inside the drawer, where they say which
      * half you are in. `cleanTitle` because eleven entries have a title that
-     * is only their own timestamp, which the stamp above already prints. */
+     * is only their own timestamp, which the stamp above already prints.
+     * `hasDigestBrief` because a card with a digest line already has a
+     * sentence doing this job -- see its own comment, and issues #86. */
     if (ordered.length === 1 && entry.cycle !== null && entry.cycle !== undefined
         && cleanTitle(entry.title) && !hasDigestBrief(digestLine)) {
       card.appendChild(el("p", "entry-title", cleanTitle(entry.title)));
@@ -1397,7 +1399,9 @@
      *
      * `cleanTitle` rather than the raw string: eleven entries have a title
      * that is only their own timestamp, and it renders as nothing rather
-     * than as a date printed twice. */
+     * than as a date printed twice. `hasDigestBrief` because a card with a
+     * digest line already has a sentence doing this job -- see its own
+     * comment, and issues #86. */
     if (parts.length === 1 && cleanTitle(first.title) && !hasDigestBrief(digestLine)) {
       card.appendChild(el("p", "entry-title", cleanTitle(first.title)));
     }
