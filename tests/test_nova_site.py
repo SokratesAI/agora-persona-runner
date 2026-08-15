@@ -3689,6 +3689,29 @@ def test_a_report_entry_still_carries_its_outcome_and_body():
     assert "Eight hours in plain language." in entry["body"]
 
 
+def test_a_report_cards_brief_is_its_summary_and_not_its_label():
+    """The wiring, not the helper. Every other test of this calls
+    `strip_brief_label` directly, so removing its one call site in
+    `parse_journal` left the whole suite green -- the reviewer on runner#204
+    found that by reverting the line. This is the test that fails instead.
+
+    The body is the real shape: report 242 opens `**TL;DR.**` followed by the
+    summary in the same paragraph, which is what makes the label the whole
+    brief without the strip."""
+    document = (
+        "### 2026-08-13 14:00 (Oslo) — Report · Cycles 149–156\n\n"
+        "**TL;DR.** These eight hours went on two things. "
+        "Your boards now say what has actually shipped.\n\n"
+        "PR: none | Outcome: report\n"
+    )
+    entry = nova_journal.parse_journal(document)[0]
+    brief = "".join(span["text"] for span in entry["briefSpans"])
+    assert brief.startswith("These eight hours went on two things.")
+    assert "TL;DR" not in brief
+    # The label is dropped from the card's brief, not from the report.
+    assert "**TL;DR.**" in entry["body"]
+
+
 def test_the_server_routes_pages_off_the_shared_constant():
     """`PAGE_ROUTES` must be what `do_GET` reads, not a description of it.
 
