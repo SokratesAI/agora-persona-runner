@@ -372,20 +372,32 @@ def append_detail_note(markdown, number, note, dated, cycle=None):
     `set_row_status`'s reason: a module that reaches for a clock reaches
     for it in UTC. `cycle` is optional and named in the line when given.
 
-    **A newline in `note` is refused, and that is the whole safety
+    **A line break in `note` is refused, and that is the whole safety
     argument.** `_detail_spans` ends a write-up at the next `#` or `##`
     heading, so a note carrying one would not merely look wrong -- it
     would truncate the block it was appended to, and every later line of
     Edvard's own text would fall outside the span and stop rendering on
     the page. One line in, one line out.
 
+    **`\\r` counts, and it is the one that gets past a `"\\n" in note`
+    check.** Python's `re.MULTILINE` anchors on `\\n` alone, so a bare
+    `\\r` does not split a span *here* and every server-side test agrees
+    the note is harmless. It is not harmless where it lands: CommonMark
+    defines a bare `\\r` as a line ending, so Obsidian on his phone
+    renders it as a real break and puts whatever follows on its own line
+    under his prose. That is the same corruption, arriving through the
+    renderer instead of through the parser, and reachable only because
+    this module and its reader disagree about what a line is.
+
     `None` means not written: no write-up for that number (the row may
-    still exist -- only some rows have one), an empty note, or a newline
-    in either free-text argument.
+    still exist -- only some rows have one), an empty note, or a line
+    break in either free-text argument.
     """
     note = (note or "").strip()
     dated = (dated or "").strip()
-    if not note or not dated or "\n" in note or "\n" in dated:
+    if not note or not dated:
+        return None
+    if any(c in note or c in dated for c in "\r\n"):
         return None
     span = _detail_spans(markdown).get(number)
     if span is None:

@@ -27,7 +27,7 @@ type: board
 
 # Details
 
-## #57 — More pages
+## 57 — More pages
 
 The problem, in his words.
 
@@ -39,14 +39,14 @@ A subheading inside the write-up, which stays inside it.
 
 One line.
 
-## #60 — Empty on purpose
+## 60 — Empty on purpose
 
-## #62 — Padded below
+## 62 — Padded below
 
 Two blank lines follow this one.
 
 
-## #61 — Last block in the file
+## 61 — Last block in the file
 
 Nothing follows this one.
 """
@@ -105,7 +105,7 @@ def test_an_empty_write_up_gets_the_note_with_no_leading_blank_line():
     # blind to a blank line opening the block. Read the raw file for that
     # -- an empty write-up has nothing to separate the note from.
     assert (
-        "## #60 — Empty on purpose\n**Nova, 08-15:** Closed by #192." in out
+        "## 60 — Empty on purpose\n**Nova, 08-15:** Closed by #192." in out
     )
 
 
@@ -117,7 +117,7 @@ def test_the_note_is_separated_from_the_body_by_exactly_one_blank_line():
     out = append_detail_note(BOARD, 62, "Closed by #192.", "08-15")
     assert (
         "Two blank lines follow this one.\n\n**Nova, 08-15:** Closed by #192.\n\n\n"
-        "## #61" in out
+        "## 61" in out
     )
 
 
@@ -142,7 +142,18 @@ def test_a_newline_in_the_note_is_refused():
     # The one that would actually destroy something: `_detail_spans` ends
     # a block at the next `#`/`##` heading, so this note would truncate
     # #57's write-up and drop everything under it off the page.
-    assert append_detail_note(BOARD, 57, "Closed.\n## #58 — Injected", "08-15") is None
+    assert append_detail_note(BOARD, 57, "Closed.\n## 58 — Injected", "08-15") is None
+
+
+def test_a_carriage_return_in_the_note_is_refused():
+    # The one a `"\n" in note` check lets through. `re.MULTILINE` anchors
+    # on `\n` alone, so a bare `\r` splits no span here and every
+    # server-side assertion agrees it is harmless -- but CommonMark calls
+    # it a line ending, so Obsidian on his phone breaks the line and puts
+    # the heading under his prose. Same corruption, different reader.
+    assert append_detail_note(BOARD, 57, "Closed.\r## 58 — Injected", "08-15") is None
+    assert append_detail_note(BOARD, 57, "Closed.\r\n## 58 — Injected", "08-15") is None
+    assert append_detail_note(BOARD, 57, "Closed.", "08-15\r## 58 — Injected") is None
 
 
 def test_the_heading_it_would_have_injected_really_does_split_a_span():
@@ -151,10 +162,16 @@ def test_the_heading_it_would_have_injected_really_does_split_a_span():
     # write-up lose the text below it.
     poisoned = BOARD.replace(
         "The problem, in his words.",
-        "The problem, in his words.\n\n## #58 — Injected",
+        "The problem, in his words.\n\n## 58 — Injected",
     )
     assert "A subheading inside the write-up" in _detail(BOARD, 57)
     assert "A subheading inside the write-up" not in _detail(poisoned, 57)
+    # And tie that back to the function, so this pins the refusal rather
+    # than only demonstrating the danger: the same text handed to
+    # `append_detail_note` leaves #57 whole.
+    out = append_detail_note(BOARD, 57, "Closed.\n## 58 — Injected", "08-15")
+    assert out is None
+    assert "A subheading inside the write-up" in _detail(BOARD, 57)
 
 
 def test_empty_and_whitespace_notes_are_refused():
@@ -166,4 +183,4 @@ def test_empty_and_whitespace_notes_are_refused():
 def test_a_missing_or_multiline_date_is_refused():
     assert append_detail_note(BOARD, 57, "Closed.", "") is None
     assert append_detail_note(BOARD, 57, "Closed.", None) is None
-    assert append_detail_note(BOARD, 57, "Closed.", "08-15\n## #58 — Injected") is None
+    assert append_detail_note(BOARD, 57, "Closed.", "08-15\n## 58 — Injected") is None
