@@ -363,6 +363,59 @@ describe("cards expand and collapse", () => {
  * card, an addendum summarising itself so the two would not look identical,
  * an anchor id and a comment bubble owned by whichever card came first. All
  * of that machinery existed only because there were two cards. */
+/* Edvard, issues #86, on the feed rather than on `/cycle/N`. The two
+ * surfaces draw a card from the same rules and #199 made that deliberate,
+ * so the rule is asserted on both -- it lives in two functions. */
+describe("a feed card carries one title, not two", () => {
+  function soloCycle() {
+    return payload.journal.entries.find(
+      (e) => e.cycle !== null
+        && payload.journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+    );
+  }
+
+  function cardFor(window, cycle) {
+    return cards(window).find((c) => c.querySelector("h2").textContent === "Cycle " + cycle);
+  }
+
+  /* Every solo cycle in the fixture has a digest line, so the second case is
+   * built by dropping one rather than found -- which is the live shape for
+   * the 55 entries older than the twelve lines the digest keeps. */
+  function withoutDigestLine(cycle) {
+    const digest = JSON.parse(JSON.stringify(payload.digest));
+    digest.lines = digest.lines.filter((l) => l.cycle !== cycle);
+    return digest;
+  }
+
+  test("a cycle with a digest line drops its heading title", async () => {
+    const solo = soloCycle();
+    assert.ok(payload.digest.lines.some((l) => l.cycle === solo.cycle));
+    // The title is written in rather than taken from the fixture: that
+    // entry's own title is empty, so without this the assertion below holds
+    // whether or not the code under test exists. Caught by mutation.
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.find((e) => e.cycle === solo.cycle).title =
+      "A second title saying what the digest line already says";
+    const window = await loadSite("/", { journal: () => journal });
+    const card = cardFor(window, solo.cycle);
+    assert.equal(card.querySelector(".entry-title"), null);
+    assert.equal(card.querySelector(".entry-brief").textContent,
+      lineBrief(payload.digest.lines.find((l) => l.cycle === solo.cycle)));
+  });
+
+  test("a cycle with no digest line keeps it, since nothing else labels the card", async () => {
+    const solo = soloCycle();
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const title = "The only sentence on this card that was written as a title";
+    journal.entries.find((e) => e.cycle === solo.cycle).title = title;
+    const window = await loadSite("/", {
+      journal: () => journal,
+      digest: withoutDigestLine(solo.cycle),
+    });
+    assert.equal(cardFor(window, solo.cycle).querySelector(".entry-title").textContent, title);
+  });
+});
+
 describe("two entries for one cycle are one card", () => {
   let window;
   before(async () => {
@@ -1206,12 +1259,40 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
    * this asserts on a literal rather than on "a title element exists". */
   test("a one-part cycle's title is shown, since it has no subheading to live in", async () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
+    // No digest line for this cycle: that is the case where the title is the
+    // only label the card has. The digest-line case is the test below, and
+    // this one asserted whichever solo cycle came first until #86 split them.
     const solo = journal.entries.find(
-      (e) => e.cycle !== null && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+      (e) => e.cycle !== null
+        && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
     );
     solo.title = "The heartbeat was never late; the clock on the card was invented";
-    const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal });
+    const digest = JSON.parse(JSON.stringify(payload.digest));
+    digest.lines = digest.lines.filter((l) => l.cycle !== solo.cycle);
+    const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal, digest });
     assert.equal(cards(window)[0].querySelector(".entry-title").textContent, solo.title);
+  });
+
+  /* Edvard, issues #86: "Journal cards like cycle 209 seems to have two
+   * titles. Only one is enough." The digest line is the one he reads. */
+  test("a cycle with a digest line shows that and not its heading title too", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const solo = journal.entries.find(
+      (e) => e.cycle !== null
+        && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+        && payload.digest.lines.some((l) => l.cycle === e.cycle)
+    );
+    assert.ok(solo, "the fixture must contain a solo cycle that has a digest line");
+    solo.title = "A second title saying the same thing the digest line says";
+    const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal });
+    const card = cards(window)[0];
+    assert.equal(card.querySelector(".entry-title"), null);
+    // Not vacuous: the brief the title was competing with is still drawn, so
+    // this cannot pass by the card having lost both.
+    assert.equal(
+      card.querySelector(".entry-brief").textContent.trim(),
+      lineBrief(payload.digest.lines.find((l) => l.cycle === solo.cycle))
+    );
   });
 
   test("a title that is only its own timestamp renders as nothing", async () => {
