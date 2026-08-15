@@ -139,11 +139,15 @@
   var folds = {};
 
   function foldFor(cycle) {
+    /* `part` joins the three booleans because a poll rebuilds the feed from
+     * scratch: without it, Edvard taps to the addendum, a routine poll lands,
+     * and the tab silently reverts to the first part under him while the card
+     * and drawer correctly stay open. Found by the reviewer, not by me. */
     if (cycle === null || cycle === undefined) {
-      return { expanded: false, journal: false, comments: false };
+      return { expanded: false, journal: false, comments: false, part: 0 };
     }
     var key = "cycle-" + cycle;
-    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false };
+    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false, part: 0 };
     return folds[key];
   }
 
@@ -905,11 +909,18 @@
     journalToggle.setAttribute("aria-controls", bodyId);
     card.appendChild(journalToggle);
 
-    /* The drawer wraps the parts rather than being one of them, so a
-     * subheading is hidden and shown with the prose it heads. */
+    /* The drawer wraps the parts rather than being one of them, so the tab
+     * strip is hidden and shown with the prose it divides.
+     *
+     * `fold` is read here rather than at its old declaration forty lines
+     * down: `var` hoists, so the name existed and was `undefined`, and
+     * passing it in silently disabled the tab memory while every test still
+     * passed. It is the same object either way -- `foldFor` memoises per
+     * cycle -- so this is a move, not a second one. */
+    var fold = foldFor(entry.cycle);
     var body = el("div", "entry-parts");
     body.id = bodyId;
-    appendParts(body, ordered, settled);
+    appendParts(body, ordered, settled, fold);
     card.appendChild(body);
 
     /* One comment button per cycle, which is now simply one per card.
@@ -936,7 +947,6 @@
      * are also the only places that have to remember it -- a tap goes
      * through one of these whether it came from the card's own listener or
      * from `setExpanded` re-asserting a drawer. See `folds`. */
-    var fold = foldFor(entry.cycle);
 
     function setCommentsOpen(open) {
       if (!commenting) return;
@@ -1226,11 +1236,16 @@
    *  settled PR and outcome in the meta row, outside the tabs, where it is
    *  visible whichever tab is open. Tabs hide prose, not the conclusion.
    *
-   *  Progressive enhancement is deliberate: every panel is in the DOM and
-   *  only `hidden` is toggled, so find-in-page and a copy-all still reach a
-   *  panel that is not on top -- the same reason the drawer above is a
-   *  class change rather than a re-render. */
-  function appendParts(container, ordered, settled) {
+   *  Every panel stays in the DOM and only `hidden` is toggled, so switching
+   *  tabs is a class change rather than a re-render and nothing below has to
+   *  be rebuilt. **It does not keep the shut half findable**: `hidden` is
+   *  `display: none`, which find-in-page and select-all skip, the same trap
+   *  `.prio-menu[hidden]` already documents in the stylesheet. An earlier
+   *  version of this comment claimed otherwise and was wrong. Reaching both
+   *  halves at once is what `/cycle/N` is for, and if that stops being a
+   *  good enough answer the fix is a real "show both" control, not a
+   *  sentence here saying the problem does not exist. */
+  function appendParts(container, ordered, settled, fold) {
     if (ordered.length < 2) {
       var only = el("div", "entry-body");
       renderBlocks(only, ordered[0].blocks);
@@ -1292,6 +1307,7 @@
     /** Show one part. Index is always in range -- every caller derives it
      *  from `tabs`, which is built from `ordered` one loop above. */
     function select(index) {
+      if (fold) fold.part = index;
       tabs.forEach(function (tab, i) {
         var on = i === index;
         tab.classList.toggle("on", on);
@@ -1325,8 +1341,11 @@
 
     /* The first part, because both surfaces read forwards: `ordered` is
      * oldest-first and an addendum is the later half of the same hour, not
-     * an alternative to it. */
-    select(0);
+     * an alternative to it -- unless this cycle's card already had a tab
+     * open, in which case a poll re-render must not throw it away. Bounded,
+     * because a cycle can gain a part between two polls. */
+    var start = fold && fold.part ? fold.part : 0;
+    select(start < ordered.length ? start : 0);
   }
 
   function renderCyclePage(cycleNumber, entries, digestLine, comments) {

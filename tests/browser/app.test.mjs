@@ -1110,6 +1110,12 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
      * tab strip, so it is readable whichever tab is open. */
     const window = await loadSite("/cycle/57");
     const page = cards(window)[0];
+    /* Assert the panels exist first. Without this the test passes with the
+     * tabs deleted entirely -- `closest(".entry-part-panel")` on a class
+     * nothing renders is null, which is the same answer as "correctly
+     * outside them". The reviewer caught that; it was vacuous as written. */
+    assert.ok(page.querySelectorAll(".entry-part-panel").length > 1,
+      "this cycle must actually be drawn with tab panels");
     const outcome = page.querySelector(".entry-meta .badge");
     assert.ok(outcome, "the cycle draws a settled outcome");
     assert.equal(outcome.closest(".entry-part-panel"), null,
@@ -1131,7 +1137,23 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
       new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
     );
     assert.equal(tabs[0].getAttribute("aria-selected"), "true");
+    /* ArrowLeft, Home and End were all implemented and none were pressed --
+     * with two tabs, ArrowRight and ArrowLeft reach the same target from
+     * either side, so a swapped comparison would have shipped silently. */
+    tabs[0].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true", "ArrowLeft wraps backwards");
+    tabs[1].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[0].getAttribute("aria-selected"), "true", "Home goes to the first part");
+    tabs[0].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true", "End goes to the last part");
   });
+
 
   test("a single-part cycle gets no tab strip", async () => {
     const solo = payload.journal.entries.find(
@@ -1954,6 +1976,33 @@ describe("the page notices new entries on its own", () => {
    * entry arrives every hour, and the card he had open closed with it. The
    * card object itself is replaced -- that is what a render does -- so these
    * assert on the card at that position being open, not on the old node. */
+  test("a poll keeps the part tab he opened, not just the card", async () => {
+    /* `fold` carried expanded/journal/comments through a rebuild and did not
+     * carry the open tab, so a routine poll put him back on part one while
+     * the card and drawer correctly stayed open. The reviewer found that; my
+     * own first test for it fired a poll that served an unchanged journal,
+     * so nothing rebuilt and the test passed with the fix reverted. Hence
+     * `grown()` here, and the length assertion below: this only means
+     * something if a real render happened. */
+    const { window, timers } = await pollable();
+    const before = cards(window).length;
+    const card = cards(window).find((c) => c.querySelectorAll(".entry-part-tab").length > 1);
+    assert.ok(card, "the fixture must have a multi-part cycle in the feed");
+    const cycle = card.id;
+    click(window, card.querySelector(".entry-toggle"));
+    click(window, card.querySelector(".journal-toggle"));
+    click(window, [...card.querySelectorAll(".entry-part-tab")][1]);
+    serve(window, grown('W/"newer-tab"'));
+
+    await timers.firePagePoll();
+    assert.equal(cards(window).length, before + 1, "the new card landed, so this is a real rebuild");
+    const after = cards(window).find((c) => c.id === cycle);
+    assert.ok(after && after !== card, "the card was rebuilt, not reused");
+    const tabs = [...after.querySelectorAll(".entry-part-tab")];
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true", "still on the part he opened");
+    assert.equal([...after.querySelectorAll(".entry-part-panel")].findIndex((n) => !n.hidden), 1);
+  });
+
   test("a card he had opened is still open after a new entry lands", async () => {
     const { window, timers } = await pollable();
     const before = cards(window).length;
