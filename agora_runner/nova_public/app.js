@@ -1758,6 +1758,13 @@
     toggles: {},
     sort: "filed",
     desc: false,
+    // Whether the filter modal (Edvard, 2026-08-14: "make the filters
+    // into a modal... remove all the filter buttons") is open, so a
+    // re-render triggered by tapping an option inside it -- every filter
+    // and toggle click already calls `renderBoard` -- knows to rebuild
+    // the modal's contents in place instead of leaving it showing stale
+    // counts and "on" states, or closing it under the reader's thumb.
+    filtersOpen: false,
   };
 
   /* `outdated` is the fifth status, from issues.md #85: "Some of them are
@@ -2010,6 +2017,16 @@
    * compares it to the Python side, because nothing else could. */
   var PRIORITIES = ["", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"];
 
+  /* Parallel to `PRIORITIES`, mirroring `nova_boards.priority_key` --
+   * the CSS class suffix each rating carries (`.prio-high` etc). The
+   * server sends `item.priorityKey` for a row's *current* rating, but a
+   * picker's chip trigger has to relabel itself the instant something
+   * else is picked, before any server round trip, so it needs the same
+   * mapping client-side. Only board-row triggers use it (`chipStyle`
+   * below); the capture box's trigger shows a glyph, never a class that
+   * depends on which rating is selected. */
+  var PRIORITY_KEYS = ["", "low", "medium", "high", "immediate"];
+
   /* A small custom dropdown, not a native <select> -- Edvard, 2026-08-14:
    * the closed control must show only the glyph (or a dash), but the open
    * list must still spell out each rating's word. No native form control
@@ -2020,16 +2037,16 @@
    * wordless as the box).
    *
    * One popup, shared by every picker on the page, appended straight to
-   * <body> rather than living under each trigger. A board row's trigger
-   * sits inside `.item`, which clips overflow to keep its rounded
-   * corners -- a popup nested there would be cut off the moment it grew
-   * past the card's edge, and the capture box's trigger is the last thing
-   * on its row with no room to its right for a popup anchored by normal
-   * flow. Position is real viewport coordinates instead, read off the
-   * trigger's own rect when it opens. */
+   * <body> rather than living under each trigger, and centered on the
+   * viewport rather than anchored to whichever trigger opened it -- see
+   * the comment on `openMenu` below for why. */
   var prioMenuOverlay = null;
+  var prioMenuBackdrop = null;
   function getPrioMenuOverlay() {
     if (prioMenuOverlay) return prioMenuOverlay;
+    prioMenuBackdrop = el("div", "prio-menu-backdrop");
+    prioMenuBackdrop.hidden = true;
+    document.body.appendChild(prioMenuBackdrop);
     prioMenuOverlay = el("div", "prio-menu");
     prioMenuOverlay.setAttribute("role", "listbox");
     prioMenuOverlay.hidden = true;
@@ -2037,30 +2054,56 @@
     return prioMenuOverlay;
   }
 
-  /* `triggerClass` picks which shape the button wears --
-   * `.prio-select-board`'s square corners inside a card, or
-   * `.capture-prio`'s circle beside the capture buttons -- both already
-   * exist as CSS and are unchanged by this; only the element they style
-   * moved from a <select> to a <button>. `onPick` may return a promise;
-   * the trigger disables and the glyph updates optimistically while it
-   * settles, and a rejection reverts the glyph to what it was before the
-   * click rather than showing a choice that was never saved. */
+  /* Two ways the trigger can look, picked by `opts.chipStyle`:
+   *
+   * The default (the capture box) is `opts.triggerClass` -- a fixed-shape
+   * button, `.capture-prio`'s circle, showing only the glyph. That is the
+   * shape a fresh, usually-unrated capture needs.
+   *
+   * `chipStyle: true` (board rows) is the opposite: Edvard, 2026-08-14,
+   * after the ball-only version shipped there -- "i liked the old issue
+   * priority status better... make it into a button that opens the
+   * modal, but the visual design is not changed from the old design."
+   * The old design (cycle 171) was a read-only `.chip.prio.prio-<key>`
+   * spelling out the rating in full, shown only when a row had one at
+   * all. This keeps exactly that classing and text, on a <button>
+   * instead of a <span>, plus an "Unrated" chip for rows that have
+   * nothing yet -- the one thing the read-only original could not do,
+   * because there was nothing to tap to give it a first rating.
+   *
+   * `onPick` may return a promise; the trigger disables and the label
+   * updates optimistically while it settles, and a rejection reverts it
+   * to what it was before the click rather than showing a choice that
+   * was never saved. */
   function buildPrioPicker(opts) {
     var current = opts.current || "";
     function glyph(label) { return label ? label.split(" ")[0] : "–"; }
+    function keyOf(label) {
+      var i = PRIORITIES.indexOf(label);
+      return i === -1 ? "" : PRIORITY_KEYS[i];
+    }
 
     var trigger = document.createElement("button");
     trigger.type = "button";
-    trigger.className = opts.triggerClass;
     if (opts.triggerId) trigger.id = opts.triggerId;
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-expanded", "false");
     trigger.setAttribute("aria-label", opts.ariaLabel);
-    trigger.textContent = glyph(current);
+
+    function render(label) {
+      if (opts.chipStyle) {
+        trigger.className = label ? ("chip prio prio-" + keyOf(label)) : "chip prio";
+        trigger.textContent = label || "Unrated";
+      } else {
+        trigger.className = opts.triggerClass;
+        trigger.textContent = glyph(label);
+      }
+    }
+    render(current);
 
     function setValue(label) {
       current = label;
-      trigger.textContent = glyph(label);
+      render(label);
     }
 
     function pick(label) {
@@ -2074,11 +2117,15 @@
       }
     }
 
+    // Centered and full-width rather than anchored under the trigger
+    // (Edvard, 2026-08-14, after using the anchored version live: the
+    // native picker it replaced read as a real dialog, and a small
+    // anchored dropdown read as a lesser thing next to it) -- so CSS
+    // alone centers `.prio-menu`, and this only has to show it and the
+    // dimming backdrop behind it.
     function openMenu() {
       var menu = getPrioMenuOverlay();
       menu.textContent = "";
-      menu.style.visibility = "hidden";
-      menu.hidden = false;
       PRIORITIES.forEach(function (label) {
         var item = document.createElement("button");
         item.type = "button";
@@ -2092,34 +2139,27 @@
         });
         menu.appendChild(item);
       });
-      var tr = trigger.getBoundingClientRect();
-      var mr = menu.getBoundingClientRect();
-      // Right edge of the menu lines up with the right edge of the
-      // trigger by default -- both pickers sit at the right of their row
-      // -- clamped so it cannot run off a narrow phone on either side.
-      var left = Math.min(Math.max(8, tr.right - mr.width), window.innerWidth - mr.width - 8);
-      var top = tr.bottom + 4;
-      if (top + mr.height > window.innerHeight - 8) top = tr.top - mr.height - 4;
-      menu.style.left = left + "px";
-      menu.style.top = Math.max(8, top) + "px";
-      menu.style.visibility = "visible";
+      prioMenuBackdrop.hidden = false;
+      menu.hidden = false;
       menu.dataset.openFor = opts.ariaLabel;
       trigger.setAttribute("aria-expanded", "true");
       document.addEventListener("click", onDocClick, true);
       document.addEventListener("keydown", onKeydown, true);
-      document.addEventListener("scroll", closeMenu, true);
     }
 
     function closeMenu() {
       var menu = prioMenuOverlay;
       if (!menu || menu.hidden) return;
       menu.hidden = true;
+      prioMenuBackdrop.hidden = true;
       trigger.setAttribute("aria-expanded", "false");
       document.removeEventListener("click", onDocClick, true);
       document.removeEventListener("keydown", onKeydown, true);
-      document.removeEventListener("scroll", closeMenu, true);
     }
 
+    // The backdrop is not inside `prioMenuOverlay`, so a tap on it falls
+    // through to here and closes the popup like any other outside tap --
+    // no separate handler needed for "tap outside to dismiss".
     function onDocClick(e) {
       if (e.target === trigger) return;
       if (prioMenuOverlay && prioMenuOverlay.contains(e.target)) return;
@@ -2139,20 +2179,22 @@
     return { el: trigger, getValue: function () { return current; }, setValue: setValue };
   }
 
-  /* The rating cell of one boarded row, as something Edvard can change.
-   * The picker is the whole control: no save button, because the only
-   * action it can take is the one he just chose, and a button would be a
-   * second thing to get wrong. It goes disabled while the write is in
+  /* The rating cell of one boarded row, as something Edvard can change --
+   * the row's own priority indicator in `.item-meta-row`, not a second
+   * control hidden inside the write-up (Edvard, 2026-08-14: "on issues and
+   * ideas the priority button should be the priority tag instead, not a
+   * separate button"). `note` is a sibling element the caller places; this
+   * only fills it in. No save button on the picker itself, because the
+   * only action it can take is the one just chosen, and a button would be
+   * a second thing to get wrong. It goes disabled while the write is in
    * flight so a double-tap cannot race two writes at one cell, and on
    * failure it snaps back to what the server still holds rather than
    * showing a rating that was never written. */
-  function renderPriorityPicker(board, item) {
-    var wrap = el("p", "item-prio-edit");
-    var note = el("span", "item-prio-note", "");
-    var picker = buildPrioPicker({
+  function renderPriorityPicker(board, item, note) {
+    return buildPrioPicker({
       current: item.priority || "",
       ariaLabel: "Priority of #" + item.number,
-      triggerClass: "prio-select prio-select-board",
+      chipStyle: true,
       onPick: function (chosen) {
         note.textContent = "Saving…";
         return fetch("/api/board/priority", {
@@ -2165,9 +2207,9 @@
             if (!payload || !payload.ok) throw new Error((payload && payload.message) || "failed");
             item.priority = chosen;
             note.textContent = "";
-            // The chip in the closed head is built from `item`, so the row
-            // has to be redrawn for the change to be visible without a
-            // reload -- which is the whole point of editing it here.
+            // The trigger in the head is built from `item`, so the row has
+            // to be redrawn for the change to be visible without a reload
+            // -- which is the whole point of editing it here.
             loadBoard(board);
           })
           .catch(function (err) {
@@ -2176,9 +2218,6 @@
           });
       },
     });
-    wrap.appendChild(picker.el);
-    wrap.appendChild(note);
-    return wrap;
   }
 
   /* Edvard, issue #84: *"If i hold the card for more than 1 second i get
@@ -2278,18 +2317,59 @@
     // What `/ideas#68` scrolls to. One board per page, so the number is
     // unique on screen.
     row.id = "item-" + item.number;
-    var head = el("button", "item-head");
-    head.type = "button";
+
+    // A <button> (the toggle) cannot contain another <button> (the
+    // priority trigger) -- nested interactive controls are invalid HTML.
+    // That ruled out a real <button> for `head` once the priority trigger
+    // needed to sit inside it, level with the status chip (Edvard,
+    // 2026-08-14: "the priority status button needs to be placed on the
+    // same horizontal as the progress status, on its right side" -- a
+    // sibling next to the whole head, tried first, could only ever line
+    // up with the head's first line, not specifically the status chip's).
+    // `role="button"` plus a manual Enter/Space handler below is what a
+    // <div> needs to behave like the <button> it replaced.
+    var head = el("div", "item-head");
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
     head.setAttribute("aria-expanded", boardState.open === item.number ? "true" : "false");
-    head.appendChild(el("span", "item-number", "#" + item.number));
-    head.appendChild(el("span", "item-title", item.title));
-    head.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
-    // Unrated rows get no chip at all rather than a grey "none" one:
-    // an empty space is what tells Edvard which rows still want a rating.
-    if (item.priority) {
-      head.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
+
+    var titleRow = el("div", "item-title-row");
+    titleRow.appendChild(el("span", "item-number", "#" + item.number));
+    titleRow.appendChild(el("span", "item-title", item.title));
+    head.appendChild(titleRow);
+
+    // Status and priority on one line, priority pinned to its right --
+    // `justify-content: space-between` in style.css is what does that,
+    // now that both chips are finally siblings in the same flex row
+    // instead of one living outside the head entirely.
+    var metaRow = el("div", "item-meta-row");
+    metaRow.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
+
+    // Every rating on both boards was set by a cycle, not by Edvard
+    // (issues.md capture, 2026-08-14). A finished row keeps the original
+    // cycle-171 read-only chip if it has a rating and nothing if it does
+    // not -- unrated getting no chip at all, rather than a grey "none"
+    // one, is what tells Edvard which open rows still want a rating; a
+    // done row is not one he is going to visit for that. `item.done`
+    // alone is not the editable test, it only means the row is in the
+    // `## Done` table and most finished rows never move there --
+    // `statusKey` is what the server refuses a write on. An outdated row
+    // is closed the same way, and the server refuses a rating on it for
+    // the same reason (`_CLOSED_STATUS_KEYS` in `nova_boards.py`).
+    var editable = !item.done && item.statusKey !== "done" && !isOutdated(item);
+    var prioNote = el("span", "item-prio-note", "");
+    if (editable) {
+      metaRow.appendChild(renderPriorityPicker(board, item, prioNote).el);
+    } else if (item.priority) {
+      metaRow.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
     }
+    head.appendChild(metaRow);
+    if (editable) head.appendChild(prioNote);
+
+    // Below the status/priority line rather than beside it (Edvard,
+    // 2026-08-14: "the date should be placed below them").
     if (item.updated) head.appendChild(el("span", "item-updated", item.updated));
+
     row.appendChild(head);
 
     var body = el("div", "item-body");
@@ -2299,18 +2379,6 @@
     function fill() {
       body.textContent = "";
       if (item.where) body.appendChild(el("p", "item-where", "Landed in " + item.where));
-      // Every rating on both boards was set by a cycle, not by Edvard
-      // (issues.md capture, 2026-08-14). A finished row gets no picker,
-      // and `item.done` alone is not that test -- it only means the row
-      // is in the `## Done` table, and most finished rows never move
-      // there. `statusKey` is what the server refuses on.
-      // An outdated row is closed the same way, and the server refuses a
-      // rating on it for the same reason (`_CLOSED_STATUS_KEYS` in
-      // `nova_boards.py`). Drawing the picker anyway would offer a control
-      // whose only outcome is a rejection.
-      if (!item.done && item.statusKey !== "done" && !isOutdated(item)) {
-        body.appendChild(renderPriorityPicker(board, item));
-      }
       var blocks = boardState.details[board + ":" + item.number];
       if (!blocks) {
         body.appendChild(el("p", "empty", "Loading…"));
@@ -2388,14 +2456,12 @@
     ["mouseup", "mouseleave", "touchend", "touchmove", "touchcancel"].forEach(
       function (name) { head.addEventListener(name, endHold); });
 
-    head.addEventListener("click", function () {
-      // A hold has already done something with this press; letting the
-      // tap handler also run would open the write-up underneath the
-      // editor that just appeared.
-      if (held) { held = false; return; }
-      // While the editor is open the row is not a toggle. Without this the
-      // write-up opens underneath the box he is typing in.
-      if (row.querySelector(".item-edit")) return;
+    // Factored out of the click handler below so `role="button"`'s
+    // keyboard activation (further down) can reach the same toggle
+    // without also going through the hold/editor guards a mouse or touch
+    // press needs -- a keyboard press has no hold gesture to have already
+    // acted on.
+    function toggle() {
       var opening = boardState.open !== item.number;
       // One open row at a time. These write-ups run to several screens
       // and a page of them all open is the scroll problem issues.md #42
@@ -2410,12 +2476,33 @@
       for (var i = 0; i < others.length; i++) {
         if (others[i] === head) continue;
         others[i].setAttribute("aria-expanded", "false");
-        others[i].parentNode.querySelector(".item-body").hidden = true;
+        others[i].closest(".item").querySelector(".item-body").hidden = true;
       }
       boardState.open = opening ? item.number : null;
       head.setAttribute("aria-expanded", opening ? "true" : "false");
       body.hidden = !opening;
       if (opening) fill();
+    }
+    head.addEventListener("click", function () {
+      // A hold has already done something with this press; letting the
+      // tap handler also run would open the write-up underneath the
+      // editor that just appeared.
+      if (held) { held = false; return; }
+      // While the editor is open the row is not a toggle. Without this the
+      // write-up opens underneath the box he is typing in.
+      if (row.querySelector(".item-edit")) return;
+      toggle();
+    });
+    // `role="button"` on a <div> gets none of a real <button>'s built-in
+    // keyboard activation -- Space and Enter do nothing without this. No
+    // hold gesture to guard against, but the editor-open guard still
+    // applies: the row is not a toggle while it is open, keyboard or not.
+    head.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        if (row.querySelector(".item-edit")) return;
+        e.preventDefault();
+        toggle();
+      }
     });
     if (boardState.open === item.number) fill();
     return row;
@@ -2590,6 +2677,110 @@
    * hand; `searchFocus` is what remembers them across a keystroke. */
   var searchFocus = null;
 
+  /* The status filters (Open/Done/All) and the extra toggles, as one
+   * group of buttons -- unchanged from when they lived directly on the
+   * page, down to the class names, so the only thing that moved is where
+   * this container ends up mounted. Rebuilt fresh on every call rather
+   * than cached, because a count or an "on" state can go stale the
+   * instant any of these buttons, or the status/board tabs above them,
+   * is tapped. */
+  function buildFilterChips(board, payload, items) {
+    var chips = el("div", "filters");
+    FILTERS.forEach(function (filter) {
+      var count = items.filter(filter.match).length;
+      var chip = el("button", "filter" + (filter.key === boardState.filter ? " on" : ""),
+        filter.label + " (" + count + ")");
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", filter.key === boardState.filter ? "true" : "false");
+      chip.addEventListener("click", function () {
+        boardState.filter = filter.key;
+        renderBoard(board, payload);
+      });
+      chips.appendChild(chip);
+    });
+    TOGGLES.forEach(function (toggle) {
+      var on = !!boardState.toggles[toggle.key];
+      // Counted against the status filter rather than the whole board,
+      // so "Unrated (0)" under Done means what it says instead of
+      // advertising rows the current view cannot show.
+      var count = items.filter(currentFilter().match).filter(toggle.match).length;
+      var chip = el("button", "filter filter-extra" + (on ? " on" : ""),
+        toggle.label + " (" + count + ")");
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", on ? "true" : "false");
+      chip.addEventListener("click", function () {
+        boardState.toggles[toggle.key] = !on;
+        renderBoard(board, payload);
+      });
+      chips.appendChild(chip);
+    });
+    return chips;
+  }
+
+  /* The filter modal -- Edvard, 2026-08-14: "make the filters into a
+   * modal same as the priority. remove all the filter buttons and place
+   * a new filter button... next to the arrow button on the search. the
+   * filter button opens a modal with the filter options."
+   *
+   * "Same as the priority" means the same shared popup and backdrop
+   * (`getPrioMenuOverlay`) and the same centred, wider `.prio-menu`
+   * chrome -- not the same *behaviour*. The priority popup is single-pick
+   * and closes itself the instant an option is chosen; these seven
+   * buttons compose (ideas.md #71 -- "unrated and untouched for a week"
+   * is one tap each) and closing after the first tap would undo the one
+   * thing that made them worth inventing. So this popup only closes on an
+   * outside tap, Escape, or its own close button, and stays open and
+   * live across every tap inside it -- each one already calls
+   * `renderBoard`, and `boardState.filtersOpen` is what tells the next
+   * `renderBoardControls` to refresh this popup's contents in place
+   * rather than leave it showing counts and "on" states from before the
+   * tap that just happened. */
+  function populateFiltersModal(board, payload, items) {
+    var overlay = getPrioMenuOverlay();
+    overlay.textContent = "";
+    overlay.removeAttribute("role");
+    overlay.dataset.openFor = "filters";
+    var head = el("div", "modal-head");
+    head.appendChild(el("h2", "modal-title", "Filters"));
+    var closeBtn = el("button", "modal-close", "×");
+    closeBtn.type = "button";
+    closeBtn.setAttribute("aria-label", "Close filters");
+    closeBtn.addEventListener("click", closeFiltersModal);
+    head.appendChild(closeBtn);
+    overlay.appendChild(head);
+    overlay.appendChild(buildFilterChips(board, payload, items));
+  }
+
+  var filtersModalHandlers = null;
+  function closeFiltersModal() {
+    if (!boardState.filtersOpen) return;
+    boardState.filtersOpen = false;
+    if (prioMenuOverlay) prioMenuOverlay.hidden = true;
+    if (prioMenuBackdrop) prioMenuBackdrop.hidden = true;
+    if (filtersModalHandlers) {
+      document.removeEventListener("click", filtersModalHandlers.onDocClick, true);
+      document.removeEventListener("keydown", filtersModalHandlers.onKeydown, true);
+      filtersModalHandlers = null;
+    }
+  }
+
+  function openFiltersModal(board, payload, items) {
+    boardState.filtersOpen = true;
+    populateFiltersModal(board, payload, items);
+    prioMenuBackdrop.hidden = false;
+    prioMenuOverlay.hidden = false;
+    function onDocClick(e) {
+      if (prioMenuOverlay.contains(e.target)) return;
+      closeFiltersModal();
+    }
+    function onKeydown(e) {
+      if (e.key === "Escape") closeFiltersModal();
+    }
+    filtersModalHandlers = { onDocClick: onDocClick, onKeydown: onKeydown };
+    document.addEventListener("click", onDocClick, true);
+    document.addEventListener("keydown", onKeydown, true);
+  }
+
   function renderBoardControls(board, payload, items) {
     var bar = el("div", "board-controls");
 
@@ -2621,37 +2812,6 @@
       search.appendChild(clear);
     }
     bar.appendChild(search);
-
-    var chips = el("div", "filters");
-    FILTERS.forEach(function (filter) {
-      var count = items.filter(filter.match).length;
-      var chip = el("button", "filter" + (filter.key === boardState.filter ? " on" : ""),
-        filter.label + " (" + count + ")");
-      chip.type = "button";
-      chip.setAttribute("aria-pressed", filter.key === boardState.filter ? "true" : "false");
-      chip.addEventListener("click", function () {
-        boardState.filter = filter.key;
-        renderBoard(board, payload);
-      });
-      chips.appendChild(chip);
-    });
-    TOGGLES.forEach(function (toggle) {
-      var on = !!boardState.toggles[toggle.key];
-      // Counted against the status filter rather than the whole board,
-      // so "Unrated (0)" under Done means what it says instead of
-      // advertising rows the current view cannot show.
-      var count = items.filter(currentFilter().match).filter(toggle.match).length;
-      var chip = el("button", "filter filter-extra" + (on ? " on" : ""),
-        toggle.label + " (" + count + ")");
-      chip.type = "button";
-      chip.setAttribute("aria-pressed", on ? "true" : "false");
-      chip.addEventListener("click", function () {
-        boardState.toggles[toggle.key] = !on;
-        renderBoard(board, payload);
-      });
-      chips.appendChild(chip);
-    });
-    bar.appendChild(chips);
 
     /* "on each option, on a horisontal line, a description of the option
      * ('priority') and on the right side of it a button with a
@@ -2693,7 +2853,36 @@
       renderBoard(board, payload);
     });
     sortRow.appendChild(arrow);
+
+    // Next to the arrow, as asked. Three bars of shrinking width -- the
+    // same ribbon shape the term "filter" usually draws as -- rather than
+    // a word, so it reads at a glance next to a row that is otherwise all
+    // icons and a select. `on` (an accent border, the same signal every
+    // other active control on this page already gives) fires only for the
+    // toggles: Open/Done/All always has exactly one of the three selected,
+    // so highlighting it here would light up on every load and mean
+    // nothing.
+    var anyToggleOn = TOGGLES.some(function (t) { return !!boardState.toggles[t.key]; });
+    var filterBtn = el("button", "board-filter-btn" + (anyToggleOn ? " on" : ""));
+    filterBtn.type = "button";
+    filterBtn.setAttribute("aria-haspopup", "dialog");
+    filterBtn.setAttribute("aria-expanded", boardState.filtersOpen ? "true" : "false");
+    filterBtn.setAttribute("aria-label", "Filters");
+    filterBtn.appendChild(el("span", "filter-bar"));
+    filterBtn.appendChild(el("span", "filter-bar"));
+    filterBtn.appendChild(el("span", "filter-bar"));
+    filterBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (boardState.filtersOpen) closeFiltersModal(); else openFiltersModal(board, payload, items);
+    });
+    sortRow.appendChild(filterBtn);
     bar.appendChild(sortRow);
+
+    // The modal is a standing popup, not rebuilt by this function's own
+    // return value -- keep it in step with whatever just changed (a tap
+    // inside it always re-runs this whole function) rather than let it
+    // show the counts and "on" states from before that tap.
+    if (boardState.filtersOpen) populateFiltersModal(board, payload, items);
 
     if (searchFocus !== null) {
       // After `feed` has the node. Deferred because focusing a detached
