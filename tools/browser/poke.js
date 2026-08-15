@@ -60,6 +60,18 @@ function watch(page) {
 const net = require('net');
 const { URL } = require('url');
 
+/* Every forwarder ever opened, so the runner can close them all.
+ *
+ * A listening server keeps node's event loop alive. If a probe throws
+ * between `listen()` and `cut()` -- a selector that never appears, a
+ * navigation timeout -- the process would sit there until the caller's
+ * 600s subprocess timeout, and one broken probe would cost ten minutes
+ * and look like a hang rather than a failure. `poke_page.py` treats a
+ * throw as a failed probe precisely so the run can continue; leaking
+ * the socket would undo that.
+ */
+const OPEN_FORWARDERS = [];
+
 function forwarder(target) {
   const to = new URL(target);
   const sockets = new Set();
@@ -72,7 +84,7 @@ function forwarder(target) {
     client.pipe(upstream);
     upstream.pipe(client);
   });
-  return {
+  const handle = {
     listen: () =>
       new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port))),
     // Closing the listener alone would leave established keep-alive
@@ -83,6 +95,8 @@ function forwarder(target) {
         server.close(() => resolve());
       }),
   };
+  OPEN_FORWARDERS.push(handle);
+  return handle;
 }
 
 /* Wait until the worker controlling this page is one we can steer.
@@ -320,4 +334,6 @@ const PROBES = {
     }
   }
   await browser.close();
+  // A probe that threw may not have reached its own `cut()`.
+  for (const fwd of OPEN_FORWARDERS) await fwd.cut().catch(() => {});
 })().catch((e) => { console.error('FATAL', e.message); process.exit(1); });
