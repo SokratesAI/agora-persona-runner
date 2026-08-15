@@ -394,3 +394,45 @@ def test_a_clone_that_is_only_behind_is_not_unfinished(squash_merged):
 
     assert [e["verdict"] for e in survey] == ["clean"]
     assert survey[0]["ahead"] == 0
+
+
+def test_a_fetch_that_hangs_does_not_take_the_cycle_with_it(squash_merged,
+                                                            monkeypatch,
+                                                            capsys):
+    """`fetch` is the only call here that leaves the box, and this runs as the
+    first thing a cycle does. A hang would cost the whole hour silently, so it
+    is bounded and a timeout degrades to the refs already on disk -- which is
+    the stale-ref answer, said out loud rather than hidden."""
+    root, _ = squash_merged
+    real = subprocess.run
+
+    def slow(cmd, **kwargs):
+        if "fetch" in cmd:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return real(cmd, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", slow)
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+    assert "did not complete" in capsys.readouterr().out
+
+
+def test_the_fetch_is_bounded(squash_merged, monkeypatch):
+    """The timeout has to actually be passed. Asserted against the constant
+    rather than against "not None", so removing the argument fails here."""
+    root, _ = squash_merged
+    seen = []
+    real = subprocess.run
+
+    def record(cmd, **kwargs):
+        if "fetch" in cmd:
+            seen.append(kwargs.get("timeout"))
+        return real(cmd, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", record)
+
+    tidy_workspace.survey_checkouts(str(root))
+
+    assert seen == [tidy_workspace.GIT_TIMEOUT_SECONDS]

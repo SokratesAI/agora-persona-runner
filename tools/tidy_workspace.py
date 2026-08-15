@@ -198,10 +198,36 @@ def clones(root):
 _BASES = ("origin/main", "origin/master")
 
 
+# The one call here that leaves the box. Every other git command in this file
+# reads local disk and returns instantly; `fetch` talks to GitHub, and this
+# runs as the *first* thing a cycle does, before it has picked anything. A
+# fetch that hangs -- a dead tailnet, a half-open socket -- would take the
+# whole hour with it and the cycle would never say why. So it is bounded, and
+# a timeout is treated as a failed command rather than raised: the survey
+# still answers, off the refs it has, which is exactly the stale-ref case it
+# was written to warn about. The verdict is then no worse than what every
+# cycle before this one worked from.
+GIT_TIMEOUT_SECONDS = 30
+
+
+class _Failed:
+    """What a git command that could not run looks like to the caller."""
+
+    returncode = 1
+    stdout = ""
+    stderr = ""
+
+
 def _git(root, clone, *args):
     """Run git in one clone, capturing output and never raising."""
-    return subprocess.run(["git", "-C", os.path.join(root, clone), *args],
-                          capture_output=True, text=True, check=False)
+    try:
+        return subprocess.run(["git", "-C", os.path.join(root, clone), *args],
+                              capture_output=True, text=True, check=False,
+                              timeout=GIT_TIMEOUT_SECONDS)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log = "%s: git %s did not complete (%s)" % (clone, " ".join(args), e)
+        print(log)
+        return _Failed()
 
 
 def survey_checkouts(root=WORKSPACE, fetch=True):
