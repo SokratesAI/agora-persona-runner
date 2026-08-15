@@ -18,10 +18,12 @@ from datetime import datetime, timedelta
 
 from agora_runner.config import NOVA_PERSONA_ID, OSLO
 from agora_runner.cycle_health import (
+    RECENT_GAP_WINDOW,
     STALL_GRACE_INTERVALS,
     gaps_between,
     missing_cycles,
     nova_cadence_minutes,
+    recent_gaps,
 )
 from agora_runner.nova_journal import JOURNAL_DIR, build_status, parse_journal
 from agora_runner.nova_site import (
@@ -630,3 +632,68 @@ def test_the_badge_the_page_draws_moves_with_the_live_cadence(monkeypatch):
     _refresh_cadence()
     stalled = journal_page(entries, now=ninety)["status"]
     assert (stalled["silentIntervals"], stalled["stalled"]) == (2, True)
+
+
+# --- the holes worth a badge, which is the recent ones ---------------------
+#
+# Edvard, comments board 2026-08-14, on the header's stall badge: *"Should
+# be displayed if the return fetch came in with missing journals."* The
+# header only ever spoke about the clock. These pin the evidence half.
+
+
+def test_the_status_names_recent_holes_separately_from_all_of_them():
+    """Both lists ship, because they answer different questions.
+
+    `missingCycles` is what the feed marks in place and never shrinks;
+    `recentMissingCycles` is what the header is allowed to interrupt him
+    about.
+    """
+    status = build_status(_entries(205, 204, 203, 175, 174))
+    # 176..202 are all interior and unwritten, so all of them are holes.
+    # The window floor is 205 - 24 = 181, so the header gets 181..202 and
+    # the five older ones stay in the feed's list only.
+    assert status["missingCycles"] == list(range(176, 203))
+    assert status["recentMissingCycles"] == list(range(181, 203))
+
+
+def test_an_old_hole_is_history_and_never_reaches_the_header():
+    """The live journal's newest hole was 134 against a newest cycle of 205.
+
+    Rendering that in the header would pin a permanent warning about a
+    three-day-old failure -- the badge-nobody-reads failure the client
+    guards against. It stays in `missingCycles` for the feed.
+    """
+    # The real shape: unbroken from 135 to 205, with 134 the one hole.
+    status = build_status(_entries(*range(205, 134, -1), 133))
+    assert status["missingCycles"] == [134]
+    assert status["recentMissingCycles"] == []
+
+
+def test_a_hole_exactly_on_the_window_edge_still_counts():
+    """The boundary is inclusive, so `window` cycles back is still recent."""
+    newest = 205
+    edge = newest - RECENT_GAP_WINDOW
+    status = build_status(_entries(newest, newest - 1, edge + 1, edge - 1))
+    assert edge in status["recentMissingCycles"]
+
+
+def test_no_holes_at_all_reports_an_empty_list_not_a_missing_key():
+    status = build_status(_entries(205, 204, 203))
+    assert status["recentMissingCycles"] == []
+
+
+def test_recent_gaps_needs_two_entries_to_bracket_anything():
+    assert recent_gaps([]) == []
+    assert recent_gaps([205]) == []
+
+
+def test_recent_gaps_reads_a_generator_without_consuming_it_for_the_other():
+    """`build_status`'s fallback source is a generator and two callers read it.
+
+    Consuming it in the first would leave the second reading an empty
+    sequence -- which is exactly what "nothing is missing" looks like, so
+    the badge would go silent rather than wrong.
+    """
+    status = build_status(_entries(205, 203), known_cycles=None)
+    assert status["missingCycles"] == [204]
+    assert status["recentMissingCycles"] == [204]

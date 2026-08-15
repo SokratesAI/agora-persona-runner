@@ -341,6 +341,33 @@
         + hours + (hours === 1 ? " hour" : " hours")));
       statusEl.appendChild(quiet);
     }
+
+    /* Edvard, comments board 2026-08-14: "Should be displayed if the
+     * return fetch came in with missing journals."
+     *
+     * The badge above is a clock and this one is evidence. They answer
+     * different questions and neither replaces the other: a loop that
+     * died five minutes ago leaves no hole at all, because a hole only
+     * appears once a later cycle writes an entry over the top of it, and
+     * a loop running one long cycle leaves no hole either. So a stall is
+     * the only thing a clock can catch, and a cycle that woke and failed
+     * is the only thing a hole can catch.
+     *
+     * This one cannot cry wolf, which is the point. "Cycle 128 wrote no
+     * entry" is a fact about the record rather than a guess about the
+     * present, so it does not appear and retract as a cycle finishes.
+     * The server has already cut the list to holes recent enough to act
+     * on -- see `cycle_health.recent_gaps` -- and this renders that
+     * judgement without second-guessing the window, the same way the
+     * stall badge defers to `stalled`. */
+    var holes = status.recentMissingCycles || [];
+    if (holes.length) {
+      var missed = el("p", "status-sub");
+      missed.appendChild(el("span", "badge badge-warn", holes.length === 1
+        ? "cycle " + holes[0] + " wrote no entry"
+        : holes.length + " cycles wrote no entry"));
+      statusEl.appendChild(missed);
+    }
   }
 
   /* Edvard, comments board 2026-08-14: "Or a display error if the fetch

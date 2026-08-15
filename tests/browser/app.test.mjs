@@ -3247,12 +3247,17 @@ describe("a loop that has gone quiet says so in the header", () => {
     [...window.document.querySelectorAll("#status .badge-warn")]
       .map((n) => n.textContent);
 
+  /* `/no entry for/` and not `/no entry/`: the fixture journal really does
+   * hole at cycle 56, so once the header started naming holes the looser
+   * pattern matched "cycle 56 wrote no entry" and this test failed on a
+   * badge it was never about. Each of the two badges is asserted by its
+   * own wording. */
   test("nothing is said while the loop is healthy", async () => {
     const live = JSON.parse(JSON.stringify(payload.journal));
     live.status.stalled = false;
     live.status.silentIntervals = 1;
     const window = await loadSite("/", { journal: () => live });
-    assert.deepEqual(warn(window).filter((t) => /no entry/.test(t)), []);
+    assert.deepEqual(warn(window).filter((t) => /no entry for/.test(t)), []);
   });
 
   test("a stall is named with how long it has been", async () => {
@@ -3270,6 +3275,64 @@ describe("a loop that has gone quiet says so in the header", () => {
     const window = await loadSite("/", { journal: () => quiet });
     assert.ok(warn(window).some((t) => t === "no entry for 1 hour"));
   });
+
+  /* Edvard, comments board 2026-08-14: "Should be displayed if the return
+   * fetch came in with missing journals." The clock and the evidence are
+   * separate badges because they catch separate failures -- see the
+   * comment beside this in app.js. */
+
+  test("a cycle that woke and wrote nothing is named", async () => {
+    const holed = JSON.parse(JSON.stringify(payload.journal));
+    holed.status.stalled = false;
+    holed.status.recentMissingCycles = [128];
+    const window = await loadSite("/", { journal: () => holed });
+    assert.ok(warn(window).some((t) => t === "cycle 128 wrote no entry"));
+  });
+
+  test("more than one hole is counted rather than listed", async () => {
+    const holed = JSON.parse(JSON.stringify(payload.journal));
+    holed.status.stalled = false;
+    holed.status.recentMissingCycles = [127, 128];
+    const window = await loadSite("/", { journal: () => holed });
+    assert.ok(warn(window).some((t) => t === "2 cycles wrote no entry"));
+  });
+
+  test("no recent hole says nothing, and an old one is not recent", async () => {
+    /* The server decides the window; this asserts the client renders that
+     * decision rather than reaching for the full `missingCycles` list,
+     * which is history and never shrinks. */
+    const holed = JSON.parse(JSON.stringify(payload.journal));
+    holed.status.stalled = false;
+    holed.status.missingCycles = [8, 52, 134];
+    holed.status.recentMissingCycles = [];
+    const window = await loadSite("/", { journal: () => holed });
+    assert.deepEqual(warn(window).filter((t) => /wrote no entry/.test(t)), []);
+  });
+
+  test("a stall and a hole are both shown, not one instead of the other",
+    async () => {
+      const both = JSON.parse(JSON.stringify(payload.journal));
+      both.status.stalled = true;
+      both.status.silentIntervals = 3;
+      both.status.recentMissingCycles = [204];
+      const window = await loadSite("/", { journal: () => both });
+      const shown = warn(window);
+      assert.ok(shown.some((t) => t === "no entry for 3 hours"));
+      assert.ok(shown.some((t) => t === "cycle 204 wrote no entry"));
+    });
+
+  test("a payload with no recentMissingCycles at all is not an error",
+    async () => {
+      /* The tailnet can serve the last build's app.js against this
+       * build's server, or the other way round. An absent key must read
+       * as "no holes", not throw and take the header down with it. */
+      const old = JSON.parse(JSON.stringify(payload.journal));
+      old.status.stalled = false;
+      delete old.status.recentMissingCycles;
+      const window = await loadSite("/", { journal: () => old });
+      assert.deepEqual(warn(window).filter((t) => /wrote no entry/.test(t)), []);
+      assert.ok(window.document.querySelector("#status .status-line"));
+    });
 });
 
 /* An HTTP error is not a network error, and the page could not tell them

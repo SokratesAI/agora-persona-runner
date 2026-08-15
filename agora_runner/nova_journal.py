@@ -1279,7 +1279,7 @@ def build_status(entries, known_cycles=None):
     document *belonging to the cycle the header names*, which is what
     makes all four fields one statement about one cycle.
     """
-    from agora_runner.cycle_health import gaps_between
+    from agora_runner.cycle_health import gaps_between, recent_gaps
 
     dated = [e for e in entries if e["date"]]
     numbered = [e for e in entries if e["cycle"] is not None]
@@ -1300,6 +1300,15 @@ def build_status(entries, known_cycles=None):
         except ValueError:
             running_days = 0
     written_at = _newest_written_at(entries)
+    # Materialised once: `known_cycles` is documented as coming from the
+    # filenames and arrives as a set, but the fallback is a generator and
+    # two callers now read it. Consuming it in the first would have left
+    # the second reading an empty sequence -- and an empty sequence is
+    # exactly what "no cycle is missing" looks like, so the badge would
+    # have been silent rather than wrong, which nothing would have caught.
+    cycle_numbers = set(
+        known_cycles if known_cycles is not None
+        else (e["cycle"] for e in numbered))
 
     return {
         "cycle": newest_cycle,
@@ -1310,8 +1319,11 @@ def build_status(entries, known_cycles=None):
         "lastOutcomeDetail": latest.get("outcomeDetail", "") if latest else "",
         "runningDays": running_days,
         "entryCount": len(entries),
-        "missingCycles": gaps_between(
-            known_cycles if known_cycles is not None
-            else (e["cycle"] for e in numbered)),
+        "missingCycles": gaps_between(cycle_numbers),
+        # The half the header can actually act on -- see
+        # `cycle_health.recent_gaps`. `missingCycles` stays whole because
+        # the feed marks every hole where it happened; this is the subset
+        # recent enough to be worth a badge rather than a footnote.
+        "recentMissingCycles": recent_gaps(cycle_numbers),
         "lastWrittenAt": written_at.isoformat() if written_at else "",
     }
