@@ -104,6 +104,129 @@ def test_a_chunked_document_that_assembles_short_raises(monkeypatch):
         vault.vault_assemble(doc(children=["c1", "c2"], size=4000), path=PATH)
 
 
+# -------------------------------------------------- the second reader
+
+# Every test above calls `vault_assemble`, and that is the whole gap they
+# missed: `vault_bulk_fetch` assembles a document too, with its own inline
+# loop, and never called `vault_assemble` — so `_size_checked` guarded the
+# single-document read and left the bulk read exactly as blind as before.
+# What that leaves unguarded, named precisely, because the first draft of
+# this comment guessed and was wrong: the journal page
+# (`nova_sources.journal_markdown`), the reply lookup behind
+# `journal_folder_best_effort`, and the seven vault MCP tools. The site's
+# other pages — board, comments, digest, costs, retros — and
+# `fetch_vault_context`, which builds every heartbeat's prompt, all read
+# single documents through `vault_read_path` and were covered by #202
+# already. Smaller than "every page", and still the path Edvard's journal
+# is rendered through.
+#
+# The two readers keep different *policies* on purpose (see
+# test_vault_refuses_partial_documents): the single read raises, the bulk
+# read drops the file and says so, because one damaged document must not
+# blank a listing of several hundred. Only the blindness is fixed.
+
+
+def _bulk(docs):
+    """`vault_bulk_fetch` over exactly `docs`, with no CouchDB."""
+    import json
+    import urllib.parse
+
+    def fake_couch_req(method, path, body=None):
+        if "_all_docs" in path and method == "GET":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+            start = json.loads(query.get("startkey", ['""'])[0])
+            end = json.loads(query.get("endkey", ['"\U0010FFFF"'])[0])
+            return 200, {"rows": [{"id": i} for i in sorted(docs)
+                                  if start <= i <= end]}
+        if "_all_docs" in path and method == "POST":
+            return 200, {"rows": [{"id": k, "doc": docs[k]}
+                                  for k in body["keys"] if k in docs]}
+        return 404, {}
+
+    return fake_couch_req
+
+
+PREFIX = "projects/sokrates/projects/nova/"
+OTHER = PREFIX + "ideas.md"
+
+
+def test_bulk_fetch_still_returns_a_document_that_matches_its_size(monkeypatch):
+    """The control, and it is doing real work here: without it every
+    assertion below would pass against a bulk fetch that had started
+    dropping everything, which is the failure this guard could introduce."""
+    monkeypatch.setattr(vault, "couch_req", _bulk({
+        PATH: doc(data="hello", size=5),
+    }))
+    assert dict(vault.vault_bulk_fetch(PREFIX)) == {PATH: "hello"}
+
+
+def test_the_blind_read_that_lost_the_boards_is_caught_in_bulk_too(monkeypatch):
+    """The same document that `test_the_blind_read_that_lost_the_boards_now_raises`
+    pins, arriving through the reader the site actually uses. Before this it
+    came back as `""` — a 123KB board rendering as an empty file, with
+    nothing anywhere saying a read had failed."""
+    monkeypatch.setattr(vault, "couch_req", _bulk({PATH: doc(size=REAL_SIZE)}))
+    monkeypatch.setattr(vault, "log", lambda m: None)
+    fetched = vault.vault_bulk_fetch(PREFIX)
+    assert PATH not in fetched
+    assert fetched == {}
+
+
+def test_the_short_file_drops_out_and_the_healthy_ones_do_not(monkeypatch):
+    """The policy difference from `vault_assemble`, stated as itself: this
+    reader degrades per-file. A raise here would take down the journal page
+    over one damaged document, which is the trade the chunk-missing branch
+    beside it already refused to make."""
+    monkeypatch.setattr(vault, "couch_req", _bulk({
+        PATH: doc(size=REAL_SIZE),
+        OTHER: dict(doc(data="# Ideas\n", size=8), _id=OTHER, path=OTHER),
+    }))
+    monkeypatch.setattr(vault, "log", lambda m: None)
+    fetched = vault.vault_bulk_fetch(PREFIX)
+    assert dict(fetched) == {OTHER: "# Ideas\n"}
+
+
+def test_bulk_fetch_says_out_loud_that_it_dropped_a_short_file(monkeypatch):
+    """Dropping quietly is the same bug one layer along — a page that
+    silently loses a file looks identical to one that never had it. The
+    caller asks `.unreadable`; `cycle_health` already reads that channel."""
+    lines = []
+    monkeypatch.setattr(vault, "couch_req", _bulk({PATH: doc(size=REAL_SIZE)}))
+    monkeypatch.setattr(vault, "log", lines.append)
+    fetched = vault.vault_bulk_fetch(PREFIX)
+    assert any(PATH in line and str(REAL_SIZE) in line for line in lines)
+    assert any(PATH in note and str(REAL_SIZE) in note
+               for note in fetched.unreadable)
+
+
+def test_a_chunked_document_that_assembles_short_drops_out_of_bulk(monkeypatch):
+    """No chunk is missing, so the existing `VaultIncompleteDocument` check
+    passes and only the length disagrees — the case the bulk loop had no way
+    at all to notice, since it never consulted `size`."""
+    monkeypatch.setattr(vault, "couch_req", _bulk({
+        PATH: doc(children=["c1", "c2"], size=4000),
+        "c1": {"_id": "c1", "data": "ab"},
+        "c2": {"_id": "c2", "data": "cd"},
+    }))
+    monkeypatch.setattr(vault, "log", lambda m: None)
+    assert vault.vault_bulk_fetch(PREFIX) == {}
+
+
+def test_a_genuinely_empty_file_still_comes_back_from_bulk(monkeypatch):
+    """The boundary. `size: 0` agrees with itself and is a real file — this
+    is the assertion that stops the guard turning every empty note in the
+    vault into a dropped one."""
+    monkeypatch.setattr(vault, "couch_req", _bulk({PATH: doc(size=0)}))
+    assert dict(vault.vault_bulk_fetch(PREFIX)) == {PATH: ""}
+
+
+def test_a_document_with_no_size_field_still_comes_back_from_bulk(monkeypatch):
+    """Three separate writers write to this vault. A bulk reader that
+    required `size` would drop every file written by one that omits it."""
+    monkeypatch.setattr(vault, "couch_req", _bulk({PATH: doc(data="hello")}))
+    assert dict(vault.vault_bulk_fetch(PREFIX)) == {PATH: "hello"}
+
+
 # -------------------------------------------------------------------- write
 
 

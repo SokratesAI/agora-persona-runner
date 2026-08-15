@@ -1204,6 +1204,28 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
             content = "".join(chunks[c] for c in kids)
         else:
             content = doc.get("data", "")
+        # The same length checksum `vault_assemble` reads, and deliberately
+        # the same *function* rather than a second copy of the rule: this
+        # loop assembles a document without going through that one, so when
+        # `_size_checked` was added it guarded the single-document read and
+        # silently left the bulk read reading exactly as blindly as before.
+        # Who that actually is, checked rather than asserted: the journal
+        # page (`nova_sources.journal_markdown`), `journal_folder_best_effort`
+        # behind the reply lookup, and the seven vault MCP tools. NOT the
+        # site's other pages — board, comments, digest, costs, retros all
+        # read single documents through `vault_read_path`, so #202 already
+        # covered them — and not `fetch_vault_context`, which builds every
+        # heartbeat's prompt the same guarded way. This comment claimed both
+        # of those until the author read the code it was naming.
+        # Policy differs from `vault_assemble` and only policy does: a short
+        # file drops out of the listing with a note, for the same reason a
+        # chunk-missing one does above.
+        try:
+            content = _size_checked(content, doc, doc.get("path") or doc_id)
+        except VaultIncompleteDocument as exc:
+            log(f"vault: {exc}")
+            unreadable.append(str(exc))
+            continue
         if isinstance(content, str):
             path = doc.get("path") or doc_id
             out[path] = content
