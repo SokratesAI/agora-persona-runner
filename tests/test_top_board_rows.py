@@ -167,3 +167,79 @@ def test_the_paths_are_the_ones_nova_boards_owns():
     from agora_runner.nova_boards import BOARD_PATHS
     assert top_board_rows.ISSUES_PATH is BOARD_PATHS["issues"]["edvard"]
     assert top_board_rows.IDEAS_PATH is BOARD_PATHS["ideas"]["edvard"]
+
+
+def details(*blocks):
+    """A `# Details` section, as both live boards carry it."""
+    out = ["", "# Details", ""]
+    for number, title, body in blocks:
+        out += [f"## {number} — {title}", "", body, ""]
+    return "\n".join(out)
+
+
+def test_an_unanswered_comment_outranks_an_immediate_rating():
+    """He asked a question on a row; that beats a rating nobody typed today."""
+    issues = board((10, "waiting", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "waiting", "Problem.\n\n**Edvard, 08-15:** what about this?"))
+    ideas = board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE))
+    rows = (top_board_rows.open_rows(issues, "issue")
+            + top_board_rows.open_rows(ideas, "idea"))
+    top = top_board_rows.rank(rows)[0]
+    assert (top["board"], top["number"]) == ("issue", 10)
+    assert top["waiting"] is True
+
+
+def test_a_thread_i_already_answered_is_not_waiting():
+    text = board((7, "answered", BACKLOG, "2026-08-01", HIGH)) + details(
+        (7, "answered", "Problem.\n\n**Edvard, 08-14:** first?\n\n"
+                        "**Nova, 08-14 (Cycle 200):** answered."))
+    assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
+
+
+def test_he_gets_the_last_word_after_my_reply_and_is_waiting_again():
+    """Positional, not a count -- Edvard, Nova, Edvard is two each and waiting."""
+    text = board((11, "reopened", BACKLOG, "2026-08-01", LOW)) + details(
+        (11, "reopened", "Problem.\n\n**Edvard, 08-13:** one\n\n"
+                         "**Nova, 08-13 (Cycle 1):** two\n\n**Edvard, 08-15:** three"))
+    assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is True
+
+
+def test_my_own_status_notes_never_make_a_row_look_waiting():
+    """Every closed row carries one of these; none of them is a question."""
+    text = board((9, "noted", BACKLOG, "2026-08-01", HIGH)) + details(
+        (9, "noted", "Problem.\n\n**Nova, 08-15 (Cycle 220):** status note."))
+    assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
+
+
+def test_every_waiting_row_is_listed_even_below_the_runners_up_window():
+    """The waiting row that is NOT the headline pick still has to be named.
+
+    Reviewer finding, PR #212: the first version of this test had one
+    waiting row among five, and waiting-first sort makes a lone waiting
+    row `ranked[0]` -- inside the displayed window by construction. It
+    passed with the summary line built from only the rows on screen, so
+    it pinned nothing. Two waiting rows and `runners_up=0` is the shape
+    where the second one is genuinely off the window.
+    """
+    rows = [{"board": "issue", "number": n, "title": f"row {n}", "status": BACKLOG,
+             "priority": IMMEDIATE, "priorityKey": "immediate", "updated": "08-01",
+             "waiting": False} for n in range(1, 6)]
+    rows.append({"board": "idea", "number": 98, "title": "first waiting", "status": BACKLOG,
+                 "priority": IMMEDIATE, "priorityKey": "immediate", "updated": "08-01",
+                 "waiting": True})
+    rows.append({"board": "idea", "number": 99, "title": "buried waiting", "status": BACKLOG,
+                 "priority": LOW, "priorityKey": "low", "updated": "08-14",
+                 "waiting": True})
+    out = top_board_rows.render(rows, runners_up=0)
+    # idea #98 is the headline pick; idea #99 is off the window entirely.
+    assert "idea #99" not in out.split("waiting on a reply from you:")[0]
+    assert "2 row(s) waiting on a reply from you: idea #98, idea #99" in out
+    assert "UNANSWERED" in out
+
+
+def test_two_questions_answered_by_one_reply_is_not_waiting():
+    """A count rule would call this waiting forever. See test_nova_boards.py."""
+    text = board((12, "twice", BACKLOG, "2026-08-01", LOW)) + details(
+        (12, "twice", "**Edvard, 08-13:** one\n\n**Edvard, 08-13:** two\n\n"
+                      "**Nova, 08-13 (Cycle 1):** both answered"))
+    assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
