@@ -1822,6 +1822,105 @@ describe("commenting on a cycle", () => {
     assert.ok(timers.queued.length > 0, "and still scheduled to try again");
   });
 
+  test("a saved copy mid-wait keeps the drawer waiting instead of giving up", async () => {
+    /* The 500 above is the loud version of this. This is the quiet one, and
+     * it is worse: the worker answers a dead network out of its cache with an
+     * ordinary 200 that parses cleanly, so nothing throws and the `.catch`
+     * below it never runs. The cached body predates the reply, `pick` finds
+     * no pending comment in it, and `paint` reads that as "the wait is over"
+     * -- `watch(false)`, poll cancelled, permanently. He is left on a drawer
+     * that has quietly stopped asking, with no error and nothing to retry. */
+    let timers;
+    const w = await loadSite("/", {
+      comments: withPending(57),
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const card = cardFor(w, 57);
+    assert.ok(card.querySelector(".comment-waiting"), "waiting to begin with");
+
+    /* The cache holds what the page saw before the comment was ever posted:
+     * no pending reply anywhere in it. That is the payload that used to end
+     * the wait. */
+    w.fetch = (url) => (String(url).includes("/api/comments")
+      ? replayedRes(payload.comments)
+      : res({}));
+
+    await timers.fire();
+    assert.ok(card.querySelector(".comment-waiting"), "still waiting after a saved copy");
+    assert.ok(timers.queued.length > 0, "and still scheduled to try again");
+  });
+
+  test("a saved copy does not paint over a reply that is already on screen", async () => {
+    /* Not repainted at all, rather than repainted and re-watched. A saved
+     * copy is strictly older than what the drawer was drawn from, so acting
+     * on one can only take information away -- here, a reply that had
+     * already landed. */
+    const answered = JSON.parse(JSON.stringify(payload.comments));
+    answered.byCycle["57"][0].reply = "Thanks — here is what I found.";
+    answered.byCycle["57"][0].replyPending = true;
+
+    let timers;
+    const w = await loadSite("/", {
+      comments: answered,
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const card = cardFor(w, 57);
+    assert.equal(
+      card.querySelector(".comment-reply .comment-body").textContent,
+      "Thanks — here is what I found.",
+      "the reply is on screen before the poll runs",
+    );
+
+    w.fetch = (url) => (String(url).includes("/api/comments")
+      ? replayedRes(payload.comments)
+      : res({}));
+
+    await timers.fire();
+    assert.ok(
+      card.querySelector(".comment-reply .comment-body"),
+      "the reply survived a replayed poll",
+    );
+  });
+
+  test("a saved copy after posting does not blank out the comment he just sent", async () => {
+    /* The refetch after a successful write is the second door into the same
+     * bug, and the one he would actually notice: the server has confirmed
+     * the comment, the status line says "saved", and a cached list from
+     * before it existed would repaint the drawer without it. A comment that
+     * vanishes under the word "saved" is one he sends again. */
+    let timers;
+    const w = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const card = cardFor(w, 57);
+    click(w, bubble(card));
+    const before = card.querySelectorAll(".comment").length;
+    assert.ok(before > 0, "the fixture drew some comments to begin with");
+
+    const box = card.querySelector(".comment-text");
+    box.value = "One more thing.";
+    /* The POST still succeeds -- `loadSite` answers it with `postReply` --
+     * and only the refetch behind it is served out of the cache, which is
+     * exactly the split that makes this dangerous. */
+    const live = w.fetch;
+    w.fetch = (url, init) => {
+      if (init && init.method === "POST") return live(url, init);
+      if (String(url).includes("/api/comments")) return replayedRes({ byCycle: {}, needs: [] });
+      return live(url, init);
+    };
+    click(w, card.querySelector(".comment-send"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(
+      card.querySelectorAll(".comment").length,
+      before,
+      "the drawer still shows what it showed, not an empty cached list",
+    );
+    assert.equal(w.posted.length, 1, "and the comment really was sent");
+  });
+
   test("navigating while a reply is coming does not leave two pollers", async () => {
     /* A render throws every drawer away and builds new ones. The discarded
      * drawer's poll has to go with it, or every tap he makes while waiting
