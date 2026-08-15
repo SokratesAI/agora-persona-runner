@@ -3995,6 +3995,20 @@ def test_a_row_with_no_write_up_is_a_409_and_not_a_502():
     assert json.loads(body)["ok"] is False
 
 
+def test_an_exhausted_write_is_a_502_and_not_a_409():
+    """`_amend_board` fails two ways and only one is "there is no such
+    row". A losing compare-and-swap against a cycle writing the same
+    write-up returns `could not write to ...`, and reporting that as 409
+    makes a real failure indistinguishable from an empty row in the log.
+    Caught by the reviewer; the first version sent 409 for both."""
+    with patch.object(nova_site, "comment_on_row",
+                      return_value=(False, "could not write to ideas: 409 conflict")):
+        status, _, body = _post(
+            "/api/board/comment", {"target": "ideas", "number": 64, "text": "x"})
+    assert status == 502
+    assert json.loads(body)["ok"] is False
+
+
 def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
     """The page on his phone still shows the write-up from before the
     comment; the next read must come from the file."""

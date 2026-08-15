@@ -1569,6 +1569,19 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         409 rather than a 502 for `_post_board_amend`'s reason: nothing
         failed, there is simply nothing there to comment under, and the
         page should say so rather than retry.
+
+        **`_amend_board` fails in two ways and only one of them is that**,
+        which the first version of this route missed while its docstring
+        claimed otherwise (reviewer). The other is a genuine write
+        failure: `WRITE_ATTEMPTS` exhausted against a losing
+        compare-and-swap, which returns `could not write to ...` and is a
+        502. That is not a hypothetical here -- the concurrent writer is a
+        cycle appending to these same write-ups in step 6, which is the
+        argument for the retry loop in the first place, so the case that
+        can actually exhaust it is the one this route was reporting as
+        benign. `app.js` reads `ok` and not the status, so nothing on
+        screen changed either way; what changed is that a real failure was
+        indistinguishable from an empty row in the log.
         """
         target = payload.get("target")
         number = payload.get("number")
@@ -1609,7 +1622,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
             is_error=not ok,
         )
-        self._send_json(200 if ok else 409, {"ok": ok, "message": message})
+        stale = "is not a row" in message
+        self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
 
     def _post_board_amend(self, payload, delete):
         """`/api/board/edit` and `/api/board/delete` -- issue #84.

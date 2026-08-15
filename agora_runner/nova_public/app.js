@@ -2604,6 +2604,7 @@
       box.placeholder = "Comment on #" + item.number + "…";
       var status = el("span", "item-comment-status", "");
       var send = el("button", "item-comment-send", "Comment");
+      send.type = "button";
 
       function busy(on) {
         send.disabled = on;
