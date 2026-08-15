@@ -851,7 +851,7 @@
      * half you are in. `cleanTitle` because eleven entries have a title that
      * is only their own timestamp, which the stamp above already prints. */
     if (ordered.length === 1 && entry.cycle !== null && entry.cycle !== undefined
-        && cleanTitle(entry.title)) {
+        && cleanTitle(entry.title) && !hasDigestBrief(digestLine)) {
       card.appendChild(el("p", "entry-title", cleanTitle(entry.title)));
     }
 
@@ -1156,6 +1156,24 @@
     return row;
   }
 
+  /* Edvard, issues #86: "Journal cards like cycle 209 seems to have two
+   * titles. Only one is enough."
+   *
+   * A card draws the entry's own `### ` heading title and, directly under
+   * it, the brief. When the brief comes from the digest line those are two
+   * sentences written for two different purposes, saying the same thing --
+   * cycle 209's heading is "Edvard asked for tabs three times and I finally
+   * built them" and its digest brief is "You asked three times for the
+   * double journal entries to be one card with tabs, and now they are."
+   * The digest line is the one he reads, so it is the one that stays.
+   *
+   * The 55 archival entries with no digest line are untouched: their brief
+   * is their own first paragraph, which is prose rather than a second
+   * title, and dropping the heading there would leave the card unlabelled. */
+  function hasDigestBrief(digestLine) {
+    return !!(digestLine && digestLine.briefSpans && digestLine.briefSpans.length);
+  }
+
   function cleanTitle(title) {
     var text = String(title || "")
       .replace(/^[\s·—–-]+/, "")
@@ -1380,7 +1398,7 @@
      * `cleanTitle` rather than the raw string: eleven entries have a title
      * that is only their own timestamp, and it renders as nothing rather
      * than as a date printed twice. */
-    if (parts.length === 1 && cleanTitle(first.title)) {
+    if (parts.length === 1 && cleanTitle(first.title) && !hasDigestBrief(digestLine)) {
       card.appendChild(el("p", "entry-title", cleanTitle(first.title)));
     }
 

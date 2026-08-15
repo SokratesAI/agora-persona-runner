@@ -719,7 +719,10 @@ def parse_journal(markdown, times_by_cycle=None):
         # dropped, so that is most of the feed rather than a corner case.
         # Only the brief: their remainder is the journal entry itself, and
         # showing it in both drawers would print the same paragraph twice.
-        entry["briefSpans"] = render_inline(split_brief(_first_paragraph(raw_body))[0])
+        # `strip_brief_label` because a report's first paragraph opens with
+        # `**TL;DR.**`, and without it that label is the whole brief.
+        brief_source = strip_brief_label(_first_paragraph(raw_body))
+        entry["briefSpans"] = render_inline(split_brief(brief_source)[0])
         entry["pr"] = pr
         entry["prSpans"] = parse_pr_refs(pr)
         entry["board"] = board
@@ -1086,6 +1089,40 @@ def split_sentences(text):
     return sentences
 
 
+def _is_bold_sentence(sentence):
+    """Is this whole sentence wrapped in `**`?"""
+    return sentence.startswith("**") and sentence.rstrip().endswith("**")
+
+
+def strip_brief_label(text):
+    """Drop a leading bold *label* -- `**TL;DR.**` -- from a card's brief.
+
+    An eight-cycle report opens with a bold label rather than a bold
+    headline, and `split_brief`'s shortcut above cannot tell the two
+    apart: it read report 242's `**TL;DR.**` as the headline and gave the
+    card that as its entire title, which is what Edvard reported in
+    issues #86 -- *"the 8cycle reports have just the word tl;dr as
+    title. That might be a missinderstanding about i said i wanted the
+    report title to be a precise and short summarization."*
+
+    The discriminator needs no list of known labels: a headline is a
+    sentence and always contains a space, and `TL;DR.` does not.
+
+    Only the entry brief calls this. A digest line's `brief` and `rest`
+    have to reconstruct the whole line between them, so nothing may be
+    dropped on that path -- and a digest line never carries this shape
+    anyway, since `_DIGEST_LINE_RE` has already eaten the `**Cycle N**`
+    prefix by the time the text gets here.
+    """
+    sentences = split_sentences(text)
+    # `> 1` because a brief that is empty is worse than one that is a
+    # label: a first paragraph holding nothing but the label keeps it.
+    if len(sentences) > 1 and _is_bold_sentence(sentences[0]):
+        if " " not in sentences[0].strip("* "):
+            return " ".join(sentences[1:])
+    return text
+
+
 def split_brief(text):
     """A summary -> `(brief, rest)`, split on a sentence boundary.
 
@@ -1102,7 +1139,7 @@ def split_brief(text):
     # whenever the headline was short, which is the opposite of "as short
     # as possible". All 9 live digest lines are shaped this way; entries
     # briefed from their own prose have no such marker and fall through.
-    if sentences[0].startswith("**") and sentences[0].rstrip().endswith("**"):
+    if _is_bold_sentence(sentences[0]):
         return sentences[0], " ".join(sentences[1:])
     taken = []
     length = 0

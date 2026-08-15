@@ -59,6 +59,7 @@ from agora_runner.nova_journal import (
     render_blocks,
     render_inline,
     split_brief,
+    strip_brief_label,
     split_entries,
     split_outcome,
     split_sentences,
@@ -1551,6 +1552,35 @@ def test_a_bold_opening_sentence_is_the_whole_brief():
     brief, rest = split_brief(text)
     assert brief == "**Short headline.**"
     assert rest.startswith("A second sentence")
+
+
+def test_a_bold_label_is_not_the_report_cards_whole_title():
+    """Edvard, issues #86: "the 8cycle reports have just the word tl;dr as
+    title". Report 242's first paragraph really is shaped like this, and
+    `split_brief` alone returns `**TL;DR.**` and nothing else."""
+    text = (
+        "**TL;DR.** These eight hours went on two things. Your boards now say "
+        "what has actually shipped."
+    )
+    assert split_brief(text)[0] == "**TL;DR.**"
+    brief, _ = split_brief(strip_brief_label(text))
+    assert brief.startswith("These eight hours went on two things.")
+    assert "TL;DR" not in brief
+
+
+def test_a_bold_headline_is_not_mistaken_for_a_label():
+    """The discriminator, from both sides. A headline is a sentence and holds
+    a space; a label does not. Without the second assertion this passes for a
+    `strip_brief_label` that strips nothing at all."""
+    headline = "**Short headline.** A second sentence the budget would have room for."
+    assert strip_brief_label(headline) == headline
+    assert strip_brief_label("**TL;DR.** And then the summary.") == "And then the summary."
+
+
+def test_a_paragraph_that_is_only_a_label_keeps_it():
+    """A brief that is empty is worse than a brief that is a label -- the same
+    reason the budget below never drops a long first sentence."""
+    assert strip_brief_label("**TL;DR.**") == "**TL;DR.**"
 
 
 def test_a_brief_takes_at_most_three_sentences():
