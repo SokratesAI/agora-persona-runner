@@ -932,7 +932,7 @@ body.nav-open { overflow: hidden; }
   min-height: 44px;
   padding: 0.4rem 0.6rem;
   background: var(--card);
-  color: var(--fg);
+  color: var(--text);
   border: 1px solid var(--line);
   border-radius: 0.5rem;
   font: inherit;
@@ -993,7 +993,7 @@ body.nav-open { overflow: hidden; }
   min-height: 44px;
   padding: 0.3rem 0.5rem;
   background: var(--card);
-  color: var(--fg);
+  color: var(--text);
   border: 1px solid var(--line);
   border-radius: 0.5rem;
   font: inherit;
@@ -1147,7 +1147,7 @@ body.nav-open { overflow: hidden; }
   background: none;
   border: 1px solid var(--line);
   border-radius: 0.5rem;
-  color: var(--fg);
+  color: var(--text);
   font: inherit;
   font-size: 0.85rem;
   cursor: pointer;
@@ -1165,7 +1165,7 @@ body.nav-open { overflow: hidden; }
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 0.5rem;
-  color: var(--fg);
+  color: var(--text);
   font: inherit;
   resize: vertical;
 }
@@ -1247,7 +1247,7 @@ body.nav-open { overflow: hidden; }
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 0.5rem;
-  color: var(--fg);
+  color: var(--text);
   font: inherit;
   resize: vertical;
 }
@@ -1276,7 +1276,7 @@ body.nav-open { overflow: hidden; }
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 0.5rem;
-  color: var(--fg);
+  color: var(--text);
   font: inherit;
   resize: vertical;
 }
