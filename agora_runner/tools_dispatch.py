@@ -111,12 +111,20 @@ def _claim_read_rev(conversation_id, path):
         return _READ_REVS.pop((conversation_id, path.lower()), _NO_READ)
 
 
-def _conditional_write(conversation_id, path, content):
-    """vault_write_path, conditional on the read this conversation did."""
+def _conditional_write(conversation_id, path, content, allow_shrink=False):
+    """vault_write_path, conditional on the read this conversation did.
+
+    `allow_shrink` is plumbed all the way from the tool's own arguments
+    rather than defaulted here, because the refusal it overrides names it
+    in the message the model reads. A flag a caller is told to pass and
+    cannot is worse than no override at all -- it reads as a dead end on
+    the one path where the file is still recoverable.
+    """
     rev = _claim_read_rev(conversation_id, path)
     if rev is _NO_READ:
-        return vault_write_path(path, content)
-    result = vault_write_path(path, content, if_rev=rev)
+        return vault_write_path(path, content, allow_shrink=allow_shrink)
+    result = vault_write_path(path, content, if_rev=rev,
+                              allow_shrink=allow_shrink)
     if "409 conflict" in result:
         # The caller here is a model, and it can act on this: it has the
         # tool it needs to recover, and no way to guess that from a bare
@@ -208,7 +216,8 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # effort -- a failed read (e.g. new file) just means "" as
             # the before side, same as the file not existing.
             before = _before_snapshot(path)
-            result = _conditional_write(conversation_id, path, content)
+            result = _conditional_write(conversation_id, path, content,
+                                        bool(args.get("allow_shrink")))
             _audit_vault_write(persona_name, conversation_id, "vault_write", path, result, before, content)
             return result
         if name == "vault_append":

@@ -1056,7 +1056,10 @@ def test_execute_tool_vault_write_audits_before_and_after_content(runner):
         )
     assert result == "written"
     mock_read.assert_called_once_with("notes.md")
-    mock_write.assert_called_once_with("notes.md", "new content")
+    # `allow_shrink=False` is the whole point of the collapse guard being on
+    # by default: an ordinary tool call must not opt out of it by omission.
+    mock_write.assert_called_once_with("notes.md", "new content",
+                                       allow_shrink=False)
     mock_audit.assert_called_once_with(
         "Gemini", "c1", "vault_write", "notes.md", before="old content", after="new content"
     )
@@ -3784,7 +3787,10 @@ def test_execute_tool_scoped_write_exact_file_ignores_model_supplied_path(runner
             "scoped_write", {"path": "elsewhere.md", "content": "hello"}, {"name": "P"}, "c1", active_step,
         )
     assert result == "written"
-    mock_write.assert_called_once_with("notes.md", "hello")
+    # `scoped_write` shares `_conditional_write` and deliberately offers no
+    # override — a workflow step writing its own scoped file has no reason
+    # to replace one with a fraction of itself.
+    mock_write.assert_called_once_with("notes.md", "hello", allow_shrink=False)
     mock_audit.assert_called_once_with("P", "c1", "scoped_write", "notes.md", before="old", after="hello")
 
 

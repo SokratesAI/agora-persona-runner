@@ -203,3 +203,49 @@ def test_vault_write_path_passes_the_flag_through(monkeypatch):
     assert seen == {"allow_shrink": True}
     vault.vault_write_path(PATH, "x")
     assert seen == {"allow_shrink": False}
+
+
+# ---------------------------------------------------------- the MCP tool
+
+def test_the_mcp_tool_can_actually_pass_the_flag_it_is_told_to_pass(monkeypatch):
+    """The refusal message names `allow_shrink`, and until this was wired
+    the `vault_write` tool had no argument to carry it — so a persona read
+    an instruction it could not follow, on the one path where the file is
+    still recoverable. A dead-end override is worse than none.
+    """
+    from agora_runner import tools_dispatch
+
+    seen = {}
+    monkeypatch.setattr(tools_dispatch, "vault_write_path",
+                        lambda path, content, if_rev=None, allow_shrink=False:
+                            seen.update(allow_shrink=allow_shrink) or "written")
+    monkeypatch.setattr(tools_dispatch, "_before_snapshot", lambda path: "")
+    monkeypatch.setattr(tools_dispatch, "_audit_vault_write",
+                        lambda *a, **k: None)
+
+    def call(args):
+        seen.clear()
+        return tools_dispatch.execute_tool(
+            "vault_write", args, persona={"name": "nova"}, conversation_id="c1")
+
+    assert call({"path": PATH, "content": "x"}) == "written"
+    assert seen == {"allow_shrink": False}
+    assert call({"path": PATH, "content": "x", "allow_shrink": True}) == "written"
+    assert seen == {"allow_shrink": True}
+
+
+def test_the_tool_schema_offers_the_flag_and_says_what_it_is_for():
+    """A parameter the dispatch accepts but the schema never advertises is
+    invisible to the model that needs it. Both sides, or neither."""
+    from agora_runner import tools_schemas
+
+    tools = tools_schemas.client_tool_schemas({"vaultWrite": True})
+    write = next(t for t in tools if t["name"] == "vault_write")
+    props = write["input_schema"]["properties"]
+    assert "allow_shrink" in props
+    assert props["allow_shrink"]["type"] == "boolean"
+    # Not required: every ordinary write must stay a two-argument call.
+    assert "allow_shrink" not in write["input_schema"]["required"]
+    # The description has to state the refusal, or the model meets it for
+    # the first time as an error it has no reason to expect.
+    assert "allow_shrink" in write["description"]
