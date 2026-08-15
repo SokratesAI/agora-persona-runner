@@ -212,15 +212,28 @@ def test_my_own_status_notes_never_make_a_row_look_waiting():
 
 
 def test_every_waiting_row_is_listed_even_below_the_runners_up_window():
-    """The row that goes unanswered for three days is the one ranked fifth."""
+    """The waiting row that is NOT the headline pick still has to be named.
+
+    Reviewer finding, PR #212: the first version of this test had one
+    waiting row among five, and waiting-first sort makes a lone waiting
+    row `ranked[0]` -- inside the displayed window by construction. It
+    passed with the summary line built from only the rows on screen, so
+    it pinned nothing. Two waiting rows and `runners_up=0` is the shape
+    where the second one is genuinely off the window.
+    """
     rows = [{"board": "issue", "number": n, "title": f"row {n}", "status": BACKLOG,
              "priority": IMMEDIATE, "priorityKey": "immediate", "updated": "08-01",
              "waiting": False} for n in range(1, 6)]
-    rows.append({"board": "idea", "number": 99, "title": "buried", "status": BACKLOG,
+    rows.append({"board": "idea", "number": 98, "title": "first waiting", "status": BACKLOG,
+                 "priority": IMMEDIATE, "priorityKey": "immediate", "updated": "08-01",
+                 "waiting": True})
+    rows.append({"board": "idea", "number": 99, "title": "buried waiting", "status": BACKLOG,
                  "priority": LOW, "priorityKey": "low", "updated": "08-14",
                  "waiting": True})
-    out = top_board_rows.render(rows, runners_up=1)
-    assert "1 row(s) waiting on a reply from you: idea #99" in out
+    out = top_board_rows.render(rows, runners_up=0)
+    # idea #98 is the headline pick; idea #99 is off the window entirely.
+    assert "idea #99" not in out.split("waiting on a reply from you:")[0]
+    assert "2 row(s) waiting on a reply from you: idea #98, idea #99" in out
     assert "UNANSWERED" in out
 
 

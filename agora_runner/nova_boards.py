@@ -472,7 +472,13 @@ _COMMENT_NOTE_RE = re.compile(
 
 
 def unanswered_comments(markdown):
-    """Row numbers whose write-up ends on a comment from Edvard. Newest first.
+    """Row numbers whose write-up ends on a comment from Edvard.
+
+    Descending row number, which is deterministic and nothing more. It
+    said "newest first" until a reviewer pointed out that row 4 can carry
+    today's freshest comment and row 99 one from last week, and that the
+    only caller wraps this in a `set()` anyway -- an ordering claim that
+    is both wrong and unused is worse than no ordering claim.
 
     Idea #64 gave him a comment box on every boarded row (Cycle 219), and
     the design call that made it cheap is the one that left this hole: a
@@ -493,6 +499,20 @@ def unanswered_comments(markdown):
     Prose between the notes is ignored -- the write-up *is* prose, his
     statement of the problem, and only the `**Author, date:**` lines are
     part of the conversation.
+
+    **This sees the comment box, not the file.** Only the shape
+    `append_detail_note` writes counts, so a comment Edvard types straight
+    into `issues.md` in Obsidian is invisible here -- and he does that:
+    `## 59` in the live file already carries `- comment from Edvard: i now
+    see that this link only appears when...`, written by hand before the
+    comment box existed (reviewer, PR #212). The bad case is not the
+    missed flag, it is that a hand-typed question landing *after* one of
+    my notes leaves the row reading as answered. Recognising free text as
+    a comment is the wrong fix -- his whole write-up is free text, so
+    anything loose enough to catch that would flag every row he has ever
+    described a problem on. The real answer is for the page to write his
+    hand-edits through the same call, and it is filed rather than guessed
+    at here.
     """
     waiting = []
     lines = (markdown or "").split("\n")
