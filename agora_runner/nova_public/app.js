@@ -139,11 +139,15 @@
   var folds = {};
 
   function foldFor(cycle) {
+    /* `part` joins the three booleans because a poll rebuilds the feed from
+     * scratch: without it, Edvard taps to the addendum, a routine poll lands,
+     * and the tab silently reverts to the first part under him while the card
+     * and drawer correctly stay open. Found by the reviewer, not by me. */
     if (cycle === null || cycle === undefined) {
-      return { expanded: false, journal: false, comments: false };
+      return { expanded: false, journal: false, comments: false, part: 0 };
     }
     var key = "cycle-" + cycle;
-    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false };
+    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false, part: 0 };
     return folds[key];
   }
 
@@ -905,11 +909,18 @@
     journalToggle.setAttribute("aria-controls", bodyId);
     card.appendChild(journalToggle);
 
-    /* The drawer wraps the parts rather than being one of them, so a
-     * subheading is hidden and shown with the prose it heads. */
+    /* The drawer wraps the parts rather than being one of them, so the tab
+     * strip is hidden and shown with the prose it divides.
+     *
+     * `fold` is read here rather than at its old declaration forty lines
+     * down: `var` hoists, so the name existed and was `undefined`, and
+     * passing it in silently disabled the tab memory while every test still
+     * passed. It is the same object either way -- `foldFor` memoises per
+     * cycle -- so this is a move, not a second one. */
+    var fold = foldFor(entry.cycle);
     var body = el("div", "entry-parts");
     body.id = bodyId;
-    appendParts(body, ordered, settled);
+    appendParts(body, ordered, settled, fold);
     card.appendChild(body);
 
     /* One comment button per cycle, which is now simply one per card.
@@ -936,7 +947,6 @@
      * are also the only places that have to remember it -- a tap goes
      * through one of these whether it came from the card's own listener or
      * from `setExpanded` re-asserting a drawer. See `folds`. */
-    var fold = foldFor(entry.cycle);
 
     function setCommentsOpen(open) {
       if (!commenting) return;
@@ -987,6 +997,16 @@
      * losing your place to copy a sentence. */
     card.addEventListener("click", function (event) {
       if (event.target.closest("a")) return;
+      /* A tap on a part tab has somewhere else to go, the same as a link.
+       * Without this the card's listener fires too and collapses the whole
+       * card out from under the tab you just pressed -- the drawer shuts,
+       * and the part you asked for flashes into view and disappears with
+       * it. Found in a real browser; every jsdom test passed, because they
+       * assert which panel is `hidden` and the panel is correct right up
+       * until the card closes over it. The guard lives here rather than as
+       * a `stopPropagation` in the strip because this file keeps one
+       * listener that decides what a tap meant, and a second one drifts. */
+      if (event.target.closest(".entry-tabs")) return;
       var selection = window.getSelection();
       if (selection && !selection.isCollapsed && String(selection)) return;
       /* "If the full journal text is clicked or the button, the full
@@ -1194,31 +1214,138 @@
    *
    *  Shared by the feed card's drawer and the cycle page so the two cannot
    *  drift -- they are the same account, and the only difference is whether
-   *  you had to tap to see it. A single-part cycle gets no subheading:
-   *  there is nothing to tell apart, and a header over the only section is
-   *  the same noise as a permalink to the page you are on. */
-  function appendParts(container, ordered, settled) {
+   *  you had to tap to see it. A single-part cycle gets no tab strip: there
+   *  is nothing to tell apart, and a control that switches between one
+   *  thing is the same noise as a permalink to the page you are on.
+   *
+   *  **Tabs, because Edvard asked three times.** Comments board at cycle
+   *  81: "If a double entry is necessary like for cycle 81, have it be
+   *  combined into one card that has tabs or something similar." Inside
+   *  issue #59: "they should be combined into one with tabs. Please do some
+   *  propper ui research and testing with this as the current solution does
+   *  not make sense, is hard to understand and wasteful."
+   *
+   *  Two cycles answered that with dated subheadings instead and each
+   *  invited him to reverse it "in one sentence". He had already spent the
+   *  sentence, twice, and then a third time to say the result was hard to
+   *  understand -- so re-arguing it a third time is the loop overruling its
+   *  own user by attrition. The standing objection was that a tab hides the
+   *  addendum, which is usually "the deploy I could not see came up
+   *  healthy", i.e. the cycle's real answer. That objection is already
+   *  answered by the card and page above this: `settledPart` puts the
+   *  settled PR and outcome in the meta row, outside the tabs, where it is
+   *  visible whichever tab is open. Tabs hide prose, not the conclusion.
+   *
+   *  Every panel stays in the DOM and only `hidden` is toggled, so switching
+   *  tabs is a class change rather than a re-render and nothing below has to
+   *  be rebuilt. **It does not keep the shut half findable**: `hidden` is
+   *  `display: none`, which find-in-page and select-all skip, the same trap
+   *  `.prio-menu[hidden]` already documents in the stylesheet. An earlier
+   *  version of this comment claimed otherwise and was wrong. Reaching both
+   *  halves at once is what `/cycle/N` is for, and if that stops being a
+   *  good enough answer the fix is a real "show both" control, not a
+   *  sentence here saying the problem does not exist. */
+  function appendParts(container, ordered, settled, fold) {
+    if (ordered.length < 2) {
+      var only = el("div", "entry-body");
+      renderBlocks(only, ordered[0].blocks);
+      container.appendChild(only);
+      return;
+    }
+
+    var strip = el("div", "tabs entry-tabs");
+    strip.setAttribute("role", "tablist");
+    strip.setAttribute("aria-label", "Parts of this cycle");
+    container.appendChild(strip);
+
+    var tabs = [];
+    var panels = [];
+
     ordered.forEach(function (part, index) {
-      if (ordered.length > 1) {
-        var when = [part.date, part.time].filter(Boolean).join(" ");
-        var label = partLabel(part.title, index);
-        container.appendChild(el("h3", "entry-part", when ? label + " · " + when : label));
-        /* A part that reached a different answer than the cycle's settled
-         * one keeps its own row, so nothing is dropped by drawing the
-         * header once. Cycle 6 is the case: three parts, three different
-         * PR/outcome pairs -- `no-op`, then `merged`, then `shipped` -- and
-         * a single header can only be one of them. Where a part agrees with
-         * the header (the common shape) it stays silent, which is the whole
-         * point of not drawing two identical cards. */
-        if ((part.pr || part.outcome) && !sameOutcome(part, settled)) {
-          var partMeta = appendOutcome(el("div", "entry-meta entry-meta-part"), part);
-          if (partMeta.childNodes.length) container.appendChild(partMeta);
-        }
+      var when = [part.date, part.time].filter(Boolean).join(" ");
+      var label = partLabel(part.title, index);
+      var seq = nextBodyId++;
+      var tabId = "part-tab-" + seq;
+      var panelId = "part-panel-" + seq;
+
+      /* The tab carries the same text the subheading did -- the cycle's own
+       * heading prose plus when it was written -- because that is what tells
+       * the two halves apart, and it is the one thing a tab label has to do.
+       * Cycle 75's runs to ninety characters, so the strip wraps rather than
+       * scrolls; `.tabs` already does that. */
+      var tab = el("button", "tab entry-part-tab", when ? label + " · " + when : label);
+      tab.type = "button";
+      tab.id = tabId;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", panelId);
+      strip.appendChild(tab);
+      tabs.push(tab);
+
+      var panel = el("div", "entry-part-panel");
+      panel.id = panelId;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabId);
+
+      /* A part that reached a different answer than the cycle's settled one
+       * keeps its own row, inside its own panel. Cycle 6 is the case: three
+       * parts, three different PR/outcome pairs -- `no-op`, then `merged`,
+       * then `shipped` -- and the meta row above the tabs can only be one of
+       * them. Where a part agrees with the settled answer (the common shape)
+       * it stays silent, so the common cycle draws no duplicate. */
+      if ((part.pr || part.outcome) && !sameOutcome(part, settled)) {
+        var partMeta = appendOutcome(el("div", "entry-meta entry-meta-part"), part);
+        if (partMeta.childNodes.length) panel.appendChild(partMeta);
       }
+
       var body = el("div", "entry-body");
       renderBlocks(body, part.blocks);
-      container.appendChild(body);
+      panel.appendChild(body);
+      container.appendChild(panel);
+      panels.push(panel);
     });
+
+    /** Show one part. Index is always in range -- every caller derives it
+     *  from `tabs`, which is built from `ordered` one loop above. */
+    function select(index) {
+      if (fold) fold.part = index;
+      tabs.forEach(function (tab, i) {
+        var on = i === index;
+        tab.classList.toggle("on", on);
+        tab.setAttribute("aria-selected", on ? "true" : "false");
+        /* Roving tabindex: one stop for the whole strip, then arrow keys
+         * within it. A tablist where every tab is a tab stop makes a
+         * keyboard user press Tab three times to get past cycle 6. */
+        tab.tabIndex = on ? 0 : -1;
+        panels[i].hidden = !on;
+      });
+    }
+
+    strip.addEventListener("click", function (event) {
+      var index = tabs.indexOf(event.target);
+      if (index !== -1) select(index);
+    });
+
+    strip.addEventListener("keydown", function (event) {
+      var current = tabs.indexOf(event.target);
+      if (current === -1) return;
+      var next = null;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (current + 1) % tabs.length;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (current - 1 + tabs.length) % tabs.length;
+      if (event.key === "Home") next = 0;
+      if (event.key === "End") next = tabs.length - 1;
+      if (next === null) return;
+      event.preventDefault();
+      select(next);
+      tabs[next].focus();
+    });
+
+    /* The first part, because both surfaces read forwards: `ordered` is
+     * oldest-first and an addendum is the later half of the same hour, not
+     * an alternative to it -- unless this cycle's card already had a tab
+     * open, in which case a poll re-render must not throw it away. Bounded,
+     * because a cycle can gain a part between two polls. */
+    var start = fold && fold.part ? fold.part : 0;
+    select(start < ordered.length ? start : 0);
   }
 
   function renderCyclePage(cycleNumber, entries, digestLine, comments) {
