@@ -3817,3 +3817,41 @@ def test_a_board_edit_writes_to_his_file_and_not_to_novas_own_copy():
     assert status == 200
     assert seen["read"] == "projects/sokrates/projects/nova/issues.md"
     assert seen["write"] == "projects/sokrates/projects/nova/issues.md"
+
+
+def test_the_journal_endpoint_reports_a_payload_it_could_not_refresh():
+    """The wiring, and it is the half no other test could see.
+
+    `_with_silence` learned to tell a frozen record from a stalled loop,
+    and `journal_page` learned to forward the age -- and with the endpoint
+    passing `record_age=None` the whole feature is dead on the live site
+    while every unit test above still passes. That mutation was run and
+    caught nothing, which is the Cycle 77 lesson: a change with two halves
+    has to be broken in both places separately.
+
+    So this asks the server, over a socket, with the cache aged by hand.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_site, "journal_payload", lambda: {"entries": [], "status": {
+        "cycle": 206,
+        "lastWrittenAt": "2026-08-15T04:29:00+02:00",
+    }}):
+        status, _, first = _get("/api/journal")
+        assert status == 200
+        # Built for this request, so the record is as current as it gets.
+        assert json.loads(first)["status"]["recordStale"] is False
+
+        # Age the served copy without touching anything it says: the
+        # journal is byte-identical, only this process's view of it is old.
+        with nova_site._cache_lock:
+            payload, cached_body, cached_etag, built = nova_site._cache["journal"]
+            nova_site._cache["journal"] = (
+                payload, cached_body, cached_etag,
+                built - nova_site.RECORD_TRUST_SECONDS - 1,
+            )
+        status, _, second = _get("/api/journal")
+
+    nova_site.reset_cache()
+    assert status == 200
+    assert json.loads(second)["status"]["recordStale"] is True
+    assert json.loads(second)["status"]["stalled"] is False

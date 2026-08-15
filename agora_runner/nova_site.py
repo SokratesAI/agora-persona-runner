@@ -574,6 +574,22 @@ def board_page(payload, limit=None, item=None, search=None):
 # session polling every 30s rebuilds once per poll and never waits for one.
 CACHE_FRESH_SECONDS = 15
 
+# How old the served payload may be before "there is no newer entry in it"
+# stops being evidence about the loop and becomes evidence about this
+# process. `_with_silence` divides a live `now` by a `lastWrittenAt` that
+# came out of the cache, so every second the refresh fails to land is
+# counted as a second of the loop being quiet -- and past two intervals
+# that is reported as a stall the loop is not in. Measured 2026-08-15:
+# `nova-site-preview` had been serving `stalled: true, silentIntervals: 9`
+# for hours off a payload built at 19:17 the previous evening, while the
+# loop was writing an entry every hour.
+#
+# 300s is twenty consecutive missed refreshes at CACHE_FRESH_SECONDS. A
+# reader is bounded by their poll interval plus one rebuild, so nothing
+# healthy comes near it; anything past it means the rebuild itself is
+# failing, which is a different fact and deserves to be said as one.
+RECORD_TRUST_SECONDS = 300
+
 _cache = {}
 _cache_lock = threading.Lock()
 _refreshing = set()
@@ -604,8 +620,22 @@ def _versioned(payload):
 
 
 def cached_payload(name, build):
-    """`(payload, body, etag)` -- the last build, served immediately while
-    the next one is computed behind the request.
+    """`(payload, body, etag)` from `cached_entry`, without the age."""
+    payload, body, etag, _ = cached_entry(name, build)
+    return payload, body, etag
+
+
+def cached_entry(name, build):
+    """`(payload, body, etag, age_seconds)` -- the last build, served
+    immediately while the next one is computed behind the request.
+
+    The age belongs to *the copy this call returns*, which is why it comes
+    back from here rather than from a second look at the cache. Reading it
+    afterwards is a race, and one this cycle's own test caught: the
+    background refresh started on the line above can land in between, so
+    the caller would stamp a stale body with the fresh copy's age. That is
+    the wrong direction to be wrong in -- the one thing the age is for is
+    saying "do not trust the timestamps in this body".
 
     `/api/journal` costs 3.0-3.5s every time it is asked (measured against
     the live pod, 2026-08-10: 1.9s of vault bulk fetch, 1.5s of parsing,
@@ -635,7 +665,7 @@ def cached_payload(name, build):
     if thread is not None:
         thread.start()
     if entry is not None:
-        return entry[0], entry[1], entry[2]
+        return entry[0], entry[1], entry[2], max(0.0, now - entry[3])
     # Cold: one build, however many requests arrive at once. This is a
     # ThreadingHTTPServer and a cold load now asks for two payloads in
     # parallel, both of which want the journal -- `/api/digest` needs the
@@ -646,8 +676,9 @@ def cached_payload(name, build):
         with _cache_lock:
             entry = _cache.get(name)
         if entry is not None:
-            return entry[0], entry[1], entry[2]
-        return _refresh(name, build)
+            return entry[0], entry[1], entry[2], max(0.0, time.time() - entry[3])
+        # Built for this request, so its age is zero rather than unknown.
+        return _refresh(name, build) + (0.0,)
 
 
 # What gets built at startup. There is an obvious way to write this list
@@ -811,7 +842,7 @@ def _refresh(name, build):
     return payload, body, etag
 
 
-def journal_page(payload, limit=None, offset=0, cycle=None, now=None):
+def journal_page(payload, limit=None, offset=0, cycle=None, now=None, record_age=None):
     """One window of the journal, plus how many entries there are in all.
 
     The cold load is the half the 304 poll of #84 did not touch: 109
@@ -853,7 +884,7 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None):
         picked = entries[offset:end]
     return {
         "entries": [_rendered(entry) for entry in picked],
-        "status": _with_silence(payload.get("status", {}), now),
+        "status": _with_silence(payload.get("status", {}), now, record_age=record_age),
         "total": len(entries),
     }
 
@@ -948,7 +979,7 @@ def reset_cadence():
         _cadence_refreshing = False
 
 
-def _with_silence(status, now=None, minutes=None):
+def _with_silence(status, now=None, minutes=None, record_age=None):
     """`status` plus how long the loop has been quiet, judged right now.
 
     The live half of #72, and it is computed here rather than in
@@ -998,7 +1029,35 @@ def _with_silence(status, now=None, minutes=None):
             # have to guard. The same call `cycle_health.stalled_for` makes.
             silent = max(0, int(elapsed.total_seconds() // (minutes * 60)))
     out["silentIntervals"] = silent
-    out["stalled"] = silent is not None and silent >= STALL_GRACE_INTERVALS
+
+    # The two halves of that subtraction come from different moments:
+    # `now` is live and `lastWrittenAt` came out of a cache that may not
+    # have refreshed in hours. So a rebuild that keeps failing looks
+    # exactly like a loop that stopped writing, and the page says the
+    # second when only the first is true -- confidently, and about the one
+    # thing it exists to be trusted on.
+    #
+    # `stale` is not a softer stall, it is a different claim: *this
+    # process cannot see the journal*. It is the failed-fetch state of
+    # issue #81 one hop further back -- Cycle 198 gave the client an
+    # honest answer for "I cannot reach the server" and left the server
+    # with none for "I cannot reach the vault". Silence there is not
+    # neutral either; here it was worse than silence, because it was a
+    # false alarm rather than a missing one.
+    #
+    # `silentIntervals` is still reported: nothing newer has been seen,
+    # which remains true and is what makes the age worth showing. What
+    # goes away is the verdict drawn from it.
+    # A boolean and not the age in minutes, deliberately. Anything in this
+    # payload that is not folded into the etag is frozen at whatever the
+    # last non-304 poll said, and a counter that stops counting while
+    # claiming to be a live age is the same shape of lie this block
+    # removes. The age is in the logs; the page gets the fact.
+    stale = record_age is not None and record_age >= RECORD_TRUST_SECONDS
+    out["recordStale"] = stale
+    out["stalled"] = (
+        not stale and silent is not None and silent >= STALL_GRACE_INTERVALS
+    )
     return out
 
 
@@ -1084,9 +1143,19 @@ def journal_descriptor(page, limit, offset, cycle):
     the case the feature exists for. Folding the interval count in means
     the etag turns over at each hour boundary, which is exactly when the
     answer changes and no more often.
+
+    And `recordStale` on top of that, for a sharper version of the same
+    trap. It turns over when the *rebuild* starts failing, which does not
+    line up with an interval boundary at all -- so keyed on the interval
+    count alone, a client already polling would be answered 304 for up to
+    a full hour after the site stopped being able to see the journal, and
+    would go on showing the stall this flag exists to retract. The flag is
+    folded in rather than the age behind it: the age changes every second
+    and would turn every conditional poll back into a full 184KB answer.
     """
+    status = page.get("status") or {}
     window = f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}"
-    return f"{window}|silent={(page.get('status') or {}).get('silentIntervals')}"
+    return f"{window}|silent={status.get('silentIntervals')}|stale={bool(status.get('recordStale'))}"
 
 
 def _int_param(query, name, default):
@@ -1160,11 +1229,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
     def _send_journal(self, query):
         """`/api/journal`, sliced to the window the client asked for."""
-        payload, _, base = cached_payload("journal", journal_payload)
+        payload, _, base, age = cached_entry("journal", journal_payload)
         cycle = _int_param(query, "cycle", None)
         limit = _int_param(query, "limit", None)
         offset = _int_param(query, "offset", 0)
-        page = journal_page(payload, limit=limit, offset=offset, cycle=cycle)
+        page = journal_page(
+            payload, limit=limit, offset=offset, cycle=cycle, record_age=age,
+        )
         etag = page_etag(base, journal_descriptor(page, limit, offset, cycle))
         # The version travels inside the document as well as in the header,
         # for the reason `_versioned` puts it in both: a response served out
