@@ -141,10 +141,24 @@ def client_tool_schemas(caps, active_step=None):
                 "all-lowercase for a brand new file. Never write a different-cased variant of an "
                 "existing path, e.g. 'Issues.md' vs 'issues.md' -- the backend normalizes to "
                 "lowercase either way, but mismatched casing across calls has previously produced "
-                "confusing duplicate-looking folders on the client."
+                "confusing duplicate-looking folders on the client. "
+                "A write that would replace a file of any real size with a small fraction of it is "
+                "REFUSED, because that is what a read which came back short looks like. If you meant "
+                "to delete most of the file, pass allow_shrink=true; if you did not, read the file "
+                "again -- it is still intact."
             ),
             "input_schema": {"type": "object",
-                             "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                             "properties": {
+                                 "path": {"type": "string"},
+                                 "content": {"type": "string"},
+                                 "allow_shrink": {
+                                     "type": "boolean",
+                                     "description": (
+                                         "Permit replacing a file with under a quarter of its "
+                                         "current size. Only set this when the truncation is "
+                                         "deliberate."),
+                                 },
+                             },
                              "required": ["path", "content"]},
         })
         tools.append({
@@ -500,8 +514,21 @@ def client_tool_schemas(caps, active_step=None):
                    "every later call this step writes to that same file."
                    if is_folder else
                    f"This step's target file is fixed: {active_step['filepath']}")
+                + " A write that would replace a file of any real size with a small fraction "
+                  "of it is REFUSED, because that is what a read which came back short looks "
+                  "like. If you meant to delete most of the file, pass allow_shrink=true; if "
+                  "you did not, read the file again -- it is still intact."
             ),
-            "input_schema": {"type": "object", "properties": properties, "required": ["content"]},
+            "input_schema": {
+                "type": "object",
+                "properties": dict(properties, allow_shrink={
+                    "type": "boolean",
+                    "description": (
+                        "Permit replacing a file with under a quarter of its current "
+                        "size. Only set this when the truncation is deliberate."),
+                }),
+                "required": ["content"],
+            },
         })
     return tools
 
