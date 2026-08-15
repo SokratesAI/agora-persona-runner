@@ -1723,6 +1723,72 @@
     return !!(r && r.headers && r.headers.get && r.headers.get("X-Nova-Replayed"));
   }
 
+  /* The saved-copy banner, once, because three more pages need the same two
+   * facts said in the same words.
+   *
+   * `renderStatus` builds its own rather than calling this, and that is not
+   * an oversight: the journal header additionally dims its status line and
+   * suppresses its badges, because every one of those is a claim about *now*
+   * and a replayed payload is evidence about whenever it was cached. A board,
+   * a cost chart and a retro ledger are records. Their content stands exactly
+   * as it is and only its currency needs marking, so they get the banner and
+   * nothing else. */
+  function savedCopyLine() {
+    var saved = el("p", "status-sub");
+    saved.appendChild(el("span", "badge badge-error", "can't reach Nova"));
+    saved.appendChild(el("span", "status-pr", "showing a saved copy"));
+    return saved;
+  }
+
+  /* `fetch(url).then(json)` for the pages that are not the journal, with the
+   * service worker's replay stamp carried through on the payload itself.
+   *
+   * On the payload rather than passed alongside it, because these pages
+   * re-render from a payload they already hold -- the board alone re-renders
+   * on search, sort, tab and every row toggle, all of which call
+   * `renderBoard(board, payload)` with the same closed-over object. A flag
+   * threaded through render arguments would have to be threaded through
+   * fourteen call sites and would fall off the first one somebody added; on
+   * the payload it survives every re-render for free, which is the correct
+   * behaviour anyway. A phone that is still offline is still looking at a
+   * saved copy after it sorts the column.
+   *
+   * The opposite of what `fetchVersioned` does above, and deliberately: it
+   * must *not* store the mark, because it memoises payloads in `lastPayload`
+   * and hands that memo back on a 304, so a stored mark would outlive the
+   * outage by up to an hour. There is no memo here -- each visit to these
+   * pages fetches afresh -- so the mark cannot outlive the response it came
+   * on. `shallow` rather than assignment for the same reason it is used
+   * there: the response body is left untouched. */
+  function fetchPage(url) {
+    return fetch(url).then(function (r) {
+      return json(r).then(function (body) {
+        if (isReplayed(r) && body) return shallow(body, { replayed: true });
+        return body;
+      });
+    });
+  }
+
+  /* `/api/comments` is deliberately *not* routed through the above, and the
+   * reason I first wrote down was wrong, so here is the true one.
+   *
+   * The wrong version: "it is only fetched on the journal page, whose header
+   * already carries the mark." Only one of its three call sites makes that
+   * true -- the one inside `fetchAll`, which fires in lockstep with the
+   * journal read, so a replayed comments payload arrives with a replayed
+   * journal payload and the header says so. The other two are independent:
+   * the reply drawer's 8s `watch()` poll, and the refetch after a comment is
+   * posted. Both can be replayed during a blip too short to fail two
+   * consecutive 30s journal polls, so the header stays green while the
+   * drawer paints a cached answer.
+   *
+   * That is a real gap and it is older than this change -- worse than a
+   * missing banner, because `paint(target.pick(stale))` reads "not in this
+   * payload" as "no comments here", hides the list and calls `watch(false)`,
+   * which stops the poll for good. Marking the fetch does not fix it; not
+   * trusting a replayed payload to end the wait does, and that is its own
+   * piece of work with its own tests. Filed rather than bolted on here. */
+
   function fetchVersioned(url, key) {
     var known = lastPayload[key] && lastPayload[key].version;
     // `no-store` keeps this the only conditional request in play. Neither
@@ -2084,6 +2150,7 @@
         + ((payload && payload.notesTotal) || 0) + " of my own notes"
     ));
     statusEl.appendChild(line);
+    if (payload && payload.replayed) statusEl.appendChild(savedCopyLine());
   }
 
   /* The four ratings, spelled with the characters themselves rather than
@@ -3203,8 +3270,7 @@
       boardState.sort = "filed";
       boardState.desc = false;
     }
-    fetch("/api/board?name=" + board + "&limit=" + boardState.notes)
-      .then(json)
+    fetchPage("/api/board?name=" + board + "&limit=" + boardState.notes)
       .then(function (payload) {
         // Two taps in quick succession leave two fetches in flight, and
         // before there were three views to land on, whichever resolved
@@ -3682,6 +3748,7 @@
       "Costs — " + (summary.cycles || 0) + " cycles, "
         + fmtTokens(summary.total_weighted) + " weighted tokens all told"
     ));
+    if (payload.replayed) statusEl.appendChild(savedCopyLine());
     feed.textContent = "";
     var domain = timeDomain(payload);
     feed.appendChild(renderCostTiles(payload));
@@ -3697,8 +3764,7 @@
   }
 
   function loadCosts() {
-    fetch("/api/costs")
-      .then(json)
+    fetchPage("/api/costs")
       .then(function (payload) {
         // The same guard the board fetch carries: two taps in quick
         // succession leave two fetches in flight and the loser must not
@@ -3936,6 +4002,7 @@
         ? "Retrospectives — " + rows.length + ", newest " + latest.date
         : "Retrospectives — none yet"
     ));
+    if (payload.replayed) statusEl.appendChild(savedCopyLine());
     feed.textContent = "";
     if (!rows.length) {
       feed.appendChild(el(
@@ -3955,8 +4022,7 @@
   }
 
   function loadRetro() {
-    fetch("/api/retro")
-      .then(json)
+    fetchPage("/api/retro")
       .then(function (payload) {
         // The same guard the board and costs fetches carry: two taps in
         // quick succession leave two fetches in flight and the loser must

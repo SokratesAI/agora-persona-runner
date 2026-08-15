@@ -142,11 +142,16 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
    * difference between checking the wire and checking the DOM. */
   window.posted = [];
   window.postReply = { ok: true, message: "ok" };
-  window.fetch = (url, init) => {
-    if (init && init.method === "POST") {
-      window.posted.push({ url, headers: init.headers, body: JSON.parse(init.body) });
-      return res(window.postReply);
-    }
+  /* Which routes the worker answers out of its cache.
+   *
+   * `replayed: true` means the journal, which is all it could mean when the
+   * journal was the only route that read the stamp. An array of path
+   * fragments replays any of the others, and the two are kept apart on
+   * purpose: a test that replays `/api/board` must leave the journal live,
+   * or it cannot tell a board that marked itself from a board that inherited
+   * a mark off the header. */
+  const replayPaths = replayed === true ? ["/api/journal"] : (replayed || []);
+  const serve = (url) => {
     if (url.includes("/api/comments")) {
       return failComments
         ? Promise.reject(new Error("comments are down"))
@@ -176,7 +181,25 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
     }
     const body = journal ? journal(url) : payload.journal;
     if (unparsable) return unreadableBody(journalStatus);
-    return replayed ? replayedRes(body) : res(body, journalStatus);
+    return res(body, journalStatus);
+  };
+  /* The stamp goes on whatever `serve` already decided to answer, rather
+   * than each branch growing its own replayed variant. That is also what the
+   * worker does -- it rebuilds a response it found in the cache and knows
+   * nothing about which route produced it. */
+  const stamped = (answer) => answer.then((r) => ({
+    ok: r.ok,
+    status: r.status,
+    headers: { get: (name) => (name === "X-Nova-Replayed" ? "1" : null) },
+    json: r.json,
+  }));
+  window.fetch = (url, init) => {
+    if (init && init.method === "POST") {
+      window.posted.push({ url, headers: init.headers, body: JSON.parse(init.body) });
+      return res(window.postReply);
+    }
+    const answer = serve(url);
+    return replayPaths.some((p) => url.includes(p)) ? stamped(answer) : answer;
   };
   window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
   /* Kept before `install` can replace it: a test that takes setTimeout over
@@ -3685,6 +3708,61 @@ describe("a loop that has gone quiet says so in the header", () => {
     assert.doesNotMatch(window.document.querySelector("#status").textContent,
       /showing a saved copy/, "a reachable server clears it, 304 and all");
     assert.ok(polls >= 2, "the poll actually ran");
+  });
+
+  /* The other three surfaces the worker replays.
+   *
+   * The stamp has been on every same-origin GET since the worker learned to
+   * set it, but only `fetchVersioned` read it -- so the journal marked itself
+   * and the board, the costs page and the retro page went on rendering a
+   * saved copy as fully current. The board is the one that actually costs
+   * something: it is the page Edvard rates rows on, so an unmarked stale
+   * board invites a tap on a row that has already moved.
+   *
+   * Each of these loads only its own route replayed and leaves the journal
+   * live, which is what makes them worth having: the page has to say this
+   * about itself, not inherit it from a header the journal drew. */
+  test("a replayed board says it is a saved copy", async () => {
+    const window = await loadSite("/issues", { replayed: ["/api/board"] });
+    const header = window.document.querySelector("#status");
+    assert.match(header.textContent, /can't reach Nova/);
+    assert.match(header.textContent, /showing a saved copy/);
+    // Still drawn, same rule as the feed: what it has, honestly labelled.
+    assert.ok(rows(window).length);
+  });
+
+  test("a replayed costs page says it is a saved copy", async () => {
+    const window = await loadSite("/costs", { replayed: ["/api/costs"] });
+    assert.match(window.document.querySelector("#status").textContent,
+      /showing a saved copy/);
+  });
+
+  test("a replayed retro page says it is a saved copy", async () => {
+    const window = await loadSite("/retro", { replayed: ["/api/retro"] });
+    assert.match(window.document.querySelector("#status").textContent,
+      /showing a saved copy/);
+  });
+
+  test("a live board is not marked", async () => {
+    const window = await loadSite("/issues");
+    assert.doesNotMatch(window.document.querySelector("#status").textContent,
+      /saved copy/);
+  });
+
+  /* The board redraws itself constantly without going back to the network --
+   * search, sort, tab, every row toggle -- all of them re-rendering from the
+   * payload the page already holds. Carrying the mark on that payload rather
+   * than in a render argument is what keeps it up across all of them, and a
+   * phone that is still offline is still reading a saved copy after it sorts
+   * a column. */
+  test("the saved-copy mark survives a board re-render", async () => {
+    const window = await loadSite("/issues", { replayed: ["/api/board"] });
+    const before = rows(window);
+    click(window, window.document.querySelector(".board-sort-dir"));
+    assert.deepEqual(rows(window), before.slice().reverse(),
+      "the board did not actually re-render");
+    assert.match(window.document.querySelector("#status").textContent,
+      /showing a saved copy/);
   });
 
   test("a stall is named with how long it has been", async () => {
