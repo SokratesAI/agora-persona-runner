@@ -61,13 +61,29 @@ _CLOSED = frozenset({"done", "outdated"})
 
 
 def _fetch(path):
-    """`vault_tool.py get` as text, or `None` if the client is not here."""
+    """`vault_tool.py get` as text, or `None` if it did not really return one.
+
+    **A missing file is not an error exit.** `vault_tool.py get` prints
+    `[not found: <path>]` on stdout and exits **0** (measured, Cycle 220),
+    so a return code alone reads a vanished board as an empty one — and an
+    empty board contributes no rows, ranks silently, and lets this tool
+    print a confident top row chosen from one of two boards. That is the
+    exact failure the `COULD NOT READ` line exists to prevent, walking in
+    through the door the check was not watching.
+
+    It is not hypothetical either: these two files moved from
+    `projects/sokrates/projects/agora/` to `projects/sokrates/projects/nova/`
+    on 2026-08-12, and the paths here are hard-coded. The next time Edvard
+    moves them, this is what stands between a wrong answer and a loud one.
+    """
     try:
         done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
                               capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return None
     if done.returncode != 0:
+        return None
+    if not done.stdout.strip() or done.stdout.lstrip().startswith("[not found:"):
         return None
     return done.stdout
 

@@ -112,6 +112,39 @@ def test_main_reads_both_local_boards(tmp_path, capsys):
     assert "COULD NOT READ" not in out
 
 
+@pytest.mark.parametrize("stdout", [
+    "[not found: projects/sokrates/projects/nova/ideas.md]\n",   # the live shape
+    "  [not found: whatever]\n",                                 # leading space
+    "",
+    "   \n",
+])
+def test_a_missing_board_is_a_failed_read_even_though_the_client_exits_zero(monkeypatch, stdout):
+    """`vault_tool.py get` prints `[not found: …]` and exits 0.
+
+    Read as success it becomes an empty board, which ranks silently and
+    lets a top row be chosen from one of two boards.
+    """
+    class Done:
+        returncode = 0
+
+    Done.stdout = stdout
+    monkeypatch.setattr(top_board_rows.subprocess, "run",
+                        lambda *a, **k: Done)
+    assert top_board_rows._fetch("some/path.md") is None
+
+
+def test_a_real_board_body_still_reads_as_success(monkeypatch):
+    """The guard above must not reject the thing it is protecting."""
+    class Done:
+        returncode = 0
+        stdout = board((1, "real row", BACKLOG, "08-01", HIGH))
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
+    text = top_board_rows._fetch("some/path.md")
+    assert text is not None
+    assert [r["number"] for r in top_board_rows.open_rows(text, "issue")] == [1]
+
+
 def test_an_unreadable_board_is_said_out_loud_and_exits_nonzero(tmp_path, capsys, monkeypatch):
     """A ranking built from one of two boards is the wrong answer in the right shape."""
     issues = tmp_path / "issues.md"
