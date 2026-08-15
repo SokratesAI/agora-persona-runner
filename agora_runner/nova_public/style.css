@@ -944,6 +944,15 @@ body.nav-open { overflow: hidden; }
   border-color: var(--accent);
 }
 
+/* Explicit because the UA rule it relies on is one specificity point
+ * away from being lost: `.prio-menu`'s own `display: flex` beat
+ * `[hidden] { display: none }`, and closing that popup did nothing
+ * visible until someone noticed. This button is hidden on every empty
+ * search box, so the same slip here would be permanent furniture. */
+.board-search-clear[hidden] {
+  display: none;
+}
+
 .board-search-clear {
   flex: 0 0 auto;
   min-width: 44px;

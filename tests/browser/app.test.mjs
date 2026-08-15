@@ -4062,6 +4062,66 @@ describe("searching, filtering and sorting a board", () => {
     assert.deepEqual(rows(window), ["#57", "#58"]);
   });
 
+  /* Edvard, issues.md 2026-08-15: "When i use the search bar in Nova, my
+   * keyboard is closed on every letter input so i have to open the
+   * keyboard each letter. This is very frustrating."
+   *
+   * A phone dismisses the soft keyboard when the focused element leaves
+   * the document, and will not reopen it for a `.focus()` that arrives
+   * outside the tap that caused it. So the fix is not "restore focus
+   * better", it is "do not remove the input" -- which is what these
+   * assert, by node identity. jsdom has no keyboard to watch, but it has
+   * the thing the keyboard was reacting to. */
+  test("typing does not replace the input under the caret", async () => {
+    const window = await loadSite("/issues");
+    const before = window.document.querySelector(".board-search-input");
+    before.focus();
+    typeSearch(window, "gemini");
+    assert.equal(
+      window.document.querySelector(".board-search-input"),
+      before,
+      "the search box was rebuilt mid-keystroke, which closes the keyboard",
+    );
+    assert.equal(window.document.activeElement, before, "focus left the search box");
+    // And it still did its job.
+    assert.deepEqual(rows(window), ["#58"]);
+  });
+
+  test("the server's answer does not replace the input either", async () => {
+    /* The second half, and it fails independently of the first: this
+     * lands ~200ms after the last keystroke, while he is still holding
+     * the keyboard open over the box. */
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("q=") ? { query: "cache", matches: [57] } : null),
+    });
+    const before = window.document.querySelector(".board-search-input");
+    before.focus();
+    typeSearch(window, "cache");
+    await settle();
+    assert.deepEqual(rows(window), ["#57"], "the answer never landed, so this proves nothing");
+    assert.equal(
+      window.document.querySelector(".board-search-input"),
+      before,
+      "the search box was rebuilt when the write-up answer arrived",
+    );
+    assert.equal(window.document.activeElement, before, "focus left the search box");
+  });
+
+  test("the clear button is hidden rather than absent while the box is empty", async () => {
+    /* Adding and removing it around the input is a DOM change next to the
+     * caret on the first and last character typed. `hidden` is the same
+     * thing to a reader and to a screen reader, and moves nothing. */
+    const window = await loadSite("/issues");
+    const clear = window.document.querySelector(".board-search-clear");
+    assert.ok(clear, "there is no clear button to hide");
+    assert.equal(clear.hidden, true);
+    typeSearch(window, "gemini");
+    assert.equal(window.document.querySelector(".board-search-clear"), clear);
+    assert.equal(clear.hidden, false);
+    typeSearch(window, "");
+    assert.equal(clear.hidden, true);
+  });
+
   test("the unrated chip finds the rows no one has rated", async () => {
     const window = await loadSite("/issues", {
       board: (url) => {

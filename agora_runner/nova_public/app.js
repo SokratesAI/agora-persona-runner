@@ -2657,25 +2657,65 @@
     var items = payload.items || [];
     wrap.appendChild(renderBoardControls(board, payload, items));
 
+    /* The rows live in their own container so a keystroke in the search
+     * box can replace them without replacing the box -- see
+     * `refreshBoardRows`. */
+    boardRows = el("div", "board-rows");
+    renderBoardRows(board, items);
+    wrap.appendChild(boardRows);
+    return wrap;
+  }
+
+  /* The rows currently on the page, or null when the board is not the
+   * thing showing. */
+  var boardRows = null;
+
+  function renderBoardRows(board, items) {
+    boardRows.textContent = "";
     var shown = visibleItems(items);
     if (!shown.length) {
-      wrap.appendChild(el(
+      boardRows.appendChild(el(
         "p", "empty",
         boardState.query.trim() ? "Nothing matches “" + boardState.query.trim() + "”."
           : "Nothing here."
       ));
     }
-    shown.forEach(function (item) { wrap.appendChild(renderBoardItem(board, item)); });
-    return wrap;
+    shown.forEach(function (item) { boardRows.appendChild(renderBoardItem(board, item)); });
+  }
+
+  /* Redraw only what a search changed. Edvard, issues.md, 2026-08-15:
+   * "When i use the search bar in Nova, my keyboard is closed on every
+   * letter input so i have to open the keyboard each letter."
+   *
+   * `renderBoard` starts with `feed.textContent = ""`, so every keystroke
+   * used to destroy the very input being typed into and build a fresh
+   * one. Removing the focused element from the document dismisses the
+   * soft keyboard, and the `setTimeout(input.focus)` that used to sit at
+   * the end of `renderBoardControls` cannot bring it back: a phone opens
+   * the keyboard for a focus that happens inside a user gesture, not for
+   * one that arrives a task later. On a desktop browser the caret was
+   * restored and the bug was invisible, which is why it shipped.
+   *
+   * A search changes which rows show and nothing else -- the chip counts
+   * are computed against the status filter, not the query, and the sort
+   * control does not read it -- so the rows are the only thing that has
+   * to be rebuilt. Nothing here touches the input, so there is no focus
+   * to restore. */
+  function refreshBoardRows(board, payload) {
+    if (!boardRows || !boardRows.isConnected) {
+      renderBoard(board, payload);
+      return;
+    }
+    renderBoardRows(board, payload.items || []);
   }
 
   /* The search box, the filter chips and the sort control, in that order
    * -- Edvard's two asks (ideas.md #70 and #71) are one strip on the
    * page because they are one question: which rows do I want, and in
-   * what order. Rebuilt on every board render like everything else here,
-   * so the focus and caret in the search input have to be put back by
-   * hand; `searchFocus` is what remembers them across a keystroke. */
-  var searchFocus = null;
+   * what order. Rebuilt on every board render like everything else here
+   * -- but deliberately *not* on a keystroke, which redraws the rows
+   * underneath it and leaves this strip standing. See
+   * `refreshBoardRows`. */
 
   /* The status filters (Open/Done/All) and the extra toggles, as one
    * group of buttons -- unchanged from when they lived directly on the
@@ -2791,26 +2831,34 @@
     input.placeholder = "Search titles and write-ups";
     input.setAttribute("aria-label", "Search this board");
     input.value = boardState.query;
+    search.appendChild(input);
+    /* Built whether or not there is anything to clear, and hidden rather
+     * than absent. Adding it beside the input on the first keystroke
+     * would not detach the input, but removing it on the last one moves
+     * the caret's own neighbour under it mid-edit, and `hidden` says the
+     * same thing to a screen reader for none of that. */
+    var clear = el("button", "board-search-clear", "×");
+    clear.type = "button";
+    clear.hidden = !boardState.query;
+    clear.setAttribute("aria-label", "Clear the search");
+    clear.addEventListener("click", function () {
+      boardState.query = "";
+      boardState.matches = null;
+      boardState.matchedQuery = null;
+      input.value = "";
+      clear.hidden = true;
+      refreshBoardRows(board, payload);
+      // Synchronous, inside the tap, so the keyboard stays up and he can
+      // type the next query without reaching for the box again.
+      input.focus();
+    });
+    search.appendChild(clear);
     input.addEventListener("input", function () {
       boardState.query = input.value;
-      searchFocus = input.selectionStart;
+      clear.hidden = !input.value;
       runBoardSearch(board, payload);
-      renderBoard(board, payload);
+      refreshBoardRows(board, payload);
     });
-    search.appendChild(input);
-    if (boardState.query) {
-      var clear = el("button", "board-search-clear", "×");
-      clear.type = "button";
-      clear.setAttribute("aria-label", "Clear the search");
-      clear.addEventListener("click", function () {
-        boardState.query = "";
-        boardState.matches = null;
-        boardState.matchedQuery = null;
-        searchFocus = null;
-        renderBoard(board, payload);
-      });
-      search.appendChild(clear);
-    }
     bar.appendChild(search);
 
     /* "on each option, on a horisontal line, a description of the option
@@ -2884,16 +2932,6 @@
     // show the counts and "on" states from before that tap.
     if (boardState.filtersOpen) populateFiltersModal(board, payload, items);
 
-    if (searchFocus !== null) {
-      // After `feed` has the node. Deferred because focusing a detached
-      // element does nothing and the caret would jump to the end.
-      var caret = searchFocus;
-      searchFocus = null;
-      setTimeout(function () {
-        input.focus();
-        try { input.setSelectionRange(caret, caret); } catch (e) { /* not all inputs allow it */ }
-      }, 0);
-    }
     return bar;
   }
 
@@ -2925,7 +2963,10 @@
           if (!result || result.query !== query) return;
           boardState.matches = result.matches || [];
           boardState.matchedQuery = query;
-          renderBoard(board, payload);
+          // Rows only, for the same reason the keystroke redraws rows
+          // only: this lands 200ms after he stopped typing, into a box he
+          // is still holding the keyboard open over.
+          refreshBoardRows(board, payload);
         })
         .catch(function () {
           // A failed search leaves the title matches standing rather
