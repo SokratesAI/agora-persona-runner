@@ -2700,7 +2700,14 @@
    * are computed against the status filter, not the query, and the sort
    * control does not read it -- so the rows are the only thing that has
    * to be rebuilt. Nothing here touches the input, so there is no focus
-   * to restore. */
+   * to restore.
+   *
+   * What this does *not* promise: the rows themselves are still rebuilt
+   * from scratch, so an open row-title editor loses whatever was typed
+   * into it, exactly as it did when the whole board re-rendered. That is
+   * unchanged rather than fixed, and it is written down here because
+   * "only the rows are redrawn" is otherwise easy to read as "nothing a
+   * reader is holding is disturbed". */
   function refreshBoardRows(board, payload) {
     if (!boardRows || !boardRows.isConnected) {
       renderBoard(board, payload);
