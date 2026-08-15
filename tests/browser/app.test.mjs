@@ -4945,3 +4945,106 @@ describe("holding a board row opens edit mode", () => {
     assert.match(sheet, /\.item-head\s*{[^}]*-webkit-touch-callout:\s*none/);
   });
 });
+
+/* ---- Commenting on a boarded row (idea #64) -----------------------------
+ *
+ * Edvard: *"Lets me have the same comment conversation on ideas, notes and
+ * issues like the Journal. Add a comment button and let me leave comments
+ * that discuss each idea."* Rated 🔴 Immediately and open since 08-12 --
+ * skipped by every cycle since, which is what he filed.
+ *
+ * There is no thread widget to test, and that is the design: the comment
+ * is appended to the row's own write-up, which the open row already
+ * fetches and renders. So what is worth pinning is the composer, what it
+ * posts, and the one thing a "saved" message can lie about -- whether the
+ * body he is looking at afterwards actually contains his sentence.
+ */
+describe("commenting on a boarded row", () => {
+  const composer = (window) =>
+    window.document.getElementById("item-57").querySelector(".item-comment");
+
+  test("an open row offers a comment box under its write-up", async () => {
+    const window = await loadSite("/issues#57");
+    const box = composer(window);
+    assert.ok(box, "the open row has no comment composer");
+    assert.ok(box.querySelector(".item-comment-box"), "no text box");
+    assert.equal(box.querySelector(".item-comment-send").textContent, "Comment");
+    // Under the write-up, not above it -- the conversation accumulates
+    // below his statement of the problem, the same order the file uses.
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    const kids = [...body.children];
+    assert.equal(kids[kids.length - 1], box, "the composer is not last in the body");
+  });
+
+  test("Comment posts the row it belongs to, as JSON", async () => {
+    const window = await loadSite("/issues#57");
+    composer(window).querySelector(".item-comment-box").value = "  Still wrong on my phone.  ";
+    click(window, composer(window).querySelector(".item-comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/board/comment");
+    assert.ok(posted, "no write reached /api/board/comment");
+    assert.deepEqual(posted.body, {
+      target: "issues",
+      number: 57,
+      text: "Still wrong on my phone.",
+    });
+  });
+
+  test("a pasted line break is folded rather than sent, because the server refuses one", async () => {
+    /* `append_detail_note` ends a write-up at the next heading, so a note
+     * carrying a break truncates the block and takes every later line of
+     * his own text off the page. The server returns 400; folding here is
+     * what stops a paste from two lines of a note becoming an error he
+     * has to read and retype. */
+    const window = await loadSite("/issues#57");
+    composer(window).querySelector(".item-comment-box").value = "one\n  two\r\nthree";
+    click(window, composer(window).querySelector(".item-comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/board/comment");
+    assert.equal(posted.body.text, "one two three");
+  });
+
+  test("an empty box posts nothing at all", async () => {
+    const window = await loadSite("/issues#57");
+    composer(window).querySelector(".item-comment-box").value = "   ";
+    click(window, composer(window).querySelector(".item-comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.find((p) => p.url === "/api/board/comment"), undefined);
+    assert.match(composer(window).querySelector(".item-comment-status").textContent, /Nothing/);
+  });
+
+  test("a saved comment refetches the write-up rather than leaving the old one on screen", async () => {
+    /* The failure this pins is the one that reads as success: the status
+     * says saved, and the body above it is the copy from before the
+     * comment, so his own sentence is missing from the thread he just
+     * added it to. Cycle 218 shipped a fix for exactly that shape on the
+     * journal drawer. */
+    let reads = 0;
+    const window = await loadSite("/issues#57", {
+      board: (url) => {
+        if (!url.includes("item=57")) return null;
+        reads += 1;
+        return payload.boardItem;
+      },
+    });
+    assert.ok(reads >= 1, "the open row never fetched its write-up");
+    const before = reads;
+    composer(window).querySelector(".item-comment-box").value = "Why is this still open?";
+    click(window, composer(window).querySelector(".item-comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.ok(reads > before, "the write-up was not re-read after the comment landed");
+  });
+
+  test("a refused comment says so and keeps the text, rather than swallowing it", async () => {
+    const window = await loadSite("/issues#57");
+    window.postReply = { ok: false, message: "#57 is not a row on issues" };
+    composer(window).querySelector(".item-comment-box").value = "Lost?";
+    click(window, composer(window).querySelector(".item-comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const status = composer(window).querySelector(".item-comment-status");
+    assert.match(status.textContent, /not a row/);
+    assert.equal(status.className, "item-comment-status is-error");
+    assert.equal(composer(window).querySelector(".item-comment-box").value, "Lost?",
+      "the comment was cleared on a failure and he would have to retype it");
+  });
+});

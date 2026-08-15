@@ -113,6 +113,7 @@ from agora_runner.nova_capture import (
     amend,
     capture,
     clean_capture_text,
+    comment_on_row,
     edit_row,
     remove_row,
     set_priority,
@@ -1543,6 +1544,87 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_board_comment(self, payload):
+        """`POST /api/board/comment` -- idea #64, the comment half.
+
+        *"Lets me have the same comment conversation on ideas, notes and
+        issues like the Journal."* Rated 🔴 Immediately, open since
+        08-12, and skipped by every cycle since -- which he noticed and
+        filed, which is why this cycle is here.
+
+        **Almost nothing new happens on this route, and that is the
+        finding rather than a shortcut.** The comment goes into the row's
+        own write-up, which an expanded board row already fetches and
+        renders, so there is no read route, no new payload field and no
+        second store to keep in step with this one.
+
+        Same three boundaries as the other board writes: `target` keys
+        into `BOARD_PATHS` and is never a path, `number` is `int` and not
+        `bool` (`True` would address row 1), and the text is refused if it
+        carries a line break -- `append_detail_note` refuses it again for
+        its own reason, but a 400 here tells the page *why* where a
+        `None` from the writer only says the write did not happen.
+
+        A row that has no write-up cannot take a comment, and that is a
+        409 rather than a 502 for `_post_board_amend`'s reason: nothing
+        failed, there is simply nothing there to comment under, and the
+        page should say so rather than retry.
+
+        **`_amend_board` fails in two ways and only one of them is that**,
+        which the first version of this route missed while its docstring
+        claimed otherwise (reviewer). The other is a genuine write
+        failure: `WRITE_ATTEMPTS` exhausted against a losing
+        compare-and-swap, which returns `could not write to ...` and is a
+        502. That is not a hypothetical here -- the concurrent writer is a
+        cycle appending to these same write-ups in step 6, which is the
+        argument for the retry loop in the first place, so the case that
+        can actually exhaust it is the one this route was reporting as
+        benign. `app.js` reads `ok` and not the status, so nothing on
+        screen changed either way; what changed is that a real failure was
+        indistinguishable from an empty row in the log.
+        """
+        target = payload.get("target")
+        number = payload.get("number")
+        text = payload.get("text")
+        if target not in BOARD_PATHS:
+            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
+            return
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            self._send_json(400, {"error": "number must be a positive integer"})
+            return
+        if not isinstance(text, str) or not text.strip():
+            self._send_json(400, {"error": "text must be a non-empty string"})
+            return
+        if "\n" in text or "\r" in text:
+            self._send_json(400, {"error": "a comment cannot contain a line break"})
+            return
+
+        # `MM-DD` in Oslo, because `append_detail_note` takes the date from
+        # its caller rather than a clock -- a module that reaches for one
+        # reaches for it in UTC, and this line lands in a file Edvard reads.
+        dated = datetime.now(OSLO).strftime("%m-%d")
+        try:
+            ok, message = comment_on_row(target, number, text.strip(), dated)
+        except Exception as e:
+            log(f"nova-site board comment failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            invalidate("board:" + target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Comment on #{number} on {target} · {'ok' if ok else message}",
+            after=text.strip()[:300],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        stale = "is not a row" in message
+        self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
+
     def _post_board_amend(self, payload, delete):
         """`/api/board/edit` and `/api/board/delete` -- issue #84.
 
@@ -1746,6 +1828,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment",
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
+            "/api/board/comment",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -1764,6 +1847,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path in ("/api/board/edit", "/api/board/delete"):
             self._post_board_amend(payload, delete=path.endswith("delete"))
+            return
+        if path == "/api/board/comment":
+            self._post_board_comment(payload)
             return
         target = payload.get("target")
         text = payload.get("text")

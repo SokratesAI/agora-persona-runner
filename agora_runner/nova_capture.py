@@ -48,6 +48,7 @@ from agora_runner.log import log
 from agora_runner.nova_boards import (
     BOARD_PATHS,
     PRIORITY_LABELS,
+    append_detail_note,
     delete_row,
     set_row_priority,
     set_row_title,
@@ -428,6 +429,42 @@ def remove_row(target, number):
     LiveSync tombstones rather than removes.
     """
     return _amend_board(target, number, lambda md: delete_row(md, number), "deleted")
+
+
+def comment_on_row(target, number, comment, dated):
+    """Add one comment from Edvard to a boarded row's write-up.
+
+    Idea #64, rated 🔴 Immediately and open since 2026-08-12: *"Lets me
+    have the same comment conversation on ideas, notes and issues like
+    the Journal. Add a comment button and let me leave comments that
+    discuss each idea."*
+
+    **The read half of this was already built and nobody noticed.** An
+    expanded board row lazily fetches its write-up and renders it, so a
+    line appended to that write-up appears on his phone with no change to
+    the page at all -- which is why this is one write path and not a
+    feature. The design call (Cycle 190's, in the #64 write-up) was
+    inline over a second comments file, and inline is what makes the read
+    half free: *"a comment and my answer to it sit in the same place as
+    the idea, so a cycle reading the idea cannot miss the conversation
+    about it."*
+
+    So there is deliberately no `## New` queue here, unlike
+    `nova_comments`. The queue exists there because a journal comment
+    has nowhere else to live; a board comment lands in a file every cycle
+    already reads, under the row it is about. What a cycle owes it is a
+    reply on the next line -- same call, `author="Nova"`.
+
+    `_amend_board` gives it the 409 retry the other four write paths have,
+    and it matters more here than anywhere: the concurrent writer is a
+    cycle appending to these same write-ups in step 6.
+    """
+    return _amend_board(
+        target,
+        number,
+        lambda md: append_detail_note(md, number, comment, dated, author="Edvard"),
+        "commented on",
+    )
 
 
 def set_priority(target, number, priority):
