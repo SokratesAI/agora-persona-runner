@@ -669,9 +669,25 @@
         timer = null;
         // See stopPolling: a render discards this drawer, and this is how
         // its poll is discarded with it.
-        fetch("/api/comments")
-          .then(json)
-          .then(function (payload) { paint(target.pick(payload)); })
+        fetchPage("/api/comments")
+          .then(function (payload) {
+            /* A replayed payload is the worker's saved copy, cached before
+             * the reply -- often before the comment -- existed. It parses
+             * cleanly and looks exactly like an answer, so without this
+             * branch `pick` finds no pending reply in it, `paint` reads that
+             * as "the wait is over" and calls `watch(false)`, and the poll
+             * stops for good: the drawer sits on a stale list until he
+             * reloads the page. That is the same failure the `.catch` below
+             * exists for, arriving as a 200 instead of a 500.
+             *
+             * So it is not repainted at all, rather than repainted and
+             * re-watched. A saved copy is strictly older than what is on
+             * screen -- the drawer was drawn from a live payload and may
+             * hold a reply this one predates -- so painting it would take
+             * information away. Keep what is shown, keep waiting. */
+            if (payload && payload.replayed) { watch(true); return; }
+            paint(target.pick(payload));
+          })
           // `watch(true)` is the keep-waiting path, and a 500 used to walk
           // straight past it: the error body parsed, `pick` found nothing
           // in it, and the drawer stopped polling as though it had been
@@ -718,9 +734,15 @@
           // `.catch` below would replace "saved" with an error message
           // for a comment that is safely written, and he would send it
           // again.
-          return fetch("/api/comments")
-            .then(json)
+          return fetchPage("/api/comments")
             .then(function (payload) {
+              /* Same reason as the poll's branch, and worse here: this
+               * refetch runs moments after a write the server confirmed, so
+               * a saved copy is guaranteed to predate the comment he just
+               * sent. Repainting from one would blank his comment out of the
+               * list under a "saved" status line -- the exact thing that
+               * makes him send it twice. */
+              if (payload && payload.replayed) return;
               paint(target.pick(payload));
             })
             .catch(function () {});
@@ -1782,12 +1804,20 @@
    * consecutive 30s journal polls, so the header stays green while the
    * drawer paints a cached answer.
    *
-   * That is a real gap and it is older than this change -- worse than a
-   * missing banner, because `paint(target.pick(stale))` reads "not in this
-   * payload" as "no comments here", hides the list and calls `watch(false)`,
-   * which stops the poll for good. Marking the fetch does not fix it; not
-   * trusting a replayed payload to end the wait does, and that is its own
-   * piece of work with its own tests. Filed rather than bolted on here. */
+   * That gap is now closed, and this paragraph is kept because the fix only
+   * makes sense against it. Both independent call sites go through
+   * `fetchPage` and both refuse to act on a payload it marks: the poll keeps
+   * waiting, the post-comment refetch leaves the list alone. Marking the
+   * fetch was never the fix on its own -- a banner over a drawer that had
+   * silently stopped polling would still have left him waiting forever --
+   * so what the mark buys is the ability to tell a saved copy from an
+   * answer, and the two branches below are what act on it.
+   *
+   * `fetchAll`'s call site is deliberately left plain. It fires in lockstep
+   * with the journal read, so a replayed comments payload arrives with a
+   * replayed journal payload and the header already says so; and it renders
+   * the drawer from scratch rather than deciding whether a wait is over, so
+   * there is no wait for a stale payload to end early. */
 
   function fetchVersioned(url, key) {
     var known = lastPayload[key] && lastPayload[key].version;
