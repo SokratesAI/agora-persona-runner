@@ -401,7 +401,7 @@ describe("two entries for one cycle are one card", () => {
   });
 
   test("the parts read oldest-first and are labelled and dated", () => {
-    const parts = [...cards(window)[0].querySelectorAll(".entry-part")]
+    const parts = [...cards(window)[0].querySelectorAll(".entry-part-tab")]
       .map((h) => h.textContent);
     assert.equal(parts.length, 2);
     // The wire is newest-first, so entries[1] is the earlier of the two.
@@ -999,7 +999,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const parts = journal.entries.filter((e) => e.cycle === 57);
     parts[0].title = "I watched it land, and caught myself re-filing a bug Edvard had already reported";
     const window = await loadSite("/cycle/57", { journal: () => journal, install: withStyle });
-    const heading = [...cards(window)[0].querySelectorAll(".entry-part")][1];
+    const heading = [...cards(window)[0].querySelectorAll(".entry-part-tab")][1];
     /* jsdom reports an unset property as "", not as its initial value, so
      * this asserts the property is not uppercase rather than that it equals
      * "none" -- the mutation this must catch is someone adding uppercase
@@ -1011,7 +1011,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const window = await loadSite("/cycle/57");
     const page = cards(window)[0];
     const both = payload.journal.entries.filter((e) => e.cycle === 57);
-    const headings = [...page.querySelectorAll(".entry-part")].map((h) => h.textContent);
+    const headings = [...page.querySelectorAll(".entry-part-tab")].map((h) => h.textContent);
     assert.equal(headings.length, 2, "two parts, two subheadings");
     // `both` is newest-first off the wire; the page reverses it.
     assert.ok(headings[0].includes(both.at(-1).time), headings[0]);
@@ -1046,7 +1046,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
       // that fall back are checked in both positions below.
       parts[0].title = title;
       const w = await loadSite("/cycle/57", { journal: () => journal });
-      const heading = w.document.querySelectorAll(".entry-part")[1].textContent;
+      const heading = w.document.querySelectorAll(".entry-part-tab")[1].textContent;
       assert.ok(heading.startsWith(want + " · "),
         `title ${JSON.stringify(title)} rendered ${JSON.stringify(heading)}, wanted ${want}`);
       assert.ok(!/\(\d{4}-\d{2}-\d{2}/.test(heading),
@@ -1059,9 +1059,92 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
     journal.entries.filter((e) => e.cycle === 57).forEach((e) => { e.title = ""; });
     const window = await loadSite("/cycle/57", { journal: () => journal });
-    const headings = [...window.document.querySelectorAll(".entry-part")].map((h) => h.textContent);
+    const headings = [...window.document.querySelectorAll(".entry-part-tab")].map((h) => h.textContent);
     assert.ok(headings[0].startsWith("The cycle · "), headings[0]);
     assert.ok(headings[1].startsWith("Addendum · "), headings[1]);
+  });
+
+  /* Tabs, which is what Edvard asked for three times (issues.md #59, and
+   * the comments board at cycle 81) and did not get twice. The tests below
+   * pin the behaviour that makes a tab acceptable rather than the fact that
+   * one exists: exactly one part visible, all of them still in the DOM, the
+   * cycle's settled answer never inside a panel, and a keyboard that can
+   * reach the half that is not on top. */
+  test("only the selected part is showing, and the other is still in the DOM", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    const panels = [...page.querySelectorAll(".entry-part-panel")];
+    assert.equal(panels.length, 2, "two parts, two panels");
+    assert.equal(panels.filter((p) => !p.hidden).length, 1, "exactly one panel is showing");
+    assert.equal(panels[0].hidden, false, "the first part is the one open");
+    /* Hidden, not absent. Find-in-page and a copy-all have to reach the
+     * half that is not on top -- that is the whole reason two earlier
+     * cycles argued against tabs, and it is only true if the prose stays
+     * rendered. */
+    const later = payload.journal.entries.filter((e) => e.cycle === 57)[0];
+    assert.ok(panels[1].textContent.length > 0, "the shut panel still holds its prose");
+    assert.ok(later.blocks.length, "the fixture's later part must have prose to hide");
+  });
+
+  test("tapping the second tab swaps which part is showing", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    const tabs = [...page.querySelectorAll(".entry-part-tab")];
+    const panels = [...page.querySelectorAll(".entry-part-panel")];
+    click(window, tabs[1]);
+    assert.equal(panels[0].hidden, true);
+    assert.equal(panels[1].hidden, false);
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true");
+    assert.equal(tabs[0].getAttribute("aria-selected"), "false");
+    // Back again, because a tab that only goes one way is a disclosure.
+    click(window, tabs[0]);
+    assert.equal(panels[0].hidden, false);
+    assert.equal(panels[1].hidden, true);
+  });
+
+  test("the cycle's settled outcome sits outside the tabs", async () => {
+    /* This is the objection the two previous cycles raised against tabs --
+     * that a tab hides the addendum, which is usually where the cycle says
+     * how it actually ended. It is answered by where the outcome is drawn,
+     * not by argument, so it needs a test: the meta row is a sibling of the
+     * tab strip, so it is readable whichever tab is open. */
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    const outcome = page.querySelector(".entry-meta .badge");
+    assert.ok(outcome, "the cycle draws a settled outcome");
+    assert.equal(outcome.closest(".entry-part-panel"), null,
+      "the settled outcome must not be inside a tab panel");
+  });
+
+  test("arrow keys move between the parts, and only one tab is a tab stop", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    const tabs = [...page.querySelectorAll(".entry-part-tab")];
+    assert.deepEqual(tabs.map((t) => t.tabIndex), [0, -1], "roving tabindex");
+    tabs[0].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true");
+    assert.deepEqual(tabs.map((t) => t.tabIndex), [-1, 0]);
+    // Wraps, so End/Home are not the only way back.
+    tabs[1].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[0].getAttribute("aria-selected"), "true");
+  });
+
+  test("a single-part cycle gets no tab strip", async () => {
+    const solo = payload.journal.entries.find(
+      (e) => e.cycle !== null && payload.journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+    );
+    assert.ok(solo, "the fixture must contain a cycle with exactly one entry");
+    const window = await loadSite("/cycle/" + solo.cycle);
+    const page = cards(window)[0];
+    assert.equal(page.querySelectorAll("[role='tablist']").length, 0);
+    assert.equal(page.querySelectorAll(".entry-part-panel").length, 0);
+    // ...and its prose is still on the page, which is the thing the strip
+    // must not have taken with it.
+    assert.ok(page.querySelector(".entry-body").textContent.trim().length > 0);
   });
 
   test("one comment bubble for the cycle, not one per entry", async () => {
@@ -1114,7 +1197,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     );
     assert.ok(solo, "the fixture must contain a cycle with exactly one entry");
     const window = await loadSite("/cycle/" + solo.cycle);
-    assert.equal(cards(window)[0].querySelectorAll(".entry-part").length, 0);
+    assert.equal(cards(window)[0].querySelectorAll(".entry-part-tab").length, 0);
   });
 
   test("the feed draws the same cycle as one card, on the same rules", async () => {
@@ -1124,8 +1207,8 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     // Same subheadings, same order, same source function as the page above.
     const page = await loadSite("/cycle/57");
     assert.deepEqual(
-      [...own[0].querySelectorAll(".entry-part")].map((h) => h.textContent),
-      [...cards(page)[0].querySelectorAll(".entry-part")].map((h) => h.textContent)
+      [...own[0].querySelectorAll(".entry-part-tab")].map((h) => h.textContent),
+      [...cards(page)[0].querySelectorAll(".entry-part-tab")].map((h) => h.textContent)
     );
   });
 });
