@@ -139,11 +139,15 @@
   var folds = {};
 
   function foldFor(cycle) {
+    /* `part` joins the three booleans because a poll rebuilds the feed from
+     * scratch: without it, Edvard taps to the addendum, a routine poll lands,
+     * and the tab silently reverts to the first part under him while the card
+     * and drawer correctly stay open. Found by the reviewer, not by me. */
     if (cycle === null || cycle === undefined) {
-      return { expanded: false, journal: false, comments: false };
+      return { expanded: false, journal: false, comments: false, part: 0 };
     }
     var key = "cycle-" + cycle;
-    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false };
+    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false, part: 0 };
     return folds[key];
   }
 
@@ -340,6 +344,51 @@
       quiet.appendChild(el("span", "badge badge-warn", "no entry for "
         + hours + (hours === 1 ? " hour" : " hours")));
       statusEl.appendChild(quiet);
+    }
+
+    /* The server saying it cannot see the journal, which until now it had
+     * no way to say -- so it said "the loop has stopped" instead, because
+     * a rebuild that keeps failing and a loop that stopped writing look
+     * identical from inside the payload.
+     *
+     * Rendered as an error rather than a warning, and beside the same
+     * "as of the last load" idea `renderStatusUnreachable` uses, because
+     * it is the same failure one hop further back: there, this page could
+     * not reach the server; here, the server could not reach the vault.
+     * The line above it is real and worth keeping -- it just stopped being
+     * current at some point the page cannot pin down. */
+    if (status.recordStale) {
+      var frozen = el("p", "status-sub");
+      frozen.appendChild(el("span", "badge badge-error", "can't read the journal"));
+      frozen.appendChild(el("span", "status-pr", "showing the last thing Nova could see"));
+      statusEl.appendChild(frozen);
+    }
+
+    /* Edvard, comments board 2026-08-14: "Should be displayed if the
+     * return fetch came in with missing journals."
+     *
+     * The badge above is a clock and this one is evidence. They answer
+     * different questions and neither replaces the other: a loop that
+     * died five minutes ago leaves no hole at all, because a hole only
+     * appears once a later cycle writes an entry over the top of it, and
+     * a loop running one long cycle leaves no hole either. So a stall is
+     * the only thing a clock can catch, and a cycle that woke and failed
+     * is the only thing a hole can catch.
+     *
+     * This one cannot cry wolf, which is the point. "Cycle 128 wrote no
+     * entry" is a fact about the record rather than a guess about the
+     * present, so it does not appear and retract as a cycle finishes.
+     * The server has already cut the list to holes recent enough to act
+     * on -- see `cycle_health.recent_gaps` -- and this renders that
+     * judgement without second-guessing the window, the same way the
+     * stall badge defers to `stalled`. */
+    var holes = status.recentMissingCycles || [];
+    if (holes.length) {
+      var missed = el("p", "status-sub");
+      missed.appendChild(el("span", "badge badge-warn", holes.length === 1
+        ? "cycle " + holes[0] + " wrote no entry"
+        : holes.length + " cycles wrote no entry"));
+      statusEl.appendChild(missed);
     }
   }
 
@@ -765,7 +814,13 @@
       : entry.title || "Note"));
     toggle.appendChild(heading);
 
-    toggle.appendChild(el("span", "chevron", "▾"));
+    /* No chevron. Edvard, issues.md #59: "Remove the arrow that shows if
+     * the dropdown is open/closed." The card already answers that twice
+     * over -- collapsed shows a one-line brief and a "Read the full
+     * journal" button, expanded shows the prose and "Close the full
+     * journal" -- so the arrow restated what the button beside it said in
+     * words. `aria-expanded` on the toggle is the accessible answer and
+     * is untouched; the arrow was decoration, not the affordance. */
 
     var head = el("header", "entry-head");
     head.appendChild(toggle);
@@ -786,7 +841,8 @@
      * page makes, so the two cannot say different things about one cycle. */
     var meta = el("div", "entry-meta");
     var stamp = [entry.date, entry.time].filter(Boolean).join(" ");
-    if (stamp) meta.appendChild(el("time", "stamp", stamp + " Oslo"));
+    if (stamp) meta.appendChild(el("time", "stamp", stamp));
+    appendRuntime(meta, entry);
     appendOutcome(meta, settled);
     if (meta.childNodes.length) card.appendChild(meta);
 
@@ -853,11 +909,18 @@
     journalToggle.setAttribute("aria-controls", bodyId);
     card.appendChild(journalToggle);
 
-    /* The drawer wraps the parts rather than being one of them, so a
-     * subheading is hidden and shown with the prose it heads. */
+    /* The drawer wraps the parts rather than being one of them, so the tab
+     * strip is hidden and shown with the prose it divides.
+     *
+     * `fold` is read here rather than at its old declaration forty lines
+     * down: `var` hoists, so the name existed and was `undefined`, and
+     * passing it in silently disabled the tab memory while every test still
+     * passed. It is the same object either way -- `foldFor` memoises per
+     * cycle -- so this is a move, not a second one. */
+    var fold = foldFor(entry.cycle);
     var body = el("div", "entry-parts");
     body.id = bodyId;
-    appendParts(body, ordered, settled);
+    appendParts(body, ordered, settled, fold);
     card.appendChild(body);
 
     /* One comment button per cycle, which is now simply one per card.
@@ -884,7 +947,6 @@
      * are also the only places that have to remember it -- a tap goes
      * through one of these whether it came from the card's own listener or
      * from `setExpanded` re-asserting a drawer. See `folds`. */
-    var fold = foldFor(entry.cycle);
 
     function setCommentsOpen(open) {
       if (!commenting) return;
@@ -935,6 +997,16 @@
      * losing your place to copy a sentence. */
     card.addEventListener("click", function (event) {
       if (event.target.closest("a")) return;
+      /* A tap on a part tab has somewhere else to go, the same as a link.
+       * Without this the card's listener fires too and collapses the whole
+       * card out from under the tab you just pressed -- the drawer shuts,
+       * and the part you asked for flashes into view and disappears with
+       * it. Found in a real browser; every jsdom test passed, because they
+       * assert which panel is `hidden` and the panel is correct right up
+       * until the card closes over it. The guard lives here rather than as
+       * a `stopPropagation` in the strip because this file keeps one
+       * listener that decides what a tap meant, and a second one drifts. */
+      if (event.target.closest(".entry-tabs")) return;
       var selection = window.getSelection();
       if (selection && !selection.isCollapsed && String(selection)) return;
       /* "If the full journal text is clicked or the button, the full
@@ -1045,6 +1117,22 @@
 
   /** The outcome pill, the PR references and the qualifier beside them.
    *  Shared so a part's own row and the cycle's row cannot drift apart. */
+  /** How long the cycle actually ran, when the server is sure (#59).
+   *
+   *  `runtimeSeconds` is absent rather than null on a cycle whose session
+   *  could not be told apart from a neighbouring cycle's, so presence is
+   *  the whole test -- see `nova_runtimes.cycle_runtimes` for why roughly
+   *  a third of the archive has no number and the recent feed nearly
+   *  always does. Minutes, because the shortest cycle on record is 7 and
+   *  seconds would imply a precision the join does not have. */
+  function appendRuntime(row, entry) {
+    var seconds = entry && entry.runtimeSeconds;
+    if (!seconds) return;
+    var minutes = Math.round(seconds / 60);
+    var text = minutes < 1 ? "ran under a minute" : "ran " + minutes + " min";
+    row.appendChild(el("span", "runtime", text));
+  }
+
   function appendOutcome(row, entry) {
     if (entry.outcome) row.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
     if (entry.pr) {
@@ -1126,31 +1214,138 @@
    *
    *  Shared by the feed card's drawer and the cycle page so the two cannot
    *  drift -- they are the same account, and the only difference is whether
-   *  you had to tap to see it. A single-part cycle gets no subheading:
-   *  there is nothing to tell apart, and a header over the only section is
-   *  the same noise as a permalink to the page you are on. */
-  function appendParts(container, ordered, settled) {
+   *  you had to tap to see it. A single-part cycle gets no tab strip: there
+   *  is nothing to tell apart, and a control that switches between one
+   *  thing is the same noise as a permalink to the page you are on.
+   *
+   *  **Tabs, because Edvard asked three times.** Comments board at cycle
+   *  81: "If a double entry is necessary like for cycle 81, have it be
+   *  combined into one card that has tabs or something similar." Inside
+   *  issue #59: "they should be combined into one with tabs. Please do some
+   *  propper ui research and testing with this as the current solution does
+   *  not make sense, is hard to understand and wasteful."
+   *
+   *  Two cycles answered that with dated subheadings instead and each
+   *  invited him to reverse it "in one sentence". He had already spent the
+   *  sentence, twice, and then a third time to say the result was hard to
+   *  understand -- so re-arguing it a third time is the loop overruling its
+   *  own user by attrition. The standing objection was that a tab hides the
+   *  addendum, which is usually "the deploy I could not see came up
+   *  healthy", i.e. the cycle's real answer. That objection is already
+   *  answered by the card and page above this: `settledPart` puts the
+   *  settled PR and outcome in the meta row, outside the tabs, where it is
+   *  visible whichever tab is open. Tabs hide prose, not the conclusion.
+   *
+   *  Every panel stays in the DOM and only `hidden` is toggled, so switching
+   *  tabs is a class change rather than a re-render and nothing below has to
+   *  be rebuilt. **It does not keep the shut half findable**: `hidden` is
+   *  `display: none`, which find-in-page and select-all skip, the same trap
+   *  `.prio-menu[hidden]` already documents in the stylesheet. An earlier
+   *  version of this comment claimed otherwise and was wrong. Reaching both
+   *  halves at once is what `/cycle/N` is for, and if that stops being a
+   *  good enough answer the fix is a real "show both" control, not a
+   *  sentence here saying the problem does not exist. */
+  function appendParts(container, ordered, settled, fold) {
+    if (ordered.length < 2) {
+      var only = el("div", "entry-body");
+      renderBlocks(only, ordered[0].blocks);
+      container.appendChild(only);
+      return;
+    }
+
+    var strip = el("div", "tabs entry-tabs");
+    strip.setAttribute("role", "tablist");
+    strip.setAttribute("aria-label", "Parts of this cycle");
+    container.appendChild(strip);
+
+    var tabs = [];
+    var panels = [];
+
     ordered.forEach(function (part, index) {
-      if (ordered.length > 1) {
-        var when = [part.date, part.time].filter(Boolean).join(" ");
-        var label = partLabel(part.title, index);
-        container.appendChild(el("h3", "entry-part", when ? label + " · " + when + " Oslo" : label));
-        /* A part that reached a different answer than the cycle's settled
-         * one keeps its own row, so nothing is dropped by drawing the
-         * header once. Cycle 6 is the case: three parts, three different
-         * PR/outcome pairs -- `no-op`, then `merged`, then `shipped` -- and
-         * a single header can only be one of them. Where a part agrees with
-         * the header (the common shape) it stays silent, which is the whole
-         * point of not drawing two identical cards. */
-        if ((part.pr || part.outcome) && !sameOutcome(part, settled)) {
-          var partMeta = appendOutcome(el("div", "entry-meta entry-meta-part"), part);
-          if (partMeta.childNodes.length) container.appendChild(partMeta);
-        }
+      var when = [part.date, part.time].filter(Boolean).join(" ");
+      var label = partLabel(part.title, index);
+      var seq = nextBodyId++;
+      var tabId = "part-tab-" + seq;
+      var panelId = "part-panel-" + seq;
+
+      /* The tab carries the same text the subheading did -- the cycle's own
+       * heading prose plus when it was written -- because that is what tells
+       * the two halves apart, and it is the one thing a tab label has to do.
+       * Cycle 75's runs to ninety characters, so the strip wraps rather than
+       * scrolls; `.tabs` already does that. */
+      var tab = el("button", "tab entry-part-tab", when ? label + " · " + when : label);
+      tab.type = "button";
+      tab.id = tabId;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-controls", panelId);
+      strip.appendChild(tab);
+      tabs.push(tab);
+
+      var panel = el("div", "entry-part-panel");
+      panel.id = panelId;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabId);
+
+      /* A part that reached a different answer than the cycle's settled one
+       * keeps its own row, inside its own panel. Cycle 6 is the case: three
+       * parts, three different PR/outcome pairs -- `no-op`, then `merged`,
+       * then `shipped` -- and the meta row above the tabs can only be one of
+       * them. Where a part agrees with the settled answer (the common shape)
+       * it stays silent, so the common cycle draws no duplicate. */
+      if ((part.pr || part.outcome) && !sameOutcome(part, settled)) {
+        var partMeta = appendOutcome(el("div", "entry-meta entry-meta-part"), part);
+        if (partMeta.childNodes.length) panel.appendChild(partMeta);
       }
+
       var body = el("div", "entry-body");
       renderBlocks(body, part.blocks);
-      container.appendChild(body);
+      panel.appendChild(body);
+      container.appendChild(panel);
+      panels.push(panel);
     });
+
+    /** Show one part. Index is always in range -- every caller derives it
+     *  from `tabs`, which is built from `ordered` one loop above. */
+    function select(index) {
+      if (fold) fold.part = index;
+      tabs.forEach(function (tab, i) {
+        var on = i === index;
+        tab.classList.toggle("on", on);
+        tab.setAttribute("aria-selected", on ? "true" : "false");
+        /* Roving tabindex: one stop for the whole strip, then arrow keys
+         * within it. A tablist where every tab is a tab stop makes a
+         * keyboard user press Tab three times to get past cycle 6. */
+        tab.tabIndex = on ? 0 : -1;
+        panels[i].hidden = !on;
+      });
+    }
+
+    strip.addEventListener("click", function (event) {
+      var index = tabs.indexOf(event.target);
+      if (index !== -1) select(index);
+    });
+
+    strip.addEventListener("keydown", function (event) {
+      var current = tabs.indexOf(event.target);
+      if (current === -1) return;
+      var next = null;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (current + 1) % tabs.length;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (current - 1 + tabs.length) % tabs.length;
+      if (event.key === "Home") next = 0;
+      if (event.key === "End") next = tabs.length - 1;
+      if (next === null) return;
+      event.preventDefault();
+      select(next);
+      tabs[next].focus();
+    });
+
+    /* The first part, because both surfaces read forwards: `ordered` is
+     * oldest-first and an addendum is the later half of the same hour, not
+     * an alternative to it -- unless this cycle's card already had a tab
+     * open, in which case a poll re-render must not throw it away. Bounded,
+     * because a cycle can gain a part between two polls. */
+    var start = fold && fold.part ? fold.part : 0;
+    select(start < ordered.length ? start : 0);
   }
 
   function renderCyclePage(cycleNumber, entries, digestLine, comments) {
@@ -1206,7 +1401,8 @@
     var settled = settledPart(parts);
     var meta = el("div", "entry-meta");
     var stamp = [first.date, first.time].filter(Boolean).join(" ");
-    if (stamp) meta.appendChild(el("time", "stamp", stamp + " Oslo"));
+    if (stamp) meta.appendChild(el("time", "stamp", stamp));
+    appendRuntime(meta, first);
     appendOutcome(meta, settled);
     if (meta.childNodes.length) card.appendChild(meta);
 
@@ -1571,9 +1767,29 @@
     filtersOpen: false,
   };
 
+  /* `outdated` is the fifth status, from issues.md #85: "Some of them are
+   * implemented and some of them are outdated. We need to clean it up.
+   * Maybe we need a new status called 'outdated', so i can go through them
+   * and delete them myself." A cycle sets it; only he acts on it. So it
+   * has to leave Open -- a row nobody will ever build is not open work, and
+   * leaving it there is the pile he asked to shrink -- without becoming
+   * Done, which would claim it shipped. It gets its own filter instead,
+   * because "go through them myself" is a list he has to be able to reach.
+   * Nothing here touches the hold-menu: edit and delete are ungated on
+   * every row and always have been, which `delete_row`'s own docstring
+   * gives the reason for -- "deleting a finished item is the most likely
+   * thing Edvard wants". So an outdated row stays deletable because there
+   * was never a gate, not because this filter spared it. */
+  function isOutdated(item) { return item.statusKey === "outdated"; }
+
   var FILTERS = [
-    { key: "open", label: "Open", match: function (i) { return i.statusKey !== "done"; } },
+    {
+      key: "open",
+      label: "Open",
+      match: function (i) { return i.statusKey !== "done" && !isOutdated(i); },
+    },
     { key: "done", label: "Done", match: function (i) { return i.statusKey === "done"; } },
+    { key: "outdated", label: "Outdated", match: isOutdated },
     { key: "all", label: "All", match: function () { return true; } },
   ];
 
@@ -1643,7 +1859,7 @@
       label: "Untouched " + STALE_DAYS + "d",
       match: function (i) {
         var age = itemAgeDays(i);
-        return age !== null && age > STALE_DAYS && i.statusKey !== "done";
+        return age !== null && age > STALE_DAYS && i.statusKey !== "done" && !isOutdated(i);
       },
     },
     {
@@ -1764,14 +1980,29 @@
   function renderBoardStatus(board, payload) {
     var titles = boardTitles(board);
     var items = (payload && payload.items) || [];
-    var open = items.filter(function (i) { return i.statusKey !== "done"; }).length;
+    /* Three buckets, not two. The tally used to derive `done` as
+     * `total - open`, so the moment a row went outdated it would have been
+     * counted as shipped -- the one reading that must never happen, since
+     * outdated means the opposite. */
+    var outdated = items.filter(isOutdated).length;
+    var done = items.filter(function (i) { return i.statusKey === "done"; }).length;
+    var open = items.length - done - outdated;
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
-    statusEl.appendChild(el(
-      "p", "status-line",
-      titles.page + " — " + open + " open, " + (items.length - open) + " done, "
+    /* The page name is bold and the counts are not -- Edvard, issues.md #83:
+     * "Make the header for issues and ideas bold". The whole line used to be
+     * one dim string, so "Issues" read as part of the tally rather than as
+     * the title of the page you are on. Only the name moves; the counts stay
+     * `--dim` because they are what the name has to stand out against, and
+     * bolding both would be the same flat line again. */
+    var line = el("p", "status-line");
+    line.appendChild(el("strong", "status-page", titles.page));
+    line.appendChild(document.createTextNode(
+      " — " + open + " open, " + done + " done, "
+        + (outdated ? outdated + " outdated, " : "")
         + ((payload && payload.notesTotal) || 0) + " of my own notes"
     ));
+    statusEl.appendChild(line);
   }
 
   /* The four ratings, spelled with the characters themselves rather than
@@ -1989,6 +2220,95 @@
     });
   }
 
+  /* Edvard, issue #84: *"If i hold the card for more than 1 second i get
+   * into edit mode"*. His number, not a tuned one. */
+  var HOLD_MS = 1000;
+
+  /* The edit-mode panel a held row turns into: the title in a box, and
+   * save, cancel and delete.
+   *
+   * **A boarded row's title lives in three places and this only shows
+   * one of them.** The table cell is what the card renders; the wiki-link
+   * beside it and the `### #84 — ...` heading over the write-up repeat
+   * the same words for Obsidian's benefit. The server moves all three
+   * together, which is why this posts a title rather than a patch -- the
+   * page has no business knowing that his file says it three times.
+   */
+  function renderRowEditor(board, item, done) {
+    var panel = el("div", "item-edit");
+    var box = el("textarea", "item-edit-input");
+    box.value = item.title || "";
+    box.rows = 2;
+    box.setAttribute("aria-label", "Title of #" + item.number);
+    var actions = el("div", "item-edit-actions");
+    var status = el("span", "item-edit-status");
+    var save = el("button", "capture-act", "Save");
+    var cancel = el("button", "capture-act", "Cancel");
+    var del = el("button", "capture-act is-danger", "Delete");
+    save.type = "button";
+    cancel.type = "button";
+    del.type = "button";
+
+    function busy(on, label) {
+      save.disabled = on;
+      cancel.disabled = on;
+      del.disabled = on;
+      status.className = "item-edit-status";
+      status.textContent = on ? label : "";
+    }
+
+    function send(url, body) {
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          // Repaint from the file rather than patching the node: a row
+          // that has just been retitled or removed is not the row this
+          // closure was built from.
+          loadBoard(board);
+        })
+        .catch(function (err) {
+          status.textContent = String((err && (err.message || err)) || "failed");
+          status.className = "item-edit-status is-error";
+          busy(false, "");
+        });
+    }
+
+    save.addEventListener("click", function () {
+      var next = box.value.trim();
+      // Emptying the box is not how a row is deleted -- there is a
+      // button for that and it asks first, the same rule the capture
+      // editor follows.
+      if (!next || next === item.title) { done(); return; }
+      busy(true, "saving…");
+      send("/api/board/edit", { target: board, number: item.number, title: next });
+    });
+    cancel.addEventListener("click", done);
+    del.addEventListener("click", function () {
+      // The one thing on this page that cannot be undone from the page.
+      // A native confirm blocks the accident in one line; #6's modal is
+      // a different item and building half of it here would be worse
+      // than either.
+      if (!window.confirm("Delete #" + item.number + "?\n\n" + (item.title || ""))) return;
+      busy(true, "deleting…");
+      send("/api/board/delete", { target: board, number: item.number });
+    });
+
+    actions.appendChild(status);
+    actions.appendChild(save);
+    actions.appendChild(cancel);
+    actions.appendChild(del);
+    panel.appendChild(box);
+    panel.appendChild(actions);
+    return { el: panel, focus: function () { box.focus(); } };
+  }
+
   /* One row of Edvard's board. Closed it is the number, the title and a
    * status chip; open it reveals the write-up, which is a second request
    * the first time a row is opened and memory after that. */
@@ -2033,8 +2353,10 @@
     // done row is not one he is going to visit for that. `item.done`
     // alone is not the editable test, it only means the row is in the
     // `## Done` table and most finished rows never move there --
-    // `statusKey` is what the server refuses a write on.
-    var editable = !item.done && item.statusKey !== "done";
+    // `statusKey` is what the server refuses a write on. An outdated row
+    // is closed the same way, and the server refuses a rating on it for
+    // the same reason (`_CLOSED_STATUS_KEYS` in `nova_boards.py`).
+    var editable = !item.done && item.statusKey !== "done" && !isOutdated(item);
     var prioNote = el("span", "item-prio-note", "");
     if (editable) {
       metaRow.appendChild(renderPriorityPicker(board, item, prioNote).el);
@@ -2080,6 +2402,65 @@
       renderBlocks(body, blocks);
     }
 
+    /* The hold gesture. A press that lasts `HOLD_MS` opens the editor;
+     * anything shorter is the ordinary tap that opens the write-up.
+     *
+     * **The timer is cleared on every way a press can end, including the
+     * ones that are not "let go".** A `setTimeout` still pending when the
+     * node is gone fires into a detached closure -- and in the browser
+     * tests it fires inside whatever unrelated file happens to be running
+     * a second later, which is a real failure this suite has already had.
+     * So `end` runs on leave, on scroll, and on cancel, not just on up.
+     *
+     * **Mouse and touch both, because the same page is a phone and a
+     * laptop.** A touch device fires the mouse events too, after a delay,
+     * and both paths land in the same idempotent `start`/`end` pair, so
+     * the double delivery costs a cleared timer and nothing else.
+     */
+    var holdTimer = null;
+    var held = false;
+    function endHold() {
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    }
+    function startHold() {
+      endHold();
+      held = false;
+      holdTimer = setTimeout(function () {
+        holdTimer = null;
+        held = true;
+        openEditor();
+      }, HOLD_MS);
+    }
+    function openEditor() {
+      if (row.querySelector(".item-edit")) return;
+      var editor = renderRowEditor(board, item, function () {
+        // Cancel is a repaint too. The row's title may have changed under
+        // this card while the box was open, and re-rendering is the only
+        // way to be sure the card and the file agree.
+        loadBoard(board);
+      });
+      // The head stays on screen and stops being a control. Hiding it was
+      // the first version and rendering the page killed it: `.item-head`
+      // sets `display: flex`, which beats the `[hidden]` user-agent rule,
+      // so it stayed visible and tappable in a real browser while jsdom --
+      // which loads no stylesheet -- reported it hidden and the test
+      // passed. Keeping it is also the better answer: the number and the
+      // chips are how he can see *which* row is in the box.
+      row.classList.add("is-editing");
+      head.setAttribute("aria-disabled", "true");
+      row.insertBefore(editor.el, head.nextSibling);
+      editor.focus();
+    }
+    head.addEventListener("mousedown", startHold);
+    head.addEventListener("touchstart", startHold);
+    ["mouseup", "mouseleave", "touchend", "touchmove", "touchcancel"].forEach(
+      function (name) { head.addEventListener(name, endHold); });
+
+    // Factored out of the click handler below so `role="button"`'s
+    // keyboard activation (further down) can reach the same toggle
+    // without also going through the hold/editor guards a mouse or touch
+    // press needs -- a keyboard press has no hold gesture to have already
+    // acted on.
     function toggle() {
       var opening = boardState.open !== item.number;
       // One open row at a time. These write-ups run to several screens
@@ -2102,11 +2483,23 @@
       body.hidden = !opening;
       if (opening) fill();
     }
-    head.addEventListener("click", toggle);
+    head.addEventListener("click", function () {
+      // A hold has already done something with this press; letting the
+      // tap handler also run would open the write-up underneath the
+      // editor that just appeared.
+      if (held) { held = false; return; }
+      // While the editor is open the row is not a toggle. Without this the
+      // write-up opens underneath the box he is typing in.
+      if (row.querySelector(".item-edit")) return;
+      toggle();
+    });
     // `role="button"` on a <div> gets none of a real <button>'s built-in
-    // keyboard activation -- Space and Enter do nothing without this.
+    // keyboard activation -- Space and Enter do nothing without this. No
+    // hold gesture to guard against, but the editor-open guard still
+    // applies: the row is not a toggle while it is open, keyboard or not.
     head.addEventListener("keydown", function (e) {
       if (e.key === "Enter" || e.key === " ") {
+        if (row.querySelector(".item-edit")) return;
         e.preventDefault();
         toggle();
       }

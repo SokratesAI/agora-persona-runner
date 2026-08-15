@@ -160,6 +160,45 @@ def gaps_between(numbers):
     return [n for n in range(min(written) + 1, max(written)) if n not in written]
 
 
+RECENT_GAP_WINDOW = 24
+
+
+def recent_gaps(numbers, window=RECENT_GAP_WINDOW):
+    """`gaps_between`, cut to holes within `window` cycles of the newest.
+
+    Edvard, comments board 2026-08-14, on the header's stall badge:
+    *"Should be displayed if the return fetch came in with missing
+    journals."* The header's whole job is whether the loop is alive, and
+    the only thing it has ever said about that is a clock -- how long
+    since the newest entry. A hole is the stronger signal and a much
+    harder one to cry wolf with, because it is a fact about the record
+    rather than a guess about the present: cycle 128 either wrote an
+    entry or it did not.
+
+    The window is what stops that becoming a badge nobody reads.
+    `gaps_between` is history and never shrinks -- the live journal holds
+    six holes, the newest being 134 against a newest cycle of 205 -- so
+    rendering all of it in the header would pin a permanent warning about
+    a failure three days old, which is the same "badge every hour"
+    failure the client comments warn about. The feed already marks every
+    hole in the position it happened; this is only for the ones still
+    worth interrupting him about.
+
+    24 is that window and it is a duration in disguise: across every
+    cadence Edvard has actually run -- 40, 60 and 72 minutes -- it spans
+    16 to 29 hours, so "a cycle failed within about the last day". It is
+    also roughly the first screen of the feed (Cycle 205 measured 20
+    cards), which means a hole the header names is one he can scroll to
+    and see marked.
+    """
+    numbers = set(numbers)
+    gaps = gaps_between(numbers)
+    if not gaps:
+        return []
+    floor = max(numbers) - window
+    return [n for n in gaps if n >= floor]
+
+
 def missing_cycles(paths):
     """Cycle numbers with no entry, bracketed by entries on both sides.
 

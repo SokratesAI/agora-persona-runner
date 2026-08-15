@@ -70,6 +70,12 @@ pre code { background: none; padding: 0; }
 }
 
 .status-line { margin: 0.3rem 0 0; color: var(--dim); }
+
+/* The page name only, on the two board pages -- issues.md #83, "Make the
+ * header for issues and ideas bold". `--text` as well as the weight: bold
+ * at `--dim` is barely a change on a phone in the dark, which is where he
+ * reads this. */
+.status-page { color: var(--text); font-weight: 700; }
 .status-sub { margin: 0.6rem 0 0; display: flex; gap: 0.5rem; align-items: center; }
 .status-pr { color: var(--dim); font-size: 0.85rem; }
 
@@ -297,13 +303,10 @@ pre code { background: none; padding: 0; }
   line-height: 1;
 }
 
-.chevron {
-  margin-left: auto;
-  color: var(--dim);
-  transition: transform 0.15s ease;
-}
-
-.entry.is-expanded .chevron { transform: rotate(180deg); }
+/* The chevron's rules lived here (issues.md #59 removed the element).
+ * They are gone rather than left unused: `margin-left: auto` was the only
+ * thing pushing anything to the right end of the toggle, so a later
+ * reader finding it would reasonably think some element still needs it. */
 
 .entry-permalink {
   color: var(--dim);
@@ -347,26 +350,36 @@ pre code { background: none; padding: 0; }
   line-height: 1.25;
 }
 
-/* Which of a cycle's two parts you are in, for the six cycles that wrote an
- * addendum. Quieter than the page's own title and separated from the prose
- * above it, because it divides one account rather than starting a new one. */
-.entry-part {
-  margin: 1.6rem 0 0.7rem;
+/* Which of a cycle's parts you are reading, for the fourteen cycles that
+ * wrote more than once. A tab strip rather than the subheadings this used to
+ * draw -- Edvard asked for tabs three times (issue #59, and the comments
+ * board at cycle 81) and got subheadings twice.
+ *
+ * It reuses `.tabs`/`.tab` from the boards rather than inventing a second
+ * tab language, so the two surfaces cannot drift apart in look or in
+ * behaviour. Only the spacing above is local: this strip sits inside a
+ * drawer of prose and needs a rule off the paragraph above it, which the
+ * board strips -- first thing on their page -- do not. */
+.entry-tabs {
+  margin-top: 1.4rem;
   padding-top: 1.1rem;
   border-top: 1px solid var(--line, #2a2d3a);
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--dim);
 }
-/* No uppercase and no letter-spacing, which the first version had. Those
- * suit a short tag -- "ADDENDUM" -- and these are not tags: the label is
- * whatever prose the cycle typed into its own heading, and cycle 75's runs
- * to ninety characters ("I watched it land, and caught myself re-filing a
- * bug Edvard had already reported"). Uppercasing a sentence that long makes
- * it slower to read than the paragraph underneath it. */
-/* Not scoped to `.is-page` any more: the feed card's drawer draws the same
- * subheadings between the same bodies, and it wants the same spacing. */
-.entry-body + .entry-part { margin-top: 1.4rem; }
+/* No uppercase and no letter-spacing. Those suit a short tag -- "ADDENDUM"
+ * -- and these are not tags: the label is whatever prose the cycle typed
+ * into its own heading, and cycle 75's runs to ninety characters ("I watched
+ * it land, and caught myself re-filing a bug Edvard had already reported").
+ * So the strip wraps and a long label keeps its sentence case; uppercasing a
+ * sentence that long makes it slower to read than the prose underneath. */
+.entry-part-tab { text-align: left; }
+/* `.tab` is sized for a one-word board filter and sits on one line. A part
+ * label is a sentence, so it may not be squeezed to an equal share of the
+ * row -- it takes the width it needs and the strip wraps around it. */
+.entry-tabs .tab { flex: 0 1 auto; }
+/* The page draws the same strip. It has no drawer above it, so the border
+ * that separates the tabs from the prose they divide is the only thing
+ * standing between them and the meta row. */
+.entry.is-page .entry-tabs { margin-top: 1.6rem; }
 
 /* No line clamp any more. The brief arrives already cut on a sentence
  * boundary, so a clamp has nothing left to do except break it again in the
@@ -448,6 +461,7 @@ pre code { background: none; padding: 0; }
 }
 
 .stamp { color: var(--dim); font-size: 0.82rem; }
+.runtime { color: var(--dim); font-size: 0.82rem; }
 .pr { color: var(--dim); font-size: 0.82rem; }
 .outcome-detail { color: var(--dim); font-size: 0.82rem; font-style: italic; }
 
@@ -1171,6 +1185,16 @@ body.nav-open { overflow: hidden; }
   gap: 0.35rem;
   padding: 0.7rem 0.9rem;
   cursor: pointer;
+  /* The row is also a one-second hold (issue #84), and on a phone a
+   * one-second hold on text is the browser's own gesture: iOS pops the
+   * selection handles and the callout menu, Android starts a selection.
+   * Both land on top of the editor the hold just opened. Turning them
+   * off here rather than calling `preventDefault` keeps the ordinary tap
+   * untouched -- `role="button"` already tells an assistive reader there
+   * is nothing here to select. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .item-title-row {
@@ -1193,6 +1217,38 @@ body.nav-open { overflow: hidden; }
 }
 
 .item-prio-note { align-self: center; }
+
+/* Edit mode on a boarded row (issue #84): the title in a box under the
+ * card's own line, and save / cancel / delete below it. The head stays --
+ * the number and the chips are how he sees which row is in the box -- and
+ * only stops behaving like a button, which `app.js` enforces. This rule
+ * is the visible half of that: a control that no longer does anything
+ * should not still offer a pointer and a hover. */
+.item.is-editing .item-head { cursor: default; }
+.item-edit { padding: 0 0.9rem 0.7rem; }
+
+.item-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+}
+
+.item-edit-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.item-edit-status { flex: 1 1 auto; color: var(--dim); font-size: 0.85rem; }
+.item-edit-status.is-error { color: var(--warn); }
 
 .item-number { color: var(--dim); font-variant-numeric: tabular-nums; }
 .item-title { flex: 1 1 60%; }
@@ -1221,6 +1277,11 @@ body.nav-open { overflow: hidden; }
 .chip-in-progress { color: var(--warn); border-color: var(--warn); }
 .chip-backlog { color: var(--dim); }
 .chip-done { color: var(--good); border-color: var(--good); }
+/* Outdated is dimmer than backlog and struck through -- it is the only
+   status that means "this will never happen", and it must not be mistaken
+   for done at a glance. It spends no colour, because the three that do are
+   all states the row is still alive in. */
+.chip-outdated { color: var(--dim); opacity: 0.7; text-decoration: line-through; }
 
 /* Priority sits beside the status chip, so it must not read as a second
    status. Filled rather than outlined, and the four ratings step down in

@@ -6,9 +6,13 @@ never fires while the loop is alive, and it fires exactly once while the
 loop is dead no matter how often it is asked.
 """
 
+from datetime import datetime, timedelta
+from unittest.mock import patch
+
 import pytest
 
 from agora_runner.config import NOVA_PERSONA_ID
+from agora_runner.nova_site import OSLO
 from agora_runner.stall_notice import (
     StallWatch, due, notice_text, nova_conversation,
 )
@@ -264,3 +268,45 @@ def test_the_live_post_speaks_as_agora_and_honours_the_mute(monkeypatch):
     assert stall_notice._live_post("conv-1", "text", False) == 200
     assert seen == {"conversation": "conv-1", "sender": "Agora",
                     "system": True, "push": False}
+
+
+def test_a_record_the_site_cannot_refresh_does_not_push_a_stall_to_his_phone():
+    """The badge's bug, in the consumer where it costs the most.
+
+    `_with_silence` measures a live `now` against a cached
+    `lastWrittenAt`, so a rebuild that keeps failing reads as a loop that
+    stopped writing. Here that does not colour a badge -- it posts "Nova
+    has stopped writing" to Edvard's phone, on evidence only that this
+    process lost its own connection to the vault.
+
+    Measured 2026-08-15: `nova-site-preview` served
+    `stalled: true, silentIntervals: 9` for hours off a payload built the
+    previous evening, while the loop wrote an entry every hour.
+
+    Same payload, same clock; only the age of the served copy differs.
+    """
+    from agora_runner import nova_site
+    from agora_runner.stall_notice import _live_status
+
+    written = (datetime.now(OSLO) - timedelta(hours=9)).isoformat()
+    built = {"entries": [], "status": {"cycle": 206, "lastWrittenAt": written}}
+
+    nova_site.reset_cache()
+    try:
+        with patch.object(nova_site, "journal_payload", lambda: built):
+            fresh = _live_status()
+            assert fresh["stalled"] is True, "a genuinely quiet loop must still be reported"
+
+            # Same reason as the two tests above: no rebuild thread.
+            with nova_site._cache_lock:
+                nova_site._refreshing.add("journal")
+                payload, body, etag, at = nova_site._cache["journal"]
+                nova_site._cache["journal"] = (
+                    payload, body, etag, at - nova_site.RECORD_TRUST_SECONDS - 1,
+                )
+            frozen = _live_status()
+    finally:
+        nova_site.reset_cache()
+
+    assert frozen["recordStale"] is True
+    assert frozen["stalled"] is False

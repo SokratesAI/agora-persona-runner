@@ -63,8 +63,26 @@ _SECTION_RE = re.compile(r"^(#{1,2})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 # rather than out of the alias after the pipe -- the alias is a display
 # label and two rows in the live file spell it differently.
 _ROW_NUMBER_RE = re.compile(r"#(\d+)")
-# `## 57 — More pages in the Nova app` inside `# Details`.
-_DETAIL_RE = re.compile(r"^##[ \t]+(\d+)[ \t]*[—–-][ \t]*(.*?)[ \t]*$", re.MULTILINE)
+# A detail heading inside `# Details`, in either shape the live files use:
+# `## 57 — More pages in the Nova app` and `### #84 — Edit and delete a
+# boarded idea or issue by holding the card`.
+#
+# **The second shape was unreadable for twenty-one of Edvard's rows.** This
+# pattern was `^##[ \t]+(\d+)` -- two hashes, no `#` before the number --
+# and `_sections` only ever offered it `#`/`##` headings, so a `### #84`
+# write-up was not a section and never reached it. Measured against the
+# live files 2026-08-14: 21 of 85 issue rows and 4 of 72 idea rows had a
+# write-up in the file and showed *"No write-up yet -- only the board
+# row."* on the page, including every issue from #70 up. Whichever cycle
+# started writing `### #N —` changed the shape and nothing here noticed,
+# because a missing detail renders as a legitimate state rather than an
+# error.
+#
+# Both shapes are accepted rather than one normalised, because these are
+# Edvard's files: rewriting 87 headings to suit the parser is a large diff
+# through his prose to fix a regex.
+_DETAIL_RE = re.compile(
+    r"^(#{2,3})[ \t]+(#?)(\d+)[ \t]*[—–-][ \t]*(.*?)[ \t]*$", re.MULTILINE)
 # `- 2026-08-09 (Cycle 63) — the note itself`. Both halves optional: a
 # few of my own captures were written without either.
 _NOTE_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})?[ \t]*(?:\(Cycle[ \t]+(?P<cycle>\d+)\))?"
@@ -82,6 +100,40 @@ def status_key(status):
     words = _EMOJI_RE.sub(" ", status or "").strip().lower()
     words = re.sub(r"\s+", "-", words)
     return words or "none"
+
+
+# The fifth status, and the exact cell text a cycle writes it as.
+# Edvard, `issues.md` #85: *"Some of them are implemented and some of them
+# are outdated. We need to clean it up. Maybe we need a new status called
+# 'outdated', so i can go through them and delete them myself."* So the
+# split of labour is his: a cycle proposes, he deletes. Nothing here sets
+# it -- the sweep is a vault edit -- but the string lives beside
+# `PRIORITY_LABELS` so the app's `chip-outdated` and this file cannot
+# drift into two different spellings of the same status.
+OUTDATED_STATUS = "⚫ Outdated"
+
+# The exact cell text a status is written as, keyed by what `status_key`
+# reduces it to -- the same shape as `PRIORITY_LABELS`, and beside it for
+# the same reason: the app's `chip-outdated` class, `OUTDATED_STATUS` and
+# whatever a cycle types into the cell must not drift into three
+# spellings of one status. `🟢 Done` is live on **issue #3** and reduces
+# to `done` here, so it is read correctly and rewritten to the ✅ spelling
+# the other 84 rows use if anything ever sets it again. (This comment
+# said #63 until the reviewer checked: #63 is a different row and is
+# already `✅ Done`. A cycle sweeping the board would have gone looking
+# for the stray spelling in the wrong place and left the real one alone.)
+STATUS_LABELS = {
+    "backlog": "⚪ Backlog",
+    "in-progress": "🟡 In progress",
+    "done": "✅ Done",
+    "outdated": OUTDATED_STATUS,
+}
+
+# The statuses that mean the row is finished with, either way. A finished
+# row takes no rating: `set_row_priority` already refused `done` because a
+# chip on a shipped item is noise, and "will never be built" is the same
+# state for the same reason.
+_CLOSED_STATUS_KEYS = frozenset({"done", "outdated"})
 
 
 # Edvard's four ratings, and the words he actually used for them:
@@ -231,7 +283,7 @@ def set_row_priority(markdown, number, priority):
         found = _ROW_NUMBER_RE.search(cells[0])
         if not found or int(found.group(1)) != number:
             continue
-        if status_key(cells[2]) == "done":
+        if status_key(cells[2]) in _CLOSED_STATUS_KEYS:
             return None
         # Appended, never inserted -- the same reason `parse_board` reads
         # it at index 4. A row that never had a fifth cell grows one here,
@@ -242,6 +294,298 @@ def set_row_priority(markdown, number, priority):
         lines[index] = "| " + " | ".join(cells) + " |"
         return "\n".join(lines)
     return None
+
+
+def set_row_status(markdown, number, status, updated=None):
+    """Rewrite one row's status cell. Returns markdown, or `None`.
+
+    The missing sibling of `set_row_priority`, and the reason it is here:
+    Cycle 202 marked nine rows `⚫ Outdated` by splitting each row on `|`
+    by hand, because nothing in this module set a status. The first column
+    is a wiki-link containing an escaped `\\|`, so that split yields five
+    cells where the table has four and shifts every column one to the
+    right -- the file it was about to write had the row's *title* in the
+    status column. It caught that by diffing before the write. The sweep
+    of the remaining ~62 open rows is many more chances to make the same
+    mistake, so the split moves in here where `_row_span` already masks
+    that character.
+
+    **A closed row loses its rating.** `set_row_priority` refuses a `done`
+    or `outdated` row outright, so a status cell moving *into* one of them
+    would otherwise strand a chip that no call could ever clear again --
+    the two functions would disagree about whether a finished row can
+    carry a rating. It cannot; Cycle 188 rated 71 open rows and
+    deliberately left the finished ones blank.
+
+    `updated` writes the fourth cell, and `None` leaves it alone. The
+    caller passes it rather than this function reaching for a clock,
+    because these files use `MM-DD` in Oslo time and a module that
+    formats dates on its own is a module that formats them in UTC.
+
+    `None` means not written: no such row in `## Board`, or a status that
+    is not one of the four. A row in `## Done` is deliberately out of
+    reach -- see `_row_span`, whose two tables put a date where this one
+    writes a status.
+    """
+    if status not in STATUS_LABELS.values():
+        return None
+    # `status` is whitelisted above and cannot carry a delimiter; `updated`
+    # is free text from a caller and can. `set_row_title` refuses the same
+    # two characters for the same reason -- a `|` splits the row into an
+    # extra column and a newline splits it into two rows, and both land in
+    # Edvard's file looking like a table he wrote.
+    if updated is not None and ("|" in updated or "\n" in updated):
+        return None
+    lines = (markdown or "").split("\n")
+    index, cells = _row_span(lines, number, tables=("board",))
+    if index is None:
+        return None
+    cells[2] = status
+    if updated is not None:
+        cells[3] = updated
+    if status_key(status) in _CLOSED_STATUS_KEYS and len(cells) > 4:
+        cells[4] = ""
+    lines[index] = "| " + " | ".join(cells) + " |"
+    return "\n".join(lines)
+
+
+def append_detail_note(markdown, number, note, dated, cycle=None):
+    """Add one dated line to the end of a row's write-up. Or `None`.
+
+    The other side of issue #85. `set_row_status` moves a row to `✅ Done`
+    and the *reason* it moved lands in a journal entry, in a different
+    file, in a different database -- so Edvard opens `issues.md` on his
+    phone, sees a row that closed itself, and has nothing in front of him
+    that says why. That is the same drift he filed #85 about, pointing the
+    other way: last time the row was stale, this time the row is right and
+    unaccountable. Cycle 203 closed ten rows and every one of them has this
+    hole.
+
+    So a status change gets a sentence written where the status is, and
+    this is the call that writes it. The line goes at the *end* of the
+    write-up body rather than the top: the write-up is Edvard's statement
+    of the problem and these are notes accumulating under it in order, so
+    the newest-first convention his capture lists use is the wrong one
+    here -- it would put a closing note above the problem it closed.
+
+    `dated` is `MM-DD` in Oslo time and the caller supplies it, for
+    `set_row_status`'s reason: a module that reaches for a clock reaches
+    for it in UTC. `cycle` is optional and named in the line when given.
+
+    **A line break in `note` is refused, and that is the whole safety
+    argument.** `_detail_spans` ends a write-up at the next `#` or `##`
+    heading, so a note carrying one would not merely look wrong -- it
+    would truncate the block it was appended to, and every later line of
+    Edvard's own text would fall outside the span and stop rendering on
+    the page. One line in, one line out.
+
+    **`\\r` counts, and it is the one that gets past a `"\\n" in note`
+    check.** Python's `re.MULTILINE` anchors on `\\n` alone, so a bare
+    `\\r` does not split a span *here* and every server-side test agrees
+    the note is harmless. It is not harmless where it lands: CommonMark
+    defines a bare `\\r` as a line ending, so Obsidian on his phone
+    renders it as a real break and puts whatever follows on its own line
+    under his prose. That is the same corruption, arriving through the
+    renderer instead of through the parser, and reachable only because
+    this module and its reader disagree about what a line is.
+
+    `None` means not written: no write-up for that number (the row may
+    still exist -- only some rows have one), an empty note, or a line
+    break in either free-text argument.
+    """
+    note = (note or "").strip()
+    dated = (dated or "").strip()
+    if not note or not dated:
+        return None
+    if any(c in note or c in dated for c in "\r\n"):
+        return None
+    span = _detail_spans(markdown).get(number)
+    if span is None:
+        return None
+
+    lines = (markdown or "").split("\n")
+    _, body_start, end = span
+    # Trailing blank lines inside the block are the separator before the
+    # next heading, not part of the body. Walk back over them so note two
+    # lands directly under note one instead of drifting a line further
+    # from the write-up each time.
+    tail = end
+    while tail > body_start and not lines[tail - 1].strip():
+        tail -= 1
+    who = f"Nova, {dated}" if cycle is None else f"Nova, {dated} (Cycle {cycle})"
+    entry = ["", f"**{who}:** {note}"]
+    # An empty write-up has nothing to separate the note from, and a
+    # leading blank line there would render as one.
+    if tail == body_start:
+        entry = entry[1:]
+    return "\n".join(lines[:tail] + entry + lines[tail:])
+
+
+def _detail_spans(markdown):
+    """`{number: (heading_line, body_start, end_line)}` for every write-up.
+
+    Scanned line-wise instead of through `_sections`, because the two
+    jobs genuinely differ. `_sections` exists to find `## Board` and
+    `## Done`, so it stops at depth two -- and a detail heading may be
+    depth three. Widening it to `#{1,3}` would have been the small change
+    and it is the wrong one: three write-ups in the live `ideas.md` carry
+    their own `### Where it lives` / `### The 20` / `### First slice`
+    subheadings, and a section splitter that treats those as new sections
+    would silently truncate the write-up at the first one.
+
+    So a block ends at the *next item* heading, or at any `#`/`##`
+    heading that is not one -- `# Details` itself, `## Board`, `## Done`.
+    Anything deeper stays inside the body where its author put it.
+
+    Returns line indices rather than text so the delete path and the
+    read path address a block the same way; `parse_board` slices the
+    body out of them.
+    """
+    lines = (markdown or "").split("\n")
+    starts = []
+    for index, line in enumerate(lines):
+        match = _DETAIL_RE.match(line)
+        if match:
+            starts.append((index, int(match.group(3))))
+            continue
+        shallow = _SECTION_RE.match(line)
+        if shallow:
+            # A non-item heading at depth 1 or 2 closes whatever is open.
+            starts.append((index, None))
+    spans = {}
+    for position, (index, number) in enumerate(starts):
+        if number is None:
+            continue
+        end = starts[position + 1][0] if position + 1 < len(starts) else len(lines)
+        # A number written twice keeps the first block, the same way
+        # `parse_board` keeps the first row for a number in both tables.
+        spans.setdefault(number, (index, index + 1, end))
+    return spans
+
+
+def _row_span(lines, number, tables=("board", "done")):
+    """`(index, cells)` for the `## Board` or `## Done` row numbered `number`.
+
+    Unlike `set_row_priority` this does not care by default which of the
+    two tables the row is in. Rating a finished item is meaningless, so
+    that function refuses one; deleting a finished item is the *most*
+    likely thing Edvard wants, since `## Done` is where the rows he has
+    stopped caring about accumulate.
+
+    `tables` narrows it, and `set_row_status` is why it exists. **The two
+    tables do not share a column layout** -- `## Board` is
+    `# | Item | Status | Updated | Priority` and `## Done` is
+    `# | Item | Landed | Where`, so the third cell is a status in one and
+    a date in the other. A status write addressed at a `## Done` row
+    would land on the date, and `parse_board` derives that row's status
+    from the table it is in, so it would keep reporting `✅ Done` and the
+    corruption would be invisible on the page. Caught by a test written
+    to check the opposite behaviour.
+    """
+    in_table = False
+    for index, line in enumerate(lines):
+        heading = _SECTION_RE.match(line)
+        if heading:
+            in_table = (len(heading.group(1)) == 2
+                        and heading.group(2).strip().lower() in tables)
+            continue
+        if not in_table or not line.strip().startswith("|"):
+            continue
+        masked = _WIKILINK_RE.sub(lambda m: m.group(0).replace("|", _ALIAS_PIPE), line.strip())
+        cells = [
+            cell.strip().replace(_ALIAS_PIPE, "|") for cell in masked.strip("|").split("|")
+        ]
+        if len(cells) < 4:
+            continue
+        found = _ROW_NUMBER_RE.search(cells[0])
+        if found and int(found.group(1)) == number:
+            return index, cells
+    return None, None
+
+
+# `[[#84 — Edit and delete a boarded card\|84]]` -- Obsidian's link from a
+# board row to its own write-up, and the only place a row's title appears
+# twice. The escaped pipe is how it survives being a table cell.
+_ROW_LINK_RE = re.compile(r"^\[\[#(\d+)[ \t]*[—–-][ \t]*(.*?)\\?\|(\d+)\]\]$")
+
+
+def set_row_title(markdown, number, title):
+    """Retitle one boarded row, in all three places at once. Or `None`.
+
+    Edvard, issue #84: *"I need to be able to edit and especially delete
+    boarded ideas and issues from the agora app."*
+
+    **A title is written three times in these files and only one of them
+    is on the page.** The table cell is what the board shows; the wiki-link
+    beside it repeats the title *as the link target*, because Obsidian
+    resolves a heading link by its text; and the `### #84 — ...` heading
+    over the write-up is that target. Rewriting the cell alone would leave
+    him a board that reads correctly in the app and, in Obsidian on his
+    phone, a row whose link goes nowhere and a write-up still carrying the
+    old title. That is a worse state than not offering the edit, so all
+    three move together or the file is not touched.
+
+    A row with no wiki-link and no write-up is still editable -- both
+    repetitions are optional and only the cell is required.
+
+    `None` means not written: no such row, or an empty title. An empty
+    title is a delete, and `delete_row` is a separate call for the same
+    reason `/api/capture/delete` is a separate route -- the destructive
+    one should never be reachable by a field arriving blank.
+    """
+    title = (title or "").strip()
+    if not title or "|" in title or "\n" in title:
+        return None
+    lines = (markdown or "").split("\n")
+    index, cells = _row_span(lines, number)
+    if index is None:
+        return None
+
+    link = _ROW_LINK_RE.match(cells[0])
+    if link:
+        cells[0] = f"[[#{number} — {title}\\|{link.group(3)}]]"
+    cells[1] = title
+    lines[index] = "| " + " | ".join(cells) + " |"
+
+    span = _detail_spans(markdown).get(number)
+    if span:
+        heading_line = span[0]
+        match = _DETAIL_RE.match(lines[heading_line])
+        # The hashes and the `#` before the number are kept exactly as
+        # they were found. Both shapes are live in his files and this is
+        # an edit to one title, not a migration.
+        lines[heading_line] = f"{match.group(1)} {match.group(2)}{number} — {title}"
+    return "\n".join(lines)
+
+
+def delete_row(markdown, number):
+    """Remove one boarded row and its write-up. Returns markdown, or `None`.
+
+    The other half of #84 -- *"and especially delete"* -- and the server
+    path #85 needs for the same reason.
+
+    **Both halves go, or neither.** A write-up whose row is gone is
+    unreachable from the page and invisible in the board tables, so
+    leaving it behind is not a conservative choice: it is an orphan that
+    only shows up the next time a cycle renumbers something. The row is
+    the thing Edvard is looking at when he asks for this, and the write-up
+    is mine.
+
+    The deletion is line-wise on the raw file, like `set_row_priority`,
+    so everything else comes back byte-identical. `None` if the number is
+    not on either table -- there is nothing to delete, which is a
+    different answer to Edvard than a failed write.
+    """
+    lines = (markdown or "").split("\n")
+    index, _ = _row_span(lines, number)
+    if index is None:
+        return None
+    drop = {index}
+    span = _detail_spans(markdown).get(number)
+    if span:
+        heading_line, _, end = span
+        drop.update(range(heading_line, end))
+    return "\n".join(line for i, line in enumerate(lines) if i not in drop)
 
 
 def _sections(markdown):
@@ -333,9 +677,9 @@ def parse_board(markdown):
                     "done": done,
                 })
             continue
-        detail = _DETAIL_RE.match("## " + title) if level == 2 else None
-        if detail:
-            details[int(detail.group(1))] = body.strip()
+    lines = (markdown or "").split("\n")
+    for number, (_, body_start, end) in _detail_spans(markdown).items():
+        details[number] = "\n".join(lines[body_start:end]).strip()
     return {"captures": captures, "items": items, "details": details}
 
 

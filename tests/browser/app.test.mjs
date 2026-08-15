@@ -401,13 +401,17 @@ describe("two entries for one cycle are one card", () => {
   });
 
   test("the parts read oldest-first and are labelled and dated", () => {
-    const parts = [...cards(window)[0].querySelectorAll(".entry-part")]
+    const parts = [...cards(window)[0].querySelectorAll(".entry-part-tab")]
       .map((h) => h.textContent);
     assert.equal(parts.length, 2);
     // The wire is newest-first, so entries[1] is the earlier of the two.
     const [addendum, run] = payload.journal.entries.filter((e) => e.cycle === 57);
-    assert.ok(parts[0].endsWith(run.date + " " + run.time + " Oslo"), parts[0]);
-    assert.ok(parts[1].endsWith(addendum.date + " " + addendum.time + " Oslo"), parts[1]);
+    // No " Oslo" suffix any more (issues.md #59) -- the date and time
+    // themselves still have to be the last thing on the subheading, which
+    // is what stops "remove Oslo" being satisfied by removing the stamp.
+    assert.ok(parts[0].endsWith(run.date + " " + run.time), parts[0]);
+    assert.ok(parts[1].endsWith(addendum.date + " " + addendum.time), parts[1]);
+    assert.ok(!/Oslo/.test(parts[0] + parts[1]), parts[0] + " | " + parts[1]);
     assert.ok(parts[1].startsWith("Verification"), parts[1]);
   });
 
@@ -472,6 +476,53 @@ describe("two entries for one cycle are one card", () => {
     assert.match(meta.textContent, /merged/);
     // The stamp still belongs to the earliest part: that is when it began.
     assert.match(meta.textContent, new RegExp(parts[1].time));
+  });
+
+  /* Edvard's issues.md #59, the three small pickings on the journal card.
+   * Each of these asserts an absence, so each one also proves the selector
+   * matches something when the thing is present -- Cycle 202 shipped a
+   * `.prio-picker` assertion against markup that never rendered that class
+   * and it passed under its own mutation. Here the positive control is the
+   * same fixture with the field put back. */
+  test("no chevron on a feed card, and the selector would have found one", async () => {
+    const w = await loadSite();
+    const card = cards(w)[0];
+    assert.equal(card.querySelector(".chevron"), null);
+    // The control: `.chevron` is a selector jsdom resolves, so a span
+    // carrying that class in this very card is found. Without this, the
+    // assertion above passes for a misspelled class name too.
+    const proof = w.document.createElement("span");
+    proof.className = "chevron";
+    card.appendChild(proof);
+    assert.ok(card.querySelector(".chevron"));
+    proof.remove();
+  });
+
+  test("the timestamp no longer says Oslo, but still says the time", async () => {
+    const w = await loadSite();
+    const stamp = cards(w)[0].querySelector(".stamp");
+    assert.ok(stamp, "there is a stamp to make a claim about");
+    assert.ok(!/Oslo/.test(stamp.textContent), stamp.textContent);
+    // The half that stops "remove Oslo" from being satisfied by removing
+    // the whole stamp: a real HH:MM has to survive.
+    assert.match(stamp.textContent, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
+  });
+
+  test("a cycle's runtime shows when the server sent one, and not when it did not", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => { e.runtimeSeconds = 962; });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(meta.textContent, /ran 16 min/);
+
+    // Absent, not null: a cycle the join could not resolve gets no key at
+    // all, and the card must print nothing rather than "ran 0 min".
+    const quiet = JSON.parse(JSON.stringify(payload.journal));
+    quiet.entries.forEach((e) => { delete e.runtimeSeconds; });
+    const w2 = await loadSite("/", { journal: () => quiet });
+    const meta2 = cards(w2)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta2.querySelector(".runtime"), null);
+    assert.ok(!/\bran\b/.test(meta2.textContent), meta2.textContent);
   });
 
   /* Cycle 105 on the live pod, and cycle 6: the footer is mandatory, so a
@@ -637,6 +688,92 @@ describe("a journal card names the board item it worked on", () => {
   });
 });
 
+describe("an outdated row leaves Open without claiming it shipped", () => {
+  /* Edvard, issues.md #85: "Some of them are implemented and some of them
+   * are outdated. We need to clean it up. Maybe we need a new status called
+   * 'outdated', so i can go through them and delete them myself." A cycle
+   * writes the status; he deletes the row. So the two things that have to
+   * hold are that it leaves Open — otherwise the pile he asked to shrink
+   * does not shrink — and that it does not land in Done, which would read
+   * as shipped. */
+  const outdatedBoard = () => {
+    const board = JSON.parse(JSON.stringify(payload.board));
+    board.items[1].status = "⚫ Outdated";
+    board.items[1].statusKey = "outdated";
+    // `item=` is a tap on one row and answers with a different shape, so
+    // it falls through to the fixture's own reply rather than the list.
+    return (url) => (url.includes("item=") ? null : board);
+  };
+  const rows = (window) =>
+    [...window.document.querySelectorAll(".item")].map((r) => r.id);
+  const filterLabels = (window) =>
+    [...window.document.querySelectorAll(".filter")].map((chip) => chip.textContent);
+
+  test("Open drops it, and Done does not pick it up", async () => {
+    const window = await loadSite("/issues", { board: outdatedBoard() });
+    const number = payload.board.items[1].number;
+    assert.ok(!rows(window).includes("item-" + number),
+      "an outdated row was still listed under Open: " + rows(window).join(","));
+    click(window, window.document.querySelector(".board-filter-btn"));
+    const done = [...window.document.querySelectorAll(".filter")]
+      .filter((chip) => chip.textContent.startsWith("Done"))[0];
+    click(window, done);
+    assert.ok(!rows(window).includes("item-" + number),
+      "an outdated row was counted as shipped under Done");
+  });
+
+  test("its own filter is the list he goes through", async () => {
+    const window = await loadSite("/issues", { board: outdatedBoard() });
+    const number = payload.board.items[1].number;
+    click(window, window.document.querySelector(".board-filter-btn"));
+    const chip = [...window.document.querySelectorAll(".filter")]
+      .filter((c) => c.textContent.startsWith("Outdated"))[0];
+    assert.ok(chip, "there is no Outdated filter to go through: " + filterLabels(window).join(","));
+    click(window, chip);
+    assert.deepEqual(rows(window), ["item-" + number]);
+  });
+
+  test("the tally counts it as neither open nor done", async () => {
+    const window = await loadSite("/issues", { board: outdatedBoard() });
+    const line = window.document.querySelector(".status-line").textContent;
+    /* Asserted as the whole string rather than as three separate regexes.
+     * The first version checked that the line did not say `3 open`, and
+     * neither the old tally nor the new one can ever produce that number
+     * -- the old one said `2 open` because it derived `done` independently
+     * -- so it was true in both states and pinned nothing. The fixture has
+     * 4 rows, 2 already done, 1 turned outdated here, which leaves 1 open;
+     * the old code said `2 open, 2 done` for the same payload. */
+    assert.match(line, /1 open, 2 done, 1 outdated, /,
+      "the tally does not split the three buckets: " + line);
+  });
+
+  test("it gets no rating picker, because the server would refuse one", async () => {
+    /* `set_row_priority` refuses a closed row, and outdated is closed. A
+     * picker drawn here would be a control whose only outcome is a
+     * rejection — the same reason a done row has never had one. The
+     * picker lives in the row's header now, not a body only an open row
+     * renders (Edvard, 2026-08-14: "the priority button should be the
+     * priority tag instead"), so there is no need to open the row to
+     * check for it -- and payload.board.items[1] is unrated in the
+     * fixture, so a non-editable row shows no chip at all rather than a
+     * read-only one. */
+    const number = payload.board.items[1].number;
+    const window = await loadSite("/issues#" + number, { board: outdatedBoard() });
+    const row = window.document.getElementById("item-" + number);
+    assert.ok(row, "the row the URL named was filtered off the page");
+    assert.equal(row.querySelector(".item-meta-row > .chip.prio"), null,
+      "an outdated row was offered a rating the server will not write");
+    // The selector is the one the picker actually renders, not a guess:
+    // an open row in the same payload must still have it, or this test
+    // would pass against a picker that had simply been renamed.
+    const openRow = window.document.getElementById(
+      "item-" + payload.board.items[0].number);
+    const trigger = openRow.querySelector(".item-meta-row > .chip.prio");
+    assert.ok(trigger, "the selector matches nothing at all, so the assertion above is vacuous");
+    assert.equal(trigger.tagName, "BUTTON", "an editable row's chip should be a clickable trigger");
+  });
+});
+
 describe("a board link opens the row it names", () => {
   test("/issues#57 opens that row rather than only landing on the page", async () => {
     const window = await loadSite("/issues#57");
@@ -789,7 +926,12 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const window = await loadSite("/cycle/57", { install: withStyle });
     const page = cards(window)[0];
     assert.equal(page.querySelector(".journal-toggle"), null);
-    assert.equal(page.querySelector(".chevron"), null);
+    // The `.chevron` assertion that used to sit here was deleted with the
+    // element (issues.md #59). It said "the page has no chevron" at a
+    // point where the feed still did, which made it a real contrast;
+    // once nothing renders one it passes whatever the page does, and a
+    // test that cannot fail is worse than no test. The feed-side check
+    // below is where the removal is actually pinned.
     assert.equal(page.querySelector(".entry-toggle"), null);
     const body = page.querySelector(".entry-body");
     body.dispatchEvent(new window.Event("click", { bubbles: true }));
@@ -868,7 +1010,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const parts = journal.entries.filter((e) => e.cycle === 57);
     parts[0].title = "I watched it land, and caught myself re-filing a bug Edvard had already reported";
     const window = await loadSite("/cycle/57", { journal: () => journal, install: withStyle });
-    const heading = [...cards(window)[0].querySelectorAll(".entry-part")][1];
+    const heading = [...cards(window)[0].querySelectorAll(".entry-part-tab")][1];
     /* jsdom reports an unset property as "", not as its initial value, so
      * this asserts the property is not uppercase rather than that it equals
      * "none" -- the mutation this must catch is someone adding uppercase
@@ -880,7 +1022,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const window = await loadSite("/cycle/57");
     const page = cards(window)[0];
     const both = payload.journal.entries.filter((e) => e.cycle === 57);
-    const headings = [...page.querySelectorAll(".entry-part")].map((h) => h.textContent);
+    const headings = [...page.querySelectorAll(".entry-part-tab")].map((h) => h.textContent);
     assert.equal(headings.length, 2, "two parts, two subheadings");
     // `both` is newest-first off the wire; the page reverses it.
     assert.ok(headings[0].includes(both.at(-1).time), headings[0]);
@@ -915,7 +1057,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
       // that fall back are checked in both positions below.
       parts[0].title = title;
       const w = await loadSite("/cycle/57", { journal: () => journal });
-      const heading = w.document.querySelectorAll(".entry-part")[1].textContent;
+      const heading = w.document.querySelectorAll(".entry-part-tab")[1].textContent;
       assert.ok(heading.startsWith(want + " · "),
         `title ${JSON.stringify(title)} rendered ${JSON.stringify(heading)}, wanted ${want}`);
       assert.ok(!/\(\d{4}-\d{2}-\d{2}/.test(heading),
@@ -928,9 +1070,114 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
     journal.entries.filter((e) => e.cycle === 57).forEach((e) => { e.title = ""; });
     const window = await loadSite("/cycle/57", { journal: () => journal });
-    const headings = [...window.document.querySelectorAll(".entry-part")].map((h) => h.textContent);
+    const headings = [...window.document.querySelectorAll(".entry-part-tab")].map((h) => h.textContent);
     assert.ok(headings[0].startsWith("The cycle · "), headings[0]);
     assert.ok(headings[1].startsWith("Addendum · "), headings[1]);
+  });
+
+  /* Tabs, which is what Edvard asked for three times (issues.md #59, and
+   * the comments board at cycle 81) and did not get twice. The tests below
+   * pin the behaviour that makes a tab acceptable rather than the fact that
+   * one exists: exactly one part visible, all of them still in the DOM, the
+   * cycle's settled answer never inside a panel, and a keyboard that can
+   * reach the half that is not on top. */
+  test("only the selected part is showing, and the other is still in the DOM", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    const panels = [...page.querySelectorAll(".entry-part-panel")];
+    assert.equal(panels.length, 2, "two parts, two panels");
+    assert.equal(panels.filter((p) => !p.hidden).length, 1, "exactly one panel is showing");
+    assert.equal(panels[0].hidden, false, "the first part is the one open");
+    /* Hidden, not absent. Find-in-page and a copy-all have to reach the
+     * half that is not on top -- that is the whole reason two earlier
+     * cycles argued against tabs, and it is only true if the prose stays
+     * rendered. */
+    const later = payload.journal.entries.filter((e) => e.cycle === 57)[0];
+    assert.ok(panels[1].textContent.length > 0, "the shut panel still holds its prose");
+    assert.ok(later.blocks.length, "the fixture's later part must have prose to hide");
+  });
+
+  test("tapping the second tab swaps which part is showing", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    const tabs = [...page.querySelectorAll(".entry-part-tab")];
+    const panels = [...page.querySelectorAll(".entry-part-panel")];
+    click(window, tabs[1]);
+    assert.equal(panels[0].hidden, true);
+    assert.equal(panels[1].hidden, false);
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true");
+    assert.equal(tabs[0].getAttribute("aria-selected"), "false");
+    // Back again, because a tab that only goes one way is a disclosure.
+    click(window, tabs[0]);
+    assert.equal(panels[0].hidden, false);
+    assert.equal(panels[1].hidden, true);
+  });
+
+  test("the cycle's settled outcome sits outside the tabs", async () => {
+    /* This is the objection the two previous cycles raised against tabs --
+     * that a tab hides the addendum, which is usually where the cycle says
+     * how it actually ended. It is answered by where the outcome is drawn,
+     * not by argument, so it needs a test: the meta row is a sibling of the
+     * tab strip, so it is readable whichever tab is open. */
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    /* Assert the panels exist first. Without this the test passes with the
+     * tabs deleted entirely -- `closest(".entry-part-panel")` on a class
+     * nothing renders is null, which is the same answer as "correctly
+     * outside them". The reviewer caught that; it was vacuous as written. */
+    assert.ok(page.querySelectorAll(".entry-part-panel").length > 1,
+      "this cycle must actually be drawn with tab panels");
+    const outcome = page.querySelector(".entry-meta .badge");
+    assert.ok(outcome, "the cycle draws a settled outcome");
+    assert.equal(outcome.closest(".entry-part-panel"), null,
+      "the settled outcome must not be inside a tab panel");
+  });
+
+  test("arrow keys move between the parts, and only one tab is a tab stop", async () => {
+    const window = await loadSite("/cycle/57");
+    const page = cards(window)[0];
+    const tabs = [...page.querySelectorAll(".entry-part-tab")];
+    assert.deepEqual(tabs.map((t) => t.tabIndex), [0, -1], "roving tabindex");
+    tabs[0].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true");
+    assert.deepEqual(tabs.map((t) => t.tabIndex), [-1, 0]);
+    // Wraps, so End/Home are not the only way back.
+    tabs[1].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[0].getAttribute("aria-selected"), "true");
+    /* ArrowLeft, Home and End were all implemented and none were pressed --
+     * with two tabs, ArrowRight and ArrowLeft reach the same target from
+     * either side, so a swapped comparison would have shipped silently. */
+    tabs[0].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true", "ArrowLeft wraps backwards");
+    tabs[1].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[0].getAttribute("aria-selected"), "true", "Home goes to the first part");
+    tabs[0].dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true }),
+    );
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true", "End goes to the last part");
+  });
+
+
+  test("a single-part cycle gets no tab strip", async () => {
+    const solo = payload.journal.entries.find(
+      (e) => e.cycle !== null && payload.journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+    );
+    assert.ok(solo, "the fixture must contain a cycle with exactly one entry");
+    const window = await loadSite("/cycle/" + solo.cycle);
+    const page = cards(window)[0];
+    assert.equal(page.querySelectorAll("[role='tablist']").length, 0);
+    assert.equal(page.querySelectorAll(".entry-part-panel").length, 0);
+    // ...and its prose is still on the page, which is the thing the strip
+    // must not have taken with it.
+    assert.ok(page.querySelector(".entry-body").textContent.trim().length > 0);
   });
 
   test("one comment bubble for the cycle, not one per entry", async () => {
@@ -983,7 +1230,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     );
     assert.ok(solo, "the fixture must contain a cycle with exactly one entry");
     const window = await loadSite("/cycle/" + solo.cycle);
-    assert.equal(cards(window)[0].querySelectorAll(".entry-part").length, 0);
+    assert.equal(cards(window)[0].querySelectorAll(".entry-part-tab").length, 0);
   });
 
   test("the feed draws the same cycle as one card, on the same rules", async () => {
@@ -993,8 +1240,8 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     // Same subheadings, same order, same source function as the page above.
     const page = await loadSite("/cycle/57");
     assert.deepEqual(
-      [...own[0].querySelectorAll(".entry-part")].map((h) => h.textContent),
-      [...cards(page)[0].querySelectorAll(".entry-part")].map((h) => h.textContent)
+      [...own[0].querySelectorAll(".entry-part-tab")].map((h) => h.textContent),
+      [...cards(page)[0].querySelectorAll(".entry-part-tab")].map((h) => h.textContent)
     );
   });
 });
@@ -1044,6 +1291,32 @@ describe("a drawer within a drawer", () => {
     assert.ok(card.querySelector(".entry-brief"), "the brief is always present");
     assert.ok(!expanded(card));
     assert.ok(!reading(card));
+  });
+
+  test("tapping a part tab does not collapse the card it is inside", async () => {
+    /* The whole card is a tap target -- "i want to click anywhere on it to
+     * expand/close it" -- so a tab's click bubbles up to that listener and
+     * shuts the drawer the tab lives in. The part you asked for appears and
+     * vanishes in the same frame.
+     *
+     * Every assertion about which panel is `hidden` passes while this is
+     * broken, because the panel is right up until the card closes over it.
+     * A real browser found this; jsdom agreed with me. So this test asserts
+     * the card is still open, which is the thing that was actually wrong. */
+    /* Its own window: this test has to leave a card expanded to press a tab
+     * inside it, and the rest of this suite shares one window and asserts on
+     * a collapsed one. */
+    const own = await loadSite("/");
+    const card = cards(own).find((c) => c.querySelectorAll(".entry-part-tab").length > 1);
+    assert.ok(card, "the fixture must have a multi-part cycle in the feed");
+    click(own, card.querySelector(".entry-toggle"));
+    click(own, journalButton(card));
+    assert.ok(expanded(card) && reading(card), "the drawer is open before the tab is tapped");
+    const tabs = [...card.querySelectorAll(".entry-part-tab")];
+    click(own, tabs[1]);
+    assert.ok(expanded(card), "the card stayed expanded");
+    assert.ok(reading(card), "the journal drawer stayed open");
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true", "and the tab actually switched");
   });
 
   test("opening the card reveals the rest of the digest and the button", () => {
@@ -1714,6 +1987,33 @@ describe("the page notices new entries on its own", () => {
    * entry arrives every hour, and the card he had open closed with it. The
    * card object itself is replaced -- that is what a render does -- so these
    * assert on the card at that position being open, not on the old node. */
+  test("a poll keeps the part tab he opened, not just the card", async () => {
+    /* `fold` carried expanded/journal/comments through a rebuild and did not
+     * carry the open tab, so a routine poll put him back on part one while
+     * the card and drawer correctly stayed open. The reviewer found that; my
+     * own first test for it fired a poll that served an unchanged journal,
+     * so nothing rebuilt and the test passed with the fix reverted. Hence
+     * `grown()` here, and the length assertion below: this only means
+     * something if a real render happened. */
+    const { window, timers } = await pollable();
+    const before = cards(window).length;
+    const card = cards(window).find((c) => c.querySelectorAll(".entry-part-tab").length > 1);
+    assert.ok(card, "the fixture must have a multi-part cycle in the feed");
+    const cycle = card.id;
+    click(window, card.querySelector(".entry-toggle"));
+    click(window, card.querySelector(".journal-toggle"));
+    click(window, [...card.querySelectorAll(".entry-part-tab")][1]);
+    serve(window, grown('W/"newer-tab"'));
+
+    await timers.firePagePoll();
+    assert.equal(cards(window).length, before + 1, "the new card landed, so this is a real rebuild");
+    const after = cards(window).find((c) => c.id === cycle);
+    assert.ok(after && after !== card, "the card was rebuilt, not reused");
+    const tabs = [...after.querySelectorAll(".entry-part-tab")];
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true", "still on the part he opened");
+    assert.equal([...after.querySelectorAll(".entry-part-panel")].findIndex((n) => !n.hidden), 1);
+  });
+
   test("a card he had opened is still open after a new entry lands", async () => {
     const { window, timers } = await pollable();
     const before = cards(window).length;
@@ -2868,6 +3168,35 @@ describe("navigating away mid-fetch", () => {
   });
 });
 
+/* Edvard, issues.md #83: "Make the header for issues and ideas bold". The
+ * whole line was one dim string, so the page you were on read as part of
+ * the tally after it. Two assertions, because either alone passes on its
+ * own: the name has to be in the bold element, and the counts have to have
+ * stayed out of it. */
+describe("the board header", () => {
+  const head = (window) => window.document.querySelector(".status-line");
+
+  test("the page name is bold and the counts are not", async () => {
+    const window = await loadSite("/issues");
+    const strong = head(window).querySelector("strong.status-page");
+    assert.ok(strong, "the page name is not in a bold element");
+    assert.equal(strong.textContent, "Issues");
+    assert.ok(
+      !/open|done|notes/.test(strong.textContent),
+      "the tally was bolded along with the name",
+    );
+    assert.match(head(window).textContent, /^Issues — \d+ open, /);
+  });
+
+  test("the ideas page names itself too", async () => {
+    const window = await loadSite("/ideas");
+    assert.equal(
+      window.document.querySelector(".status-line strong.status-page").textContent,
+      "Ideas",
+    );
+  });
+});
+
 /* ---- The costs page (issues.md #57, page 2) ------------------------------
  *
  * Two charts of hand-written SVG, so what is worth pinning here is not
@@ -3088,12 +3417,34 @@ describe("a loop that has gone quiet says so in the header", () => {
     [...window.document.querySelectorAll("#status .badge-warn")]
       .map((n) => n.textContent);
 
-  test("nothing is said while the loop is healthy", async () => {
+  /* `/no entry for/` and not `/no entry/`: the fixture journal really does
+   * hole at cycle 56, so once the header started naming holes the looser
+   * pattern matched "cycle 56 wrote no entry" and this test failed on a
+   * badge it was never about. Each of the two badges is asserted by its
+   * own wording. */
+  test("no stall badge while the loop is running to time", async () => {
     const live = JSON.parse(JSON.stringify(payload.journal));
     live.status.stalled = false;
     live.status.silentIntervals = 1;
     const window = await loadSite("/", { journal: () => live });
-    assert.deepEqual(warn(window).filter((t) => /no entry/.test(t)), []);
+    assert.deepEqual(warn(window).filter((t) => /no entry for/.test(t)), []);
+  });
+
+  /* The test above was called "nothing is said while the loop is healthy"
+   * and did not check that, which the reviewer on runner#195 caught. Every
+   * fixture in this file carries the hole at cycle 56, so narrowing that
+   * assertion to the stall badge left *no* test anywhere asserting the
+   * header is completely quiet — the state Edvard is looking at almost
+   * every time he opens the app. Renaming the old one to what it actually
+   * proves and adding this is the honest split; a fixture has to be
+   * cleared, not a pattern narrowed, to claim silence. */
+  test("a healthy loop with no holes says nothing at all", async () => {
+    const live = JSON.parse(JSON.stringify(payload.journal));
+    live.status.stalled = false;
+    live.status.silentIntervals = 1;
+    live.status.recentMissingCycles = [];
+    const window = await loadSite("/", { journal: () => live });
+    assert.deepEqual(warn(window), []);
   });
 
   test("a stall is named with how long it has been", async () => {
@@ -3111,6 +3462,96 @@ describe("a loop that has gone quiet says so in the header", () => {
     const window = await loadSite("/", { journal: () => quiet });
     assert.ok(warn(window).some((t) => t === "no entry for 1 hour"));
   });
+
+  /* The server saying it cannot see the journal, rather than guessing
+   * that the loop stopped. Asserted as an error badge and not a warning:
+   * it is the same failure as "can't reach Nova" one hop further back,
+   * and the header already spends `badge-warn` on two things that are
+   * claims about the loop rather than about this process. */
+  test("a record the site cannot refresh says so instead of crying stall", async () => {
+    const frozen = JSON.parse(JSON.stringify(payload.journal));
+    frozen.status.stalled = false;
+    frozen.status.silentIntervals = 9;
+    frozen.status.recentMissingCycles = [];
+    frozen.status.recordStale = true;
+    const window = await loadSite("/", { journal: () => frozen });
+    const header = window.document.querySelector("#status");
+    assert.deepEqual(warn(window), []);
+    assert.ok([...header.querySelectorAll(".badge-error")]
+      .some((n) => n.textContent === "can't read the journal"));
+  });
+
+  /* The other direction, so the assertion above cannot pass by matching
+   * nothing: the selector has to be able to find the badge when the flag
+   * is off too, and here it must not. */
+  test("a readable record shows no can't-read badge", async () => {
+    const live = JSON.parse(JSON.stringify(payload.journal));
+    live.status.stalled = false;
+    live.status.silentIntervals = 1;
+    live.status.recentMissingCycles = [];
+    live.status.recordStale = false;
+    const window = await loadSite("/", { journal: () => live });
+    assert.deepEqual([...window.document.querySelectorAll("#status .badge-error")]
+      .map((n) => n.textContent), []);
+  });
+
+  /* Edvard, comments board 2026-08-14: "Should be displayed if the return
+   * fetch came in with missing journals." The clock and the evidence are
+   * separate badges because they catch separate failures -- see the
+   * comment beside this in app.js. */
+
+  test("a cycle that woke and wrote nothing is named", async () => {
+    const holed = JSON.parse(JSON.stringify(payload.journal));
+    holed.status.stalled = false;
+    holed.status.recentMissingCycles = [128];
+    const window = await loadSite("/", { journal: () => holed });
+    assert.ok(warn(window).some((t) => t === "cycle 128 wrote no entry"));
+  });
+
+  test("more than one hole is counted rather than listed", async () => {
+    const holed = JSON.parse(JSON.stringify(payload.journal));
+    holed.status.stalled = false;
+    holed.status.recentMissingCycles = [127, 128];
+    const window = await loadSite("/", { journal: () => holed });
+    assert.ok(warn(window).some((t) => t === "2 cycles wrote no entry"));
+  });
+
+  test("no recent hole says nothing, and an old one is not recent", async () => {
+    /* The server decides the window; this asserts the client renders that
+     * decision rather than reaching for the full `missingCycles` list,
+     * which is history and never shrinks. */
+    const holed = JSON.parse(JSON.stringify(payload.journal));
+    holed.status.stalled = false;
+    holed.status.missingCycles = [8, 52, 134];
+    holed.status.recentMissingCycles = [];
+    const window = await loadSite("/", { journal: () => holed });
+    assert.deepEqual(warn(window).filter((t) => /wrote no entry/.test(t)), []);
+  });
+
+  test("a stall and a hole are both shown, not one instead of the other",
+    async () => {
+      const both = JSON.parse(JSON.stringify(payload.journal));
+      both.status.stalled = true;
+      both.status.silentIntervals = 3;
+      both.status.recentMissingCycles = [204];
+      const window = await loadSite("/", { journal: () => both });
+      const shown = warn(window);
+      assert.ok(shown.some((t) => t === "no entry for 3 hours"));
+      assert.ok(shown.some((t) => t === "cycle 204 wrote no entry"));
+    });
+
+  test("a payload with no recentMissingCycles at all is not an error",
+    async () => {
+      /* The tailnet can serve the last build's app.js against this
+       * build's server, or the other way round. An absent key must read
+       * as "no holes", not throw and take the header down with it. */
+      const old = JSON.parse(JSON.stringify(payload.journal));
+      old.status.stalled = false;
+      delete old.status.recentMissingCycles;
+      const window = await loadSite("/", { journal: () => old });
+      assert.deepEqual(warn(window).filter((t) => /wrote no entry/.test(t)), []);
+      assert.ok(window.document.querySelector("#status .status-line"));
+    });
 });
 
 /* An HTTP error is not a network error, and the page could not tell them
@@ -3862,5 +4303,168 @@ describe("the header says so when it cannot reach the server", () => {
     assert.ok(line.classList.contains("is-stale"));
     assert.match(line.textContent, /as of the last load/);
     assert.ok(line.textContent.startsWith(before));
+  });
+});
+
+/* Holding a boarded card -- Edvard's issue #84.
+ *
+ * *"I need to be able to edit and especially delete boarded ideas and
+ * issues from the agora app. If i hold the card for more than 1 second i
+ * get into edit mode and also have the option of deleting, save or cancel
+ * the edit."*
+ *
+ * These drive the real gesture through real events rather than calling
+ * the handler, because the whole feature is the difference between a tap
+ * and a hold and only the event sequence has that in it. */
+describe("holding a board row opens edit mode", () => {
+  const HOLD = 1000;
+  const press = (window, node, type) =>
+    node.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true }));
+  /** A whole press: down, the second Edvard asked for, then up and the
+   *  click a browser sends after it. */
+  const hold = async (window, node, ms = HOLD + 30) => {
+    press(window, node, "mousedown");
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    press(window, node, "mouseup");
+    click(window, node);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const head = (window, number) =>
+    window.document.getElementById("item-" + number).querySelector(".item-head");
+  const act = (row, label) =>
+    [...row.querySelectorAll(".capture-act")].filter((b) => b.textContent === label)[0];
+
+  test("a one-second hold turns the row into a box holding its own title", async () => {
+    const window = await loadSite("/issues");
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    const box = row.querySelector(".item-edit-input");
+    assert.ok(box, "no editor after a hold");
+    assert.equal(box.value, "More pages in the Nova app");
+    assert.ok(act(row, "Save") && act(row, "Cancel") && act(row, "Delete"),
+      "edit mode is missing one of save/cancel/delete");
+    // The head stays -- it is how he sees which row is in the box -- but
+    // it stops being a toggle. Asserting `hidden` here is what the first
+    // version did, and it passed in jsdom while the real browser showed
+    // the row still visible and still tappable: `.item-head` sets
+    // `display: flex`, which beats the `[hidden]` user-agent rule.
+    assert.ok(row.classList.contains("is-editing"));
+    click(window, row.querySelector(".item-head"));
+    assert.equal(row.querySelector(".item-head").getAttribute("aria-expanded"), "false",
+      "tapping the head while editing opened the write-up under the box");
+  });
+
+  test("the click that ends a hold does not also open the write-up", async () => {
+    /* The failure this exists for: a browser sends `click` after
+     * `mouseup`, so without the flag the row toggles open underneath the
+     * editor that just appeared. */
+    const window = await loadSite("/issues");
+    await hold(window, head(window, 57));
+    assert.equal(head(window, 57).getAttribute("aria-expanded"), "false");
+  });
+
+  test("an ordinary tap still opens the write-up and opens no editor", async () => {
+    const window = await loadSite("/issues");
+    const node = head(window, 57);
+    press(window, node, "mousedown");
+    press(window, node, "mouseup");
+    click(window, node);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(node.getAttribute("aria-expanded"), "true");
+    assert.equal(window.document.querySelector(".item-edit"), null,
+      "a tap opened edit mode");
+  });
+
+  test("letting go early cancels the hold, and leaves no timer behind", async () => {
+    /* Both halves matter. A press that ends at 200ms must not open the
+     * editor -- and the timer it started must be cleared, or it fires
+     * into a detached closure long after this test has finished, which
+     * this suite has already been broken by once. */
+    const window = await loadSite("/issues");
+    const node = head(window, 57);
+    press(window, node, "mousedown");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    press(window, node, "mouseup");
+    await new Promise((resolve) => setTimeout(resolve, HOLD + 100));
+    assert.equal(window.document.querySelector(".item-edit"), null,
+      "a short press opened edit mode later");
+  });
+
+  test("Save sends the row's number and the new title", async () => {
+    const window = await loadSite("/issues");
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    row.querySelector(".item-edit-input").value = "A better title";
+    click(window, act(row, "Save"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/board/edit");
+    assert.deepEqual(window.posted[0].body,
+      { target: "issues", number: 57, title: "A better title" });
+  });
+
+  test("Save on an untouched title posts nothing at all", async () => {
+    /* Opening the editor and thinking better of it is the common case,
+     * and it must not rewrite his file with the bytes it already holds. */
+    const window = await loadSite("/issues");
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    click(window, act(row, "Save"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0);
+  });
+
+  test("Delete asks first, and sends the number when it is allowed to", async () => {
+    const window = await loadSite("/issues");
+    window.confirm = () => true;
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    click(window, act(row, "Delete"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/board/delete");
+    assert.deepEqual(window.posted[0].body, { target: "issues", number: 57 });
+  });
+
+  test("a declined confirm deletes nothing", async () => {
+    const window = await loadSite("/issues");
+    window.confirm = () => false;
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    click(window, act(row, "Delete"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0, "a declined confirm still deleted");
+  });
+
+  test("a hold works on a touch screen too, which is where he asked for it", async () => {
+    const window = await loadSite("/issues");
+    const node = head(window, 57);
+    node.dispatchEvent(new window.Event("touchstart", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, HOLD + 30));
+    node.dispatchEvent(new window.Event("touchend", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.querySelector(".item-edit-input"), "no editor after a touch hold");
+  });
+
+  test("a hold that turns into a scroll cancels, rather than editing", async () => {
+    const window = await loadSite("/issues");
+    const node = head(window, 57);
+    node.dispatchEvent(new window.Event("touchstart", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    node.dispatchEvent(new window.Event("touchmove", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, HOLD + 100));
+    assert.equal(window.document.querySelector(".item-edit"), null,
+      "scrolling past a row opened edit mode");
+  });
+
+  test("the row's own text is not selectable, so a phone hold reaches the app", async () => {
+    /* jsdom applies no stylesheet, so this reads the sheet. A one-second
+     * hold on text is the browser's own gesture -- iOS pops the callout
+     * menu on top of the editor -- and turning it off is what makes the
+     * gesture reach this code at all. */
+    await loadSite("/issues");
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(sheet, /\.item-head\s*{[^}]*user-select:\s*none/);
+    assert.match(sheet, /\.item-head\s*{[^}]*-webkit-touch-callout:\s*none/);
   });
 });

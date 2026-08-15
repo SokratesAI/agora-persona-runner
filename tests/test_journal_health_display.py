@@ -18,10 +18,12 @@ from datetime import datetime, timedelta
 
 from agora_runner.config import NOVA_PERSONA_ID, OSLO
 from agora_runner.cycle_health import (
+    RECENT_GAP_WINDOW,
     STALL_GRACE_INTERVALS,
     gaps_between,
     missing_cycles,
     nova_cadence_minutes,
+    recent_gaps,
 )
 from agora_runner.nova_journal import JOURNAL_DIR, build_status, parse_journal
 from agora_runner.nova_site import (
@@ -201,8 +203,15 @@ def test_the_payload_takes_the_written_set_from_the_filenames():
     }
     mtimes = {path: 1786000000000 for path in docs}
 
+    # `journal_payload` reads a second document now -- the cost ledger, for
+    # the per-cycle runtime on a card (issues.md #59) -- so stubbing only
+    # the journal source leaves it reaching the real vault. Stubbed on
+    # `nova_site` rather than `nova_sources` because that is the reference
+    # the module under test actually calls, which is what the network guard
+    # in conftest says when it fires.
     with patch.object(nova_sources, "vault_bulk_fetch",
-                      return_value=(VaultFiles(docs), mtimes)):
+                      return_value=(VaultFiles(docs), mtimes)), \
+            patch.object(nova_site, "cost_ledger_json", return_value=""):
         status = nova_site.journal_payload()["status"]
 
     assert status["missingCycles"] == [], (
@@ -623,3 +632,167 @@ def test_the_badge_the_page_draws_moves_with_the_live_cadence(monkeypatch):
     _refresh_cadence()
     stalled = journal_page(entries, now=ninety)["status"]
     assert (stalled["silentIntervals"], stalled["stalled"]) == (2, True)
+
+
+# --- the holes worth a badge, which is the recent ones ---------------------
+#
+# Edvard, comments board 2026-08-14, on the header's stall badge: *"Should
+# be displayed if the return fetch came in with missing journals."* The
+# header only ever spoke about the clock. These pin the evidence half.
+
+
+def test_the_status_names_recent_holes_separately_from_all_of_them():
+    """Both lists ship, because they answer different questions.
+
+    `missingCycles` is what the feed marks in place and never shrinks;
+    `recentMissingCycles` is what the header is allowed to interrupt him
+    about.
+    """
+    status = build_status(_entries(205, 204, 203, 175, 174))
+    # 176..202 are all interior and unwritten, so all of them are holes.
+    # The window floor is 205 - 24 = 181, so the header gets 181..202 and
+    # the five older ones stay in the feed's list only.
+    assert status["missingCycles"] == list(range(176, 203))
+    assert status["recentMissingCycles"] == list(range(181, 203))
+
+
+def test_an_old_hole_is_history_and_never_reaches_the_header():
+    """The live journal's newest hole was 134 against a newest cycle of 205.
+
+    Rendering that in the header would pin a permanent warning about a
+    three-day-old failure -- the badge-nobody-reads failure the client
+    guards against. It stays in `missingCycles` for the feed.
+    """
+    # The real shape: unbroken from 135 to 205, with 134 the one hole.
+    status = build_status(_entries(*range(205, 134, -1), 133))
+    assert status["missingCycles"] == [134]
+    assert status["recentMissingCycles"] == []
+
+
+def test_a_hole_exactly_on_the_window_edge_still_counts():
+    """The boundary is inclusive, so `window` cycles back is still recent."""
+    newest = 205
+    edge = newest - RECENT_GAP_WINDOW
+    status = build_status(_entries(newest, newest - 1, edge + 1, edge - 1))
+    assert edge in status["recentMissingCycles"]
+
+
+def test_no_holes_at_all_reports_an_empty_list_not_a_missing_key():
+    status = build_status(_entries(205, 204, 203))
+    assert status["recentMissingCycles"] == []
+
+
+def test_recent_gaps_needs_two_entries_to_bracket_anything():
+    assert recent_gaps([]) == []
+    assert recent_gaps([205]) == []
+
+
+def test_recent_gaps_reads_a_generator_without_consuming_it_for_the_other():
+    """`build_status`'s fallback source is a generator and two callers read it.
+
+    Consuming it in the first would leave the second reading an empty
+    sequence -- which is exactly what "nothing is missing" looks like, so
+    the badge would go silent rather than wrong.
+    """
+    status = build_status(_entries(205, 203), known_cycles=None)
+    assert status["missingCycles"] == [204]
+    assert status["recentMissingCycles"] == [204]
+
+
+def test_a_payload_the_site_cannot_refresh_is_not_reported_as_a_stall():
+    """The flash in Edvard's #81, and the first mechanism actually caught.
+
+    `_with_silence` subtracts a cached `lastWrittenAt` from a live `now`,
+    so every second a rebuild fails to land is counted as a second of the
+    loop being quiet. Past the grace intervals that is published as a
+    stall — a confident, specific, false claim about the one thing this
+    header exists to be trusted on.
+
+    Measured 2026-08-15: `nova-site-preview` had been serving
+    `stalled: true, silentIntervals: 9` for hours off a payload built at
+    19:17 the previous evening, while the loop wrote an entry every hour.
+
+    Same payload, same clock, only the age of the served copy differs.
+    """
+    payload = {"entries": [dict(e) for e in _entries(129, 128)]}
+    payload["status"] = build_status(parse_journal(_journal(129, 128)))
+
+    fresh = journal_page(payload, now=NOW + timedelta(hours=4), record_age=3)
+    frozen = journal_page(payload, now=NOW + timedelta(hours=4), record_age=9 * 3600)
+
+    assert fresh["status"]["stalled"] is True
+    assert fresh["status"]["recordStale"] is False
+    assert frozen["status"]["stalled"] is False
+    assert frozen["status"]["recordStale"] is True
+    # Still reported: nothing newer has been seen, which stays true. What
+    # goes away is the verdict drawn from it.
+    assert frozen["status"]["silentIntervals"] == fresh["status"]["silentIntervals"]
+
+
+def test_an_unknown_payload_age_keeps_the_stall_it_always_had():
+    """The cold path must not turn every stall into "cannot tell".
+
+    `payload_age` returns `None` before anything has been built, and a
+    caller on that path is about to be handed a payload built for its own
+    request. Defaulting that to "stale" would delete the stall badge
+    outright rather than qualify it.
+    """
+    payload = {"entries": [dict(e) for e in _entries(129, 128)]}
+    payload["status"] = build_status(parse_journal(_journal(129, 128)))
+
+    page = journal_page(payload, now=NOW + timedelta(hours=4), record_age=None)
+    assert page["status"]["stalled"] is True
+    assert page["status"]["recordStale"] is False
+
+
+def test_going_stale_changes_the_etag_so_an_open_tab_is_told():
+    """The same trap `test_a_stall_changes_the_etag...` pins, one flag over.
+
+    `recordStale` turns over when the *rebuild* starts failing, which does
+    not line up with an interval boundary. Keyed on `silentIntervals`
+    alone a polling tab is answered 304 for up to a full hour after the
+    site stopped being able to see the journal — and goes on showing the
+    stall this flag exists to retract, which is precisely the phone Edvard
+    is holding.
+    """
+    from agora_runner.nova_site import journal_descriptor, page_etag
+
+    payload = {"entries": [dict(e) for e in _entries(129, 128)]}
+    payload["status"] = build_status(parse_journal(_journal(129, 128)))
+
+    at = NOW + timedelta(hours=4)
+    fresh = journal_page(payload, limit=20, now=at, record_age=3)
+    frozen = journal_page(payload, limit=20, now=at, record_age=9 * 3600)
+    assert fresh["status"]["silentIntervals"] == frozen["status"]["silentIntervals"]
+
+    base = "W/base"
+    assert page_etag(base, journal_descriptor(fresh, 20, 0, None)) \
+        != page_etag(base, journal_descriptor(frozen, 20, 0, None))
+
+
+def test_the_age_belongs_to_the_copy_that_was_served():
+    """`cached_payload` dropped the one field that says when it was true.
+
+    It returned three of the cache entry's four, so nothing downstream
+    could ask how old the answer was -- which is why `_with_silence` had
+    to assume it was current. `cached_entry` hands the age back with the
+    body it belongs to, rather than leaving the caller to look the age up
+    afterwards and race the background refresh it just started.
+    """
+    from agora_runner import nova_site
+
+    nova_site.reset_cache()
+    built = {"entries": [], "status": {}}
+    _, _, _, cold = nova_site.cached_entry("journal", built.copy)
+    assert cold == 0.0
+
+    # See the note in `test_the_journal_endpoint_reports_a_payload_it_could
+    # _not_refresh`: the flag keeps the aged read from starting a rebuild
+    # thread this test would not wait for.
+    with nova_site._cache_lock:
+        payload, body, etag, at = nova_site._cache["journal"]
+        nova_site._cache["journal"] = (payload, body, etag, at - 900)
+        nova_site._refreshing.add("journal")
+    _, _, _, warm = nova_site.cached_entry("journal", built.copy)
+    assert warm >= 900
+    nova_site.reset_cache()

@@ -179,6 +179,43 @@ def test_the_system_prompt_names_the_pod_the_turn_actually_runs_in():
     assert "not the `agora-persona-runner` pod" in system
 
 
+def test_the_prompt_tells_it_not_to_re_explain_its_limits():
+    """His capture, 2026-08-14: *"Keep replies to my comments short and
+    precise -- don't re-explain what you can/can't do each time, my memory is
+    consistent, I don't forget."*
+
+    Three separate paragraphs of this prompt used to push the other way -- do
+    not imply you remember, here is what you cannot do, say you did not check
+    -- and the replies he was reading opened with all three before answering
+    him. The constraints stay; what this pins is that the prompt also says not
+    to narrate them. The verbatim ask is in the prompt on purpose: a paraphrase
+    of a correction is the thing that drifts back.
+    """
+    system = _prompt_for()[2]["system"]
+    assert "don't re-explain what you can/can't do each time" in system
+    assert "do not open with your limitations" in system
+
+
+def test_the_prompt_asks_for_one_or_two_sentences_not_three():
+    """The length guidance and the don't-explain-yourself rule are one ask and
+    fail together: leaving the old "two or three sentences" in place gives the
+    model room to spend the first of them on a disclaimer.
+    """
+    system = _prompt_for()[2]["system"]
+    assert "One or two sentences" in system
+    assert "Two or three sentences" not in system
+
+
+def test_the_prompt_forbids_announcing_the_missing_memory():
+    """The narrowest of the three, and the one that reads as a contradiction
+    of the paragraph above it if you only skim: "never imply you remember" is
+    about not fabricating, and a model resolving it alone disclaims instead.
+    Both halves have to be in the same sentence or the disclaimer comes back.
+    """
+    system = _prompt_for()[2]["system"]
+    assert "never announce that you do not" in system
+
+
 def test_the_prompts_denial_of_pod_and_repo_tools_matches_the_grant():
     """Both sides of one claim, because either alone passes on its own.
 

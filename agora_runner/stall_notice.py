@@ -192,10 +192,23 @@ class StallWatch:
 
 
 def _live_status():
-    from agora_runner.nova_site import _with_silence, cached_payload, journal_payload
+    """The same status `/api/journal` publishes, age and all.
 
-    payload, _body, _etag = cached_payload("journal", journal_payload)
-    return _with_silence(payload.get("status", {}))
+    The age is not optional here and this is the caller where it costs the
+    most. `_with_silence` measures a live `now` against a cached
+    `lastWrittenAt`, so a rebuild that keeps failing reads as a loop that
+    stopped writing -- and unlike the badge, this consumer *pushes to
+    Edvard's phone*. Without the age it would tell him the loop is dead
+    because this process lost its own connection to the vault, which is
+    the one false alarm that costs the notice its credibility.
+
+    `stalled` is already false when the record is stale, so `_notice_for`
+    needs no change: it returns early on exactly that flag.
+    """
+    from agora_runner.nova_site import _with_silence, cached_entry, journal_payload
+
+    payload, _body, _etag, age = cached_entry("journal", journal_payload)
+    return _with_silence(payload.get("status", {}), record_age=age)
 
 
 def _live_heartbeats():

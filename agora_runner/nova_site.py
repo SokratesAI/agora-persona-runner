@@ -113,6 +113,8 @@ from agora_runner.nova_capture import (
     amend,
     capture,
     clean_capture_text,
+    edit_row,
+    remove_row,
     set_priority,
 )
 from agora_runner.nova_comments import (
@@ -145,6 +147,7 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_retro import retros_payload as shape_retros
+from agora_runner.nova_runtimes import attach_runtimes
 from agora_runner.nova_sources import (
     board_markdown,
     comments_markdown,
@@ -275,7 +278,42 @@ def journal_payload():
     # invent a new way of mis-writing a heading is the reason for it.
     # See `build_status`.
     status = build_status(entries, known_cycles=times.keys() if times else None)
-    return {"entries": [dict(entry) for entry in entries], "status": status}
+    entries = [dict(entry) for entry in entries]
+    # The one extra fetch on this build, and it is paid where the journal
+    # build already is: this payload is cached per process and warmed
+    # before the first visit, so the ledger costs a warm rather than a
+    # request rather than being re-read per window a reader scrolls to.
+    #
+    # Swallowed on purpose, and the first draft did not: `cycle_runtimes`
+    # raises on a ledger that will not parse, which is right for the costs
+    # page -- there, a ledger is the entire subject and an empty chart is
+    # a worse lie than a 502. Here it is a decoration on somebody else's
+    # page. Wiring the strict version straight in made a malformed file in
+    # a *different* document take down the journal, which is the one page
+    # that has to render when things are broken; the whole test suite said
+    # so at once. An absent ledger was already no runtimes rather than an
+    # error, so this only widens that to a corrupt one.
+    #
+    # `Exception` and not a tuple, which is a wider net than this file uses
+    # anywhere else, so it needs its reason: the *fetch* can fail on its own
+    # too, not just the parse. Narrowing it to the parse errors left the
+    # background refresh thread dying on a ledger read -- one test's thread
+    # warning, and in production a journal that silently stopped refreshing
+    # because a document it does not render was unreadable. There is no
+    # failure of this call worth a degraded journal, so there is no
+    # exception type worth re-raising. It is logged, never swallowed
+    # silently, and `journal_markdown` above is still free to raise.
+    try:
+        entries = attach_runtimes(entries, cost_ledger_json())
+    except Exception as problem:  # noqa: BLE001 -- deliberate, see above
+        # `log`, not `print`: it flushes. Nothing sets PYTHONUNBUFFERED and
+        # `run.py` has no `-u`, so a bare print to a container's stdout is
+        # block-buffered and can sit unwritten in the background refresh
+        # thread -- which would make "logged, never silent" false in exactly
+        # the case this catch exists for. Every other handler in this file
+        # already uses it.
+        log(f"nova-site runtimes unavailable, journal unaffected: {problem}")
+    return {"entries": entries, "status": status}
 
 
 def _rendered(entry):
@@ -536,6 +574,22 @@ def board_page(payload, limit=None, item=None, search=None):
 # session polling every 30s rebuilds once per poll and never waits for one.
 CACHE_FRESH_SECONDS = 15
 
+# How old the served payload may be before "there is no newer entry in it"
+# stops being evidence about the loop and becomes evidence about this
+# process. `_with_silence` measures a live `now` against a `lastWrittenAt`
+# that came out of the cache, so every second the refresh fails to land is
+# counted as a second of the loop being quiet -- and past two intervals
+# that is reported as a stall the loop is not in. Measured 2026-08-15:
+# `nova-site-preview` had been serving `stalled: true, silentIntervals: 9`
+# for hours off a payload built at 19:17 the previous evening, while the
+# loop was writing an entry every hour.
+#
+# 300s is twenty consecutive missed refreshes at CACHE_FRESH_SECONDS. A
+# reader is bounded by their poll interval plus one rebuild, so nothing
+# healthy comes near it; anything past it means the rebuild itself is
+# failing, which is a different fact and deserves to be said as one.
+RECORD_TRUST_SECONDS = 300
+
 _cache = {}
 _cache_lock = threading.Lock()
 _refreshing = set()
@@ -566,8 +620,22 @@ def _versioned(payload):
 
 
 def cached_payload(name, build):
-    """`(payload, body, etag)` -- the last build, served immediately while
-    the next one is computed behind the request.
+    """`(payload, body, etag)` from `cached_entry`, without the age."""
+    payload, body, etag, _ = cached_entry(name, build)
+    return payload, body, etag
+
+
+def cached_entry(name, build):
+    """`(payload, body, etag, age_seconds)` -- the last build, served
+    immediately while the next one is computed behind the request.
+
+    The age belongs to *the copy this call returns*, which is why it comes
+    back from here rather than from a second look at the cache. Reading it
+    afterwards is a race, and one this cycle's own test caught: the
+    background refresh started on the line above can land in between, so
+    the caller would stamp a stale body with the fresh copy's age. That is
+    the wrong direction to be wrong in -- the one thing the age is for is
+    saying "do not trust the timestamps in this body".
 
     `/api/journal` costs 3.0-3.5s every time it is asked (measured against
     the live pod, 2026-08-10: 1.9s of vault bulk fetch, 1.5s of parsing,
@@ -597,7 +665,7 @@ def cached_payload(name, build):
     if thread is not None:
         thread.start()
     if entry is not None:
-        return entry[0], entry[1], entry[2]
+        return entry[0], entry[1], entry[2], max(0.0, now - entry[3])
     # Cold: one build, however many requests arrive at once. This is a
     # ThreadingHTTPServer and a cold load now asks for two payloads in
     # parallel, both of which want the journal -- `/api/digest` needs the
@@ -608,8 +676,9 @@ def cached_payload(name, build):
         with _cache_lock:
             entry = _cache.get(name)
         if entry is not None:
-            return entry[0], entry[1], entry[2]
-        return _refresh(name, build)
+            return entry[0], entry[1], entry[2], max(0.0, time.time() - entry[3])
+        # Built for this request, so its age is zero rather than unknown.
+        return _refresh(name, build) + (0.0,)
 
 
 # What gets built at startup. There is an obvious way to write this list
@@ -773,7 +842,7 @@ def _refresh(name, build):
     return payload, body, etag
 
 
-def journal_page(payload, limit=None, offset=0, cycle=None, now=None):
+def journal_page(payload, limit=None, offset=0, cycle=None, now=None, record_age=None):
     """One window of the journal, plus how many entries there are in all.
 
     The cold load is the half the 304 poll of #84 did not touch: 109
@@ -815,7 +884,7 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None):
         picked = entries[offset:end]
     return {
         "entries": [_rendered(entry) for entry in picked],
-        "status": _with_silence(payload.get("status", {}), now),
+        "status": _with_silence(payload.get("status", {}), now, record_age=record_age),
         "total": len(entries),
     }
 
@@ -910,7 +979,7 @@ def reset_cadence():
         _cadence_refreshing = False
 
 
-def _with_silence(status, now=None, minutes=None):
+def _with_silence(status, now=None, minutes=None, record_age=None):
     """`status` plus how long the loop has been quiet, judged right now.
 
     The live half of #72, and it is computed here rather than in
@@ -960,7 +1029,36 @@ def _with_silence(status, now=None, minutes=None):
             # have to guard. The same call `cycle_health.stalled_for` makes.
             silent = max(0, int(elapsed.total_seconds() // (minutes * 60)))
     out["silentIntervals"] = silent
-    out["stalled"] = silent is not None and silent >= STALL_GRACE_INTERVALS
+
+    # The two halves of that subtraction come from different moments:
+    # `now` is live and `lastWrittenAt` came out of a cache that may not
+    # have refreshed in hours. So a rebuild that keeps failing looks
+    # exactly like a loop that stopped writing, and the page says the
+    # second when only the first is true -- confidently, and about the one
+    # thing it exists to be trusted on.
+    #
+    # `stale` is not a softer stall, it is a different claim: *this
+    # process cannot see the journal*. It is the failed-fetch state of
+    # issue #81 one hop further back -- Cycle 198 gave the client an
+    # honest answer for "I cannot reach the server" and left the server
+    # with none for "I cannot reach the vault". Silence there is not
+    # neutral either; here it was worse than silence, because it was a
+    # false alarm rather than a missing one.
+    #
+    # `silentIntervals` is still reported: nothing newer has been seen,
+    # which remains true and is what makes the age worth showing. What
+    # goes away is the verdict drawn from it.
+    #
+    # A boolean and not the age in minutes, deliberately. Anything in this
+    # payload that is not folded into the etag is frozen at whatever the
+    # last non-304 poll said, and a counter that stops counting while
+    # claiming to be a live age is the same shape of lie this block
+    # removes. The page gets the fact; the age stays a parameter.
+    stale = record_age is not None and record_age >= RECORD_TRUST_SECONDS
+    out["recordStale"] = stale
+    out["stalled"] = (
+        not stale and silent is not None and silent >= STALL_GRACE_INTERVALS
+    )
     return out
 
 
@@ -1046,9 +1144,19 @@ def journal_descriptor(page, limit, offset, cycle):
     the case the feature exists for. Folding the interval count in means
     the etag turns over at each hour boundary, which is exactly when the
     answer changes and no more often.
+
+    And `recordStale` on top of that, for a sharper version of the same
+    trap. It turns over when the *rebuild* starts failing, which does not
+    line up with an interval boundary at all -- so keyed on the interval
+    count alone, a client already polling would be answered 304 for up to
+    a full hour after the site stopped being able to see the journal, and
+    would go on showing the stall this flag exists to retract. The flag is
+    folded in rather than the age behind it: the age changes every second
+    and would turn every conditional poll back into a full 184KB answer.
     """
+    status = page.get("status") or {}
     window = f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}"
-    return f"{window}|silent={(page.get('status') or {}).get('silentIntervals')}"
+    return f"{window}|silent={status.get('silentIntervals')}|stale={bool(status.get('recordStale'))}"
 
 
 def _int_param(query, name, default):
@@ -1122,11 +1230,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
     def _send_journal(self, query):
         """`/api/journal`, sliced to the window the client asked for."""
-        payload, _, base = cached_payload("journal", journal_payload)
+        payload, _, base, age = cached_entry("journal", journal_payload)
         cycle = _int_param(query, "cycle", None)
         limit = _int_param(query, "limit", None)
         offset = _int_param(query, "offset", 0)
-        page = journal_page(payload, limit=limit, offset=offset, cycle=cycle)
+        page = journal_page(
+            payload, limit=limit, offset=offset, cycle=cycle, record_age=age,
+        )
         etag = page_etag(base, journal_descriptor(page, limit, offset, cycle))
         # The version travels inside the document as well as in the header,
         # for the reason `_versioned` puts it in both: a response served out
@@ -1433,6 +1543,75 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_board_amend(self, payload, delete):
+        """`/api/board/edit` and `/api/board/delete` -- issue #84.
+
+        *"I need to be able to edit and especially delete boarded ideas
+        and issues from the agora app."* Until now a row became read-only
+        the moment a cycle numbered it, so anything he typed and then
+        regretted could only be taken back in Obsidian.
+
+        **Two routes, for the reason `_post_amend` already gives**: an
+        edit arriving with a blank title is a bad request here, never a
+        quiet delete. The scope boundary is his too, from #85 -- *"This is
+        only for the ones i have reported"* -- and it falls out of the
+        addressing rather than being enforced separately: `target` keys
+        into his two board files, and my own capture files are not boarded
+        at all.
+
+        A number that is not on either table is a 409 and not a 502.
+        Nothing failed; the row moved or a cycle removed it, and the page
+        should re-read rather than retry.
+        """
+        target = payload.get("target")
+        number = payload.get("number")
+        title = "" if delete else payload.get("title")
+        if target not in BOARD_PATHS:
+            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
+            return
+        # `True` is an int in Python and would address row 1.
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            self._send_json(400, {"error": "number must be a positive integer"})
+            return
+        if not delete:
+            if not isinstance(title, str) or not title.strip():
+                self._send_json(400, {"error": "title must be a non-empty string"})
+                return
+            # A row is one line of a markdown table. Either character ends
+            # the edit somewhere the author did not mean it to.
+            if "|" in title or "\n" in title:
+                self._send_json(400, {"error": "a title cannot contain | or a line break"})
+                return
+
+        try:
+            if delete:
+                ok, message = remove_row(target, number)
+            else:
+                ok, message = edit_row(target, number, title)
+        except Exception as e:
+            log(f"nova-site board amend failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            invalidate("board:" + target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"{'Delete' if delete else 'Edit'} #{number} on {target} "
+            f"· {'ok' if ok else message}",
+            after=title[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        stale = "is not a row" in message
+        self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
     def _post_comment(self, payload):
         """`/api/comment` -- Edvard replying to one cycle (ideas.md #44).
 
@@ -1566,7 +1745,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment",
-            "/api/board/priority",
+            "/api/board/priority", "/api/board/edit", "/api/board/delete",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -1582,6 +1761,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/priority":
             self._post_priority(payload)
+            return
+        if path in ("/api/board/edit", "/api/board/delete"):
+            self._post_board_amend(payload, delete=path.endswith("delete"))
             return
         target = payload.get("target")
         text = payload.get("text")

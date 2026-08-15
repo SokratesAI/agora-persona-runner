@@ -1867,12 +1867,88 @@ def test_an_entry_quoting_the_entries_marker_does_not_delete_the_newer_cards():
         ),
         JOURNAL_DIR + "001-cycle-1.md": "### Cycle 1\n\nOldest.",
     }
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})):
+    # The cost ledger is `journal_payload`'s second source now (#59); these
+    # entries carry no stamp so no runtime resolves either way, but the
+    # fetch is real and the network guard is right to refuse it.
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})), \
+            patch.object(nova_site, "cost_ledger_json", return_value=""):
         payload = nova_site.journal_payload()
     assert [e["cycle"] for e in payload["entries"]] == [3, 2, 1]
     # Not just present: the quoting entry keeps the text it was quoting,
     # rather than being kept by having the offending half trimmed off it.
     assert "is the marker that command needs." in payload["entries"][1]["body"]
+
+
+def test_a_corrupt_cost_ledger_costs_runtimes_and_not_the_journal():
+    """The failure my own first draft shipped, caught by the whole suite.
+
+    `journal_payload` reads the cost ledger to put a runtime on each card
+    (issues.md #59). Wiring `cycle_runtimes` straight in meant a ledger
+    that would not parse raised out of the journal build -- so a corrupt
+    document belonging to the *costs* page 502'd the journal, which is the
+    one page that has to render when other things are broken. Thirty-four
+    tests failed at once and every one of them was right.
+
+    The ledger here is markdown rather than JSON on purpose: that is
+    exactly what a fixture patching `vault_read_path` for every path
+    returns, and it is also what a half-written publish leaves behind.
+    """
+    files = {
+        JOURNAL_DIR + "002-cycle-2.md": "### 2026-08-15 02:14 (Oslo) — Cycle 2\n\nNewest.",
+        JOURNAL_DIR + "001-cycle-1.md": "### 2026-08-15 01:10 (Oslo) — Cycle 1\n\nOldest.",
+    }
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})), \
+            patch.object(nova_site, "cost_ledger_json", return_value="# not json at all"):
+        payload = nova_site.journal_payload()
+    assert [e["cycle"] for e in payload["entries"]] == [2, 1]
+    # And it degrades rather than half-attaching: no card claims a runtime.
+    assert all("runtimeSeconds" not in e for e in payload["entries"])
+
+
+def test_a_cost_ledger_fetch_that_raises_also_leaves_the_journal_standing():
+    """The half the corrupt-ledger test does not reach, and the reviewer
+    was right that nothing pinned it.
+
+    That test feeds an unparseable document, so the failure happens inside
+    `cycle_runtimes` and a narrow `except json.JSONDecodeError` would cover
+    it. The reason the catch here is a bare `Exception` is the *other*
+    case: `cost_ledger_json()` itself failing -- a vault read erroring
+    rather than returning junk. Narrowing it left a background refresh
+    thread dying on precisely this, and until now that was a claim in a
+    comment rather than something the suite would notice.
+    """
+    files = {
+        JOURNAL_DIR + "001-cycle-1.md": "### 2026-08-15 01:10 (Oslo) — Cycle 1\n\nOnly.",
+    }
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})), \
+            patch.object(nova_site, "cost_ledger_json",
+                         side_effect=RuntimeError("vault unreachable")):
+        payload = nova_site.journal_payload()
+    assert [e["cycle"] for e in payload["entries"]] == [1]
+    assert "runtimeSeconds" not in payload["entries"][0]
+
+
+def test_a_good_cost_ledger_puts_a_runtime_on_the_card_it_belongs_to():
+    """The positive control for the test above.
+
+    Without this, "no entry has a runtime" passes because the wiring was
+    deleted, not because the ledger was corrupt -- the same shape as the
+    `.prio-picker` assertion Cycle 202 shipped against markup that never
+    rendered it. Same two entries, same call, a ledger that parses.
+    """
+    files = {
+        JOURNAL_DIR + "002-cycle-2.md": "### 2026-08-15 02:14 (Oslo) — Cycle 2\n\nNewest.",
+        JOURNAL_DIR + "001-cycle-1.md": "### 2026-08-15 01:10 (Oslo) — Cycle 1\n\nOldest.",
+    }
+    ledger = json.dumps({"cycles": [
+        {"startedAt": "2026-08-14T23:00:00Z", "durationSeconds": 600.0},   # 01:00 Oslo
+        {"startedAt": "2026-08-15T00:00:00Z", "durationSeconds": 940.0},   # 02:00 Oslo
+    ]})
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})), \
+            patch.object(nova_site, "cost_ledger_json", return_value=ledger):
+        payload = nova_site.journal_payload()
+    got = {e["cycle"]: e.get("runtimeSeconds") for e in payload["entries"]}
+    assert got == {2: 940, 1: 600}
 
 
 def test_the_journal_never_reads_the_emptied_archive_again():
@@ -2816,7 +2892,7 @@ def test_nothing_is_warmed_that_the_request_path_will_not_read_back():
         if not isinstance(node, ast.Call):
             continue
         named = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        if named not in ("cached_payload", "_send_cached_json"):
+        if named not in ("cached_payload", "cached_entry", "_send_cached_json"):
             continue
         first = node.args[0] if node.args else None
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
@@ -3615,3 +3691,175 @@ def test_nova_site_main_is_runnable_as_a_module():
     source = (pathlib.Path(__file__).resolve().parent.parent / "agora_runner" / "nova_site_main.py").read_text()
     assert '__name__ == "__main__"' in source
     assert source.rstrip().endswith("main()")
+
+
+# --- POST /api/board/edit and /api/board/delete: Edvard's issue #84 ---
+# *"I need to be able to edit and especially delete boarded ideas and
+# issues from the agora app."* The same two boundaries as every other
+# write path here: `target` is a key into a dict of literal paths, never a
+# path, and the request must be unambiguous about which of the two things
+# it is asking for.
+
+def test_editing_a_boarded_row_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "edit_row", return_value=(True, "#84 edited on issues")) as ed:
+        status, _, body = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "A better title"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    ed.assert_called_once_with("issues", 84, "A better title")
+
+
+def test_deleting_a_boarded_row_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "remove_row", return_value=(True, "#68 deleted on ideas")) as rm:
+        status, _, body = _post(
+            "/api/board/delete", {"target": "ideas", "number": 68, "title": "surprise"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    # Whatever a client puts in `title` on the delete route is ignored, so
+    # a stray field can never turn a delete into an edit -- the same rule
+    # `/api/capture/delete` follows.
+    rm.assert_called_once_with("ideas", 68)
+
+
+def test_a_board_edit_with_a_blank_title_is_rejected_rather_than_deleting_the_row():
+    """The dangerous shape, and the reason there are two routes."""
+    with patch.object(nova_site, "edit_row") as ed, patch.object(nova_site, "remove_row") as rm:
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "   "})
+    assert status == 400
+    ed.assert_not_called()
+    rm.assert_not_called()
+
+
+def test_a_title_cannot_smuggle_a_cell_break_or_a_line_break_into_his_table():
+    for title in ["a | b", "a\nb"]:
+        with patch.object(nova_site, "edit_row") as ed:
+            status, _, _ = _post(
+                "/api/board/edit", {"target": "issues", "number": 84, "title": title})
+        assert status == 400, title
+        ed.assert_not_called()
+
+
+def test_board_amend_refuses_a_target_that_is_not_one_of_his_two_boards():
+    """Notably a path, and notably `notes` -- a capture target that is not
+    a board. Nothing a client sends addresses a vault document."""
+    for target in ["notes", "projects/sokrates/projects/nova/issues", "../secrets", 7]:
+        with patch.object(nova_site, "edit_row") as ed:
+            status, _, _ = _post(
+                "/api/board/edit", {"target": target, "number": 1, "title": "x"})
+        assert status == 400, target
+        ed.assert_not_called()
+
+
+def test_board_amend_refuses_a_number_that_is_not_a_positive_int():
+    # `True` is an int in Python and would address row 1.
+    for number in [True, 0, -1, "84", 8.4, None]:
+        with patch.object(nova_site, "remove_row") as rm:
+            status, _, _ = _post("/api/board/delete", {"target": "issues", "number": number})
+        assert status == 400, number
+        rm.assert_not_called()
+
+
+def test_a_row_that_moved_is_a_409_and_not_a_502():
+    """Nothing failed -- the row was renumbered or removed while the page
+    was open, and the page should re-read rather than retry."""
+    with patch.object(nova_site, "remove_row", return_value=(False, "#99 is not a row on issues")):
+        status, _, body = _post("/api/board/delete", {"target": "issues", "number": 99})
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_failed_board_write_is_a_502():
+    with patch.object(
+            nova_site, "edit_row", return_value=(False, "could not write to issues: 500 boom")):
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 84, "title": "x"})
+    assert status == 502
+
+
+def test_a_stale_row_is_a_409_through_the_real_module_not_a_hand_typed_string():
+    """The reviewer's finding: `_send_json(409 …)` keys on the substring
+    `"is not a row"`, which `nova_capture._amend_board` composes. Every
+    other test here mocks that function and re-types the sentence, so the
+    two sides agree by inspection and nothing pins them. Rewording the
+    message would turn every stale row into a 502 -- "the vault failed",
+    when nothing failed -- and the page would retry instead of re-reading.
+
+    This one runs the real `remove_row` against a board that genuinely has
+    no #999, with only the vault stubbed out.
+    """
+    board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
+            "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(board, "3-abc")), \
+            patch.object(nova_capture, "vault_write_path") as write:
+        status, _, body = _post("/api/board/delete", {"target": "issues", "number": 999})
+    write.assert_not_called()
+    assert status == 409, "a row that is not there was reported as a vault failure"
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_board_edit_writes_to_his_file_and_not_to_novas_own_copy():
+    """One real path end to end: a request arrives, his file is written.
+
+    Note what this does *not* prove. It cannot tell `BOARD_PATHS` from
+    `CAPTURE_TARGETS`, because the two hold the same string for `issues`
+    -- swapping the lookup leaves this green. The branch where they differ
+    is `notes`, and it is pinned in `test_board_row_edit.py`."""
+    board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
+            "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
+    seen = {}
+    with patch.object(nova_capture, "vault_read_path_rev",
+                      side_effect=lambda p: seen.update(read=p) or (board, "3-abc")), \
+            patch.object(nova_capture, "vault_write_path",
+                         side_effect=lambda p, b, if_rev=None: seen.update(write=p) or "written"):
+        status, _, _ = _post(
+            "/api/board/edit", {"target": "issues", "number": 57, "title": "Renamed"})
+    assert status == 200
+    assert seen["read"] == "projects/sokrates/projects/nova/issues.md"
+    assert seen["write"] == "projects/sokrates/projects/nova/issues.md"
+
+
+def test_the_journal_endpoint_reports_a_payload_it_could_not_refresh():
+    """The wiring, and it is the half no other test could see.
+
+    `_with_silence` learned to tell a frozen record from a stalled loop,
+    and `journal_page` learned to forward the age -- and with the endpoint
+    passing `record_age=None` the whole feature is dead on the live site
+    while every unit test above still passes. That mutation was run and
+    caught nothing, which is the Cycle 77 lesson: a change with two halves
+    has to be broken in both places separately.
+
+    So this asks the server, over a socket, with the cache aged by hand.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_site, "journal_payload", lambda: {"entries": [], "status": {
+        "cycle": 206,
+        "lastWrittenAt": "2026-08-15T04:29:00+02:00",
+    }}):
+        status, _, first = _get("/api/journal")
+        assert status == 200
+        # Built for this request, so the record is as current as it gets.
+        assert json.loads(first)["status"]["recordStale"] is False
+
+        # Age the served copy without touching anything it says: the
+        # journal is byte-identical, only this process's view of it is old.
+        #
+        # `_refreshing` is held down over the aged read on purpose. Any age
+        # past `RECORD_TRUST_SECONDS` is also past `CACHE_FRESH_SECONDS`,
+        # so the next call would start a background rebuild that outlives
+        # this `patch` block and run the *real* `journal_payload` against
+        # the network guard. Borrowing the module's own single-flight flag
+        # is what it is for, and it keeps the test to one thread.
+        with nova_site._cache_lock:
+            nova_site._refreshing.add("journal")
+            payload, cached_body, cached_etag, built = nova_site._cache["journal"]
+            nova_site._cache["journal"] = (
+                payload, cached_body, cached_etag,
+                built - nova_site.RECORD_TRUST_SECONDS - 1,
+            )
+        status, _, second = _get("/api/journal")
+
+    nova_site.reset_cache()
+    assert status == 200
+    assert json.loads(second)["status"]["recordStale"] is True
+    assert json.loads(second)["status"]["stalled"] is False
