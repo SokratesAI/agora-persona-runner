@@ -23,6 +23,23 @@ only findable deliberately, through `vault_search`, so the live file has
 to stay wide enough to actually pick from. What it does not have to be is
 complete.
 
+**The `put` of the live half needs `--allow-shrink`, and this is the one
+write in the loop that does.** Cycle 212 taught the vault client to refuse
+a write that replaces a document with under a quarter of its size, after a
+blind read wrote an empty body over Edvard's 123KB board. Rolling is the
+legitimate operation that looks exactly like that failure: Cycle 114 took
+these two from 265KB to 58KB, and `issues.md` alone went from 158,635
+bytes to roughly 29,000 — about 18%. So the live write is:
+
+    python3 /app/bridge/vault_tool.py put '<archive>' archive.md   # archive FIRST
+    python3 /app/bridge/vault_tool.py put '<live>'    live.md --allow-shrink
+
+The archive keeps no flag on purpose — it only ever grows, so a refusal
+there would mean something is genuinely wrong. Found by the reviewer on
+runner#202, which is the cycle that introduced the guard: the guard and
+the one script it breaks were written eleven minutes apart by the same
+cycle, and nothing in either file mentioned the other.
+
 The archive title is derived from the live file's own `# ` heading
 rather than passed in, so the same command rolls either file and cannot
 be pointed at the wrong archive by a mistyped flag.

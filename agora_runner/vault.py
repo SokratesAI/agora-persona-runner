@@ -553,7 +553,7 @@ def _collapse_refusal(path, existing, new_bytes, allow_shrink):
         f"is {new_bytes} — refusing to replace a document with under "
         f"{int(COLLAPSE_RATIO * 100)}% of its size. If the read that "
         "produced this came back short, the document is still intact and "
-        "re-reading is the fix. Pass allow_shrink=True if the truncation "
+        "re-reading is the fix. Pass allow_shrink=true if the truncation "
         "is genuinely what you meant.)"
     )
 

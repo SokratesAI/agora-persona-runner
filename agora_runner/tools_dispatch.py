@@ -111,6 +111,22 @@ def _claim_read_rev(conversation_id, path):
         return _READ_REVS.pop((conversation_id, path.lower()), _NO_READ)
 
 
+def _wants_shrink(args):
+    """Did the caller actually ask to bypass the collapse guard?
+
+    `bool(args.get(...))` is wrong here in the one direction that matters.
+    A provider that serialises the argument loosely sends the *string*
+    `"false"`, and `bool("false")` is `True` -- which would silently
+    disable the guard for a caller that explicitly declined it. A safety
+    check must not fail open on a value it did not expect, so anything
+    that is not a real yes is a no.
+    """
+    value = args.get("allow_shrink")
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1")
+    return bool(value)
+
+
 def _conditional_write(conversation_id, path, content, allow_shrink=False):
     """vault_write_path, conditional on the read this conversation did.
 
@@ -217,7 +233,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # the before side, same as the file not existing.
             before = _before_snapshot(path)
             result = _conditional_write(conversation_id, path, content,
-                                        bool(args.get("allow_shrink")))
+                                        _wants_shrink(args))
             _audit_vault_write(persona_name, conversation_id, "vault_write", path, result, before, content)
             return result
         if name == "vault_append":
@@ -438,7 +454,12 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
                 return "[scoped_write error: folder target requires a valid filename on the first call]"
             content = str(args.get("content", ""))
             before = _before_snapshot(target)
-            result = _conditional_write(conversation_id, target, content)
+            # Same override as `vault_write`, for the same reason: the
+            # collapse refusal names `allow_shrink` in the text the model
+            # reads, and a sibling tool that shares the refusal and not the
+            # flag tells its caller to do something it cannot do.
+            result = _conditional_write(conversation_id, target, content,
+                                        _wants_shrink(args))
             _audit_vault_write(persona_name, conversation_id, "scoped_write", target, result, before, content)
             return result
         return f"[unknown tool {name}]"

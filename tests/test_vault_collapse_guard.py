@@ -249,3 +249,58 @@ def test_the_tool_schema_offers_the_flag_and_says_what_it_is_for():
     # The description has to state the refusal, or the model meets it for
     # the first time as an error it has no reason to expect.
     assert "allow_shrink" in write["description"]
+
+
+def test_a_string_false_does_not_disable_the_guard():
+    """A safety check must not fail open on a value it did not expect. A
+    provider that serialises the argument loosely sends the string
+    "false", and `bool("false")` is True — which would silently switch off
+    the one guard this whole change exists to add, for a caller that
+    explicitly declined it."""
+    from agora_runner.tools_dispatch import _wants_shrink
+
+    for no in (None, False, "", "false", "False", "FALSE", "no", "0", 0):
+        assert _wants_shrink({"allow_shrink": no}) is False, no
+    for yes in (True, "true", "True", "yes", "1", 1):
+        assert _wants_shrink({"allow_shrink": yes}) is True, yes
+    assert _wants_shrink({}) is False
+
+
+def test_scoped_write_has_the_same_override_as_vault_write():
+    """`scoped_write` shares `_conditional_write`, and therefore shares the
+    refusal message that names `allow_shrink`. A sibling tool that inherits
+    the refusal and not the flag tells its caller to do something it cannot
+    do — the same dead end this cycle fixed for `vault_write`."""
+    from agora_runner import tools_dispatch, tools_schemas
+
+    step = {"filepath": "notes.md", "toolWhitelist": ["scoped_write"]}
+    write = next(t for t in tools_schemas.client_tool_schemas({}, step)
+                 if t["name"] == "scoped_write")
+    assert "allow_shrink" in write["input_schema"]["properties"]
+    assert "allow_shrink" not in write["input_schema"]["required"]
+    assert "allow_shrink" in write["description"]
+
+    seen = {}
+    import unittest.mock as mock
+    with mock.patch.object(tools_dispatch, "vault_write_path",
+                           lambda path, content, if_rev=None, allow_shrink=False:
+                               seen.update(allow_shrink=allow_shrink) or "written"), \
+         mock.patch.object(tools_dispatch, "_before_snapshot", lambda p: ""), \
+         mock.patch.object(tools_dispatch, "_audit_vault_write", lambda *a, **k: None):
+        tools_dispatch.execute_tool(
+            "scoped_write", {"content": "x", "allow_shrink": True},
+            {"name": "P"}, "c1", step)
+    assert seen == {"allow_shrink": True}
+
+
+def test_both_clients_tell_the_caller_the_same_flag_spelling():
+    """The refusal and the schema description are read back to back by the
+    same model. Two spellings of one flag is a small thing that costs a
+    retry."""
+    from agora_runner import tools_schemas
+
+    refusal = vault._collapse_refusal(PATH, {"size": REAL_SIZE}, 0, False)
+    write = next(t for t in tools_schemas.client_tool_schemas({"vaultWrite": True})
+                 if t["name"] == "vault_write")
+    assert "allow_shrink=true" in refusal
+    assert "allow_shrink=true" in write["description"]
