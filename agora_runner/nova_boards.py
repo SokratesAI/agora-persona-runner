@@ -349,6 +349,66 @@ def set_row_status(markdown, number, status, updated=None):
     return "\n".join(lines)
 
 
+def append_detail_note(markdown, number, note, dated, cycle=None):
+    """Add one dated line to the end of a row's write-up. Or `None`.
+
+    The other side of issue #85. `set_row_status` moves a row to `✅ Done`
+    and the *reason* it moved lands in a journal entry, in a different
+    file, in a different database -- so Edvard opens `issues.md` on his
+    phone, sees a row that closed itself, and has nothing in front of him
+    that says why. That is the same drift he filed #85 about, pointing the
+    other way: last time the row was stale, this time the row is right and
+    unaccountable. Cycle 203 closed ten rows and every one of them has this
+    hole.
+
+    So a status change gets a sentence written where the status is, and
+    this is the call that writes it. The line goes at the *end* of the
+    write-up body rather than the top: the write-up is Edvard's statement
+    of the problem and these are notes accumulating under it in order, so
+    the newest-first convention his capture lists use is the wrong one
+    here -- it would put a closing note above the problem it closed.
+
+    `dated` is `MM-DD` in Oslo time and the caller supplies it, for
+    `set_row_status`'s reason: a module that reaches for a clock reaches
+    for it in UTC. `cycle` is optional and named in the line when given.
+
+    **A newline in `note` is refused, and that is the whole safety
+    argument.** `_detail_spans` ends a write-up at the next `#` or `##`
+    heading, so a note carrying one would not merely look wrong -- it
+    would truncate the block it was appended to, and every later line of
+    Edvard's own text would fall outside the span and stop rendering on
+    the page. One line in, one line out.
+
+    `None` means not written: no write-up for that number (the row may
+    still exist -- only some rows have one), an empty note, or a newline
+    in either free-text argument.
+    """
+    note = (note or "").strip()
+    dated = (dated or "").strip()
+    if not note or not dated or "\n" in note or "\n" in dated:
+        return None
+    span = _detail_spans(markdown).get(number)
+    if span is None:
+        return None
+
+    lines = (markdown or "").split("\n")
+    _, body_start, end = span
+    # Trailing blank lines inside the block are the separator before the
+    # next heading, not part of the body. Walk back over them so note two
+    # lands directly under note one instead of drifting a line further
+    # from the write-up each time.
+    tail = end
+    while tail > body_start and not lines[tail - 1].strip():
+        tail -= 1
+    who = f"Nova, {dated}" if cycle is None else f"Nova, {dated} (Cycle {cycle})"
+    entry = ["", f"**{who}:** {note}"]
+    # An empty write-up has nothing to separate the note from, and a
+    # leading blank line there would render as one.
+    if tail == body_start:
+        entry = entry[1:]
+    return "\n".join(lines[:tail] + entry + lines[tail:])
+
+
 def _detail_spans(markdown):
     """`{number: (heading_line, body_start, end_line)}` for every write-up.
 
