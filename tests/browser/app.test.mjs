@@ -83,6 +83,23 @@ function unreadableBody(status) {
   });
 }
 
+/** The shape `sw.js` hands back when it answers a dead network out of its
+ *  own cache: an ordinary, entirely successful `200` whose only tell is the
+ *  header it stamps on the way past.
+ *
+ *  Every other double in this file omits `headers`, which is why this branch
+ *  went untested for as long as it did -- without one, a test can say "the
+ *  network answered" and "the network died" and nothing in between, and the
+ *  gap between those two is exactly where issue #81 lived. */
+function replayedRes(body) {
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    headers: { get: (name) => (name === "X-Nova-Replayed" ? "1" : null) },
+    json: () => Promise.resolve(body),
+  });
+}
+
 /** The other real shape: a 304 is not `ok` and carries no body at all, so a
  *  page that checks `ok` before checking for 304 turns every successful
  *  conditional poll into an error. Kept as its own helper rather than a
@@ -112,7 +129,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, digestStatus = 200, unparsable = false, digest, comments, install, journal, board, costs, retro } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, digestStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -158,7 +175,8 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       return res(body, digestStatus);
     }
     const body = journal ? journal(url) : payload.journal;
-    return unparsable ? unreadableBody(journalStatus) : res(body, journalStatus);
+    if (unparsable) return unreadableBody(journalStatus);
+    return replayed ? replayedRes(body) : res(body, journalStatus);
   };
   window.scrollTo = () => {}; // jsdom has none, and the link handler calls it
   /* Kept before `install` can replace it: a test that takes setTimeout over
@@ -3493,6 +3511,68 @@ describe("a hole in the record is visible in the feed", () => {
     });
 });
 
+/* The other half of issue #81, and the half that could silently do nothing.
+ *
+ * The page's check for a replayed payload is worth exactly as much as the
+ * worker's stamp is real: if `sw.js` does not set the header, the client
+ * flag never fires and the fix is a guard guarding nothing, with every
+ * test above it still green. So the worker is run for real -- its source
+ * evaluated against stubs for the worker globals -- and asked what the
+ * page would actually receive. */
+describe("the service worker says so when it answers from its cache", () => {
+  function runFetchHandler({ networkFails, cached }) {
+    const listeners = {};
+    const workerSelf = {
+      addEventListener: (name, fn) => { listeners[name] = fn; },
+      location: { origin: "https://nova.example" },
+      skipWaiting: () => {},
+      clients: { claim: () => {} },
+    };
+    const cacheStub = {
+      open: () => Promise.resolve({ addAll: () => Promise.resolve(), put: () => Promise.resolve() }),
+      keys: () => Promise.resolve([]),
+      match: () => Promise.resolve(cached),
+    };
+    const fetchStub = networkFails
+      ? () => Promise.reject(new TypeError("Failed to fetch"))
+      : () => Promise.resolve(new Response('{"live":true}', { status: 200 }));
+    const source = readFileSync(join(publicDir, "sw.js"), "utf8");
+    new Function("self", "caches", "fetch", "Headers", "Response", "URL", source)(
+      workerSelf, cacheStub, fetchStub, Headers, Response, URL);
+
+    let answered;
+    listeners.fetch({
+      request: { method: "GET", url: "https://nova.example/api/journal?limit=20", mode: "cors" },
+      respondWith: (p) => { answered = p; },
+    });
+    return answered;
+  }
+
+  test("a cache hit is stamped, and still carries the body it cached", async () => {
+    const response = await runFetchHandler({
+      networkFails: true,
+      cached: new Response('{"cached":true}', { status: 200 }),
+    });
+    assert.equal(response.headers.get("X-Nova-Replayed"), "1");
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), '{"cached":true}');
+  });
+
+  test("a live answer is not stamped", async () => {
+    const response = await runFetchHandler({ networkFails: false, cached: null });
+    assert.equal(response.headers.get("X-Nova-Replayed"), null);
+    assert.equal(await response.text(), '{"live":true}');
+  });
+
+  /* Offline with nothing cached: the worker has nothing to hand back and
+   * must say so by resolving to undefined, which is what turns into the
+   * page's own "can't reach Nova" path. Stamping must not invent a
+   * response out of a miss. */
+  test("a cache miss stays a miss", async () => {
+    assert.equal(await runFetchHandler({ networkFails: true, cached: undefined }), undefined);
+  });
+});
+
 describe("a loop that has gone quiet says so in the header", () => {
   const warn = (window) =>
     [...window.document.querySelectorAll("#status .badge-warn")]
@@ -3526,6 +3606,38 @@ describe("a loop that has gone quiet says so in the header", () => {
     live.status.recentMissingCycles = [];
     const window = await loadSite("/", { journal: () => live });
     assert.deepEqual(warn(window), []);
+  });
+
+  /* Issue #81, the badge that appeared and retracted with nothing wrong on
+   * the server. `sw.js` is network-first, so it answers a failed fetch out
+   * of its cache -- as a `200`, which the page has no way to distinguish
+   * from a live answer. The journal etag folds in `silentIntervals`, so the
+   * body sitting in that cache during a real stall is one that says
+   * `stalled: true`. A phone waking up polls before the tailnet is back,
+   * gets that body replayed, and raises a badge about a stall that ended
+   * hours ago; the next poll retracts it.
+   *
+   * The rule these two tests pin: a replayed payload may still show its
+   * content, and may not make a claim about *now*. */
+  test("a stall badge is not raised from a payload replayed out of the cache", async () => {
+    const quiet = JSON.parse(JSON.stringify(payload.journal));
+    quiet.status.stalled = true;
+    quiet.status.silentIntervals = 4;
+    const window = await loadSite("/", { journal: () => quiet, replayed: true });
+    assert.deepEqual(warn(window).filter((t) => /no entry for/.test(t)), []);
+  });
+
+  test("a replayed payload says it is a saved copy rather than passing as current", async () => {
+    const quiet = JSON.parse(JSON.stringify(payload.journal));
+    quiet.status.stalled = true;
+    quiet.status.silentIntervals = 4;
+    const window = await loadSite("/", { journal: () => quiet, replayed: true });
+    const header = window.document.querySelector("#status");
+    assert.match(header.textContent, /showing a saved copy/);
+    assert.match(header.textContent, /as of the last load/);
+    // The feed is still drawn: an offline app that shows nothing is worse
+    // than one that shows what it has, honestly labelled.
+    assert.ok(window.document.querySelectorAll(".entry").length);
   });
 
   test("a stall is named with how long it has been", async () => {

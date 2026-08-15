@@ -320,7 +320,24 @@
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
 
-    statusEl.appendChild(el("p", "status-line", statusParts(status).join(" · ")));
+    /* Replayed out of the service worker's cache: the content is worth
+     * showing and its currency is not something this page can vouch for.
+     * Marked exactly the way `renderStatusUnreachable` marks it, because it
+     * is the same fact -- the network was down -- arriving through a path
+     * that happens to look successful. The badges below are suppressed for
+     * the same reason: they are claims about *now*, and this payload is
+     * evidence about whenever it was cached. */
+    var replayed = !!status.replayed;
+
+    statusEl.appendChild(el("p", replayed ? "status-line is-stale" : "status-line",
+      statusParts(status).join(" · ") + (replayed ? " — as of the last load" : "")));
+
+    if (replayed) {
+      var saved = el("p", "status-sub");
+      saved.appendChild(el("span", "badge badge-error", "can't reach Nova"));
+      saved.appendChild(el("span", "status-pr", "showing a saved copy"));
+      statusEl.appendChild(saved);
+    }
 
     if (status.lastOutcome) {
       var line = el("p", "status-sub");
@@ -338,7 +355,7 @@
      * like from here and a badge every hour is a badge nobody reads (#72).
      * The server owns that judgement; this renders it and does not
      * second-guess the number. */
-    if (status.stalled) {
+    if (status.stalled && !replayed) {
       var hours = status.silentIntervals;
       var quiet = el("p", "status-sub");
       quiet.appendChild(el("span", "badge badge-warn", "no entry for "
@@ -1684,6 +1701,17 @@
     );
   }
 
+  /* Whether `sw.js` served this out of its cache instead of the network.
+   *
+   * Defensive about `headers` because the test doubles in this repo -- and
+   * a 304, which carries none -- are plain objects with only the fields the
+   * page reads. Missing means "not replayed", which is the safe direction:
+   * the page goes on believing a live answer is live.
+   */
+  function isReplayed(r) {
+    return !!(r && r.headers && r.headers.get && r.headers.get("X-Nova-Replayed"));
+  }
+
   function fetchVersioned(url, key) {
     var known = lastPayload[key] && lastPayload[key].version;
     // `no-store` keeps this the only conditional request in play. Neither
@@ -1703,6 +1731,14 @@
       // once -- into an error.
       if (r.status === 304 && lastPayload[key]) return lastPayload[key];
       return json(r).then(function (body) {
+        // The service worker answered a dead network out of its cache and
+        // stamped the response so this can tell. `no-store` above rules out
+        // the browser's own HTTP cache but not the worker, which sits in
+        // front of it -- so without the stamp a resumed phone renders an
+        // arbitrarily old payload as current. Carried on `status` because
+        // that is the object `renderStatus` is handed; `/api/digest` has no
+        // `status` and needs none, its content is not a claim about now.
+        if (isReplayed(r) && body && body.status) body.status.replayed = true;
         lastPayload[key] = body;
         return body;
       });
