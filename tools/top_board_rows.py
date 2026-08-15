@@ -42,7 +42,7 @@ import re
 import subprocess
 import sys
 
-from agora_runner.nova_boards import parse_board
+from agora_runner.nova_boards import _CLOSED_STATUS_KEYS, parse_board
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 ISSUES_PATH = "projects/sokrates/projects/nova/issues.md"
@@ -53,11 +53,15 @@ IDEAS_PATH = "projects/sokrates/projects/nova/ideas.md"
 # a reason to work on it ahead of something Edvard called High.
 _RANK = {"immediate": 0, "high": 1, "medium": 2, "low": 3, "": 4}
 
-# `nova_boards._CLOSED_STATUS_KEYS` is the same set and is private. It is
-# spelled again rather than imported because importing a private name is
-# how the next drift check gets written; if these two ever disagree the
-# tests here fail on the shared `STATUS_LABELS`, which both read.
-_CLOSED = frozenset({"done", "outdated"})
+# Imported rather than re-spelled, underscore and all. A local copy of
+# `{"done", "outdated"}` reads fine today and drifts silently the day a
+# fifth closed status is added -- no test here would fail, because the
+# tests build their rows from `STATUS_LABELS`, which would have the new
+# status in it and this set would not. `prompt.md` step 2 is explicit
+# that the answer to a duplication is deleting it rather than shipping
+# guard number ten against it, so: one definition, in the module that
+# owns the board vocabulary.
+_CLOSED = _CLOSED_STATUS_KEYS
 
 
 def _fetch(path):
