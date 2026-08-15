@@ -1204,6 +1204,21 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
             content = "".join(chunks[c] for c in kids)
         else:
             content = doc.get("data", "")
+        # The same length checksum `vault_assemble` reads, and deliberately
+        # the same *function* rather than a second copy of the rule: this
+        # loop assembles a document without going through that one, so when
+        # `_size_checked` was added it guarded the single-document read and
+        # silently left the bulk read — which feeds the site's pages and
+        # every persona's context — reading exactly as blindly as before.
+        # Policy differs from `vault_assemble` and only policy does: a short
+        # file drops out of the listing with a note, for the same reason a
+        # chunk-missing one does above.
+        try:
+            content = _size_checked(content, doc, doc.get("path") or doc_id)
+        except VaultIncompleteDocument as exc:
+            log(f"vault: {exc}")
+            unreadable.append(str(exc))
+            continue
         if isinstance(content, str):
             path = doc.get("path") or doc_id
             out[path] = content
