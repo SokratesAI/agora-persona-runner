@@ -2892,7 +2892,7 @@ def test_nothing_is_warmed_that_the_request_path_will_not_read_back():
         if not isinstance(node, ast.Call):
             continue
         named = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        if named not in ("cached_payload", "_send_cached_json"):
+        if named not in ("cached_payload", "cached_entry", "_send_cached_json"):
             continue
         first = node.args[0] if node.args else None
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
@@ -3817,3 +3817,49 @@ def test_a_board_edit_writes_to_his_file_and_not_to_novas_own_copy():
     assert status == 200
     assert seen["read"] == "projects/sokrates/projects/nova/issues.md"
     assert seen["write"] == "projects/sokrates/projects/nova/issues.md"
+
+
+def test_the_journal_endpoint_reports_a_payload_it_could_not_refresh():
+    """The wiring, and it is the half no other test could see.
+
+    `_with_silence` learned to tell a frozen record from a stalled loop,
+    and `journal_page` learned to forward the age -- and with the endpoint
+    passing `record_age=None` the whole feature is dead on the live site
+    while every unit test above still passes. That mutation was run and
+    caught nothing, which is the Cycle 77 lesson: a change with two halves
+    has to be broken in both places separately.
+
+    So this asks the server, over a socket, with the cache aged by hand.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_site, "journal_payload", lambda: {"entries": [], "status": {
+        "cycle": 206,
+        "lastWrittenAt": "2026-08-15T04:29:00+02:00",
+    }}):
+        status, _, first = _get("/api/journal")
+        assert status == 200
+        # Built for this request, so the record is as current as it gets.
+        assert json.loads(first)["status"]["recordStale"] is False
+
+        # Age the served copy without touching anything it says: the
+        # journal is byte-identical, only this process's view of it is old.
+        #
+        # `_refreshing` is held down over the aged read on purpose. Any age
+        # past `RECORD_TRUST_SECONDS` is also past `CACHE_FRESH_SECONDS`,
+        # so the next call would start a background rebuild that outlives
+        # this `patch` block and run the *real* `journal_payload` against
+        # the network guard. Borrowing the module's own single-flight flag
+        # is what it is for, and it keeps the test to one thread.
+        with nova_site._cache_lock:
+            nova_site._refreshing.add("journal")
+            payload, cached_body, cached_etag, built = nova_site._cache["journal"]
+            nova_site._cache["journal"] = (
+                payload, cached_body, cached_etag,
+                built - nova_site.RECORD_TRUST_SECONDS - 1,
+            )
+        status, _, second = _get("/api/journal")
+
+    nova_site.reset_cache()
+    assert status == 200
+    assert json.loads(second)["status"]["recordStale"] is True
+    assert json.loads(second)["status"]["stalled"] is False

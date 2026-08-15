@@ -342,6 +342,24 @@
       statusEl.appendChild(quiet);
     }
 
+    /* The server saying it cannot see the journal, which until now it had
+     * no way to say -- so it said "the loop has stopped" instead, because
+     * a rebuild that keeps failing and a loop that stopped writing look
+     * identical from inside the payload.
+     *
+     * Rendered as an error rather than a warning, and beside the same
+     * "as of the last load" idea `renderStatusUnreachable` uses, because
+     * it is the same failure one hop further back: there, this page could
+     * not reach the server; here, the server could not reach the vault.
+     * The line above it is real and worth keeping -- it just stopped being
+     * current at some point the page cannot pin down. */
+    if (status.recordStale) {
+      var frozen = el("p", "status-sub");
+      frozen.appendChild(el("span", "badge badge-error", "can't read the journal"));
+      frozen.appendChild(el("span", "status-pr", "showing the last thing Nova could see"));
+      statusEl.appendChild(frozen);
+    }
+
     /* Edvard, comments board 2026-08-14: "Should be displayed if the
      * return fetch came in with missing journals."
      *

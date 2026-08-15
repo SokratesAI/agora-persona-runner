@@ -3293,6 +3293,38 @@ describe("a loop that has gone quiet says so in the header", () => {
     assert.ok(warn(window).some((t) => t === "no entry for 1 hour"));
   });
 
+  /* The server saying it cannot see the journal, rather than guessing
+   * that the loop stopped. Asserted as an error badge and not a warning:
+   * it is the same failure as "can't reach Nova" one hop further back,
+   * and the header already spends `badge-warn` on two things that are
+   * claims about the loop rather than about this process. */
+  test("a record the site cannot refresh says so instead of crying stall", async () => {
+    const frozen = JSON.parse(JSON.stringify(payload.journal));
+    frozen.status.stalled = false;
+    frozen.status.silentIntervals = 9;
+    frozen.status.recentMissingCycles = [];
+    frozen.status.recordStale = true;
+    const window = await loadSite("/", { journal: () => frozen });
+    const header = window.document.querySelector("#status");
+    assert.deepEqual(warn(window), []);
+    assert.ok([...header.querySelectorAll(".badge-error")]
+      .some((n) => n.textContent === "can't read the journal"));
+  });
+
+  /* The other direction, so the assertion above cannot pass by matching
+   * nothing: the selector has to be able to find the badge when the flag
+   * is off too, and here it must not. */
+  test("a readable record shows no can't-read badge", async () => {
+    const live = JSON.parse(JSON.stringify(payload.journal));
+    live.status.stalled = false;
+    live.status.silentIntervals = 1;
+    live.status.recentMissingCycles = [];
+    live.status.recordStale = false;
+    const window = await loadSite("/", { journal: () => live });
+    assert.deepEqual([...window.document.querySelectorAll("#status .badge-error")]
+      .map((n) => n.textContent), []);
+  });
+
   /* Edvard, comments board 2026-08-14: "Should be displayed if the return
    * fetch came in with missing journals." The clock and the evidence are
    * separate badges because they catch separate failures -- see the
