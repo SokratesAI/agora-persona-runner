@@ -1977,12 +1977,22 @@ WORKFLOW_PROBES = (
     ("concurrency", lambda doc: doc.get("concurrency")),
     ("image and config repo", lambda doc: doc.get("env")),
     ("secret scan", lambda doc: _workflow_step(doc, "test", "Secret scan")),
+    # Cycle 224 folded `update-manifest` into this job's last steps and
+    # `vault-drift` into `test`, to stop paying GitHub's per-job minute
+    # rounding four times per pipeline (idea #73). So the manifest commit is
+    # now inside what this probe already compares whole, and the separate
+    # probe for it was removed rather than pointed at a job that exists in
+    # neither copy -- which the class below would (correctly) have called
+    # unreadable rather than agreement.
     ("build-push job", lambda doc: doc.get("jobs", {}).get("build-push")),
-    ("update-manifest job", lambda doc: doc.get("jobs", {}).get("update-manifest")),
+    ("manifest commit", lambda doc: _workflow_step(
+        doc, "build-push", "Update image digest in manifest.yaml")),
+    # The drift step itself is deliberately NOT probed: each copy points at
+    # the other repo, so its checkout path and argv differ by construction.
     # Not the jobs' contents -- just that neither copy has quietly lost one of
-    # the four. An extra repo-specific job is allowed and does not drift.
+    # the two. An extra repo-specific job is allowed and does not drift.
     ("pipeline jobs", lambda doc: sorted(
-        set(doc.get("jobs", {})) & {"test", "vault-drift", "build-push", "update-manifest"})),
+        set(doc.get("jobs", {})) & {"test", "build-push"})),
 )
 
 
