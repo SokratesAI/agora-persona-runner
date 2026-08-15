@@ -549,3 +549,15 @@ def test_unanswered_comments_is_positional_where_a_count_would_disagree():
     """
     assert _uc("**Edvard, 08-13:** one\n\n**Edvard, 08-13:** and another\n\n"
                "**Nova, 08-13 (Cycle 1):** answering both") == []
+
+
+def test_unanswered_comments_ignores_bold_prose_that_looks_like_a_note():
+    """`**Edvard, in his own words:**` is prose and must not flag the row.
+
+    A false positive here never clears: no reply of mine can answer a note
+    that was never a note, so the row claims to be waiting forever. The
+    `MM-DD` in the pattern is what separates the two, and every real note
+    has one because `append_detail_note` refuses an empty date.
+    """
+    assert _uc("**Edvard, in his own words:** this is the problem.") == []
+    assert _uc("**Nova, on reflection:** still prose.") == []

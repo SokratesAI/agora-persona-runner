@@ -457,8 +457,16 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
 # and built from `NOTE_AUTHORS` rather than a typed-out alternation, so the
 # day a third author is allowed this matcher learns about it instead of
 # quietly reading that author's lines as prose.
+#
+# **The `MM-DD` is required, and that is what keeps prose out.** Without it
+# the pattern is "his name, a comma, anything, a colon", which a sentence
+# like `**Edvard, in his own words:**` in a write-up satisfies -- and a
+# false positive here is a row that claims to be waiting on a reply
+# forever, since no reply of mine can clear a note that was never a note.
+# `append_detail_note` refuses an empty `dated`, so every real note has one
+# and requiring it costs nothing.
 _COMMENT_NOTE_RE = re.compile(
-    r"^\*\*(" + "|".join(sorted(NOTE_AUTHORS.values())) + r"),[^:*]*:\*\*",
+    r"^\*\*(" + "|".join(sorted(NOTE_AUTHORS.values())) + r"), \d{2}-\d{2}[^:*]*:\*\*",
     re.MULTILINE,
 )
 
