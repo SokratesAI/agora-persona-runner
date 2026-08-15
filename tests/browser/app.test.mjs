@@ -3252,12 +3252,29 @@ describe("a loop that has gone quiet says so in the header", () => {
    * pattern matched "cycle 56 wrote no entry" and this test failed on a
    * badge it was never about. Each of the two badges is asserted by its
    * own wording. */
-  test("nothing is said while the loop is healthy", async () => {
+  test("no stall badge while the loop is running to time", async () => {
     const live = JSON.parse(JSON.stringify(payload.journal));
     live.status.stalled = false;
     live.status.silentIntervals = 1;
     const window = await loadSite("/", { journal: () => live });
     assert.deepEqual(warn(window).filter((t) => /no entry for/.test(t)), []);
+  });
+
+  /* The test above was called "nothing is said while the loop is healthy"
+   * and did not check that, which the reviewer on runner#195 caught. Every
+   * fixture in this file carries the hole at cycle 56, so narrowing that
+   * assertion to the stall badge left *no* test anywhere asserting the
+   * header is completely quiet — the state Edvard is looking at almost
+   * every time he opens the app. Renaming the old one to what it actually
+   * proves and adding this is the honest split; a fixture has to be
+   * cleared, not a pattern narrowed, to claim silence. */
+  test("a healthy loop with no holes says nothing at all", async () => {
+    const live = JSON.parse(JSON.stringify(payload.journal));
+    live.status.stalled = false;
+    live.status.silentIntervals = 1;
+    live.status.recentMissingCycles = [];
+    const window = await loadSite("/", { journal: () => live });
+    assert.deepEqual(warn(window), []);
   });
 
   test("a stall is named with how long it has been", async () => {
