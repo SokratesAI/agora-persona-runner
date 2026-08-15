@@ -27,6 +27,21 @@ const PHONE = {
     '(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
 };
 
+/* How long to wait between keystrokes in the search probe.
+ *
+ * It has to stay comfortably above the board search's debounce --
+ * `setTimeout(..., 200)` in `app.js`, `runBoardSearch` -- because typing
+ * faster than that lets every keystroke coalesce into a single render,
+ * and a probe that never provokes a second render passes without having
+ * tested anything.
+ *
+ * The coupling is to a constant in another file that nothing checks, so
+ * the margin is deliberately wide rather than minimal: at 250 it was
+ * 50ms, and a debounce raised to 300 during some future tuning would
+ * silently blind this probe instead of failing loudly.
+ */
+const KEY_GAP_MS = 450;
+
 function watch(page) {
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -155,10 +170,7 @@ async function probeSearchFocus(browser, path) {
   const typed = 'issue';
   for (const ch of typed) {
     await page.keyboard.type(ch);
-    // The rebuild this is hunting is debounced; typing faster than the
-    // debounce would let every keystroke coalesce into one render and
-    // the probe would pass because it never provoked the bug.
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(KEY_GAP_MS);
   }
   await page.waitForTimeout(600);
 
@@ -220,9 +232,18 @@ async function probeOfflineBanner(browser, path) {
   await page.waitForTimeout(1500);
 
   const text = await page.locator('body').innerText().catch(() => '');
+  // Re-read control *here*, not from the `workerReady` above. That call
+  // runs before the warm reload, and the warm reload exists precisely
+  // because the first load is often not yet controlled -- so the early
+  // value reads `false` on a perfectly healthy run and would send a
+  // future cycle debugging the wrong end. `probeReplayHeader` reads it
+  // live for the same reason.
+  const controlled = await page
+    .evaluate(() => !!navigator.serviceWorker.controller)
+    .catch(() => null);
   const detail = {
     registered: true,
-    controlled: sw.controlled,
+    controlled,
     textLen: text.trim().length,
     banner: text.includes('showing a saved copy'),
     // The head is what makes a failure diagnosable rather than just
