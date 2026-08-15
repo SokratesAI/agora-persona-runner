@@ -1208,8 +1208,13 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
         # the same *function* rather than a second copy of the rule: this
         # loop assembles a document without going through that one, so when
         # `_size_checked` was added it guarded the single-document read and
-        # silently left the bulk read — which feeds the site's pages and
-        # every persona's context — reading exactly as blindly as before.
+        # silently left the bulk read reading exactly as blindly as before.
+        # That is `nova_sources.journal_markdown` and `journal_entry_markdown`
+        # — the site's journal pages — plus `vault_search` and
+        # `vault_query_frontmatter`. Not `fetch_vault_context`, which builds
+        # every heartbeat's prompt through `vault_read_path` and so was
+        # covered from the start; this comment claimed otherwise until the
+        # author went and read it.
         # Policy differs from `vault_assemble` and only policy does: a short
         # file drops out of the listing with a note, for the same reason a
         # chunk-missing one does above.
