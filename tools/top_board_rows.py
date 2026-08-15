@@ -42,11 +42,20 @@ import re
 import subprocess
 import sys
 
-from agora_runner.nova_boards import _CLOSED_STATUS_KEYS, parse_board
+from agora_runner.nova_boards import BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
-ISSUES_PATH = "projects/sokrates/projects/nova/issues.md"
-IDEAS_PATH = "projects/sokrates/projects/nova/ideas.md"
+
+# Taken from `BOARD_PATHS` rather than typed again. Both of these moved on
+# 2026-08-12, from `projects/sokrates/projects/agora/` into Edvard's own
+# `projects/sokrates/projects/nova/`, and `nova_boards` carries the note
+# about it. A second hand-typed copy of a path that has already moved once
+# is a copy that will be wrong the next time it moves -- and wrong here is
+# quiet, because a path that does not resolve reads as a board with no
+# rows. `_fetch` makes that loud; not duplicating the string means it does
+# not have to.
+ISSUES_PATH = BOARD_PATHS["issues"]["edvard"]
+IDEAS_PATH = BOARD_PATHS["ideas"]["edvard"]
 
 # Ranking order, best first. Unrated sorts last rather than first: a
 # blank cell means nobody has looked, which is a reason to rate it, not
@@ -77,8 +86,9 @@ def _fetch(path):
 
     It is not hypothetical either: these two files moved from
     `projects/sokrates/projects/agora/` to `projects/sokrates/projects/nova/`
-    on 2026-08-12, and the paths here are hard-coded. The next time Edvard
-    moves them, this is what stands between a wrong answer and a loud one.
+    on 2026-08-12. The paths come from `BOARD_PATHS` so a move only has to
+    be applied once, but "once" still means there is a window, and this is
+    what stands between a wrong answer and a loud one inside it.
     """
     try:
         done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],

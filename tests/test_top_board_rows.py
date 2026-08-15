@@ -155,3 +155,15 @@ def test_an_unreadable_board_is_said_out_loud_and_exits_nonzero(tmp_path, capsys
     assert code == 1
     assert "COULD NOT READ" in out
     assert top_board_rows.IDEAS_PATH in out
+
+
+def test_the_paths_are_the_ones_nova_boards_owns():
+    """Reviewer finding, PR #210: these were hand-typed copies of `BOARD_PATHS`.
+
+    Both moved on 2026-08-12 and a second copy is one that will be wrong
+    the next time they move — quietly, because an unresolvable path reads
+    as a board with no rows.
+    """
+    from agora_runner.nova_boards import BOARD_PATHS
+    assert top_board_rows.ISSUES_PATH is BOARD_PATHS["issues"]["edvard"]
+    assert top_board_rows.IDEAS_PATH is BOARD_PATHS["ideas"]["edvard"]
