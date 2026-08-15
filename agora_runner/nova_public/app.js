@@ -2578,6 +2578,80 @@
         return;
       }
       renderBlocks(body, blocks);
+      body.appendChild(commentBox());
+    }
+
+    /* The comment thread, idea #64: *"Lets me have the same comment
+     * conversation on ideas, notes and issues like the Journal."*
+     *
+     * **There is no thread to render, and that is the design rather than
+     * a missing half.** A comment is appended to the row's own write-up,
+     * which `renderBlocks` above has just drawn -- so his comment and my
+     * reply to it appear as part of the write-up, in order, in the file
+     * he reads in Obsidian when the app is down. The journal's drawer
+     * needs its own store because a journal entry is immutable; a board
+     * row's write-up is not.
+     *
+     * So this is only the composer, and it goes *after* the write-up for
+     * the reason `append_detail_note` puts the note at the end: the
+     * write-up is his statement of the problem and the conversation
+     * accumulates under it.
+     */
+    function commentBox() {
+      var wrap = el("div", "item-comment");
+      var box = el("textarea", "item-comment-box");
+      box.rows = 2;
+      box.placeholder = "Comment on #" + item.number + "…";
+      var status = el("span", "item-comment-status", "");
+      var send = el("button", "item-comment-send", "Comment");
+
+      function busy(on) {
+        send.disabled = on;
+        box.disabled = on;
+      }
+
+      send.addEventListener("click", function () {
+        var text = box.value.trim().replace(/\s*\n\s*/g, " ");
+        if (!text) {
+          status.textContent = "Nothing to send.";
+          status.className = "item-comment-status is-error";
+          return;
+        }
+        busy(true);
+        status.textContent = "sending…";
+        status.className = "item-comment-status";
+        fetch("/api/board/comment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: board, number: item.number, text: text }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (result) {
+            if (!result || !result.ok) {
+              throw new Error((result && (result.message || result.error)) || "failed");
+            }
+            box.value = "";
+            // The write-up on screen is the one from before the comment.
+            // Drop the cached copy so `fill` refetches it and he sees his
+            // own sentence land, rather than being told it saved and
+            // shown a body that does not contain it.
+            delete boardState.details[board + ":" + item.number];
+            busy(false);
+            fill();
+          })
+          .catch(function (err) {
+            status.textContent = String((err && (err.message || err)) || "failed");
+            status.className = "item-comment-status is-error";
+            busy(false);
+          });
+      });
+
+      wrap.appendChild(box);
+      var foot = el("div", "item-comment-foot");
+      foot.appendChild(status);
+      foot.appendChild(send);
+      wrap.appendChild(foot);
+      return wrap;
     }
 
     /* The hold gesture. A press that lasts `HOLD_MS` opens the editor;

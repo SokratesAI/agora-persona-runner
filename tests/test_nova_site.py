@@ -33,11 +33,13 @@ import signal
 import sys
 import threading
 import urllib.parse
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
 
 from agora_runner import nova_capture, nova_journal, nova_replies, nova_site, nova_sources, vault
+from agora_runner.config import OSLO
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.vault import VaultFiles
 from agora_runner.nova_journal import (
@@ -3916,3 +3918,87 @@ def test_the_journal_endpoint_reports_a_payload_it_could_not_refresh():
     assert status == 200
     assert json.loads(second)["status"]["recordStale"] is True
     assert json.loads(second)["status"]["stalled"] is False
+
+
+# --- POST /api/board/comment: idea #64, rated 🔴 and open since 08-12 ---
+# *"Lets me have the same comment conversation on ideas, notes and issues
+# like the Journal. Add a comment button and let me leave comments that
+# discuss each idea."* The comment is appended to the row's own write-up,
+# which an expanded row already fetches and renders -- so there is no read
+# route here to test, and that absence is the design rather than a gap.
+
+def test_commenting_on_a_boarded_row_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "comment_on_row",
+                      return_value=(True, "#64 commented on ideas")) as cm:
+        status, _, body = _post(
+            "/api/board/comment", {"target": "ideas", "number": 64, "text": "  Still broken. "})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    target, number, text, dated = cm.call_args[0]
+    assert (target, number, text) == ("ideas", 64, "Still broken.")
+    # `MM-DD`, and Oslo's -- a module that reaches for a clock reaches for
+    # it in UTC, and this lands in a file he reads.
+    assert re.fullmatch(r"\d{2}-\d{2}", dated)
+    assert dated == datetime.now(OSLO).strftime("%m-%d")
+
+
+def test_a_comment_cannot_smuggle_a_line_break_into_his_write_up():
+    """The span failure `append_detail_note` is built around: a write-up
+    ends at the next heading, so a note carrying a break truncates the
+    block and every later line of his own text stops rendering."""
+    for text in ["two\nlines", "sneaky\rreturn"]:
+        with patch.object(nova_site, "comment_on_row") as cm:
+            status, _, _ = _post(
+                "/api/board/comment", {"target": "ideas", "number": 64, "text": text})
+        assert status == 400, text
+        cm.assert_not_called()
+
+
+def test_an_empty_comment_is_rejected_rather_than_written_as_a_blank_line():
+    for text in ["", "   ", None, 7]:
+        with patch.object(nova_site, "comment_on_row") as cm:
+            status, _, _ = _post(
+                "/api/board/comment", {"target": "ideas", "number": 64, "text": text})
+        assert status == 400, text
+        cm.assert_not_called()
+
+
+def test_a_comment_refuses_a_target_that_is_not_one_of_his_two_boards():
+    """`notes` is a capture target and not a board, and it is the one a
+    client is most likely to guess."""
+    for target in ["notes", "projects/sokrates/projects/nova/ideas", "../secrets", 7, None]:
+        with patch.object(nova_site, "comment_on_row") as cm:
+            status, _, _ = _post(
+                "/api/board/comment", {"target": target, "number": 64, "text": "x"})
+        assert status == 400, target
+        cm.assert_not_called()
+
+
+def test_a_comment_refuses_a_number_that_is_not_a_positive_int():
+    # `True` is an int in Python and would comment on row 1.
+    for number in [True, 0, -1, "64", 6.4, None]:
+        with patch.object(nova_site, "comment_on_row") as cm:
+            status, _, _ = _post(
+                "/api/board/comment", {"target": "ideas", "number": number, "text": "x"})
+        assert status == 400, repr(number)
+        cm.assert_not_called()
+
+
+def test_a_row_with_no_write_up_is_a_409_and_not_a_502():
+    """Nothing failed -- there is simply no block to comment under, and
+    the page should say so rather than retry."""
+    with patch.object(nova_site, "comment_on_row",
+                      return_value=(False, "#63 is not a row on ideas")):
+        status, _, body = _post(
+            "/api/board/comment", {"target": "ideas", "number": 63, "text": "x"})
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
+    """The page on his phone still shows the write-up from before the
+    comment; the next read must come from the file."""
+    with patch.object(nova_site, "comment_on_row", return_value=(True, "ok")), \
+            patch.object(nova_site, "invalidate") as inv:
+        _post("/api/board/comment", {"target": "ideas", "number": 64, "text": "x"})
+    inv.assert_called_once_with("board:ideas")

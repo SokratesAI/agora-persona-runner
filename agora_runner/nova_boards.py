@@ -349,7 +349,14 @@ def set_row_status(markdown, number, status, updated=None):
     return "\n".join(lines)
 
 
-def append_detail_note(markdown, number, note, dated, cycle=None):
+# Who a write-up note may be attributed to. A closed set, because the
+# value is interpolated inside `**...**` in Edvard's own file -- see
+# `append_detail_note`. The key is lowercased so a route may pass either
+# case; the value is what gets written.
+NOTE_AUTHORS = {"nova": "Nova", "edvard": "Edvard"}
+
+
+def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
     """Add one dated line to the end of a row's write-up. Or `None`.
 
     The other side of issue #85. `set_row_status` moves a row to `✅ Done`
@@ -389,9 +396,25 @@ def append_detail_note(markdown, number, note, dated, cycle=None):
     renderer instead of through the parser, and reachable only because
     this module and its reader disagree about what a line is.
 
+    `author` is who the line is attributed to and defaults to me. Idea
+    #64 is what needs the other value: *"Lets me have the same comment
+    conversation on ideas, notes and issues like the Journal."* A comment
+    from Edvard is the same one-line append in the same place -- the
+    write-up is already where he goes looking for commentary, and the
+    board page already renders it -- so the thread is this call with a
+    different name in front of the colon, not a second store.
+
+    **It is checked against a fixed set rather than written through**,
+    the same boundary `_post_priority` draws for a rating: the value ends
+    up inside `**...**` in his own file, and free text there could close
+    the emphasis and keep going. Two names are all this needs, and an
+    unknown one is `None` rather than a silent fallback to mine --
+    attributing his sentence to me is exactly the corruption worth
+    refusing.
+
     `None` means not written: no write-up for that number (the row may
-    still exist -- only some rows have one), an empty note, or a line
-    break in either free-text argument.
+    still exist -- only some rows have one), an empty note, a line break
+    in either free-text argument, or an author who is not one of the two.
     """
     note = (note or "").strip()
     dated = (dated or "").strip()
@@ -412,7 +435,15 @@ def append_detail_note(markdown, number, note, dated, cycle=None):
     tail = end
     while tail > body_start and not lines[tail - 1].strip():
         tail -= 1
-    who = f"Nova, {dated}" if cycle is None else f"Nova, {dated} (Cycle {cycle})"
+    # `None` is "not specified" and means me. An empty or blank string is
+    # not the same thing: it is a caller that meant to name someone and
+    # sent nothing, which is almost always an unset payload field -- and
+    # defaulting *that* to me is how Edvard's sentence ends up signed with
+    # my name, which is the one outcome this argument exists to prevent.
+    name = NOTE_AUTHORS.get(("Nova" if author is None else author).strip().lower())
+    if name is None:
+        return None
+    who = f"{name}, {dated}" if cycle is None else f"{name}, {dated} (Cycle {cycle})"
     entry = ["", f"**{who}:** {note}"]
     # An empty write-up has nothing to separate the note from, and a
     # leading blank line there would render as one.

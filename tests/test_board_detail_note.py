@@ -184,3 +184,60 @@ def test_a_missing_or_multiline_date_is_refused():
     assert append_detail_note(BOARD, 57, "Closed.", "") is None
     assert append_detail_note(BOARD, 57, "Closed.", None) is None
     assert append_detail_note(BOARD, 57, "Closed.", "08-15\n## 58 — Injected") is None
+
+
+# --- Idea #64: the same append, attributed to Edvard ---
+# *"Lets me have the same comment conversation on ideas, notes and issues
+# like the Journal."* The thread lives inside the write-up, so a comment
+# is `append_detail_note` with a different name in front of the colon --
+# and the name is the one new thing that can go wrong, because it is
+# interpolated inside `**...**` in his own file.
+
+def test_a_comment_from_edvard_is_attributed_to_him_not_to_me():
+    out = append_detail_note(BOARD, 57, "This is still wrong on my phone.", "08-15",
+                             author="Edvard")
+    assert "**Edvard, 08-15:** This is still wrong on my phone." in _detail(out, 57)
+    assert "**Nova, 08-15:**" not in _detail(out, 57)
+
+
+def test_the_author_defaults_to_me_so_every_existing_caller_is_unchanged():
+    assert _detail(append_detail_note(BOARD, 57, "x", "08-15"), 57).endswith("**Nova, 08-15:** x")
+
+
+def test_an_unknown_author_is_refused_rather_than_falling_back_to_me():
+    """Attributing his sentence to me is the corruption worth refusing --
+    a cycle reading the row would answer its own comment."""
+    for author in ["Sokrates", "Nova**, 08-15:** injected", "anon"]:
+        assert append_detail_note(BOARD, 57, "hello", "08-15", author=author) is None
+
+
+def test_a_blank_author_is_refused_rather_than_signed_with_my_name():
+    """`None` means "not specified" and defaults to me. An empty string
+    means a caller that meant to name someone and sent nothing -- an unset
+    payload field -- and defaulting that to me signs his sentence with my
+    name, which is what the closed set is for. Caught by this test against
+    a first version that wrote `author or "Nova"`."""
+    for author in ["", "   "]:
+        assert append_detail_note(BOARD, 57, "hello", "08-15", author=author) is None
+
+
+def test_a_comment_and_my_reply_stack_under_the_write_up_in_order():
+    """The whole reason inline beat a second comments file: the
+    conversation sits under the idea it is about, oldest first."""
+    out = append_detail_note(BOARD, 57, "Why is this still open?", "08-15", author="Edvard")
+    out = append_detail_note(out, 57, "Built it this cycle.", "08-15", cycle=219, author="Nova")
+    body = _detail(out, 57)
+    assert body.index("**Edvard, 08-15:**") < body.index("**Nova, 08-15 (Cycle 219):**")
+
+
+def test_a_comment_still_cannot_carry_a_line_break_into_his_write_up():
+    """`author` is a new argument on a call whose span safety is the whole
+    point of this file; it must not have opened a second door."""
+    for text in ["two\nlines", "sneaky\rreturn"]:
+        assert append_detail_note(BOARD, 57, text, "08-15", author="Edvard") is None
+
+
+def test_a_row_with_no_write_up_takes_no_comment():
+    """#63 is a board row with no `## 63 —` block, which is most rows.
+    The route turns this into a 409 rather than a retry."""
+    assert append_detail_note(BOARD, 63, "hello", "08-15", author="Edvard") is None

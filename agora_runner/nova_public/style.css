@@ -1263,6 +1263,35 @@ body.nav-open { overflow: hidden; }
 .item-edit-status { flex: 1 1 auto; color: var(--dim); font-size: 0.85rem; }
 .item-edit-status.is-error { color: var(--warn); }
 
+/* The comment composer under a row's write-up (idea #64). Separated by a
+   rule rather than a card, because the comments it sends land *inside*
+   the write-up above it -- the line marks where his prose ends and the
+   conversation about it begins. */
+.item-comment { margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid var(--line); }
+
+.item-comment-box {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+}
+
+.item-comment-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.item-comment-status { flex: 1 1 auto; color: var(--dim); font-size: 0.85rem; }
+.item-comment-status.is-error { color: var(--warn); }
+
 .item-number { color: var(--dim); font-variant-numeric: tabular-nums; }
 .item-title { flex: 1 1 60%; }
 /* Its own row below status/priority (Edvard, 2026-08-14: "the date
