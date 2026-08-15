@@ -22,14 +22,28 @@ node_modules/
 /archive.md
 
 # Every other scratch file `prompt.md` tells a cycle to write into this
-# repo root, for exactly the reason above. The digest roll got its three
-# ignored after being committed twice; the claim ledger (step 2) and the
-# retro ledger (step 2's Friday block) were left out and `claims.json`
-# was then committed twice more -- deleted once in 084fbd6, and again by
-# Cycle 194, whose reviewer caught it in the PR. The list, not the habit,
-# is what stops this: any `get > <name>` in `prompt.md` that lands here
-# belongs in this file the day it is written.
-/claims.json
-/claims2.json
-/ledger.json
-/iss.md
+# repo root -- and the enumerated list that used to live here is gone,
+# because enumerating was the bug. It was extended three times (the digest
+# roll's three, then `claims.json`/`ledger.json`, then `iss.md`) and each
+# time it was extended by a cycle cleaning up a file that had *already*
+# been committed. It still did not have `prompt.md`, `prompt-cur.md`,
+# `live-new.md`, `entry.md`, `entry2.md` or `newsections.md` in it, and
+# the first three of those were tracked on `main` until Cycle 220.
+#
+# `prompt.md` is the one that did damage rather than just sitting there:
+# it is a stale copy of Nova's own constitution, and Cycle 220's review
+# subagent grepped it instead of the live one in the vault, found no
+# mention of the change under review, and returned a confident finding
+# that the fix had never been wired in. It had been -- in the vault, which
+# is the only place any of those three documents really live.
+#
+# So the rule is inverted. Nothing at this repo root is a `.md` or a
+# `.json` except the three named below; everything else there is a cycle's
+# scratch by construction, including the ones nobody has invented yet.
+# `tests/test_repo_root_is_clean.py` fails loudly if one is committed
+# anyway, since an ignore rule does nothing to a file already tracked.
+/*.md
+!/README.md
+/*.json
+!/package.json
+!/tsconfig.json
