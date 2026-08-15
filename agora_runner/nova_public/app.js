@@ -328,6 +328,7 @@
      * the same reason: they are claims about *now*, and this payload is
      * evidence about whenever it was cached. */
     var replayed = !!status.replayed;
+    renderedReplayed = replayed;
 
     statusEl.appendChild(el("p", replayed ? "status-line is-stale" : "status-line",
       statusParts(status).join(" · ") + (replayed ? " — as of the last load" : "")));
@@ -1708,6 +1709,16 @@
    * page reads. Missing means "not replayed", which is the safe direction:
    * the page goes on believing a live answer is live.
    */
+  /* A copy of `source` with `extra`'s fields over the top. `Object.assign`
+   * with an object literal, spelled out, because this file is ES5 throughout
+   * and the point here is to leave the original untouched. */
+  function shallow(source, extra) {
+    var out = {};
+    Object.keys(source).forEach(function (k) { out[k] = source[k]; });
+    Object.keys(extra).forEach(function (k) { out[k] = extra[k]; });
+    return out;
+  }
+
   function isReplayed(r) {
     return !!(r && r.headers && r.headers.get && r.headers.get("X-Nova-Replayed"));
   }
@@ -1738,8 +1749,20 @@
         // arbitrarily old payload as current. Carried on `status` because
         // that is the object `renderStatus` is handed; `/api/digest` has no
         // `status` and needs none, its content is not a claim about now.
-        if (isReplayed(r) && body && body.status) body.status.replayed = true;
+        //
+        // **Remembered clean, returned marked**, and that distinction is the
+        // whole bug rather than a nicety. Mutating `body` here would store
+        // the mark in `lastPayload`, and `lastPayload` is what the 304 branch
+        // above hands back -- so the *next* poll, on a network that has come
+        // back, replays the mark. The etag is deliberately stable while the
+        // loop is quiet (`journal_descriptor`), so that 304 is the common
+        // case, and "can't reach Nova" would stick to the header for up to an
+        // hour after the app was last actually offline. That is the flash
+        // Edvard reported, inverted onto the banner meant to explain it.
         lastPayload[key] = body;
+        if (isReplayed(r) && body && body.status) {
+          return shallow(body, { status: shallow(body.status, { replayed: true }) });
+        }
         return body;
       });
     });
@@ -4010,6 +4033,13 @@
   var POLL_FAILURES_BEFORE_STALE = 2;
   var pollFailures = 0;
   var renderedVersion = null;
+  /* Whether what is on screen right now came out of the service worker's
+   * cache. Kept beside `renderedVersion` and compared the same way, because
+   * coming back from a replayed payload is a change the version cannot
+   * express: the bytes are identical, the etag is identical, and the only
+   * thing that moved is whether they are current. Without this the "showing
+   * a saved copy" banner is raised and never lowered. */
+  var renderedReplayed = false;
   var renderedComments = null;
   var pollTimer = null;
 
@@ -4037,7 +4067,9 @@
         // compare `undefined` against `null` and count as changed on every
         // single poll, throwing away every open drawer twice a minute.
         var version = (journal && journal.version) || null;
-        var changed = version !== renderedVersion || comments !== renderedComments;
+        var replayedNow = !!(journal && journal.status && journal.status.replayed);
+        var changed = version !== renderedVersion || comments !== renderedComments
+          || replayedNow !== renderedReplayed;
         // Re-checked after the fetch as well as before it: a request takes
         // long enough for him to have started typing during one.
         // A poll that came back is the only thing that clears the header's

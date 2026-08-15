@@ -3640,6 +3640,53 @@ describe("a loop that has gone quiet says so in the header", () => {
     assert.ok(window.document.querySelectorAll(".entry").length);
   });
 
+  /* The regression my own first draft shipped, caught in review, and the
+   * reason this test exists rather than a comment saying to be careful.
+   *
+   * The mark was written onto the parsed body, and that same object is what
+   * `lastPayload` remembers and what the 304 branch hands back. So one blip
+   * on a phone latched "can't reach Nova" onto the header for as long as the
+   * etag held still -- which, while the loop is quiet, is up to an hour. The
+   * banner meant to explain a flash had become a longer one.
+   *
+   * Recovery also cannot be seen in the version: identical bytes, identical
+   * etag, and the only thing that moved is whether they are current. So the
+   * poll compares the replay state as well, or it never re-renders to clear
+   * it. */
+  test("a live poll after a replayed one clears the saved-copy banner", async () => {
+    const quiet = JSON.parse(JSON.stringify(payload.journal));
+    quiet.status.stalled = false;
+    quiet.status.recentMissingCycles = [];
+
+    let replayNext = true;
+    let polls = 0;
+    let timers;
+    const window = await loadSite("/", {
+      install: (w) => {
+        timers = captureTimers(w);
+        w.fetch = (url, init) => {
+          if (init && init.method === "POST") return res({ ok: true });
+          if (url.includes("/api/comments")) return res(payload.comments);
+          if (url.includes("/api/digest")) return res(payload.digest);
+          polls += 1;
+          if (replayNext) return replayedRes(quiet);
+          // The network is back, and the server answers exactly what the
+          // etag contract says it answers when nothing has changed.
+          return notModified();
+        };
+      },
+    });
+
+    assert.match(window.document.querySelector("#status").textContent,
+      /showing a saved copy/, "the first load was replayed and says so");
+
+    replayNext = false;
+    assert.equal(await timers.firePagePoll(), 1, "one page poll was scheduled");
+    assert.doesNotMatch(window.document.querySelector("#status").textContent,
+      /showing a saved copy/, "a reachable server clears it, 304 and all");
+    assert.ok(polls >= 2, "the poll actually ran");
+  });
+
   test("a stall is named with how long it has been", async () => {
     const quiet = JSON.parse(JSON.stringify(payload.journal));
     quiet.status.stalled = true;
