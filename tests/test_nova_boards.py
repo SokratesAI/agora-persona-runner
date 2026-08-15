@@ -465,3 +465,87 @@ def test_two_different_searches_do_not_share_one_etag(board_md, notes_md):
         _, _, first = _get("/api/board?name=issues&q=gemini")
         _, _, second = _get("/api/board?name=issues&q=visualisations")
     assert json.loads(first)["version"] != json.loads(second)["version"]
+
+
+# --- unanswered_comments: which rows are still waiting on a reply -----------
+# Idea #64 put a comment box on every board row (Cycle 219) and stored the
+# thread inline in the row's write-up, which is what made it cheap and what
+# left it with no `## New` queue. These pin the "last note wins" rule.
+
+_UC_BOARD = """## Board
+
+| # | Item | Status | Updated | Priority |
+|---|---|---|---|---|
+| [[#4 — a\\|4]] | a | ⚪ Backlog | 08-01 | 🟠 High |
+
+# Details
+
+## 4 — a
+
+{body}
+"""
+
+
+def _uc(body):
+    from agora_runner.nova_boards import unanswered_comments
+    return unanswered_comments(_UC_BOARD.format(body=body))
+
+
+def test_unanswered_comments_flags_a_write_up_ending_on_edvard():
+    assert _uc("Problem.\n\n**Edvard, 08-15:** what about this?") == [4]
+
+
+def test_unanswered_comments_clears_once_nova_replies():
+    assert _uc("Problem.\n\n**Edvard, 08-15:** q?\n\n"
+               "**Nova, 08-15 (Cycle 221):** a.") == []
+
+
+def test_unanswered_comments_is_positional_not_a_count():
+    """Edvard, Nova, Edvard is one note each way and still waiting on me."""
+    assert _uc("**Edvard, 08-13:** one\n\n**Nova, 08-13 (Cycle 1):** two\n\n"
+               "**Edvard, 08-15:** three") == [4]
+
+
+def test_unanswered_comments_ignores_a_write_up_with_no_notes_at_all():
+    """Most rows are only his statement of the problem, and that is not a comment."""
+    assert _uc("Just the problem statement, with **bold** in it.") == []
+
+
+def test_unanswered_comments_ignores_bold_prose_that_is_not_a_note():
+    """A write-up opening on a bold lead-in must not read as a comment."""
+    assert _uc("**Edvard wrote this ages ago** and it is prose, not a note.") == []
+
+
+def test_unanswered_comments_matches_the_authors_nova_boards_allows():
+    """Built from NOTE_AUTHORS so a third author cannot be silently unreadable."""
+    from agora_runner.nova_boards import NOTE_AUTHORS, _COMMENT_NOTE_RE
+    for name in NOTE_AUTHORS.values():
+        assert _COMMENT_NOTE_RE.search(f"**{name}, 08-15:** hi")
+
+
+def test_unanswered_comments_reads_the_note_append_detail_note_actually_writes():
+    """The two must agree by construction, not by both being edited together."""
+    from agora_runner.nova_boards import append_detail_note, unanswered_comments
+    after_his = append_detail_note(_UC_BOARD.format(body="Problem."), 4,
+                                   "is this right?", "08-15", author="Edvard")
+    assert unanswered_comments(after_his) == [4]
+    after_mine = append_detail_note(after_his, 4, "yes", "08-15",
+                                    cycle=221, author="Nova")
+    assert unanswered_comments(after_mine) == []
+
+
+def test_unanswered_comments_is_positional_where_a_count_would_disagree():
+    """The case that separates the two rules, and the earlier test did not.
+
+    Two comments from him then one reply from me: a count says he is one
+    ahead and still waiting, position says I had the last word and he is
+    not. Position is right -- one reply can answer two questions, and the
+    count rule would leave this row flagged forever, which is the state
+    that makes the flag worth ignoring.
+
+    Written after mutating the rule to a count and watching all 63 tests
+    pass: `Edvard, Nova, Edvard` is 2-vs-1 and both rules call it waiting,
+    so the test that claimed to pin this pinned nothing.
+    """
+    assert _uc("**Edvard, 08-13:** one\n\n**Edvard, 08-13:** and another\n\n"
+               "**Nova, 08-13 (Cycle 1):** answering both") == []

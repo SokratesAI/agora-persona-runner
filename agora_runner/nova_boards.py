@@ -452,6 +452,50 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
     return "\n".join(lines[:tail] + entry + lines[tail:])
 
 
+# One dated note, as `append_detail_note` writes it: `**Edvard, 08-15:** ...`
+# or `**Nova, 08-15 (Cycle 221):** ...`. Anchored at the start of the line
+# and built from `NOTE_AUTHORS` rather than a typed-out alternation, so the
+# day a third author is allowed this matcher learns about it instead of
+# quietly reading that author's lines as prose.
+_COMMENT_NOTE_RE = re.compile(
+    r"^\*\*(" + "|".join(sorted(NOTE_AUTHORS.values())) + r"),[^:*]*:\*\*",
+    re.MULTILINE,
+)
+
+
+def unanswered_comments(markdown):
+    """Row numbers whose write-up ends on a comment from Edvard. Newest first.
+
+    Idea #64 gave him a comment box on every boarded row (Cycle 219), and
+    the design call that made it cheap is the one that left this hole: a
+    board comment lands inline in the row's own write-up rather than in a
+    queue, so unlike `comments.md` there is no `## New` for a cycle to
+    drain. `nova_capture.comment_on_row` says what a cycle owes it -- *"a
+    reply on the next line"* -- and nothing anywhere says which rows are
+    still waiting for one. He commented, and the next cycle read the same
+    52 open rows it always reads.
+
+    So: a row is waiting when the **last** note under it is his. That is
+    the whole rule, and it is deliberately positional rather than a count
+    of his notes against mine. A thread that ran Edvard → Nova → Edvard
+    is waiting even though both have spoken twice; a thread that ended on
+    my reply is not, however much he said before it. Counting would call
+    the first one answered.
+
+    Prose between the notes is ignored -- the write-up *is* prose, his
+    statement of the problem, and only the `**Author, date:**` lines are
+    part of the conversation.
+    """
+    waiting = []
+    lines = (markdown or "").split("\n")
+    for number, span in _detail_spans(markdown or "").items():
+        _, body_start, end = span
+        found = _COMMENT_NOTE_RE.findall("\n".join(lines[body_start:end]))
+        if found and found[-1] == "Edvard":
+            waiting.append(number)
+    return sorted(waiting, reverse=True)
+
+
 def _detail_spans(markdown):
     """`{number: (heading_line, body_start, end_line)}` for every write-up.
 

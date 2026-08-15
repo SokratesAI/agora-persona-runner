@@ -42,7 +42,9 @@ import re
 import subprocess
 import sys
 
-from agora_runner.nova_boards import BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board
+from agora_runner.nova_boards import (
+    BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board, unanswered_comments,
+)
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
@@ -105,6 +107,7 @@ def _fetch(path):
 def open_rows(markdown, board):
     """Open rows of one board file, each tagged with which board it is on."""
     rows = []
+    waiting = set(unanswered_comments(markdown or ""))
     for item in parse_board(markdown or "")["items"]:
         if item["done"] or item["statusKey"] in _CLOSED:
             continue
@@ -116,6 +119,10 @@ def open_rows(markdown, board):
             "priority": item["priority"],
             "priorityKey": item["priorityKey"],
             "updated": item["updated"],
+            # A row whose write-up ends on one of his comments. Read off the
+            # same markdown the rows come from, so a row and its thread can
+            # never be sourced from two different reads of the file.
+            "waiting": item["number"] in waiting,
         })
     return rows
 
@@ -144,8 +151,20 @@ def age_key(updated):
 
 
 def rank(rows):
-    """Best pick first. See the module docstring for why age is the tiebreak."""
+    """Best pick first. See the module docstring for why age is the tiebreak.
+
+    **An unanswered comment outranks every rating**, including a 🔴 on
+    another row. `prompt.md` step 1c already says why in the general
+    case -- *"his unprocessed captures are the strongest signal you will
+    get all cycle"* -- and a comment on a row is a capture that happens
+    to have landed somewhere a cycle was already going to look. It is
+    also the one signal here with no other home: a rating persists until
+    someone changes it, and an unanswered comment stops existing the
+    moment a cycle replies, so nothing is lost by putting it first and a
+    question of his is lost by not.
+    """
     return sorted(rows, key=lambda r: (
+        0 if r.get("waiting") else 1,
         _RANK.get(r["priorityKey"], len(_RANK)),
         age_key(r["updated"]),
         0 if r["board"] == "issue" else 1,
@@ -155,7 +174,11 @@ def rank(rows):
 
 def _line(row):
     rating = row["priority"] or "(unrated)"
-    return (f"{row['board']} #{row['number']}  {rating}  {row['status']}"
+    # Ahead of the rating, because it is ahead of it in the sort. A marker
+    # that explains the order is worth more than one appended as a footnote
+    # to a line whose position it already decided.
+    waiting = "💬 UNANSWERED  " if row.get("waiting") else ""
+    return (f"{row['board']} #{row['number']}  {waiting}{rating}  {row['status']}"
             f"  (updated {row['updated']})  {row['title']}")
 
 
@@ -169,6 +192,15 @@ def render(rows, runners_up=3):
     if rest:
         out.append("  next:")
         out.extend("     " + _line(r) for r in rest)
+    # Every waiting row, not just the ones that fit in the runners-up window.
+    # Answering him is cheap and the list is short; a row that is waiting and
+    # ranked fifth is exactly the one that goes unanswered for three days.
+    waiting = [r for r in ranked if r.get("waiting")]
+    if waiting:
+        out.append(f"  {len(waiting)} row(s) waiting on a reply from you: "
+                   + ", ".join(f"{r['board']} #{r['number']}" for r in waiting))
+        out.append("  Reply on the row (POST /api/board/comment, author Nova) "
+                   "even if you do not take it as this cycle's work.")
     return "\n".join(out)
 
 
