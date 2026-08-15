@@ -2892,7 +2892,7 @@ def test_nothing_is_warmed_that_the_request_path_will_not_read_back():
         if not isinstance(node, ast.Call):
             continue
         named = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        if named not in ("cached_payload", "_send_cached_json"):
+        if named not in ("cached_payload", "cached_entry", "_send_cached_json"):
             continue
         first = node.args[0] if node.args else None
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
