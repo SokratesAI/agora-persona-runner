@@ -944,6 +944,19 @@ body.nav-open { overflow: hidden; }
   border-color: var(--accent);
 }
 
+/* Redundant today and deliberately kept. `.board-search-clear` declares
+ * no `display` of its own and this stylesheet has no `button` reset, so
+ * the UA's `[hidden] { display: none }` already wins on its own -- this
+ * rule fixes nothing that is currently broken. It is here because the
+ * moment someone adds `display: flex` to centre the ×, it would stop
+ * winning, silently, and this button is hidden on every empty search
+ * box. That is not hypothetical: `.prio-menu`'s own `display: flex` beat
+ * the same UA rule and closing that popup did nothing visible until
+ * someone noticed by hand. */
+.board-search-clear[hidden] {
+  display: none;
+}
+
 .board-search-clear {
   flex: 0 0 auto;
   min-width: 44px;
