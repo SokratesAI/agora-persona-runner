@@ -235,18 +235,35 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
         branch = _git(root, clone, "rev-parse", "--abbrev-ref",
                       "HEAD").stdout.strip()
         dirty = bool(_git(root, clone, "status", "--porcelain").stdout.strip())
+        ahead = 0
+        if base is not None:
+            counted = _git(root, clone, "rev-list", "--count",
+                           base + "..HEAD").stdout.strip()
+            ahead = int(counted) if counted.isdigit() else 0
         if base is None:
             verdict = "no-base"
         elif dirty:
             verdict = "unfinished"
+        elif ahead == 0:
+            # Nothing here the base has not got. A clone that is merely
+            # *behind* lands here too, and that is the answer: `git diff` is
+            # non-empty in both directions, so judging on content alone called
+            # three untouched clones unfinished on the first real run --
+            # `yoyo-evolve` is 470 commits behind with nothing local. The
+            # question this sweep asks is "did a cycle leave work here", and
+            # being behind is not work.
+            verdict = "clean"
         elif _git(root, clone, "diff", "--quiet", base, "HEAD").returncode == 0:
-            # Identical content. On the base's own branch that is the ordinary
-            # up-to-date checkout; on any other branch it is a leftover.
-            verdict = "clean" if branch == base.split("/", 1)[1] else "leftover"
+            # Commits the base does not have, and yet no difference in
+            # content: the squash merge. This is the pair that matters, and
+            # neither half decides it alone -- the count alone says the same
+            # thing for landed and unlanded work, and the content alone
+            # cannot tell ahead from behind.
+            verdict = "leftover"
         else:
             verdict = "unfinished"
         out.append({"clone": clone, "branch": branch, "base": base,
-                    "dirty": dirty, "verdict": verdict})
+                    "dirty": dirty, "ahead": ahead, "verdict": verdict})
     return out
 
 

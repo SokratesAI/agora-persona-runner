@@ -379,3 +379,18 @@ def test_the_cli_names_the_leftover_branch(squash_merged, capsys):
     # The tidy half found nothing, and that must not read as an all-clear for
     # the workspace as a whole.
     assert "nothing to tidy" in out
+
+
+def test_a_clone_that_is_only_behind_is_not_unfinished(squash_merged):
+    """Found by running this on the real workspace rather than by a test.
+    Judging on content alone called three untouched clones unfinished --
+    `git diff` is non-empty whichever direction the difference runs, and
+    `yoyo-evolve` sits 470 commits behind with nothing local. Being behind is
+    not work somebody left."""
+    root, repo = squash_merged
+    _git(repo, "checkout", "-q", "main")   # the pre-merge main, now behind
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["clean"]
+    assert survey[0]["ahead"] == 0
