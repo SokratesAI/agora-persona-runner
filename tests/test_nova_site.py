@@ -1867,12 +1867,65 @@ def test_an_entry_quoting_the_entries_marker_does_not_delete_the_newer_cards():
         ),
         JOURNAL_DIR + "001-cycle-1.md": "### Cycle 1\n\nOldest.",
     }
-    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})):
+    # The cost ledger is `journal_payload`'s second source now (#59); these
+    # entries carry no stamp so no runtime resolves either way, but the
+    # fetch is real and the network guard is right to refuse it.
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})), \
+            patch.object(nova_site, "cost_ledger_json", return_value=""):
         payload = nova_site.journal_payload()
     assert [e["cycle"] for e in payload["entries"]] == [3, 2, 1]
     # Not just present: the quoting entry keeps the text it was quoting,
     # rather than being kept by having the offending half trimmed off it.
     assert "is the marker that command needs." in payload["entries"][1]["body"]
+
+
+def test_a_corrupt_cost_ledger_costs_runtimes_and_not_the_journal():
+    """The failure my own first draft shipped, caught by the whole suite.
+
+    `journal_payload` reads the cost ledger to put a runtime on each card
+    (issues.md #59). Wiring `cycle_runtimes` straight in meant a ledger
+    that would not parse raised out of the journal build -- so a corrupt
+    document belonging to the *costs* page 502'd the journal, which is the
+    one page that has to render when other things are broken. Thirty-four
+    tests failed at once and every one of them was right.
+
+    The ledger here is markdown rather than JSON on purpose: that is
+    exactly what a fixture patching `vault_read_path` for every path
+    returns, and it is also what a half-written publish leaves behind.
+    """
+    files = {
+        JOURNAL_DIR + "002-cycle-2.md": "### 2026-08-15 02:14 (Oslo) — Cycle 2\n\nNewest.",
+        JOURNAL_DIR + "001-cycle-1.md": "### 2026-08-15 01:10 (Oslo) — Cycle 1\n\nOldest.",
+    }
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})), \
+            patch.object(nova_site, "cost_ledger_json", return_value="# not json at all"):
+        payload = nova_site.journal_payload()
+    assert [e["cycle"] for e in payload["entries"]] == [2, 1]
+    # And it degrades rather than half-attaching: no card claims a runtime.
+    assert all("runtimeSeconds" not in e for e in payload["entries"])
+
+
+def test_a_good_cost_ledger_puts_a_runtime_on_the_card_it_belongs_to():
+    """The positive control for the test above.
+
+    Without this, "no entry has a runtime" passes because the wiring was
+    deleted, not because the ledger was corrupt -- the same shape as the
+    `.prio-picker` assertion Cycle 202 shipped against markup that never
+    rendered it. Same two entries, same call, a ledger that parses.
+    """
+    files = {
+        JOURNAL_DIR + "002-cycle-2.md": "### 2026-08-15 02:14 (Oslo) — Cycle 2\n\nNewest.",
+        JOURNAL_DIR + "001-cycle-1.md": "### 2026-08-15 01:10 (Oslo) — Cycle 1\n\nOldest.",
+    }
+    ledger = json.dumps({"cycles": [
+        {"startedAt": "2026-08-14T23:00:00Z", "durationSeconds": 600.0},   # 01:00 Oslo
+        {"startedAt": "2026-08-15T00:00:00Z", "durationSeconds": 940.0},   # 02:00 Oslo
+    ]})
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})), \
+            patch.object(nova_site, "cost_ledger_json", return_value=ledger):
+        payload = nova_site.journal_payload()
+    got = {e["cycle"]: e.get("runtimeSeconds") for e in payload["entries"]}
+    assert got == {2: 940, 1: 600}
 
 
 def test_the_journal_never_reads_the_emptied_archive_again():

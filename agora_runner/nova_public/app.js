@@ -765,7 +765,13 @@
       : entry.title || "Note"));
     toggle.appendChild(heading);
 
-    toggle.appendChild(el("span", "chevron", "▾"));
+    /* No chevron. Edvard, issues.md #59: "Remove the arrow that shows if
+     * the dropdown is open/closed." The card already answers that twice
+     * over -- collapsed shows a one-line brief and a "Read the full
+     * journal" button, expanded shows the prose and "Close the full
+     * journal" -- so the arrow restated what the button beside it said in
+     * words. `aria-expanded` on the toggle is the accessible answer and
+     * is untouched; the arrow was decoration, not the affordance. */
 
     var head = el("header", "entry-head");
     head.appendChild(toggle);
@@ -786,7 +792,8 @@
      * page makes, so the two cannot say different things about one cycle. */
     var meta = el("div", "entry-meta");
     var stamp = [entry.date, entry.time].filter(Boolean).join(" ");
-    if (stamp) meta.appendChild(el("time", "stamp", stamp + " Oslo"));
+    if (stamp) meta.appendChild(el("time", "stamp", stamp));
+    appendRuntime(meta, entry);
     appendOutcome(meta, settled);
     if (meta.childNodes.length) card.appendChild(meta);
 
@@ -1045,6 +1052,22 @@
 
   /** The outcome pill, the PR references and the qualifier beside them.
    *  Shared so a part's own row and the cycle's row cannot drift apart. */
+  /** How long the cycle actually ran, when the server is sure (#59).
+   *
+   *  `runtimeSeconds` is absent rather than null on a cycle whose session
+   *  could not be told apart from a neighbouring cycle's, so presence is
+   *  the whole test -- see `nova_runtimes.cycle_runtimes` for why roughly
+   *  a third of the archive has no number and the recent feed nearly
+   *  always does. Minutes, because the shortest cycle on record is 7 and
+   *  seconds would imply a precision the join does not have. */
+  function appendRuntime(row, entry) {
+    var seconds = entry && entry.runtimeSeconds;
+    if (!seconds) return;
+    var minutes = Math.round(seconds / 60);
+    var text = minutes < 1 ? "ran under a minute" : "ran " + minutes + " min";
+    row.appendChild(el("span", "runtime", text));
+  }
+
   function appendOutcome(row, entry) {
     if (entry.outcome) row.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
     if (entry.pr) {
@@ -1134,7 +1157,7 @@
       if (ordered.length > 1) {
         var when = [part.date, part.time].filter(Boolean).join(" ");
         var label = partLabel(part.title, index);
-        container.appendChild(el("h3", "entry-part", when ? label + " · " + when + " Oslo" : label));
+        container.appendChild(el("h3", "entry-part", when ? label + " · " + when : label));
         /* A part that reached a different answer than the cycle's settled
          * one keeps its own row, so nothing is dropped by drawing the
          * header once. Cycle 6 is the case: three parts, three different
@@ -1206,7 +1229,8 @@
     var settled = settledPart(parts);
     var meta = el("div", "entry-meta");
     var stamp = [first.date, first.time].filter(Boolean).join(" ");
-    if (stamp) meta.appendChild(el("time", "stamp", stamp + " Oslo"));
+    if (stamp) meta.appendChild(el("time", "stamp", stamp));
+    appendRuntime(meta, first);
     appendOutcome(meta, settled);
     if (meta.childNodes.length) card.appendChild(meta);
 
