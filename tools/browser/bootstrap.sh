@@ -29,14 +29,20 @@ apt-get "${APT[@]}" install --download-only -y --no-install-recommends \
   libnss3 libnspr4 libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 \
   libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libdbus-1-3 \
   libdrm2 libgbm1 libglib2.0-0t64 libxcb1 libxkbcommon0 libexpat1 \
-  fontconfig fonts-dejavu-core libfreetype6 libfontconfig1
+  fontconfig fonts-dejavu-core libfreetype6 libfontconfig1 fonts-noto-color-emoji
 
 # 3. unpack into a private sysroot and point the loader at it
 mkdir -p sysroot
 for d in apt/cache/archives/*.deb; do dpkg -x "$d" sysroot; done
 find sysroot -name '*.so*' -printf '%h\n' | sort -u | tr '\n' ':' > libdirs.txt
 
-# 4. fonts. Without this chromium launches, lays the page out, and draws NO text at all —
+# 4. fonts. dejavu-core is why any text draws at all; noto-color-emoji is why the
+#    status and priority pills draw as 🟡 / 🟠 rather than as empty boxes. Cycle 196
+#    rendered the issues board without it and every pill on the page was tofu — which
+#    reads exactly like a broken stylesheet, and is a standing invitation to "fix" an
+#    app that was never wrong. A screenshot that misrepresents the page is worse than
+#    no screenshot, because it is acted on.
+#    Without this chromium launches, lays the page out, and draws NO text at all —
 #    innerText comes back empty and the screenshot looks like an empty wireframe.
 mkdir -p fontconf
 sed "s|<dir>/usr/share/fonts</dir>|<dir>$R/sysroot/usr/share/fonts</dir>|" \

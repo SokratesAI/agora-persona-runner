@@ -2531,10 +2531,11 @@ def test_the_comments_endpoint_says_which_replies_are_still_coming():
     assert answered["reply"] == "here you go"
 
 
-def test_a_long_wait_is_shown_as_queued_not_as_a_reply_being_written():
+def test_a_long_wait_is_flagged_rather_than_called_a_reply_being_written():
     """Edvard, on cycle 81: "Nova is replying..." should only be visible if
-    its actually working on replying". Past the threshold it is not working
-    on it -- it is behind a cycle's hold on the bridge's single CLI lock."""
+    its actually working on replying". Past the threshold something is
+    holding it up. Which thing is deliberately not asserted here -- see
+    comments_payload and issue #80."""
     stored = (
         "## New\n\n"
         "### Cycle 57 \u00b7 2026-08-09 16:02\n\nwaiting on this one\n\n"
@@ -2554,6 +2555,48 @@ def test_a_long_wait_is_shown_as_queued_not_as_a_reply_being_written():
     assert queued["replyPending"] is True and queued["replyWaiting"] is True
     fresh = payload["byCycle"]["55"][0]
     assert fresh["replyPending"] is True and fresh["replyWaiting"] is False
+
+
+def test_a_waiting_reply_carries_how_long_it_has_waited():
+    """The card used to name a cause the server cannot see -- "queued behind
+    a running cycle" -- when the bridge takes a parallel lane except in the
+    refresh window. The elapsed second is what this server actually knows,
+    so it is what goes out."""
+    stored = (
+        "## New\n\n"
+        "### Cycle 57 \u00b7 2026-08-09 16:02\n\nwaiting on this one\n\n"
+        "### Cycle 55 \u00b7 2026-08-09 13:10\n\nanswered\n"
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={
+                (57, "2026-08-09 16:02"): time.time() - 185,
+            }), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    payload = json.loads(body)
+    waiting = payload["byCycle"]["57"][0]
+    assert waiting["replyWaiting"] is True
+    # Wall-clock passes between the patch and the read, so pin the band.
+    assert 185 <= waiting["replyWaitingSeconds"] <= 190
+    # A comment nobody is waiting on reports zero, never a negative or a
+    # stray clock reading the card would render as a real wait.
+    assert payload["byCycle"]["55"][0]["replyWaitingSeconds"] == 0
+
+
+def test_a_backwards_clock_step_does_not_put_a_negative_wait_on_the_wire():
+    """Both ends of the subtraction are `time.time()`, so an NTP correction
+    between enqueue and this read can invert it. A wait cannot have lasted
+    -50 seconds, whatever the consumer happens to do with one."""
+    stored = "## New\n\n### Cycle 57 \u00b7 2026-08-09 16:02\n\nasked\n"
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={
+                (57, "2026-08-09 16:02"): time.time() + 300,
+            }), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    assert json.loads(body)["byCycle"]["57"][0]["replyWaitingSeconds"] == 0
 
 
 def test_a_reply_that_failed_says_so_instead_of_vanishing():
@@ -3560,3 +3603,15 @@ def test_the_server_routes_pages_off_the_shared_constant():
     # And with the patch gone it is a 404 again, so the assertion above is
     # about the constant rather than about a server that serves anything.
     assert _get("/invented")[0] == 404
+
+
+def test_nova_site_main_is_runnable_as_a_module():
+    """`python -m agora_runner.nova_site_main` must start a server, not exit 0.
+
+    Without the `__main__` guard the module imports, defines `main`, calls
+    nothing, and exits successfully with no output -- indistinguishable from
+    a server that started and died. Cycle 196 lost a third of an hour to it.
+    """
+    source = (pathlib.Path(__file__).resolve().parent.parent / "agora_runner" / "nova_site_main.py").read_text()
+    assert '__name__ == "__main__"' in source
+    assert source.rstrip().endswith("main()")

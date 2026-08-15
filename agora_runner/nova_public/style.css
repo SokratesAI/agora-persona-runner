@@ -9,9 +9,9 @@
   --accent: #7aa2f7;
   --good: #7bd88f;
   --warn: #e8b75c;
-  /* Priority chips only. Distinct from --warn so "high" and "medium" do
-   * not collapse into one colour, and light enough to carry --bg as its
-   * own text when filled. */
+  /* Priority chips, and the header's "can't reach Nova". Distinct from
+   * --warn so "high" and "medium" do not collapse into one colour, and
+   * light enough to carry --bg as its own text when filled. */
   --danger: #f07178;
   /* Report cards only -- see `.entry.is-report`. Deliberately not one of
    * the four above: those all already mean something about an outcome. */
@@ -488,6 +488,14 @@ pre code { background: none; padding: 0; }
 
 .badge-good { color: var(--good); border-color: #2f6b42; }
 .badge-warn { color: var(--warn); border-color: #6b552f; }
+/* "can't reach Nova". Deliberately not --warn: an amber badge here would
+ * read as the stall badge directly above it, and "the loop is quiet" and
+ * "this page cannot see the loop at all" are different enough answers that
+ * they must not look the same at a glance. */
+.badge-error { color: var(--danger); border-color: #6b3535; }
+/* The last known header line while the page cannot reach the server. Dimmed
+ * and italic so it never reads as a current claim. */
+.status-line.is-stale { font-style: italic; opacity: 0.7; }
 
 .entry-title { margin: 0 0 0.5rem; font-weight: 600; }
 

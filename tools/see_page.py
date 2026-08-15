@@ -13,6 +13,43 @@ it shipped.
     python3 -m tools.see_page              # every route, at phone width
     python3 -m tools.see_page /retro
     python3 -m tools.see_page --width 1280 /retro
+    python3 -m tools.see_page --base http://127.0.0.1:8099 /issues
+
+## Why there is a `--base`
+
+Until this flag, this tool could only render `nova-site`, which serves
+`main`. So a UI change could not be looked at until *after* it was merged,
+which is the wrong order for the one tool whose job is catching what tests
+cannot see -- three separate cycles shipped a dead control with a green
+suite that week.
+
+Two targets make the flag useful, and both were measured on 2026-08-14.
+`nova-site-preview:8083` is a second Deployment of this same image in
+`agents`, so it renders whatever image is deployed there rather than the
+live one. And the site runs *inside the bridge pod*: this repo's package
+reads `COUCHDB_*` while the bridge pod holds the same credentials under
+`CDB_*`, so mapping the five across is all a local run needs --
+
+    COUCHDB_URL="$CDB_BASE" COUCHDB_USER="$CDB_USER" \
+    COUCHDB_PASSWORD="$CDB_PASS" COUCHDB_DB="$CDB_DB" \
+    COUCHDB_NOVA_DB="$CDB_NOVA_DB" NOVA_PORT=8111 \
+    python3 run_nova_site.py
+
+Measured against that server: `/` 200, `/api/health` 200, `/api/journal`
+200 at 1,489,522 bytes, `/api/board?name=issues` 200 at 523,422 with the
+real rows. So a local render is trustworthy for data, not only layout.
+That is the `CouchDB answered HTTP 401` Cycle 192 stopped on.
+
+**The first version of this paragraph said `python3 -m
+agora_runner.nova_site_main` and that command did nothing at all.** The
+module had no `__main__` guard, so it exited 0 with no output -- and the
+port happened to be answered by a leftover static file server from an
+earlier cycle, which serves `index.html` at `/` and a stdlib HTML 404 at
+every `/api/` path. That is a positive result on the one route that proves
+nothing and a negative on every route that would have proved something.
+The guard exists now, so both spellings work; the lesson that outlived it
+is that `/` returning the right page is not evidence the server under test
+is the one answering.
 
 ## Why the default width is a phone
 
@@ -166,6 +203,15 @@ def render(paths, root=None, base=DEFAULT_BASE, width=PHONE_WIDTH) -> list:
 def main(argv=None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     width = PHONE_WIDTH
+    base = DEFAULT_BASE
+    if "--base" in args:
+        at = args.index("--base")
+        # Same failure as `--width` below: a target that was asked for and
+        # silently ignored means a cycle looks at the live site while
+        # believing it is looking at its own branch, which is worse than
+        # not looking at all.
+        base = args[at + 1]
+        del args[at : at + 2]
     if "--width" in args:
         at = args.index("--width")
         # Fail loudly on a missing or unparseable value rather than
@@ -175,7 +221,7 @@ def main(argv=None) -> int:
         del args[at : at + 2]
     paths = args or list(PAGE_ROUTES)
     try:
-        rows = render(paths, width=width)
+        rows = render(paths, base=base, width=width)
     except (BrowserMissing, RuntimeError) as exc:
         print(exc)
         return 1

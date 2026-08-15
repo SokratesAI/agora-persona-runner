@@ -96,19 +96,36 @@ def nova_cadence_minutes():
         return None
     minutes = [
         schedule_minutes(hb.get("schedule", ""))
-        for hb in (body.get("heartbeats") or [])
-        # `workflowId` excluded, not just filtered for tidiness: a
-        # workflow-bound heartbeat dispatches `run_workflow_heartbeat`, a
-        # multi-step conversation round that writes no journal entry, and
-        # `create_heartbeat` requires a `personaId` on those too. One
-        # pointed at Nova at a faster cadence -- a workflow left enabled,
-        # say -- would have this measuring silence in intervals nothing
-        # writes in, which is the false stall #72 exists to prevent.
-        if (hb.get("enabled") and not hb.get("workflowId")
-                and hb.get("personaId") == NOVA_PERSONA_ID)
+        for hb in nova_cycle_heartbeats(body.get("heartbeats"))
     ]
     usable = [m for m in minutes if m]
     return min(usable) if usable else None
+
+
+def nova_cycle_heartbeats(heartbeats):
+    """The enabled heartbeats that actually make Nova write journal entries.
+
+    `workflowId` excluded, not just filtered for tidiness: a workflow-bound
+    heartbeat dispatches `run_workflow_heartbeat`, a multi-step conversation
+    round that writes no journal entry, and `create_heartbeat` requires a
+    `personaId` on those too. One pointed at Nova at a faster cadence -- a
+    workflow left enabled, say -- would have `nova_cadence_minutes`
+    measuring silence in intervals nothing writes in, which is the false
+    stall #72 exists to prevent.
+
+    Its own function because two callers now ask the same question of the
+    same list: this module, for the interval the stall is judged in, and
+    `stall_notice.nova_conversation`, for where to send the notice. The
+    second one hand-copied the three conditions and its own docstring said
+    so, which is how the pair the next drift check finds gets made.
+    """
+    from agora_runner.config import NOVA_PERSONA_ID
+
+    return [
+        hb for hb in (heartbeats or [])
+        if (hb.get("enabled") and not hb.get("workflowId")
+            and hb.get("personaId") == NOVA_PERSONA_ID)
+    ]
 
 
 def cycles_written(paths):

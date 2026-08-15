@@ -1326,6 +1326,47 @@ describe("commenting on a cycle", () => {
     assert.equal(card.querySelector(".comment-waiting").textContent, "Nova is replying…");
   });
 
+  test("a long wait reports how long it has been and blames nothing", async () => {
+    /* The line here used to read "Queued behind a running cycle", which is a
+     * cause the server cannot see: a reply takes the bridge's parallel lane
+     * except in the 15-minute window before an OAuth refresh, so the stated
+     * reason was usually false. What is left is the elapsed time, which is
+     * also the thing that separates a slow answer from a stuck one. */
+    const waiting = withPending(57);
+    waiting.byCycle["57"][0].replyWaiting = true;
+    waiting.byCycle["57"][0].replyWaitingSeconds = 185;
+    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
+    assert.match(text, /Still working on this — 3 minutes so far\./);
+    assert.doesNotMatch(text, /[Qq]ueued/);
+  });
+
+  test("a wait with no elapsed time still reads as a sentence", async () => {
+    /* An older server, or a payload that lost the field, must not put
+     * "NaN minutes" in front of him -- that is worse than the fixed
+     * sentence this replaced. */
+    const waiting = withPending(57);
+    waiting.byCycle["57"][0].replyWaiting = true;
+    delete waiting.byCycle["57"][0].replyWaitingSeconds;
+    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
+    assert.match(text, /Still working on this — a moment so far\./);
+    assert.doesNotMatch(text, /NaN|undefined/);
+  });
+
+  test("a null elapsed time reads as a moment, not as zero seconds", async () => {
+    /* Number(null) is 0, so a coercing guard lets a value the server never
+     * means to send render as a confident "0 seconds". The same hole passes
+     * [] and "" as zero and true as one. */
+    const waiting = withPending(57);
+    waiting.byCycle["57"][0].replyWaiting = true;
+    waiting.byCycle["57"][0].replyWaitingSeconds = null;
+    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
+    assert.match(text, /Still working on this — a moment so far\./);
+    assert.doesNotMatch(text, /0 seconds/);
+  });
+
   test("the page polls until the reply lands, then lets go", async () => {
     /* The poll is the only thing that turns "replying…" into the reply
      * without him reloading, and the only thing that stops. Both halves are
@@ -3753,5 +3794,73 @@ describe("searching, filtering and sorting a board", () => {
     typeSearch(window, "zzzznothing");
     assert.deepEqual(rows(window), []);
     assert.match(window.document.querySelector(".empty").textContent, /zzzznothing/);
+  });
+});
+
+/* Edvard, comments board 2026-08-14, on the stall badge: "Or a display
+ * error if the fetch failed, also".
+ *
+ * The header is the part of the page that answers "is the loop alive", and
+ * it was the part with no failure state at all. A cold load that failed sat
+ * on "loading…"; a poll that failed left the last good line standing,
+ * unmarked. Both of those are the reassuring answer given at the one moment
+ * the page has no evidence for it. */
+describe("the header says so when it cannot reach the server", () => {
+  const header = (window) => window.document.getElementById("status");
+
+  test("a failed cold load replaces 'loading…' with an error, not silence", async () => {
+    const window = await loadSite("/", { journalStatus: 502 });
+    assert.match(header(window).textContent, /can't reach Nova/);
+    assert.doesNotMatch(header(window).textContent, /loading…/);
+    assert.ok(header(window).querySelector(".badge-error"));
+  });
+
+  test("the server's own message reaches the header, not just the feed", async () => {
+    const window = await loadSite("/", {
+      journalStatus: 500,
+      journal: () => ({ error: "the journal folder is unreadable" }),
+    });
+    assert.match(header(window).textContent, /the journal folder is unreadable/);
+  });
+
+  test("a healthy load says nothing about reachability", async () => {
+    const window = await loadSite("/");
+    assert.doesNotMatch(header(window).textContent, /can't reach Nova/);
+    assert.equal(header(window).querySelector(".badge-error"), null);
+  });
+
+  /* The whole point of the threshold: one dropped request on a phone is not
+   * an outage, and flashing the header red for it would be the same
+   * flash-and-retract that produced this complaint. */
+  test("one failed poll is tolerated; the second is reported", async () => {
+    let timers;
+    const window = await loadSite("/", { install: (w) => { timers = captureTimers(w); } });
+    const good = window.fetch;
+    window.fetch = () => Promise.reject(new Error("network down"));
+    await timers.firePagePoll();
+    assert.doesNotMatch(header(window).textContent, /can't reach Nova/);
+    await timers.firePagePoll();
+    assert.match(header(window).textContent, /can't reach Nova/);
+
+    /* And it recovers: a poll that comes back clears the error even when
+     * the payload has not changed, which is the case that would otherwise
+     * stay red for good once the loop went quiet. */
+    window.fetch = good;
+    await timers.firePagePoll();
+    assert.doesNotMatch(header(window).textContent, /can't reach Nova/);
+    assert.match(header(window).textContent, /Cycle /);
+  });
+
+  test("the last known line is kept, marked as stale rather than current", async () => {
+    let timers;
+    const window = await loadSite("/", { install: (w) => { timers = captureTimers(w); } });
+    const before = header(window).querySelector(".status-line").textContent;
+    window.fetch = () => Promise.reject(new Error("network down"));
+    await timers.firePagePoll();
+    await timers.firePagePoll();
+    const line = header(window).querySelector(".status-line");
+    assert.ok(line.classList.contains("is-stale"));
+    assert.match(line.textContent, /as of the last load/);
+    assert.ok(line.textContent.startsWith(before));
   });
 });
