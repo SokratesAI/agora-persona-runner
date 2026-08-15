@@ -170,6 +170,140 @@ def clones(root):
                   if os.path.isdir(os.path.join(root, name, ".git")))
 
 
+# The branch a squash merge leaves behind, which is the thing this survey
+# exists to name.
+#
+# `prompt.md` step 1c tells every cycle to sweep `/data/workspace` for work a
+# previous cycle left unfinished, and the sweep it describes is `git status`
+# plus `git log origin/main..HEAD`. Both of those compare against a *local*
+# ref. Nothing in that sweep fetches, and these clones are written to by a
+# cycle that opens a PR and then never touches the checkout again -- so
+# `origin/main` in a clone can be days behind the real one, and a branch whose
+# work merged long ago still reads "2 commits ahead of main, nothing open".
+#
+# Cycle 208 spent six minutes acting on exactly that: it re-ran a suite,
+# opened agora#59, and only found out it was byte-identical to `origin/main`
+# because a board row said the work had shipped. The second check agreed with
+# the first and was guaranteed to -- `gh pr list --head <branch>` lists open
+# PRs, so the merged one that proved the branch was finished is precisely the
+# one it cannot return. Two instruments, one answer, neither able to produce
+# the other answer: the Cycle 53 rule, in a new place.
+#
+# So the fetch is not a nicety here, it is the whole measurement, and the
+# verdict below is drawn from content rather than from commit counts. A squash
+# merge rewrites the commits, so "how many commits is this branch ahead" says
+# `2` for merged work and unmerged work alike; `git diff <base> HEAD` says
+# nothing at all for the merged one. That difference is the only reliable
+# signal, and it is what separates `leftover` from `unfinished`.
+_BASES = ("origin/main", "origin/master")
+
+
+# The one call here that leaves the box. Every other git command in this file
+# reads local disk and returns instantly; `fetch` talks to GitHub, and this
+# runs as the *first* thing a cycle does, before it has picked anything. A
+# fetch that hangs -- a dead tailnet, a half-open socket -- would take the
+# whole hour with it and the cycle would never say why. So it is bounded, and
+# a timeout is treated as a failed command rather than raised: the survey
+# still answers, off the refs it has, which is exactly the stale-ref case it
+# was written to warn about. The verdict is then no worse than what every
+# cycle before this one worked from.
+GIT_TIMEOUT_SECONDS = 30
+
+
+class _Failed:
+    """What a git command that could not run looks like to the caller."""
+
+    returncode = 1
+    stdout = ""
+    stderr = ""
+
+
+def _git(root, clone, *args):
+    """Run git in one clone, capturing output and never raising."""
+    try:
+        return subprocess.run(["git", "-C", os.path.join(root, clone), *args],
+                              capture_output=True, text=True, check=False,
+                              timeout=GIT_TIMEOUT_SECONDS)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log = "%s: git %s did not complete (%s)" % (clone, " ".join(args), e)
+        print(log)
+        return _Failed()
+
+
+def survey_checkouts(root=WORKSPACE, fetch=True):
+    """One verdict per clone, after refreshing its remote refs.
+
+    Returns a list of dicts, one per clone, sorted by name:
+
+    - `clean` -- no uncommitted files and nothing on this branch that the
+      base does not already have.
+    - `leftover` -- a branch whose content is identical to the base. Its work
+      has landed; the branch is litter. This is the case a stale ref hides.
+    - `unfinished` -- something here is genuinely not on the base yet, either
+      uncommitted or committed. This is the one worth a cycle's attention.
+    - `no-base` -- neither `origin/main` nor `origin/master` resolves, so
+      there is nothing to compare against and this says so rather than
+      guessing.
+
+    `fetch=False` is for a caller that has already fetched, and for the test
+    that pins what the fetch is worth -- with a stale ref the same clone reads
+    `unfinished`, and that divergence is the bug this function removes.
+    """
+    out = []
+    for clone in clones(root):
+        fetched = not fetch
+        if fetch:
+            # Checked, not fired and forgotten. A fetch can fail without
+            # hanging -- an unreachable host exits 128 in well under a second
+            # -- and the survey would then go on to answer off whatever refs
+            # are on disk, which is precisely the stale-ref bug this function
+            # exists to remove, silently reintroduced. The verdict below is
+            # still the best available answer, so it is still computed; what
+            # changes is that the caller is told it may be the old wrong one.
+            # Second reader on this change.
+            done = _git(root, clone, "fetch", "--quiet", "--prune", "origin")
+            fetched = done.returncode == 0
+        base = next(
+            (candidate for candidate in _BASES
+             if _git(root, clone, "rev-parse", "--verify", "--quiet",
+                     candidate).returncode == 0),
+            None)
+        branch = _git(root, clone, "rev-parse", "--abbrev-ref",
+                      "HEAD").stdout.strip()
+        dirty = bool(_git(root, clone, "status", "--porcelain").stdout.strip())
+        ahead = 0
+        if base is not None:
+            counted = _git(root, clone, "rev-list", "--count",
+                           base + "..HEAD").stdout.strip()
+            ahead = int(counted) if counted.isdigit() else 0
+        if base is None:
+            verdict = "no-base"
+        elif dirty:
+            verdict = "unfinished"
+        elif ahead == 0:
+            # Nothing here the base has not got. A clone that is merely
+            # *behind* lands here too, and that is the answer: `git diff` is
+            # non-empty in both directions, so judging on content alone called
+            # three untouched clones unfinished on the first real run --
+            # `yoyo-evolve` is 470 commits behind with nothing local. The
+            # question this sweep asks is "did a cycle leave work here", and
+            # being behind is not work.
+            verdict = "clean"
+        elif _git(root, clone, "diff", "--quiet", base, "HEAD").returncode == 0:
+            # Commits the base does not have, and yet no difference in
+            # content: the squash merge. This is the pair that matters, and
+            # neither half decides it alone -- the count alone says the same
+            # thing for landed and unlanded work, and the content alone
+            # cannot tell ahead from behind.
+            verdict = "leftover"
+        else:
+            verdict = "unfinished"
+        out.append({"clone": clone, "branch": branch, "base": base,
+                    "dirty": dirty, "ahead": ahead, "verdict": verdict,
+                    "fetched": fetched})
+    return out
+
+
 def _remove_worktree(root, name, clone_names):
     """`git worktree remove` from whichever clone owns it, then a plain delete.
 
@@ -232,6 +366,9 @@ def main(argv=None):
                         help="leave reviewer worktrees newer than this alone")
     parser.add_argument("--dry-run", action="store_true",
                         help="say what would happen and change nothing")
+    parser.add_argument("--no-fetch", action="store_true",
+                        help="survey checkouts against the refs already on "
+                             "disk; the verdicts are only as fresh as they are")
     args = parser.parse_args(argv)
 
     archived, expired, worktrees = tidy(
@@ -256,6 +393,32 @@ def main(argv=None):
         print("%s %s (older than %d days)" % (verb, name, args.retention_days))
     if not (archived or expired or worktrees):
         print("nothing to tidy")
+
+    # Printed after the sweep and never gated on it: a cycle that had nothing
+    # to tidy is exactly the cycle that most needs to be told a checkout is
+    # holding unfinished work, and "nothing to tidy" above it reads like an
+    # all-clear for the whole workspace.
+    for entry in survey_checkouts(args.root, fetch=not args.no_fetch):
+        # Said even for a clone the survey then calls clean, because "clean"
+        # off a ref that could not be refreshed is the reassuring answer with
+        # nothing behind it -- the shape of failure this whole function was
+        # written after.
+        if not entry["fetched"] and not args.no_fetch:
+            print("%s: could not fetch -- the verdict below is off the refs "
+                  "already on disk and may be stale" % (entry["clone"],))
+        if entry["verdict"] == "clean":
+            continue
+        if entry["verdict"] == "leftover":
+            print("%s: branch %s is already on %s -- its work has landed, "
+                  "the branch is litter" % (entry["clone"], entry["branch"],
+                                            entry["base"]))
+        elif entry["verdict"] == "no-base":
+            print("%s: no origin/main or origin/master to compare against"
+                  % (entry["clone"],))
+        else:
+            print("%s: branch %s has work not on %s%s"
+                  % (entry["clone"], entry["branch"], entry["base"],
+                     " (uncommitted)" if entry["dirty"] else ""))
     return 0
 
 

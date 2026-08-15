@@ -9,6 +9,7 @@ for deleting one.
 Every test runs against a `tmp_path`, never the real workspace.
 """
 import os
+import subprocess
 import time
 
 import pytest
@@ -233,3 +234,276 @@ def test_the_cli_says_what_it_did(workspace, capsys):
     assert "would archive 2 loose file(s)" in out
     assert "entry.md" in out
     assert (workspace / "entry.md").exists()
+
+
+# ---- Surveying the checkouts ------------------------------------------
+#
+# These build real git repositories rather than stubbing `subprocess`,
+# because the thing under test is what git actually answers after a squash
+# merge -- a stub would answer whatever the author expected, which is the
+# expectation that was wrong in the first place (Cycle 208, agora#59).
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-C", str(cwd), *args], check=True,
+                   capture_output=True, text=True)
+
+
+def _commit(cwd, name, text):
+    (cwd / name).write_text(text, encoding="utf-8")
+    _git(cwd, "add", name)
+    _git(cwd, "commit", "-m", "add " + name)
+
+
+@pytest.fixture
+def squash_merged(tmp_path):
+    """A clone whose branch was squash-merged upstream after it last fetched.
+
+    Returns `(root, repo)`. `root` holds only the clone under survey; the
+    second clone that does the merging lives outside it, so `clones()` does
+    not see it.
+    """
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)],
+                   check=True, capture_output=True)
+
+    merger = tmp_path / "merger"
+    subprocess.run(["git", "clone", str(origin), str(merger)],
+                   check=True, capture_output=True)
+    _git(merger, "config", "user.email", "nova@example.com")
+    _git(merger, "config", "user.name", "Nova")
+    _commit(merger, "base.txt", "base\n")
+    _git(merger, "push", "-q", "origin", "main")
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    repo = root / "repo"
+    subprocess.run(["git", "clone", str(origin), str(repo)],
+                   check=True, capture_output=True)
+    _git(repo, "config", "user.email", "nova@example.com")
+    _git(repo, "config", "user.name", "Nova")
+    _git(repo, "checkout", "-q", "-b", "nova/feature")
+    _commit(repo, "feature.txt", "the work\n")
+    _git(repo, "push", "-q", "origin", "nova/feature")
+
+    # Squashed into main from the other clone, so `repo`'s own `origin/main`
+    # is now behind and knows nothing about it. This is what a merged PR
+    # leaves behind: the same tree under a commit the branch has never seen.
+    _git(merger, "fetch", "-q", "origin")
+    _git(merger, "merge", "--squash", "origin/nova/feature")
+    _git(merger, "commit", "-m", "squashed (#58)")
+    _git(merger, "push", "-q", "origin", "main")
+    return root, repo
+
+
+def test_a_stale_ref_calls_landed_work_unfinished(squash_merged):
+    """The bug, stated as a test. Without the fetch the clone is comparing
+    against an `origin/main` from before the merge, so the branch looks like
+    two commits of work nobody has taken -- which is what sent Cycle 208 to
+    open a duplicate PR."""
+    root, _ = squash_merged
+
+    survey = tidy_workspace.survey_checkouts(str(root), fetch=False)
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+
+
+def test_the_fetch_turns_that_into_leftover(squash_merged):
+    """The fix. Same clone, same branch, one fetch: the content is already on
+    main, so there is nothing here for a cycle to finish."""
+    root, _ = squash_merged
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["leftover"]
+    assert survey[0]["branch"] == "nova/feature"
+    assert survey[0]["base"] == "origin/main"
+
+
+def test_work_that_really_is_unfinished_survives_the_fetch(squash_merged):
+    """The other direction, and the one that stops this from being a fix that
+    calls everything clean: a commit made after the squash is genuinely not on
+    main, and a fetch must not launder it into `leftover`."""
+    root, repo = squash_merged
+    _commit(repo, "more.txt", "not merged anywhere\n")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+
+
+def test_uncommitted_changes_are_unfinished_even_on_main(squash_merged):
+    """A cycle killed mid-edit leaves no branch and no commit at all."""
+    root, repo = squash_merged
+    _git(repo, "checkout", "-q", "main")
+    (repo / "base.txt").write_text("half an edit\n", encoding="utf-8")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+    assert survey[0]["dirty"] is True
+
+
+def test_a_clone_sitting_on_an_up_to_date_main_is_clean(squash_merged):
+    root, repo = squash_merged
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "-q", "origin/main")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["clean"]
+
+
+def test_a_repo_with_no_origin_main_says_so_rather_than_guessing(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    repo = root / "lonely"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True,
+                   capture_output=True)
+    _git(repo, "config", "user.email", "nova@example.com")
+    _git(repo, "config", "user.name", "Nova")
+    _commit(repo, "only.txt", "no remote\n")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["no-base"]
+
+
+def test_the_cli_names_the_leftover_branch(squash_merged, capsys):
+    root, _ = squash_merged
+
+    tidy_workspace.main(["--root", str(root)])
+
+    out = capsys.readouterr().out
+    assert "repo: branch nova/feature is already on origin/main" in out
+    # The tidy half found nothing, and that must not read as an all-clear for
+    # the workspace as a whole.
+    assert "nothing to tidy" in out
+
+
+def test_a_clone_that_is_only_behind_is_not_unfinished(squash_merged):
+    """Found by running this on the real workspace rather than by a test.
+    Judging on content alone called three untouched clones unfinished --
+    `git diff` is non-empty whichever direction the difference runs, and
+    `yoyo-evolve` sits 470 commits behind with nothing local. Being behind is
+    not work somebody left."""
+    root, repo = squash_merged
+    _git(repo, "checkout", "-q", "main")   # the pre-merge main, now behind
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["clean"]
+    assert survey[0]["ahead"] == 0
+
+
+def test_a_fetch_that_hangs_does_not_take_the_cycle_with_it(squash_merged,
+                                                            monkeypatch,
+                                                            capsys):
+    """`fetch` is the only call here that leaves the box, and this runs as the
+    first thing a cycle does. A hang would cost the whole hour silently, so it
+    is bounded and a timeout degrades to the refs already on disk -- which is
+    the stale-ref answer, said out loud rather than hidden."""
+    root, _ = squash_merged
+    real = subprocess.run
+
+    def slow(cmd, **kwargs):
+        if "fetch" in cmd:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return real(cmd, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", slow)
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+    assert "did not complete" in capsys.readouterr().out
+
+
+def test_the_fetch_is_bounded(squash_merged, monkeypatch):
+    """The timeout has to actually be passed. Asserted against the constant
+    rather than against "not None", so removing the argument fails here."""
+    root, _ = squash_merged
+    seen = []
+    real = subprocess.run
+
+    def record(cmd, **kwargs):
+        if "fetch" in cmd:
+            seen.append(kwargs.get("timeout"))
+        return real(cmd, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", record)
+
+    tidy_workspace.survey_checkouts(str(root))
+
+    assert seen == [tidy_workspace.GIT_TIMEOUT_SECONDS]
+
+
+def test_a_fetch_that_fails_is_said_out_loud(squash_merged, capsys):
+    """Reviewer finding. A fetch can fail without hanging -- an unreachable
+    host exits 128 in under a second -- and the survey would then answer off
+    the refs on disk with no sign anything went wrong, which is the stale-ref
+    bug this function exists to remove, silently reintroduced."""
+    root, repo = squash_merged
+    _git(repo, "remote", "set-url", "origin", "https://0.0.0.0/nope.git")
+
+    tidy_workspace.main(["--root", str(root)])
+
+    out = capsys.readouterr().out
+    assert "repo: could not fetch" in out
+    assert "may be stale" in out
+
+
+def test_a_clone_that_could_not_be_fetched_says_so_even_when_clean(tmp_path,
+                                                                   capsys):
+    """The one a suppressed verdict would hide: `clean` drawn from a ref that
+    could not be refreshed is the reassuring answer with nothing behind it."""
+    root = tmp_path / "workspace"
+    root.mkdir()
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)],
+                   check=True, capture_output=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", str(origin), str(seed)], check=True,
+                   capture_output=True)
+    _git(seed, "config", "user.email", "nova@example.com")
+    _git(seed, "config", "user.name", "Nova")
+    _commit(seed, "base.txt", "base\n")
+    _git(seed, "push", "-q", "origin", "main")
+    repo = root / "repo"
+    subprocess.run(["git", "clone", str(origin), str(repo)], check=True,
+                   capture_output=True)
+    _git(repo, "remote", "set-url", "origin", "https://0.0.0.0/nope.git")
+
+    tidy_workspace.main(["--root", str(root)])
+
+    out = capsys.readouterr().out
+    assert "repo: could not fetch" in out
+    # And the verdict itself is still suppressed, because it is still clean.
+    assert "has work not on" not in out
+
+
+def test_no_fetch_does_not_claim_a_fetch_failed(squash_merged, capsys):
+    """`--no-fetch` is a caller saying it has already fetched, not a failure.
+    Warning there would train a cycle to ignore the warning."""
+    root, _ = squash_merged
+
+    tidy_workspace.main(["--root", str(root), "--no-fetch"])
+
+    assert "could not fetch" not in capsys.readouterr().out
+
+
+def test_a_detached_head_at_the_base_tip_is_not_called_a_leftover_branch(
+        squash_merged):
+    """Reviewer finding, fixed by the `ahead == 0` guard rather than by the
+    branch-name comparison it replaced -- `git rev-parse --abbrev-ref HEAD`
+    answers the literal string `HEAD` when detached, which never equals
+    `main`, so the old logic printed "branch HEAD is litter" about a branch
+    that does not exist."""
+    root, repo = squash_merged
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "checkout", "-q", "--detach", "origin/main")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["branch"] == "HEAD"
+    assert [e["verdict"] for e in survey] == ["clean"]
