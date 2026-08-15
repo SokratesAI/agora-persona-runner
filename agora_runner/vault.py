@@ -482,8 +482,80 @@ def vault_assemble(doc, path=None, db=None):
                 f"{', …' if len(missing) > 5 else ''}) — refusing to serve a "
                 f"partial document; recover with vault_git_revision_history"
             )
-        return "".join(out)
-    return doc.get("data", "")
+        return _size_checked("".join(out), doc, path)
+    return _size_checked(doc.get("data", ""), doc, path)
+
+
+def _size_checked(content, doc, path=None):
+    """Return `content`, or raise if the doc says it should be a different
+    length.
+
+    A LiveSync file doc records `size`, the byte length of the text it
+    stands for, and every writer sets it — this module at `_vault_put_raw`,
+    the bridge's client, and Obsidian itself. Measured 2026-08-15 across 37
+    documents spanning Edvard's phone-written captures, this loop's journal
+    entries, the JSON ledgers and the 291KB frozen archive: `size` equalled
+    `len(content.encode())` exactly, 37 times out of 37, with no document
+    missing the field. So it is a length checksum the vault has been
+    carrying all along and nothing has ever read.
+
+    Reading it closes the failure that `VaultIncompleteDocument` above does
+    not. That one catches a chunk that is *absent*. This catches a document
+    that assembles to the wrong length for any other reason, and the case
+    that matters is the shortest one: `children` empty and `data` empty
+    returns `""` through the fallback below, with no chunk missing and
+    nothing to raise about. Cycle 211 read Edvard's 123KB `issues.md` that
+    way — empty body, exit 0 — and wrote the empty result back over the
+    live document, which was still intact underneath. The read was the
+    blind half. `_collapse_refusal` refuses the write half.
+
+    Erring toward raising is deliberate: every caller reads before it
+    writes, so a wrong answer here does not stay a read for long."""
+    declared = doc.get("size")
+    if not isinstance(declared, int) or isinstance(declared, bool):
+        return content
+    actual = len(content.encode("utf-8"))
+    if actual == declared:
+        return content
+    raise VaultIncompleteDocument(
+        f"{path or doc.get('path') or doc.get('_id')}: assembled {actual} "
+        f"bytes but the document records {declared} — refusing to serve a "
+        "document that does not match its own recorded length; recover "
+        "with vault_git_revision_history"
+    )
+
+
+#: A write is refused as a collapse when it replaces a document of at
+#: least COLLAPSE_FLOOR bytes with one under COLLAPSE_RATIO of its size.
+#: Kept identical to the bridge's copy in `bridge/vault_tool.py`, which
+#: carries the reasoning behind both numbers and the one legitimate edit
+#: that crosses the line (trimming the digest's handoff list, which is
+#: expected to pass `allow_shrink`).
+COLLAPSE_FLOOR = 4096
+COLLAPSE_RATIO = 0.25
+
+
+def _collapse_refusal(path, existing, new_bytes, allow_shrink):
+    """`None` if the write may proceed, else the FAILED string to return.
+
+    The revision guard does not cover this. The write that lost Edvard's
+    `issues.md` on 2026-08-15 carried the correct `_rev` and was, as far as
+    CouchDB could tell, an ordinary edit by the only writer in the room."""
+    if allow_shrink or existing is None:
+        return None
+    old_bytes = existing.get("size")
+    if not isinstance(old_bytes, int) or isinstance(old_bytes, bool):
+        return None
+    if old_bytes < COLLAPSE_FLOOR or new_bytes >= old_bytes * COLLAPSE_RATIO:
+        return None
+    return (
+        f"FAILED(collapse: {path} holds {old_bytes} bytes and this write "
+        f"is {new_bytes} — refusing to replace a document with under "
+        f"{int(COLLAPSE_RATIO * 100)}% of its size. If the read that "
+        "produced this came back short, the document is still intact and "
+        "re-reading is the fix. Pass allow_shrink=True if the truncation "
+        "is genuinely what you meant.)"
+    )
 
 
 def vault_read_path(path):
@@ -766,8 +838,13 @@ def _doc_to_overwrite(doc_id, db=None):
     )
 
 
-def vault_write_path(path, content, if_rev=_ANY_REV):
+def vault_write_path(path, content, if_rev=_ANY_REV, allow_shrink=False):
     """LiveSync v0.25+ chunked write, mirroring vault_tool.seed_file.
+
+    2026-08-15: a write that would replace a document with a small fraction
+    of its size is refused unless `allow_shrink` says the truncation is
+    intended — see `_collapse_refusal`. `if_rev` does not cover it: the
+    write that lost Edvard's `issues.md` carried the correct revision.
 
     2026-08-12: `if_rev` makes the write conditional. Pass the `rev` from
     `vault_read_path_rev` and CouchDB rejects the PUT with 409 if anything
@@ -804,7 +881,8 @@ def vault_write_path(path, content, if_rev=_ANY_REV):
     # mutation check reverting only this site failed nothing, because the
     # lookup below caught every case anyway. One lookup, one place, one
     # answer, and no second copy to drift.
-    return _vault_put_raw(path, content, if_rev=if_rev)
+    return _vault_put_raw(path, content, if_rev=if_rev,
+                          allow_shrink=allow_shrink)
 
 
 def vault_append_path(path, content, after_marker=""):
@@ -873,7 +951,8 @@ def _appended(existing_content, content, after_marker):
     return existing_content + sep + content.strip("\n") + "\n"
 
 
-def _vault_put_raw(path, content, existing=None, if_rev=_ANY_REV):
+def _vault_put_raw(path, content, existing=None, if_rev=_ANY_REV,
+                   allow_shrink=False):
     path = path.lower()
     db = db_for(path)
     now_ms = int(time.time() * 1000)
@@ -890,6 +969,11 @@ def _vault_put_raw(path, content, existing=None, if_rev=_ANY_REV):
             existing = _doc_to_overwrite(lower_id, db)
         except VaultUnreadableDocument as e:
             return f"FAILED(unreadable: {e})"
+
+    refusal = _collapse_refusal(path, existing, len(content_bytes),
+                                allow_shrink)
+    if refusal:
+        return refusal
 
     # Chunks are content-addressed, so one that already exists holds
     # exactly this text and does not need rewriting -- that reuse is the
