@@ -174,10 +174,11 @@ async function probeSearchFocus(browser, path) {
  * measured. The three steps are the ones a phone in a tunnel takes:
  * install the worker, let it cache a page, then lose the network.
  *
- * Registration needs a secure context, and this origin is plain http.
- * That is what `--unsafely-treat-insecure-origin-as-secure` in
- * poke_page.py buys; without it `navigator.serviceWorker` is undefined
- * and this probe reports `registered: false` rather than pretending.
+ * Registration needs a secure context and `--base` is plain http, so
+ * the browser is pointed at the `forwarder` above rather than at `base`
+ * directly -- localhost is trusted without a security override. If the
+ * worker still does not register, this reports `registered: false` and
+ * fails rather than quietly skipping.
  */
 async function probeOfflineBanner(browser, path) {
   const fwd = forwarder(base);
