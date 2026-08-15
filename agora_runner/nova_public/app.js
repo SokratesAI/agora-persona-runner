@@ -1769,6 +1769,26 @@
     });
   }
 
+  /* `/api/comments` is deliberately *not* routed through the above, and the
+   * reason I first wrote down was wrong, so here is the true one.
+   *
+   * The wrong version: "it is only fetched on the journal page, whose header
+   * already carries the mark." Only one of its three call sites makes that
+   * true -- the one inside `fetchAll`, which fires in lockstep with the
+   * journal read, so a replayed comments payload arrives with a replayed
+   * journal payload and the header says so. The other two are independent:
+   * the reply drawer's 8s `watch()` poll, and the refetch after a comment is
+   * posted. Both can be replayed during a blip too short to fail two
+   * consecutive 30s journal polls, so the header stays green while the
+   * drawer paints a cached answer.
+   *
+   * That is a real gap and it is older than this change -- worse than a
+   * missing banner, because `paint(target.pick(stale))` reads "not in this
+   * payload" as "no comments here", hides the list and calls `watch(false)`,
+   * which stops the poll for good. Marking the fetch does not fix it; not
+   * trusting a replayed payload to end the wait does, and that is its own
+   * piece of work with its own tests. Filed rather than bolted on here. */
+
   function fetchVersioned(url, key) {
     var known = lastPayload[key] && lastPayload[key].version;
     // `no-store` keeps this the only conditional request in play. Neither
