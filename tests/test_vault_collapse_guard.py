@@ -110,9 +110,15 @@ def test_a_chunked_document_that_assembles_short_raises(monkeypatch):
 # missed: `vault_bulk_fetch` assembles a document too, with its own inline
 # loop, and never called `vault_assemble` — so `_size_checked` guarded the
 # single-document read and left the bulk read exactly as blind as before.
-# That is not the lesser path. It is what `nova_site` renders every page
-# from and what `fetch_vault_context` builds every persona's prompt from,
-# so the blind read that lost the boards was still reachable there.
+# What that leaves unguarded, named precisely, because the first draft of
+# this comment guessed and was wrong: the journal page
+# (`nova_sources.journal_markdown`), the reply lookup behind
+# `journal_folder_best_effort`, and the seven vault MCP tools. The site's
+# other pages — board, comments, digest, costs, retros — and
+# `fetch_vault_context`, which builds every heartbeat's prompt, all read
+# single documents through `vault_read_path` and were covered by #202
+# already. Smaller than "every page", and still the path Edvard's journal
+# is rendered through.
 #
 # The two readers keep different *policies* on purpose (see
 # test_vault_refuses_partial_documents): the single read raises, the bulk
