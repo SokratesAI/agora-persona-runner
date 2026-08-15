@@ -251,8 +251,18 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
     """
     out = []
     for clone in clones(root):
+        fetched = not fetch
         if fetch:
-            _git(root, clone, "fetch", "--quiet", "--prune", "origin")
+            # Checked, not fired and forgotten. A fetch can fail without
+            # hanging -- an unreachable host exits 128 in well under a second
+            # -- and the survey would then go on to answer off whatever refs
+            # are on disk, which is precisely the stale-ref bug this function
+            # exists to remove, silently reintroduced. The verdict below is
+            # still the best available answer, so it is still computed; what
+            # changes is that the caller is told it may be the old wrong one.
+            # Second reader on this change.
+            done = _git(root, clone, "fetch", "--quiet", "--prune", "origin")
+            fetched = done.returncode == 0
         base = next(
             (candidate for candidate in _BASES
              if _git(root, clone, "rev-parse", "--verify", "--quiet",
@@ -289,7 +299,8 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
         else:
             verdict = "unfinished"
         out.append({"clone": clone, "branch": branch, "base": base,
-                    "dirty": dirty, "ahead": ahead, "verdict": verdict})
+                    "dirty": dirty, "ahead": ahead, "verdict": verdict,
+                    "fetched": fetched})
     return out
 
 
@@ -388,6 +399,13 @@ def main(argv=None):
     # holding unfinished work, and "nothing to tidy" above it reads like an
     # all-clear for the whole workspace.
     for entry in survey_checkouts(args.root, fetch=not args.no_fetch):
+        # Said even for a clone the survey then calls clean, because "clean"
+        # off a ref that could not be refreshed is the reassuring answer with
+        # nothing behind it -- the shape of failure this whole function was
+        # written after.
+        if not entry["fetched"] and not args.no_fetch:
+            print("%s: could not fetch -- the verdict below is off the refs "
+                  "already on disk and may be stale" % (entry["clone"],))
         if entry["verdict"] == "clean":
             continue
         if entry["verdict"] == "leftover":
