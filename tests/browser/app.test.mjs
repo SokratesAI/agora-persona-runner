@@ -1260,6 +1260,32 @@ describe("a drawer within a drawer", () => {
     assert.ok(!reading(card));
   });
 
+  test("tapping a part tab does not collapse the card it is inside", async () => {
+    /* The whole card is a tap target -- "i want to click anywhere on it to
+     * expand/close it" -- so a tab's click bubbles up to that listener and
+     * shuts the drawer the tab lives in. The part you asked for appears and
+     * vanishes in the same frame.
+     *
+     * Every assertion about which panel is `hidden` passes while this is
+     * broken, because the panel is right up until the card closes over it.
+     * A real browser found this; jsdom agreed with me. So this test asserts
+     * the card is still open, which is the thing that was actually wrong. */
+    /* Its own window: this test has to leave a card expanded to press a tab
+     * inside it, and the rest of this suite shares one window and asserts on
+     * a collapsed one. */
+    const own = await loadSite("/");
+    const card = cards(own).find((c) => c.querySelectorAll(".entry-part-tab").length > 1);
+    assert.ok(card, "the fixture must have a multi-part cycle in the feed");
+    click(own, card.querySelector(".entry-toggle"));
+    click(own, journalButton(card));
+    assert.ok(expanded(card) && reading(card), "the drawer is open before the tab is tapped");
+    const tabs = [...card.querySelectorAll(".entry-part-tab")];
+    click(own, tabs[1]);
+    assert.ok(expanded(card), "the card stayed expanded");
+    assert.ok(reading(card), "the journal drawer stayed open");
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true", "and the tab actually switched");
+  });
+
   test("opening the card reveals the rest of the digest and the button", () => {
     const card = firstCard();
     click(window, card.querySelector(".entry-brief"));

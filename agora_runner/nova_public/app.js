@@ -987,6 +987,16 @@
      * losing your place to copy a sentence. */
     card.addEventListener("click", function (event) {
       if (event.target.closest("a")) return;
+      /* A tap on a part tab has somewhere else to go, the same as a link.
+       * Without this the card's listener fires too and collapses the whole
+       * card out from under the tab you just pressed -- the drawer shuts,
+       * and the part you asked for flashes into view and disappears with
+       * it. Found in a real browser; every jsdom test passed, because they
+       * assert which panel is `hidden` and the panel is correct right up
+       * until the card closes over it. The guard lives here rather than as
+       * a `stopPropagation` in the strip because this file keeps one
+       * listener that decides what a tap meant, and a second one drifts. */
+      if (event.target.closest(".entry-tabs")) return;
       var selection = window.getSelection();
       if (selection && !selection.isCollapsed && String(selection)) return;
       /* "If the full journal text is clicked or the button, the full
