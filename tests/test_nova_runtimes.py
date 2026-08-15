@@ -154,6 +154,58 @@ def test_a_session_missing_its_duration_or_start_is_dropped_not_crashed():
     assert cycle_runtimes(document, [entry(204, "2026-08-15", "02:14")]) == {}
 
 
+def test_a_session_with_no_duration_does_not_donate_its_hour_to_the_one_before():
+    """The wrong-number path, which is the only kind that matters here.
+
+    Dropping an unusable session removes it from the *boundary* list, not
+    from the timeline -- so an entry written during it falls through to the
+    previous session and gets that run's wall-clock on its card, which is
+    indistinguishable from a correct answer. Keeping the row with `None`
+    turns that into a blank.
+
+    **The sessions here are 40 minutes apart, and that is load-bearing.**
+    Written first with hourly ones, this test passed under its own
+    mutation: falling back an hour puts the entry more than
+    `MAX_LAG_SECONDS` after the earlier start, so that guard refused it
+    and both rules answered `{}` for different reasons. The heartbeat has
+    actually run at 40 minutes (Edvard's `notes.md`, 2026-08-12), which is
+    exactly the spacing where the fallback lands *inside* the window and
+    the wrong answer becomes reachable.
+
+    Cycle 205 is stamped 02:50, inside the 02:40 session. Dropping that row
+    hands it to the 02:00 one, 50 minutes back and within the guard, and
+    prints its 940s.
+    """
+    document = json.dumps(
+        {
+            "cycles": [
+                {"startedAt": "2026-08-15T00:00:00Z", "durationSeconds": 940.0},  # 02:00 Oslo
+                {"startedAt": "2026-08-15T00:40:00Z"},                            # 02:40 Oslo
+            ]
+        }
+    )
+    assert cycle_runtimes(document, [entry(205, "2026-08-15", "02:50")]) == {}
+
+
+def test_the_boundary_still_works_when_the_gap_session_is_usable():
+    """The positive control for the test above.
+
+    Without it, "no runtime" passes because the join broke, not because
+    the duration was missing. Same two sessions, the second one whole --
+    and the answer must be the *second* session's 611, never the first's
+    940, which is the wrong number the test above is guarding against.
+    """
+    document = json.dumps(
+        {
+            "cycles": [
+                {"startedAt": "2026-08-15T00:00:00Z", "durationSeconds": 940.0},
+                {"startedAt": "2026-08-15T00:40:00Z", "durationSeconds": 611.0},
+            ]
+        }
+    )
+    assert cycle_runtimes(document, [entry(205, "2026-08-15", "02:50")]) == {205: 611.0}
+
+
 def test_attach_writes_the_field_on_every_part_of_a_resolved_cycle():
     """The client reads `runtimeSeconds` off the *earliest* part.
 

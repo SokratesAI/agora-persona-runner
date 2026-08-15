@@ -61,25 +61,38 @@ MAX_LAG_SECONDS = 3600
 
 
 def _sessions(document):
-    """`[(start, seconds)]` from the raw ledger, sorted, bad rows dropped.
+    """`[(start, seconds or None)]` from the raw ledger, sorted by start.
 
     Unparseable JSON raises, matching `nova_costs.costs_payload`: a ledger
     that will not parse is a fault worth a 502, not a page that quietly
     claims no cycle ever ran. An *absent* ledger is `""` and is simply no
     runtimes, which is the same answer as a ledger that predates a cycle.
+
+    **A session with no usable duration is kept, with `None` for it.** The
+    obvious version drops it, and that is wrong in the one direction this
+    module cares about: these rows are the boundaries `bisect` searches, so
+    removing one does not remove its *hour* -- it hands that hour to the
+    previous session, and an entry written during the dropped run gets the
+    earlier run's wall-clock printed on its card. Refusing to answer is a
+    blank; dropping the boundary is a wrong number. Live, all 205 sessions
+    carry a duration (the shortest is 0.7s), so this costs nothing today
+    and is only about which way it fails when that stops being true.
     """
     if not (document or "").strip():
         return []
     rows = []
     for cycle in json.loads(document).get("cycles") or []:
-        started, seconds = cycle.get("startedAt"), cycle.get("durationSeconds")
-        if not started or not seconds:
+        started = cycle.get("startedAt")
+        if not started:
+            # No start is genuinely unplaceable -- it is not a boundary at
+            # all, so there is no hour for it to wrongly donate.
             continue
         try:
             at = datetime.fromisoformat(started.replace("Z", "+00:00"))
         except ValueError:
             continue
-        rows.append((at, float(seconds)))
+        seconds = cycle.get("durationSeconds")
+        rows.append((at, float(seconds) if seconds else None))
     rows.sort()
     return rows
 
@@ -142,6 +155,10 @@ def cycle_runtimes(document, entries):
             continue
         cycle = next(iter(cycles))
         start, seconds = sessions[index]
+        if seconds is None:
+            # Matched a session the ledger never gave a duration. It did its
+            # job by being a boundary; there is nothing to report for it.
+            continue
         previous = runtimes.get(cycle)
         if previous is None or start < previous[0]:
             runtimes[cycle] = (start, seconds)

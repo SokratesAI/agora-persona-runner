@@ -1905,6 +1905,29 @@ def test_a_corrupt_cost_ledger_costs_runtimes_and_not_the_journal():
     assert all("runtimeSeconds" not in e for e in payload["entries"])
 
 
+def test_a_cost_ledger_fetch_that_raises_also_leaves_the_journal_standing():
+    """The half the corrupt-ledger test does not reach, and the reviewer
+    was right that nothing pinned it.
+
+    That test feeds an unparseable document, so the failure happens inside
+    `cycle_runtimes` and a narrow `except json.JSONDecodeError` would cover
+    it. The reason the catch here is a bare `Exception` is the *other*
+    case: `cost_ledger_json()` itself failing -- a vault read erroring
+    rather than returning junk. Narrowing it left a background refresh
+    thread dying on precisely this, and until now that was a claim in a
+    comment rather than something the suite would notice.
+    """
+    files = {
+        JOURNAL_DIR + "001-cycle-1.md": "### 2026-08-15 01:10 (Oslo) — Cycle 1\n\nOnly.",
+    }
+    with patch.object(nova_sources, "vault_bulk_fetch", return_value=(VaultFiles(files), {})), \
+            patch.object(nova_site, "cost_ledger_json",
+                         side_effect=RuntimeError("vault unreachable")):
+        payload = nova_site.journal_payload()
+    assert [e["cycle"] for e in payload["entries"]] == [1]
+    assert "runtimeSeconds" not in payload["entries"][0]
+
+
 def test_a_good_cost_ledger_puts_a_runtime_on_the_card_it_belongs_to():
     """The positive control for the test above.
 

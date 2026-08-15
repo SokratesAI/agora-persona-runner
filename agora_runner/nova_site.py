@@ -306,7 +306,13 @@ def journal_payload():
     try:
         entries = attach_runtimes(entries, cost_ledger_json())
     except Exception as problem:  # noqa: BLE001 -- deliberate, see above
-        print(f"nova-site runtimes unavailable, journal unaffected: {problem}")
+        # `log`, not `print`: it flushes. Nothing sets PYTHONUNBUFFERED and
+        # `run.py` has no `-u`, so a bare print to a container's stdout is
+        # block-buffered and can sit unwritten in the background refresh
+        # thread -- which would make "logged, never silent" false in exactly
+        # the case this catch exists for. Every other handler in this file
+        # already uses it.
+        log(f"nova-site runtimes unavailable, journal unaffected: {problem}")
     return {"entries": entries, "status": status}
 
 
