@@ -147,6 +147,7 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_retro import retros_payload as shape_retros
+from agora_runner.nova_runtimes import attach_runtimes
 from agora_runner.nova_sources import (
     board_markdown,
     comments_markdown,
@@ -277,7 +278,42 @@ def journal_payload():
     # invent a new way of mis-writing a heading is the reason for it.
     # See `build_status`.
     status = build_status(entries, known_cycles=times.keys() if times else None)
-    return {"entries": [dict(entry) for entry in entries], "status": status}
+    entries = [dict(entry) for entry in entries]
+    # The one extra fetch on this build, and it is paid where the journal
+    # build already is: this payload is cached per process and warmed
+    # before the first visit, so the ledger costs a warm rather than a
+    # request rather than being re-read per window a reader scrolls to.
+    #
+    # Swallowed on purpose, and the first draft did not: `cycle_runtimes`
+    # raises on a ledger that will not parse, which is right for the costs
+    # page -- there, a ledger is the entire subject and an empty chart is
+    # a worse lie than a 502. Here it is a decoration on somebody else's
+    # page. Wiring the strict version straight in made a malformed file in
+    # a *different* document take down the journal, which is the one page
+    # that has to render when things are broken; the whole test suite said
+    # so at once. An absent ledger was already no runtimes rather than an
+    # error, so this only widens that to a corrupt one.
+    #
+    # `Exception` and not a tuple, which is a wider net than this file uses
+    # anywhere else, so it needs its reason: the *fetch* can fail on its own
+    # too, not just the parse. Narrowing it to the parse errors left the
+    # background refresh thread dying on a ledger read -- one test's thread
+    # warning, and in production a journal that silently stopped refreshing
+    # because a document it does not render was unreadable. There is no
+    # failure of this call worth a degraded journal, so there is no
+    # exception type worth re-raising. It is logged, never swallowed
+    # silently, and `journal_markdown` above is still free to raise.
+    try:
+        entries = attach_runtimes(entries, cost_ledger_json())
+    except Exception as problem:  # noqa: BLE001 -- deliberate, see above
+        # `log`, not `print`: it flushes. Nothing sets PYTHONUNBUFFERED and
+        # `run.py` has no `-u`, so a bare print to a container's stdout is
+        # block-buffered and can sit unwritten in the background refresh
+        # thread -- which would make "logged, never silent" false in exactly
+        # the case this catch exists for. Every other handler in this file
+        # already uses it.
+        log(f"nova-site runtimes unavailable, journal unaffected: {problem}")
+    return {"entries": entries, "status": status}
 
 
 def _rendered(entry):

@@ -406,8 +406,12 @@ describe("two entries for one cycle are one card", () => {
     assert.equal(parts.length, 2);
     // The wire is newest-first, so entries[1] is the earlier of the two.
     const [addendum, run] = payload.journal.entries.filter((e) => e.cycle === 57);
-    assert.ok(parts[0].endsWith(run.date + " " + run.time + " Oslo"), parts[0]);
-    assert.ok(parts[1].endsWith(addendum.date + " " + addendum.time + " Oslo"), parts[1]);
+    // No " Oslo" suffix any more (issues.md #59) -- the date and time
+    // themselves still have to be the last thing on the subheading, which
+    // is what stops "remove Oslo" being satisfied by removing the stamp.
+    assert.ok(parts[0].endsWith(run.date + " " + run.time), parts[0]);
+    assert.ok(parts[1].endsWith(addendum.date + " " + addendum.time), parts[1]);
+    assert.ok(!/Oslo/.test(parts[0] + parts[1]), parts[0] + " | " + parts[1]);
     assert.ok(parts[1].startsWith("Verification"), parts[1]);
   });
 
@@ -472,6 +476,53 @@ describe("two entries for one cycle are one card", () => {
     assert.match(meta.textContent, /merged/);
     // The stamp still belongs to the earliest part: that is when it began.
     assert.match(meta.textContent, new RegExp(parts[1].time));
+  });
+
+  /* Edvard's issues.md #59, the three small pickings on the journal card.
+   * Each of these asserts an absence, so each one also proves the selector
+   * matches something when the thing is present -- Cycle 202 shipped a
+   * `.prio-picker` assertion against markup that never rendered that class
+   * and it passed under its own mutation. Here the positive control is the
+   * same fixture with the field put back. */
+  test("no chevron on a feed card, and the selector would have found one", async () => {
+    const w = await loadSite();
+    const card = cards(w)[0];
+    assert.equal(card.querySelector(".chevron"), null);
+    // The control: `.chevron` is a selector jsdom resolves, so a span
+    // carrying that class in this very card is found. Without this, the
+    // assertion above passes for a misspelled class name too.
+    const proof = w.document.createElement("span");
+    proof.className = "chevron";
+    card.appendChild(proof);
+    assert.ok(card.querySelector(".chevron"));
+    proof.remove();
+  });
+
+  test("the timestamp no longer says Oslo, but still says the time", async () => {
+    const w = await loadSite();
+    const stamp = cards(w)[0].querySelector(".stamp");
+    assert.ok(stamp, "there is a stamp to make a claim about");
+    assert.ok(!/Oslo/.test(stamp.textContent), stamp.textContent);
+    // The half that stops "remove Oslo" from being satisfied by removing
+    // the whole stamp: a real HH:MM has to survive.
+    assert.match(stamp.textContent, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
+  });
+
+  test("a cycle's runtime shows when the server sent one, and not when it did not", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => { e.runtimeSeconds = 962; });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(meta.textContent, /ran 16 min/);
+
+    // Absent, not null: a cycle the join could not resolve gets no key at
+    // all, and the card must print nothing rather than "ran 0 min".
+    const quiet = JSON.parse(JSON.stringify(payload.journal));
+    quiet.entries.forEach((e) => { delete e.runtimeSeconds; });
+    const w2 = await loadSite("/", { journal: () => quiet });
+    const meta2 = cards(w2)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta2.querySelector(".runtime"), null);
+    assert.ok(!/\bran\b/.test(meta2.textContent), meta2.textContent);
   });
 
   /* Cycle 105 on the live pod, and cycle 6: the footer is mandatory, so a
@@ -864,7 +915,12 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     const window = await loadSite("/cycle/57", { install: withStyle });
     const page = cards(window)[0];
     assert.equal(page.querySelector(".journal-toggle"), null);
-    assert.equal(page.querySelector(".chevron"), null);
+    // The `.chevron` assertion that used to sit here was deleted with the
+    // element (issues.md #59). It said "the page has no chevron" at a
+    // point where the feed still did, which made it a real contrast;
+    // once nothing renders one it passes whatever the page does, and a
+    // test that cannot fail is worse than no test. The feed-side check
+    // below is where the removal is actually pinned.
     assert.equal(page.querySelector(".entry-toggle"), null);
     const body = page.querySelector(".entry-body");
     body.dispatchEvent(new window.Event("click", { bubbles: true }));

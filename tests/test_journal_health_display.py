@@ -201,8 +201,15 @@ def test_the_payload_takes_the_written_set_from_the_filenames():
     }
     mtimes = {path: 1786000000000 for path in docs}
 
+    # `journal_payload` reads a second document now -- the cost ledger, for
+    # the per-cycle runtime on a card (issues.md #59) -- so stubbing only
+    # the journal source leaves it reaching the real vault. Stubbed on
+    # `nova_site` rather than `nova_sources` because that is the reference
+    # the module under test actually calls, which is what the network guard
+    # in conftest says when it fires.
     with patch.object(nova_sources, "vault_bulk_fetch",
-                      return_value=(VaultFiles(docs), mtimes)):
+                      return_value=(VaultFiles(docs), mtimes)), \
+            patch.object(nova_site, "cost_ledger_json", return_value=""):
         status = nova_site.journal_payload()["status"]
 
     assert status["missingCycles"] == [], (
