@@ -786,9 +786,13 @@ def test_the_age_belongs_to_the_copy_that_was_served():
     _, _, _, cold = nova_site.cached_entry("journal", built.copy)
     assert cold == 0.0
 
+    # See the note in `test_the_journal_endpoint_reports_a_payload_it_could
+    # _not_refresh`: the flag keeps the aged read from starting a rebuild
+    # thread this test would not wait for.
     with nova_site._cache_lock:
         payload, body, etag, at = nova_site._cache["journal"]
         nova_site._cache["journal"] = (payload, body, etag, at - 900)
+        nova_site._refreshing.add("journal")
     _, _, _, warm = nova_site.cached_entry("journal", built.copy)
     assert warm >= 900
     nova_site.reset_cache()

@@ -297,7 +297,9 @@ def test_a_record_the_site_cannot_refresh_does_not_push_a_stall_to_his_phone():
             fresh = _live_status()
             assert fresh["stalled"] is True, "a genuinely quiet loop must still be reported"
 
+            # Same reason as the two tests above: no rebuild thread.
             with nova_site._cache_lock:
+                nova_site._refreshing.add("journal")
                 payload, body, etag, at = nova_site._cache["journal"]
                 nova_site._cache["journal"] = (
                     payload, body, etag, at - nova_site.RECORD_TRUST_SECONDS - 1,

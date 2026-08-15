@@ -3843,7 +3843,15 @@ def test_the_journal_endpoint_reports_a_payload_it_could_not_refresh():
 
         # Age the served copy without touching anything it says: the
         # journal is byte-identical, only this process's view of it is old.
+        #
+        # `_refreshing` is held down over the aged read on purpose. Any age
+        # past `RECORD_TRUST_SECONDS` is also past `CACHE_FRESH_SECONDS`,
+        # so the next call would start a background rebuild that outlives
+        # this `patch` block and run the *real* `journal_payload` against
+        # the network guard. Borrowing the module's own single-flight flag
+        # is what it is for, and it keeps the test to one thread.
         with nova_site._cache_lock:
+            nova_site._refreshing.add("journal")
             payload, cached_body, cached_etag, built = nova_site._cache["journal"]
             nova_site._cache["journal"] = (
                 payload, cached_body, cached_etag,
