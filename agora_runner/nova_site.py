@@ -576,8 +576,8 @@ CACHE_FRESH_SECONDS = 15
 
 # How old the served payload may be before "there is no newer entry in it"
 # stops being evidence about the loop and becomes evidence about this
-# process. `_with_silence` divides a live `now` by a `lastWrittenAt` that
-# came out of the cache, so every second the refresh fails to land is
+# process. `_with_silence` measures a live `now` against a `lastWrittenAt`
+# that came out of the cache, so every second the refresh fails to land is
 # counted as a second of the loop being quiet -- and past two intervals
 # that is reported as a stall the loop is not in. Measured 2026-08-15:
 # `nova-site-preview` had been serving `stalled: true, silentIntervals: 9`
@@ -1048,11 +1048,12 @@ def _with_silence(status, now=None, minutes=None, record_age=None):
     # `silentIntervals` is still reported: nothing newer has been seen,
     # which remains true and is what makes the age worth showing. What
     # goes away is the verdict drawn from it.
+    #
     # A boolean and not the age in minutes, deliberately. Anything in this
     # payload that is not folded into the etag is frozen at whatever the
     # last non-304 poll said, and a counter that stops counting while
     # claiming to be a live age is the same shape of lie this block
-    # removes. The age is in the logs; the page gets the fact.
+    # removes. The page gets the fact; the age stays a parameter.
     stale = record_age is not None and record_age >= RECORD_TRUST_SECONDS
     out["recordStale"] = stale
     out["stalled"] = (
