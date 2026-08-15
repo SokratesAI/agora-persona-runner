@@ -60,7 +60,45 @@ self.addEventListener("fetch", function (event) {
       }
       return response;
     }).catch(function () {
-      return caches.match(fallback);
+      return caches.match(fallback).then(replayed);
     })
   );
 });
+
+/* Say, in the response itself, that these bytes came out of the cache.
+ *
+ * Without this the page cannot tell the two apart, because this handler
+ * answers a dead network with a perfectly ordinary `200`. That is the
+ * whole point of network-first -- and it also quietly defeats
+ * `renderStatusUnreachable`, which exists precisely so the app never
+ * asserts an unconfirmed status as current. The fetch did not fail from
+ * where the page is standing, so the honest path never runs and the page
+ * renders hours-old data as live.
+ *
+ * For the stall badge that is not merely untidy, it is issue #81. The
+ * journal etag folds in `silentIntervals`, so during a real stall the
+ * payload sitting in this cache is one that says `stalled: true`. A phone
+ * resuming from sleep polls before the tailnet is up, this handler replays
+ * that body, the badge appears -- and the next poll, once the network is
+ * back, retracts it. A badge that flashes and disappears, with nothing
+ * wrong on the server and nothing to find in its logs.
+ *
+ * A header rather than a rewritten body: the body is 184KB of JSON and
+ * this must not parse it. The response is rebuilt rather than mutated
+ * because `Headers` on a cached `Response` is immutable. Same-origin, so
+ * the page can read a custom header off it -- the note in `app.js` about
+ * unreachable headers is about the ETag on a raw cache hit, which is a
+ * different thing from one we construct here.
+ */
+function replayed(hit) {
+  if (!hit) return hit;
+  var headers = new Headers(hit.headers);
+  headers.set("X-Nova-Replayed", "1");
+  return hit.blob().then(function (body) {
+    return new Response(body, {
+      status: hit.status,
+      statusText: hit.statusText,
+      headers: headers,
+    });
+  });
+}
