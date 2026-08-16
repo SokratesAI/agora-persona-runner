@@ -24,6 +24,12 @@ The stronger one -- refusing a claim on anything else while a 🔴 is open
 that is wrong in a way you cannot see from inside it. That one is
 Edvard's to approve.
 
+Above the ranking sit Edvard's **unprocessed captures** -- the bare
+bullets he types above `## Board`, which `prompt.md` step 2 places above
+the board, above the handoff and above everything else. They are printed
+first and unranked, because a capture has no rating cell to sort on and
+because there are never many; see `unboarded_captures`.
+
 Ranking is rating first (🔴 > 🟠 > 🔵 > ⚪ > unrated), then oldest
 `Updated` first, then issues before ideas, then row number. Age is the
 tiebreak on purpose: two 🟠 rows are not equally urgent when one has sat
@@ -43,7 +49,8 @@ import subprocess
 import sys
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board, unanswered_comments,
+    BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board, split_capture_priority,
+    unanswered_comments,
 )
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -102,6 +109,33 @@ def _fetch(path):
     if not done.stdout.strip() or done.stdout.lstrip().startswith("[not found:"):
         return None
     return done.stdout
+
+
+def unboarded_captures(markdown, board):
+    """The bare bullets above `## Board` -- Edvard talking, unfiled.
+
+    These outrank every row this tool ranks. `prompt.md` step 2 puts an
+    unprocessed capture above a live incident, above the board and above
+    the handoff; step 1c calls them *"the strongest signal you will get
+    all cycle"*. This tool nonetheless could not see them, because
+    `open_rows` asked `parse_board` for `items` and dropped the
+    `captures` key sitting beside it in the same return value.
+
+    That is not a theoretical gap. Cycle 241 ran this tool, took the row
+    it named, and three of Edvard's captures were sitting above the board
+    unread -- only the delegated subagent found them, and the tool whose
+    entire job is to stop exactly that had reported a confident top row.
+    Filed by that cycle as `[top-board-rows-blind-to-captures]`.
+
+    Rating rides at the front of the bullet rather than in a column, so
+    `split_capture_priority` is what reads it -- the same function the
+    site and the boarding path use, not a second matcher.
+    """
+    captures = []
+    for bullet in parse_board(markdown or "")["captures"]:
+        priority, text = split_capture_priority(bullet)
+        captures.append({"board": board, "priority": priority, "text": text})
+    return captures
 
 
 def open_rows(markdown, board):
@@ -182,12 +216,36 @@ def _line(row):
             f"  (updated {row['updated']})  {row['title']}")
 
 
-def render(rows, runners_up=3):
+def _capture_line(capture):
+    rating = capture["priority"] or "(unrated)"
+    text = capture["text"]
+    return f"{capture['board']}s.md  {rating}  {text}"
+
+
+def render(rows, runners_up=3, captures=()):
+    """The captures first, then the ranked board. Never one without the other.
+
+    The alternative the handoff offered was refusing to rank at all while
+    a capture is open. That throws away the board to make a point, and
+    this loop has a rule against exactly that shape -- keep the data
+    whole and let the presentation carry the priority. So both are
+    printed, and the "take this" sentence moves onto the captures when
+    there are any, because that is where the contract actually points.
+    """
+    out = []
+    if captures:
+        out.append(f"UNPROCESSED CAPTURES FROM EDVARD ({len(captures)}) — "
+                   "these outrank every row below. Take one, or say why not:")
+        out.extend("  -> " + _capture_line(c) for c in captures)
+        out.append("")
     ranked = rank(rows)
     if not ranked:
-        return "TOP OF EDVARD'S BOARD — no open rows on either board."
-    out = ["TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:",
-           "  -> " + _line(ranked[0])]
+        out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
+        return "\n".join(out)
+    header = ("TOP OF EDVARD'S BOARD — below the captures above:" if captures else
+              "TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:")
+    out.append(header)
+    out.append("  -> " + _line(ranked[0]))
     rest = ranked[1:1 + runners_up]
     if rest:
         out.append("  next:")
@@ -212,6 +270,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     rows = []
+    captures = []
     missing = []
     for board, local, path in (("issue", args.issues, ISSUES_PATH),
                                ("idea", args.ideas, IDEAS_PATH)):
@@ -227,8 +286,9 @@ def main(argv=None):
             missing.append(path)
             continue
         rows.extend(open_rows(text, board))
+        captures.extend(unboarded_captures(text, board))
 
-    print(render(rows, runners_up=args.runners_up))
+    print(render(rows, runners_up=args.runners_up, captures=captures))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")

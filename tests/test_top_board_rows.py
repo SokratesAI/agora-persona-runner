@@ -243,3 +243,79 @@ def test_two_questions_answered_by_one_reply_is_not_waiting():
         (12, "twice", "**Edvard, 08-13:** one\n\n**Edvard, 08-13:** two\n\n"
                       "**Nova, 08-13 (Cycle 1):** both answered"))
     assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
+
+
+# --- Edvard's unboarded captures, which this tool could not see at all ---
+#
+# Cycle 241 ran the tool, took the row it named, and three of his captures
+# were sitting unread above the board. `parse_board` had been returning
+# them the whole time under a key `open_rows` dropped. Filed by that cycle
+# as `[top-board-rows-blind-to-captures]`.
+
+def with_captures(text, *bullets):
+    """Edvard's bare bullets above the first heading, plus his empty cursor."""
+    head = "---\ntype: log\n---\n\n" + "".join(f"- {b}\n" for b in bullets) + "- \n\n"
+    return head + text
+
+
+def test_a_bare_capture_is_read_off_the_board_file():
+    text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
+                         "the thing I typed on my phone")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == ["the thing I typed on my phone"]
+    assert got[0]["board"] == "issue"
+
+
+def test_a_rating_on_a_capture_is_read_off_the_front_of_the_bullet():
+    text = with_captures(board(), f"{IMMEDIATE.split()[0]} this one is on fire")
+    got = top_board_rows.unboarded_captures(text, "idea")
+    assert got[0]["priority"] == IMMEDIATE
+    assert got[0]["text"] == "this one is on fire"
+
+
+def test_his_empty_cursor_bullet_is_not_a_capture():
+    text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)))
+    assert top_board_rows.unboarded_captures(text, "issue") == []
+
+
+def test_a_capture_is_printed_above_the_top_row_and_takes_the_contract():
+    """The 'take this' sentence has to move, or the row still wins by default."""
+    text = with_captures(board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE)),
+                         "please look at the login page")
+    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"),
+                                captures=top_board_rows.unboarded_captures(text, "idea"))
+    assert out.index("please look at the login page") < out.index("idea #64")
+    assert "these outrank every row below" in out
+    # The row is still shown -- printing the capture must not throw the board away.
+    assert "idea #64" in out
+    assert IMMEDIATE in out
+
+
+def test_the_board_keeps_its_own_contract_when_there_are_no_captures():
+    text = board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE))
+    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"))
+    assert "why you did not" in out
+    assert "UNPROCESSED CAPTURES" not in out
+
+
+def test_a_capture_is_still_shown_when_neither_board_has_an_open_row():
+    """The one case where a capture is the only thing there is to report."""
+    text = with_captures(board(), "the only thing waiting on me")
+    out = top_board_rows.render([], captures=top_board_rows.unboarded_captures(text, "issue"))
+    assert "the only thing waiting on me" in out
+    assert "no open rows" in out
+
+
+def test_main_surfaces_captures_from_both_files(tmp_path, capsys):
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    issues.write_text(with_captures(board((10, "a high issue", BACKLOG, "08-01", HIGH)),
+                                    "an issue I typed"))
+    ideas.write_text(with_captures(board((64, "the immediate idea", BACKLOG, "08-12", IMMEDIATE)),
+                                   "an idea I typed"))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "an issue I typed" in out
+    assert "an idea I typed" in out
+    assert out.index("UNPROCESSED CAPTURES FROM EDVARD (2)") < out.index("idea #64")
