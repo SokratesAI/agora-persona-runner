@@ -87,19 +87,53 @@ def nova_cadence_minutes():
     often does an entry get written" -- and the two answers diverge the
     day Nova has a second enabled heartbeat.
     """
-    from agora_runner.config import NOVA_PERSONA_ID
+    return nova_heartbeat_snapshot()[0]
+
+
+def nova_heartbeat_snapshot():
+    """`(minutes, last_run_at, last_result)` for Nova's own heartbeat.
+
+    One `/heartbeats` fetch answering both questions the site asks of it,
+    because it was already making the call and throwing away every field
+    but `schedule`.
+
+    `lastRunAt` and `lastResult` are the other half of Edvard's #72. The
+    cadence tells the page how long silence is allowed to last; these two
+    tell it whether the silence is a cycle *working*. Agora writes
+    `lastResult: "running"` when it claims a run and overwrites it with
+    the outcome when the run returns (`heartbeats.run_heartbeat`), so
+    "running" plus a `lastRunAt` newer than the newest journal entry is a
+    measured statement that cycle N is in flight -- not an inference from
+    the clock. That is the fact the app never had, and why it could only
+    ever show N-1 and leave him to guess whether N had died.
+
+    A cycle that is *killed* leaves `lastResult` stuck on "running"
+    forever, so this is not on its own a liveness check and must never be
+    read as one -- see `nova_site._running_now`, which drops the claim
+    once the loop crosses the stall grace window.
+
+    The **newest** `lastRunAt` when more than one heartbeat writes
+    entries, for the same reason the cadence is the shortest interval:
+    any of them running is a cycle running.
+
+    All three are `None` when Agora is unreachable or no enabled
+    heartbeat targets Nova, which is the same "no honest answer" the
+    cadence returns rather than a fabricated one.
+    """
     from agora_runner.http_util import agora_internal
     from agora_runner.turns import schedule_minutes
 
     status, body = agora_internal("GET", "/heartbeats")
     if status != 200:
-        return None
-    minutes = [
-        schedule_minutes(hb.get("schedule", ""))
-        for hb in nova_cycle_heartbeats(body.get("heartbeats"))
-    ]
-    usable = [m for m in minutes if m]
-    return min(usable) if usable else None
+        return (None, None, None)
+    nova = nova_cycle_heartbeats(body.get("heartbeats"))
+    usable = [m for m in (schedule_minutes(hb.get("schedule", "")) for hb in nova) if m]
+    minutes = min(usable) if usable else None
+    ran = [hb for hb in nova if hb.get("lastRunAt")]
+    if not ran:
+        return (minutes, None, None)
+    newest = max(ran, key=lambda hb: hb["lastRunAt"])
+    return (minutes, newest.get("lastRunAt"), newest.get("lastResult"))
 
 
 def nova_cycle_heartbeats(heartbeats):

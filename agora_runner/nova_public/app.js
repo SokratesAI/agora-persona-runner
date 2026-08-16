@@ -350,6 +350,37 @@
       statusEl.appendChild(line);
     }
 
+    /* The other half of #72: "Nova is 1 behind agora." The header names the
+     * newest cycle that has *written*, and for the first 20-45 minutes of
+     * every hour that is one behind the cycle actually running -- which
+     * looked, on this page, exactly like the cycle having died. This says
+     * which of the two it is, and it says it from Agora's own heartbeat
+     * record rather than from the clock: the server sets `running` only
+     * while `lastResult` is "running" and the run is newer than the newest
+     * entry. It cannot be true at the same time as `stalled`; the server
+     * drops the claim once the grace window passes, so a killed cycle
+     * whose heartbeat is stuck on "running" forever reads as stalled here,
+     * not as working.
+     *
+     * `!status.stalled` is checked here too even though the server cannot
+     * currently emit the pair, because the failure if it ever did is not a
+     * cosmetic one: the page would say the loop is working and that it has
+     * been silent for four hours, in two lines a centimetre apart, and the
+     * reassuring one is the lie. A second lock on that door costs one
+     * clause. My own browser test for it failed on the first run -- the
+     * comment above already asserted the two were exclusive, and only the
+     * server made it so.
+     *
+     * Not shown on a replayed payload, for the same reason the stall badge
+     * is not: "a cycle is running" is a claim about right now, and a saved
+     * copy cannot make it. */
+    if (status.running && !status.stalled && !replayed) {
+      var live = el("p", "status-sub");
+      live.appendChild(el("span", "badge badge-live", "cycle running now"));
+      live.appendChild(el("span", "status-pr", "its entry arrives when it finishes"));
+      statusEl.appendChild(live);
+    }
+
     /* Shown only once the server calls the loop stalled, which it will not
      * do while a cycle is merely mid-flight -- an entry is written at the
      * end of an hour, so "one behind agora" is what a healthy loop looks
