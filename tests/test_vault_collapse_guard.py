@@ -40,6 +40,12 @@ PATH = "projects/sokrates/projects/nova/issues.md"
 #: The real file, at the size it actually was when it was lost.
 REAL_SIZE = 123586
 
+#: A real binary attachment, at the two lengths it actually reported.
+PDF_PATH = (
+    "work/platform/resources/reports/"
+    "product as a product- the key to platform engineering success.pdf"
+)
+
 
 def doc(**kw):
     base = {"_id": PATH, "path": PATH, "_rev": "7-abc", "children": [], "data": ""}
@@ -90,6 +96,25 @@ def test_size_is_bytes_not_characters():
     assert len(text.encode("utf-8")) != len(text)
     assert vault.vault_assemble(
         doc(data=text, size=len(text.encode("utf-8"))), path=PATH) == text
+
+
+def test_a_binary_attachment_is_not_checked_against_its_decoded_size():
+    """`size` on a `type: newnote` doc is the *decoded* byte count while
+    the chunks hold base64, so the two differ by 4/3 by construction and
+    the check raised on every binary in the vault. The numbers are real —
+    one of the four PDFs that took `vault_search` down vault-wide."""
+    encoded = "A" * 662428
+    assert vault.vault_assemble(
+        doc(data=encoded, size=496813, type="newnote"), path=PDF_PATH
+    ) == encoded
+
+
+def test_a_document_that_declares_plain_is_still_checked():
+    """The exemption is for binaries only. A doc saying `plain` that
+    assembles short is the Cycle 211 failure and must still raise — the
+    no-`type` case is pinned by the blind-read test above."""
+    with pytest.raises(vault.VaultIncompleteDocument):
+        vault.vault_assemble(doc(size=REAL_SIZE, type="plain"), path=PATH)
 
 
 def test_a_chunked_document_that_assembles_short_raises(monkeypatch):
