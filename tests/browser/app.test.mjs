@@ -955,6 +955,101 @@ describe("the Needs Edvard box", () => {
     assert.ok(!needs.hidden);
     assert.match(needs.textContent, /Decide about the node/);
   });
+
+  /* Edvard, comments board 2026-08-16, three times in fifteen minutes:
+   * "it creates a very long list of previous conversations. Something must
+   * be done with this, immediately!" -- and "I see all of this text which
+   * is quite a lot to scroll past every single time i want to read your
+   * newest journals, which is 6-8 times a day."
+   *
+   * This drawer is the only one that is never folded, so every reply he has
+   * made to the block since 2026-08-10 was painted open above the newest
+   * journal card. */
+  async function needsPage(needsComments) {
+    const html = readFileSync(join(publicDir, "index.html"), "utf8");
+    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
+    const { window } = dom;
+    const asking = {
+      ...payload.digest,
+      hasNeedsEdvard: true,
+      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about the node." }] }],
+    };
+    window.fetch = (url) => {
+      if (url.includes("/api/digest")) return res(asking);
+      if (url.includes("/api/comments")) return res({ byCycle: {}, needs: needsComments });
+      return res(payload.journal);
+    };
+    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    return window;
+  }
+
+  const needsComment = (stamp, text, acknowledged) => ({
+    cycle: null, stamp, text, reply: "", replyStamp: "", acknowledged,
+    replyPending: false, replyWaiting: false, replyWaitingSeconds: 0, replyFailed: false,
+  });
+
+  test("retired replies are folded away, and the live one is not", async () => {
+    const window = await needsPage([
+      needsComment("2026-08-10 08:20", "the first old thing", true),
+      needsComment("2026-08-13 09:00", "the second old thing", true),
+      needsComment("2026-08-16 12:37", "this one still needs an answer", false),
+    ]);
+    const needs = window.document.getElementById("needs");
+    assert.match(needs.textContent, /this one still needs an answer/);
+    assert.doesNotMatch(needs.textContent, /the first old thing/);
+    assert.doesNotMatch(needs.textContent, /the second old thing/);
+    // The block's drawer is pinned open and carries no 💬 bubble at all --
+    // that is `renderNeeds`'s one deliberate difference from a card, and it
+    // is why the thread had nowhere to fold before this.
+    assert.equal(needs.querySelector(".comment-toggle"), null);
+    assert.match(needs.querySelector(".comment-earlier").textContent, /Show 2 earlier replies/);
+  });
+
+  test("the folded ones are one tap away, not gone", async () => {
+    const window = await needsPage([
+      needsComment("2026-08-10 08:20", "the first old thing", true),
+      needsComment("2026-08-16 12:37", "this one still needs an answer", false),
+    ]);
+    const needs = window.document.getElementById("needs");
+    const earlier = needs.querySelector(".comment-earlier");
+    assert.ok(!earlier.hidden);
+    assert.match(earlier.textContent, /Show 1 earlier reply/);
+    click(window, earlier);
+    assert.match(needs.textContent, /the first old thing/);
+    assert.match(needs.querySelector(".comment-earlier").textContent, /Hide/);
+  });
+
+  test("nothing to fold means no button", async () => {
+    const window = await needsPage([
+      needsComment("2026-08-16 12:37", "this one still needs an answer", false),
+    ]);
+    const needs = window.document.getElementById("needs");
+    assert.ok(needs.querySelector(".comment-earlier").hidden);
+    assert.match(needs.textContent, /this one still needs an answer/);
+  });
+
+  test("an all-retired thread stays open rather than folding to nothing", async () => {
+    // Otherwise the drawer is an empty list under a "show 2 earlier"
+    // button, which reads as broken rather than as tidy.
+    const window = await needsPage([
+      needsComment("2026-08-10 08:20", "the first old thing", true),
+      needsComment("2026-08-13 09:00", "the second old thing", true),
+    ]);
+    const needs = window.document.getElementById("needs");
+    assert.ok(needs.querySelector(".comment-earlier").hidden);
+    assert.match(needs.textContent, /the second old thing/);
+  });
+
+  test("a cycle card's thread is not folded -- its drawer already is", async () => {
+    const window = await loadSite();
+    const card = cards(window)[0];
+    click(window, card.querySelector(".comment-toggle"));
+    // Cycle 57's fixture thread is one acknowledged comment then one live
+    // one; under the Needs Edvard rule the first would be hidden.
+    assert.match(card.textContent, /an older note on the same cycle, already acted on/);
+    assert.ok(card.querySelector(".comment-earlier").hidden);
+  });
 });
 
 /* Edvard, in issue #59: "its not the link thats the problem, its the single

@@ -557,6 +557,43 @@
   function renderComments(container, target, comments) {
     var drawer = el("div", "comment-drawer");
 
+    /* Edvard, comments board 2026-08-16, three times inside fifteen
+     * minutes: *"it creates a very long list of previous conversations.
+     * Something must be done with this, immediately!"*, *"I still see it
+     * with a long conversation of previous messages that is not relevant
+     * anymore"*, and *"I see all of this text which is quite a lot to
+     * scroll past every single time i want to read your newest journals,
+     * which is 6-8 times a day."*
+     *
+     * He is describing the Needs Edvard block, and the cause is that its
+     * drawer is the one drawer that is never folded (see `renderNeeds`) --
+     * so every reply he has ever made to it, since 2026-08-10, is painted
+     * open at the top of the page, above the newest journal card. A cycle
+     * card has the same thread and nobody notices, because a card's drawer
+     * is shut until you open it.
+     *
+     * So the fold goes on the thread rather than on the drawer, and the
+     * line it folds at is the one the file already draws: a comment under
+     * `## Acknowledged` is one a cycle has acted on and retired, which is
+     * exactly "not relevant anymore" in his words. What is left open is
+     * the trailing run he has not had an answer to yet, which is never
+     * more than a couple of items and always includes one he just typed --
+     * so the confirmation that a comment saved, which is why this list is
+     * shown at all, survives the fold.
+     *
+     * Retired ones are not dropped. Losing them would trade his complaint
+     * for a worse one, and `earlier` is one tap away. */
+    var showEarlier = false;
+
+    var earlierBtn = el("button", "comment-earlier");
+    earlierBtn.type = "button";
+    earlierBtn.hidden = true;
+    earlierBtn.addEventListener("click", function () {
+      showEarlier = !showEarlier;
+      paint(lastItems);
+    });
+    drawer.appendChild(earlierBtn);
+
     var list = el("div", "comment-list");
     drawer.appendChild(list);
 
@@ -588,8 +625,39 @@
     toggle.type = "button";
     toggle.setAttribute("aria-label", target.ariaLabel);
 
+    /* Where the fold falls: everything before the last unretired comment.
+     *
+     * Not `filter(acknowledged)`, which would be the same thing only while
+     * the file stays tidy. A cycle that retires an older comment and leaves
+     * a newer one open would, under a filter, hide a message from the
+     * middle of a conversation and leave the two either side of it touching
+     * -- so the thread would read as continuous while a turn of it was
+     * missing. Cutting at the last retired item can only ever hide a
+     * prefix, which is what a "show earlier" control claims to be doing. */
+    var lastItems = comments;
+
+    function foldPoint(items) {
+      var cut = 0;
+      (items || []).forEach(function (comment, i) {
+        if (comment.acknowledged) cut = i + 1;
+      });
+      // Never fold the whole thread away to nothing: with every comment
+      // retired there is no live exchange to keep open, and an empty list
+      // under a "show 6 earlier" button reads as a broken drawer.
+      return cut >= (items || []).length ? 0 : cut;
+    }
+
     function paint(items) {
+      lastItems = items;
       list.textContent = "";
+      var cut = target.fold ? foldPoint(items) : 0;
+      if (cut && !showEarlier) {
+        items = (items || []).slice(cut);
+      }
+      earlierBtn.hidden = !cut;
+      earlierBtn.textContent = showEarlier
+        ? "Hide earlier replies"
+        : "Show " + cut + (cut === 1 ? " earlier reply" : " earlier replies");
       (items || []).forEach(function (comment) {
         var item = el("div", comment.acknowledged ? "comment is-acknowledged" : "comment");
         var head = el("p", "comment-meta");
@@ -646,10 +714,15 @@
         list.appendChild(item);
         if (after) list.appendChild(after);
       });
-      var count = (items || []).length;
+      // Both of these read the whole thread, not the shown slice. The
+      // count on the 💬 toggle is how many comments a cycle has, which the
+      // fold does not change; and a reply still being written on a folded
+      // comment has to keep the poll alive, or hiding it would stop its
+      // answer ever arriving on screen.
+      var count = (lastItems || []).length;
       toggle.textContent = count ? "💬 " + count : "💬";
-      list.hidden = !count;
-      watch((items || []).some(function (c) { return c.replyPending; }));
+      list.hidden = !(items || []).length;
+      watch((lastItems || []).some(function (c) { return c.replyPending; }));
     }
 
     /* Poll only while the server says a reply is still coming, and stop the
@@ -785,6 +858,12 @@
       key: "needs",
       placeholder: "Answer…",
       ariaLabel: "Reply to Needs Edvard",
+      /* Only this target folds. A cycle card's drawer is already shut, so
+       * folding its thread as well would hide history behind two taps to
+       * fix a problem it does not have. This block is pinned open above the
+       * newest journal card and is the one he has to scroll past 6-8 times
+       * a day. */
+      fold: true,
       body: function (text) { return { target: "needs", text: text }; },
       pick: function (data) { return (data && data.needs) || []; },
     };
