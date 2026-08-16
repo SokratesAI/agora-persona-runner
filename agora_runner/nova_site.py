@@ -466,19 +466,19 @@ def board_payload(name):
         # all five captures on `issues.md` were finished work. Stripping
         # the marker out of `body` keeps it out of the card's prose; the
         # page paints it as a chip and sinks those cards below the open
-        # ones. `text` is still the raw bullet, marker and all, because
-        # `nova_capture.replace_capture` matches an edit or a delete on
-        # exactly this string.
+        # ones.
         "captures": [
             {
                 "text": text,
-                "body": _capture_parts(text)[2],
-                "priority": _capture_parts(text)[1],
-                "priorityKey": priority_key(_capture_parts(text)[1]),
-                "done": _capture_parts(text)[0],
-                "blocks": render_blocks(_capture_parts(text)[2]),
+                "body": body,
+                "priority": priority,
+                "priorityKey": priority_key(priority),
+                "done": done,
+                "blocks": render_blocks(body),
             }
-            for text in board["captures"]
+            for text, (done, priority, body) in (
+                (bullet, _capture_parts(bullet)) for bullet in board["captures"]
+            )
         ],
         "items": board["items"],
         "details": details,

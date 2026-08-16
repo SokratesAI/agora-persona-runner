@@ -285,9 +285,14 @@ def test_a_capture_a_cycle_already_closed_is_not_unprocessed():
 
 def test_a_rating_survives_being_written_behind_a_done_marker():
     """The marker is prefixed in front of his bullet, glyph and all, so
-    reading the rating before stripping it reports the capture unrated."""
-    text = with_captures(board(), f"DONE (Cycle 9): fixed. {IMMEDIATE.split()[0]} on fire")
-    assert top_board_rows.unboarded_captures(text, "idea") == []
+    reading the rating before stripping it reports the capture unrated.
+
+    Only the two calls below can see that. A first draft opened with
+    `unboarded_captures(...) == []`, which reads like it belongs here and
+    does not: a closed capture is dropped whichever order the two
+    matchers run in, so that assertion is true either way. Reviewer
+    finding on #234.
+    """
     from agora_runner.nova_boards import split_capture_done, split_capture_priority
     done, rest = split_capture_done(f"DONE (Cycle 9): {IMMEDIATE.split()[0]} on fire")
     assert done == "Cycle 9"
