@@ -336,10 +336,12 @@ def split_ask(body):
     match = _ASK_RE.search(body or "")
     if not match:
         return body or "", ""
-    ask = " ".join(match.group("ask").split())
-    if not ask:
-        return body or "", ""
     remainder = (body[: match.start()] + body[match.end():]).strip()
+    ask = " ".join(match.group("ask").split())
+    # The label with nothing after it is asking nothing -- but the paragraph
+    # still has to go. Returning the untouched body here put `**Needs
+    # Edvard:**` in `_first_paragraph`, so the card's one-line brief read as
+    # the label and the entry's real opening sentence never appeared.
     return remainder, ask
 
 

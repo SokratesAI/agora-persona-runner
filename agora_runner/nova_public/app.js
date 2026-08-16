@@ -568,7 +568,7 @@
      * which is 6-8 times a day."*
      *
      * He is describing the Needs Edvard block, and the cause is that its
-     * drawer is the one drawer that is never folded (see `renderNeeds`) --
+     * drawer was the one drawer that was never folded (that block is gone) --
      * so every reply he has ever made to it, since 2026-08-10, is painted
      * open at the top of the page, above the newest journal card. A cycle
      * card has the same thread and nobody notices, because a card's drawer
@@ -973,20 +973,24 @@
      * reading of it. The card's own comment drawer is opened for it further
      * down, because an ask he cannot see the answer box for is the exact
      * failure that left idea #56 unanswered for eight cycles. */
-    var asked = null;
+    /* Every part's ask, not the first one's. A cycle that wrote an addendum
+     * is two entries on one card, and stopping at the first match dropped
+     * the second ask off the page entirely -- the server has already cut it
+     * out of that part's prose, so there is nowhere else for it to appear.
+     * Silently losing a question is the failure this whole change exists to
+     * stop. */
+    var asked = [];
     for (var ai = 0; ai < ordered.length; ai++) {
-      if (ordered[ai].askSpans && ordered[ai].askSpans.length) {
-        asked = ordered[ai];
-        break;
-      }
+      if (ordered[ai].askSpans && ordered[ai].askSpans.length) asked.push(ordered[ai]);
     }
-    if (asked) {
+    if (asked.length) {
       var ask = el("div", "entry-ask");
-      var askLabel = el("p", "entry-ask-label", "Needs Edvard");
-      ask.appendChild(askLabel);
-      var askBody = el("p", "entry-ask-body");
-      renderSpans(askBody, asked.askSpans);
-      ask.appendChild(askBody);
+      ask.appendChild(el("p", "entry-ask-label", "Needs Edvard"));
+      asked.forEach(function (part) {
+        var askBody = el("p", "entry-ask-body");
+        renderSpans(askBody, part.askSpans);
+        ask.appendChild(askBody);
+      });
       card.appendChild(ask);
     }
 
@@ -1093,7 +1097,7 @@
      * opening on every render, so closing it stays closed through the
      * five-minute poll -- a box that reopens itself is the pinned-open
      * drawer this replaced. */
-    if (asked && !fold.askSeen) {
+    if (asked.length && !fold.askSeen) {
       fold.askSeen = true;
       fold.comments = true;
     }
