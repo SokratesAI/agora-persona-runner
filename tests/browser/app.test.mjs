@@ -1003,7 +1003,10 @@ describe("the Needs Edvard box", () => {
     // that is `renderNeeds`'s one deliberate difference from a card, and it
     // is why the thread had nowhere to fold before this.
     assert.equal(needs.querySelector(".comment-toggle"), null);
-    assert.match(needs.querySelector(".comment-earlier").textContent, /Show 2 earlier replies/);
+    // No control in front of them either. Edvard, 2026-08-16 20:04: "a
+    // 'show/hide' comments bar... was a failure. Remove it and try
+    // something else."
+    assert.equal(needs.querySelector(".comment-earlier"), null);
   });
 
   /* Issue #93, rated 🔴 Immediately: "I can't cross it out, it says it does
@@ -1101,48 +1104,28 @@ describe("the Needs Edvard box", () => {
     assert.equal(needs.querySelectorAll(".needs-done").length, 0);
   });
 
-  test("the folded ones are one tap away, not gone", async () => {
+  test("a retired reply is gone from the drawer, with no control in front of it", async () => {
+    /* Edvard, 2026-08-16 20:04: "I see that a solution to the comments has
+     * been to introduce a 'show/hide' comments bar, but that was a failure.
+     * Remove it and try something else." The replies are still in
+     * comments.md and every cycle reads them; they are just not his to
+     * scroll past. */
     const window = await needsPage([
       needsComment("2026-08-10 08:20", "the first old thing", true),
       needsComment("2026-08-16 12:37", "this one still needs an answer", false),
     ]);
     const needs = window.document.getElementById("needs");
-    const earlier = needs.querySelector(".comment-earlier");
-    assert.ok(!earlier.hidden);
-    assert.match(earlier.textContent, /Show 1 earlier reply/);
-    click(window, earlier);
-    assert.match(needs.textContent, /the first old thing/);
-    assert.match(needs.querySelector(".comment-earlier").textContent, /Hide/);
+    assert.equal(needs.querySelector(".comment-earlier"), null);
+    assert.doesNotMatch(needs.textContent, /the first old thing/);
+    assert.match(needs.textContent, /this one still needs an answer/);
   });
 
-  test("opening the earlier replies survives a re-render", async () => {
-    /* A new journal entry lands about every forty minutes and he reads the
-     * page 6-8 times a day, so "he opened it and something arrived" is an
-     * ordinary event, not a corner case. A full `render` discards the
-     * drawer -- which is why unsent text lives in `drafts` rather than in
-     * the box -- so the fold state has to live outside it too, or opening
-     * the earlier replies would undo itself while he was reading them. */
-    const window = await needsPage([
-      needsComment("2026-08-10 08:20", "the first old thing", true),
-      needsComment("2026-08-16 12:37", "this one still needs an answer", false),
-    ]);
-    const needs = window.document.getElementById("needs");
-    click(window, needs.querySelector(".comment-earlier"));
-    assert.match(needs.textContent, /the first old thing/);
-    // Re-render the whole page the way the poll does on a changed payload.
-    window.dispatchEvent(new window.PopStateEvent("popstate"));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    const after = window.document.getElementById("needs");
-    assert.match(after.textContent, /the first old thing/);
-    assert.match(after.querySelector(".comment-earlier").textContent, /Hide/);
-  });
-
-  test("a comment I have not answered is never folded, even behind a retired one", async () => {
+  test("a comment I have not answered is never hidden, even behind a retired one", async () => {
     /* Retirement is not chronological: `tools/ack_comment.py` retires one
      * comment by (cycle, stamp), whichever a cycle acted on, so answering a
      * newer message and leaving an older one open is an ordinary outcome.
-     * Cutting at the *last* retired comment would bury the 08:00 one here --
-     * a message still waiting on me -- which is the opposite of the point. */
+     * A filter does not care about order, which is the whole reason it is a
+     * filter and not a cut at a point in the list. */
     const window = await needsPage([
       needsComment("2026-08-14 08:00", "I never answered this one", false),
       needsComment("2026-08-15 09:00", "this one I did answer", true),
@@ -1151,28 +1134,27 @@ describe("the Needs Edvard box", () => {
     const needs = window.document.getElementById("needs");
     assert.match(needs.textContent, /I never answered this one/);
     assert.match(needs.textContent, /and this one just arrived/);
-    assert.ok(needs.querySelector(".comment-earlier").hidden);
+    assert.doesNotMatch(needs.textContent, /this one I did answer/);
   });
 
-  test("nothing to fold means no button", async () => {
-    const window = await needsPage([
-      needsComment("2026-08-16 12:37", "this one still needs an answer", false),
-    ]);
-    const needs = window.document.getElementById("needs");
-    assert.ok(needs.querySelector(".comment-earlier").hidden);
-    assert.match(needs.textContent, /this one still needs an answer/);
-  });
-
-  test("an all-retired thread stays open rather than folding to nothing", async () => {
-    // Otherwise the drawer is an empty list under a "show 2 earlier"
-    // button, which reads as broken rather than as tidy.
+  test("an all-retired thread leaves the box and nothing else", async () => {
+    /* This is the steady state, not an edge case: I retire every comment I
+     * answer, so between my finishing a cycle and his typing again there is
+     * nothing live at all. The fold this replaced bailed out here to avoid
+     * "an empty list under a show-2-earlier button", so it switched itself
+     * off in exactly the state it was built for -- all 12 replies to the
+     * Needs Edvard block were retired on 2026-08-16 and he was still
+     * scrolling every one of them. */
     const window = await needsPage([
       needsComment("2026-08-10 08:20", "the first old thing", true),
       needsComment("2026-08-13 09:00", "the second old thing", true),
     ]);
     const needs = window.document.getElementById("needs");
-    assert.ok(needs.querySelector(".comment-earlier").hidden);
-    assert.match(needs.textContent, /the second old thing/);
+    assert.doesNotMatch(needs.textContent, /the first old thing/);
+    assert.doesNotMatch(needs.textContent, /the second old thing/);
+    assert.equal(needs.querySelector(".comment-earlier"), null);
+    // The box he types into is never what gets hidden.
+    assert.ok(needs.querySelector(".comment-text"));
   });
 
   test("a cycle card's thread is not folded -- its drawer already is", async () => {
@@ -1182,7 +1164,7 @@ describe("the Needs Edvard box", () => {
     // Cycle 57's fixture thread is one acknowledged comment then one live
     // one; under the Needs Edvard rule the first would be hidden.
     assert.match(card.textContent, /an older note on the same cycle, already acted on/);
-    assert.ok(card.querySelector(".comment-earlier").hidden);
+    assert.equal(card.querySelector(".comment-earlier"), null);
   });
 });
 

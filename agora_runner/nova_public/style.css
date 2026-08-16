@@ -621,26 +621,6 @@ pre code { background: none; padding: 0; }
  * it names something he asked to stop seeing, so it should read as a way
  * back to it and not as an invitation. Same 44px touch target as the
  * toggle above; it is a real tap on a phone. */
-.comment-earlier {
-  background: none;
-  border: 0;
-  color: var(--dim);
-  font: inherit;
-  font-size: 0.9rem;
-  min-height: 44px;
-  padding: 0;
-  cursor: pointer;
-  text-align: left;
-  text-decoration: underline;
-  display: block;
-}
-
-.comment-earlier:hover { color: var(--accent); }
-.comment-earlier:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-  border-radius: 6px;
-}
 
 .comment-list { margin-bottom: 0.7rem; }
 
@@ -1152,7 +1132,6 @@ body.nav-open { overflow: hidden; }
 }
 
 .modal-close:hover { color: var(--text); }
-
 
 .captures {
   border: 1px solid var(--warn);
