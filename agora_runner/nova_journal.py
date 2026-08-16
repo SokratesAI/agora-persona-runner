@@ -300,6 +300,49 @@ def needs_items(text):
     return [] if is_empty_needs(text) else split_needs_items(text)
 
 
+# Edvard, comments board 2026-08-16: "the solution i want is to remove the
+# 'needs Edvard' block entirely. If you need something from me, it should be
+# added in the Journal card somehow and i'll answer in the comment of a
+# journal card. [...] add a new yellow block below the title or somehow
+# higlight your issue so that i see it."
+#
+# So an ask now belongs to the cycle that raised it, written as one paragraph
+# of that cycle's own entry, and the answer lands in that card's existing
+# comment thread. That is what fixes the failure mode the block had: it was a
+# shared list nobody owned, rewritten from scratch every cycle by an author
+# who had not written the items in it, so keeping an item cost nothing and
+# removing one required being sure. An entry document is written once and
+# never edited, so an ask cannot silently outlive its answer here -- it scrolls
+# away with its own card.
+_ASK_RE = re.compile(
+    r"^\*\*Needs Edvard:?\*\*[ \t]*:?[ \t]*(?P<ask>.*?)(?=\n[ \t]*\n|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def split_ask(body):
+    """An entry body -> (body without the ask paragraph, the ask text).
+
+    The ask is one paragraph opening `**Needs Edvard:**`. It is cut out of
+    the body rather than left in place because the card renders it above the
+    brief, and an entry that printed it in both would be the wall of text
+    this replaced.
+
+    Only the first is taken. A cycle with two genuinely separate asks should
+    write one paragraph -- the block's whole failure was that a list of asks
+    is easy to add to and hard to clear, and reproducing the list inside the
+    card would reproduce that.
+    """
+    match = _ASK_RE.search(body or "")
+    if not match:
+        return body or "", ""
+    ask = " ".join(match.group("ask").split())
+    if not ask:
+        return body or "", ""
+    remainder = (body[: match.start()] + body[match.end():]).strip()
+    return remainder, ask
+
+
 # Edvard, on the comments board at Cycle 156: "every 8 cycles (at 06:00,
 # 14:00 & 22:00) I want a report like you just did for the last 8 cycles.
 # They should appear like a journal card, but stand out in both color and
@@ -734,6 +777,9 @@ def parse_journal(markdown, times_by_cycle=None):
             if nth < len(stamps):
                 entry["date"], entry["time"] = stamps[nth]
         label, detail = split_outcome(outcome)
+        raw_body, ask = split_ask(raw_body)
+        entry["ask"] = ask
+        entry["askSpans"] = render_inline(ask) if ask else []
         entry["body"] = raw_body
         # The card's brief for the 55 entries that have no digest line --
         # the digest is rewritten every cycle and its older lines are

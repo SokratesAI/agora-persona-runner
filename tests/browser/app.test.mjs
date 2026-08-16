@@ -928,243 +928,61 @@ describe("a board link opens the row it names", () => {
   });
 });
 
-describe("the Needs Edvard box", () => {
-  test("stays hidden when the section says a bolded nothing", async () => {
-    // The live digest has said `**Nothing.**` since the box shipped, and the
-    // emptiness test compared the section literally, so the box had never
-    // once been hidden. Edvard, issues.md 2026-08-09.
-    assert.equal(payload.digest.hasNeedsEdvard, false);
-    const window = await loadSite();
-    assert.ok(window.document.getElementById("needs").hidden);
-  });
+describe("an ask lives on the card that raised it", () => {
+  /* Edvard, comments board 2026-08-16: "the solution i want is to remove the
+   * 'needs Edvard' block entirely. If you need something from me, it should
+   * be added in the Journal card somehow and i'll answer in the comment of a
+   * journal card. [...] add a new yellow block below the title or somehow
+   * higlight your issue so that i see it." */
 
-  test("appears when the section actually asks for something", async () => {
-    const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
-    const { window } = dom;
-    const asking = {
-      ...payload.digest,
-      hasNeedsEdvard: true,
-      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about the node." }] }],
-    };
-    window.fetch = (url) =>
-      res(url.includes("/api/digest") ? asking : payload.journal);
-    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    const needs = window.document.getElementById("needs");
-    assert.ok(!needs.hidden);
-    assert.match(needs.textContent, /Decide about the node/);
-  });
-
-  /* Edvard, comments board 2026-08-16, three times in fifteen minutes:
-   * "it creates a very long list of previous conversations. Something must
-   * be done with this, immediately!" -- and "I see all of this text which
-   * is quite a lot to scroll past every single time i want to read your
-   * newest journals, which is 6-8 times a day."
-   *
-   * This drawer is the only one that is never folded, so every reply he has
-   * made to the block since 2026-08-10 was painted open above the newest
-   * journal card. */
-  async function needsPage(needsComments) {
-    const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
-    const { window } = dom;
-    const asking = {
-      ...payload.digest,
-      hasNeedsEdvard: true,
-      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about the node." }] }],
-    };
-    window.fetch = (url) => {
-      if (url.includes("/api/digest")) return res(asking);
-      if (url.includes("/api/comments")) return res({ byCycle: {}, needs: needsComments });
-      return res(payload.journal);
-    };
-    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    return window;
+  /** A journal payload whose newest entry carries an ask. */
+  function asking(ask) {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const entry = journal.entries[0];
+    entry.ask = ask;
+    entry.askSpans = [{ kind: "text", text: ask }];
+    return journal;
   }
 
-  const needsComment = (stamp, text, acknowledged) => ({
-    cycle: null, stamp, text, reply: "", replyStamp: "", acknowledged,
-    replyPending: false, replyWaiting: false, replyWaitingSeconds: 0, replyFailed: false,
-  });
-
-  test("retired replies are folded away, and the live one is not", async () => {
-    const window = await needsPage([
-      needsComment("2026-08-10 08:20", "the first old thing", true),
-      needsComment("2026-08-13 09:00", "the second old thing", true),
-      needsComment("2026-08-16 12:37", "this one still needs an answer", false),
-    ]);
-    const needs = window.document.getElementById("needs");
-    assert.match(needs.textContent, /this one still needs an answer/);
-    assert.doesNotMatch(needs.textContent, /the first old thing/);
-    assert.doesNotMatch(needs.textContent, /the second old thing/);
-    // The block's drawer is pinned open and carries no 💬 bubble at all --
-    // that is `renderNeeds`'s one deliberate difference from a card, and it
-    // is why the thread had nowhere to fold before this.
-    assert.equal(needs.querySelector(".comment-toggle"), null);
-    // No control in front of them either. Edvard, 2026-08-16 20:04: "a
-    // 'show/hide' comments bar... was a failure. Remove it and try
-    // something else."
-    assert.equal(needs.querySelector(".comment-earlier"), null);
-  });
-
-  /* Issue #93, rated 🔴 Immediately: "I can't cross it out, it says it does
-   * not need me." The block was write-only from his side -- a cycle put an
-   * item in and only a cycle could take it out. */
-  async function itemsPage(items, onDismiss) {
-    const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
-    const { window } = dom;
-    const asking = {
-      ...payload.digest,
-      hasNeedsEdvard: true,
-      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "everything at once" }] }],
-      needsEdvardItems: items.map((text) => ({
-        text,
-        blocks: [{ type: "p", spans: [{ kind: "text", text }] }],
-      })),
-    };
-    window.fetch = (url, options) => {
-      if (url.includes("/api/needs/dismiss")) return onDismiss(url, options, asking);
-      if (url.includes("/api/digest")) return res(asking);
-      if (url.includes("/api/comments")) return res({ byCycle: {}, needs: [] });
-      return res(payload.journal);
-    };
-    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    return window;
-  }
-
-  test("each ask gets its own Done", async () => {
-    const window = await itemsPage(["the first ask", "the second ask"], () => res({ ok: true }));
-    const rows = window.document.querySelectorAll("#needs .needs-item");
-    assert.equal(rows.length, 2);
-    assert.match(rows[0].textContent, /the first ask/);
-    assert.match(rows[1].textContent, /the second ask/);
-    assert.equal(window.document.querySelectorAll("#needs .needs-done").length, 2);
-  });
-
-  test("Done sends the ask's own text, not its position", async () => {
-    /* The block is renumbered every time a cycle rewrites it -- roughly
-     * every forty minutes -- so an index names a different ask by the time
-     * he taps. The server refuses text that no longer matches exactly one
-     * item, which turns that race into a visible failure. */
-    let sent = null;
-    const window = await itemsPage(["the first ask", "the second ask"], (_url, options, asking) => {
-      sent = JSON.parse(options.body);
-      // What the real server does: the item leaves the file, and the digest
-      // cache is dropped so the reload below sees it gone.
-      asking.needsEdvardItems = asking.needsEdvardItems.filter(
-        (item) => item.text !== sent.text);
-      return res({ ok: true });
-    });
-    window.document.querySelectorAll("#needs .needs-done")[1].click();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    assert.equal(sent.text, "the second ask");
-    assert.equal(sent.index, undefined);
-    // The reload `load()` fires is what makes the clearing stick rather
-    // than being one hidden row that comes back on the next poll.
-    const rows = window.document.querySelectorAll("#needs .needs-item");
-    assert.equal(rows.length, 1);
-    assert.match(rows[0].textContent, /the first ask/);
-  });
-
-  test("a refused dismissal says so and leaves the ask on the page", async () => {
-    const window = await itemsPage(["the only ask"], () =>
-      res({ ok: false, message: "no Needs Edvard item contains it" }));
-    const done = window.document.querySelector("#needs .needs-done");
-    done.click();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    const row = window.document.querySelector("#needs .needs-item");
-    assert.ok(!row.hidden);
-    assert.match(row.textContent, /Could not clear it/);
-    // Tappable again: he has to be able to retry once he reloads.
-    assert.equal(done.disabled, false);
-  });
-
-  test("an older payload with no items still shows the asks", async () => {
-    /* A cached app.js against a new server, or the reverse. Falling through
-     * to the whole-block render costs him the buttons; falling through to
-     * nothing would cost him the asks. */
-    const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
-    const { window } = dom;
-    const asking = {
-      ...payload.digest,
-      hasNeedsEdvard: true,
-      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about the node." }] }],
-    };
-    delete asking.needsEdvardItems;
-    window.fetch = (url) => res(url.includes("/api/digest") ? asking : payload.journal);
-    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    const needs = window.document.getElementById("needs");
-    assert.match(needs.textContent, /Decide about the node/);
-    assert.equal(needs.querySelectorAll(".needs-done").length, 0);
-  });
-
-  test("a retired reply is gone from the drawer, with no control in front of it", async () => {
-    /* Edvard, 2026-08-16 20:04: "I see that a solution to the comments has
-     * been to introduce a 'show/hide' comments bar, but that was a failure.
-     * Remove it and try something else." The replies are still in
-     * comments.md and every cycle reads them; they are just not his to
-     * scroll past. */
-    const window = await needsPage([
-      needsComment("2026-08-10 08:20", "the first old thing", true),
-      needsComment("2026-08-16 12:37", "this one still needs an answer", false),
-    ]);
-    const needs = window.document.getElementById("needs");
-    assert.equal(needs.querySelector(".comment-earlier"), null);
-    assert.doesNotMatch(needs.textContent, /the first old thing/);
-    assert.match(needs.textContent, /this one still needs an answer/);
-  });
-
-  test("a comment I have not answered is never hidden, even behind a retired one", async () => {
-    /* Retirement is not chronological: `tools/ack_comment.py` retires one
-     * comment by (cycle, stamp), whichever a cycle acted on, so answering a
-     * newer message and leaving an older one open is an ordinary outcome.
-     * A filter does not care about order, which is the whole reason it is a
-     * filter and not a cut at a point in the list. */
-    const window = await needsPage([
-      needsComment("2026-08-14 08:00", "I never answered this one", false),
-      needsComment("2026-08-15 09:00", "this one I did answer", true),
-      needsComment("2026-08-16 12:37", "and this one just arrived", false),
-    ]);
-    const needs = window.document.getElementById("needs");
-    assert.match(needs.textContent, /I never answered this one/);
-    assert.match(needs.textContent, /and this one just arrived/);
-    assert.doesNotMatch(needs.textContent, /this one I did answer/);
-  });
-
-  test("an all-retired thread leaves the box and nothing else", async () => {
-    /* This is the steady state, not an edge case: I retire every comment I
-     * answer, so between my finishing a cycle and his typing again there is
-     * nothing live at all. The fold this replaced bailed out here to avoid
-     * "an empty list under a show-2-earlier button", so it switched itself
-     * off in exactly the state it was built for -- all 12 replies to the
-     * Needs Edvard block were retired on 2026-08-16 and he was still
-     * scrolling every one of them. */
-    const window = await needsPage([
-      needsComment("2026-08-10 08:20", "the first old thing", true),
-      needsComment("2026-08-13 09:00", "the second old thing", true),
-    ]);
-    const needs = window.document.getElementById("needs");
-    assert.doesNotMatch(needs.textContent, /the first old thing/);
-    assert.doesNotMatch(needs.textContent, /the second old thing/);
-    assert.equal(needs.querySelector(".comment-earlier"), null);
-    // The box he types into is never what gets hidden.
-    assert.ok(needs.querySelector(".comment-text"));
-  });
-
-  test("a cycle card's thread is not folded -- its drawer already is", async () => {
+  test("the separate block is gone from the page entirely", async () => {
     const window = await loadSite();
-    const card = cards(window)[0];
-    click(window, card.querySelector(".comment-toggle"));
-    // Cycle 57's fixture thread is one acknowledged comment then one live
-    // one; under the Needs Edvard rule the first would be hidden.
-    assert.match(card.textContent, /an older note on the same cycle, already acted on/);
-    assert.equal(card.querySelector(".comment-earlier"), null);
+    assert.equal(window.document.getElementById("needs"), null);
+    assert.equal(window.document.querySelector(".needs-done"), null);
+  });
+
+  test("an ask renders as its own block on its own card", async () => {
+    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const ask = window.document.querySelector(".entry-ask");
+    assert.ok(ask, "the card should carry the ask");
+    assert.match(ask.textContent, /Needs Edvard/);
+    assert.match(ask.textContent, /Decide about the node/);
+  });
+
+  test("the ask sits above the brief, which is where he asked for it", async () => {
+    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    const kids = Array.from(card.children);
+    const askAt = kids.findIndex((n) => n.classList.contains("entry-ask"));
+    const briefAt = kids.findIndex((n) => n.classList.contains("entry-brief"));
+    assert.ok(askAt > -1 && briefAt > -1, "both should be on the card");
+    assert.ok(askAt < briefAt, "the ask goes below the title and above the brief");
+  });
+
+  test("a card with an ask opens its own comment drawer", async () => {
+    /* The answer box is the whole point -- idea #56 sat unanswered for eight
+     * cycles because the block asked a question and gave him nowhere to type.
+     * A card's drawer is shut by default, so an ask that did not open it
+     * would reintroduce exactly that. */
+    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    assert.ok(card.classList.contains("is-commenting"));
+  });
+
+  test("a card with no ask keeps its drawer shut", async () => {
+    const window = await loadSite();
+    const card = window.document.querySelector(".entry");
+    assert.equal(card.querySelector(".entry-ask"), null);
+    assert.equal(card.classList.contains("is-commenting"), false);
   });
 });
 
@@ -2238,106 +2056,6 @@ describe("commenting on a cycle", () => {
  * to type an answer. These tests pin the two things that makes it fixed:
  * the box is reachable without a click, and what it sends names the block
  * rather than a cycle. */
-describe("replying to Needs Edvard", () => {
-  const asking = {
-    ...payload.digest,
-    hasNeedsEdvard: true,
-    needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about idea #56." }] }],
-  };
-  const withReply = {
-    byCycle: payload.comments.byCycle,
-    needs: [{ cycle: null, stamp: "2026-08-10 08:20", text: "go ahead and do it", acknowledged: false }],
-  };
-  const needsEl = (window) => window.document.getElementById("needs");
-  const box = (window) => needsEl(window).querySelector(".comment-text");
-
-  test("the box is there without a click, unlike a card's", async () => {
-    /* The one deliberate difference from a journal card. A fold is what
-     * hid this for eight cycles, and the section only exists at all when
-     * something is being asked -- so there is no state where an open box
-     * is noise. */
-    const window = await loadSite("/", { digest: asking });
-    assert.ok(!needsEl(window).hidden);
-    assert.ok(box(window), "the answer field is in the DOM with no interaction");
-    assert.ok(needsEl(window).querySelector(".comment-send"));
-  });
-
-  test("no box at all when nothing is being asked", async () => {
-    // The section is hidden; a reply field inside a hidden section would be
-    // a box he can never reach, which is the bug this feature is fixing.
-    const window = await loadSite();
-    assert.ok(needsEl(window).hidden);
-  });
-
-  test("the reply posts the block, not a cycle", async () => {
-    const window = await loadSite("/", { digest: asking });
-    box(window).value = "  go ahead and do it  ";
-    click(window, needsEl(window).querySelector(".comment-send"));
-    await new Promise((r) => window.setTimeout(r, 0));
-
-    const sent = window.posted.at(-1);
-    assert.equal(sent.url, "/api/comment");
-    assert.deepEqual(sent.body, { target: "needs", text: "go ahead and do it" });
-    assert.ok(!("cycle" in sent.body), "a cycle would file his answer on a random card");
-  });
-
-  test("answers already given are shown, so a saved one is tellable from a lost one", async () => {
-    const window = await loadSite("/", { digest: asking, comments: withReply });
-    assert.match(needsEl(window).textContent, /go ahead and do it/);
-    assert.equal(needsEl(window).querySelectorAll(".comment").length, 1);
-  });
-
-  test("a needs reply never paints onto a journal card", async () => {
-    const window = await loadSite("/", { digest: asking, comments: withReply });
-    const feed = window.document.getElementById("feed");
-    assert.ok(!feed.textContent.includes("go ahead and do it"));
-  });
-
-  test("a failed write keeps what he typed", async () => {
-    const window = await loadSite("/", { digest: asking });
-    window.postReply = { ok: false, message: "409 conflict" };
-    box(window).value = "go ahead and do it";
-    click(window, needsEl(window).querySelector(".comment-send"));
-    await new Promise((r) => window.setTimeout(r, 0));
-    assert.equal(box(window).value, "go ahead and do it");
-    assert.match(needsEl(window).querySelector(".comment-status").textContent, /409/);
-  });
-
-  test("the question and the answer box are still one section", async () => {
-    // Reading the ask and answering it should not be two places to look.
-    const window = await loadSite("/", { digest: asking });
-    assert.match(needsEl(window).textContent, /Decide about idea #56/);
-    assert.ok(needsEl(window).contains(box(window)));
-  });
-});
-
-describe("the Needs Edvard reply box survives a re-render", () => {
-  /* `load()` runs again on popstate and after a capture, so renderNeeds is
-   * not a once-per-page-load function. Without clearing the old drawer the
-   * section would grow a second answer box on every navigation -- two
-   * places to type one answer, and only one of them holding what he wrote. */
-  test("navigating back does not leave two boxes", async () => {
-    const asking = {
-      ...payload.digest,
-      hasNeedsEdvard: true,
-      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about idea #56." }] }],
-    };
-    const window = await loadSite("/", { digest: asking });
-    const needs = window.document.getElementById("needs");
-    assert.equal(needs.querySelectorAll(".comment-text").length, 1);
-
-    window.dispatchEvent(new window.PopStateEvent("popstate"));
-    await new Promise((r) => window.setTimeout(r, 0));
-    assert.equal(needs.querySelectorAll(".comment-text").length, 1, "a second box appeared");
-    assert.equal(needs.querySelectorAll(".comment-drawer").length, 1);
-  });
-});
-
-/* Edvard, issues.md 2026-08-10: "i have to refresh it to see new messages."
- *
- * The page poll that answers it. None of this was pinned when it shipped --
- * the suite it shipped with could not even finish, because these windows keep
- * a rescheduling timer alive and nothing closed them. */
 describe("the page notices new entries on its own", () => {
   /** The site, with its timers under the test's control. */
   async function pollable(options = {}) {

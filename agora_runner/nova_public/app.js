@@ -12,7 +12,6 @@
 
   var feed = document.getElementById("feed");
   var statusEl = document.getElementById("status");
-  var needsEl = document.getElementById("needs");
 
   var navEl = document.getElementById("nav");
   var menuBtn = document.getElementById("menu-btn");
@@ -481,104 +480,6 @@
     return text.replace(/^Error:\s*/, "");
   }
 
-  /* One ask at a time, each with its own "Done" — issue #93, rated
-   * 🔴 Immediately: *"I can't cross it out, it says it does not need me."*
-   *
-   * The block was write-only from his side. A cycle put an item in and only
-   * a cycle could take it out, so an ask he had already answered stayed on
-   * his page until some later cycle was *sure* — and being sure costs more
-   * than leaving it, which is the mechanism that filled the block in the
-   * first place. This is the other direction.
-   *
-   * `item.text` is the raw paragraph the server sent and goes back
-   * unchanged. Not the index: a cycle rewrites this block every forty
-   * minutes and renumbers it, so the position he tapped may name a
-   * different ask by the time the request lands. The server refuses a text
-   * that no longer matches exactly one item, which turns that race into a
-   * visible failure instead of the wrong ask being retired.
-   *
-   * `blocks` is the fallback for a payload from before this shipped, so a
-   * cached `app.js` against a new server — or the reverse — still shows him
-   * the asks rather than an empty box. */
-  function renderNeedsItems(body, items, blocks) {
-    if (!items || !items.length) {
-      renderBlocks(body, blocks);
-      return;
-    }
-    items.forEach(function (item) {
-      var row = el("div", "needs-item");
-      var prose = el("div", "needs-item-body");
-      renderBlocks(prose, item.blocks);
-      row.appendChild(prose);
-
-      var note = el("p", "needs-item-note");
-      var done = el("button", "needs-done", "Done");
-      done.type = "button";
-      done.title = "Clear this from the block — it is kept in Nova's archive";
-      done.addEventListener("click", function () {
-        done.disabled = true;
-        note.textContent = "Clearing…";
-        fetch("/api/needs/dismiss", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: item.text })
-        })
-          .then(json)
-          .then(function (payload) {
-            if (!payload || !payload.ok) {
-              throw new Error((payload && payload.message) || "failed");
-            }
-            /* Hide it now rather than waiting for the reload. The digest
-             * cache is dropped server-side on a successful write, so the
-             * next poll agrees — but the tap has to feel like it worked. */
-            row.hidden = true;
-            load();
-          })
-          .catch(function (err) {
-            done.disabled = false;
-            note.textContent = "Could not clear it: " + fetchFailureDetail(err);
-          });
-      });
-      row.appendChild(done);
-      row.appendChild(note);
-      body.appendChild(row);
-    });
-  }
-
-  function renderNeeds(digest, comments) {
-    // Item 3: pinned when it has something, completely absent when it
-    // doesn't -- not a box saying "Nothing".
-    if (!digest || !digest.hasNeedsEdvard) {
-      needsEl.hidden = true;
-      return;
-    }
-    var body = needsEl.querySelector(".needs-body");
-    body.textContent = "";
-    renderNeedsItems(body, digest.needsEdvardItems, digest.needsEdvardBlocks);
-
-    /* Edvard, 2026-08-10: "the 'needs Edvard' is still missing a comment
-     * block, so its hard for me to answer it. [...] Where did you intend
-     * me to answer it? [...] I want a reply button on it."
-     *
-     * Idea #56 sat in this block unanswered for eight cycles. Reading that
-     * as him not getting to it was wrong: the block asked a question and
-     * gave him nowhere to type, and the capture box below it files
-     * backlog bullets, which is not what an answer is.
-     *
-     * Unlike a journal card the box is open rather than behind the 💬
-     * toggle, and that is the one deliberate difference. A card's drawer
-     * is folded because there are seventy-odd cards and almost none of
-     * them want a comment. This section exists *only* when I am asking him
-     * something -- it is `hidden` otherwise -- so there is no state in
-     * which an always-visible answer field is noise, and a fold is exactly
-     * the thing that hid the problem for eight cycles. */
-    var old = needsEl.querySelector(".comment-drawer");
-    if (old) needsEl.removeChild(old);
-    renderComments(needsEl, needsTarget(), (comments && comments.needs) || []);
-
-    needsEl.hidden = false;
-  }
-
   var nextBodyId = 0;
 
   /** The first paragraph of the entry, for cycles with no digest line.
@@ -955,22 +856,6 @@
     };
   }
 
-  function needsTarget() {
-    return {
-      key: "needs",
-      placeholder: "Answer…",
-      ariaLabel: "Reply to Needs Edvard",
-      /* Only this target folds. A cycle card's drawer is already shut, so
-       * folding its thread as well would hide history behind two taps to
-       * fix a problem it does not have. This block is pinned open above the
-       * newest journal card and is the one he has to scroll past 6-8 times
-       * a day. */
-      fold: true,
-      body: function (text) { return { target: "needs", text: text }; },
-      pick: function (data) { return (data && data.needs) || []; },
-    };
-  }
-
   /* One card per cycle, however many entries that cycle wrote.
    *
    * Edvard, on the comments board at cycle 81: "i do not like the double
@@ -1078,6 +963,33 @@
       card.appendChild(el("p", "entry-title", cleanTitle(entry.title)));
     }
 
+    /* Edvard, comments board 2026-08-16: "remove the 'needs Edvard' block
+     * entirely. If you need something from me, it should be added in the
+     * Journal card somehow and i'll answer in the comment of a journal card.
+     * [...] add a new yellow block below the title or somehow higlight your
+     * issue so that i see it."
+     *
+     * Below the title, above the brief, and yellow -- his layout, not a
+     * reading of it. The card's own comment drawer is opened for it further
+     * down, because an ask he cannot see the answer box for is the exact
+     * failure that left idea #56 unanswered for eight cycles. */
+    var asked = null;
+    for (var ai = 0; ai < ordered.length; ai++) {
+      if (ordered[ai].askSpans && ordered[ai].askSpans.length) {
+        asked = ordered[ai];
+        break;
+      }
+    }
+    if (asked) {
+      var ask = el("div", "entry-ask");
+      var askLabel = el("p", "entry-ask-label", "Needs Edvard");
+      ask.appendChild(askLabel);
+      var askBody = el("p", "entry-ask-body");
+      renderSpans(askBody, asked.askSpans);
+      ask.appendChild(askBody);
+      card.appendChild(ask);
+    }
+
     /* Edvard, issues.md 2026-08-09: "a 2-3 line short precise Digest for
      * each cycle as a title for each journey card ... Then, when a journey
      * card is opened, the Digest is revealed. Below that, a 'read the full
@@ -1176,6 +1088,14 @@
       fold.comments = open;
       card.classList.toggle("is-commenting", open);
       commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    /* An ask opens its own card's drawer, once. `askSeen` rather than
+     * opening on every render, so closing it stays closed through the
+     * five-minute poll -- a box that reopens itself is the pinned-open
+     * drawer this replaced. */
+    if (asked && !fold.askSeen) {
+      fold.askSeen = true;
+      fold.comments = true;
     }
     setCommentsOpen(fold.comments);
 
@@ -1702,7 +1622,6 @@
     renderedVersion = (journal && journal.version) || null;
     renderedComments = JSON.stringify(comments);
     renderStatus(journal.status || {});
-    renderNeeds(digest, comments);
 
     var commentsByCycle = (comments && comments.byCycle) || {};
 
@@ -3539,7 +3458,6 @@
   function renderBoard(board, payload) {
     stopPolling();
     markNav();
-    needsEl.hidden = true;
     renderBoardStatus(board, payload);
     feed.textContent = "";
 
@@ -4103,7 +4021,6 @@
   function renderCosts(payload) {
     stopPolling();
     markNav();
-    needsEl.hidden = true;
     var summary = payload.summary || {};
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
@@ -4355,7 +4272,6 @@
   function renderRetro(payload) {
     stopPolling();
     markNav();
-    needsEl.hidden = true;
     var rows = payload.retros || [];
     var latest = rows.length ? rows[rows.length - 1] : null;
     statusEl.textContent = "";

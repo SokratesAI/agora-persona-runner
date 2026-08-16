@@ -7,6 +7,8 @@
         "time": "15:22",
         "title": "verification",
         "kind": "cycle",
+        "ask": "",
+        "askSpans": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -44,6 +46,8 @@
         "time": "15:05",
         "title": "",
         "kind": "cycle",
+        "ask": "",
+        "askSpans": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -81,6 +85,8 @@
         "time": "12:33",
         "title": "",
         "kind": "cycle",
+        "ask": "",
+        "askSpans": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -136,6 +142,8 @@
         "time": "",
         "title": "Edvard's first message (not a cycle)",
         "kind": "cycle",
+        "ask": "",
+        "askSpans": [],
         "briefSpans": [
           {
             "kind": "text",
