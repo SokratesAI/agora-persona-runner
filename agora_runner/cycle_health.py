@@ -112,9 +112,22 @@ def nova_heartbeat_snapshot():
     read as one -- see `nova_site._running_now`, which drops the claim
     once the loop crosses the stall grace window.
 
-    The **newest** `lastRunAt` when more than one heartbeat writes
-    entries, for the same reason the cadence is the shortest interval:
-    any of them running is a cycle running.
+    **A running heartbeat wins over a newer finished one**, and the
+    difference is not academic -- it is the same "any of them running is a
+    cycle running" rule the cadence follows by taking the shortest
+    interval. Taking the newest `lastRunAt` outright looks equivalent and
+    is not: a slow heartbeat claimed at 15:00 and still in flight, beside
+    a fast one claimed at 15:20 and already finished, would report the
+    finished one's outcome and the page would say no cycle is running
+    while one is. That is precisely the false negative #72 is about,
+    reintroduced by the aggregation rule. Among running heartbeats, and
+    among finished ones, the newest `lastRunAt` still wins.
+
+    There is one enabled heartbeat targeting Nova today, so this is
+    latent rather than live -- but `nova_cadence_minutes` beside it
+    already says the two answers diverge the day there is a second one,
+    and a rule that is wrong only in the case it was written for is not
+    much of a rule.
 
     All three are `None` when Agora is unreachable or no enabled
     heartbeat targets Nova, which is the same "no honest answer" the
@@ -132,7 +145,8 @@ def nova_heartbeat_snapshot():
     ran = [hb for hb in nova if hb.get("lastRunAt")]
     if not ran:
         return (minutes, None, None)
-    newest = max(ran, key=lambda hb: hb["lastRunAt"])
+    newest = max(ran, key=lambda hb: (hb.get("lastResult") == "running",
+                                      hb["lastRunAt"]))
     return (minutes, newest.get("lastRunAt"), newest.get("lastResult"))
 
 

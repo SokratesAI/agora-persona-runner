@@ -905,7 +905,10 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None, record_age
 # is tracking changes a few times a week at most, so anything shorter than
 # minutes would be a poll loop against Agora dressed up as a cache.
 CADENCE_FRESH_SECONDS = 300
-_cadence = None          # (minutes-or-None, fetched_at) once anything has been fetched
+# ((minutes-or-None, lastRunAt-or-None, lastResult-or-None), fetched_at)
+# once anything has been fetched. The name is older than the payload: it
+# held the cadence alone until the run state joined it off the same fetch.
+_cadence = None
 _cadence_lock = threading.Lock()
 _cadence_refreshing = False
 

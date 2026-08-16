@@ -964,3 +964,41 @@ def test_an_agora_that_answers_with_an_error_carries_no_run_state(monkeypatch):
     _with_agora(monkeypatch, _FakeAgora(status=503, heartbeats=[
         _hb("every@40m", last_run_at=WRITTEN, last_result="running")]))
     assert nova_heartbeat_snapshot() == (None, None, None)
+
+
+def test_a_running_heartbeat_beats_a_newer_finished_one(monkeypatch):
+    """Reviewer finding on runner#221, and a real one. "Newest `lastRunAt`"
+    and "any of them running" are the same answer only while the two
+    heartbeats agree. A slow one still in flight beside a fast one that
+    claimed later and already finished would report the finished
+    outcome -- and the page would say no cycle is running while one is,
+    which is the exact false negative #72 exists to remove.
+
+    Latent today (one enabled heartbeat targets Nova) and pinned anyway:
+    `nova_cadence_minutes` beside it already anticipates the second one.
+    """
+    from agora_runner.cycle_health import nova_heartbeat_snapshot
+
+    slow = _hb("every@6h", last_run_at="2026-08-12T15:00:00+02:00",
+               last_result="running")
+    fast = _hb("every@40m", last_run_at="2026-08-12T15:20:00+02:00",
+               last_result="merged")
+    for order in ([slow, fast], [fast, slow]):
+        _with_agora(monkeypatch, _FakeAgora(heartbeats=order))
+        assert nova_heartbeat_snapshot()[1:] == (
+            "2026-08-12T15:00:00+02:00", "running"), order
+
+
+def test_the_newest_run_still_wins_among_heartbeats_in_the_same_state(monkeypatch):
+    """The preference is a tie-break, not a replacement -- two finished
+    runs must still report the newer one rather than an arbitrary one."""
+    from agora_runner.cycle_health import nova_heartbeat_snapshot
+
+    older = _hb("every@6h", last_run_at="2026-08-12T15:00:00+02:00",
+                last_result="merged")
+    newer = _hb("every@40m", last_run_at="2026-08-12T15:20:00+02:00",
+                last_result="research")
+    for order in ([older, newer], [newer, older]):
+        _with_agora(monkeypatch, _FakeAgora(heartbeats=order))
+        assert nova_heartbeat_snapshot()[1:] == (
+            "2026-08-12T15:20:00+02:00", "research"), order
