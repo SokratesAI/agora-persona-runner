@@ -108,7 +108,7 @@ def test_an_outcome_is_required(tmp_path):
     """An item archived with no answer is the unreadable log, one folder over."""
     live = tmp_path / "live.md"
     live.write_text(LIVE)
-    with pytest.raises(RollError, match="--answered needs --outcome"):
+    with pytest.raises(RollError, match="needs an outcome saying what"):
         R.main([
             "--live", str(live), "--archive", str(tmp_path / "a.md"),
             "--answered", "spending limit", "--outcome", "  ",
@@ -305,3 +305,70 @@ def test_dates_come_from_oslo_not_the_system_clock(tmp_path, monkeypatch):
         "--answered", "spending limit", "--outcome", "Raised.",
     ])
     assert "**Answered 08-17**" in archive.read_text(), archive.read_text()
+
+
+# --- The same transform, reached from the site (issue #93) -----------------
+
+
+def test_the_site_and_the_cli_split_the_block_into_the_same_items():
+    """One splitter, or the button clears something the roller kept.
+
+    `nova_journal.needs_items` is what the payload sends to Edvard's page
+    and `nova_needs.live_items` is what the archiver acts on. If the two
+    ever disagree about where one ask ends, the item he taps is not the
+    item that leaves the file -- and nothing anywhere would say so.
+    """
+    from agora_runner.nova_journal import needs_items
+    from agora_runner.nova_needs import live_items
+    from agora_runner.rolling import _body
+    from agora_runner.nova_needs import SPEC
+
+    body = _body(LIVE, SPEC)[1]
+    assert live_items(LIVE) == needs_items(body)
+    assert len(live_items(LIVE)) > 1
+
+
+def test_an_empty_block_offers_nothing_to_clear():
+    """`**Nothing.**` is not an ask, and a button on it would archive the
+    word Nothing and leave the next cycle writing a second one."""
+    from agora_runner.nova_journal import needs_items
+
+    assert needs_items("**Nothing.**") == []
+    assert needs_items("**Nothing**") == []
+    assert needs_items("") == []
+
+
+def test_dismissing_by_text_archives_that_item_and_leaves_the_others():
+    import datetime as dt
+
+    from agora_runner.nova_needs import archive_answered
+
+    items = R.live_items(LIVE)
+    target = items[1]
+    new_live, new_archive, moved = archive_answered(
+        LIVE, "", [target], "He said yes.", dt.date(2026, 8, 16)
+    )
+    assert moved == [target]
+    assert target in new_archive
+    assert "**Answered 08-16** — He said yes." in new_archive
+    remaining = R.live_items(new_live)
+    assert target not in remaining
+    assert remaining == [item for item in items if item != target]
+
+
+def test_a_stale_page_cannot_clear_the_wrong_ask():
+    """The whole reason the client sends text rather than an index.
+
+    A cycle rewrites this block every forty minutes. If Edvard's page was
+    rendered before that rewrite, the item at position 1 is a different ask
+    by the time he taps Done -- so a dismissal naming an ask the file no
+    longer holds has to fail, not fall through to whatever is there now.
+    """
+    import datetime as dt
+
+    from agora_runner.nova_needs import archive_answered
+
+    with pytest.raises(RollError, match="no Needs Edvard item contains"):
+        archive_answered(
+            LIVE, "", ["an ask that was rewritten away"], "n/a", dt.date(2026, 8, 16)
+        )

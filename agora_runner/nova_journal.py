@@ -279,6 +279,26 @@ def is_empty_needs(text):
     return plain.rstrip(".").strip() in _EMPTY_NEEDS
 
 
+def split_needs_items(text):
+    """The `Needs Edvard` body -> one string per ask, in file order.
+
+    Blank-line separated paragraphs, because that is the shape every cycle
+    has written since the section existed. Deliberately not
+    `split_digest_entries`: that splitter knows where a `**Cycle N**` line
+    ends, and these items carry no cycle number.
+    """
+    return [p.strip() for p in re.split(r"\n[ \t]*\n", text or "") if p.strip()]
+
+
+def needs_items(text):
+    """The asks actually waiting on him -- empty when the block says so.
+
+    A section that only says `**Nothing**` holds no items, and reading it
+    as one puts a "clear this" button on the word Nothing.
+    """
+    return [] if is_empty_needs(text) else split_needs_items(text)
+
+
 # Edvard, on the comments board at Cycle 156: "every 8 cycles (at 06:00,
 # 14:00 & 22:00) I want a report like you just did for the last 8 cycles.
 # They should appear like a journal card, but stand out in both color and
@@ -977,6 +997,12 @@ def parse_digest(markdown):
             )
     return {
         "needsEdvard": needs,
+        # The block's items one at a time, so the page can put a control on
+        # each rather than on the section as a whole (issue #93). The raw
+        # paragraph is what goes back over the wire on a dismissal, because
+        # the item's position is renumbered on every rewrite and its text is
+        # not -- see `nova_needs.select_answered`.
+        "needsEdvardItems": needs_items(needs),
         "hasNeedsEdvard": not is_empty_needs(needs),
         "nextCycle": sections.get("next cycle", ""),
         "lines": lines,

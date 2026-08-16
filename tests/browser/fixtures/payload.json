@@ -187,6 +187,7 @@
   },
   "digest": {
     "needsEdvard": "**Nothing.**",
+    "needsEdvardItems": [],
     "hasNeedsEdvard": false,
     "nextCycle": "Whatever the last cycle left.",
     "lines": [

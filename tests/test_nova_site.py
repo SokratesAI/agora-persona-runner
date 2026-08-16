@@ -4016,3 +4016,75 @@ def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
             patch.object(nova_site, "invalidate") as inv:
         _post("/api/board/comment", {"target": "ideas", "number": 64, "text": "x"})
     inv.assert_called_once_with("board:ideas")
+
+
+# --- Clearing a Needs Edvard item from the page (issue #93) ---------------
+
+
+def test_the_digest_payload_carries_one_rendered_ask_per_item():
+    """The page needs the asks separately to put a control on each, and it
+    needs each one's raw text back to name it on the way out."""
+    digest = (
+        "# Journal — Digest\n\n## Needs Edvard\n\n"
+        "**Since 08-14** — First ask, `code` and all.\n\n"
+        "**Since 08-15** — Second ask.\n\n"
+        "## Next cycle\n\nnothing\n\n## Digest\n\n"
+    )
+    with patch.object(nova_site, "digest_markdown", return_value=digest):
+        payload = nova_site.digest_payload()
+    items = payload["needsEdvardItems"]
+    assert [item["text"] for item in items] == [
+        "**Since 08-14** — First ask, `code` and all.",
+        "**Since 08-15** — Second ask.",
+    ]
+    assert all(item["blocks"] for item in items)
+
+
+def test_an_empty_needs_block_offers_no_items_to_clear():
+    digest = (
+        "# Journal — Digest\n\n## Needs Edvard\n\n**Nothing.**\n\n"
+        "## Next cycle\n\nnothing\n\n## Digest\n\n"
+    )
+    with patch.object(nova_site, "digest_markdown", return_value=digest):
+        payload = nova_site.digest_payload()
+    assert payload["needsEdvardItems"] == []
+    assert payload["hasNeedsEdvard"] is False
+
+
+def test_dismissing_an_item_writes_it_through_and_drops_the_cache():
+    seen = {}
+
+    def fake(text, outcome):
+        seen["text"] = text
+        seen["outcome"] = outcome
+        return True, "cleared"
+
+    with patch.object(nova_site, "dismiss_needs", fake), \
+            patch.object(nova_site, "invalidate") as dropped:
+        status, _, body = _post("/api/needs/dismiss", {"text": "**Since 08-14** — ask"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    assert seen["text"] == "**Since 08-14** — ask"
+    assert seen["outcome"]  # the archive refuses an item with no answer
+    dropped.assert_called_once_with("digest")
+
+
+def test_dismissing_nothing_is_refused_before_any_write():
+    with patch.object(nova_site, "dismiss_needs") as wrote:
+        for payload in [{}, {"text": ""}, {"text": "   "}, {"text": 3}]:
+            status, _, _ = _post("/api/needs/dismiss", payload)
+            assert status == 400, payload
+    wrote.assert_not_called()
+
+
+def test_a_failed_dismissal_is_reported_rather_than_swallowed():
+    """He tapped Done and the item is still there -- the page has to say so,
+    because the alternative is him believing a block that never cleared."""
+    with patch.object(nova_site, "dismiss_needs", return_value=(False, "no item contains it")), \
+            patch.object(nova_site, "invalidate") as dropped:
+        status, _, body = _post("/api/needs/dismiss", {"text": "gone"})
+    assert status == 502
+    payload = json.loads(body)
+    assert payload["ok"] is False
+    assert "no item contains it" in payload["message"]
+    dropped.assert_not_called()

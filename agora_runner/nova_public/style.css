@@ -217,6 +217,35 @@ pre code { background: none; padding: 0; }
 
 .needs-body p:last-child { margin-bottom: 0; }
 
+/* One ask per row, each with its own Done (issue #93). The separator is
+ * the point of the row existing: two asks used to run together as one
+ * block of prose, and a per-item button is meaningless if he cannot see
+ * where one item stops. The last row has no rule under it, because the
+ * reply box below already draws one. */
+.needs-item {
+  padding: 0.7rem 0 0.6rem;
+  border-bottom: 1px solid #4a3c18;
+}
+.needs-item:last-of-type { border-bottom: 0; padding-bottom: 0.2rem; }
+.needs-item-body p:last-child { margin-bottom: 0.5rem; }
+
+.needs-done {
+  background: none;
+  border: 1px solid #5c4a1e;
+  border-radius: 999px;
+  color: var(--warn);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  /* 44px is the phone tap target; this is the only control in the block
+   * and he is reaching for it one-handed. */
+  min-height: 34px;
+  padding: 0.2rem 0.9rem;
+}
+.needs-done:hover { background: #3a3120; }
+.needs-done:disabled { color: var(--dim); border-color: var(--dim); cursor: default; }
+.needs-item-note { color: var(--dim); font-size: 0.8rem; margin: 0.4rem 0 0; }
+
 /* The reply box (2026-08-10). Always shown -- see renderNeeds in app.js;
  * the `display: none` on a comment drawer is scoped to `.entry`, so this
  * one is visible without needing to override anything. The rule to hold
