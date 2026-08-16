@@ -241,3 +241,67 @@ def test_verify_refuses_twins_rather_than_silently_collapsing_them():
     new_live, new_archive = R.plan(live, "", R.SPEC, select=lambda _: [2])
     with pytest.raises(RollError, match="items in, .* out"):
         R.verify(live, "", new_live, new_archive, R.SPEC, ordered=False)
+
+
+def test_a_heading_in_the_outcome_is_refused_before_anything_is_written(tmp_path):
+    """The archive guard cannot see `--outcome`, so this check has to.
+
+    `verify` runs `_check_archive` on the planned archive, and the outcome
+    is spliced in *after* that -- deliberately, because `verify`'s
+    invariant is that entries pass through unchanged. The reviewer
+    reproduced the gap against the real digest: an outcome carrying a
+    `## Entries` line wrote that heading to disk with a clean exit 0.
+    """
+    live = tmp_path / "live.md"
+    archive = tmp_path / "a.md"
+    live.write_text(LIVE)
+    with pytest.raises(RollError, match="markdown heading"):
+        R.main([
+            "--live", str(live), "--archive", str(archive),
+            "--answered", "spending limit",
+            "--outcome", "He said this:\n## Entries\nand then that.",
+        ])
+    assert not archive.exists(), "nothing may be written before the refusal"
+    assert live.read_text() == LIVE
+
+
+def test_plan_refuses_keep_zero_with_no_select():
+    """`keep=0` plus the wrapper shape every other caller uses wipes the lot.
+
+    `rolling.plan(live, archive, SPEC)` is exactly how `roll_digest`'s own
+    wrapper calls through. With this SPEC's `keep=0` and no `select`, that
+    archived every live item and `verify` passed it, because moving
+    everything is still a multiset-preserving roll.
+    """
+    with pytest.raises(RollError, match="keep=0 with no select"):
+        R.plan(LIVE, "", R.SPEC)
+
+
+def test_dates_come_from_oslo_not_the_system_clock(tmp_path, monkeypatch):
+    """The pod runs UTC; Edvard reads Oslo. At 22:30 UTC they disagree.
+
+    This must go through `main`, not through `stamp_answer` with a date the
+    test computed itself -- the first version of this test did the latter,
+    survived the mutation back to `datetime.now()`, and pinned nothing.
+    """
+    import datetime as dt
+
+    frozen = dt.datetime(2026, 8, 16, 22, 30, tzinfo=dt.timezone.utc)
+    assert frozen.date() == dt.date(2026, 8, 16), "UTC is still on the 16th"
+    assert frozen.astimezone(R.OSLO).date() == dt.date(2026, 8, 17), "Oslo turned over"
+
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen.astimezone(tz) if tz else frozen.replace(tzinfo=None)
+
+    monkeypatch.setattr(R.datetime, "datetime", Frozen)
+
+    live = tmp_path / "live.md"
+    archive = tmp_path / "a.md"
+    live.write_text(LIVE)
+    R.main([
+        "--live", str(live), "--archive", str(archive),
+        "--answered", "spending limit", "--outcome", "Raised.",
+    ])
+    assert "**Answered 08-17**" in archive.read_text(), archive.read_text()

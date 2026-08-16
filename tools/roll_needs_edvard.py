@@ -50,6 +50,7 @@ import datetime
 import re
 import sys
 
+from agora_runner.config import OSLO
 from agora_runner.nova_journal import is_empty_needs
 from tools import rolling
 from tools.rolling import RollError, RollSpec, join_paragraphs, plan, verify
@@ -210,7 +211,14 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    today = datetime.date.today()
+    # Oslo, not the system clock. The pod runs UTC and Edvard reads Oslo
+    # (UTC+2 in August), so between 22:00 and 23:59 UTC `date.today()` is
+    # still on yesterday while his calendar has already turned over -- the
+    # `**Answered MM-DD**` stamp and every age this tool prints would be a
+    # day behind for that window, every night. `nova_journal.entry_times`
+    # uses OSLO for exactly this reason; reviewer caught that this file did
+    # not.
+    today = datetime.datetime.now(OSLO).date()
     live = open(args.live).read()
     try:
         archive = open(args.archive).read()
@@ -234,6 +242,20 @@ def main(argv=None):
         print("nothing archived: pass --answered '<phrase>' --outcome '<what he said>'")
         return 0
 
+    # `--outcome` is free text and is spliced into the archive *after*
+    # `verify` has run `_check_archive` on it, so the heading guard cannot
+    # see it -- the reviewer reproduced this against the real digest and
+    # got a `##` heading written to disk with a clean exit 0. Check the
+    # text here, before anything is written, rather than moving the splice
+    # earlier: `verify`'s invariant is that entries pass through unchanged,
+    # and stamping before it would mean loosening the one check that proves
+    # nothing was dropped.
+    if re.search(r"^#{1,6}[ \t]", args.outcome, re.MULTILINE):
+        raise RollError(
+            "refusing to roll: --outcome contains a markdown heading, which "
+            "would land in the archive as a rival section. Quote it inline "
+            "or drop the leading '#'."
+        )
     if not args.outcome.strip():
         raise RollError(
             "refusing to roll: --answered needs --outcome saying what the "
