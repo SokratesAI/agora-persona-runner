@@ -998,6 +998,166 @@ describe("an ask lives on the card that raised it", () => {
     assert.equal(ask.querySelectorAll(".entry-ask-label").length, 1);
   });
 
+  /* Edvard, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
+   * 'needs Edvard' block on an entry, minimize it instead of leaving it
+   * full-size -- and let Edvard minimize it himself too. Don't delete it,
+   * just collapse it." */
+
+  /** The cycle the fixture's newest entry belongs to. */
+  const newestCycle = payload.journal.entries[0].cycle;
+
+  /* The fixture's newest entry is cycle 57, and cycle 57 already carries two
+   * comments -- so "an answered ask starts minimized" passes against the
+   * plain fixture whether or not the code reads the comments at all. Both
+   * halves therefore build their own comments payload: `silent` is the one
+   * that makes the open case capable of failing. */
+  /** A comments payload where he has replied on the newest entry's card. */
+  function repliedOnNewest() {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle[String(newestCycle)] = [
+      { stamp: "2026-08-16 22:14", text: "Do it.", acknowledged: false },
+    ];
+    return copy;
+  }
+
+  /** The same, with nothing said on the newest entry's card. */
+  function silentOnNewest() {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    delete copy.byCycle[String(newestCycle)];
+    return copy;
+  }
+
+  test("an unanswered ask is open, with a control to minimize it", async () => {
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: silentOnNewest(),
+    });
+    const ask = window.document.querySelector(".entry-ask");
+    const toggle = ask.querySelector(".entry-ask-toggle");
+    assert.ok(toggle, "the ask should carry its own control");
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, false);
+    assert.equal(ask.classList.contains("is-collapsed"), false);
+  });
+
+  test("an ask on a card he has replied to starts minimized", async () => {
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: repliedOnNewest(),
+    });
+    const ask = window.document.querySelector(".entry-ask");
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true);
+    assert.equal(ask.querySelector(".entry-ask-toggle").getAttribute("aria-expanded"), "false");
+    assert.ok(ask.classList.contains("is-collapsed"));
+  });
+
+  test("minimized still says an ask is there, rather than deleting it", async () => {
+    /* "It should not be deleted, but be minimised." The label is what makes
+     * a collapsed ask findable at all -- hide the row and the card looks
+     * like every card with nothing to answer.
+     *
+     * Reviewer finding, Cycle 249. This test used to assert `ask.hidden ===
+     * false` and that the label read "Needs Edvard", which nothing in the
+     * feature can move: `setAskOpen` never touches `ask.hidden`, and the
+     * label was rendered unconditionally before the change too. It passed
+     * with the whole feature reverted. What it has to assert is the
+     * *contrast* -- the prose is gone and the row is not -- because that is
+     * the only thing that distinguishes minimised from deleted. */
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: repliedOnNewest(),
+    });
+    const ask = window.document.querySelector(".entry-ask");
+    assert.ok(ask.classList.contains("is-collapsed"), "this case should be collapsed at all");
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true, "the prose should be folded");
+    assert.equal(ask.querySelector(".entry-ask-label").hidden, false);
+    assert.equal(ask.querySelector(".entry-ask-toggle").hidden, false);
+    assert.match(ask.textContent, /Needs Edvard/, "the row still names itself");
+    assert.doesNotMatch(
+      ask.querySelector(".entry-ask-head").textContent,
+      /Decide about the node/,
+      "the question itself should not be in the row that stays",
+    );
+  });
+
+  test("he can minimize an unanswered ask himself, and open it again", async () => {
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: silentOnNewest(),
+    });
+    const ask = window.document.querySelector(".entry-ask");
+    const toggle = ask.querySelector(".entry-ask-toggle");
+    toggle.click();
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true, "his tap should fold it");
+    toggle.click();
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, false, "and unfold it again");
+  });
+
+  test("minimizing the ask does not open or close the card behind it", async () => {
+    /* The card toggles on any tap that is not claimed by a control, so a
+     * missing branch in that one listener would expand the whole cycle
+     * every time he folded its ask. */
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: silentOnNewest(),
+    });
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    const before = card.classList.contains("is-expanded");
+    card.querySelector(".entry-ask-toggle").click();
+    assert.equal(card.classList.contains("is-expanded"), before);
+  });
+
+  test("a poll does not re-collapse an ask he has opened", async () => {
+    /* The failure a plain boolean would give: he opens an answered ask, a
+     * background poll rebuilds the feed, and the guess overrules his tap.
+     * A real poll, not a hand call of the renderer -- the version has to
+     * move or the page correctly leaves itself alone and this proves
+     * nothing. */
+    let timers;
+    const comments = repliedOnNewest();
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments,
+      install: (win) => { timers = captureTimers(win); },
+    });
+    window.document.querySelector(".entry-ask-toggle").click();
+    assert.equal(window.document.querySelector(".entry-ask-bodies").hidden, false);
+
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    const grown = asking("Decide about the node.");
+    grown.version = 'W/"ask-poll"';
+    window.fetch = (url) =>
+      res(
+        String(url).includes("/api/digest") ? payload.digest
+          : String(url).includes("/api/comments") ? comments
+            : grown,
+      );
+    await timers.firePagePoll();
+    assert.ok(!window.document.contains(card), "the old card is still here, so the feed was not actually rebuilt and this proves nothing");
+    assert.equal(
+      window.document.querySelector(".entry-ask-bodies").hidden,
+      false,
+      "his choice should survive the re-render",
+    );
+  });
+
+  test("the ask's minimize control meets the 44px touch minimum", () => {
+    /* Reviewer finding, Cycle 249, and it was reading my own comment back at
+     * me: I wrote "44px of tap height comes from the padding" above a rule
+     * whose padding and font size compute to about 29px. Fifteen rules in
+     * this file set the floor explicitly. Pinned the way the capture box's
+     * picker is pinned, because a comment claiming a number is exactly what
+     * failed here. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const { window } = openWindow("<style>" + css + "</style>");
+    const rules = [...window.document.styleSheets[0].cssRules];
+    const sized = rules.find(
+      (r) => r.selectorText === ".entry-ask-toggle" && /min-height/.test(r.style.cssText),
+    );
+    assert.ok(sized, "no .entry-ask-toggle rule sets a min-height");
+    assert.match(sized.style.cssText, /min-height:\s*44px/);
+  });
+
   test("a card with no ask keeps its drawer shut", async () => {
     const window = await loadSite();
     const card = window.document.querySelector(".entry");

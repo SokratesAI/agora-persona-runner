@@ -143,10 +143,10 @@
      * and the tab silently reverts to the first part under him while the card
      * and drawer correctly stay open. Found by the reviewer, not by me. */
     if (cycle === null || cycle === undefined) {
-      return { expanded: false, journal: false, comments: false, part: 0 };
+      return { expanded: false, journal: false, comments: false, part: 0, ask: null };
     }
     var key = "cycle-" + cycle;
-    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false, part: 0 };
+    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false, part: 0, ask: null };
     return folds[key];
   }
 
@@ -983,14 +983,70 @@
     for (var ai = 0; ai < ordered.length; ai++) {
       if (ordered[ai].askSpans && ordered[ai].askSpans.length) asked.push(ordered[ai]);
     }
+    /* Read here rather than forty lines down, because the ask block below
+     * needs it. It was already moved up once for the same reason and the
+     * comment there records why that matters: `var` hoists, so reading
+     * `fold` above its assignment gets `undefined` silently and disables
+     * the memory while every test still passes. */
+    var fold = foldFor(entry.cycle);
+    var askToggle = null;
+    var setAskOpen = null;
     if (asked.length) {
+      /* Edvard, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
+       * 'needs Edvard' block on an entry, minimize it instead of leaving it
+       * full-size -- and let Edvard minimize it himself too. Don't delete it,
+       * just collapse it."
+       *
+       * Two halves, and the second is what makes the first safe to guess at.
+       *
+       * "My reply answers it" is not something this page can read. What it
+       * can read is whether he has said anything on this card at all, and
+       * that is the whole mechanism the ask relies on -- the ask is raised
+       * on the card, the card's drawer is opened for it, and his answer goes
+       * in that drawer. So: a card he has commented on has been answered.
+       * That proxy is wrong sometimes (a comment can be about something
+       * else), which is exactly why he also asked for the manual control --
+       * a wrong guess costs one tap, not an unread question.
+       *
+       * Collapsed keeps the label and the control. "It should not be
+       * deleted, but be minimised" -- so the yellow row stays on the card
+       * saying an ask lives here, and only its prose folds away. Hiding the
+       * row itself would be the deletion he ruled out, and would put this
+       * back where idea #56 was: a question with nowhere visible to answer. */
+      var answered = !!(comments && comments.length);
       var ask = el("div", "entry-ask");
-      ask.appendChild(el("p", "entry-ask-label", "Needs Edvard"));
+      var askHead = el("div", "entry-ask-head");
+      askHead.appendChild(el("p", "entry-ask-label", "Needs Edvard"));
+      askToggle = el("button", "entry-ask-toggle");
+      askToggle.type = "button";
+      askHead.appendChild(askToggle);
+      ask.appendChild(askHead);
+      var askBodies = el("div", "entry-ask-bodies");
+      askBodies.id = "ask-" + (entry.cycle === null || entry.cycle === undefined
+        ? Math.random().toString(36).slice(2) : entry.cycle);
       asked.forEach(function (part) {
         var askBody = el("p", "entry-ask-body");
         renderSpans(askBody, part.askSpans);
-        ask.appendChild(askBody);
+        askBodies.appendChild(askBody);
       });
+      ask.appendChild(askBodies);
+      askToggle.setAttribute("aria-controls", askBodies.id);
+
+      setAskOpen = function (open) {
+        askBodies.hidden = !open;
+        ask.classList.toggle("is-collapsed", !open);
+        askToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        askToggle.textContent = open ? "Minimize" : "Show";
+        askToggle.setAttribute("aria-label",
+          (open ? "Minimize" : "Show") + " what this cycle needs from you");
+      };
+      /* Tri-state on purpose. `null` means he has not touched this card's
+       * ask, so the answered-guess decides; once he has, his choice wins and
+       * a background poll rebuilding the card does not overrule it. Storing
+       * a plain boolean would make "he opened it" and "it was never
+       * collapsed" the same value, and the next poll would re-collapse it
+       * under him. */
+      setAskOpen(fold.ask === null || fold.ask === undefined ? !answered : !fold.ask);
       card.appendChild(ask);
     }
 
@@ -1051,12 +1107,12 @@
     /* The drawer wraps the parts rather than being one of them, so the tab
      * strip is hidden and shown with the prose it divides.
      *
-     * `fold` is read here rather than at its old declaration forty lines
-     * down: `var` hoists, so the name existed and was `undefined`, and
+     * `fold` is read above the ask block rather than at its old declaration
+     * here: `var` hoists, so the name existed and was `undefined`, and
      * passing it in silently disabled the tab memory while every test still
      * passed. It is the same object either way -- `foldFor` memoises per
-     * cycle -- so this is a move, not a second one. */
-    var fold = foldFor(entry.cycle);
+     * cycle -- so that was a move, not a second one, and this is the same
+     * move again for the same reason. */
     var body = el("div", "entry-parts");
     body.id = bodyId;
     appendParts(body, ordered, settled, fold);
@@ -1173,6 +1229,17 @@
       // tap on the card. Without this, focusing the textarea would collapse
       // the card out from under it.
       if (event.target.closest(".comment-drawer")) return;
+      /* His own minimize, and it does not touch the card. Same reason the
+       * chat bubble returns early: folding the ask is a decision about the
+       * ask, not a request to read or close the cycle behind it. `fold.ask`
+       * is written here rather than inside `setAskOpen`, so the first paint
+       * -- which is a guess, not his choice -- leaves the tri-state alone. */
+      if (setAskOpen && event.target.closest(".entry-ask-toggle")) {
+        var wantOpen = askToggle.getAttribute("aria-expanded") !== "true";
+        fold.ask = !wantOpen;
+        setAskOpen(wantOpen);
+        return;
+      }
       if (event.target.closest(".journal-toggle")) {
         setJournalOpen(journalToggle.getAttribute("aria-expanded") !== "true");
         return;

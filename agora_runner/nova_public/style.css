@@ -214,6 +214,21 @@ pre code { background: none; padding: 0; }
   margin: 0.2rem 0 0.9rem;
 }
 
+/* Collapsed, the block is the label row and nothing else -- Edvard,
+ * ideas.md 2026-08-16: "Don't delete it, just collapse it." The yellow
+ * stays, so a card carrying an unanswered question still reads as one from
+ * a scroll; only the prose folds. The padding tightens rather than
+ * disappearing, because a row with no bottom padding reads as a broken
+ * block rather than a shut one. */
+.entry-ask.is-collapsed { padding-bottom: 0.55rem; }
+
+.entry-ask-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
 .entry-ask-label {
   font-size: 0.72rem;
   letter-spacing: 0.12em;
@@ -222,7 +237,37 @@ pre code { background: none; padding: 0; }
   margin: 0 0 0.35rem;
 }
 
+.entry-ask.is-collapsed .entry-ask-label { margin-bottom: 0; }
+
+/* A quiet control on purpose: the yellow is doing the attention work and a
+ * second bright thing inside the same block competes with it.
+ *
+ * `min-height: 44px` explicitly, and the reviewer is why. I wrote this
+ * comment claiming "44px of tap height comes from the padding" and then set
+ * 0.6rem of padding around 0.75rem text, which computes to about 29px --
+ * two thirds of the floor, on the one control Edvard's whole ask depends on,
+ * on a page he opens from a phone. Fifteen other rules in this file set
+ * `min-height: 44px` and say why. The negative block margin keeps the label
+ * row from growing by the difference: the target is 44px, the row is not. */
+.entry-ask-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  background: none;
+  border: none;
+  padding: 0 0 0 0.6rem;
+  margin: -0.7rem 0;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.entry-ask-toggle:hover { color: var(--warn); }
+
 .entry-ask-body { margin: 0; }
+.entry-ask-body + .entry-ask-body { margin-top: 0.4rem; }
 
 /* Journal timeline (item 1) */
 .entry {
