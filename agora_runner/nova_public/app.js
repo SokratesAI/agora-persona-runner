@@ -644,10 +644,29 @@
     var lastItems = comments;
 
     function foldPoint(items) {
+      /* The *leading* run of retired comments, and only that.
+       *
+       * I first cut at the last retired comment instead, on the assumption
+       * that retirement runs in order, so everything before the newest
+       * retired one must be retired too. That assumption is false and
+       * nothing enforces it: `tools/ack_comment.py` retires one comment by
+       * `(cycle, stamp)`, whichever a cycle chose to act on, so a cycle can
+       * answer a newer message and leave an older one open. `_oldest_first`
+       * in `nova_comments.py` exists precisely because the two sections are
+       * not chronological with respect to each other.
+       *
+       * Under the old cut, `[live 08:00, retired 09:00, live 10:00]` hid the
+       * 08:00 one — a message still waiting on an answer from me, buried
+       * behind "Show 2 earlier replies" where he would never look for it.
+       * That is the exact opposite of what this fold is for.
+       *
+       * Stopping at the first live comment costs a little folding — a
+       * retired message sitting mid-thread stays on screen — and buys the
+       * property the fold actually needs: nothing I have not answered is
+       * ever hidden. */
       var cut = 0;
-      (items || []).forEach(function (comment, i) {
-        if (comment.acknowledged) cut = i + 1;
-      });
+      var items_ = items || [];
+      while (cut < items_.length && items_[cut].acknowledged) cut += 1;
       // Never fold the whole thread away to nothing: with every comment
       // retired there is no live exchange to keep open, and an empty list
       // under a "show 6 earlier" button reads as a broken drawer.
