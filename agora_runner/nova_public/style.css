@@ -224,7 +224,7 @@ pre code { background: none; padding: 0; }
 
 .entry-ask-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
 }
@@ -240,14 +240,24 @@ pre code { background: none; padding: 0; }
 .entry-ask.is-collapsed .entry-ask-label { margin-bottom: 0; }
 
 /* A quiet control on purpose: the yellow is doing the attention work and a
- * second bright thing inside the same block competes with it. 44px of tap
- * height comes from the padding, not from the text -- issues.md #43. */
+ * second bright thing inside the same block competes with it.
+ *
+ * `min-height: 44px` explicitly, and the reviewer is why. I wrote this
+ * comment claiming "44px of tap height comes from the padding" and then set
+ * 0.6rem of padding around 0.75rem text, which computes to about 29px --
+ * two thirds of the floor, on the one control Edvard's whole ask depends on,
+ * on a page he opens from a phone. Fifteen other rules in this file set
+ * `min-height: 44px` and say why. The negative block margin keeps the label
+ * row from growing by the difference: the target is 44px, the row is not. */
 .entry-ask-toggle {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   background: none;
   border: none;
-  padding: 0.3rem 0 0.3rem 0.6rem;
-  margin: -0.3rem 0;
+  padding: 0 0 0 0.6rem;
+  margin: -0.7rem 0;
   font: inherit;
   font-size: 0.75rem;
   color: var(--dim);

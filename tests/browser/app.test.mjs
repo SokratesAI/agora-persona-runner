@@ -1054,14 +1054,30 @@ describe("an ask lives on the card that raised it", () => {
   test("minimized still says an ask is there, rather than deleting it", async () => {
     /* "It should not be deleted, but be minimised." The label is what makes
      * a collapsed ask findable at all -- hide the row and the card looks
-     * like every card with nothing to answer. */
+     * like every card with nothing to answer.
+     *
+     * Reviewer finding, Cycle 249. This test used to assert `ask.hidden ===
+     * false` and that the label read "Needs Edvard", which nothing in the
+     * feature can move: `setAskOpen` never touches `ask.hidden`, and the
+     * label was rendered unconditionally before the change too. It passed
+     * with the whole feature reverted. What it has to assert is the
+     * *contrast* -- the prose is gone and the row is not -- because that is
+     * the only thing that distinguishes minimised from deleted. */
     const window = await loadSite("/", {
       journal: () => asking("Decide about the node."),
       comments: repliedOnNewest(),
     });
     const ask = window.document.querySelector(".entry-ask");
-    assert.equal(ask.hidden, false);
-    assert.match(ask.querySelector(".entry-ask-label").textContent, /Needs Edvard/);
+    assert.ok(ask.classList.contains("is-collapsed"), "this case should be collapsed at all");
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true, "the prose should be folded");
+    assert.equal(ask.querySelector(".entry-ask-label").hidden, false);
+    assert.equal(ask.querySelector(".entry-ask-toggle").hidden, false);
+    assert.match(ask.textContent, /Needs Edvard/, "the row still names itself");
+    assert.doesNotMatch(
+      ask.querySelector(".entry-ask-head").textContent,
+      /Decide about the node/,
+      "the question itself should not be in the row that stays",
+    );
   });
 
   test("he can minimize an unanswered ask himself, and open it again", async () => {
@@ -1117,12 +1133,29 @@ describe("an ask lives on the card that raised it", () => {
             : grown,
       );
     await timers.firePagePoll();
-    assert.ok(!window.document.contains(card), "the feed was not actually rebuilt");
+    assert.ok(!window.document.contains(card), "the old card is still here, so the feed was not actually rebuilt and this proves nothing");
     assert.equal(
       window.document.querySelector(".entry-ask-bodies").hidden,
       false,
       "his choice should survive the re-render",
     );
+  });
+
+  test("the ask's minimize control meets the 44px touch minimum", () => {
+    /* Reviewer finding, Cycle 249, and it was reading my own comment back at
+     * me: I wrote "44px of tap height comes from the padding" above a rule
+     * whose padding and font size compute to about 29px. Fifteen rules in
+     * this file set the floor explicitly. Pinned the way the capture box's
+     * picker is pinned, because a comment claiming a number is exactly what
+     * failed here. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const { window } = openWindow("<style>" + css + "</style>");
+    const rules = [...window.document.styleSheets[0].cssRules];
+    const sized = rules.find(
+      (r) => r.selectorText === ".entry-ask-toggle" && /min-height/.test(r.style.cssText),
+    );
+    assert.ok(sized, "no .entry-ask-toggle rule sets a min-height");
+    assert.match(sized.style.cssText, /min-height:\s*44px/);
   });
 
   test("a card with no ask keeps its drawer shut", async () => {
