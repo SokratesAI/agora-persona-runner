@@ -396,14 +396,59 @@ def test_no_clock_means_no_finding_rather_than_a_guess():
     assert _clock_findings_only("I spent half an hour perfecting the guard.", None) == []
 
 
+# Every one of these is real prose from the live journal, or the shape of
+# it. The reviewer found this list was originally all elapsed-shaped, so
+# the remaining pattern's total lack of a first-person guard went
+# unexercised and it fired on ordinary retrospective writing.
 @pytest.mark.parametrize("body", [
     "Cycle 12 burned ~16 minutes proving that waiting is a deadlock.",
     "Waiting on the new pod cost that cycle 40 minutes.",
     "The turn cap is 45 minutes and a turn that overruns is killed.",
     "Each cycle has 45 minutes left of a five-hour window.",
+    "A cycle with an hour left has every reason to keep going.",
+    "It speaks at 15, 8 and 3 minutes remaining, and every single time.",
+    "There are two position reports now, at 30 and 22 minutes left.",
+    "The previous cycle would not ship this with twenty minutes left.",
+    "Cycle 246 claimed four minutes left when it had thirty-four.",
+    "Starting it with twenty minutes left would have left a mess.",
+    "The hook warns me when I have 15 minutes left, then 8, then 3.",
 ])
 def test_a_duration_that_is_not_a_claim_about_this_turn_is_left_alone(body):
     assert _clock_findings_only(body, (11.0, 34.0)) == []
+
+
+# The whitelist that used to exempt 40/45/60/72/300 was deleted, and this
+# is why. It was compensating for the loose remaining pattern above, and
+# the price was silently passing "an hour" -- 60 minutes inside a
+# 45-minute cap, physically impossible and the single roundest number a
+# made-up figure reaches for.
+@pytest.mark.parametrize("claim,minutes", [
+    ("I spent an hour on the composition.", 60),
+    ("I spent 1 hour on the composition.", 60),
+    ("I spent 60 minutes on the composition.", 60),
+    ("I spent 45 minutes on the composition.", 45),
+    ("I spent 40 minutes on the composition.", 40),
+])
+def test_a_round_constant_is_not_a_free_pass_for_an_elapsed_claim(claim, minutes):
+    found = _clock_findings_only(claim, (11.0, 34.0))
+    assert len(found) == 1
+    assert f"{minutes} minutes" in found[0]
+
+
+@pytest.mark.parametrize("body", [
+    "I had about ten minutes left, which is how this happened.",
+    "I finished the code with four minutes left.",
+    "I did not build it with twenty minutes left.",
+])
+def test_a_first_person_remaining_claim_is_still_caught(body):
+    assert len(_clock_findings_only(body, (11.0, 34.0))) == 1
+
+
+def test_a_turn_past_its_deadline_is_described_as_overdue_not_as_negative():
+    found = _clock_findings_only("I have thirty minutes left.", (65.0, -20.0))
+    assert len(found) == 1
+    assert "20 minutes past its deadline" in found[0]
+    assert "-20" not in found[0]
 
 
 def test_the_clock_check_reads_the_deadline_file_when_one_exists(tmp_path):

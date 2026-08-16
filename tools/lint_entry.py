@@ -284,7 +284,10 @@ _WORD_NUMBERS = {
 _NUMBER = r"\d+(?:\.\d+)?|" + "|".join(
     sorted((re.escape(w) for w in _WORD_NUMBERS), key=len, reverse=True)
 )
-_DURATION = rf"(?P<n>{_NUMBER})[\s-]*(?P<unit>minutes?|mins?|hours?|hrs?)"
+# `[\s-]+`, not `*`: a zero-width separator let the typo "amin" parse
+# as "a" + "min" and score as a real one-minute claim -- a silent
+# mis-score rather than a clean non-match.
+_DURATION = rf"(?P<n>{_NUMBER})[\s-]+(?P<unit>minutes?|mins?|hours?|hrs?)"
 
 # Only first-person, present-cycle framings. An entry that says "Cycle 12
 # burned ~16 minutes proving that" is reporting history and is not a
@@ -296,16 +299,33 @@ _ELAPSED_RE = re.compile(
     rf"(?:about|roughly|nearly|almost|around|some|~)?\s*{_DURATION}\b",
     re.IGNORECASE,
 )
+# The remaining-time pattern needs the same first-person restriction and
+# for one revision it did not have one -- the leading group was fully
+# optional, so it constrained nothing and fired on any "N minutes left".
+# Built from the real corpus rather than guessed: across 295 entries the
+# self-framed shapes are all "I had ten minutes left", "I finished the
+# code with four minutes left", "I did not build it with twenty minutes
+# left", and the ones that must stay silent are all subject-less or about
+# some other cycle -- "a cycle with an hour left has every reason to...",
+# "it speaks at 15, 8 and 3 minutes remaining", "the previous cycle wrote
+# down that it would not ship this with twenty minutes left". An `I` in
+# the same clause separates every one of those correctly.
+#
+# It under-fires on "with twenty minutes left I was not willing", where
+# the subject trails the duration. That is the safe direction and it is
+# left alone: a check that refuses a true sentence is one this loop
+# learns to route around, which costs more than a claim slipping past.
 _REMAINING_RE = re.compile(
-    rf"\b(?:with|leaving|and)?\s*{_DURATION}\s+(?:left|remaining|to spare)\b",
+    rf"\bI\b[^.;\n]{{0,80}}?{_DURATION}\s+(?:left|remaining|to spare)\b",
     re.IGNORECASE,
 )
 
-# Durations this loop states as facts about its own configuration rather
-# than as measurements: the 45-minute turn cap, the heartbeat cadences it
-# has run at, and the five-hour quota window. A sentence naming one of
-# these is quoting `prompt.md`, not reading a clock.
-_KNOWN_CONSTANTS_MINUTES = {40, 45, 60, 72, 300}
+# "the hook warns me when I have 15 minutes left" describes a mechanism,
+# not this turn. A subordinator immediately governing the clause is the
+# cheapest reliable signal for that; `re` has no variable-width
+# lookbehind, so it is checked against the text before the match.
+_SUBORDINATOR_RE = re.compile(r"\b(?:when|whenever|if|unless|until)\b", re.IGNORECASE)
+_SUBORDINATOR_WINDOW = 30
 
 # How far a claim may sit from the clock before it is a guess. Generous
 # on purpose: prose is written minutes before the lint runs, and a check
@@ -391,8 +411,6 @@ def _clock_findings(body, clock):
     findings = []
     for match in _ELAPSED_RE.finditer(body):
         claimed = _minutes(match)
-        if claimed in _KNOWN_CONSTANTS_MINUTES:
-            continue
         if claimed <= elapsed + ELAPSED_TOLERANCE_MINUTES:
             continue
         findings.append(
@@ -403,14 +421,23 @@ def _clock_findings(body, clock):
         )
     for match in _REMAINING_RE.finditer(body):
         claimed = _minutes(match)
-        if claimed in _KNOWN_CONSTANTS_MINUTES:
+        before = body[max(0, match.start() - _SUBORDINATOR_WINDOW):match.start()]
+        if _SUBORDINATOR_RE.search(before):
             continue
         if abs(claimed - remaining) <= REMAINING_TOLERANCE_MINUTES:
             continue
+        # A turn past its deadline reports a negative remaining --
+        # `deadline.seconds_left` documents that as real, not
+        # hypothetical -- and "-20 minutes are left" is not a sentence.
+        actual = (
+            f"{remaining:.0f} minutes are left of this turn"
+            if remaining >= 0
+            else f"this turn is {abs(remaining):.0f} minutes past its deadline"
+        )
         findings.append(
             f"clock: {match.group(0).strip()!r} claims {claimed:g} minutes, but "
-            f"{remaining:.0f} minutes are left of this turn. Read the clock "
-            "rather than estimating it, or drop the number."
+            f"{actual}. Read the clock rather than estimating it, or drop the "
+            "number."
         )
     return findings
 
