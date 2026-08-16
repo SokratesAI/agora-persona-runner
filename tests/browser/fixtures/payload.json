@@ -307,6 +307,7 @@
         "body": "Small pickings on Nova ui - low priority - remove \"Oslo\" text from Journal timestamp.",
         "priority": "",
         "priorityKey": "",
+        "done": "",
         "blocks": [
           {
             "type": "p",

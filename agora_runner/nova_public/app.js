@@ -2952,7 +2952,10 @@
    * instead of resolving it. A stale address is a 409 and the page
    * re-reads, which is the honest outcome. */
   function renderCapture(board, capture, index) {
-    var one = el("div", "capture-item");
+    /* `capture.done` is the cycle that closed it, or "". It only paints
+     * -- Edit and Delete keep working, because the marker is text in his
+     * bullet and he is allowed to change his mind about it. */
+    var one = el("div", "capture-item" + (capture.done ? " capture-item-done" : ""));
     var body = el("div", "capture-body");
     /* The rating, shown and editable the same way a boarded row's is.
      * Edvard, issues.md #91: *"All unboarded issues and ideas should have
@@ -3038,6 +3041,10 @@
       },
     });
     body.appendChild(prioPicker.el);
+    // After the rating trigger, so #91's "left top corner" still holds.
+    if (capture.done) {
+      body.appendChild(el("span", "capture-done-chip", "Done · " + capture.done));
+    }
     renderBlocks(body, capture.blocks || []);
     one.appendChild(body);
 
@@ -3146,15 +3153,39 @@
 
   function renderBoardEdvard(board, payload) {
     var wrap = el("div", "board");
+    /* Two sections, not one. A capture a cycle has closed carries a
+     * `DONE (Cycle N):` prefix (`nova_boards.split_capture_done`), and
+     * until Cycle 251 nothing read it -- so every finished bullet went on
+     * sitting under "Not boarded yet" with the open ones. On 08-17 that
+     * heading held five items and all five were done, which makes the
+     * section unreadable in exactly the way that matters: the one place
+     * on this page where Edvard's own unfiled words appear.
+     *
+     * The done ones stay on the page rather than being hidden, because
+     * the marker is a cycle answering him and the answer is worth
+     * reading once. They just stop claiming to be work. The index passed
+     * to `renderCapture` is the index into `payload.captures`, not into
+     * the section -- `/api/capture/edit` addresses a bullet by its
+     * position in the file, so splitting the list for display must not
+     * renumber it. */
     var captures = payload.captures || [];
-    if (captures.length) {
-      var box = el("section", "captures");
-      box.appendChild(el("h2", "captures-title", "Not boarded yet"));
-      captures.forEach(function (capture, index) {
-        box.appendChild(renderCapture(board, capture, index));
+    var open = [];
+    var done = [];
+    captures.forEach(function (capture, index) {
+      (capture.done ? done : open).push({ capture: capture, index: index });
+    });
+    [
+      { rows: open, cls: "captures", title: "Not boarded yet" },
+      { rows: done, cls: "captures captures-done", title: "Done, not yet cleared" }
+    ].forEach(function (section) {
+      if (!section.rows.length) return;
+      var box = el("section", section.cls);
+      box.appendChild(el("h2", "captures-title", section.title));
+      section.rows.forEach(function (row) {
+        box.appendChild(renderCapture(board, row.capture, row.index));
       });
       wrap.appendChild(box);
-    }
+    });
 
     var items = payload.items || [];
     wrap.appendChild(renderBoardControls(board, payload, items));

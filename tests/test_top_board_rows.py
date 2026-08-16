@@ -273,6 +273,33 @@ def test_a_rating_on_a_capture_is_read_off_the_front_of_the_bullet():
     assert got[0]["text"] == "this one is on fire"
 
 
+def test_a_capture_a_cycle_already_closed_is_not_unprocessed():
+    """Cycle 251: all five captures on `issues.md` were finished work, and
+    this tool printed every one of them under "take one of these"."""
+    text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
+                         "DONE (Cycle 247): shipped in runner#228 — the old ask",
+                         "the thing I typed on my phone")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == ["the thing I typed on my phone"]
+
+
+def test_a_rating_survives_being_written_behind_a_done_marker():
+    """The marker is prefixed in front of his bullet, glyph and all, so
+    reading the rating before stripping it reports the capture unrated."""
+    text = with_captures(board(), f"DONE (Cycle 9): fixed. {IMMEDIATE.split()[0]} on fire")
+    assert top_board_rows.unboarded_captures(text, "idea") == []
+    from agora_runner.nova_boards import split_capture_done, split_capture_priority
+    done, rest = split_capture_done(f"DONE (Cycle 9): {IMMEDIATE.split()[0]} on fire")
+    assert done == "Cycle 9"
+    assert split_capture_priority(rest) == (IMMEDIATE, "on fire")
+
+
+def test_the_word_done_inside_his_sentence_is_prose_not_a_marker():
+    text = with_captures(board(), "I am DONE (Cycle whatever) with this page")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == ["I am DONE (Cycle whatever) with this page"]
+
+
 def test_his_empty_cursor_bullet_is_not_a_capture():
     text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)))
     assert top_board_rows.unboarded_captures(text, "issue") == []

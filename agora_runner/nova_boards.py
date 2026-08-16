@@ -63,6 +63,11 @@ _SECTION_RE = re.compile(r"^(#{1,2})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 # rather than out of the alias after the pipe -- the alias is a display
 # label and two rows in the live file spell it differently.
 _ROW_NUMBER_RE = re.compile(r"#(\d+)")
+# `DONE (Cycle 247): shipped in runner#228 — <the rest of his bullet>`.
+# The shape `prompt.md` step 6 asks a cycle to write when its work closed
+# one of Edvard's captures; see `split_capture_done`. The colon is
+# required so a bullet that merely opens with the word cannot match.
+_CAPTURE_DONE_RE = re.compile(r"^DONE\s*\(\s*(Cycle\s*\d+)\s*\)\s*:", re.IGNORECASE)
 # A detail heading inside `# Details`, in either shape the live files use:
 # `## 57 — More pages in the Nova app` and `### #84 — Edit and delete a
 # boarded idea or issue by holding the card`.
@@ -234,6 +239,38 @@ def split_capture_priority(bullet):
         if text.startswith(glyph):
             return label, text[len(glyph):].strip()
     return "", text
+
+
+def split_capture_done(bullet):
+    """`DONE (Cycle 247): shipped it — <his text>` -> `("Cycle 247", rest)`.
+
+    Not done -> `("", bullet)`.
+
+    `prompt.md` step 6 tells every cycle to edit a capture it closed so
+    the bullet starts with `DONE (Cycle N):` -- that is the only mark
+    these bullets carry, because a capture is a bare line in Edvard's
+    file with nowhere to put a status cell. Nothing read the mark. So a
+    closed capture stayed, by every mechanism that looks at these files,
+    exactly as unprocessed as one he typed a minute ago: at Cycle 251 all
+    five captures on `issues.md` were finished work, and both consumers
+    said so out loud -- `tools/top_board_rows.py` printed them under
+    *"these outrank every row below. Take one"*, and the app listed them
+    on his phone under *"Not boarded yet"*.
+
+    That is issue #88's failure arriving from the other side. The point
+    of putting his captures above the board was that they are the
+    strongest signal a cycle gets; a section where every item is finished
+    trains a cycle to skip the section.
+
+    The marker is matched only as a prefix, for `split_capture_priority`'s
+    reason -- the bullet is his text from that point on, and "DONE" in the
+    middle of a sentence is prose. The cycle number is returned rather
+    than dropped because it is the one thing that says *when* it closed.
+    """
+    match = _CAPTURE_DONE_RE.match((bullet or "").strip())
+    if not match:
+        return "", (bullet or "").strip()
+    return match.group(1).strip(), match.string[match.end():].strip()
 
 
 def set_row_priority(markdown, number, priority):

@@ -49,7 +49,8 @@ import subprocess
 import sys
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board, split_capture_priority,
+    BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board, split_capture_done,
+    split_capture_priority,
     unanswered_comments,
 )
 
@@ -130,10 +131,22 @@ def unboarded_captures(markdown, board):
     Rating rides at the front of the bullet rather than in a column, so
     `split_capture_priority` is what reads it -- the same function the
     site and the boarding path use, not a second matcher.
+
+    **A capture a cycle already closed is not one of these**, and that is
+    the whole of `split_capture_done`. Marking the bullet `DONE (Cycle
+    N):` is what `prompt.md` step 6 asks for and nothing read it, so at
+    Cycle 251 this function returned five finished items and the renderer
+    printed them under *"these outrank every row below. Take one"*. A
+    section that is entirely noise is worse than no section, because the
+    next cycle learns to skip it -- which is issue #88, the one this tool
+    exists to fix, coming back inverted.
     """
     captures = []
     for bullet in parse_board(markdown or "")["captures"]:
-        priority, text = split_capture_priority(bullet)
+        done, rest = split_capture_done(bullet)
+        if done:
+            continue
+        priority, text = split_capture_priority(rest)
         captures.append({"board": board, "priority": priority, "text": text})
     return captures
 

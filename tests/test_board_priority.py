@@ -120,6 +120,35 @@ def test_a_rated_bullet_splits_into_a_rating_and_his_words():
     assert split_capture_priority("🔴 the app is down") == ("🔴 Immediately", "the app is down")
 
 
+# --- and the marker a cycle writes when its work closed one of them ---
+
+from agora_runner.nova_boards import split_capture_done
+from agora_runner.nova_site import _capture_parts
+
+
+def test_a_closed_capture_gives_up_its_cycle_and_his_words():
+    assert split_capture_done("DONE (Cycle 247): shipped it — the old ask") == (
+        "Cycle 247", "shipped it — the old ask")
+
+
+def test_an_open_capture_comes_back_whole():
+    assert split_capture_done("just a thought") == ("", "just a thought")
+    # Only a prefix is a marker; the word mid-sentence is his prose.
+    assert split_capture_done("I am DONE (Cycle 9): with it") == (
+        "", "I am DONE (Cycle 9): with it")
+    # The colon is required, so "DONE (Cycle 9) yesterday" is prose too.
+    assert split_capture_done("DONE (Cycle 9) yesterday, roughly") == (
+        "", "DONE (Cycle 9) yesterday, roughly")
+
+
+def test_the_page_reads_the_marker_before_the_rating_not_after():
+    """Both are prefixes on one line and the done marker sits outermost --
+    read the rating first and every closed capture reports as unrated."""
+    assert _capture_parts("DONE (Cycle 247): 🟠 fix the sort order") == (
+        "Cycle 247", "🟠 High", "fix the sort order")
+    assert _capture_parts("🟠 fix the sort order") == ("", "🟠 High", "fix the sort order")
+
+
 def test_an_unrated_bullet_comes_back_whole():
     assert split_capture_priority("just a thought") == ("", "just a thought")
     # Only a leading glyph is a rating; the same emoji mid-sentence is prose.
