@@ -375,7 +375,7 @@
      * copy cannot make it. */
     if (status.running && !status.stalled && !replayed) {
       var live = el("p", "status-sub");
-      live.appendChild(el("span", "badge badge-live", "cycle running now"));
+      live.appendChild(el("span", "badge badge-live", "cycle running"));
       live.appendChild(el("span", "status-pr", "its entry arrives when it finishes"));
       statusEl.appendChild(live);
     }

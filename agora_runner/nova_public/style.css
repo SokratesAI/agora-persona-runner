@@ -496,7 +496,7 @@ pre code { background: none; padding: 0; }
 }
 
 .badge-good { color: var(--good); border-color: #2f6b42; }
-/* "cycle running now" (#72). `--accent` rather than `--good`: this is not
+/* "cycle running" (#72). `--accent` rather than `--good`: this is not
  * an outcome and must not read as one -- the cycle it describes has not
  * finished, so borrowing the colour the merged pills use would say it went
  * well before anything knows. Blue is this page's "information" colour and
