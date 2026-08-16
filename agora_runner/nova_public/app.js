@@ -3024,8 +3024,13 @@
       onPick: function (label) {
         var rest = capture.body || "";
         if (!rest) {
-          // A bullet that is nothing but a glyph would rewrite to the empty
-          // string, and an empty text on that route means delete. Refuse.
+          /* A bullet that is nothing but a glyph rewrites to the empty
+           * string, which that route answers with a 400 "nothing to save"
+           * -- it does not delete, deletion is `/api/capture/delete`. So
+           * this is not a safety guard, it is a round trip that can only
+           * fail; refusing here reverts the trigger without one. I shipped
+           * this comment claiming the empty edit *would* delete the
+           * capture, which is wrong about the server, and corrected it. */
           return Promise.reject(new Error("nothing to rate"));
         }
         var next = label ? label.split(" ")[0] + " " + rest : rest;

@@ -4668,9 +4668,10 @@ describe("rating a capture that is not boarded yet", () => {
   });
 
   test("clearing a rating leaves the text and does not send an empty edit", async () => {
-    // An empty `text` on that route is how a capture is deleted, so an
-    // Unrated pick on a bullet that is nothing but a glyph must not
-    // become one.
+    // `/api/capture/edit` answers a blank text with 400 "nothing to save"
+    // and never deletes -- deletion is its own route. So the point here is
+    // not safety, it is that an Unrated pick on a glyph-only bullet has no
+    // request worth making.
     const window = await loadSite("/issues", withCapture(rated));
     click(window, window.document.querySelector(".capture-item .chip.prio"));
     click(window, [...window.document.querySelectorAll(".prio-option")]
@@ -4680,7 +4681,7 @@ describe("rating a capture that is not boarded yet", () => {
     assert.equal(posted.body.text, "make the picker work here too");
   });
 
-  test("a glyph-only capture refuses the write rather than deleting itself", async () => {
+  test("a glyph-only capture sends nothing, rather than a request that can only 400", async () => {
     const glyphOnly = { text: "🟠", body: "", priority: "🟠 High", priorityKey: "high", blocks: [] };
     const window = await loadSite("/issues", withCapture(glyphOnly));
     const trigger = window.document.querySelector(".capture-item .chip.prio");
@@ -4689,7 +4690,7 @@ describe("rating a capture that is not boarded yet", () => {
       .find((o) => o.textContent === "– Unrated"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.filter((p) => p.url === "/api/capture/edit").length, 0,
-      "an empty edit would have deleted the capture");
+      "an edit the server can only refuse was sent anyway");
     assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating it never saved");
   });
 
