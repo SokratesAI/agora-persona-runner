@@ -35,7 +35,7 @@ whichever vault client that pod actually has.
 
 import argparse
 
-from agora_runner.md_sections import split_at_heading
+from agora_runner.md_sections import section_bounds, split_at_heading
 
 
 class RollSpec:
@@ -147,7 +147,18 @@ def join_bullets(entries):
 
 
 def _body(live, spec):
-    """(everything up to and including the marker, everything after).
+    """(everything up to and including the marker, the section, the rest).
+
+    **The third piece is why this is not just `split_at_heading`.** The two
+    original callers roll the *last* section of their file -- `## Digest`
+    and `## Entries` -- so "everything after the heading" and "the section
+    under the heading" were the same string and nothing distinguished them.
+    `roll_needs_edvard` rolls the first of three sections, and under the
+    old two-piece split its section ran to the end of the file: `## Next
+    cycle` and `## Digest` parsed as items, so a phrase that happened to
+    appear in a digest line was archivable as though it were an unanswered
+    question. `section_bounds` already knew where a section ends; this was
+    the one caller that had to ask.
 
     `split_at_heading` rather than `live.find(spec.marker)`: the marker is
     a heading, and a heading is a whole line outside the frontmatter and
@@ -160,7 +171,13 @@ def _body(live, spec):
         raise RollError(
             f"refusing to roll: no {spec.marker.strip()!r} section in the live file"
         )
-    return parts
+    head, _rest = parts
+    lines = live.split("\n")
+    # `section_bounds` counts lines; `split_at_heading` counts characters.
+    # Convert through the same `len(line) + 1` sum it uses, so the three
+    # pieces still concatenate back to the input byte for byte.
+    end = sum(len(line) + 1 for line in lines[: section_bounds(lines, spec.marker)[1]])
+    return head, live[len(head):end], live[end:]
 
 
 def _split_title(archive, spec):
@@ -262,10 +279,33 @@ def dedup(entries):
     return out
 
 
-def plan(live, archive, spec, keep=None):
-    """(new live, new archive), or the pair unchanged if nothing rolls."""
+def plan(live, archive, spec, keep=None, select=None):
+    """(new live, new archive), or the pair unchanged if nothing rolls.
+
+    `select` takes the parsed entries and returns the subset to roll, for a
+    caller whose "old" is not "at the end of the list". The three original
+    callers roll by age -- a digest line ten cycles back is old because ten
+    cycles happened -- and for them the tail *is* the answer.
+    `roll_needs_edvard` is the one where it is not: an item there is old
+    when Edvard has answered it, which no position in the file can show, so
+    it passes the items it was told are answered. Default is the tail, byte
+    for byte what this function did before the parameter existed.
+
+    **It returns indices, not entries, and that is not a style choice.**
+    Selecting by value looks equivalent and quietly is not: two identical
+    entries are legal input, and removing "the ones that were chosen" by
+    membership takes both copies out of the live file while rolling one.
+    The old tail slice could not express that bug and neither can this.
+
+    `verify` does catch it, and an earlier draft of this docstring claimed
+    it did not -- measured, so recorded rather than left as the scarier
+    version. Twins make its deduplicated left side disagree with its right
+    however they were selected, so it refuses with "2 in, 3 out". That is a
+    real backstop; it just names the wrong cause, which is why the
+    selection is right here rather than only caught downstream.
+    """
     keep = spec.keep if keep is None else keep
-    head, body = _body(live, spec)
+    head, body, tail = _body(live, spec)
     entries = spec.split_entries(body)
     if spec.check_entry:
         for entry in entries:
@@ -276,8 +316,11 @@ def plan(live, archive, spec, keep=None):
     # day it grows past `keep` and rolls the wrong end.
     if spec.check_entries:
         spec.check_entries(entries)
-    if len(entries) <= keep:
+    picked = range(keep, len(entries)) if select is None else select(entries)
+    picked = sorted(set(picked))
+    if not picked:
         return live, archive
+    chosen = [entries[i] for i in picked]
 
     # Heading-aware for the same reason `_split_title` is: an archive whose
     # frontmatter merely *names* the title passed this check as a substring
@@ -289,9 +332,11 @@ def plan(live, archive, spec, keep=None):
             f"refusing to roll: archive has no {spec.archive_title!r} title"
         )
     already = set(_archived(archive, spec))
-    rolling = [entry for entry in entries[keep:] if entry not in already]
+    rolling = [entry for entry in chosen if entry not in already]
 
-    new_live = head + "\n" + spec.join_entries(entries[:keep]) + "\n"
+    leaving = set(picked)
+    kept_entries = [e for i, e in enumerate(entries) if i not in leaving]
+    new_live = head + "\n" + spec.join_entries(kept_entries) + "\n" + tail
     new_archive = (
         _archive_header(archive, spec)
         + spec.join_entries(rolling + _archived(archive, spec))
@@ -300,15 +345,25 @@ def plan(live, archive, spec, keep=None):
     return new_live, new_archive
 
 
-def verify(live, archive, new_live, new_archive, spec):
-    """Raise unless the rolled pair holds exactly what the given pair did."""
+def verify(live, archive, new_live, new_archive, spec, ordered=True):
+    """Raise unless the rolled pair holds exactly what the given pair did.
+
+    `ordered` is what a tail roll gets for free and a `select` roll cannot
+    have. Rolling the tail concatenates back in the same sequence, so the
+    strict list comparison is a real extra check and stays the default.
+    Pulling an item out of the *middle* moves it ahead of the items that
+    were below it, by design, so for that caller the ordered comparison
+    fails on a correct roll -- and the invariant that actually matters,
+    nothing lost and nothing invented, is the multiset one either way.
+    """
     if spec.check_archive:
         spec.check_archive(new_archive)
     kept = dedup(
         spec.split_entries(_body(live, spec)[1]) + _archived(archive, spec)
     )
     rolled = spec.split_entries(_body(new_live, spec)[1]) + _archived(new_archive, spec)
-    if kept != rolled:
+    lost = kept != rolled if ordered else sorted(kept) != sorted(rolled)
+    if lost:
         raise RollError(
             f"refusing to write: {len(kept)} {spec.noun} in, {len(rolled)} out"
         )
