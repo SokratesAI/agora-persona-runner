@@ -762,10 +762,26 @@
       var cut = 0;
       var items_ = items || [];
       while (cut < items_.length && items_[cut].acknowledged) cut += 1;
-      // Never fold the whole thread away to nothing: with every comment
-      // retired there is no live exchange to keep open, and an empty list
-      // under a "show 6 earlier" button reads as a broken drawer.
-      return cut >= (items || []).length ? 0 : cut;
+      /* An all-retired thread folds all the way, and that is the case this
+       * fold exists for rather than the edge case it was written off as.
+       *
+       * I put a guard here saying "never fold the whole thread away to
+       * nothing", on the reasoning that an empty list under a "show 12
+       * earlier" button reads as a broken drawer. Two things were wrong
+       * with it. The list is `hidden` when empty, so what he actually sees
+       * is the button and the box, which is a tidy drawer and not a broken
+       * one. And every-comment-retired is not an edge case: I answer and
+       * retire everything I read, so it is the *steady state* of this
+       * thread between the moment I finish a cycle and the moment he types
+       * again. Measured 2026-08-16: all 12 replies to the Needs Edvard
+       * block were retired, so the guard turned the fold off entirely and
+       * he was still scrolling the full thread back to 08-11 -- which is
+       * the complaint the fold was built for, still standing after it
+       * shipped. Edvard, same day: "what I asked for is to not show all
+       * previous comments/answers on them as it shows all comments and
+       * answers that has ever been written in that thread and they have
+       * absolutely no relevance to the current issues." */
+      return cut;
     }
 
     function paint(items) {

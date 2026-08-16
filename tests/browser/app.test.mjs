@@ -1163,15 +1163,29 @@ describe("the Needs Edvard box", () => {
     assert.match(needs.textContent, /this one still needs an answer/);
   });
 
-  test("an all-retired thread stays open rather than folding to nothing", async () => {
-    // Otherwise the drawer is an empty list under a "show 2 earlier"
-    // button, which reads as broken rather than as tidy.
+  test("an all-retired thread folds all the way", async () => {
+    /* This is the steady state, not an edge case: I retire every comment I
+     * answer, so between my finishing a cycle and his typing again there is
+     * nothing live in the thread at all. The first version of this fold
+     * bailed out here to avoid "an empty list under a show-2-earlier
+     * button", which meant the fold switched itself off in exactly the
+     * state it was built for -- all 12 replies to the Needs Edvard block
+     * were retired on 2026-08-16 and he was still scrolling every one of
+     * them. The empty list is `hidden`, so what is left is the button and
+     * the comment box. */
     const window = await needsPage([
       needsComment("2026-08-10 08:20", "the first old thing", true),
       needsComment("2026-08-13 09:00", "the second old thing", true),
     ]);
     const needs = window.document.getElementById("needs");
-    assert.ok(needs.querySelector(".comment-earlier").hidden);
+    const earlier = needs.querySelector(".comment-earlier");
+    assert.ok(!earlier.hidden);
+    assert.match(earlier.textContent, /Show 2 earlier replies/);
+    assert.doesNotMatch(needs.textContent, /the first old thing/);
+    assert.doesNotMatch(needs.textContent, /the second old thing/);
+    // The box he types into is never what gets folded away.
+    assert.ok(needs.querySelector(".comment-text"));
+    click(window, earlier);
     assert.match(needs.textContent, /the second old thing/);
   });
 
