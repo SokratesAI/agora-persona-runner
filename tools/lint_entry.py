@@ -37,10 +37,12 @@ wrong number puts one cycle's words under another's name, while the gap
 detector counts that cycle from the filename, so the two halves of the
 site disagree and nothing anywhere raises an error. That measurement is
 also why there is no rule here
-Every check here but one reports where the renderer would have to repair
-the document. The stamp check is the exception and is deliberate: a
-heading dated ahead of the clock renders exactly as written, and is wrong
-anyway, because the feed sorts on it. So the tool is "what must not be
+Most checks here report where the renderer would have to repair the
+document. Two do not, deliberately: the stamp check, because a heading
+dated ahead of the clock renders exactly as written and is wrong anyway
+since the feed sorts on it, and the clock check, because an entry that
+claims it spent half an hour inside an eleven-minute cycle renders
+perfectly and is simply untrue. So the tool is "what must not be
 written", which is a superset of "what would be repaired".
 
 requiring the `---` above the footer, which `personality.md` asks for
@@ -54,6 +56,8 @@ ignore.
 """
 
 import argparse
+import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -260,13 +264,151 @@ def _stamp_finding(entry, now):
     )
 
 
-def lint(name, content, now=None):
+# The turn clock `bridge/deadline.py` writes at the start of every turn:
+# `started_at`, `deadline_at`, `timeout_seconds`, all epoch seconds. It
+# lives on the bridge pod's CLAUDE_HOME, which is where this tool runs
+# from (`prompt.md` step 7 chains it in a `Bash` call), but nothing in
+# this repo can import `bridge.deadline` -- different package, different
+# image -- so the path is read directly. A missing file is the normal
+# resting state between turns and means no ground truth, not a finding.
+DEADLINE_FILE = os.path.join(
+    os.environ.get("CLAUDE_HOME", "/data/claude-home"), "turn-deadline.json"
+)
+
+_WORD_NUMBERS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40,
+    "forty-five": 45, "half an": 0.5, "half": 0.5,
+}
+_NUMBER = r"\d+(?:\.\d+)?|" + "|".join(
+    sorted((re.escape(w) for w in _WORD_NUMBERS), key=len, reverse=True)
+)
+_DURATION = rf"(?P<n>{_NUMBER})[\s-]*(?P<unit>minutes?|mins?|hours?|hrs?)"
+
+# Only first-person, present-cycle framings. An entry that says "Cycle 12
+# burned ~16 minutes proving that" is reporting history and is not a
+# claim about this hour; the whole value of this check is that it fires
+# on the sentences the author had no source for.
+_ELAPSED_RE = re.compile(
+    rf"\b(?:I|this cycle|I have|I've)\s+(?:just\s+)?"
+    rf"(?:spent|burned|took|ran for|worked for|have spent|had spent)\s+"
+    rf"(?:about|roughly|nearly|almost|around|some|~)?\s*{_DURATION}\b",
+    re.IGNORECASE,
+)
+_REMAINING_RE = re.compile(
+    rf"\b(?:with|leaving|and)?\s*{_DURATION}\s+(?:left|remaining|to spare)\b",
+    re.IGNORECASE,
+)
+
+# Durations this loop states as facts about its own configuration rather
+# than as measurements: the 45-minute turn cap, the heartbeat cadences it
+# has run at, and the five-hour quota window. A sentence naming one of
+# these is quoting `prompt.md`, not reading a clock.
+_KNOWN_CONSTANTS_MINUTES = {40, 45, 60, 72, 300}
+
+# How far a claim may sit from the clock before it is a guess. Generous
+# on purpose: prose is written minutes before the lint runs, and a check
+# that fires on honest rounding is one cycles learn to route around.
+ELAPSED_TOLERANCE_MINUTES = 5
+REMAINING_TOLERANCE_MINUTES = 10
+
+
+def _minutes(match):
+    raw = match.group("n").lower()
+    value = _WORD_NUMBERS.get(raw, None)
+    if value is None:
+        value = float(raw)
+    if match.group("unit").lower().startswith(("hour", "hr")):
+        value *= 60
+    return value
+
+
+def read_turn_clock(path=None):
+    """`(elapsed_minutes, remaining_minutes)` for the running turn, or `None`.
+
+    `None` means there is no ground truth to check against -- the file is
+    absent between turns, and this tool is also run by hand. That is the
+    honest answer and it is deliberately not a finding: idea #77 asks for
+    mismatches to be flagged and for anything with no available source to
+    be left alone.
+    """
+    try:
+        with open(path or DEADLINE_FILE) as handle:
+            record = json.load(handle)
+        started, ends = record["started_at"], record["deadline_at"]
+    except Exception:
+        return None
+    if not isinstance(started, (int, float)) or not isinstance(ends, (int, float)):
+        return None
+    now = datetime.now(OSLO).timestamp()
+    return ((now - started) / 60, (ends - now) / 60)
+
+
+def _clock_findings(body, clock):
+    """Elapsed- and remaining-time claims the running clock contradicts.
+
+    Cycle 246 wrote "four minutes left" into a reply and "spent half an
+    hour perfecting" a fix into its entry, inside a cycle whose measured
+    runtime was 673 seconds. Edvard asked twice how that could be true
+    and it is not: both numbers were written as confident prose and
+    neither was read off anything. The retro had already prescribed
+    "read the clock as a real tool call" two days earlier and issue #72
+    had already put a real timestamp in every tool result, so the fix
+    that did not hold was the one that relied on remembering.
+
+    The claim this check makes is narrow and worth stating: introspection
+    cannot catch a confabulated number, because a confabulated number
+    does not feel uncertain from the inside. Comparing it to a file does.
+    """
+    if clock is None:
+        return []
+    elapsed, remaining = clock
+    findings = []
+    for match in _ELAPSED_RE.finditer(body):
+        claimed = _minutes(match)
+        if claimed in _KNOWN_CONSTANTS_MINUTES:
+            continue
+        if claimed <= elapsed + ELAPSED_TOLERANCE_MINUTES:
+            continue
+        findings.append(
+            f"clock: {match.group(0).strip()!r} claims {claimed:g} minutes, but "
+            f"this turn started {elapsed:.0f} minutes ago -- it cannot have "
+            "spent longer than it has existed. Read the elapsed time rather "
+            "than estimating it, or drop the number."
+        )
+    for match in _REMAINING_RE.finditer(body):
+        claimed = _minutes(match)
+        if claimed in _KNOWN_CONSTANTS_MINUTES:
+            continue
+        if abs(claimed - remaining) <= REMAINING_TOLERANCE_MINUTES:
+            continue
+        findings.append(
+            f"clock: {match.group(0).strip()!r} claims {claimed:g} minutes, but "
+            f"{remaining:.0f} minutes are left of this turn. Read the clock "
+            "rather than estimating it, or drop the number."
+        )
+    return findings
+
+
+# `None` is a real answer from `read_turn_clock` -- it means "no ground
+# truth", which is the whole point of that check being skippable -- so it
+# cannot double as "the caller did not pass one". Using it for both made
+# `clock=None` silently read the live bridge file, which is a test that
+# passes for the wrong reason in the one direction that matters.
+_UNSET = object()
+
+
+def lint(name, content, now=None, clock=_UNSET):
     """`(filename, text)` -> a list of findings, empty when it renders as written.
 
     `now` is injected rather than read here so the stamp check is testable
     at a fixed instant; the CLI passes nothing and gets the real clock.
+    `clock` is the same arrangement for the turn clock, except that
+    `None` is one of its real values -- see `_UNSET`.
     """
     now = now or datetime.now(OSLO)
+    clock = read_turn_clock() if clock is _UNSET else clock
     if not (content or "").strip():
         return ["empty: there is nothing in this file to write."]
     path = JOURNAL_DIR + name
@@ -328,6 +470,7 @@ def lint(name, content, now=None):
     stamp = _stamp_finding(entry, now)
     if stamp:
         findings.append(stamp)
+    findings.extend(_clock_findings(raw, clock))
     return findings
 
 

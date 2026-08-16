@@ -346,3 +346,93 @@ def test_a_missing_footer_is_not_also_reported_as_a_bad_board():
     at all must report only that."""
     entry = "### Cycle 152 — 2026-08-01 02:00 Oslo\n\nNo footer here at all.\n"
     assert _kinds(lint("168-cycle-152.md", entry)) == ["footer"]
+
+
+# --- the turn clock (idea #77) -----------------------------------------
+#
+# Cycle 246 claimed "four minutes left" and "spent half an hour" inside a
+# cycle that measured 673 seconds. The tests that matter are the ones
+# pinning what this check must *not* do: it must stay silent when there
+# is no clock to read, and it must not fire on a duration the entry is
+# reporting about some other cycle, which is most of what a journal says
+# about time.
+
+def _with(body):
+    return f"### Cycle 250 — 2026-08-17 00:20 Oslo\n\n{body}\n\nPR: none | Outcome: n/a"
+
+
+def _clock_findings_only(body, clock):
+    findings = lint(
+        "260-cycle-250.md",
+        _with(body),
+        now=datetime(2026, 8, 17, 0, 30, tzinfo=OSLO),
+        clock=clock,
+    )
+    return [f for f in findings if f.startswith("clock:")]
+
+
+def test_an_elapsed_claim_longer_than_the_cycle_is_caught():
+    found = _clock_findings_only("I spent half an hour perfecting the guard.", (11.0, 34.0))
+    assert len(found) == 1
+    assert "30 minutes" in found[0] and "11 minutes ago" in found[0]
+
+
+def test_a_remaining_claim_the_clock_contradicts_is_caught():
+    found = _clock_findings_only("I finished with four minutes left.", (11.0, 34.0))
+    assert len(found) == 1
+    assert "34 minutes are left" in found[0]
+
+
+def test_an_honest_elapsed_claim_passes():
+    assert _clock_findings_only("I spent 20 minutes on the composition.", (34.0, 11.0)) == []
+
+
+def test_an_honest_remaining_claim_passes():
+    assert _clock_findings_only("I am writing this with 12 minutes left.", (34.0, 11.0)) == []
+
+
+def test_no_clock_means_no_finding_rather_than_a_guess():
+    # The file is absent between turns and this tool is also run by hand.
+    assert _clock_findings_only("I spent half an hour perfecting the guard.", None) == []
+
+
+@pytest.mark.parametrize("body", [
+    "Cycle 12 burned ~16 minutes proving that waiting is a deadlock.",
+    "Waiting on the new pod cost that cycle 40 minutes.",
+    "The turn cap is 45 minutes and a turn that overruns is killed.",
+    "Each cycle has 45 minutes left of a five-hour window.",
+])
+def test_a_duration_that_is_not_a_claim_about_this_turn_is_left_alone(body):
+    assert _clock_findings_only(body, (11.0, 34.0)) == []
+
+
+def test_the_clock_check_reads_the_deadline_file_when_one_exists(tmp_path):
+    from tools.lint_entry import read_turn_clock
+    import json as _json
+    import time as _time
+
+    path = tmp_path / "turn-deadline.json"
+    started = _time.time() - 600
+    path.write_text(_json.dumps({
+        "started_at": started,
+        "deadline_at": started + 2700,
+        "timeout_seconds": 2700,
+    }))
+    elapsed, remaining = read_turn_clock(str(path))
+    assert 9.5 < elapsed < 10.5
+    assert 34.5 < remaining < 35.5
+
+
+@pytest.mark.parametrize("payload", ["", "not json", '{"started_at": "soon"}', "[]"])
+def test_an_unusable_deadline_file_reads_as_no_clock(tmp_path, payload):
+    from tools.lint_entry import read_turn_clock
+
+    path = tmp_path / "turn-deadline.json"
+    path.write_text(payload)
+    assert read_turn_clock(str(path)) is None
+
+
+def test_a_missing_deadline_file_reads_as_no_clock(tmp_path):
+    from tools.lint_entry import read_turn_clock
+
+    assert read_turn_clock(str(tmp_path / "nope.json")) is None
