@@ -25,6 +25,7 @@ import re
 from datetime import datetime
 
 from agora_runner.config import OSLO
+from agora_runner.md_sections import section_bounds
 
 JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
 # One document per entry, which is where entries live as of 2026-08-09.
@@ -968,10 +969,34 @@ def _sections(markdown):
     return out
 
 
+def section_body(markdown, heading):
+    """One `## Heading`'s body, the way the rolling engine reads it.
+
+    `_sections` below is a bare `^## ` scan over the raw file: it does not
+    skip frontmatter and it does not skip fenced blocks, so a `## Needs
+    Edvard` quoted inside an example cuts the real section short. That was
+    harmless while nothing acted on an individual item. It stopped being
+    harmless when `POST /api/needs/dismiss` started archiving the item
+    Edvard tapped: the page would be built by one splitter and the archive
+    by another, and the ask that leaves the file would not be the ask he
+    pointed at. `rolling._body` already uses `section_bounds` for exactly
+    this reason -- my reviewer caught that the payload did not.
+    """
+    lines = (markdown or "").split("\n")
+    bounds = section_bounds(lines, heading)
+    if bounds is None:
+        return ""
+    start, end = bounds
+    return "\n".join(lines[start:end]).strip()
+
+
 def parse_digest(markdown):
     """`journal-digest.md` -> its three sections, with the digest lines split out."""
     sections = _sections(markdown)
-    needs = sections.get("needs edvard", "")
+    # Fence- and frontmatter-aware, because an item under it is individually
+    # actionable from his phone. The other two sections keep the old scan:
+    # nothing addresses one of their paragraphs by name.
+    needs = section_body(markdown, "## Needs Edvard")
     lines = []
     for paragraph in split_digest_entries(sections.get("digest", "")):
         match = _DIGEST_LINE_RE.match(paragraph)

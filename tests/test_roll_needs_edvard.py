@@ -310,22 +310,42 @@ def test_dates_come_from_oslo_not_the_system_clock(tmp_path, monkeypatch):
 # --- The same transform, reached from the site (issue #93) -----------------
 
 
-def test_the_site_and_the_cli_split_the_block_into_the_same_items():
+@pytest.mark.parametrize("digest", [
+    LIVE,
+    # An ask that quotes a heading inside a fenced block. Nova writes prose
+    # about its own machinery into this file every hour, so this is a
+    # "when", not an "if" -- `md_sections` exists because a marker written
+    # with real newlines instead of escaped ones fired for real on 08-13.
+    LIVE.replace(
+        "## Next cycle",
+        "**Since 08-16** \u2014 An ask that quotes a heading:\n\n"
+        "```\n## Needs Edvard\n```\n\n"
+        "and then keeps going.\n\n## Next cycle",
+        1,
+    ),
+])
+def test_the_site_and_the_cli_split_the_block_into_the_same_items(digest):
     """One splitter, or the button clears something the roller kept.
 
-    `nova_journal.needs_items` is what the payload sends to Edvard's page
-    and `nova_needs.live_items` is what the archiver acts on. If the two
-    ever disagree about where one ask ends, the item he taps is not the
-    item that leaves the file -- and nothing anywhere would say so.
-    """
-    from agora_runner.nova_journal import needs_items
-    from agora_runner.nova_needs import live_items
-    from agora_runner.rolling import _body
-    from agora_runner.nova_needs import SPEC
+    `parse_digest` is what builds Edvard's page -- it is where `item.text`
+    on a Done button comes from -- and `live_items` is what the archive
+    matches that text against. If the two disagree about where one ask
+    ends, the ask that leaves the file is not the one he pointed at, and
+    nothing anywhere says so.
 
-    body = _body(LIVE, SPEC)[1]
-    assert live_items(LIVE) == needs_items(body)
-    assert len(live_items(LIVE)) > 1
+    This asserts against `parse_digest` on the *whole digest*, deliberately.
+    An earlier version of this test fed both sides the body that
+    `rolling._body` had already cut, which made it `needs_items(x) ==
+    needs_items(x)` -- true however `parse_digest` behaved. My reviewer
+    caught that, and the second parameter above is the input it was blind
+    to: the naive scan stops the section at the fence's fake heading, so
+    the page loses an ask entirely and mangles the next one.
+    """
+    from agora_runner.nova_journal import parse_digest
+    from agora_runner.nova_needs import live_items
+
+    assert live_items(digest) == parse_digest(digest)["needsEdvardItems"]
+    assert len(live_items(digest)) > 1
 
 
 def test_an_empty_block_offers_nothing_to_clear():
