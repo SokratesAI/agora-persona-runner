@@ -291,11 +291,25 @@ def test_a_capture_is_printed_above_the_top_row_and_takes_the_contract():
     assert IMMEDIATE in out
 
 
-def test_the_board_keeps_its_own_contract_when_there_are_no_captures():
-    text = board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE))
-    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"))
-    assert "why you did not" in out
-    assert "UNPROCESSED CAPTURES" not in out
+def test_the_contract_sentence_moves_onto_the_captures_and_only_then():
+    """Both directions in one test, because either alone is unfailable.
+
+    Asserting only the no-captures case passes with this whole feature
+    reverted -- `render` took no `captures` argument, the header read the
+    same, and `UNPROCESSED CAPTURES` was a string that had never existed.
+    The claim worth pinning is that the header *switches*, so both sides
+    of the switch are read here and the "not in" is what does the work.
+    """
+    text = with_captures(board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE)),
+                         "something I typed")
+    rows = top_board_rows.open_rows(text, "idea")
+    caps = top_board_rows.unboarded_captures(text, "idea")
+    without = top_board_rows.render(rows, captures=[])
+    assert "why you did not" in without
+    assert "UNPROCESSED CAPTURES" not in without
+    withthem = top_board_rows.render(rows, captures=caps)
+    assert "below the captures above" in withthem
+    assert "why you did not" not in withthem
 
 
 def test_a_capture_is_still_shown_when_neither_board_has_an_open_row():
