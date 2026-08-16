@@ -395,9 +395,11 @@ class _FakeAgora:
         return self.status, {"heartbeats": self.heartbeats}
 
 
-def _hb(schedule, persona=NOVA_PERSONA_ID, enabled=True):
+def _hb(schedule, persona=NOVA_PERSONA_ID, enabled=True,
+        last_run_at=None, last_result=None):
     return {"id": "hb", "personaId": persona, "schedule": schedule,
-            "enabled": enabled}
+            "enabled": enabled, "lastRunAt": last_run_at,
+            "lastResult": last_result}
 
 
 def _with_agora(monkeypatch, fake):
@@ -796,3 +798,169 @@ def test_the_age_belongs_to_the_copy_that_was_served():
     _, _, _, warm = nova_site.cached_entry("journal", built.copy)
     assert warm >= 900
     nova_site.reset_cache()
+
+
+# --- the other half of #72: a cycle that is running, not dead --------------
+#
+# "Nova is 1 behind agora." For the first 20-45 minutes of every hour the
+# newest entry names N-1 while agora runs N, and until now this page could
+# not tell that apart from N having died. `stalled` answers the dead case
+# after two intervals; these answer the live one immediately, from Agora's
+# own heartbeat record rather than from the clock.
+
+WRITTEN = NOW.isoformat()
+
+
+def _silence(now_offset, last_run_at, last_result, minutes=60):
+    return _with_silence(
+        build_status(_entries(129, 128)), now=NOW + now_offset,
+        minutes=minutes, heartbeat=(last_run_at, last_result))
+
+
+def test_a_cycle_in_flight_is_reported_running():
+    """The window Edvard was reading as a failure. Cycle 130 was claimed
+    twenty minutes ago, 129 wrote the newest entry, and the header can
+    only name 129 -- which is correct and now says why."""
+    status = _silence(timedelta(minutes=20),
+                      (NOW + timedelta(minutes=15)).isoformat(), "running")
+    assert status["running"] is True
+    assert status["stalled"] is False
+
+
+def test_a_run_that_finished_is_not_still_running():
+    """`lastResult` carries the outcome once the run returns. Anything but
+    the literal "running" is a run that ended, however it ended."""
+    for result in ("merged", "research", "failed: persona not found", "", None):
+        status = _silence(timedelta(minutes=20),
+                          (NOW + timedelta(minutes=15)).isoformat(), result)
+        assert status["running"] is False, result
+
+
+def test_a_run_older_than_the_newest_entry_is_not_running():
+    """The gap between a cycle writing its entry and its heartbeat being
+    PATCHed with the outcome. Without the strict comparison this would
+    render as a cycle still working, one hour out of every one -- and it
+    is the same `lastResult: "running"` in the record either way, so the
+    stamp is the only thing that separates them."""
+    status = _silence(timedelta(minutes=20),
+                      (NOW - timedelta(minutes=40)).isoformat(), "running")
+    assert status["running"] is False
+
+
+def test_a_killed_cycle_stuck_on_running_reads_as_stalled_not_running():
+    """The one case the badge would be lying about. A cycle that is killed
+    never writes its closing PATCH, so `lastResult` stays "running"
+    forever -- the record alone would reassure Edvard indefinitely about a
+    loop that stopped hours ago. Past the grace window the stall wins and
+    the claim is dropped."""
+    status = _silence(timedelta(hours=4),
+                      (NOW + timedelta(minutes=15)).isoformat(), "running")
+    assert status["stalled"] is True
+    assert status["running"] is False
+
+
+def test_the_two_badges_can_never_both_be_true():
+    """They contradict each other on screen, so the server must not be
+    able to emit the pair. Swept across the whole grace window rather than
+    asserted at one offset."""
+    for hours in range(0, 8):
+        status = _silence(timedelta(hours=hours),
+                          (NOW + timedelta(minutes=15)).isoformat(), "running")
+        assert not (status["running"] and status["stalled"]), hours
+
+
+def test_a_cold_cache_does_not_claim_a_cycle_is_running():
+    """`(None, None)` is "not known yet", not an answer. Silence is the
+    status quo here; a wrong "running" is worse than a late one."""
+    assert _silence(timedelta(minutes=20), None, None)["running"] is False
+    assert _silence(timedelta(minutes=20), "not-a-timestamp",
+                    "running")["running"] is False
+
+
+def test_a_journal_with_no_write_time_cannot_place_a_run_against_it():
+    status = _with_silence(build_status([]), minutes=60,
+                           heartbeat=(NOW.isoformat(), "running"))
+    assert status["running"] is False
+
+
+def test_a_page_that_cannot_see_the_journal_makes_no_claim_either_way():
+    """`recordStale` already retracts the stall for this reason -- the
+    stamp it is judged against came out of a cache that stopped
+    refreshing. The run state is measured against that same stamp, so it
+    inherits the same doubt."""
+    status = _with_silence(
+        build_status(_entries(129, 128)), now=NOW + timedelta(minutes=20),
+        minutes=60, record_age=9 * 3600,
+        heartbeat=((NOW + timedelta(minutes=15)).isoformat(), "running"))
+    assert status["recordStale"] is True
+    assert status["running"] is False
+    assert status["stalled"] is False
+
+
+def test_the_running_badge_reaches_a_phone_that_is_already_polling():
+    """The trap that caught `stalled` and then `recordStale`. The journal
+    content does not change when a cycle starts, so the base etag is
+    byte-identical across the moment the badge turns on -- a client
+    polling with `If-None-Match` would be answered 304 for the whole
+    cycle and the badge would render only in a tab opened after it began.
+    Edvard's phone is the tab that is already open."""
+    from agora_runner.nova_site import journal_descriptor, page_etag
+
+    payload = {"entries": [dict(e) for e in _entries(129, 128)]}
+    payload["status"] = build_status(parse_journal(_journal(129, 128)))
+    at = NOW + timedelta(minutes=20)
+    idle = journal_page(payload, limit=20, now=at)
+    idle["status"]["running"] = False
+    live = journal_page(payload, limit=20, now=at)
+    live["status"]["running"] = True
+    assert idle["status"]["silentIntervals"] == live["status"]["silentIntervals"]
+
+    base = "W/base"
+    assert page_etag(base, journal_descriptor(idle, 20, 0, None)) \
+        != page_etag(base, journal_descriptor(live, 20, 0, None))
+
+
+def test_the_run_state_comes_from_novas_own_heartbeat(monkeypatch):
+    from agora_runner.cycle_health import nova_heartbeat_snapshot
+
+    fake = _FakeAgora(heartbeats=[
+        _hb("every@5m", persona="someone-else",
+            last_run_at="2026-08-12T23:59:00+02:00", last_result="running"),
+        _hb("every@10m", enabled=False,
+            last_run_at="2026-08-12T23:58:00+02:00", last_result="running"),
+        _hb("every@40m@19:00",
+            last_run_at="2026-08-12T23:15:00+02:00", last_result="merged"),
+    ])
+    _with_agora(monkeypatch, fake)
+    assert nova_heartbeat_snapshot() == (40, "2026-08-12T23:15:00+02:00", "merged")
+    assert fake.calls == [("GET", "/heartbeats")], "one fetch answers both"
+
+
+def test_two_live_heartbeats_report_the_newest_run(monkeypatch):
+    """Same reason the cadence takes the shortest interval: any of them
+    running is a cycle running, so the newest run is the live one."""
+    from agora_runner.cycle_health import nova_heartbeat_snapshot
+
+    older = _hb("every@6h", last_run_at="2026-08-12T20:00:00+02:00",
+                last_result="merged")
+    newer = _hb("every@40m", last_run_at="2026-08-12T23:15:00+02:00",
+                last_result="running")
+    for order in ([older, newer], [newer, older]):
+        _with_agora(monkeypatch, _FakeAgora(heartbeats=order))
+        assert nova_heartbeat_snapshot()[1:] == (
+            "2026-08-12T23:15:00+02:00", "running")
+
+
+def test_a_heartbeat_that_has_never_run_carries_no_run_state(monkeypatch):
+    from agora_runner.cycle_health import nova_heartbeat_snapshot
+
+    _with_agora(monkeypatch, _FakeAgora(heartbeats=[_hb("every@40m")]))
+    assert nova_heartbeat_snapshot() == (40, None, None)
+
+
+def test_an_agora_that_answers_with_an_error_carries_no_run_state(monkeypatch):
+    from agora_runner.cycle_health import nova_heartbeat_snapshot
+
+    _with_agora(monkeypatch, _FakeAgora(status=503, heartbeats=[
+        _hb("every@40m", last_run_at=WRITTEN, last_result="running")]))
+    assert nova_heartbeat_snapshot() == (None, None, None)

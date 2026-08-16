@@ -3924,6 +3924,71 @@ describe("the service worker says so when it answers from its cache", () => {
   });
 });
 
+describe("a cycle that is running says so in the header", () => {
+  /* The other half of #72. The header names the newest cycle that has
+   * *written*, so for the first 20-45 minutes of every hour it names one
+   * behind the cycle actually running -- which is what Edvard reported as
+   * a failure. The server decides; these assert the page renders that
+   * decision and, more importantly, that it never renders it beside the
+   * badge that contradicts it. */
+  const live = (window) =>
+    [...window.document.querySelectorAll("#status .badge-live")]
+      .map((n) => n.textContent);
+  const warn = (window) =>
+    [...window.document.querySelectorAll("#status .badge-warn")]
+      .map((n) => n.textContent);
+
+  const withStatus = (extra) => {
+    const copy = JSON.parse(JSON.stringify(payload.journal));
+    Object.assign(copy.status, { recentMissingCycles: [] }, extra);
+    return copy;
+  };
+
+  test("a cycle in flight is named on the page", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: false, silentIntervals: 0 }),
+    });
+    assert.deepEqual(live(window), ["cycle running now"]);
+  });
+
+  /* The state Edvard is looking at almost every time he opens the app: a
+   * cycle finished, the next has not woken. The badge must be absent, not
+   * merely worded differently -- a badge that is always up is a badge
+   * nobody reads, which is the objection this whole header is built
+   * around. */
+  test("nothing is said between cycles", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: false, stalled: false, silentIntervals: 1 }),
+    });
+    assert.deepEqual(live(window), []);
+    assert.deepEqual(warn(window), []);
+  });
+
+  /* The server already refuses to emit the pair, and this is the second
+   * lock on the same door: if a future change ever lets both through, the
+   * page would tell him the loop is working and has been dead for four
+   * hours, in two lines a centimetre apart. */
+  test("a stalled loop is never also reported as running", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: true, silentIntervals: 4 }),
+    });
+    assert.deepEqual(live(window), []);
+    assert.ok(warn(window).some((t) => t === "no entry for 4 hours"));
+  });
+
+  /* Same reason the stall badge is hidden on a replayed payload: "a cycle
+   * is running" is a claim about right now, and a copy served out of the
+   * service worker's cache after a failed fetch cannot make it. A phone
+   * off the tailnet would otherwise be told a cycle was running for as
+   * long as it stayed offline. */
+  test("a saved copy does not claim a cycle is running", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: false, replayed: true }),
+    });
+    assert.deepEqual(live(window), []);
+  });
+});
+
 describe("a loop that has gone quiet says so in the header", () => {
   const warn = (window) =>
     [...window.document.querySelectorAll("#status .badge-warn")]
