@@ -1020,6 +1020,28 @@ describe("the Needs Edvard box", () => {
     assert.match(needs.querySelector(".comment-earlier").textContent, /Hide/);
   });
 
+  test("opening the earlier replies survives a re-render", async () => {
+    /* A new journal entry lands about every forty minutes and he reads the
+     * page 6-8 times a day, so "he opened it and something arrived" is an
+     * ordinary event, not a corner case. A full `render` discards the
+     * drawer -- which is why unsent text lives in `drafts` rather than in
+     * the box -- so the fold state has to live outside it too, or opening
+     * the earlier replies would undo itself while he was reading them. */
+    const window = await needsPage([
+      needsComment("2026-08-10 08:20", "the first old thing", true),
+      needsComment("2026-08-16 12:37", "this one still needs an answer", false),
+    ]);
+    const needs = window.document.getElementById("needs");
+    click(window, needs.querySelector(".comment-earlier"));
+    assert.match(needs.textContent, /the first old thing/);
+    // Re-render the whole page the way the poll does on a changed payload.
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const after = window.document.getElementById("needs");
+    assert.match(after.textContent, /the first old thing/);
+    assert.match(after.querySelector(".comment-earlier").textContent, /Hide/);
+  });
+
   test("nothing to fold means no button", async () => {
     const window = await needsPage([
       needsComment("2026-08-16 12:37", "this one still needs an answer", false),

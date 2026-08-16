@@ -529,6 +529,15 @@
    * survives the re-render that discards the box. See `renderComments`. */
   var drafts = {};
 
+  /* Whether a folded thread has been opened, keyed the same way and here for
+   * the same reason: a full `render` throws the drawer away, and the fold
+   * state is something he asked for by tapping. The 8s reply poll and the
+   * refetch after a send both repaint inside the existing drawer, so those
+   * were never the problem -- a new journal entry landing is, and one lands
+   * about every forty minutes. Without this, opening the earlier replies to
+   * read them would silently undo itself while he was reading them. */
+  var expanded = {};
+
   /* "40 seconds" / "3 minutes" / "1 hour 5 minutes" -- how long a reply has
    * been in flight. Deliberately coarse above a minute: the point is to let
    * Edvard tell a slow answer from a stuck one, and a ticking second count
@@ -583,13 +592,11 @@
      *
      * Retired ones are not dropped. Losing them would trade his complaint
      * for a worse one, and `earlier` is one tap away. */
-    var showEarlier = false;
-
     var earlierBtn = el("button", "comment-earlier");
     earlierBtn.type = "button";
     earlierBtn.hidden = true;
     earlierBtn.addEventListener("click", function () {
-      showEarlier = !showEarlier;
+      expanded[target.key] = !expanded[target.key];
       paint(lastItems);
     });
     drawer.appendChild(earlierBtn);
@@ -651,6 +658,7 @@
       lastItems = items;
       list.textContent = "";
       var cut = target.fold ? foldPoint(items) : 0;
+      var showEarlier = !!expanded[target.key];
       if (cut && !showEarlier) {
         items = (items || []).slice(cut);
       }
