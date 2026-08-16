@@ -316,6 +316,20 @@ def plan(live, archive, spec, keep=None, select=None):
     # day it grows past `keep` and rolls the wrong end.
     if spec.check_entries:
         spec.check_entries(entries)
+    if select is None and keep == 0:
+        # A spec whose entries are not ordered by age carries `keep=0`
+        # because it always selects explicitly. Calling `plan` on it the way
+        # every *other* caller does -- `rolling.plan(live, archive, SPEC)`,
+        # which is exactly `roll_digest`'s own wrapper -- would then archive
+        # the whole live section and `verify` would pass it, because moving
+        # everything is still a multiset-preserving roll. The reviewer
+        # reproduced that against Edvard's real digest: both live asks gone,
+        # exit 0, no placeholder. Refusing is the only sane reading of
+        # "keep none of it, by age".
+        raise RollError(
+            "refusing to roll: keep=0 with no select would archive the "
+            "entire live section -- pass select= to say what should roll"
+        )
     picked = range(keep, len(entries)) if select is None else select(entries)
     picked = sorted(set(picked))
     if not picked:
