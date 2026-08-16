@@ -25,6 +25,7 @@ import re
 from datetime import datetime
 
 from agora_runner.config import OSLO
+from agora_runner.md_sections import section_bounds
 
 JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
 # One document per entry, which is where entries live as of 2026-08-09.
@@ -277,6 +278,26 @@ def is_empty_needs(text):
     """True if the `Needs Edvard` section is asking for nothing."""
     plain = _EMPHASIS_RE.sub("", text or "").strip().lower()
     return plain.rstrip(".").strip() in _EMPTY_NEEDS
+
+
+def split_needs_items(text):
+    """The `Needs Edvard` body -> one string per ask, in file order.
+
+    Blank-line separated paragraphs, because that is the shape every cycle
+    has written since the section existed. Deliberately not
+    `split_digest_entries`: that splitter knows where a `**Cycle N**` line
+    ends, and these items carry no cycle number.
+    """
+    return [p.strip() for p in re.split(r"\n[ \t]*\n", text or "") if p.strip()]
+
+
+def needs_items(text):
+    """The asks actually waiting on him -- empty when the block says so.
+
+    A section that only says `**Nothing**` holds no items, and reading it
+    as one puts a "clear this" button on the word Nothing.
+    """
+    return [] if is_empty_needs(text) else split_needs_items(text)
 
 
 # Edvard, on the comments board at Cycle 156: "every 8 cycles (at 06:00,
@@ -948,10 +969,34 @@ def _sections(markdown):
     return out
 
 
+def section_body(markdown, heading):
+    """One `## Heading`'s body, the way the rolling engine reads it.
+
+    `_sections` below is a bare `^## ` scan over the raw file: it does not
+    skip frontmatter and it does not skip fenced blocks, so a `## Needs
+    Edvard` quoted inside an example cuts the real section short. That was
+    harmless while nothing acted on an individual item. It stopped being
+    harmless when `POST /api/needs/dismiss` started archiving the item
+    Edvard tapped: the page would be built by one splitter and the archive
+    by another, and the ask that leaves the file would not be the ask he
+    pointed at. `rolling._body` already uses `section_bounds` for exactly
+    this reason -- my reviewer caught that the payload did not.
+    """
+    lines = (markdown or "").split("\n")
+    bounds = section_bounds(lines, heading)
+    if bounds is None:
+        return ""
+    start, end = bounds
+    return "\n".join(lines[start:end]).strip()
+
+
 def parse_digest(markdown):
     """`journal-digest.md` -> its three sections, with the digest lines split out."""
     sections = _sections(markdown)
-    needs = sections.get("needs edvard", "")
+    # Fence- and frontmatter-aware, because an item under it is individually
+    # actionable from his phone. The other two sections keep the old scan:
+    # nothing addresses one of their paragraphs by name.
+    needs = section_body(markdown, "## Needs Edvard")
     lines = []
     for paragraph in split_digest_entries(sections.get("digest", "")):
         match = _DIGEST_LINE_RE.match(paragraph)
@@ -977,6 +1022,12 @@ def parse_digest(markdown):
             )
     return {
         "needsEdvard": needs,
+        # The block's items one at a time, so the page can put a control on
+        # each rather than on the section as a whole (issue #93). The raw
+        # paragraph is what goes back over the wire on a dismissal, because
+        # the item's position is renumbered on every rewrite and its text is
+        # not -- see `nova_needs.select_answered`.
+        "needsEdvardItems": needs_items(needs),
         "hasNeedsEdvard": not is_empty_needs(needs),
         "nextCycle": sections.get("next cycle", ""),
         "lines": lines,

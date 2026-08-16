@@ -450,6 +450,70 @@
     return text.replace(/^Error:\s*/, "");
   }
 
+  /* One ask at a time, each with its own "Done" — issue #93, rated
+   * 🔴 Immediately: *"I can't cross it out, it says it does not need me."*
+   *
+   * The block was write-only from his side. A cycle put an item in and only
+   * a cycle could take it out, so an ask he had already answered stayed on
+   * his page until some later cycle was *sure* — and being sure costs more
+   * than leaving it, which is the mechanism that filled the block in the
+   * first place. This is the other direction.
+   *
+   * `item.text` is the raw paragraph the server sent and goes back
+   * unchanged. Not the index: a cycle rewrites this block every forty
+   * minutes and renumbers it, so the position he tapped may name a
+   * different ask by the time the request lands. The server refuses a text
+   * that no longer matches exactly one item, which turns that race into a
+   * visible failure instead of the wrong ask being retired.
+   *
+   * `blocks` is the fallback for a payload from before this shipped, so a
+   * cached `app.js` against a new server — or the reverse — still shows him
+   * the asks rather than an empty box. */
+  function renderNeedsItems(body, items, blocks) {
+    if (!items || !items.length) {
+      renderBlocks(body, blocks);
+      return;
+    }
+    items.forEach(function (item) {
+      var row = el("div", "needs-item");
+      var prose = el("div", "needs-item-body");
+      renderBlocks(prose, item.blocks);
+      row.appendChild(prose);
+
+      var note = el("p", "needs-item-note");
+      var done = el("button", "needs-done", "Done");
+      done.type = "button";
+      done.title = "Clear this from the block — it is kept in Nova's archive";
+      done.addEventListener("click", function () {
+        done.disabled = true;
+        note.textContent = "Clearing…";
+        fetch("/api/needs/dismiss", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: item.text })
+        })
+          .then(json)
+          .then(function (payload) {
+            if (!payload || !payload.ok) {
+              throw new Error((payload && payload.message) || "failed");
+            }
+            /* Hide it now rather than waiting for the reload. The digest
+             * cache is dropped server-side on a successful write, so the
+             * next poll agrees — but the tap has to feel like it worked. */
+            row.hidden = true;
+            load();
+          })
+          .catch(function (err) {
+            done.disabled = false;
+            note.textContent = "Could not clear it: " + fetchFailureDetail(err);
+          });
+      });
+      row.appendChild(done);
+      row.appendChild(note);
+      body.appendChild(row);
+    });
+  }
+
   function renderNeeds(digest, comments) {
     // Item 3: pinned when it has something, completely absent when it
     // doesn't -- not a box saying "Nothing".
@@ -459,7 +523,7 @@
     }
     var body = needsEl.querySelector(".needs-body");
     body.textContent = "";
-    renderBlocks(body, digest.needsEdvardBlocks);
+    renderNeedsItems(body, digest.needsEdvardItems, digest.needsEdvardBlocks);
 
     /* Edvard, 2026-08-10: "the 'needs Edvard' is still missing a comment
      * block, so its hard for me to answer it. [...] Where did you intend

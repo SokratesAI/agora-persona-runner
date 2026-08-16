@@ -1006,6 +1006,101 @@ describe("the Needs Edvard box", () => {
     assert.match(needs.querySelector(".comment-earlier").textContent, /Show 2 earlier replies/);
   });
 
+  /* Issue #93, rated 🔴 Immediately: "I can't cross it out, it says it does
+   * not need me." The block was write-only from his side -- a cycle put an
+   * item in and only a cycle could take it out. */
+  async function itemsPage(items, onDismiss) {
+    const html = readFileSync(join(publicDir, "index.html"), "utf8");
+    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
+    const { window } = dom;
+    const asking = {
+      ...payload.digest,
+      hasNeedsEdvard: true,
+      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "everything at once" }] }],
+      needsEdvardItems: items.map((text) => ({
+        text,
+        blocks: [{ type: "p", spans: [{ kind: "text", text }] }],
+      })),
+    };
+    window.fetch = (url, options) => {
+      if (url.includes("/api/needs/dismiss")) return onDismiss(url, options, asking);
+      if (url.includes("/api/digest")) return res(asking);
+      if (url.includes("/api/comments")) return res({ byCycle: {}, needs: [] });
+      return res(payload.journal);
+    };
+    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    return window;
+  }
+
+  test("each ask gets its own Done", async () => {
+    const window = await itemsPage(["the first ask", "the second ask"], () => res({ ok: true }));
+    const rows = window.document.querySelectorAll("#needs .needs-item");
+    assert.equal(rows.length, 2);
+    assert.match(rows[0].textContent, /the first ask/);
+    assert.match(rows[1].textContent, /the second ask/);
+    assert.equal(window.document.querySelectorAll("#needs .needs-done").length, 2);
+  });
+
+  test("Done sends the ask's own text, not its position", async () => {
+    /* The block is renumbered every time a cycle rewrites it -- roughly
+     * every forty minutes -- so an index names a different ask by the time
+     * he taps. The server refuses text that no longer matches exactly one
+     * item, which turns that race into a visible failure. */
+    let sent = null;
+    const window = await itemsPage(["the first ask", "the second ask"], (_url, options, asking) => {
+      sent = JSON.parse(options.body);
+      // What the real server does: the item leaves the file, and the digest
+      // cache is dropped so the reload below sees it gone.
+      asking.needsEdvardItems = asking.needsEdvardItems.filter(
+        (item) => item.text !== sent.text);
+      return res({ ok: true });
+    });
+    window.document.querySelectorAll("#needs .needs-done")[1].click();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    assert.equal(sent.text, "the second ask");
+    assert.equal(sent.index, undefined);
+    // The reload `load()` fires is what makes the clearing stick rather
+    // than being one hidden row that comes back on the next poll.
+    const rows = window.document.querySelectorAll("#needs .needs-item");
+    assert.equal(rows.length, 1);
+    assert.match(rows[0].textContent, /the first ask/);
+  });
+
+  test("a refused dismissal says so and leaves the ask on the page", async () => {
+    const window = await itemsPage(["the only ask"], () =>
+      res({ ok: false, message: "no Needs Edvard item contains it" }));
+    const done = window.document.querySelector("#needs .needs-done");
+    done.click();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const row = window.document.querySelector("#needs .needs-item");
+    assert.ok(!row.hidden);
+    assert.match(row.textContent, /Could not clear it/);
+    // Tappable again: he has to be able to retry once he reloads.
+    assert.equal(done.disabled, false);
+  });
+
+  test("an older payload with no items still shows the asks", async () => {
+    /* A cached app.js against a new server, or the reverse. Falling through
+     * to the whole-block render costs him the buttons; falling through to
+     * nothing would cost him the asks. */
+    const html = readFileSync(join(publicDir, "index.html"), "utf8");
+    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
+    const { window } = dom;
+    const asking = {
+      ...payload.digest,
+      hasNeedsEdvard: true,
+      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about the node." }] }],
+    };
+    delete asking.needsEdvardItems;
+    window.fetch = (url) => res(url.includes("/api/digest") ? asking : payload.journal);
+    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const needs = window.document.getElementById("needs");
+    assert.match(needs.textContent, /Decide about the node/);
+    assert.equal(needs.querySelectorAll(".needs-done").length, 0);
+  });
+
   test("the folded ones are one tap away, not gone", async () => {
     const window = await needsPage([
       needsComment("2026-08-10 08:20", "the first old thing", true),
