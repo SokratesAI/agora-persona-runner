@@ -1042,6 +1042,23 @@ describe("the Needs Edvard box", () => {
     assert.match(after.querySelector(".comment-earlier").textContent, /Hide/);
   });
 
+  test("a comment I have not answered is never folded, even behind a retired one", async () => {
+    /* Retirement is not chronological: `tools/ack_comment.py` retires one
+     * comment by (cycle, stamp), whichever a cycle acted on, so answering a
+     * newer message and leaving an older one open is an ordinary outcome.
+     * Cutting at the *last* retired comment would bury the 08:00 one here --
+     * a message still waiting on me -- which is the opposite of the point. */
+    const window = await needsPage([
+      needsComment("2026-08-14 08:00", "I never answered this one", false),
+      needsComment("2026-08-15 09:00", "this one I did answer", true),
+      needsComment("2026-08-16 12:37", "and this one just arrived", false),
+    ]);
+    const needs = window.document.getElementById("needs");
+    assert.match(needs.textContent, /I never answered this one/);
+    assert.match(needs.textContent, /and this one just arrived/);
+    assert.ok(needs.querySelector(".comment-earlier").hidden);
+  });
+
   test("nothing to fold means no button", async () => {
     const window = await needsPage([
       needsComment("2026-08-16 12:37", "this one still needs an answer", false),
