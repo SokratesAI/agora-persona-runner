@@ -978,6 +978,26 @@ describe("an ask lives on the card that raised it", () => {
     assert.ok(card.classList.contains("is-commenting"));
   });
 
+  test("a two-part cycle shows both of its asks, not just the first", async () => {
+    /* Reviewer finding, Cycle 247. The server cuts each part's ask out of
+     * that part's own prose, so an ask the card declines to render is gone
+     * from the page with no trace. */
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const cycle = journal.entries[0].cycle;
+    const twin = JSON.parse(JSON.stringify(journal.entries[0]));
+    twin.ask = "second ask";
+    twin.askSpans = [{ kind: "text", text: "second ask" }];
+    journal.entries[0].ask = "first ask";
+    journal.entries[0].askSpans = [{ kind: "text", text: "first ask" }];
+    twin.cycle = cycle;
+    journal.entries.splice(1, 0, twin);
+    const window = await loadSite("/", { journal: () => journal });
+    const ask = window.document.querySelector(".entry-ask");
+    assert.match(ask.textContent, /first ask/);
+    assert.match(ask.textContent, /second ask/);
+    assert.equal(ask.querySelectorAll(".entry-ask-label").length, 1);
+  });
+
   test("a card with no ask keeps its drawer shut", async () => {
     const window = await loadSite();
     const card = window.document.querySelector(".entry");

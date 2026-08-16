@@ -76,3 +76,46 @@ def test_the_brief_is_taken_after_the_ask_is_cut():
     brief = " ".join(span.get("text", "") for span in entries[0]["briefSpans"])
     assert "answer this" not in brief
     assert "The rest of the entry" in brief
+
+
+def test_the_bare_label_is_still_cut_from_the_body():
+    """Reviewer finding, Cycle 247. The empty case returned the body untouched.
+
+    `_first_paragraph` then briefed on `**Needs Edvard:**`, so the collapsed
+    card's one line read as the label and the entry's real opening sentence
+    never appeared on his page at all.
+    """
+    remainder, ask = split_ask("**Needs Edvard:**\n\nThe real prose.")
+    assert ask == ""
+    assert remainder == "The real prose."
+
+    entries = parse_journal(
+        "### 2026-08-16 21:00 (Oslo) — Cycle 247 · a thing\n\n"
+        "**Needs Edvard:**\n\n"
+        "The real prose.\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    brief = " ".join(span.get("text", "") for span in entries[0]["briefSpans"])
+    assert "Needs Edvard" not in brief
+    assert "The real prose" in brief
+
+
+def test_both_parts_of_a_two_part_cycle_keep_their_asks():
+    """Reviewer finding, Cycle 247. The card showed the first and dropped the second.
+
+    The server cuts each part's ask out of its own prose, so a part whose ask
+    the card declines to render has lost it outright.
+    """
+    entries = parse_journal(
+        "### 2026-08-16 21:00 (Oslo) — Cycle 247 · the addendum\n\n"
+        "**Needs Edvard:** second ask.\n\n"
+        "More prose.\n\n"
+        "PR: none | Outcome: shipped\n\n"
+        "### 2026-08-16 20:00 (Oslo) — Cycle 247 · a thing\n\n"
+        "**Needs Edvard:** first ask.\n\n"
+        "Some prose.\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert [e["ask"] for e in entries] == ["second ask.", "first ask."]
+    for entry in entries:
+        assert "Needs Edvard" not in entry["body"]
