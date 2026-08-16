@@ -3174,6 +3174,48 @@ describe("the issues page", () => {
     assert.equal(window.posted[0].body.original, "fix this");
   });
 
+  test("a capture a cycle closed sits in its own section, and keeps its own address", async () => {
+    /* On 08-17 all five captures on the issues board carried a `DONE
+     * (Cycle N):` marker and the page still listed every one of them
+     * under "Not boarded yet". The split is presentational, so the risk
+     * it introduces is the addressing one: `/api/capture/edit` takes the
+     * bullet's position in the file, and rendering the open ones first
+     * would renumber them if the index came from the section. */
+    const blocks = (t) => [{ type: "p", spans: [{ kind: "text", text: t }] }];
+    const board = {
+      ...payload.board,
+      /* The done one is **second** in the file and first in its section.
+       * With it first in the file both numbers are 0 and the assertion
+       * below cannot fail -- which is what it did on the first draft. */
+      captures: [
+        { text: "the thing I typed", body: "the thing I typed", blocks: blocks("the thing I typed") },
+        { text: "DONE (Cycle 247): shipped it", done: "Cycle 247", body: "shipped it", blocks: blocks("shipped it") },
+      ],
+    };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    window.confirm = () => true;
+
+    const titles = [...window.document.querySelectorAll(".captures-title")]
+      .map((n) => n.textContent);
+    assert.deepEqual(titles, ["Not boarded yet", "Done, not yet cleared"]);
+    const open = window.document.querySelector(".captures:not(.captures-done)");
+    assert.equal(open.querySelectorAll(".capture-item").length, 1);
+    assert.match(open.textContent, /the thing I typed/);
+    const shut = window.document.querySelector(".captures-done");
+    assert.equal(shut.querySelector(".capture-done-chip").textContent, "Done · Cycle 247");
+
+    // The done one is second in the file and must still say so.
+    click(window, [...shut.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted[0].body.index, 1,
+      "the section reordered the rows and the page sent the wrong address");
+    assert.equal(window.posted[0].body.original, "DONE (Cycle 247): shipped it",
+      "the marker is part of his bullet and has to round-trip");
+  });
+
   test("Delete asks first, and sends nothing when the answer is no", async () => {
     const window = await loadSite("/issues");
     window.confirm = () => false;

@@ -1173,6 +1173,26 @@ body.nav-open { overflow: hidden; }
 
 .capture-item p { margin: 0.3rem 0; }
 
+/* A capture a cycle has closed. The block keeps the same shape as the
+ * open one so the two read as the same kind of thing, but drops the
+ * amber border and title colour that mean "this is waiting on nobody but
+ * Nova" -- on 08-17 every capture on the issues board was finished and
+ * the whole section was still painted as outstanding work. */
+.captures-done { border-color: var(--line); }
+.captures-done .captures-title { color: var(--dim); }
+.capture-item-done { opacity: 0.75; }
+
+.capture-done-chip {
+  display: inline-block;
+  margin-right: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--good);
+  border: 1px solid var(--good);
+  border-radius: 0.5rem;
+  padding: 0 0.35rem;
+  white-space: nowrap;
+}
+
 .capture-edit {
   display: flex;
   align-items: center;

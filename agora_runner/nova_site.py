@@ -145,6 +145,7 @@ from agora_runner.nova_boards import (
     parse_board,
     parse_notes,
     priority_key,
+    split_capture_done,
     split_capture_priority,
 )
 from agora_runner.nova_costs import costs_payload as shape_costs
@@ -411,6 +412,19 @@ def comments_payload():
     }
 
 
+def _capture_parts(text):
+    """One raw capture bullet -> `(done, priority, body)`.
+
+    Both markers are prefixes on the same line, and the order matters:
+    a closed bullet reads `DONE (Cycle 247): 🟠 the original text`, so
+    reading the rating first sees `D` and reports the capture unrated.
+    Strip the done marker, then hand what is left to the rating matcher.
+    """
+    done, rest = split_capture_done(text)
+    priority, body = split_capture_priority(rest)
+    return done, priority, body
+
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -445,15 +459,26 @@ def board_payload(name):
         # `nova_capture.replace_capture` matches an edit or a delete on
         # exactly this string. The split is presentational: `body` is what
         # the card shows and `priority` is the chip beside it.
+        # `done` is the cycle that closed it, or "". `prompt.md` step 6
+        # asks a cycle to prefix a capture it finished with `DONE (Cycle
+        # N):` and nothing had ever read that, so every closed bullet
+        # went on rendering here under "Not boarded yet" -- at Cycle 251
+        # all five captures on `issues.md` were finished work. Stripping
+        # the marker out of `body` keeps it out of the card's prose; the
+        # page paints it as a chip and sinks those cards below the open
+        # ones.
         "captures": [
             {
                 "text": text,
-                "body": split_capture_priority(text)[1],
-                "priority": split_capture_priority(text)[0],
-                "priorityKey": priority_key(split_capture_priority(text)[0]),
-                "blocks": render_blocks(split_capture_priority(text)[1]),
+                "body": body,
+                "priority": priority,
+                "priorityKey": priority_key(priority),
+                "done": done,
+                "blocks": render_blocks(body),
             }
-            for text in board["captures"]
+            for text, (done, priority, body) in (
+                (bullet, _capture_parts(bullet)) for bullet in board["captures"]
+            )
         ],
         "items": board["items"],
         "details": details,
