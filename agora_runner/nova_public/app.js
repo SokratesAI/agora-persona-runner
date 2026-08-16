@@ -3022,6 +3022,16 @@
       ariaLabel: "Priority of capture " + (index + 1),
       chipStyle: true,
       onPick: function (label) {
+        /* The reason goes on screen, not just into a reverted chip. Every
+         * other write on this row -- Edit, Delete, and the same picker on a
+         * boarded row -- says why it failed, and the failure this one is
+         * most likely to hit is the one `/api/capture/edit` was built to
+         * expect: a cycle boarding these very bullets while he is looking
+         * at them, which answers 409. Reverting in silence leaves "my tap
+         * did not register", "the app is broken" and "reload, a cycle just
+         * took this" looking identical. Found by review on #223. */
+        status.textContent = "saving…";
+        status.className = "capture-item-status";
         var rest = capture.body || "";
         if (!rest) {
           /* A bullet that is nothing but a glyph rewrites to the empty
@@ -3031,7 +3041,9 @@
            * fail; refusing here reverts the trigger without one. I shipped
            * this comment claiming the empty edit *would* delete the
            * capture, which is wrong about the server, and corrected it. */
-          return Promise.reject(new Error("nothing to rate"));
+          var err = new Error("nothing to rate");
+          fail(err);
+          return Promise.reject(err);
         }
         var next = label ? label.split(" ")[0] + " " + rest : rest;
         return fetch("/api/capture/edit", {
@@ -3046,8 +3058,13 @@
             if (!result || !result.ok) {
               throw new Error((result && (result.message || result.error)) || "failed");
             }
+            status.textContent = "";
             loadBoard(board);
-          });
+          })
+          // `fail` paints the reason and re-enables Edit/Delete; rethrowing
+          // is what makes `buildPrioPicker` revert the chip, so the two
+          // halves of "it did not save" happen together.
+          .catch(function (err) { fail(err); throw err; });
       },
     });
     body.appendChild(prioPicker.el);
