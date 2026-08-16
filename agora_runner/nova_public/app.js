@@ -624,14 +624,11 @@
    * survives the re-render that discards the box. See `renderComments`. */
   var drafts = {};
 
-  /* Whether a folded thread has been opened, keyed the same way and here for
-   * the same reason: a full `render` throws the drawer away, and the fold
-   * state is something he asked for by tapping. The 8s reply poll and the
-   * refetch after a send both repaint inside the existing drawer, so those
-   * were never the problem -- a new journal entry landing is, and one lands
-   * about every forty minutes. Without this, opening the earlier replies to
-   * read them would silently undo itself while he was reading them. */
-  var expanded = {};
+  /* There used to be an `expanded` map here, holding whether a folded thread
+   * had been opened. It is gone with the "Show earlier replies" control it
+   * served -- Edvard, 2026-08-16 20:04: *"I see that a solution to the
+   * comments has been to introduce a 'show/hide' comments bar, but that was
+   * a failure. Remove it and try something else."* See `renderComments`. */
 
   /* "40 seconds" / "3 minutes" / "1 hour 5 minutes" -- how long a reply has
    * been in flight. Deliberately coarse above a minute: the point is to let
@@ -676,25 +673,36 @@
      * card has the same thread and nobody notices, because a card's drawer
      * is shut until you open it.
      *
-     * So the fold goes on the thread rather than on the drawer, and the
-     * line it folds at is the one the file already draws: a comment under
-     * `## Acknowledged` is one a cycle has acted on and retired, which is
-     * exactly "not relevant anymore" in his words. What is left open is
-     * the trailing run he has not had an answer to yet, which is never
-     * more than a couple of items and always includes one he just typed --
-     * so the confirmation that a comment saved, which is why this list is
-     * shown at all, survives the fold.
+     * My first answer was a fold: keep every reply, hide the leading run of
+     * retired ones behind a "Show N earlier replies" button. He rejected it
+     * the same day, 20:04 -- *"I see that a solution to the comments has
+     * been to introduce a 'show/hide' comments bar, but that was a failure.
+     * Remove it and try something else."* -- and 20:03, on the block as a
+     * whole: *"I think the architecture around the 'needs Edvard' block
+     * needs to be rethinked as it seems poorly designed."*
      *
-     * Retired ones are not dropped. Losing them would trade his complaint
-     * for a worse one, and `earlier` is one tap away. */
-    var earlierBtn = el("button", "comment-earlier");
-    earlierBtn.type = "button";
-    earlierBtn.hidden = true;
-    earlierBtn.addEventListener("click", function () {
-      expanded[target.key] = !expanded[target.key];
-      paint(lastItems);
-    });
-    drawer.appendChild(earlierBtn);
+     * He is right and the fold was me refusing to answer the question. He
+     * asked for old answered replies not to be on the page; I kept them on
+     * the page and put a control in front of them, which adds a widget to
+     * the thing he said was too long. It also failed outright: I guarded
+     * against folding a thread away to nothing, and since I retire every
+     * comment I answer, all-retired is the *steady state* -- so the guard
+     * fired every time and folded exactly zero of the twelve replies.
+     *
+     * So: a retired comment is not rendered in this drawer at all. No
+     * control, no count, nothing to tap. `## Acknowledged` is the file
+     * already saying "acted on, no longer live", which is "not relevant
+     * anymore" in his words, and a filter is the honest reading of it.
+     *
+     * The one property that has to survive is that nothing waiting on me is
+     * ever hidden, and a filter gives it outright rather than by argument:
+     * only retired comments disappear, and a comment he just typed is never
+     * retired. Retirement is not chronological -- `tools/ack_comment.py`
+     * retires one comment by `(cycle, stamp)` -- which is what sank the
+     * previous cut-at-a-point approach; a filter does not care about order.
+     *
+     * Nothing is lost: the comments stay in `comments.md`, and every cycle
+     * reads them. They are simply not his to scroll past. */
 
     var list = el("div", "comment-list");
     drawer.appendChild(list);
@@ -727,75 +735,31 @@
     toggle.type = "button";
     toggle.setAttribute("aria-label", target.ariaLabel);
 
-    /* Where the fold falls: everything before the last unretired comment.
-     *
-     * Not `filter(acknowledged)`, which would be the same thing only while
-     * the file stays tidy. A cycle that retires an older comment and leaves
-     * a newer one open would, under a filter, hide a message from the
-     * middle of a conversation and leave the two either side of it touching
-     * -- so the thread would read as continuous while a turn of it was
-     * missing. Cutting at the last retired item can only ever hide a
-     * prefix, which is what a "show earlier" control claims to be doing. */
     var lastItems = comments;
 
-    function foldPoint(items) {
-      /* The *leading* run of retired comments, and only that.
-       *
-       * I first cut at the last retired comment instead, on the assumption
-       * that retirement runs in order, so everything before the newest
-       * retired one must be retired too. That assumption is false and
-       * nothing enforces it: `tools/ack_comment.py` retires one comment by
-       * `(cycle, stamp)`, whichever a cycle chose to act on, so a cycle can
-       * answer a newer message and leave an older one open. `_oldest_first`
-       * in `nova_comments.py` exists precisely because the two sections are
-       * not chronological with respect to each other.
-       *
-       * Under the old cut, `[live 08:00, retired 09:00, live 10:00]` hid the
-       * 08:00 one — a message still waiting on an answer from me, buried
-       * behind "Show 2 earlier replies" where he would never look for it.
-       * That is the exact opposite of what this fold is for.
-       *
-       * Stopping at the first live comment costs a little folding — a
-       * retired message sitting mid-thread stays on screen — and buys the
-       * property the fold actually needs: nothing I have not answered is
-       * ever hidden. */
-      var cut = 0;
-      var items_ = items || [];
-      while (cut < items_.length && items_[cut].acknowledged) cut += 1;
-      /* An all-retired thread folds all the way, and that is the case this
-       * fold exists for rather than the edge case it was written off as.
-       *
-       * I put a guard here saying "never fold the whole thread away to
-       * nothing", on the reasoning that an empty list under a "show 12
-       * earlier" button reads as a broken drawer. Two things were wrong
-       * with it. The list is `hidden` when empty, so what he actually sees
-       * is the button and the box, which is a tidy drawer and not a broken
-       * one. And every-comment-retired is not an edge case: I answer and
-       * retire everything I read, so it is the *steady state* of this
-       * thread between the moment I finish a cycle and the moment he types
-       * again. Measured 2026-08-16: all 12 replies to the Needs Edvard
-       * block were retired, so the guard turned the fold off entirely and
-       * he was still scrolling the full thread back to 08-11 -- which is
-       * the complaint the fold was built for, still standing after it
-       * shipped. Edvard, same day: "what I asked for is to not show all
-       * previous comments/answers on them as it shows all comments and
-       * answers that has ever been written in that thread and they have
-       * absolutely no relevance to the current issues." */
-      return cut;
+    /* Which comments this drawer shows. A retired one is dropped outright.
+     *
+     * A filter is what the previous cut-at-a-point version deliberately
+     * avoided, on the argument that dropping a retired comment from the
+     * middle of a thread leaves the two either side touching, so the thread
+     * reads as continuous while a turn of it is missing. That argument is
+     * about preserving a conversation. It stopped applying the moment he
+     * said the conversation itself is the problem -- these are answered
+     * asks he does not want on the page, not a discussion he is following.
+     *
+     * The property that does still matter is that nothing waiting on me is
+     * ever hidden, and a filter gives it directly: `acknowledged` is set
+     * only by a cycle that acted on the comment, so a message he just typed
+     * can never be filtered out. */
+    function shown(items) {
+      if (!target.fold) return items || [];
+      return (items || []).filter(function (c) { return !c.acknowledged; });
     }
 
     function paint(items) {
       lastItems = items;
       list.textContent = "";
-      var cut = target.fold ? foldPoint(items) : 0;
-      var showEarlier = !!expanded[target.key];
-      if (cut && !showEarlier) {
-        items = (items || []).slice(cut);
-      }
-      earlierBtn.hidden = !cut;
-      earlierBtn.textContent = showEarlier
-        ? "Hide earlier replies"
-        : "Show " + cut + (cut === 1 ? " earlier reply" : " earlier replies");
+      items = shown(items);
       (items || []).forEach(function (comment) {
         var item = el("div", comment.acknowledged ? "comment is-acknowledged" : "comment");
         var head = el("p", "comment-meta");
