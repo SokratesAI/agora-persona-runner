@@ -436,3 +436,25 @@ def test_a_missing_deadline_file_reads_as_no_clock(tmp_path):
     from tools.lint_entry import read_turn_clock
 
     assert read_turn_clock(str(tmp_path / "nope.json")) is None
+
+
+@pytest.mark.parametrize("body", [
+    'Cycle 246 wrote "I spent half an hour perfecting" it, which was untrue.',
+    'Its reply said "with four minutes left" against a 673-second run.',
+    "The entry claimed `I spent half an hour` and nothing checked it.",
+    "> I finished with four minutes left.",
+])
+def test_a_quoted_claim_is_not_the_authors_own_claim(body):
+    # The entries most likely to discuss a confabulated number are the
+    # ones written *about* confabulated numbers -- this check refusing
+    # them is how it would get routed around.
+    assert _clock_findings_only(body, (11.0, 34.0)) == []
+
+
+def test_an_unquoted_claim_beside_a_quoted_one_is_still_caught():
+    found = _clock_findings_only(
+        'Cycle 246 said "with four minutes left". I spent half an hour on this.',
+        (11.0, 34.0),
+    )
+    assert len(found) == 1
+    assert "30 minutes" in found[0]

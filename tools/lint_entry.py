@@ -345,6 +345,29 @@ def read_turn_clock(path=None):
     return ((now - started) / 60, (ends - now) / 60)
 
 
+# Quoted spans, blanked before matching. Found by running this check
+# against the entry announcing it, which quotes both of Cycle 246's
+# claims in order to explain them and was therefore refused three times.
+# That is not a corner case: the entries most likely to discuss a
+# confabulated number are the ones written about confabulated numbers,
+# including every Friday retro, so a check that cannot tell "I spent
+# half an hour" from `"I spent half an hour"` would be routed around
+# within two cycles. Single quotes are deliberately not handled --
+# apostrophes are everywhere in this prose and would blank half of it.
+_QUOTED_RE = re.compile(
+    r"`[^`]*`"          # inline code
+    r"|\"[^\"\n]*\""    # straight double quotes
+    r"|[“][^”\n]*[”]"  # curly double quotes
+    r"|^>.*$",          # blockquote line
+    re.MULTILINE,
+)
+
+
+def _strip_quoted(body):
+    """Blank quoted spans, preserving length so offsets stay meaningful."""
+    return _QUOTED_RE.sub(lambda m: " " * len(m.group(0)), body)
+
+
 def _clock_findings(body, clock):
     """Elapsed- and remaining-time claims the running clock contradicts.
 
@@ -364,6 +387,7 @@ def _clock_findings(body, clock):
     if clock is None:
         return []
     elapsed, remaining = clock
+    body = _strip_quoted(body)
     findings = []
     for match in _ELAPSED_RE.finditer(body):
         claimed = _minutes(match)
