@@ -346,3 +346,160 @@ def test_a_missing_footer_is_not_also_reported_as_a_bad_board():
     at all must report only that."""
     entry = "### Cycle 152 — 2026-08-01 02:00 Oslo\n\nNo footer here at all.\n"
     assert _kinds(lint("168-cycle-152.md", entry)) == ["footer"]
+
+
+# --- the turn clock (idea #77) -----------------------------------------
+#
+# Cycle 246 claimed "four minutes left" and "spent half an hour" inside a
+# cycle that measured 673 seconds. The tests that matter are the ones
+# pinning what this check must *not* do: it must stay silent when there
+# is no clock to read, and it must not fire on a duration the entry is
+# reporting about some other cycle, which is most of what a journal says
+# about time.
+
+def _with(body):
+    return f"### Cycle 250 — 2026-08-17 00:20 Oslo\n\n{body}\n\nPR: none | Outcome: n/a"
+
+
+def _clock_findings_only(body, clock):
+    findings = lint(
+        "260-cycle-250.md",
+        _with(body),
+        now=datetime(2026, 8, 17, 0, 30, tzinfo=OSLO),
+        clock=clock,
+    )
+    return [f for f in findings if f.startswith("clock:")]
+
+
+def test_an_elapsed_claim_longer_than_the_cycle_is_caught():
+    found = _clock_findings_only("I spent half an hour perfecting the guard.", (11.0, 34.0))
+    assert len(found) == 1
+    assert "30 minutes" in found[0] and "11 minutes ago" in found[0]
+
+
+def test_a_remaining_claim_the_clock_contradicts_is_caught():
+    found = _clock_findings_only("I finished with four minutes left.", (11.0, 34.0))
+    assert len(found) == 1
+    assert "34 minutes are left" in found[0]
+
+
+def test_an_honest_elapsed_claim_passes():
+    assert _clock_findings_only("I spent 20 minutes on the composition.", (34.0, 11.0)) == []
+
+
+def test_an_honest_remaining_claim_passes():
+    assert _clock_findings_only("I am writing this with 12 minutes left.", (34.0, 11.0)) == []
+
+
+def test_no_clock_means_no_finding_rather_than_a_guess():
+    # The file is absent between turns and this tool is also run by hand.
+    assert _clock_findings_only("I spent half an hour perfecting the guard.", None) == []
+
+
+# Every one of these is real prose from the live journal, or the shape of
+# it. The reviewer found this list was originally all elapsed-shaped, so
+# the remaining pattern's total lack of a first-person guard went
+# unexercised and it fired on ordinary retrospective writing.
+@pytest.mark.parametrize("body", [
+    "Cycle 12 burned ~16 minutes proving that waiting is a deadlock.",
+    "Waiting on the new pod cost that cycle 40 minutes.",
+    "The turn cap is 45 minutes and a turn that overruns is killed.",
+    "Each cycle has 45 minutes left of a five-hour window.",
+    "A cycle with an hour left has every reason to keep going.",
+    "It speaks at 15, 8 and 3 minutes remaining, and every single time.",
+    "There are two position reports now, at 30 and 22 minutes left.",
+    "The previous cycle would not ship this with twenty minutes left.",
+    "Cycle 246 claimed four minutes left when it had thirty-four.",
+    "Starting it with twenty minutes left would have left a mess.",
+    "The hook warns me when I have 15 minutes left, then 8, then 3.",
+])
+def test_a_duration_that_is_not_a_claim_about_this_turn_is_left_alone(body):
+    assert _clock_findings_only(body, (11.0, 34.0)) == []
+
+
+# The whitelist that used to exempt 40/45/60/72/300 was deleted, and this
+# is why. It was compensating for the loose remaining pattern above, and
+# the price was silently passing "an hour" -- 60 minutes inside a
+# 45-minute cap, physically impossible and the single roundest number a
+# made-up figure reaches for.
+@pytest.mark.parametrize("claim,minutes", [
+    ("I spent an hour on the composition.", 60),
+    ("I spent 1 hour on the composition.", 60),
+    ("I spent 60 minutes on the composition.", 60),
+    ("I spent 45 minutes on the composition.", 45),
+    ("I spent 40 minutes on the composition.", 40),
+])
+def test_a_round_constant_is_not_a_free_pass_for_an_elapsed_claim(claim, minutes):
+    found = _clock_findings_only(claim, (11.0, 34.0))
+    assert len(found) == 1
+    assert f"{minutes} minutes" in found[0]
+
+
+@pytest.mark.parametrize("body", [
+    "I had about ten minutes left, which is how this happened.",
+    "I finished the code with four minutes left.",
+    "I did not build it with twenty minutes left.",
+])
+def test_a_first_person_remaining_claim_is_still_caught(body):
+    assert len(_clock_findings_only(body, (11.0, 34.0))) == 1
+
+
+def test_a_turn_past_its_deadline_is_described_as_overdue_not_as_negative():
+    found = _clock_findings_only("I have thirty minutes left.", (65.0, -20.0))
+    assert len(found) == 1
+    assert "20 minutes past its deadline" in found[0]
+    assert "-20" not in found[0]
+
+
+def test_the_clock_check_reads_the_deadline_file_when_one_exists(tmp_path):
+    from tools.lint_entry import read_turn_clock
+    import json as _json
+    import time as _time
+
+    path = tmp_path / "turn-deadline.json"
+    started = _time.time() - 600
+    path.write_text(_json.dumps({
+        "started_at": started,
+        "deadline_at": started + 2700,
+        "timeout_seconds": 2700,
+    }))
+    elapsed, remaining = read_turn_clock(str(path))
+    assert 9.5 < elapsed < 10.5
+    assert 34.5 < remaining < 35.5
+
+
+@pytest.mark.parametrize("payload", ["", "not json", '{"started_at": "soon"}', "[]"])
+def test_an_unusable_deadline_file_reads_as_no_clock(tmp_path, payload):
+    from tools.lint_entry import read_turn_clock
+
+    path = tmp_path / "turn-deadline.json"
+    path.write_text(payload)
+    assert read_turn_clock(str(path)) is None
+
+
+def test_a_missing_deadline_file_reads_as_no_clock(tmp_path):
+    from tools.lint_entry import read_turn_clock
+
+    assert read_turn_clock(str(tmp_path / "nope.json")) is None
+
+
+@pytest.mark.parametrize("body", [
+    'Cycle 246 wrote "I spent half an hour perfecting" it, which was untrue.',
+    'Its reply said "with four minutes left" against a 673-second run.',
+    "The entry claimed `I spent half an hour` and nothing checked it.",
+    "> I finished with four minutes left.",
+])
+def test_a_quoted_claim_is_not_the_authors_own_claim(body):
+    # The entries most likely to discuss a confabulated number are the
+    # ones written *about* confabulated numbers -- this check refusing
+    # them is how it would get routed around.
+    assert _clock_findings_only(body, (11.0, 34.0)) == []
+
+
+def test_an_unquoted_claim_beside_a_quoted_one_is_still_caught():
+    found = _clock_findings_only(
+        'Cycle 246 said "with four minutes left". I spent half an hour on this.',
+        (11.0, 34.0),
+    )
+    assert len(found) == 1
+    assert "30 minutes" in found[0]
