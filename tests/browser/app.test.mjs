@@ -3652,7 +3652,7 @@ describe("a cycle that is running says so in the header", () => {
     const window = await loadSite("/", {
       journal: () => withStatus({ running: true, stalled: false, silentIntervals: 0 }),
     });
-    assert.deepEqual(live(window), ["cycle running now"]);
+    assert.deepEqual(live(window), ["cycle running"]);
   });
 
   /* The state Edvard is looking at almost every time he opens the app: a
