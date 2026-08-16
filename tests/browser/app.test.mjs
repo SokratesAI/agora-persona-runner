@@ -4599,10 +4599,18 @@ describe("Enter in the capture box is a newline", () => {
       assert.equal(window.posted.length, 1, `no send on ${JSON.stringify(mods)}+Enter`);
       assert.equal(window.posted[0].url, "/api/capture");
       assert.equal(window.posted[0].body.text, "ship the thing");
+      /* Both halves, because either alone is weaker than it looks. Review
+       * on #223 flagged the first: comparing against the same selector the
+       * production code reads mirrors the logic rather than pinning an
+       * answer, so a mutation choosing the *last* button would move both
+       * sides together if the real button order were ever reversed. The
+       * literal alone would be wrong in the other direction -- the point of
+       * this change is that the target is not hardcoded -- so the literal
+       * pins today's answer and the second assertion pins why it is that. */
+      assert.equal(window.posted[0].body.target, "issues");
       assert.equal(
-        window.posted[0].body.target,
-        window.document.querySelector(".capture-btn").getAttribute("data-target"),
-        "the chord picked a target the buttons do not offer first",
+        window.document.querySelector(".capture-btn").getAttribute("data-target"), "issues",
+        "the leftmost capture button is no longer Issue, so the chord's target changed with it",
       );
     }
   });
@@ -4668,9 +4676,10 @@ describe("rating a capture that is not boarded yet", () => {
   });
 
   test("clearing a rating leaves the text and does not send an empty edit", async () => {
-    // An empty `text` on that route is how a capture is deleted, so an
-    // Unrated pick on a bullet that is nothing but a glyph must not
-    // become one.
+    // `/api/capture/edit` answers a blank text with 400 "nothing to save"
+    // and never deletes -- deletion is its own route. So the point here is
+    // not safety, it is that an Unrated pick on a glyph-only bullet has no
+    // request worth making.
     const window = await loadSite("/issues", withCapture(rated));
     click(window, window.document.querySelector(".capture-item .chip.prio"));
     click(window, [...window.document.querySelectorAll(".prio-option")]
@@ -4680,7 +4689,7 @@ describe("rating a capture that is not boarded yet", () => {
     assert.equal(posted.body.text, "make the picker work here too");
   });
 
-  test("a glyph-only capture refuses the write rather than deleting itself", async () => {
+  test("a glyph-only capture sends nothing, rather than a request that can only 400", async () => {
     const glyphOnly = { text: "🟠", body: "", priority: "🟠 High", priorityKey: "high", blocks: [] };
     const window = await loadSite("/issues", withCapture(glyphOnly));
     const trigger = window.document.querySelector(".capture-item .chip.prio");
@@ -4689,8 +4698,13 @@ describe("rating a capture that is not boarded yet", () => {
       .find((o) => o.textContent === "– Unrated"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.filter((p) => p.url === "/api/capture/edit").length, 0,
-      "an empty edit would have deleted the capture");
+      "an edit the server can only refuse was sent anyway");
     assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating it never saved");
+    assert.match(
+      window.document.querySelector(".capture-item .capture-item-status").textContent,
+      /nothing to rate/,
+      "the local refusal said nothing on screen",
+    );
   });
 
   test("a failed write reverts the trigger rather than showing an unsaved rating", async () => {
@@ -4702,6 +4716,11 @@ describe("rating a capture that is not boarded yet", () => {
       .find((o) => o.textContent === "⚪ Low"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating the server refused");
+    assert.match(
+      window.document.querySelector(".capture-item .capture-item-status").textContent,
+      /conflict/,
+      "the refusal reverted the chip in silence, so he cannot tell it from a tap that never registered",
+    );
   });
 
   test("each capture's trigger names the capture it belongs to", async () => {
