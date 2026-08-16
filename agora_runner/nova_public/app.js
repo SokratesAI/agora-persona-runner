@@ -2984,12 +2984,68 @@
   function renderCapture(board, capture, index) {
     var one = el("div", "capture-item");
     var body = el("div", "capture-body");
-    // The rating he chose when he typed it, shown the same way a boarded
-    // row shows one, so an unboarded capture and a boarded item read
-    // alike. Unrated gets no chip -- the same rule as the board.
-    if (capture.priority) {
-      body.appendChild(el("span", "chip prio prio-" + capture.priorityKey, capture.priority));
-    }
+    /* The rating, shown and editable the same way a boarded row's is.
+     * Edvard, issues.md #91: *"All unboarded issues and ideas should have
+     * the priority status icon shown (as they do when its chosen) in the
+     * left top corner, but pressing it should open the modal like it does
+     * sin the issue cards."*
+     *
+     * This was a read-only `.chip` painted only when he had rated the
+     * capture at typing time, so the window between typing something and a
+     * cycle boarding it -- often hours, and exactly when his own sense of
+     * how urgent it is has to survive until I read it -- was the one place
+     * on the page a rating could not be given or changed. `chipStyle: true`
+     * is the board row's trigger, "Unrated" chip and all, so the two read
+     * alike and there is something to press when there is no rating yet.
+     *
+     * **A capture has nowhere to put a Priority cell, so the rating is the
+     * leading glyph of the bullet** (`nova_boards.split_capture_priority`)
+     * and setting one is an ordinary text edit. That is why this needs no
+     * route of its own: it rebuilds the bullet and posts it to the same
+     * `/api/capture/edit` the Edit button uses, address and all, so it
+     * inherits that route's index-and-text check and its 409. `capture.body`
+     * is the server's own glyph-stripped text, so the round trip never
+     * stacks a second glyph on a bullet that already had one. */
+    var prioPicker = buildPrioPicker({
+      current: capture.priority || "",
+      // Named per capture, as board rows are ("Priority of #57"), so a
+      // screen reader on a page of several unrated captures can tell which
+      // one a trigger belongs to -- every one of them otherwise announces
+      // the identical "Priority, Unrated".
+      //
+      // `openMenu` also stores this string as the shared popup's
+      // `dataset.openFor`, and I first wrote the comment here claiming
+      // uniqueness was load-bearing for that. It is not, and I checked:
+      // making every capture share one label changes no behaviour, because
+      // the document-level outside-click handler closes the open menu
+      // before the second trigger's own handler ever reads `openFor`.
+      ariaLabel: "Priority of capture " + (index + 1),
+      chipStyle: true,
+      onPick: function (label) {
+        var rest = capture.body || "";
+        if (!rest) {
+          // A bullet that is nothing but a glyph would rewrite to the empty
+          // string, and an empty text on that route means delete. Refuse.
+          return Promise.reject(new Error("nothing to rate"));
+        }
+        var next = label ? label.split(" ")[0] + " " + rest : rest;
+        return fetch("/api/capture/edit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target: board, index: index, original: capture.text, text: next,
+          }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (result) {
+            if (!result || !result.ok) {
+              throw new Error((result && (result.message || result.error)) || "failed");
+            }
+            loadBoard(board);
+          });
+      },
+    });
+    body.appendChild(prioPicker.el);
     renderBlocks(body, capture.blocks || []);
     one.appendChild(body);
 
@@ -4586,12 +4642,31 @@
       button.addEventListener("click", function () { send(button.getAttribute("data-target")); });
     });
     form.addEventListener("submit", function (event) { event.preventDefault(); });
-    // Enter sends as an issue; Shift+Enter keeps the newline, since several
-    // lines become several bullets server-side.
+    /* Enter is a newline. Edvard, issues.md #90: *"When i press enter on my
+     * keyboard, it automatically submits my input text as an issue in the
+     * Nova text input field. Pressing enter should create a new line, not
+     * submit."*
+     *
+     * This used to be Enter-sends / Shift+Enter-newline, on the reasoning
+     * that a capture is one line per item so Enter meaning "file it" costs
+     * nothing. It cost plenty. He types this box on a phone, where a soft
+     * keyboard has a return key and no reachable Shift+Enter at all, so the
+     * escape hatch existed only on a desktop he does not capture from --
+     * and the failure is destructive rather than annoying: half a sentence
+     * is filed as its own issue and the rest has nowhere to go.
+     *
+     * It also had to guess a target, and guessed `issues` for a box with
+     * three buttons. An idea typed and Entered was filed as a bug.
+     *
+     * Cmd/Ctrl+Enter keeps a keyboard send for the desktop case, where the
+     * modifier is the conventional "submit this composer" chord and cannot
+     * be hit by accident mid-sentence. It still has to pick a target, so it
+     * picks the same one the leftmost button does. The button is the path
+     * that has to work, and it is the only one that works on a phone. */
     textEl.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        send("issues");
+        send(buttons.length ? buttons[0].getAttribute("data-target") : "issues");
       }
     });
     textEl.addEventListener("input", fit);

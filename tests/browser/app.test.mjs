@@ -3329,7 +3329,11 @@ describe("the issues page", () => {
       board: (url) => (url.includes("item=") ? payload.boardItem : board),
     });
     const item = window.document.querySelector(".capture-item");
-    assert.equal(item.querySelector(".capture-body").textContent,
+    // The rendered paragraph, not all of `.capture-body`: the priority
+    // trigger (issues.md #91) is a sibling inside that same element and
+    // its label would otherwise be concatenated onto his text here. `p` is
+    // what `renderBlocks` produced, which is the thing this line is about.
+    assert.equal(item.querySelector(".capture-body p").textContent,
       "the /api/board page is slow", "the fixture does not render differently from its source");
     click(window, [...item.querySelectorAll(".capture-act")].filter(
       (b) => b.textContent === "Edit")[0]);
@@ -4542,6 +4546,184 @@ describe("the capture row does not scramble", () => {
     // into the text and exposes no property for it, so a property
     // assertion reads `undefined` whatever the sheet says.
     assert.match(sized.style.cssText, /min-height:\s*44px/);
+  });
+});
+
+/* Edvard, issues.md #90: "When i press enter on my keyboard, it
+ * automatically submits my input text as an issue in the Nova text input
+ * field. Pressing enter should create a new line, not submit."
+ *
+ * These pin the *absence* of a handler, which is a shape worth being
+ * careful about: `preventDefault` not being called is the only observable
+ * difference between "Enter inserts a newline" and "Enter did nothing at
+ * all", since jsdom does not type into a textarea for you. So both halves
+ * are asserted -- nothing posted, and the event left un-cancelled so the
+ * browser's own newline survives. */
+describe("Enter in the capture box is a newline", () => {
+  function press(window, el, key, mods) {
+    const event = new window.KeyboardEvent("keydown", Object.assign(
+      { key, bubbles: true, cancelable: true }, mods || {}));
+    el.dispatchEvent(event);
+    return event;
+  }
+
+  test("Enter files nothing and is left to insert a newline, with or without Shift", async () => {
+    /* Both cases in one test on purpose. Written as two, the Shift+Enter
+     * half passed under every mutation I could aim at this -- the old
+     * code let Shift+Enter through too -- so it read as a second guard and
+     * was pinning nothing. The bare-Enter case is the one that discriminates;
+     * Shift is here to say the modifier is no longer load-bearing, which is
+     * the actual bug: a soft keyboard has a return key and no reachable
+     * Shift+Enter, so on the phone he captures from there was no escape. */
+    for (const mods of [{}, { shiftKey: true }]) {
+      const window = await loadSite("/issues");
+      const box = window.document.getElementById("capture-text");
+      box.value = "half a thought";
+      const event = press(window, box, "Enter", mods);
+      await new Promise((r) => window.setTimeout(r, 0));
+      const how = JSON.stringify(mods);
+      assert.equal(window.posted.length, 0, `${how}+Enter filed the half-written capture`);
+      assert.equal(event.defaultPrevented, false,
+        `${how}+Enter cancelled the newline, so it does nothing at all rather than breaking the line`);
+      assert.equal(box.value, "half a thought", `${how}+Enter cleared the box as if it had sent`);
+    }
+  });
+
+  test("Cmd/Ctrl+Enter still sends, to the leftmost button's target", async () => {
+    for (const mods of [{ metaKey: true }, { ctrlKey: true }]) {
+      const window = await loadSite("/issues");
+      const box = window.document.getElementById("capture-text");
+      box.value = "ship the thing";
+      press(window, box, "Enter", mods);
+      await new Promise((r) => window.setTimeout(r, 0));
+      assert.equal(window.posted.length, 1, `no send on ${JSON.stringify(mods)}+Enter`);
+      assert.equal(window.posted[0].url, "/api/capture");
+      assert.equal(window.posted[0].body.text, "ship the thing");
+      assert.equal(
+        window.posted[0].body.target,
+        window.document.querySelector(".capture-btn").getAttribute("data-target"),
+        "the chord picked a target the buttons do not offer first",
+      );
+    }
+  });
+});
+
+/* Edvard, issues.md #91: "All unboarded issues and ideas should have the
+ * priority status icon shown (as they do when its chosen) in the left top
+ * corner, but pressing it should open the modal like it does sin the issue
+ * cards." */
+describe("rating a capture that is not boarded yet", () => {
+  const rated = {
+    text: "🟠 make the picker work here too",
+    body: "make the picker work here too",
+    priority: "🟠 High",
+    priorityKey: "high",
+    blocks: [{ type: "p", spans: [{ kind: "text", text: "make the picker work here too" }] }],
+  };
+  const withCapture = (capture) => ({
+    board: (url) => (url.includes("item=") ? payload.boardItem
+      : { ...payload.board, captures: [capture] }),
+  });
+
+  test("an unrated capture still shows a trigger, so a first rating can be given", async () => {
+    // The read-only chip it replaces was painted only when a rating
+    // existed, which left the one case that needs the control most --
+    // nothing rated yet -- with nothing to press.
+    const window = await loadSite("/issues");
+    const trigger = window.document.querySelector(".capture-item .chip.prio");
+    assert.ok(trigger, "an unrated capture has no priority trigger");
+    assert.equal(trigger.tagName, "BUTTON");
+    assert.equal(trigger.textContent, "Unrated");
+    assert.equal(trigger.className, "chip prio", "an unrated trigger must carry no colour class");
+  });
+
+  test("picking a rating rewrites the bullet's leading glyph through /api/capture/edit", async () => {
+    const window = await loadSite("/issues", withCapture(payload.board.captures[0]));
+    click(window, window.document.querySelector(".capture-item .chip.prio"));
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "🔴 Immediately"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.ok(posted, "no write reached /api/capture/edit");
+    assert.equal(posted.body.target, "issues");
+    assert.equal(posted.body.index, 0);
+    assert.equal(posted.body.original, payload.board.captures[0].text,
+      "the edit did not carry the capture's own text as its address");
+    assert.equal(posted.body.text, "🔴 " + payload.board.captures[0].body);
+  });
+
+  test("re-rating an already-rated capture swaps the glyph rather than stacking a second one", async () => {
+    // `capture.body` is the server's glyph-stripped text, and using
+    // `capture.text` here instead would send "⚪ 🟠 make the picker...".
+    const window = await loadSite("/issues", withCapture(rated));
+    const trigger = window.document.querySelector(".capture-item .chip.prio");
+    assert.equal(trigger.textContent, "🟠 High");
+    assert.equal(trigger.className, "chip prio prio-high");
+    click(window, trigger);
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "⚪ Low"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.equal(posted.body.text, "⚪ make the picker work here too");
+  });
+
+  test("clearing a rating leaves the text and does not send an empty edit", async () => {
+    // An empty `text` on that route is how a capture is deleted, so an
+    // Unrated pick on a bullet that is nothing but a glyph must not
+    // become one.
+    const window = await loadSite("/issues", withCapture(rated));
+    click(window, window.document.querySelector(".capture-item .chip.prio"));
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "– Unrated"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.equal(posted.body.text, "make the picker work here too");
+  });
+
+  test("a glyph-only capture refuses the write rather than deleting itself", async () => {
+    const glyphOnly = { text: "🟠", body: "", priority: "🟠 High", priorityKey: "high", blocks: [] };
+    const window = await loadSite("/issues", withCapture(glyphOnly));
+    const trigger = window.document.querySelector(".capture-item .chip.prio");
+    click(window, trigger);
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "– Unrated"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.filter((p) => p.url === "/api/capture/edit").length, 0,
+      "an empty edit would have deleted the capture");
+    assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating it never saved");
+  });
+
+  test("a failed write reverts the trigger rather than showing an unsaved rating", async () => {
+    const window = await loadSite("/issues", withCapture(rated));
+    window.postReply = { ok: false, message: "conflict" };
+    const trigger = window.document.querySelector(".capture-item .chip.prio");
+    click(window, trigger);
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "⚪ Low"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating the server refused");
+  });
+
+  test("each capture's trigger names the capture it belongs to", async () => {
+    /* Not a behaviour test and deliberately not written as one. I first
+     * wrote this as "two captures each open their own menu, not each
+     * other's", on the theory that `openMenu` keys the shared popup on
+     * `opts.ariaLabel` so identical labels would make the second tap close
+     * the first's menu. It passed with every capture sharing one label,
+     * because the document-level outside-click handler closes the menu
+     * before the second trigger's handler reads `openFor` -- so it was a
+     * test that could not fail, dressed as a guard. What unique labels
+     * actually buy is a screen reader being able to tell a page of
+     * "Priority, Unrated" triggers apart, so that is what this asserts. */
+    const first = payload.board.captures[0];
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem
+        : { ...payload.board, captures: [first, rated] }),
+    });
+    const labels = [...window.document.querySelectorAll(".capture-item .chip.prio")]
+      .map((t) => t.getAttribute("aria-label"));
+    assert.equal(labels.length, 2);
+    assert.equal(new Set(labels).size, 2, "both triggers announce the same thing");
   });
 });
 
