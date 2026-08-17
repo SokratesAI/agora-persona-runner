@@ -1,0 +1,297 @@
+"""Say when this loop goes dark, and for how long.
+
+Cycle 259, from a live reading. The seven-day window was 88% spent with
+58 hours still to run on it, and the only instrument any cycle had was
+`pace` -- used share divided by elapsed share, 1.344 that morning.
+
+`pace` is a good number and it answers the wrong question. It says the
+week is running hot as a ratio, which a cycle then has to turn into a
+decision about how big a pick to take. It cannot say *when* the budget
+hits zero, and it cannot say what happens between that moment and the
+reset. Those two are the whole question, because the answer is not
+"cycles get smaller" -- cycles do not get smaller, they stop. At a
+40-minute cadence a heartbeat still fires 36 times a day into an empty
+window, and none of those wake-ups can do any work. What one of them
+*costs* is not known -- no cycle has ever observed one and lived to
+write it down -- so this module reports the hours and the count and
+deliberately claims no figure for the waste.
+
+The measured numbers that morning: 12% remaining against 18%/day, so
+about 16 hours of runway and then **42 hours dark -- 63 heartbeats that
+would wake with nothing.** Nothing in the loop was reporting that, and
+`pace` at 1.344 reads as "take a smaller pick", which does not touch it.
+
+    python3 -m tools.quota_runway
+
+`runway` is pure and takes the four numbers; `main` reads them off
+`quota-snapshot.json` and `quota-history.jsonl`, the two files the
+warning hook already maintains. The split is so the arithmetic is
+testable without a live window.
+
+The burn rate is measured off the history rather than assumed, because
+the assumed one has been wrong at every cadence change -- `prompt.md`
+carried a figure derived at a 6-hourly heartbeat through three of them.
+"""
+
+import argparse
+import datetime as dt
+import json
+import os
+
+SNAPSHOT = "/data/claude-home/quota-snapshot.json"
+HISTORY = "/data/claude-home/quota-history.jsonl"
+
+# The last-resort fallback, not the truth. `nova_cadence_minutes()` in
+# `agora_runner.cycle_health` is the truth and `main` asks it first --
+# Edvard has changed the cadence five times since 2026-08-08, so a
+# constant here would be exactly the mistake this module's docstring
+# accuses `prompt.md` of. It is only used when that lookup has no honest
+# answer (Agora unreachable, or a schedule with no single interval).
+CADENCE_MINUTES = 40
+
+HEALTHY = "HEALTHY"
+TIGHT = "TIGHT"
+DARK = "DARK"
+
+
+def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_MINUTES):
+    """How long the budget lasts, and what is left over.
+
+    `pct_per_day` is the measured burn rate. A rate at or below zero
+    means the window is not being spent at all, which is reported as
+    unbounded runway rather than divided by.
+
+    Returns `(state, hours_of_runway, dark_hours, cycles_lost, lines)`.
+    `TIGHT` is the band where the budget runs out inside one cadence
+    interval of the reset -- close enough that it is not worth acting on,
+    and worth distinguishing from `DARK` so the check does not cry wolf.
+    """
+    lines = []
+
+    if remaining_pct <= 0:
+        cycles = int(hours_to_reset * 60 // cadence_minutes)
+        lines.append(
+            f"{DARK}: the window is already spent, and it does not reset for "
+            f"{hours_to_reset:.1f}h. About {cycles} heartbeats will wake with "
+            f"nothing between now and then."
+        )
+        return DARK, 0.0, hours_to_reset, cycles, lines
+
+    if pct_per_day <= 0:
+        lines.append(
+            f"{HEALTHY}: {remaining_pct:.0f}% remaining and no measurable burn "
+            f"over the sample, so nothing to project. Re-read once cycles have "
+            f"been running for a few hours."
+        )
+        return HEALTHY, float("inf"), 0.0, 0, lines
+
+    hours_of_runway = remaining_pct / pct_per_day * 24
+    dark_hours = hours_to_reset - hours_of_runway
+
+    if dark_hours <= 0:
+        lines.append(
+            f"{HEALTHY}: {remaining_pct:.0f}% remaining at {pct_per_day:.1f}%/day "
+            f"lasts {hours_of_runway:.1f}h, and the window resets in "
+            f"{hours_to_reset:.1f}h. The budget outlives the window."
+        )
+        return HEALTHY, hours_of_runway, 0.0, 0, lines
+
+    cycles_lost = int(dark_hours * 60 // cadence_minutes)
+
+    if cycles_lost < 1:
+        lines.append(
+            f"{TIGHT}: {remaining_pct:.0f}% remaining at {pct_per_day:.1f}%/day "
+            f"lasts {hours_of_runway:.1f}h against {hours_to_reset:.1f}h to the "
+            f"reset -- short by {dark_hours * 60:.0f} minutes, less than one "
+            f"cadence interval. Not worth acting on."
+        )
+        return TIGHT, hours_of_runway, dark_hours, cycles_lost, lines
+
+    lines.append(
+        f"{DARK}: {remaining_pct:.0f}% remaining at {pct_per_day:.1f}%/day lasts "
+        f"{hours_of_runway:.1f}h, and the window does not reset for "
+        f"{hours_to_reset:.1f}h."
+    )
+    lines.append(
+        f"  So the loop goes dark for about {dark_hours:.0f}h -- roughly "
+        f"{cycles_lost} heartbeats firing into an empty window. What one of "
+        f"those actually costs has never been measured; what is certain is "
+        f"that none of them can do any work."
+    )
+    lines.append(
+        "  The lever is cadence, and it is Edvard's. Slowing the heartbeat "
+        f"enough to stretch {remaining_pct:.0f}% over {hours_to_reset:.1f}h means "
+        f"about {_needed_cadence(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes):.0f} "
+        "minutes between cycles."
+    )
+    return DARK, hours_of_runway, dark_hours, cycles_lost, lines
+
+
+def _needed_cadence(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes):
+    """The interval that would make the budget last exactly to the reset.
+
+    Cost is linear in cadence because every cycle is a cold session --
+    the setup is paid per wake-up, not per hour -- so halving the rate
+    means doubling the interval.
+    """
+    needed_rate = remaining_pct / (hours_to_reset / 24)
+    return cadence_minutes * pct_per_day / needed_rate
+
+
+def burn_rate(rows, now, window_hours=24, key="seven_day"):
+    """Measured %/day over the trailing window, or None if unmeasurable.
+
+    Rows are the parsed lines of `quota-history.jsonl`, in any order. A
+    reset inside the sample would read as a large negative step and make
+    the slope meaningless, so samples before the newest reset are
+    dropped rather than averaged through.
+    """
+    usable = sorted(
+        (r for r in rows if key in r and "at" in r), key=lambda r: r["at"]
+    )
+    if len(usable) < 2:
+        return None
+
+    start = 0
+    for i in range(1, len(usable)):
+        if usable[i][key] < usable[i - 1][key] - 20:
+            start = i
+    usable = usable[start:]
+
+    seg = [r for r in usable if r["at"] >= now - window_hours * 3600]
+    if len(seg) < 2:
+        return None
+
+    elapsed_hours = (seg[-1]["at"] - seg[0]["at"]) / 3600
+    if elapsed_hours <= 0:
+        return None
+    return (seg[-1][key] - seg[0][key]) / elapsed_hours * 24
+
+
+def live_cadence_minutes():
+    """`(minutes, measured)` -- the heartbeat interval, and whether it is real.
+
+    Kept out of `runway` so the arithmetic stays pure and testable. The
+    lookup already exists for `cycle_health`; importing it rather than
+    writing a second one is the point -- a cadence that lives in two
+    places is a cadence that will disagree with itself.
+
+    **The second element is not decoration.** Cycle 259 shipped this
+    with a silent fallback and was wrong within the minute: the bridge
+    pod cannot reach Agora, so `nova_cadence_minutes()` returns `None`
+    there, and the tool cheerfully reported a wake-up count computed
+    from a stale 40 while the real cadence was 60. A cycle runs this
+    from the bridge pod, so the silent path *was* the normal path. An
+    assumed cadence has to announce itself or it is worse than none.
+    """
+    try:
+        from agora_runner.cycle_health import nova_cadence_minutes
+    except ImportError:
+        return CADENCE_MINUTES, False
+    try:
+        live = nova_cadence_minutes()
+    except Exception:
+        return CADENCE_MINUTES, False
+    if live:
+        return live, True
+    return CADENCE_MINUTES, False
+
+
+def _read_history(path):
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    return rows
+
+
+def main_argv(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--snapshot", default=SNAPSHOT)
+    ap.add_argument("--history", default=HISTORY)
+    ap.add_argument("--window-hours", type=float, default=24)
+    ap.add_argument(
+        "--cadence-minutes",
+        type=float,
+        default=None,
+        help="override the live heartbeat lookup",
+    )
+    args = ap.parse_args(argv)
+
+    with open(args.snapshot) as fh:
+        snap = json.load(fh)
+
+    seven = next(
+        (w for w in snap.get("windows", []) if w.get("window") == "seven_day"), None
+    )
+    if seven is None:
+        print("COULD NOT READ: no seven_day window in the snapshot.")
+        return 1
+
+    now = snap.get("fetched_at") or dt.datetime.now(dt.timezone.utc).timestamp()
+
+    # An empty `resets_at` is a real value, not a malformed one: the
+    # bridge writes `block.get("resets_at") or ""` and the upstream API
+    # returns nothing for it at the reset instant itself. There is one
+    # such row in quota-history.jsonl, logged during the 2026-08-12
+    # seven-day reset. Parsing it raises, and the reset instant is
+    # exactly when somebody would be asking this question.
+    stamp = (seven.get("resets_at") or "").strip()
+    if not stamp:
+        print(
+            "COULD NOT READ: the snapshot has no reset time for the seven_day "
+            "window, which is what the bridge writes at the reset instant "
+            "itself. Re-read in a minute; the window has almost certainly "
+            "just rolled over."
+        )
+        return 1
+    try:
+        reset = dt.datetime.fromisoformat(stamp)
+    except ValueError:
+        print(f"COULD NOT READ: cannot parse the seven_day reset time {stamp!r}.")
+        return 1
+    hours_to_reset = (reset.timestamp() - now) / 3600
+
+    rate = burn_rate(_read_history(args.history), now, args.window_hours)
+    if rate is None:
+        print(
+            "COULD NOT READ: not enough history to measure a burn rate over the "
+            f"last {args.window_hours:.0f}h. pace reads "
+            f"{seven.get('pace', '?')}; that is the only instrument here."
+        )
+        return 1
+
+    cadence, measured = args.cadence_minutes, True
+    if cadence is None:
+        cadence, measured = live_cadence_minutes()
+
+    state, _, _, _, lines = runway(
+        seven["remaining_pct"], hours_to_reset, rate, cadence
+    )
+    for line in lines:
+        print(line)
+    if not measured:
+        print(
+            f"  NOTE: could not reach Agora for the heartbeat interval, so the "
+            f"wake-up count and the suggested interval above assume "
+            f"{cadence:.0f} minutes. That lookup returns nothing from the "
+            f"bridge pod, which is where a cycle runs this -- check the "
+            f"heartbeat yourself before quoting either number."
+        )
+    return 0 if state == HEALTHY else 2
+
+
+def main():
+    return main_argv()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
