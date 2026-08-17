@@ -6,7 +6,7 @@ added in the Journal card somehow and i'll answer in the comment of a journal
 card."*
 """
 
-from agora_runner.nova_journal import parse_journal, split_ask
+from agora_runner.nova_journal import build_status, open_asks, parse_journal, split_ask
 
 
 def test_an_ask_paragraph_leaves_the_body():
@@ -119,3 +119,58 @@ def test_both_parts_of_a_two_part_cycle_keep_their_asks():
     assert [e["ask"] for e in entries] == ["second ask.", "first ask."]
     for entry in entries:
         assert "Needs Edvard" not in entry["body"]
+
+
+def test_open_asks_names_every_card_that_raised_one():
+    """The page holds twenty entries; the oldest ask is outside that window.
+
+    #94's ask waited a day on card 247 while the row it blocks sat at the
+    top of Edvard's board, and nothing on the page said so -- by then the
+    card was fourteen down the feed. The header can only point at it if the
+    server names it, because the client never fetched that far back.
+    """
+    entries = parse_journal(
+        "### 2026-08-17 09:00 (Oslo) — Cycle 249 · no ask here\n\n"
+        "Just work.\n\n"
+        "PR: none | Outcome: shipped\n\n"
+        "### 2026-08-16 21:20 (Oslo) — Cycle 247 · an ask\n\n"
+        "**Needs Edvard:** do you use Codex against these repos?\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert open_asks(entries) == [
+        {"cycle": 247, "date": "2026-08-16", "time": "21:20"},
+    ]
+
+
+def test_open_asks_keeps_the_newest_first_order():
+    """Which end is the oldest is the whole answer, so the order is a contract.
+
+    The client takes the last match as the longest-waiting one. Reverse this
+    list and the header points at the freshest ask instead -- still an ask,
+    still plausible, and exactly the wrong one.
+    """
+    entries = parse_journal(
+        "### 2026-08-17 09:00 (Oslo) — Cycle 249 · newer ask\n\n"
+        "**Needs Edvard:** the newer question.\n\n"
+        "PR: none | Outcome: shipped\n\n"
+        "### 2026-08-16 21:20 (Oslo) — Cycle 247 · older ask\n\n"
+        "**Needs Edvard:** the older question.\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert [a["cycle"] for a in open_asks(entries)] == [249, 247]
+
+
+def test_an_ask_with_no_cycle_number_is_not_listed():
+    """A report has no card, so an ask in one has nowhere to be answered."""
+    assert open_asks([{"ask": "answer me", "cycle": None, "date": "2026-08-16"}]) == []
+
+
+def test_the_status_header_carries_the_asks():
+    entries = parse_journal(
+        "### 2026-08-16 21:20 (Oslo) — Cycle 247 · an ask\n\n"
+        "**Needs Edvard:** answer this.\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert build_status(entries)["asks"] == [
+        {"cycle": 247, "date": "2026-08-16", "time": "21:20"},
+    ]

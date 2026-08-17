@@ -314,8 +314,69 @@
    * can show it as stale instead of replacing it with nothing. */
   var lastStatus = null;
 
-  function renderStatus(status) {
+  /* The comments the page last saw, keyed by cycle. Held here rather than
+   * passed down every call because `renderStatus` has two callers and only
+   * one of them is `render` -- the poll re-renders the header on its own to
+   * clear the offline state, and a header that lost the ask pill every time
+   * that happened would flicker it away twice a minute. */
+  var lastCommentsByCycle = {};
+
+  /* Whether a comments payload has ever arrived. `/api/comments` is
+   * tolerated when it fails -- it resolves to null and costs the bubbles,
+   * not the feed -- and without this the header would read that empty
+   * answer set as "he has replied to nothing" and raise the pill on every
+   * open ask. Same failure as the replayed case one level in: a claim about
+   * what he has done, made from a payload that never came. */
+  var haveComments = false;
+
+  /* The oldest ask Edvard has not replied to, or null.
+   *
+   * `status.asks` is every card that raised one, newest first and with no
+   * opinion about which are still open (see `open_asks`); a card is
+   * answered once he has commented on it, which is what the comments
+   * payload knows. Intersecting the two here rather than on the server is
+   * what makes the pill disappear the moment his reply lands, instead of
+   * whenever the journal cache next rebuilds.
+   *
+   * Last match wins because the list is newest first, so the survivor is
+   * the one that has waited longest -- which is the whole point. An ask
+   * scrolls out of the twenty-entry window in a day and stops being
+   * something he can stumble across; #94's sat unanswered for a day with
+   * the row it blocks at the top of his board. */
+  function oldestOpenAsk(status, commentsByCycle) {
+    var asks = (status && status.asks) || [];
+    var open = null;
+    for (var i = 0; i < asks.length; i++) {
+      var answers = commentsByCycle[String(asks[i].cycle)];
+      if (answers && answers.length) continue;
+      open = asks[i];
+    }
+    return open;
+  }
+
+  /* "since 08-16", and the day count when it has been more than one.
+   *
+   * The wait is computed here, off the reader's own clock, and not on the
+   * server: this payload is cached and warmed, so a number of days baked
+   * into it would freeze at build time -- the same reason `build_status`
+   * refuses to consult a clock at all. */
+  function askWaitLabel(ask, now) {
+    var stamp = (ask.date || "").slice(5);
+    var label = stamp ? "since " + stamp : "";
+    var start = Date.parse((ask.date || "") + "T" + (ask.time || "00:00") + ":00");
+    if (!isNaN(start)) {
+      var days = Math.floor(((now || Date.now()) - start) / 86400000);
+      if (days >= 1) label += " · " + days + (days === 1 ? " day" : " days");
+    }
+    return label;
+  }
+
+  function renderStatus(status, commentsByCycle) {
     lastStatus = status;
+    if (commentsByCycle) {
+      lastCommentsByCycle = commentsByCycle;
+      haveComments = true;
+    }
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
 
@@ -337,6 +398,30 @@
       saved.appendChild(el("span", "badge badge-error", "can't reach Nova"));
       saved.appendChild(el("span", "status-pr", "showing a saved copy"));
       statusEl.appendChild(saved);
+    }
+
+    /* An ask with no answer, pointing at the card it lives on.
+     *
+     * Suppressed on a replayed payload for the same reason the badges
+     * below are: "he has not replied" is a claim about now, and a cached
+     * comments payload cannot support it -- the failure mode is telling
+     * him he owes an answer he gave an hour ago.
+     *
+     * A link and not a button: it is the same `/cycle/N` permalink every
+     * card carries, so it survives a right-click, a share and the back
+     * button, and it lands on the page where the reply box is. */
+    if (!replayed && haveComments) {
+      var open = oldestOpenAsk(status, lastCommentsByCycle);
+      if (open) {
+        var waiting = el("p", "status-sub");
+        var pill = el("a", "badge badge-ask", "waiting on you");
+        pill.href = "/cycle/" + open.cycle;
+        waiting.appendChild(pill);
+        waiting.appendChild(el("span", "status-pr", "cycle " + open.cycle));
+        var wait = askWaitLabel(open);
+        if (wait) waiting.appendChild(el("span", "status-pr", wait));
+        statusEl.appendChild(waiting);
+      }
     }
 
     if (status.lastOutcome) {
@@ -1692,9 +1777,12 @@
     // changed" from "changed while he was typing".
     renderedVersion = (journal && journal.version) || null;
     renderedComments = JSON.stringify(comments);
-    renderStatus(journal.status || {});
-
     var commentsByCycle = (comments && comments.byCycle) || {};
+
+    // `null` and not the empty object when the fetch itself failed: "no
+    // comments" and "no answer about the comments" are different, and only
+    // the first one licenses the header to say he owes a reply.
+    renderStatus(journal.status || {}, comments ? commentsByCycle : null);
 
     var byCycle = {};
     ((digest && digest.lines) || []).forEach(function (line) {
@@ -4526,7 +4614,18 @@
         // `changed` branch: an unchanged payload is still a reachable
         // server, and that is the case that would otherwise stay red
         // forever once the loop went quiet.
-        if (pollFailures >= POLL_FAILURES_BEFORE_STALE) renderStatus(journal.status || {});
+        if (pollFailures >= POLL_FAILURES_BEFORE_STALE) {
+          // Given the comments this poll just fetched, not the ones from
+          // whenever the page last re-rendered: coming back online is
+          // exactly when his reply is the news, and re-drawing the header
+          // with a stale answer set would leave the ask pill up.
+          //
+          // `results[2]` and not `comments`, which is that payload already
+          // serialised for the change comparison -- a string has no
+          // `byCycle`, so reading it there would silently hand the header
+          // an empty answer set and put the pill back up on every ask.
+          renderStatus(journal.status || {}, results[2] ? (results[2].byCycle || {}) : null);
+        }
         pollFailures = 0;
         if (changed && !typing()) {
           /* New entries land at the top, so a naive re-render shoves
