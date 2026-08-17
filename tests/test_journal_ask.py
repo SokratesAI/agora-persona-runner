@@ -22,6 +22,30 @@ def test_an_ask_paragraph_leaves_the_body():
     assert "And then I did the other thing." in remainder
 
 
+def test_prose_naming_the_old_section_is_not_an_ask():
+    """The colon is what makes it a label rather than a mention.
+
+    This is the real opening of entry 011-cycle-11.md, which describes the
+    old digest layout. It starts a line, so an optional colon matched it,
+    and it parsed as an open ask -- the oldest in the corpus, which is how
+    the header's "waiting on you" pill came to point at 2026-08-11 instead
+    of at the ask that was actually live.
+    """
+    body = (
+        "**Needs Edvard**, **Next cycle**, and a one-line-per-cycle **Digest**,\n"
+        "with the prose kept underneath for when he wants the why."
+    )
+    remainder, ask = split_ask(body)
+    assert ask == ""
+    assert remainder == body
+
+
+def test_a_colon_outside_the_bold_still_reads_as_a_label():
+    """`**Needs Edvard**:` is a typo of the convention, not a mention."""
+    _, ask = split_ask("**Needs Edvard**: raise the spending limit.")
+    assert ask == "raise the spending limit."
+
+
 def test_a_wrapped_ask_comes_back_as_one_line():
     """The journal is hard-wrapped, and the wrap is not a sentence boundary."""
     body = "**Needs Edvard:** do you use Codex\nagainst these repos, or not?"
