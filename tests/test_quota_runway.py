@@ -240,7 +240,7 @@ def test_main_asks_agora_for_the_cadence_rather_than_assuming_it(tmp_path, capsy
     the very mistake this module's docstring accuses prompt.md of."""
     reset = dt.datetime.fromtimestamp(1000.0 + 58 * 3600, dt.timezone.utc)
     snap = _snapshot(tmp_path, resets_at=reset.isoformat())
-    monkeypatch.setattr(quota_runway, "live_cadence_minutes", lambda: 120)
+    monkeypatch.setattr(quota_runway, "live_cadence_minutes", lambda: (120, True))
     quota_runway.main_argv(["--snapshot", str(snap), "--history", str(_history(tmp_path))])
     out = capsys.readouterr().out
     # 43h dark at 120-minute cadence is 21 wake-ups, not the 64 that a
@@ -253,10 +253,29 @@ def test_the_cadence_lookup_falls_back_rather_than_raising(monkeypatch):
     import agora_runner.cycle_health as ch
 
     monkeypatch.setattr(ch, "nova_cadence_minutes", lambda: None)
-    assert quota_runway.live_cadence_minutes() == quota_runway.CADENCE_MINUTES
+    assert quota_runway.live_cadence_minutes() == (quota_runway.CADENCE_MINUTES, False)
 
     def boom():
         raise RuntimeError("agora unreachable")
 
     monkeypatch.setattr(ch, "nova_cadence_minutes", boom)
-    assert quota_runway.live_cadence_minutes() == quota_runway.CADENCE_MINUTES
+    assert quota_runway.live_cadence_minutes() == (quota_runway.CADENCE_MINUTES, False)
+
+    monkeypatch.setattr(ch, "nova_cadence_minutes", lambda: 60)
+    assert quota_runway.live_cadence_minutes() == (60, True)
+
+
+def test_an_assumed_cadence_says_so_and_a_measured_one_does_not(tmp_path, capsys, monkeypatch):
+    """The silent fallback was the normal path from the bridge pod, and it
+    reported a wake-up count off a stale 40 while the truth was 60."""
+    reset = dt.datetime.fromtimestamp(1000.0 + 58 * 3600, dt.timezone.utc)
+    snap = _snapshot(tmp_path, resets_at=reset.isoformat())
+    argv = ["--snapshot", str(snap), "--history", str(_history(tmp_path))]
+
+    monkeypatch.setattr(quota_runway, "live_cadence_minutes", lambda: (40, False))
+    quota_runway.main_argv(argv)
+    assert "NOTE: could not reach Agora" in capsys.readouterr().out
+
+    monkeypatch.setattr(quota_runway, "live_cadence_minutes", lambda: (60, True))
+    quota_runway.main_argv(argv)
+    assert "NOTE: could not reach Agora" not in capsys.readouterr().out

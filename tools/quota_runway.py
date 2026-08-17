@@ -169,21 +169,32 @@ def burn_rate(rows, now, window_hours=24, key="seven_day"):
 
 
 def live_cadence_minutes():
-    """The heartbeat interval from Agora, falling back to the constant.
+    """`(minutes, measured)` -- the heartbeat interval, and whether it is real.
 
     Kept out of `runway` so the arithmetic stays pure and testable. The
     lookup already exists for `cycle_health`; importing it rather than
     writing a second one is the point -- a cadence that lives in two
     places is a cadence that will disagree with itself.
+
+    **The second element is not decoration.** Cycle 259 shipped this
+    with a silent fallback and was wrong within the minute: the bridge
+    pod cannot reach Agora, so `nova_cadence_minutes()` returns `None`
+    there, and the tool cheerfully reported a wake-up count computed
+    from a stale 40 while the real cadence was 60. A cycle runs this
+    from the bridge pod, so the silent path *was* the normal path. An
+    assumed cadence has to announce itself or it is worse than none.
     """
     try:
         from agora_runner.cycle_health import nova_cadence_minutes
     except ImportError:
-        return CADENCE_MINUTES
+        return CADENCE_MINUTES, False
     try:
-        return nova_cadence_minutes() or CADENCE_MINUTES
+        live = nova_cadence_minutes()
     except Exception:
-        return CADENCE_MINUTES
+        return CADENCE_MINUTES, False
+    if live:
+        return live, True
+    return CADENCE_MINUTES, False
 
 
 def _read_history(path):
@@ -258,15 +269,23 @@ def main_argv(argv=None):
         )
         return 1
 
-    cadence = args.cadence_minutes
+    cadence, measured = args.cadence_minutes, True
     if cadence is None:
-        cadence = live_cadence_minutes()
+        cadence, measured = live_cadence_minutes()
 
     state, _, _, _, lines = runway(
         seven["remaining_pct"], hours_to_reset, rate, cadence
     )
     for line in lines:
         print(line)
+    if not measured:
+        print(
+            f"  NOTE: could not reach Agora for the heartbeat interval, so the "
+            f"wake-up count and the suggested interval above assume "
+            f"{cadence:.0f} minutes. That lookup returns nothing from the "
+            f"bridge pod, which is where a cycle runs this -- check the "
+            f"heartbeat yourself before quoting either number."
+        )
     return 0 if state == HEALTHY else 2
 
 
