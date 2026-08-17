@@ -1319,6 +1319,40 @@ def _newest_written_at(entries):
     return None
 
 
+def open_asks(entries):
+    """Every card carrying an ask, newest first, as `{cycle, date, time}`.
+
+    An ask lives on the journal card that raised it (`split_ask`), and the
+    card scrolls off the top of the feed while the question stays open --
+    #94's has been waiting since 08-16 and is fourteen cards down, which is
+    the whole reason this list exists. The page cannot work it out for
+    itself: it holds twenty entries and the oldest ask is exactly the one
+    outside that window.
+
+    **Which of these is still waiting is deliberately not decided here.**
+    An ask is answered when Edvard has commented on that card, and comments
+    live in a different document with its own cache -- folding them in
+    would mean the pill kept claiming he had not replied until the *journal*
+    cache next rebuilt, minutes after he did. So this stays a pure function
+    of the journal, and the client, which already holds both payloads,
+    intersects them.
+
+    Entries with no cycle number are skipped rather than carried with a
+    `None`: a report has no card of its own for him to reply on, so an ask
+    written into one has nowhere to be answered and pointing at it would be
+    pointing at nothing.
+    """
+    return [
+        {
+            "cycle": entry["cycle"],
+            "date": entry.get("date") or "",
+            "time": entry.get("time") or "",
+        }
+        for entry in entries
+        if entry.get("ask") and entry.get("cycle") is not None
+    ]
+
+
 def build_status(entries, known_cycles=None):
     """The front-page header: is Nova alive, and what did it just do.
 
@@ -1428,4 +1462,6 @@ def build_status(entries, known_cycles=None):
         # recent enough to be worth a badge rather than a footnote.
         "recentMissingCycles": recent_gaps(cycle_numbers),
         "lastWrittenAt": written_at.isoformat() if written_at else "",
+        # Every card with an ask on it, answered or not -- see `open_asks`.
+        "asks": open_asks(entries),
     }

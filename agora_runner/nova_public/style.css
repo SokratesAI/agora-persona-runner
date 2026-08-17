@@ -554,6 +554,26 @@ pre code { background: none; padding: 0; }
  * "this page cannot see the loop at all" are different enough answers that
  * they must not look the same at a glance. */
 .badge-error { color: var(--danger); border-color: #6b3535; }
+/* "waiting on you" -- the header's pointer at the oldest ask nobody has
+ * answered. Deliberately the *same* amber as `.entry-ask`, filled the same
+ * way, because it is a pointer at one of those blocks rather than a badge in
+ * its own right: he should recognise where it lands before he taps it.
+ *
+ * That does put it in the same colour family as `.badge-warn` two lines up,
+ * which the comment there argues against for the unreachable badge. The
+ * cases differ: this one names the block it links to, and the two only ever
+ * appear together when the loop has stalled *and* owes him an answer -- in
+ * which case they are two true things rather than one ambiguous one.
+ *
+ * It is an anchor, so the underline has to go; without this it renders as an
+ * underlined pill, which nothing else on the page does. */
+.badge-ask {
+  color: var(--warn);
+  border-color: #5c4a1e;
+  background: #2a2418;
+  text-decoration: none;
+}
+
 /* The last known header line while the page cannot reach the server. Dimmed
  * and italic so it never reads as a current claim. */
 .status-line.is-stale { font-style: italic; opacity: 0.7; }

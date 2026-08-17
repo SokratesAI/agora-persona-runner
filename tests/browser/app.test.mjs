@@ -3915,6 +3915,142 @@ describe("a cycle that is running says so in the header", () => {
   });
 });
 
+describe("an ask nobody answered is named in the header", () => {
+  /* An ask lives on the journal card that raised it, and the card scrolls
+   * off the feed while the question stays open. #94's waited a day on card
+   * 247 -- by then fourteen cards down -- while the board row it blocks sat
+   * at the top of Edvard's board and three cycles in a row skipped it. The
+   * card was the right home for the ask; nothing was the home for "this one
+   * is still waiting". */
+  const pill = (window) => window.document.querySelector("#status .badge-ask");
+  const head = (window) => window.document.getElementById("status");
+
+  const withAsks = (asks, extra) => {
+    const copy = JSON.parse(JSON.stringify(payload.journal));
+    Object.assign(copy.status, { recentMissingCycles: [], asks }, extra || {});
+    return copy;
+  };
+
+  const withComments = (byCycle) => () => ({ byCycle, needs: [] });
+
+  test("an unanswered ask links to the card it lives on", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const found = pill(window);
+    assert.ok(found, "expected a waiting-on-you pill");
+    assert.equal(found.getAttribute("href"), "/cycle/247");
+    assert.match(window.document.getElementById("status").textContent, /cycle 247/);
+  });
+
+  /* The longest wait is the one worth surfacing: a fresh ask is on a card
+   * he can still see. Taking the first of the list instead would name an
+   * ask -- plausible, wrong, and untestable by eye. */
+  test("the oldest open ask wins", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.equal(pill(window).getAttribute("href"), "/cycle/247");
+  });
+
+  /* A comment on the card is the answer, so the pill has to move on to the
+   * next one still waiting rather than staying on the one he just replied
+   * to. This is the assertion that makes the feature capable of stopping. */
+  test("a card he has replied to is not still waiting", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ]),
+      comments: {
+        byCycle: { 247: [{ stamp: "2026-08-17 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.equal(pill(window).getAttribute("href"), "/cycle/260");
+  });
+
+  test("nothing is said when every ask has an answer", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
+      comments: {
+        byCycle: { 247: [{ stamp: "2026-08-17 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.equal(pill(window), null);
+  });
+
+  test("a journal with no asks says nothing", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.equal(pill(window), null);
+  });
+
+  /* The recovery path, and it is here because it is where the bug was.
+   *
+   * Once the page has been offline the poll re-draws the header on its own,
+   * without a full re-render, and the only comments it holds at that moment
+   * are the ones it just fetched. The first version of this read the poll's
+   * `comments` local -- which is that payload already serialised for the
+   * change comparison, so `.byCycle` was `undefined`, the header was handed
+   * an empty answer set, and the pill went back up on an ask he had already
+   * answered. A string is a perfectly good value to read a missing property
+   * off, so nothing threw.
+   *
+   * **The obvious version of this test does not catch it, and I wrote that
+   * one first.** Have him answer *during* the outage and the recovering poll
+   * sees a changed payload, re-renders the whole page, and the correct
+   * comments arrive through `render` a line later -- the bug is real and
+   * invisible. So nothing changes here: the answer is already in the payload
+   * before the outage, and the recovery draw is the only thing that touches
+   * the header. */
+  test("coming back online does not put the pill back on an answered ask", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
+      comments: {
+        byCycle: { 247: [{ stamp: "2026-08-17 07:00", text: "answered" }] },
+        needs: [],
+      },
+      install: (w) => { timers = captureTimers(w); },
+    });
+    assert.equal(pill(window), null, "answered, so nothing is waiting");
+
+    const good = window.fetch;
+    window.fetch = () => Promise.reject(new Error("network down"));
+    await timers.firePagePoll();
+    await timers.firePagePoll();
+    assert.match(head(window).textContent, /can't reach Nova/);
+
+    window.fetch = good;
+    await timers.firePagePoll();
+    assert.doesNotMatch(head(window).textContent, /can't reach Nova/);
+    assert.equal(pill(window), null);
+  });
+
+  /* Same rule as the running and stall badges: "he has not replied" is a
+   * claim about now, and a payload replayed out of the service worker's
+   * cache cannot support it. The failure it prevents is telling him he owes
+   * an answer he gave an hour ago, on the one screen he checks from his
+   * phone. */
+  test("a saved copy does not claim he owes an answer", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }],
+        { replayed: true }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.equal(pill(window), null);
+  });
+});
+
 describe("a loop that has gone quiet says so in the header", () => {
   const warn = (window) =>
     [...window.document.querySelectorAll("#status .badge-warn")]
