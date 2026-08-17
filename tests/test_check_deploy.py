@@ -30,7 +30,12 @@ def test_the_actual_incident_reads_as_not_deployed():
     assert state == NOT_DEPLOYED
     body = "\n".join(lines)
     assert "f5406109f550" in body and "44c269960014" in body
-    assert "update-manifest" in body
+    # Pins that the advice names something that still exists. This asserted
+    # the literal `update-manifest` until Cycle 258, and Cycle 224 had already
+    # folded that job into `build-push` -- so the test was holding the tool's
+    # one actionable sentence at a job name a cycle could no longer find.
+    assert "build-push" in body
+    assert "agora-persona-runner-config/manifest.yaml" in body
 
 
 def test_not_deployed_outranks_the_stale_cluster():

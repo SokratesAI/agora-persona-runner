@@ -7,18 +7,30 @@ Oslo and its build reported `failure`: `test`, `vault-drift` and
     The job was not started because recent account payments have failed
     or your spending limit needs to be increased.
 
-That fourth job is `update-manifest`, the one that writes the new image
+That fourth job was `update-manifest`, the one that writes the new image
 digest into `agora-persona-runner-config`. So the image was built and
 pushed to the registry, and nothing on earth pointed at it. ArgoCD kept
 serving the previous digest, the pod stayed on the previous code, and
 every check a cycle actually runs was green or absent:
 
-  - `gh pr checks` on the PR passes -- `update-manifest` only runs on
-    the push to `main`, after the merge.
+  - `gh pr checks` on the PR passes -- the manifest write only happens
+    on the push to `main`, after the merge.
   - `kubectl get pods -n agents` shows a healthy pod. It is healthy. It
     is running last cycle's code.
   - `kubectl logs ... | grep -i traceback` finds nothing, because
     nothing crashed.
+
+**That job no longer exists, and the check is not thereby retired.**
+Cycle 224 folded `update-manifest` into `build-push` as its last step,
+so a manifest write that fails now reddens a job somebody is watching
+rather than one nothing was. What it did not do is make the manifest
+write unskippable: the step still runs after a push, still needs an
+installation token and a push to a second repo, and a cycle that merges
+and then reads `gh pr checks` is still reading a check that ran before
+any of that. So the three facts below still live in three systems, and
+this is still the only command that puts two of them side by side. The
+specific 2026-08-15 shape -- a whole job refused at startup over
+billing -- is history; the gap it exposed is not.
 
 The handoff asks each cycle to "confirm the deploy came up healthy",
 and the honest answer for runner#212 was that it never would. Nothing
@@ -87,8 +99,12 @@ def verdict(tip_sha, tip_digest, manifest_digest, deployed):
             f"it, so the merged code will never reach the cluster on its own."
         )
         lines.append(
-            "  This is what a skipped `update-manifest` job looks like. It is "
-            "not visible in `gh pr checks`, in pod status, or in the logs."
+            "  This is what a manifest write that never happened looks like -- "
+            "a refused job before Cycle 224, a failed last step of `build-push` "
+            "after it. Either way it is not visible in `gh pr checks`, in pod "
+            "status, or in the logs. Check the `build-push` job on main's "
+            "newest run, then fix it by hand: commit the digest above to "
+            f"{CONFIG_REPO}/manifest.yaml, which is all the step does."
         )
         return NOT_DEPLOYED, lines
 
