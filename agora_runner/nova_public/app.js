@@ -321,6 +321,14 @@
    * that happened would flicker it away twice a minute. */
   var lastCommentsByCycle = {};
 
+  /* Whether a comments payload has ever arrived. `/api/comments` is
+   * tolerated when it fails -- it resolves to null and costs the bubbles,
+   * not the feed -- and without this the header would read that empty
+   * answer set as "he has replied to nothing" and raise the pill on every
+   * open ask. Same failure as the replayed case one level in: a claim about
+   * what he has done, made from a payload that never came. */
+  var haveComments = false;
+
   /* The oldest ask Edvard has not replied to, or null.
    *
    * `status.asks` is every card that raised one, newest first and with no
@@ -365,7 +373,10 @@
 
   function renderStatus(status, commentsByCycle) {
     lastStatus = status;
-    if (commentsByCycle) lastCommentsByCycle = commentsByCycle;
+    if (commentsByCycle) {
+      lastCommentsByCycle = commentsByCycle;
+      haveComments = true;
+    }
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
 
@@ -399,7 +410,7 @@
      * A link and not a button: it is the same `/cycle/N` permalink every
      * card carries, so it survives a right-click, a share and the back
      * button, and it lands on the page where the reply box is. */
-    if (!replayed) {
+    if (!replayed && haveComments) {
       var open = oldestOpenAsk(status, lastCommentsByCycle);
       if (open) {
         var waiting = el("p", "status-sub");
@@ -1768,7 +1779,10 @@
     renderedComments = JSON.stringify(comments);
     var commentsByCycle = (comments && comments.byCycle) || {};
 
-    renderStatus(journal.status || {}, commentsByCycle);
+    // `null` and not the empty object when the fetch itself failed: "no
+    // comments" and "no answer about the comments" are different, and only
+    // the first one licenses the header to say he owes a reply.
+    renderStatus(journal.status || {}, comments ? commentsByCycle : null);
 
     var byCycle = {};
     ((digest && digest.lines) || []).forEach(function (line) {
@@ -4610,7 +4624,7 @@
           // serialised for the change comparison -- a string has no
           // `byCycle`, so reading it there would silently hand the header
           // an empty answer set and put the pill back up on every ask.
-          renderStatus(journal.status || {}, (results[2] && results[2].byCycle) || {});
+          renderStatus(journal.status || {}, results[2] ? (results[2].byCycle || {}) : null);
         }
         pollFailures = 0;
         if (changed && !typing()) {

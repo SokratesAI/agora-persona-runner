@@ -3994,6 +3994,19 @@ describe("an ask nobody answered is named in the header", () => {
     assert.equal(pill(window), null);
   });
 
+  /* `/api/comments` is tolerated when it fails -- it resolves to null and
+   * costs the bubbles, not the feed. The header must not read that as "he
+   * has replied to nothing" and raise the pill on every open ask: it would
+   * be a claim about what he has done, drawn from a payload that never
+   * arrived, on the one screen he checks from his phone. */
+  test("a comments fetch that failed is not read as no answers", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
+      failComments: true,
+    });
+    assert.equal(pill(window), null);
+  });
+
   /* The recovery path, and it is here because it is where the bug was.
    *
    * Once the page has been offline the poll re-draws the header on its own,
