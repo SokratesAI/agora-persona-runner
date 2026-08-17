@@ -1722,13 +1722,20 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if "\n" in text or "\r" in text:
             self._send_json(400, {"error": "a comment cannot contain a line break"})
             return
+        # The page is his, so an unstated author is him; a cycle posting a
+        # reply says so. Anything else is refused rather than written into
+        # his board under a name neither of us used.
+        author = payload.get("author") or "Edvard"
+        if author not in ("Edvard", "Nova"):
+            self._send_json(400, {"error": "author must be 'Edvard' or 'Nova'"})
+            return
 
         # `MM-DD` in Oslo, because `append_detail_note` takes the date from
         # its caller rather than a clock -- a module that reaches for one
         # reaches for it in UTC, and this line lands in a file Edvard reads.
         dated = datetime.now(OSLO).strftime("%m-%d")
         try:
-            ok, message = comment_on_row(target, number, text.strip(), dated)
+            ok, message = comment_on_row(target, number, text.strip(), dated, author)
         except Exception as e:
             log(f"nova-site board comment failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})

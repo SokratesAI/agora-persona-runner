@@ -3913,12 +3913,57 @@ def test_commenting_on_a_boarded_row_reaches_the_vault_through_the_real_request_
             "/api/board/comment", {"target": "ideas", "number": 64, "text": "  Still broken. "})
     assert status == 200
     assert json.loads(body)["ok"] is True
-    target, number, text, dated = cm.call_args[0]
+    target, number, text, dated, author = cm.call_args[0]
     assert (target, number, text) == ("ideas", 64, "Still broken.")
+    # The page is his, so an unstated author is him.
+    assert author == "Edvard"
     # `MM-DD`, and Oslo's -- a module that reaches for a clock reaches for
     # it in UTC, and this lands in a file he reads.
     assert re.fullmatch(r"\d{2}-\d{2}", dated)
     assert dated == datetime.now(OSLO).strftime("%m-%d")
+
+
+def test_a_cycles_reply_is_attributed_to_nova_and_not_to_him():
+    """`comment_on_row` hardcoded `author="Edvard"` while its own docstring
+    told a cycle to reply with `author="Nova"`, so every reply this loop
+    made through this route was written into his board as words he had
+    said. Worse than cosmetic: `unanswered_comments` calls a row waiting
+    when the last note under it is his, and that flag outranks a 🔴 in
+    `tools.top_board_rows` -- so a cycle commenting set a permanent "he is
+    waiting" marker that its own reply could never clear."""
+    with patch.object(nova_site, "comment_on_row",
+                      return_value=(True, "#94 commented on issues")) as cm:
+        status, _, _ = _post("/api/board/comment", {
+            "target": "issues", "number": 94, "text": "Not taken this cycle.",
+            "author": "Nova"})
+    assert status == 200
+    assert cm.call_args[0][4] == "Nova"
+
+
+@pytest.mark.parametrize("author", ["Sokrates", " ", 3, "nova", "NOVA"])
+def test_an_author_neither_of_us_uses_is_refused_before_any_write(author):
+    """His board is not a place to write under an arbitrary name.
+
+    `" "` is in here deliberately: it is truthy, so it survives the
+    `or "Edvard"` fallback and would be written as the author verbatim.
+    The casing pair is here because `append_detail_note` renders the
+    string as given -- `**nova, 08-17:**` is not a name either of us uses.
+    """
+    with patch.object(nova_site, "comment_on_row") as cm:
+        status, _, _ = _post("/api/board/comment", {
+            "target": "issues", "number": 94, "text": "hi", "author": author})
+    assert status == 400, author
+    cm.assert_not_called()
+
+
+@pytest.mark.parametrize("payload_extra", [{}, {"author": ""}, {"author": None}])
+def test_an_unstated_author_is_him_because_the_page_is_his(payload_extra):
+    with patch.object(nova_site, "comment_on_row",
+                      return_value=(True, "ok")) as cm:
+        status, _, _ = _post("/api/board/comment", dict(
+            {"target": "issues", "number": 94, "text": "hi"}, **payload_extra))
+    assert status == 200
+    assert cm.call_args[0][4] == "Edvard"
 
 
 def test_a_comment_cannot_smuggle_a_line_break_into_his_write_up():
