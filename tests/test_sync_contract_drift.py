@@ -1109,6 +1109,15 @@ def test_a_reworded_comment_is_not_drift(tmp_path):
 
 
 def test_a_dropped_pipeline_job_is_drift(tmp_path):
+    """One side quietly loses a job the other still runs.
+
+    `vault-drift` is the mutation because it is the one job in the set that no
+    other probe reads: renaming `test` would also take the secret scan with
+    it, and renaming `build-push` its own probe, so either would pass for the
+    wrong reason. Cycle 224 briefly folded this job into `test`, which left
+    nothing here that could fail alone; Cycle 252 put it back, and this test is
+    the reason to notice if anyone folds it again.
+    """
     other = _workflow_copy(tmp_path, old="  vault-drift:", new="  vault-drift-disabled:")
     assert [label for label, _, _ in
             sync_contract.compare_workflow(WORKFLOW_PATH, other)] == ["pipeline jobs"]
