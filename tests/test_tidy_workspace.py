@@ -380,6 +380,62 @@ def test_the_cli_prints_the_differing_files(squash_merged, capsys):
     assert "manifest.yaml" in out
 
 
+def test_an_uncommitted_edit_is_named_too(squash_merged):
+    """The reviewer's finding on #238, and the case that matters most: a
+    `-config` clone whose stale `image:` digest was never committed reaches
+    `unfinished` through `dirty` alone, where `git diff base HEAD` is empty.
+    A committed-only file list is blank for exactly the clone that needs one."""
+    root, repo = squash_merged
+    _git(repo, "checkout", "-q", "main")
+    (repo / "manifest.yaml").write_text("image: sha256:stale\n", encoding="utf-8")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "unfinished"
+    assert survey[0]["ahead"] == 0          # nothing committed to diff against
+    assert survey[0]["files"] == ["manifest.yaml"]
+
+
+def test_a_diff_that_fails_is_not_an_empty_file_list(squash_merged,
+                                                     monkeypatch):
+    """`unfinished` is only reached once a difference is proven, so "no files"
+    cannot legitimately happen. Reporting a failed `git diff --name-only` as an
+    empty list is a failure reported as success."""
+    root, repo = squash_merged
+    _commit(repo, "manifest.yaml", "image: sha256:stale\n")
+    real = tidy_workspace._git
+
+    def broken(root_, clone, *args, **kwargs):
+        if args[:2] == ("diff", "--name-only"):
+            return subprocess.CompletedProcess(args, 128, "", "fatal: bad object")
+        return real(root_, clone, *args, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace, "_git", broken)
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "unfinished"
+    assert survey[0]["files"] == []
+    assert survey[0]["files_failed"] is True
+
+
+def test_a_failed_diff_says_so_rather_than_printing_nothing(squash_merged,
+                                                            monkeypatch,
+                                                            capsys):
+    root, repo = squash_merged
+    _commit(repo, "manifest.yaml", "image: sha256:stale\n")
+    real = tidy_workspace._git
+
+    def broken(root_, clone, *args, **kwargs):
+        if args[:2] == ("diff", "--name-only"):
+            return subprocess.CompletedProcess(args, 128, "", "fatal: bad object")
+        return real(root_, clone, *args, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace, "_git", broken)
+    tidy_workspace.main(["--root", str(root)])
+
+    assert "could not list which files differ" in capsys.readouterr().out
+
+
 def test_uncommitted_changes_are_unfinished_even_on_main(squash_merged):
     """A cycle killed mid-edit leaves no branch and no commit at all."""
     root, repo = squash_merged

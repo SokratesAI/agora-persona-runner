@@ -307,12 +307,51 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
         # cases was one `git diff --name-only`. So the sweep runs it, rather
         # than leaving every reader to remember to.
         files = []
+        files_failed = False
         if verdict == "unfinished" and base is not None:
-            names = _git(root, clone, "diff", "--name-only", base, "HEAD")
-            files = [line for line in names.stdout.split("\n") if line.strip()]
+            found = set()
+            # Both halves, because `unfinished` is reached two ways and the
+            # motivating case can arrive by either. A stale `image:` digest in
+            # a `-config` clone is a committed delta when a cycle committed it
+            # and an uncommitted one when a cycle was killed mid-edit, and the
+            # `dirty` branch of the verdict above does not require `ahead > 0`
+            # at all -- so a committed-only file list is empty for exactly the
+            # clone that most needs one. Reviewer finding on #238.
+            names = (_git(root, clone, "diff", "--name-only", base, "HEAD")
+                     if ahead else None)
+            if names is None:
+                # `ahead == 0` and dirty: there is nothing committed here that
+                # the base has not got, so `git diff base HEAD` lists the
+                # base's *own* newer files, in the other direction. Collecting
+                # them would narrate main's work as work somebody left, which
+                # is the bug the `clean` verdict exists to avoid.
+                pass
+            elif names.returncode != 0:
+                # Not folded into the empty list. On this code path a
+                # difference has already been proven to exist, so "no files"
+                # cannot legitimately happen -- reporting the failure as an
+                # empty list is a failure reported as success, and the caller
+                # would print the old undifferentiated sentence and nothing
+                # else. Reviewer finding on #238.
+                files_failed = True
+            else:
+                found.update(line for line in names.stdout.split("\n")
+                             if line.strip())
+            if dirty:
+                # `--porcelain` is `XY <path>`, and a rename is `XY <old> -> <new>`.
+                # Only the path is wanted, and only the current name of it.
+                for line in _git(root, clone, "status",
+                                 "--porcelain").stdout.split("\n"):
+                    path = line[3:].strip()
+                    if " -> " in path:
+                        path = path.split(" -> ", 1)[1]
+                    if path:
+                        found.add(path)
+            files = sorted(found)
         out.append({"clone": clone, "branch": branch, "base": base,
                     "dirty": dirty, "ahead": ahead, "verdict": verdict,
-                    "fetched": fetched, "files": files})
+                    "fetched": fetched, "files": files,
+                    "files_failed": files_failed})
     return out
 
 
@@ -432,8 +471,12 @@ def main(argv=None):
                   % (entry["clone"], entry["branch"], entry["base"],
                      " (uncommitted)" if entry["dirty"] else ""))
             if entry["files"]:
-                print("    committed files differing from %s: %s"
+                print("    files not on %s: %s"
                       % (entry["base"], ", ".join(entry["files"])))
+            if entry["files_failed"]:
+                print("    could not list which files differ -- `git diff "
+                      "--name-only` failed, so the absence of a list above "
+                      "says nothing")
     return 0
 
 
