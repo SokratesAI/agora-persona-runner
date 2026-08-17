@@ -48,6 +48,10 @@ def test_not_deployed_outranks_the_stale_cluster():
     it reads as 'wait a few minutes' for a state that never resolves."""
     state, _ = verdict(TIP, NEW, OLD, _deployed(OLD))
     assert state != ROLLOUT_PENDING
+    # And say which state it must be. Asserting only the negative left the
+    # name's claim resting on the neighbouring test: NOT_BUILT would also
+    # have satisfied `!= ROLLOUT_PENDING` while contradicting the name.
+    assert state == NOT_DEPLOYED
 
 
 def test_missing_image_is_not_built():

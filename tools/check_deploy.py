@@ -50,7 +50,6 @@ interesting half is testable without a cluster.
 import argparse
 import json
 import subprocess
-import sys
 
 REPO = "SokratesAI/agora-persona-runner"
 CONFIG_REPO = REPO + "-config"
