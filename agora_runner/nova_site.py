@@ -115,7 +115,6 @@ from agora_runner.nova_capture import (
     clean_capture_text,
     comment_on_row,
     edit_row,
-    dismiss_needs,
     remove_row,
     set_priority,
 )
@@ -338,17 +337,7 @@ def _rendered(entry):
 
 
 def digest_payload():
-    payload = parse_digest(digest_markdown())
-    payload["needsEdvardBlocks"] = render_blocks(payload["needsEdvard"])
-    # One rendered ask per item, so the page can hang a "clear this" control
-    # off each (issue #93). `text` is the raw paragraph and goes back
-    # unchanged on a dismissal -- it is the item's only stable name, since
-    # the block is renumbered every time a cycle rewrites it.
-    payload["needsEdvardItems"] = [
-        {"text": item, "blocks": render_blocks(item)}
-        for item in payload["needsEdvardItems"]
-    ]
-    return payload
+    return parse_digest(digest_markdown())
 
 
 def comments_payload():
@@ -1679,61 +1668,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
-    def _post_needs_dismiss(self, payload):
-        """`POST /api/needs/dismiss` -- Edvard clearing one ask off the block.
-
-        Issue #93, rated 🔴 Immediately: *"I can't cross it out, it says it
-        does not need me and it creates a very long list of previous
-        conversations. Something must be done with this, immediately!"*
-
-        The **Needs Edvard** block is the one channel where this loop asks
-        him things, and until now it was write-only from his side: a cycle
-        put an item in and only a cycle could take it out. So an ask he had
-        already dealt with sat there claiming his attention until some
-        future cycle was *sure* it had been answered, which is exactly the
-        asymmetry issue #89 named and only half fixed.
-
-        The item is addressed by its own text, not by its position. The
-        block is renumbered on every rewrite, and a cycle rewrites it every
-        forty minutes, so an index sent from a page he loaded ten minutes
-        ago names something else by the time he taps it.
-        `nova_needs.select_answered` refuses a text that matches nothing or
-        matches twice, so a block rewritten under him fails the dismissal
-        out loud rather than retiring whichever ask moved into that slot.
-        """
-        text = payload.get("text")
-        outcome = payload.get("outcome") or "Edvard cleared this from the page."
-        if not isinstance(text, str) or not text.strip():
-            self._send_json(400, {"error": "text must be a non-empty string"})
-            return
-        if not isinstance(outcome, str):
-            self._send_json(400, {"error": "outcome must be a string"})
-            return
-
-        try:
-            ok, message = dismiss_needs(text, outcome)
-        except Exception as e:
-            log(f"nova-site needs dismiss failed: {e}")
-            self._send_json(502, {"error": str(e)[:300]})
-            return
-
-        if ok:
-            # He is looking at a block that still shows the item, and the
-            # digest is cached -- the same staleness the capture box
-            # invalidates for.
-            invalidate("digest")
-
-        audit(
-            "Nova",
-            "",
-            "nova_capture",
-            f"Clear a Needs Edvard item \u00b7 {'ok' if ok else message}",
-            after=" ".join(text.split())[:200],
-            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
-            is_error=not ok,
-        )
-        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
-
     def _post_board_comment(self, payload):
         """`POST /api/board/comment` -- idea #64, the comment half.
 
@@ -2018,7 +1952,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment",
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
-            "/api/board/comment", "/api/needs/dismiss",
+            "/api/board/comment",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -2040,9 +1974,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/comment":
             self._post_board_comment(payload)
-            return
-        if path == "/api/needs/dismiss":
-            self._post_needs_dismiss(payload)
             return
         target = payload.get("target")
         text = payload.get("text")

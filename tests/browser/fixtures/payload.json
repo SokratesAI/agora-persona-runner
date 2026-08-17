@@ -194,9 +194,6 @@
     }
   },
   "digest": {
-    "needsEdvard": "**Nothing.**",
-    "needsEdvardItems": [],
-    "hasNeedsEdvard": false,
     "nextCycle": "Whatever the last cycle left.",
     "lines": [
       {
@@ -238,17 +235,6 @@
           {
             "kind": "text",
             "text": "And this fourth one must fall into the remainder."
-          }
-        ]
-      }
-    ],
-    "needsEdvardBlocks": [
-      {
-        "type": "p",
-        "spans": [
-          {
-            "kind": "strong",
-            "text": "Nothing."
           }
         ]
       }

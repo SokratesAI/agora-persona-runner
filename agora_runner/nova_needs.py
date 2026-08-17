@@ -1,15 +1,20 @@
 """The **Needs Edvard** block: what an item is, and how one leaves.
 
-Split out of `tools/roll_needs_edvard.py` on 2026-08-16 so the *site* can
-run it. The container image copies `agora_runner/` and not `tools/`, so
-the CLI's copy of this logic was unreachable from the web handler that
-issue #93 asked for -- and writing a second implementation inside
-`agora_runner/` would have been the third fix of one shape, which
-`prompt.md` names as the bug rather than the fix.
+**The block itself is retired.** Edvard asked for it gone on 2026-08-16;
+#229 deleted it from the page and #236 the server half that fed it, so an
+ask now lives on the journal card that raised it. What survives here is
+the *archive*: `needs-edvard-archive.md` holds every ask this loop ever
+made and the answer it got, it is still read, and `tools/roll_needs_edvard.py`
+is what moves an item into it. That CLI is now the only caller.
+
+This was split out of that CLI on 2026-08-16 so the *site* could run it
+too -- the container image copies `agora_runner/` and not `tools/`, so the
+CLI's copy was unreachable from a web handler. The handler is gone and the
+split is not worth undoing: the code is I/O-free either way and the shim
+in `tools/` re-exports it by name.
 
 Nothing here does vault I/O. It takes the two files' text in and hands
-two new texts back, which is what lets the same functions serve a shell
-pipeline in one pod and an HTTP handler in another.
+two new texts back.
 """
 
 import datetime
@@ -56,9 +61,11 @@ ARCHIVE_FRONTMATTER = (
 EMPTY_BLOCK = "**Nothing.**"
 
 
-# The splitter lives in `nova_journal` beside `is_empty_needs`, so the
-# section's shape is defined in exactly one place -- the site's payload and
-# this module's roll cannot disagree about where one ask ends.
+# The splitter lives in `nova_journal` beside `is_empty_needs`. It was one
+# place so the site's payload and this module's roll could not disagree
+# about where one ask ends; the payload half is gone as of #236 and this is
+# now the only reader, but the helpers stay where they are rather than
+# being moved for the sake of it.
 split_items = split_needs_items
 
 
@@ -96,8 +103,9 @@ def live_items(live):
     """The items currently waiting on Edvard, in file order.
 
     Takes the whole digest and finds the section; `needs_items` takes the
-    section body and is what the site's payload already calls, so the two
-    cannot drift about what an item is or about which blocks hold none.
+    section body. Since #236 this is the only splitter -- the site's payload
+    used to call `needs_items` directly and the pair could not be allowed to
+    drift, which is why they still share one definition.
     """
     return needs_items(_body(live, SPEC)[1])
 
