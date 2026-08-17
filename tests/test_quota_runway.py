@@ -10,7 +10,17 @@ import datetime as dt
 import json
 
 from tools import quota_runway
-from tools.quota_runway import DARK, HEALTHY, TIGHT, burn_rate, runway
+from tools.quota_runway import (
+    ASSUMED,
+    DARK,
+    HEALTHY,
+    OBSERVED,
+    SCHEDULE,
+    TIGHT,
+    burn_rate,
+    observed_cadence_minutes,
+    runway,
+)
 
 
 def test_budget_outliving_the_window_is_healthy():
@@ -240,7 +250,9 @@ def test_main_asks_agora_for_the_cadence_rather_than_assuming_it(tmp_path, capsy
     the very mistake this module's docstring accuses prompt.md of."""
     reset = dt.datetime.fromtimestamp(1000.0 + 58 * 3600, dt.timezone.utc)
     snap = _snapshot(tmp_path, resets_at=reset.isoformat())
-    monkeypatch.setattr(quota_runway, "live_cadence_minutes", lambda: (120, True))
+    monkeypatch.setattr(
+        quota_runway, "live_cadence_minutes", lambda *a, **k: (120, SCHEDULE)
+    )
     quota_runway.main_argv(["--snapshot", str(snap), "--history", str(_history(tmp_path))])
     out = capsys.readouterr().out
     # 43h dark at 120-minute cadence is 21 wake-ups, not the 64 that a
@@ -253,16 +265,16 @@ def test_the_cadence_lookup_falls_back_rather_than_raising(monkeypatch):
     import agora_runner.cycle_health as ch
 
     monkeypatch.setattr(ch, "nova_cadence_minutes", lambda: None)
-    assert quota_runway.live_cadence_minutes() == (quota_runway.CADENCE_MINUTES, False)
+    assert quota_runway.live_cadence_minutes() == (quota_runway.CADENCE_MINUTES, ASSUMED)
 
     def boom():
         raise RuntimeError("agora unreachable")
 
     monkeypatch.setattr(ch, "nova_cadence_minutes", boom)
-    assert quota_runway.live_cadence_minutes() == (quota_runway.CADENCE_MINUTES, False)
+    assert quota_runway.live_cadence_minutes() == (quota_runway.CADENCE_MINUTES, ASSUMED)
 
     monkeypatch.setattr(ch, "nova_cadence_minutes", lambda: 60)
-    assert quota_runway.live_cadence_minutes() == (60, True)
+    assert quota_runway.live_cadence_minutes() == (60, SCHEDULE)
 
 
 def test_an_assumed_cadence_says_so_and_a_measured_one_does_not(tmp_path, capsys, monkeypatch):
@@ -272,10 +284,133 @@ def test_an_assumed_cadence_says_so_and_a_measured_one_does_not(tmp_path, capsys
     snap = _snapshot(tmp_path, resets_at=reset.isoformat())
     argv = ["--snapshot", str(snap), "--history", str(_history(tmp_path))]
 
-    monkeypatch.setattr(quota_runway, "live_cadence_minutes", lambda: (40, False))
+    monkeypatch.setattr(
+        quota_runway, "live_cadence_minutes", lambda *a, **k: (40, ASSUMED)
+    )
     quota_runway.main_argv(argv)
-    assert "NOTE: could not reach Agora" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "NOTE: could not reach Agora" in out
+    assert "assume 40 minutes" in out
 
-    monkeypatch.setattr(quota_runway, "live_cadence_minutes", lambda: (60, True))
+    monkeypatch.setattr(
+        quota_runway, "live_cadence_minutes", lambda *a, **k: (60, SCHEDULE)
+    )
     quota_runway.main_argv(argv)
     assert "NOTE: could not reach Agora" not in capsys.readouterr().out
+
+
+# --- the cadence measured off the loop's own wake-ups (Cycle 260) ---
+
+
+def _starts(*minutes_from_zero):
+    """A wake-up log at the stated minute offsets, plus the burn rows that
+    share the file, so the filter has something to reject."""
+    rows = [{"at": 0.0, "seven_day": 10.0}, {"at": 3600.0, "seven_day": 11.0}]
+    rows += [{"at": m * 60.0, "boundary": "start"} for m in minutes_from_zero]
+    return rows
+
+
+def test_a_clean_hourly_log_measures_sixty():
+    rows = _starts(0, 60, 120, 180, 240)
+    assert observed_cadence_minutes(rows, now=240 * 60) == (60, 4, 4)
+
+
+def test_a_manual_start_splits_an_interval_and_the_mode_survives_it():
+    """Edvard talking to Nova opens a session too, which inserts a start
+    partway through an interval. That splits one 60 into 31 + 29 without
+    changing their sum, so the low buckets fill up with halves."""
+    rows = _starts(0, 60, 120, 151, 180, 240, 244, 300)
+    minutes, support, sampled = observed_cadence_minutes(rows, now=300 * 60)
+    assert (minutes, support, sampled) == (60, 3, 7)
+
+    # The point of using the mode: on this same log the median is 30,
+    # which would halve the suggested interval and double the wake-up
+    # count. Asserted here so a future switch back to the median fails.
+    gaps = sorted([60, 60, 31, 29, 60, 4, 56])
+    assert gaps[len(gaps) // 2] == 56 and minutes != 56
+
+
+def test_two_starts_in_the_same_minute_are_one_wake_up_not_two():
+    # 0 and 1 are a re-entry inside one session: no cadence Edvard has
+    # ever set is under 40 minutes. Dropping them leaves four real gaps.
+    rows = _starts(0, 1, 60, 120, 180, 240)
+    assert observed_cadence_minutes(rows, now=240 * 60) == (60, 4, 4)
+
+
+def test_a_sample_too_small_for_a_mode_measures_nothing():
+    assert observed_cadence_minutes(_starts(0, 60, 120), now=120 * 60) == (None, 0, 2)
+
+
+def test_a_mode_backed_by_a_single_gap_is_not_a_measurement():
+    """Four gaps, all different: a winner with one vote is a coin toss."""
+    rows = _starts(0, 20, 65, 140, 240)
+    assert observed_cadence_minutes(rows, now=240 * 60) == (None, 0, 4)
+
+
+def test_wake_ups_outside_the_window_do_not_vote():
+    """A cadence change has to show up, so the old interval must age out."""
+    old = [-720, -680, -640, -600, -560]  # a 40-minute era, 9-12h ago
+    new = [0, 120, 240, 360, 480]  # every two hours since
+    rows = _starts(*(old + new))
+    assert observed_cadence_minutes(rows, now=480 * 60, window_hours=9) == (120, 4, 4)
+    # Widen the window until the old era outnumbers the new one and it
+    # wins on votes -- which is why this window is 48h and not a week.
+    rows = _starts(*([-800, -760] + old + new))
+    assert observed_cadence_minutes(rows, now=480 * 60, window_hours=48)[0] == 40
+
+
+def test_a_tie_between_two_eras_reports_the_recent_one():
+    """The days after a cadence change are exactly when this gets asked,
+    and for part of that stretch the two intervals draw."""
+    rows = _starts(-720, -680, -640, -600, 0, 120, 240, 360)
+    minutes, support, sampled = observed_cadence_minutes(
+        rows, now=360 * 60, window_hours=48
+    )
+    assert support == 3 and sampled == 7  # three 40s, three 120s, one gap between
+    assert minutes == 120
+
+
+def test_rows_that_are_not_wake_ups_are_ignored():
+    """The burn rate reads the same file; its rows carry no boundary."""
+    rows = [{"at": m * 60.0, "seven_day": 10.0} for m in (0, 5, 10, 15, 20)]
+    assert observed_cadence_minutes(rows, now=20 * 60) == (None, 0, 0)
+
+
+def test_the_lookup_measures_the_cadence_when_agora_is_unreachable(monkeypatch):
+    """The bridge pod's normal path: no Agora, but a wake-up log."""
+    import agora_runner.cycle_health as ch
+
+    monkeypatch.setattr(ch, "nova_cadence_minutes", lambda: None)
+    rows = _starts(0, 90, 180, 270, 360)
+    assert quota_runway.live_cadence_minutes(rows, now=360 * 60) == (90, OBSERVED)
+
+    # Agora answering still wins: it says what the schedule *is*.
+    monkeypatch.setattr(ch, "nova_cadence_minutes", lambda: 60)
+    assert quota_runway.live_cadence_minutes(rows, now=360 * 60) == (60, SCHEDULE)
+
+
+def test_an_observed_cadence_says_so_and_shows_its_sample(tmp_path, capsys):
+    """The note has to be distinguishable from the assumed one, and it has
+    to carry the counts -- a measurement whose sample is hidden reads
+    exactly like the constant it replaced."""
+    reset = dt.datetime.fromtimestamp(1000.0 + 58 * 3600, dt.timezone.utc)
+    snap = _snapshot(tmp_path, resets_at=reset.isoformat())
+
+    hist = tmp_path / "hist.jsonl"
+    rows = [
+        {"at": 1000.0 - 24 * 3600, "seven_day": 69.0},
+        {"at": 1000.0, "seven_day": 88.0},
+    ]
+    # Five wake-ups two hours apart, ending at the snapshot instant.
+    rows += [
+        {"at": 1000.0 - h * 3600, "boundary": "start"} for h in (8, 6, 4, 2, 0)
+    ]
+    hist.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    quota_runway.main_argv(["--snapshot", str(snap), "--history", str(hist)])
+    out = capsys.readouterr().out
+    assert "measured from this loop's own wake-ups" in out
+    assert "the most common gap in 4 of 4 starts" in out
+    assert "assume" not in out
+    # 43h dark at the measured 120 minutes, not the 64 a stale 40 gives.
+    assert "21 heartbeats" in out
