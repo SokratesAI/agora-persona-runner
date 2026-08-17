@@ -1111,17 +1111,16 @@ def test_a_reworded_comment_is_not_drift(tmp_path):
 def test_a_dropped_pipeline_job_is_drift(tmp_path):
     """One side quietly loses a job the other still runs.
 
-    This mutated `vault-drift` until Cycle 224 folded that job into `test` and
-    `update-manifest` into `build-push`, leaving two jobs in the set instead of
-    four. With only two left there is no job whose disappearance is invisible
-    to every other probe, so the expectation names both labels rather than
-    pretending the mutation is narrower than it is: renaming `test` also takes
-    the secret scan with it. `pipeline jobs` firing is still what this asserts.
+    `vault-drift` is the mutation because it is the one job in the set that no
+    other probe reads: renaming `test` would also take the secret scan with
+    it, and renaming `build-push` its own probe, so either would pass for the
+    wrong reason. Cycle 224 briefly folded this job into `test`, which left
+    nothing here that could fail alone; Cycle 252 put it back, and this test is
+    the reason to notice if anyone folds it again.
     """
-    other = _workflow_copy(tmp_path, old="  test:", new="  unit:")
+    other = _workflow_copy(tmp_path, old="  vault-drift:", new="  vault-drift-disabled:")
     assert [label for label, _, _ in
-            sync_contract.compare_workflow(WORKFLOW_PATH, other)] == [
-                "secret scan", "pipeline jobs"]
+            sync_contract.compare_workflow(WORKFLOW_PATH, other)] == ["pipeline jobs"]
 
 
 def test_a_job_renamed_on_both_sides_is_an_error_not_agreement(tmp_path):
