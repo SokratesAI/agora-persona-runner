@@ -234,7 +234,7 @@ def observed_cadence_minutes(rows, now, window_hours=48, bucket=5):
     return best, counts[best], len(gaps)
 
 
-def live_cadence_minutes(rows=(), now=None, window_hours=48):
+def live_cadence_minutes(rows=(), now=None, window_hours=CADENCE_WINDOW_HOURS):
     """`(minutes, source)` -- the heartbeat interval, and where it came from.
 
     Kept out of `runway` so the arithmetic stays pure and testable. The
