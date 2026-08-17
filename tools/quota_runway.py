@@ -11,8 +11,10 @@ hits zero, and it cannot say what happens between that moment and the
 reset. Those two are the whole question, because the answer is not
 "cycles get smaller" -- cycles do not get smaller, they stop. At a
 40-minute cadence a heartbeat still fires 36 times a day into an empty
-window, and each one pays a cold session's setup cost to find out there
-is nothing left.
+window, and none of those wake-ups can do any work. What one of them
+*costs* is not known -- no cycle has ever observed one and lived to
+write it down -- so this module reports the hours and the count and
+deliberately claims no figure for the waste.
 
 The measured numbers that morning: 12% remaining against 18%/day, so
 about 16 hours of runway and then **42 hours dark -- 63 heartbeats that
@@ -108,8 +110,9 @@ def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_M
     )
     lines.append(
         f"  So the loop goes dark for about {dark_hours:.0f}h -- roughly "
-        f"{cycles_lost} heartbeats waking with nothing, each paying a cold "
-        f"session's setup cost to find out."
+        f"{cycles_lost} heartbeats firing into an empty window. What one of "
+        f"those actually costs has never been measured; what is certain is "
+        f"that none of them can do any work."
     )
     lines.append(
         "  The lever is cadence, and it is Edvard's. Slowing the heartbeat "
