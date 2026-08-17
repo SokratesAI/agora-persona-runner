@@ -81,8 +81,6 @@ def test_rolling_twice_changes_nothing_the_second_time():
 def test_the_sections_edvard_reads_survive_the_roll():
     live, archive = plan(LIVE, ARCHIVE, keep=2)
     digest = parse_digest(f"{live}\n\n{archive}")
-    assert "node" in digest["needsEdvard"]
-    assert digest["hasNeedsEdvard"] is True
     assert "Check the deploy." in digest["nextCycle"]
     assert [line["cycle"] for line in digest["lines"]] == [5, 4, 3, 2, 1, 0]
 

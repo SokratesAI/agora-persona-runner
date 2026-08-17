@@ -324,27 +324,20 @@ def test_dates_come_from_oslo_not_the_system_clock(tmp_path, monkeypatch):
         1,
     ),
 ])
-def test_the_site_and_the_cli_split_the_block_into_the_same_items(digest):
-    """One splitter, or the button clears something the roller kept.
+def test_the_cli_splits_the_block_on_real_headings_not_fenced_ones(digest):
+    """A fenced `## Needs Edvard` must not end the section early.
 
-    `parse_digest` is what builds Edvard's page -- it is where `item.text`
-    on a Done button comes from -- and `live_items` is what the archive
-    matches that text against. If the two disagree about where one ask
-    ends, the ask that leaves the file is not the one he pointed at, and
-    nothing anywhere says so.
-
-    This asserts against `parse_digest` on the *whole digest*, deliberately.
-    An earlier version of this test fed both sides the body that
-    `rolling._body` had already cut, which made it `needs_items(x) ==
-    needs_items(x)` -- true however `parse_digest` behaved. My reviewer
-    caught that, and the second parameter above is the input it was blind
-    to: the naive scan stops the section at the fence's fake heading, so
-    the page loses an ask entirely and mangles the next one.
+    This used to assert that `parse_digest` and `live_items` split the
+    block identically -- the page's Done button named an item by text and
+    the archiver matched that text, so two splitters meant the ask that
+    left the file was not the one he pointed at. #229 deleted the block
+    from the page and #236 its server half, so `live_items` is now the only
+    splitter and there is nothing left to disagree with it. What still
+    matters is the input that caught the naive scan: the fence's fake
+    heading, which a `^## ` scan stops at and this one must not.
     """
-    from agora_runner.nova_journal import parse_digest
     from agora_runner.nova_needs import live_items
 
-    assert live_items(digest) == parse_digest(digest)["needsEdvardItems"]
     assert len(live_items(digest)) > 1
 
 

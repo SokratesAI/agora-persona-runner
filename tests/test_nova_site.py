@@ -480,8 +480,6 @@ def test_the_archive_cannot_displace_the_sections_edvard_reads():
     # one it sees. The archive is `#`-titled for exactly this reason.
     with _digest_reader(_ARCHIVED_DIGEST):
         digest = parse_digest(nova_sources.digest_markdown())
-    assert "node" in digest["needsEdvard"]
-    assert digest["hasNeedsEdvard"] is True
     assert "Check the deploy." in digest["nextCycle"]
 
 
@@ -498,17 +496,6 @@ def test_a_missing_archive_leaves_the_live_digest_exactly_as_it_was():
     for absent in (None, ""):
         with _digest_reader(absent):
             assert nova_sources.digest_markdown() == _LIVE_DIGEST
-
-
-@pytest.mark.parametrize("text", ["Nothing.", "Nothing", "none", "  \n"])
-def test_needs_edvard_is_empty_when_it_says_nothing(text):
-    assert parse_digest(f"## Needs Edvard\n\n{text}\n\n## Digest\n")["hasNeedsEdvard"] is False
-
-
-def test_needs_edvard_is_present_when_it_asks_something():
-    digest = parse_digest("## Needs Edvard\n\nShould the site be public?\n\n## Digest\n")
-    assert digest["hasNeedsEdvard"] is True
-    assert "public" in digest["needsEdvard"]
 
 
 # --- status ---------------------------------------------------------------
@@ -657,8 +644,7 @@ def test_api_digest_returns_the_needs_section_rendered(digest_md):
         status, _, body = _get("/api/digest")
     payload = json.loads(body)
     assert status == 200
-    assert "needsEdvardBlocks" in payload
-    assert isinstance(payload["hasNeedsEdvard"], bool)
+    assert "nextCycle" in payload
     assert payload["lines"]
 
 
@@ -1197,12 +1183,6 @@ def test_a_real_ask_is_not_mistaken_for_an_empty_one(text):
     the word. Only a section that is *nothing but* some spelling of
     "nothing" counts as empty."""
     assert is_empty_needs(text) is False
-
-
-def test_the_live_digests_needs_section_is_hidden():
-    """The bug as Edvard actually met it, against the committed fixture of
-    the file he reads."""
-    assert parse_digest(_fixture("digest_two_entries.md"))["hasNeedsEdvard"] is False
 
 
 # --- PR references become links -------------------------------------------
@@ -3209,17 +3189,16 @@ def test_a_digest_asked_for_the_old_way_is_still_the_whole_digest(journal_md, di
     assert len(json.loads(body)["lines"]) == 11
 
 
-def test_the_needs_section_survives_every_window(journal_md, digest_md):
-    """`needsEdvard` is the header, not the feed -- it is not part of what
-    gets sliced, and the card at the top of the page renders it on every
-    window the same way the status header does."""
+def test_the_handoff_section_survives_every_window(journal_md, digest_md):
+    """`nextCycle` is the header, not the feed -- it is not part of what
+    gets sliced, and it renders on every window the same way the status
+    header does. `needsEdvard` used to be asserted here too; the block was
+    deleted from the page in #229 and its server half in #236."""
     with _both(journal_md, digest_md):
         _, _, windowed = _get("/api/digest?limit=1")
         nova_site.reset_cache()
         _, _, whole = _get("/api/digest")
     windowed, whole = json.loads(windowed), json.loads(whole)
-    assert windowed["needsEdvard"] == whole["needsEdvard"]
-    assert windowed["needsEdvardBlocks"] == whole["needsEdvardBlocks"]
     assert windowed["nextCycle"] == whole["nextCycle"]
 
 
@@ -4021,70 +4000,3 @@ def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
 # --- Clearing a Needs Edvard item from the page (issue #93) ---------------
 
 
-def test_the_digest_payload_carries_one_rendered_ask_per_item():
-    """The page needs the asks separately to put a control on each, and it
-    needs each one's raw text back to name it on the way out."""
-    digest = (
-        "# Journal — Digest\n\n## Needs Edvard\n\n"
-        "**Since 08-14** — First ask, `code` and all.\n\n"
-        "**Since 08-15** — Second ask.\n\n"
-        "## Next cycle\n\nnothing\n\n## Digest\n\n"
-    )
-    with patch.object(nova_site, "digest_markdown", return_value=digest):
-        payload = nova_site.digest_payload()
-    items = payload["needsEdvardItems"]
-    assert [item["text"] for item in items] == [
-        "**Since 08-14** — First ask, `code` and all.",
-        "**Since 08-15** — Second ask.",
-    ]
-    assert all(item["blocks"] for item in items)
-
-
-def test_an_empty_needs_block_offers_no_items_to_clear():
-    digest = (
-        "# Journal — Digest\n\n## Needs Edvard\n\n**Nothing.**\n\n"
-        "## Next cycle\n\nnothing\n\n## Digest\n\n"
-    )
-    with patch.object(nova_site, "digest_markdown", return_value=digest):
-        payload = nova_site.digest_payload()
-    assert payload["needsEdvardItems"] == []
-    assert payload["hasNeedsEdvard"] is False
-
-
-def test_dismissing_an_item_writes_it_through_and_drops_the_cache():
-    seen = {}
-
-    def fake(text, outcome):
-        seen["text"] = text
-        seen["outcome"] = outcome
-        return True, "cleared"
-
-    with patch.object(nova_site, "dismiss_needs", fake), \
-            patch.object(nova_site, "invalidate") as dropped:
-        status, _, body = _post("/api/needs/dismiss", {"text": "**Since 08-14** — ask"})
-    assert status == 200
-    assert json.loads(body)["ok"] is True
-    assert seen["text"] == "**Since 08-14** — ask"
-    assert seen["outcome"]  # the archive refuses an item with no answer
-    dropped.assert_called_once_with("digest")
-
-
-def test_dismissing_nothing_is_refused_before_any_write():
-    with patch.object(nova_site, "dismiss_needs") as wrote:
-        for payload in [{}, {"text": ""}, {"text": "   "}, {"text": 3}]:
-            status, _, _ = _post("/api/needs/dismiss", payload)
-            assert status == 400, payload
-    wrote.assert_not_called()
-
-
-def test_a_failed_dismissal_is_reported_rather_than_swallowed():
-    """He tapped Done and the item is still there -- the page has to say so,
-    because the alternative is him believing a block that never cleared."""
-    with patch.object(nova_site, "dismiss_needs", return_value=(False, "no item contains it")), \
-            patch.object(nova_site, "invalidate") as dropped:
-        status, _, body = _post("/api/needs/dismiss", {"text": "gone"})
-    assert status == 502
-    payload = json.loads(body)
-    assert payload["ok"] is False
-    assert "no item contains it" in payload["message"]
-    dropped.assert_not_called()
