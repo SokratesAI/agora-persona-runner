@@ -34,8 +34,12 @@ def test_the_actual_incident_reads_as_not_deployed():
     # the literal `update-manifest` until Cycle 258, and Cycle 224 had already
     # folded that job into `build-push` -- so the test was holding the tool's
     # one actionable sentence at a job name a cycle could no longer find.
+    # Both of these are pinned by the advice line only. An earlier version of
+    # this test also asserted `agora-persona-runner-config/manifest.yaml`,
+    # which was vacuous: the NOT DEPLOYED line above the advice already names
+    # that path, so the assertion passed with the advice deleted.
     assert "build-push" in body
-    assert "agora-persona-runner-config/manifest.yaml" in body
+    assert "fix it by hand" in body
 
 
 def test_not_deployed_outranks_the_stale_cluster():
