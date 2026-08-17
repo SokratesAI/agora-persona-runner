@@ -41,8 +41,12 @@ import os
 SNAPSHOT = "/data/claude-home/quota-snapshot.json"
 HISTORY = "/data/claude-home/quota-history.jsonl"
 
-# The heartbeat interval, in minutes. Only used to turn dark hours into a
-# count of wasted wake-ups, which is the form that makes the cost legible.
+# The last-resort fallback, not the truth. `nova_cadence_minutes()` in
+# `agora_runner.cycle_health` is the truth and `main` asks it first --
+# Edvard has changed the cadence five times since 2026-08-08, so a
+# constant here would be exactly the mistake this module's docstring
+# accuses `prompt.md` of. It is only used when that lookup has no honest
+# answer (Agora unreachable, or a schedule with no single interval).
 CADENCE_MINUTES = 40
 
 HEALTHY = "HEALTHY"
@@ -164,6 +168,24 @@ def burn_rate(rows, now, window_hours=24, key="seven_day"):
     return (seg[-1][key] - seg[0][key]) / elapsed_hours * 24
 
 
+def live_cadence_minutes():
+    """The heartbeat interval from Agora, falling back to the constant.
+
+    Kept out of `runway` so the arithmetic stays pure and testable. The
+    lookup already exists for `cycle_health`; importing it rather than
+    writing a second one is the point -- a cadence that lives in two
+    places is a cadence that will disagree with itself.
+    """
+    try:
+        from agora_runner.cycle_health import nova_cadence_minutes
+    except ImportError:
+        return CADENCE_MINUTES
+    try:
+        return nova_cadence_minutes() or CADENCE_MINUTES
+    except Exception:
+        return CADENCE_MINUTES
+
+
 def _read_history(path):
     rows = []
     if not os.path.exists(path):
@@ -180,13 +202,18 @@ def _read_history(path):
     return rows
 
 
-def main():
+def main_argv(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--snapshot", default=SNAPSHOT)
     ap.add_argument("--history", default=HISTORY)
     ap.add_argument("--window-hours", type=float, default=24)
-    ap.add_argument("--cadence-minutes", type=float, default=CADENCE_MINUTES)
-    args = ap.parse_args()
+    ap.add_argument(
+        "--cadence-minutes",
+        type=float,
+        default=None,
+        help="override the live heartbeat lookup",
+    )
+    args = ap.parse_args(argv)
 
     with open(args.snapshot) as fh:
         snap = json.load(fh)
@@ -199,7 +226,27 @@ def main():
         return 1
 
     now = snap.get("fetched_at") or dt.datetime.now(dt.timezone.utc).timestamp()
-    reset = dt.datetime.fromisoformat(seven["resets_at"])
+
+    # An empty `resets_at` is a real value, not a malformed one: the
+    # bridge writes `block.get("resets_at") or ""` and the upstream API
+    # returns nothing for it at the reset instant itself. There is one
+    # such row in quota-history.jsonl, logged during the 2026-08-12
+    # seven-day reset. Parsing it raises, and the reset instant is
+    # exactly when somebody would be asking this question.
+    stamp = (seven.get("resets_at") or "").strip()
+    if not stamp:
+        print(
+            "COULD NOT READ: the snapshot has no reset time for the seven_day "
+            "window, which is what the bridge writes at the reset instant "
+            "itself. Re-read in a minute; the window has almost certainly "
+            "just rolled over."
+        )
+        return 1
+    try:
+        reset = dt.datetime.fromisoformat(stamp)
+    except ValueError:
+        print(f"COULD NOT READ: cannot parse the seven_day reset time {stamp!r}.")
+        return 1
     hours_to_reset = (reset.timestamp() - now) / 3600
 
     rate = burn_rate(_read_history(args.history), now, args.window_hours)
@@ -211,12 +258,20 @@ def main():
         )
         return 1
 
+    cadence = args.cadence_minutes
+    if cadence is None:
+        cadence = live_cadence_minutes()
+
     state, _, _, _, lines = runway(
-        seven["remaining_pct"], hours_to_reset, rate, args.cadence_minutes
+        seven["remaining_pct"], hours_to_reset, rate, cadence
     )
     for line in lines:
         print(line)
     return 0 if state == HEALTHY else 2
+
+
+def main():
+    return main_argv()
 
 
 if __name__ == "__main__":

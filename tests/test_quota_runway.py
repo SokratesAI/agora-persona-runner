@@ -6,6 +6,10 @@ test agrees with itself no matter what, which is how three checks passed
 in one night on Cycle 253.
 """
 
+import datetime as dt
+import json
+
+from tools import quota_runway
 from tools.quota_runway import DARK, HEALTHY, TIGHT, burn_rate, runway
 
 
@@ -74,10 +78,12 @@ def test_the_suggested_cadence_would_actually_last():
     # 12% over 58h is 4.966%/day; 40 min * 18 / 4.966 = 145 min.
     suggested = float(advice[0].split("about ")[1].split(" ")[0])
     assert round(suggested) == 145
-    # Feed the slowed rate back in and the window must now hold out.
-    slowed = 18 * 40 / suggested
-    state, _, _, _, _ = runway(12, 58, slowed)
-    assert state == HEALTHY
+    # Feeding the answer straight back in lands exactly on the dark_hours
+    # == 0 boundary, so it would pass under a `< 0` / `<= 0` mutation
+    # either way -- the code agreeing with its own algebra. Step just
+    # inside and just outside instead, which no rounding can move.
+    assert runway(12, 58, 18 * 40 / (suggested * 1.05))[0] == HEALTHY
+    assert runway(12, 58, 18 * 40 / (suggested * 0.95))[0] == DARK
 
 
 def test_a_shorter_cadence_loses_proportionally_more_wake_ups():
@@ -139,3 +145,118 @@ def test_unordered_rows_give_the_same_answer():
     now = 100 * HOUR
     ordered = [_row(now - 24 * HOUR, 50), _row(now - 12 * HOUR, 59), _row(now, 68)]
     assert burn_rate(list(reversed(ordered)), now, 24) == burn_rate(ordered, now, 24)
+
+
+# --- main(), which had no coverage at all until the reviewer said so ---
+
+
+def _snapshot(tmp_path, resets_at, remaining=12.0, fetched_at=1000.0):
+    p = tmp_path / "snap.json"
+    p.write_text(
+        json.dumps(
+            {
+                "windows": [
+                    {
+                        "window": "seven_day",
+                        "used_pct": 100 - remaining,
+                        "remaining_pct": remaining,
+                        "resets_at": resets_at,
+                        "pace": 1.344,
+                    }
+                ],
+                "fetched_at": fetched_at,
+            }
+        )
+    )
+    return p
+
+
+def _history(tmp_path, fetched_at=1000.0):
+    p = tmp_path / "hist.jsonl"
+    rows = [
+        {"at": fetched_at - 24 * 3600, "seven_day": 69.0},
+        {"at": fetched_at, "seven_day": 88.0},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return p
+
+
+def test_an_empty_reset_time_is_reported_not_raised(tmp_path, capsys):
+    """The bridge writes "" at the reset instant. There is one such row in
+    the real quota-history.jsonl, logged during the 2026-08-12 reset."""
+    rc = main_with(_snapshot(tmp_path, resets_at=""), _history(tmp_path))
+    out = capsys.readouterr().out
+    assert rc == 1
+    # The generic parse failure below would also catch "" and also exit 1,
+    # so asserting on the exit code alone pins nothing -- this test passed
+    # with the guard deleted. What the guard buys is telling the reader
+    # the window just rolled over instead of implying a corrupt file.
+    assert "just rolled over" in out
+    assert "cannot parse" not in out
+
+
+def test_an_unparseable_reset_time_is_reported_not_raised(tmp_path, capsys):
+    rc = main_with(_snapshot(tmp_path, resets_at="not a date"), _history(tmp_path))
+    assert rc == 1
+    assert "cannot parse" in capsys.readouterr().out
+
+
+def test_a_missing_seven_day_window_is_reported(tmp_path, capsys):
+    p = tmp_path / "snap.json"
+    p.write_text(json.dumps({"windows": [{"window": "five_hour"}]}))
+    assert main_with(p, _history(tmp_path)) == 1
+    assert "no seven_day window" in capsys.readouterr().out
+
+
+def test_too_little_history_to_measure_is_reported(tmp_path, capsys):
+    snap = _snapshot(tmp_path, resets_at="1970-01-01T02:00:00+00:00")
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    assert main_with(snap, empty) == 1
+    assert "not enough history" in capsys.readouterr().out
+
+
+def test_a_good_snapshot_prints_the_verdict_and_exits_nonzero_when_dark(
+    tmp_path, capsys
+):
+    # fetched_at 1000.0, reset 58h later; 19%/day burn over the history.
+    reset = dt.datetime.fromtimestamp(1000.0 + 58 * 3600, dt.timezone.utc)
+    snap = _snapshot(tmp_path, resets_at=reset.isoformat())
+    rc = main_with(snap, _history(tmp_path))
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert out.startswith("DARK:")
+    assert "minutes between cycles" in out
+
+
+def main_with(snapshot, history):
+    return quota_runway.main_argv(
+        ["--snapshot", str(snapshot), "--history", str(history), "--cadence-minutes", "40"]
+    )
+
+
+def test_main_asks_agora_for_the_cadence_rather_than_assuming_it(tmp_path, capsys, monkeypatch):
+    """The cadence has moved five times since 08-08; a constant would be
+    the very mistake this module's docstring accuses prompt.md of."""
+    reset = dt.datetime.fromtimestamp(1000.0 + 58 * 3600, dt.timezone.utc)
+    snap = _snapshot(tmp_path, resets_at=reset.isoformat())
+    monkeypatch.setattr(quota_runway, "live_cadence_minutes", lambda: 120)
+    quota_runway.main_argv(["--snapshot", str(snap), "--history", str(_history(tmp_path))])
+    out = capsys.readouterr().out
+    # 43h dark at 120-minute cadence is 21 wake-ups, not the 64 that a
+    # hardcoded 40 would give.
+    assert "21 heartbeats" in out
+    assert "64 heartbeats" not in out
+
+
+def test_the_cadence_lookup_falls_back_rather_than_raising(monkeypatch):
+    import agora_runner.cycle_health as ch
+
+    monkeypatch.setattr(ch, "nova_cadence_minutes", lambda: None)
+    assert quota_runway.live_cadence_minutes() == quota_runway.CADENCE_MINUTES
+
+    def boom():
+        raise RuntimeError("agora unreachable")
+
+    monkeypatch.setattr(ch, "nova_cadence_minutes", boom)
+    assert quota_runway.live_cadence_minutes() == quota_runway.CADENCE_MINUTES
