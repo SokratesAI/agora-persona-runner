@@ -25,7 +25,6 @@ import re
 from datetime import datetime
 
 from agora_runner.config import OSLO
-from agora_runner.md_sections import section_bounds
 
 JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
 # One document per entry, which is where entries live as of 2026-08-09.

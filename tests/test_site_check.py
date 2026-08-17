@@ -184,3 +184,30 @@ def test_every_checked_api_path_is_one_the_server_answers(path):
         __import__("pathlib").Path(site_check.__file__).parent / "nova_site.py"
     ).read_text()
     assert f'path == "{path}"' in source
+
+
+def test_the_digest_keys_are_ones_the_payload_still_carries():
+    """A key deleted from the payload and left here is a permanent alarm.
+
+    The sibling above catches a misspelled *path*; nothing caught a stale
+    *key*, and `_payload` above cannot -- it builds its fixture out of
+    `API_KEYS`, so a healthy site is whatever `API_KEYS` says it is and the
+    assertion compares the check to itself. #236 deleted `needsEdvard` from
+    `digest_payload` and left it listed here, which would have reported
+    `/api/digest: 200 but missing needsEdvard` on every deploy from then on
+    -- this module's own failure mode, aimed at this module.
+
+    So this asserts against the real builder rather than against the list.
+    `parse_digest` is pure, so a fixture digest is enough to name the keys.
+    """
+    from agora_runner import nova_site
+    from unittest.mock import patch
+
+    fixture = (
+        "# Journal — Digest\n\n## Next cycle\n\n1. **[thing]** do it\n\n"
+        "## Digest\n\n**Cycle 1** (2026-08-17 03:00) — a line.\n"
+    )
+    with patch.object(nova_site, "digest_markdown", return_value=fixture):
+        served = set(nova_site.digest_payload())
+    missing = set(site_check.API_KEYS["/api/digest"]) - served
+    assert not missing, f"site_check requires keys /api/digest no longer sends: {missing}"

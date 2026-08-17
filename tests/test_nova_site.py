@@ -631,7 +631,7 @@ def test_api_journal_returns_rendered_entries_without_the_raw_body(journal_md):
     assert "body" not in payload["entries"][0]
 
 
-def test_api_digest_returns_the_needs_section_rendered(digest_md):
+def test_api_digest_returns_the_handoff_and_the_digest_lines(digest_md):
     # Answer by path, not with one value for every read: `digest_markdown`
     # now reads the live file and the archive, and a blanket return_value
     # hands it the fixture twice. That is not a duplicate -- `_sections`
