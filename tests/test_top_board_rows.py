@@ -6,6 +6,7 @@ was competing with.
 """
 
 import pytest
+from unittest.mock import patch
 
 from agora_runner.nova_boards import PRIORITY_LABELS, STATUS_LABELS
 from tools import top_board_rows
@@ -104,7 +105,10 @@ def test_main_reads_both_local_boards(tmp_path, capsys):
     ideas = tmp_path / "ideas.md"
     issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
     ideas.write_text(board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE)))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
     out = capsys.readouterr().out
     assert code == 0
     assert "-> idea #64" in out
@@ -243,3 +247,199 @@ def test_two_questions_answered_by_one_reply_is_not_waiting():
         (12, "twice", "**Edvard, 08-13:** one\n\n**Edvard, 08-13:** two\n\n"
                       "**Nova, 08-13 (Cycle 1):** both answered"))
     assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
+
+
+# --- Edvard's unboarded captures, which this tool could not see at all ---
+#
+# Cycle 241 ran the tool, took the row it named, and three of his captures
+# were sitting unread above the board. `parse_board` had been returning
+# them the whole time under a key `open_rows` dropped. Filed by that cycle
+# as `[top-board-rows-blind-to-captures]`.
+
+def with_captures(text, *bullets):
+    """Edvard's bare bullets above the first heading, plus his empty cursor."""
+    head = "---\ntype: log\n---\n\n" + "".join(f"- {b}\n" for b in bullets) + "- \n\n"
+    return head + text
+
+
+def test_a_bare_capture_is_read_off_the_board_file():
+    text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
+                         "the thing I typed on my phone")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == ["the thing I typed on my phone"]
+    assert got[0]["board"] == "issue"
+
+
+def test_a_rating_on_a_capture_is_read_off_the_front_of_the_bullet():
+    text = with_captures(board(), f"{IMMEDIATE.split()[0]} this one is on fire")
+    got = top_board_rows.unboarded_captures(text, "idea")
+    assert got[0]["priority"] == IMMEDIATE
+    assert got[0]["text"] == "this one is on fire"
+
+
+def test_a_capture_a_cycle_already_closed_is_not_unprocessed():
+    """Cycle 251: all five captures on `issues.md` were finished work, and
+    this tool printed every one of them under "take one of these"."""
+    text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
+                         "DONE (Cycle 247): shipped in runner#228 — the old ask",
+                         "the thing I typed on my phone")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == ["the thing I typed on my phone"]
+
+
+def test_a_rating_survives_being_written_behind_a_done_marker():
+    """The marker is prefixed in front of his bullet, glyph and all, so
+    reading the rating before stripping it reports the capture unrated.
+
+    Only the two calls below can see that. A first draft opened with
+    `unboarded_captures(...) == []`, which reads like it belongs here and
+    does not: a closed capture is dropped whichever order the two
+    matchers run in, so that assertion is true either way. Reviewer
+    finding on #234.
+    """
+    from agora_runner.nova_boards import split_capture_done, split_capture_priority
+    done, rest = split_capture_done(f"DONE (Cycle 9): {IMMEDIATE.split()[0]} on fire")
+    assert done == "Cycle 9"
+    assert split_capture_priority(rest) == (IMMEDIATE, "on fire")
+
+
+def test_the_word_done_inside_his_sentence_is_prose_not_a_marker():
+    text = with_captures(board(), "I am DONE (Cycle whatever) with this page")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == ["I am DONE (Cycle whatever) with this page"]
+
+
+def test_his_empty_cursor_bullet_is_not_a_capture():
+    text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)))
+    assert top_board_rows.unboarded_captures(text, "issue") == []
+
+
+def test_a_capture_is_printed_above_the_top_row_and_takes_the_contract():
+    """The 'take this' sentence has to move, or the row still wins by default."""
+    text = with_captures(board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE)),
+                         "please look at the login page")
+    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"),
+                                captures=top_board_rows.unboarded_captures(text, "idea"))
+    assert out.index("please look at the login page") < out.index("idea #64")
+    assert "these outrank every row below" in out
+    # The row is still shown -- printing the capture must not throw the board away.
+    assert "idea #64" in out
+    assert IMMEDIATE in out
+
+
+def test_the_contract_sentence_moves_onto_the_captures_and_only_then():
+    """Both directions in one test, because either alone is unfailable.
+
+    Asserting only the no-captures case passes with this whole feature
+    reverted -- `render` took no `captures` argument, the header read the
+    same, and `UNPROCESSED CAPTURES` was a string that had never existed.
+    The claim worth pinning is that the header *switches*, so both sides
+    of the switch are read here and the "not in" is what does the work.
+    """
+    text = with_captures(board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE)),
+                         "something I typed")
+    rows = top_board_rows.open_rows(text, "idea")
+    caps = top_board_rows.unboarded_captures(text, "idea")
+    without = top_board_rows.render(rows, captures=[])
+    assert "why you did not" in without
+    assert "UNPROCESSED CAPTURES" not in without
+    withthem = top_board_rows.render(rows, captures=caps)
+    assert "below the captures above" in withthem
+    assert "why you did not" not in withthem
+
+
+def test_a_capture_is_still_shown_when_neither_board_has_an_open_row():
+    """The one case where a capture is the only thing there is to report."""
+    text = with_captures(board(), "the only thing waiting on me")
+    out = top_board_rows.render([], captures=top_board_rows.unboarded_captures(text, "issue"))
+    assert "the only thing waiting on me" in out
+    assert "no open rows" in out
+
+
+def test_main_surfaces_captures_from_both_files(tmp_path, capsys):
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    issues.write_text(with_captures(board((10, "a high issue", BACKLOG, "08-01", HIGH)),
+                                    "an issue I typed"))
+    ideas.write_text(with_captures(board((64, "the immediate idea", BACKLOG, "08-12", IMMEDIATE)),
+                                   "an idea I typed"))
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "an issue I typed" in out
+    assert "an idea I typed" in out
+    assert out.index("UNPROCESSED CAPTURES FROM EDVARD (2)") < out.index("idea #64")
+
+
+# --- notes.md, the third capture file (Cycle 253) ---------------------------
+
+NOTES = """---
+type: log
+---
+
+- {}
+
+## Read
+
+- an old note
+  - Read Cycle 1. Did the thing.
+"""
+
+
+def test_main_surfaces_an_unread_note(tmp_path, capsys):
+    """`notes.md` was the last thing in the opening read a cycle could only
+    reach by hand -- and unlike `issues.md` there is no board row to carry a
+    note it walked past. It is not a board: a note is never numbered and
+    never rated, so it is printed with the captures rather than ranked."""
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    notes.write_text(NOTES.format("Stop using the metered API for anything scheduled."))
+    code = top_board_rows.main(
+        ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Stop using the metered API" in out
+    assert "notes.md" in out
+    # Printed with the captures, above the ranking -- not as a board row.
+    assert out.index("Stop using the metered API") < out.index("issue #10")
+    # A note has no rating cell, so it must not be labelled as unrated.
+    note_line = [l for l in out.splitlines() if "Stop using the metered API" in l][0]
+    assert "(unrated)" not in note_line
+
+
+def test_a_note_already_moved_under_read_is_not_unread(tmp_path, capsys):
+    """The other half of step 1a's contract: a cycle acts on a note and
+    moves it under `## Read`. Everything below that heading is answered,
+    and re-surfacing it would make the list grow forever -- the failure
+    the done-capture marker already had to fix once."""
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    notes.write_text(NOTES.format(" "))  # his empty cursor bullet
+    assert top_board_rows.main(
+        ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)]) == 0
+    out = capsys.readouterr().out
+    assert "an old note" not in out
+    assert "UNPROCESSED CAPTURES" not in out
+
+
+def test_a_notes_file_that_cannot_be_read_is_said_out_loud(tmp_path, capsys):
+    """Silence here would read as "he has left no notes", which is the
+    same wrong-answer-wearing-the-right-shape the boards already guard."""
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    with patch.object(top_board_rows, "_fetch", return_value=None):
+        code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "COULD NOT READ" in out and "notes.md" in out

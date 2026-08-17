@@ -12,7 +12,6 @@
 
   var feed = document.getElementById("feed");
   var statusEl = document.getElementById("status");
-  var needsEl = document.getElementById("needs");
 
   var navEl = document.getElementById("nav");
   var menuBtn = document.getElementById("menu-btn");
@@ -144,10 +143,10 @@
      * and the tab silently reverts to the first part under him while the card
      * and drawer correctly stay open. Found by the reviewer, not by me. */
     if (cycle === null || cycle === undefined) {
-      return { expanded: false, journal: false, comments: false, part: 0 };
+      return { expanded: false, journal: false, comments: false, part: 0, ask: null };
     }
     var key = "cycle-" + cycle;
-    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false, part: 0 };
+    if (!folds[key]) folds[key] = { expanded: false, journal: false, comments: false, part: 0, ask: null };
     return folds[key];
   }
 
@@ -350,6 +349,37 @@
       statusEl.appendChild(line);
     }
 
+    /* The other half of #72: "Nova is 1 behind agora." The header names the
+     * newest cycle that has *written*, and for the first 20-45 minutes of
+     * every hour that is one behind the cycle actually running -- which
+     * looked, on this page, exactly like the cycle having died. This says
+     * which of the two it is, and it says it from Agora's own heartbeat
+     * record rather than from the clock: the server sets `running` only
+     * while `lastResult` is "running" and the run is newer than the newest
+     * entry. It cannot be true at the same time as `stalled`; the server
+     * drops the claim once the grace window passes, so a killed cycle
+     * whose heartbeat is stuck on "running" forever reads as stalled here,
+     * not as working.
+     *
+     * `!status.stalled` is checked here too even though the server cannot
+     * currently emit the pair, because the failure if it ever did is not a
+     * cosmetic one: the page would say the loop is working and that it has
+     * been silent for four hours, in two lines a centimetre apart, and the
+     * reassuring one is the lie. A second lock on that door costs one
+     * clause. My own browser test for it failed on the first run -- the
+     * comment above already asserted the two were exclusive, and only the
+     * server made it so.
+     *
+     * Not shown on a replayed payload, for the same reason the stall badge
+     * is not: "a cycle is running" is a claim about right now, and a saved
+     * copy cannot make it. */
+    if (status.running && !status.stalled && !replayed) {
+      var live = el("p", "status-sub");
+      live.appendChild(el("span", "badge badge-live", "cycle running"));
+      live.appendChild(el("span", "status-pr", "its entry arrives when it finishes"));
+      statusEl.appendChild(live);
+    }
+
     /* Shown only once the server calls the loop stalled, which it will not
      * do while a cycle is merely mid-flight -- an entry is written at the
      * end of an hour, so "one behind agora" is what a healthy loop looks
@@ -450,40 +480,6 @@
     return text.replace(/^Error:\s*/, "");
   }
 
-  function renderNeeds(digest, comments) {
-    // Item 3: pinned when it has something, completely absent when it
-    // doesn't -- not a box saying "Nothing".
-    if (!digest || !digest.hasNeedsEdvard) {
-      needsEl.hidden = true;
-      return;
-    }
-    var body = needsEl.querySelector(".needs-body");
-    body.textContent = "";
-    renderBlocks(body, digest.needsEdvardBlocks);
-
-    /* Edvard, 2026-08-10: "the 'needs Edvard' is still missing a comment
-     * block, so its hard for me to answer it. [...] Where did you intend
-     * me to answer it? [...] I want a reply button on it."
-     *
-     * Idea #56 sat in this block unanswered for eight cycles. Reading that
-     * as him not getting to it was wrong: the block asked a question and
-     * gave him nowhere to type, and the capture box below it files
-     * backlog bullets, which is not what an answer is.
-     *
-     * Unlike a journal card the box is open rather than behind the 💬
-     * toggle, and that is the one deliberate difference. A card's drawer
-     * is folded because there are seventy-odd cards and almost none of
-     * them want a comment. This section exists *only* when I am asking him
-     * something -- it is `hidden` otherwise -- so there is no state in
-     * which an always-visible answer field is noise, and a fold is exactly
-     * the thing that hid the problem for eight cycles. */
-    var old = needsEl.querySelector(".comment-drawer");
-    if (old) needsEl.removeChild(old);
-    renderComments(needsEl, needsTarget(), (comments && comments.needs) || []);
-
-    needsEl.hidden = false;
-  }
-
   var nextBodyId = 0;
 
   /** The first paragraph of the entry, for cycles with no digest line.
@@ -529,6 +525,12 @@
    * survives the re-render that discards the box. See `renderComments`. */
   var drafts = {};
 
+  /* There used to be an `expanded` map here, holding whether a folded thread
+   * had been opened. It is gone with the "Show earlier replies" control it
+   * served -- Edvard, 2026-08-16 20:04: *"I see that a solution to the
+   * comments has been to introduce a 'show/hide' comments bar, but that was
+   * a failure. Remove it and try something else."* See `renderComments`. */
+
   /* "40 seconds" / "3 minutes" / "1 hour 5 minutes" -- how long a reply has
    * been in flight. Deliberately coarse above a minute: the point is to let
    * Edvard tell a slow answer from a stuck one, and a ticking second count
@@ -556,6 +558,52 @@
 
   function renderComments(container, target, comments) {
     var drawer = el("div", "comment-drawer");
+
+    /* Edvard, comments board 2026-08-16, three times inside fifteen
+     * minutes: *"it creates a very long list of previous conversations.
+     * Something must be done with this, immediately!"*, *"I still see it
+     * with a long conversation of previous messages that is not relevant
+     * anymore"*, and *"I see all of this text which is quite a lot to
+     * scroll past every single time i want to read your newest journals,
+     * which is 6-8 times a day."*
+     *
+     * He is describing the Needs Edvard block, and the cause is that its
+     * drawer was the one drawer that was never folded (that block is gone) --
+     * so every reply he has ever made to it, since 2026-08-10, is painted
+     * open at the top of the page, above the newest journal card. A cycle
+     * card has the same thread and nobody notices, because a card's drawer
+     * is shut until you open it.
+     *
+     * My first answer was a fold: keep every reply, hide the leading run of
+     * retired ones behind a "Show N earlier replies" button. He rejected it
+     * the same day, 20:04 -- *"I see that a solution to the comments has
+     * been to introduce a 'show/hide' comments bar, but that was a failure.
+     * Remove it and try something else."* -- and 20:03, on the block as a
+     * whole: *"I think the architecture around the 'needs Edvard' block
+     * needs to be rethinked as it seems poorly designed."*
+     *
+     * He is right and the fold was me refusing to answer the question. He
+     * asked for old answered replies not to be on the page; I kept them on
+     * the page and put a control in front of them, which adds a widget to
+     * the thing he said was too long. It also failed outright: I guarded
+     * against folding a thread away to nothing, and since I retire every
+     * comment I answer, all-retired is the *steady state* -- so the guard
+     * fired every time and folded exactly zero of the twelve replies.
+     *
+     * So: a retired comment is not rendered in this drawer at all. No
+     * control, no count, nothing to tap. `## Acknowledged` is the file
+     * already saying "acted on, no longer live", which is "not relevant
+     * anymore" in his words, and a filter is the honest reading of it.
+     *
+     * The one property that has to survive is that nothing waiting on me is
+     * ever hidden, and a filter gives it outright rather than by argument:
+     * only retired comments disappear, and a comment he just typed is never
+     * retired. Retirement is not chronological -- `tools/ack_comment.py`
+     * retires one comment by `(cycle, stamp)` -- which is what sank the
+     * previous cut-at-a-point approach; a filter does not care about order.
+     *
+     * Nothing is lost: the comments stay in `comments.md`, and every cycle
+     * reads them. They are simply not his to scroll past. */
 
     var list = el("div", "comment-list");
     drawer.appendChild(list);
@@ -588,8 +636,31 @@
     toggle.type = "button";
     toggle.setAttribute("aria-label", target.ariaLabel);
 
+    var lastItems = comments;
+
+    /* Which comments this drawer shows. A retired one is dropped outright.
+     *
+     * A filter is what the previous cut-at-a-point version deliberately
+     * avoided, on the argument that dropping a retired comment from the
+     * middle of a thread leaves the two either side touching, so the thread
+     * reads as continuous while a turn of it is missing. That argument is
+     * about preserving a conversation. It stopped applying the moment he
+     * said the conversation itself is the problem -- these are answered
+     * asks he does not want on the page, not a discussion he is following.
+     *
+     * The property that does still matter is that nothing waiting on me is
+     * ever hidden, and a filter gives it directly: `acknowledged` is set
+     * only by a cycle that acted on the comment, so a message he just typed
+     * can never be filtered out. */
+    function shown(items) {
+      if (!target.fold) return items || [];
+      return (items || []).filter(function (c) { return !c.acknowledged; });
+    }
+
     function paint(items) {
+      lastItems = items;
       list.textContent = "";
+      items = shown(items);
       (items || []).forEach(function (comment) {
         var item = el("div", comment.acknowledged ? "comment is-acknowledged" : "comment");
         var head = el("p", "comment-meta");
@@ -646,10 +717,15 @@
         list.appendChild(item);
         if (after) list.appendChild(after);
       });
-      var count = (items || []).length;
+      // Both of these read the whole thread, not the shown slice. The
+      // count on the 💬 toggle is how many comments a cycle has, which the
+      // fold does not change; and a reply still being written on a folded
+      // comment has to keep the poll alive, or hiding it would stop its
+      // answer ever arriving on screen.
+      var count = (lastItems || []).length;
       toggle.textContent = count ? "💬 " + count : "💬";
-      list.hidden = !count;
-      watch((items || []).some(function (c) { return c.replyPending; }));
+      list.hidden = !(items || []).length;
+      watch((lastItems || []).some(function (c) { return c.replyPending; }));
     }
 
     /* Poll only while the server says a reply is still coming, and stop the
@@ -780,16 +856,6 @@
     };
   }
 
-  function needsTarget() {
-    return {
-      key: "needs",
-      placeholder: "Answer…",
-      ariaLabel: "Reply to Needs Edvard",
-      body: function (text) { return { target: "needs", text: text }; },
-      pick: function (data) { return (data && data.needs) || []; },
-    };
-  }
-
   /* One card per cycle, however many entries that cycle wrote.
    *
    * Edvard, on the comments board at cycle 81: "i do not like the double
@@ -897,6 +963,93 @@
       card.appendChild(el("p", "entry-title", cleanTitle(entry.title)));
     }
 
+    /* Edvard, comments board 2026-08-16: "remove the 'needs Edvard' block
+     * entirely. If you need something from me, it should be added in the
+     * Journal card somehow and i'll answer in the comment of a journal card.
+     * [...] add a new yellow block below the title or somehow higlight your
+     * issue so that i see it."
+     *
+     * Below the title, above the brief, and yellow -- his layout, not a
+     * reading of it. The card's own comment drawer is opened for it further
+     * down, because an ask he cannot see the answer box for is the exact
+     * failure that left idea #56 unanswered for eight cycles. */
+    /* Every part's ask, not the first one's. A cycle that wrote an addendum
+     * is two entries on one card, and stopping at the first match dropped
+     * the second ask off the page entirely -- the server has already cut it
+     * out of that part's prose, so there is nowhere else for it to appear.
+     * Silently losing a question is the failure this whole change exists to
+     * stop. */
+    var asked = [];
+    for (var ai = 0; ai < ordered.length; ai++) {
+      if (ordered[ai].askSpans && ordered[ai].askSpans.length) asked.push(ordered[ai]);
+    }
+    /* Read here rather than forty lines down, because the ask block below
+     * needs it. It was already moved up once for the same reason and the
+     * comment there records why that matters: `var` hoists, so reading
+     * `fold` above its assignment gets `undefined` silently and disables
+     * the memory while every test still passes. */
+    var fold = foldFor(entry.cycle);
+    var askToggle = null;
+    var setAskOpen = null;
+    if (asked.length) {
+      /* Edvard, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
+       * 'needs Edvard' block on an entry, minimize it instead of leaving it
+       * full-size -- and let Edvard minimize it himself too. Don't delete it,
+       * just collapse it."
+       *
+       * Two halves, and the second is what makes the first safe to guess at.
+       *
+       * "My reply answers it" is not something this page can read. What it
+       * can read is whether he has said anything on this card at all, and
+       * that is the whole mechanism the ask relies on -- the ask is raised
+       * on the card, the card's drawer is opened for it, and his answer goes
+       * in that drawer. So: a card he has commented on has been answered.
+       * That proxy is wrong sometimes (a comment can be about something
+       * else), which is exactly why he also asked for the manual control --
+       * a wrong guess costs one tap, not an unread question.
+       *
+       * Collapsed keeps the label and the control. "It should not be
+       * deleted, but be minimised" -- so the yellow row stays on the card
+       * saying an ask lives here, and only its prose folds away. Hiding the
+       * row itself would be the deletion he ruled out, and would put this
+       * back where idea #56 was: a question with nowhere visible to answer. */
+      var answered = !!(comments && comments.length);
+      var ask = el("div", "entry-ask");
+      var askHead = el("div", "entry-ask-head");
+      askHead.appendChild(el("p", "entry-ask-label", "Needs Edvard"));
+      askToggle = el("button", "entry-ask-toggle");
+      askToggle.type = "button";
+      askHead.appendChild(askToggle);
+      ask.appendChild(askHead);
+      var askBodies = el("div", "entry-ask-bodies");
+      askBodies.id = "ask-" + (entry.cycle === null || entry.cycle === undefined
+        ? Math.random().toString(36).slice(2) : entry.cycle);
+      asked.forEach(function (part) {
+        var askBody = el("p", "entry-ask-body");
+        renderSpans(askBody, part.askSpans);
+        askBodies.appendChild(askBody);
+      });
+      ask.appendChild(askBodies);
+      askToggle.setAttribute("aria-controls", askBodies.id);
+
+      setAskOpen = function (open) {
+        askBodies.hidden = !open;
+        ask.classList.toggle("is-collapsed", !open);
+        askToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        askToggle.textContent = open ? "Minimize" : "Show";
+        askToggle.setAttribute("aria-label",
+          (open ? "Minimize" : "Show") + " what this cycle needs from you");
+      };
+      /* Tri-state on purpose. `null` means he has not touched this card's
+       * ask, so the answered-guess decides; once he has, his choice wins and
+       * a background poll rebuilding the card does not overrule it. Storing
+       * a plain boolean would make "he opened it" and "it was never
+       * collapsed" the same value, and the next poll would re-collapse it
+       * under him. */
+      setAskOpen(fold.ask === null || fold.ask === undefined ? !answered : !fold.ask);
+      card.appendChild(ask);
+    }
+
     /* Edvard, issues.md 2026-08-09: "a 2-3 line short precise Digest for
      * each cycle as a title for each journey card ... Then, when a journey
      * card is opened, the Digest is revealed. Below that, a 'read the full
@@ -954,12 +1107,12 @@
     /* The drawer wraps the parts rather than being one of them, so the tab
      * strip is hidden and shown with the prose it divides.
      *
-     * `fold` is read here rather than at its old declaration forty lines
-     * down: `var` hoists, so the name existed and was `undefined`, and
+     * `fold` is read above the ask block rather than at its old declaration
+     * here: `var` hoists, so the name existed and was `undefined`, and
      * passing it in silently disabled the tab memory while every test still
      * passed. It is the same object either way -- `foldFor` memoises per
-     * cycle -- so this is a move, not a second one. */
-    var fold = foldFor(entry.cycle);
+     * cycle -- so that was a move, not a second one, and this is the same
+     * move again for the same reason. */
     var body = el("div", "entry-parts");
     body.id = bodyId;
     appendParts(body, ordered, settled, fold);
@@ -995,6 +1148,14 @@
       fold.comments = open;
       card.classList.toggle("is-commenting", open);
       commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    /* An ask opens its own card's drawer, once. `askSeen` rather than
+     * opening on every render, so closing it stays closed through the
+     * five-minute poll -- a box that reopens itself is the pinned-open
+     * drawer this replaced. */
+    if (asked.length && !fold.askSeen) {
+      fold.askSeen = true;
+      fold.comments = true;
     }
     setCommentsOpen(fold.comments);
 
@@ -1068,6 +1229,17 @@
       // tap on the card. Without this, focusing the textarea would collapse
       // the card out from under it.
       if (event.target.closest(".comment-drawer")) return;
+      /* His own minimize, and it does not touch the card. Same reason the
+       * chat bubble returns early: folding the ask is a decision about the
+       * ask, not a request to read or close the cycle behind it. `fold.ask`
+       * is written here rather than inside `setAskOpen`, so the first paint
+       * -- which is a guess, not his choice -- leaves the tri-state alone. */
+      if (setAskOpen && event.target.closest(".entry-ask-toggle")) {
+        var wantOpen = askToggle.getAttribute("aria-expanded") !== "true";
+        fold.ask = !wantOpen;
+        setAskOpen(wantOpen);
+        return;
+      }
       if (event.target.closest(".journal-toggle")) {
         setJournalOpen(journalToggle.getAttribute("aria-expanded") !== "true");
         return;
@@ -1521,7 +1693,6 @@
     renderedVersion = (journal && journal.version) || null;
     renderedComments = JSON.stringify(comments);
     renderStatus(journal.status || {});
-    renderNeeds(digest, comments);
 
     var commentsByCycle = (comments && comments.byCycle) || {};
 
@@ -2781,13 +2952,98 @@
    * instead of resolving it. A stale address is a 409 and the page
    * re-reads, which is the honest outcome. */
   function renderCapture(board, capture, index) {
-    var one = el("div", "capture-item");
+    /* `capture.done` is the cycle that closed it, or "". It only paints
+     * -- Edit and Delete keep working, because the marker is text in his
+     * bullet and he is allowed to change his mind about it. */
+    var one = el("div", "capture-item" + (capture.done ? " capture-item-done" : ""));
     var body = el("div", "capture-body");
-    // The rating he chose when he typed it, shown the same way a boarded
-    // row shows one, so an unboarded capture and a boarded item read
-    // alike. Unrated gets no chip -- the same rule as the board.
-    if (capture.priority) {
-      body.appendChild(el("span", "chip prio prio-" + capture.priorityKey, capture.priority));
+    /* The rating, shown and editable the same way a boarded row's is.
+     * Edvard, issues.md #91: *"All unboarded issues and ideas should have
+     * the priority status icon shown (as they do when its chosen) in the
+     * left top corner, but pressing it should open the modal like it does
+     * sin the issue cards."*
+     *
+     * This was a read-only `.chip` painted only when he had rated the
+     * capture at typing time, so the window between typing something and a
+     * cycle boarding it -- often hours, and exactly when his own sense of
+     * how urgent it is has to survive until I read it -- was the one place
+     * on the page a rating could not be given or changed. `chipStyle: true`
+     * is the board row's trigger, "Unrated" chip and all, so the two read
+     * alike and there is something to press when there is no rating yet.
+     *
+     * **A capture has nowhere to put a Priority cell, so the rating is the
+     * leading glyph of the bullet** (`nova_boards.split_capture_priority`)
+     * and setting one is an ordinary text edit. That is why this needs no
+     * route of its own: it rebuilds the bullet and posts it to the same
+     * `/api/capture/edit` the Edit button uses, address and all, so it
+     * inherits that route's index-and-text check and its 409. `capture.body`
+     * is the server's own glyph-stripped text, so the round trip never
+     * stacks a second glyph on a bullet that already had one. */
+    var prioPicker = buildPrioPicker({
+      current: capture.priority || "",
+      // Named per capture, as board rows are ("Priority of #57"), so a
+      // screen reader on a page of several unrated captures can tell which
+      // one a trigger belongs to -- every one of them otherwise announces
+      // the identical "Priority, Unrated".
+      //
+      // `openMenu` also stores this string as the shared popup's
+      // `dataset.openFor`, and I first wrote the comment here claiming
+      // uniqueness was load-bearing for that. It is not, and I checked:
+      // making every capture share one label changes no behaviour, because
+      // the document-level outside-click handler closes the open menu
+      // before the second trigger's own handler ever reads `openFor`.
+      ariaLabel: "Priority of capture " + (index + 1),
+      chipStyle: true,
+      onPick: function (label) {
+        /* The reason goes on screen, not just into a reverted chip. Every
+         * other write on this row -- Edit, Delete, and the same picker on a
+         * boarded row -- says why it failed, and the failure this one is
+         * most likely to hit is the one `/api/capture/edit` was built to
+         * expect: a cycle boarding these very bullets while he is looking
+         * at them, which answers 409. Reverting in silence leaves "my tap
+         * did not register", "the app is broken" and "reload, a cycle just
+         * took this" looking identical. Found by review on #223. */
+        status.textContent = "saving…";
+        status.className = "capture-item-status";
+        var rest = capture.body || "";
+        if (!rest) {
+          /* A bullet that is nothing but a glyph rewrites to the empty
+           * string, which that route answers with a 400 "nothing to save"
+           * -- it does not delete, deletion is `/api/capture/delete`. So
+           * this is not a safety guard, it is a round trip that can only
+           * fail; refusing here reverts the trigger without one. I shipped
+           * this comment claiming the empty edit *would* delete the
+           * capture, which is wrong about the server, and corrected it. */
+          var err = new Error("nothing to rate");
+          fail(err);
+          return Promise.reject(err);
+        }
+        var next = label ? label.split(" ")[0] + " " + rest : rest;
+        return fetch("/api/capture/edit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target: board, index: index, original: capture.text, text: next,
+          }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (result) {
+            if (!result || !result.ok) {
+              throw new Error((result && (result.message || result.error)) || "failed");
+            }
+            status.textContent = "";
+            loadBoard(board);
+          })
+          // `fail` paints the reason and re-enables Edit/Delete; rethrowing
+          // is what makes `buildPrioPicker` revert the chip, so the two
+          // halves of "it did not save" happen together.
+          .catch(function (err) { fail(err); throw err; });
+      },
+    });
+    body.appendChild(prioPicker.el);
+    // After the rating trigger, so #91's "left top corner" still holds.
+    if (capture.done) {
+      body.appendChild(el("span", "capture-done-chip", "Done · " + capture.done));
     }
     renderBlocks(body, capture.blocks || []);
     one.appendChild(body);
@@ -2897,15 +3153,39 @@
 
   function renderBoardEdvard(board, payload) {
     var wrap = el("div", "board");
+    /* Two sections, not one. A capture a cycle has closed carries a
+     * `DONE (Cycle N):` prefix (`nova_boards.split_capture_done`), and
+     * until Cycle 251 nothing read it -- so every finished bullet went on
+     * sitting under "Not boarded yet" with the open ones. On 08-17 that
+     * heading held five items and all five were done, which makes the
+     * section unreadable in exactly the way that matters: the one place
+     * on this page where Edvard's own unfiled words appear.
+     *
+     * The done ones stay on the page rather than being hidden, because
+     * the marker is a cycle answering him and the answer is worth
+     * reading once. They just stop claiming to be work. The index passed
+     * to `renderCapture` is the index into `payload.captures`, not into
+     * the section -- `/api/capture/edit` addresses a bullet by its
+     * position in the file, so splitting the list for display must not
+     * renumber it. */
     var captures = payload.captures || [];
-    if (captures.length) {
-      var box = el("section", "captures");
-      box.appendChild(el("h2", "captures-title", "Not boarded yet"));
-      captures.forEach(function (capture, index) {
-        box.appendChild(renderCapture(board, capture, index));
+    var open = [];
+    var done = [];
+    captures.forEach(function (capture, index) {
+      (capture.done ? done : open).push({ capture: capture, index: index });
+    });
+    [
+      { rows: open, cls: "captures", title: "Not boarded yet" },
+      { rows: done, cls: "captures captures-done", title: "Done, not yet cleared" }
+    ].forEach(function (section) {
+      if (!section.rows.length) return;
+      var box = el("section", section.cls);
+      box.appendChild(el("h2", "captures-title", section.title));
+      section.rows.forEach(function (row) {
+        box.appendChild(renderCapture(board, row.capture, row.index));
       });
       wrap.appendChild(box);
-    }
+    });
 
     var items = payload.items || [];
     wrap.appendChild(renderBoardControls(board, payload, items));
@@ -3280,7 +3560,6 @@
   function renderBoard(board, payload) {
     stopPolling();
     markNav();
-    needsEl.hidden = true;
     renderBoardStatus(board, payload);
     feed.textContent = "";
 
@@ -3844,7 +4123,6 @@
   function renderCosts(payload) {
     stopPolling();
     markNav();
-    needsEl.hidden = true;
     var summary = payload.summary || {};
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
@@ -4096,7 +4374,6 @@
   function renderRetro(payload) {
     stopPolling();
     markNav();
-    needsEl.hidden = true;
     var rows = payload.retros || [];
     var latest = rows.length ? rows[rows.length - 1] : null;
     statusEl.textContent = "";
@@ -4385,12 +4662,31 @@
       button.addEventListener("click", function () { send(button.getAttribute("data-target")); });
     });
     form.addEventListener("submit", function (event) { event.preventDefault(); });
-    // Enter sends as an issue; Shift+Enter keeps the newline, since several
-    // lines become several bullets server-side.
+    /* Enter is a newline. Edvard, issues.md #90: *"When i press enter on my
+     * keyboard, it automatically submits my input text as an issue in the
+     * Nova text input field. Pressing enter should create a new line, not
+     * submit."*
+     *
+     * This used to be Enter-sends / Shift+Enter-newline, on the reasoning
+     * that a capture is one line per item so Enter meaning "file it" costs
+     * nothing. It cost plenty. He types this box on a phone, where a soft
+     * keyboard has a return key and no reachable Shift+Enter at all, so the
+     * escape hatch existed only on a desktop he does not capture from --
+     * and the failure is destructive rather than annoying: half a sentence
+     * is filed as its own issue and the rest has nowhere to go.
+     *
+     * It also had to guess a target, and guessed `issues` for a box with
+     * three buttons. An idea typed and Entered was filed as a bug.
+     *
+     * Cmd/Ctrl+Enter keeps a keyboard send for the desktop case, where the
+     * modifier is the conventional "submit this composer" chord and cannot
+     * be hit by accident mid-sentence. It still has to pick a target, so it
+     * picks the same one the leftmost button does. The button is the path
+     * that has to work, and it is the only one that works on a phone. */
     textEl.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        send("issues");
+        send(buttons.length ? buttons[0].getAttribute("data-target") : "issues");
       }
     });
     textEl.addEventListener("input", fit);

@@ -480,8 +480,6 @@ def test_the_archive_cannot_displace_the_sections_edvard_reads():
     # one it sees. The archive is `#`-titled for exactly this reason.
     with _digest_reader(_ARCHIVED_DIGEST):
         digest = parse_digest(nova_sources.digest_markdown())
-    assert "node" in digest["needsEdvard"]
-    assert digest["hasNeedsEdvard"] is True
     assert "Check the deploy." in digest["nextCycle"]
 
 
@@ -498,17 +496,6 @@ def test_a_missing_archive_leaves_the_live_digest_exactly_as_it_was():
     for absent in (None, ""):
         with _digest_reader(absent):
             assert nova_sources.digest_markdown() == _LIVE_DIGEST
-
-
-@pytest.mark.parametrize("text", ["Nothing.", "Nothing", "none", "  \n"])
-def test_needs_edvard_is_empty_when_it_says_nothing(text):
-    assert parse_digest(f"## Needs Edvard\n\n{text}\n\n## Digest\n")["hasNeedsEdvard"] is False
-
-
-def test_needs_edvard_is_present_when_it_asks_something():
-    digest = parse_digest("## Needs Edvard\n\nShould the site be public?\n\n## Digest\n")
-    assert digest["hasNeedsEdvard"] is True
-    assert "public" in digest["needsEdvard"]
 
 
 # --- status ---------------------------------------------------------------
@@ -644,7 +631,7 @@ def test_api_journal_returns_rendered_entries_without_the_raw_body(journal_md):
     assert "body" not in payload["entries"][0]
 
 
-def test_api_digest_returns_the_needs_section_rendered(digest_md):
+def test_api_digest_returns_the_handoff_and_the_digest_lines(digest_md):
     # Answer by path, not with one value for every read: `digest_markdown`
     # now reads the live file and the archive, and a blanket return_value
     # hands it the fixture twice. That is not a duplicate -- `_sections`
@@ -657,8 +644,7 @@ def test_api_digest_returns_the_needs_section_rendered(digest_md):
         status, _, body = _get("/api/digest")
     payload = json.loads(body)
     assert status == 200
-    assert "needsEdvardBlocks" in payload
-    assert isinstance(payload["hasNeedsEdvard"], bool)
+    assert "nextCycle" in payload
     assert payload["lines"]
 
 
@@ -1197,12 +1183,6 @@ def test_a_real_ask_is_not_mistaken_for_an_empty_one(text):
     the word. Only a section that is *nothing but* some spelling of
     "nothing" counts as empty."""
     assert is_empty_needs(text) is False
-
-
-def test_the_live_digests_needs_section_is_hidden():
-    """The bug as Edvard actually met it, against the committed fixture of
-    the file he reads."""
-    assert parse_digest(_fixture("digest_two_entries.md"))["hasNeedsEdvard"] is False
 
 
 # --- PR references become links -------------------------------------------
@@ -3209,17 +3189,16 @@ def test_a_digest_asked_for_the_old_way_is_still_the_whole_digest(journal_md, di
     assert len(json.loads(body)["lines"]) == 11
 
 
-def test_the_needs_section_survives_every_window(journal_md, digest_md):
-    """`needsEdvard` is the header, not the feed -- it is not part of what
-    gets sliced, and the card at the top of the page renders it on every
-    window the same way the status header does."""
+def test_the_handoff_section_survives_every_window(journal_md, digest_md):
+    """`nextCycle` is the header, not the feed -- it is not part of what
+    gets sliced, and it renders on every window the same way the status
+    header does. `needsEdvard` used to be asserted here too; the block was
+    deleted from the page in #229 and its server half in #236."""
     with _both(journal_md, digest_md):
         _, _, windowed = _get("/api/digest?limit=1")
         nova_site.reset_cache()
         _, _, whole = _get("/api/digest")
     windowed, whole = json.loads(windowed), json.loads(whole)
-    assert windowed["needsEdvard"] == whole["needsEdvard"]
-    assert windowed["needsEdvardBlocks"] == whole["needsEdvardBlocks"]
     assert windowed["nextCycle"] == whole["nextCycle"]
 
 
@@ -3934,12 +3913,57 @@ def test_commenting_on_a_boarded_row_reaches_the_vault_through_the_real_request_
             "/api/board/comment", {"target": "ideas", "number": 64, "text": "  Still broken. "})
     assert status == 200
     assert json.loads(body)["ok"] is True
-    target, number, text, dated = cm.call_args[0]
+    target, number, text, dated, author = cm.call_args[0]
     assert (target, number, text) == ("ideas", 64, "Still broken.")
+    # The page is his, so an unstated author is him.
+    assert author == "Edvard"
     # `MM-DD`, and Oslo's -- a module that reaches for a clock reaches for
     # it in UTC, and this lands in a file he reads.
     assert re.fullmatch(r"\d{2}-\d{2}", dated)
     assert dated == datetime.now(OSLO).strftime("%m-%d")
+
+
+def test_a_cycles_reply_is_attributed_to_nova_and_not_to_him():
+    """`comment_on_row` hardcoded `author="Edvard"` while its own docstring
+    told a cycle to reply with `author="Nova"`, so every reply this loop
+    made through this route was written into his board as words he had
+    said. Worse than cosmetic: `unanswered_comments` calls a row waiting
+    when the last note under it is his, and that flag outranks a 🔴 in
+    `tools.top_board_rows` -- so a cycle commenting set a permanent "he is
+    waiting" marker that its own reply could never clear."""
+    with patch.object(nova_site, "comment_on_row",
+                      return_value=(True, "#94 commented on issues")) as cm:
+        status, _, _ = _post("/api/board/comment", {
+            "target": "issues", "number": 94, "text": "Not taken this cycle.",
+            "author": "Nova"})
+    assert status == 200
+    assert cm.call_args[0][4] == "Nova"
+
+
+@pytest.mark.parametrize("author", ["Sokrates", " ", 3, "nova", "NOVA"])
+def test_an_author_neither_of_us_uses_is_refused_before_any_write(author):
+    """His board is not a place to write under an arbitrary name.
+
+    `" "` is in here deliberately: it is truthy, so it survives the
+    `or "Edvard"` fallback and would be written as the author verbatim.
+    The casing pair is here because `append_detail_note` renders the
+    string as given -- `**nova, 08-17:**` is not a name either of us uses.
+    """
+    with patch.object(nova_site, "comment_on_row") as cm:
+        status, _, _ = _post("/api/board/comment", {
+            "target": "issues", "number": 94, "text": "hi", "author": author})
+    assert status == 400, author
+    cm.assert_not_called()
+
+
+@pytest.mark.parametrize("payload_extra", [{}, {"author": ""}, {"author": None}])
+def test_an_unstated_author_is_him_because_the_page_is_his(payload_extra):
+    with patch.object(nova_site, "comment_on_row",
+                      return_value=(True, "ok")) as cm:
+        status, _, _ = _post("/api/board/comment", dict(
+            {"target": "issues", "number": 94, "text": "hi"}, **payload_extra))
+    assert status == 200
+    assert cm.call_args[0][4] == "Edvard"
 
 
 def test_a_comment_cannot_smuggle_a_line_break_into_his_write_up():
@@ -4016,3 +4040,8 @@ def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
             patch.object(nova_site, "invalidate") as inv:
         _post("/api/board/comment", {"target": "ideas", "number": 64, "text": "x"})
     inv.assert_called_once_with("board:ideas")
+
+
+# --- Clearing a Needs Edvard item from the page (issue #93) ---------------
+
+

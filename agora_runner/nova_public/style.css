@@ -199,35 +199,75 @@ pre code { background: none; padding: 0; }
 .capture-btn:hover:not(:disabled) { border-color: var(--accent); }
 .capture-btn:disabled { color: var(--dim); cursor: default; }
 
-/* Digest strip (item 3) */
-.needs {
+/* The ask, on the card that raised it -- Edvard, comments board 2026-08-16:
+ * "add a new yellow block below the title or somehow higlight your issue so
+ * that i see it."
+ *
+ * It keeps the old block's colours on purpose: the same warning yellow he
+ * already reads as "this one is for you", moved onto the card that owns it
+ * rather than floating above the feed as a list nobody owned. */
+.entry-ask {
   background: #2a2418;
   border: 1px solid #5c4a1e;
   border-radius: 10px;
-  padding: 0.2rem 1rem 0.9rem;
-  margin-bottom: 1.5rem;
+  padding: 0.6rem 0.9rem 0.7rem;
+  margin: 0.2rem 0 0.9rem;
 }
 
-.needs h2 {
-  font-size: 0.78rem;
+/* Collapsed, the block is the label row and nothing else -- Edvard,
+ * ideas.md 2026-08-16: "Don't delete it, just collapse it." The yellow
+ * stays, so a card carrying an unanswered question still reads as one from
+ * a scroll; only the prose folds. The padding tightens rather than
+ * disappearing, because a row with no bottom padding reads as a broken
+ * block rather than a shut one. */
+.entry-ask.is-collapsed { padding-bottom: 0.55rem; }
+
+.entry-ask-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.entry-ask-label {
+  font-size: 0.72rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--warn);
+  margin: 0 0 0.35rem;
 }
 
-.needs-body p:last-child { margin-bottom: 0; }
+.entry-ask.is-collapsed .entry-ask-label { margin-bottom: 0; }
 
-/* The reply box (2026-08-10). Always shown -- see renderNeeds in app.js;
- * the `display: none` on a comment drawer is scoped to `.entry`, so this
- * one is visible without needing to override anything. The rule to hold
- * onto is the separator: the question above and the answer below are two
- * different things and should not read as one block of warning-coloured
- * text. */
-.needs .comment-drawer {
-  margin-top: 0.9rem;
-  padding-top: 0.9rem;
-  border-top: 1px solid #5c4a1e;
+/* A quiet control on purpose: the yellow is doing the attention work and a
+ * second bright thing inside the same block competes with it.
+ *
+ * `min-height: 44px` explicitly, and the reviewer is why. I wrote this
+ * comment claiming "44px of tap height comes from the padding" and then set
+ * 0.6rem of padding around 0.75rem text, which computes to about 29px --
+ * two thirds of the floor, on the one control Edvard's whole ask depends on,
+ * on a page he opens from a phone. Fifteen other rules in this file set
+ * `min-height: 44px` and say why. The negative block margin keeps the label
+ * row from growing by the difference: the target is 44px, the row is not. */
+.entry-ask-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  background: none;
+  border: none;
+  padding: 0 0 0 0.6rem;
+  margin: -0.7rem 0;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--dim);
+  cursor: pointer;
 }
+
+.entry-ask-toggle:hover { color: var(--warn); }
+
+.entry-ask-body { margin: 0; }
+.entry-ask-body + .entry-ask-body { margin-top: 0.4rem; }
 
 /* Journal timeline (item 1) */
 .entry {
@@ -501,6 +541,13 @@ pre code { background: none; padding: 0; }
 }
 
 .badge-good { color: var(--good); border-color: #2f6b42; }
+/* "cycle running" (#72). `--accent` rather than `--good`: this is not
+ * an outcome and must not read as one -- the cycle it describes has not
+ * finished, so borrowing the colour the merged pills use would say it went
+ * well before anything knows. Blue is this page's "information" colour and
+ * sits in no other badge, so it cannot be mistaken for the amber stall or
+ * the red unreachable directly below it. */
+.badge-live { color: var(--accent); border-color: #3a5488; }
 .badge-warn { color: var(--warn); border-color: #6b552f; }
 /* "can't reach Nova". Deliberately not --warn: an amber badge here would
  * read as the stall badge directly above it, and "the loop is quiet" and
@@ -580,6 +627,11 @@ pre code { background: none; padding: 0; }
   outline-offset: 3px;
   border-radius: 6px;
 }
+
+/* The disclosure over a folded Needs Edvard thread. Deliberately quiet --
+ * it names something he asked to stop seeing, so it should read as a way
+ * back to it and not as an invitation. Same 44px touch target as the
+ * toggle above; it is a real tap on a phone. */
 
 .comment-list { margin-bottom: 0.7rem; }
 
@@ -1092,7 +1144,6 @@ body.nav-open { overflow: hidden; }
 
 .modal-close:hover { color: var(--text); }
 
-
 .captures {
   border: 1px solid var(--warn);
   border-radius: 0.6rem;
@@ -1121,6 +1172,26 @@ body.nav-open { overflow: hidden; }
 .capture-item:first-of-type { border-top: 0; padding-top: 0.2rem; }
 
 .capture-item p { margin: 0.3rem 0; }
+
+/* A capture a cycle has closed. The block keeps the same shape as the
+ * open one so the two read as the same kind of thing, but drops the
+ * amber border and title colour that mean "this is waiting on nobody but
+ * Nova" -- on 08-17 every capture on the issues board was finished and
+ * the whole section was still painted as outstanding work. */
+.captures-done { border-color: var(--line); }
+.captures-done .captures-title { color: var(--dim); }
+.capture-item-done { opacity: 0.75; }
+
+.capture-done-chip {
+  display: inline-block;
+  margin-right: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--good);
+  border: 1px solid var(--good);
+  border-radius: 0.5rem;
+  padding: 0 0.35rem;
+  white-space: nowrap;
+}
 
 .capture-edit {
   display: flex;

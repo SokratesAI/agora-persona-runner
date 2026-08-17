@@ -928,32 +928,241 @@ describe("a board link opens the row it names", () => {
   });
 });
 
-describe("the Needs Edvard box", () => {
-  test("stays hidden when the section says a bolded nothing", async () => {
-    // The live digest has said `**Nothing.**` since the box shipped, and the
-    // emptiness test compared the section literally, so the box had never
-    // once been hidden. Edvard, issues.md 2026-08-09.
-    assert.equal(payload.digest.hasNeedsEdvard, false);
+describe("an ask lives on the card that raised it", () => {
+  /* Edvard, comments board 2026-08-16: "the solution i want is to remove the
+   * 'needs Edvard' block entirely. If you need something from me, it should
+   * be added in the Journal card somehow and i'll answer in the comment of a
+   * journal card. [...] add a new yellow block below the title or somehow
+   * higlight your issue so that i see it." */
+
+  /** A journal payload whose newest entry carries an ask. */
+  function asking(ask) {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const entry = journal.entries[0];
+    entry.ask = ask;
+    entry.askSpans = [{ kind: "text", text: ask }];
+    return journal;
+  }
+
+  test("the separate block is gone from the page entirely", async () => {
     const window = await loadSite();
-    assert.ok(window.document.getElementById("needs").hidden);
+    assert.equal(window.document.getElementById("needs"), null);
+    assert.equal(window.document.querySelector(".needs-done"), null);
   });
 
-  test("appears when the section actually asks for something", async () => {
-    const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
-    const { window } = dom;
-    const asking = {
-      ...payload.digest,
-      hasNeedsEdvard: true,
-      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about the node." }] }],
-    };
+  test("an ask renders as its own block on its own card", async () => {
+    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const ask = window.document.querySelector(".entry-ask");
+    assert.ok(ask, "the card should carry the ask");
+    assert.match(ask.textContent, /Needs Edvard/);
+    assert.match(ask.textContent, /Decide about the node/);
+  });
+
+  test("the ask sits above the brief, which is where he asked for it", async () => {
+    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    const kids = Array.from(card.children);
+    const askAt = kids.findIndex((n) => n.classList.contains("entry-ask"));
+    const briefAt = kids.findIndex((n) => n.classList.contains("entry-brief"));
+    assert.ok(askAt > -1 && briefAt > -1, "both should be on the card");
+    assert.ok(askAt < briefAt, "the ask goes below the title and above the brief");
+  });
+
+  test("a card with an ask opens its own comment drawer", async () => {
+    /* The answer box is the whole point -- idea #56 sat unanswered for eight
+     * cycles because the block asked a question and gave him nowhere to type.
+     * A card's drawer is shut by default, so an ask that did not open it
+     * would reintroduce exactly that. */
+    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    assert.ok(card.classList.contains("is-commenting"));
+  });
+
+  test("a two-part cycle shows both of its asks, not just the first", async () => {
+    /* Reviewer finding, Cycle 247. The server cuts each part's ask out of
+     * that part's own prose, so an ask the card declines to render is gone
+     * from the page with no trace. */
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const cycle = journal.entries[0].cycle;
+    const twin = JSON.parse(JSON.stringify(journal.entries[0]));
+    twin.ask = "second ask";
+    twin.askSpans = [{ kind: "text", text: "second ask" }];
+    journal.entries[0].ask = "first ask";
+    journal.entries[0].askSpans = [{ kind: "text", text: "first ask" }];
+    twin.cycle = cycle;
+    journal.entries.splice(1, 0, twin);
+    const window = await loadSite("/", { journal: () => journal });
+    const ask = window.document.querySelector(".entry-ask");
+    assert.match(ask.textContent, /first ask/);
+    assert.match(ask.textContent, /second ask/);
+    assert.equal(ask.querySelectorAll(".entry-ask-label").length, 1);
+  });
+
+  /* Edvard, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
+   * 'needs Edvard' block on an entry, minimize it instead of leaving it
+   * full-size -- and let Edvard minimize it himself too. Don't delete it,
+   * just collapse it." */
+
+  /** The cycle the fixture's newest entry belongs to. */
+  const newestCycle = payload.journal.entries[0].cycle;
+
+  /* The fixture's newest entry is cycle 57, and cycle 57 already carries two
+   * comments -- so "an answered ask starts minimized" passes against the
+   * plain fixture whether or not the code reads the comments at all. Both
+   * halves therefore build their own comments payload: `silent` is the one
+   * that makes the open case capable of failing. */
+  /** A comments payload where he has replied on the newest entry's card. */
+  function repliedOnNewest() {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle[String(newestCycle)] = [
+      { stamp: "2026-08-16 22:14", text: "Do it.", acknowledged: false },
+    ];
+    return copy;
+  }
+
+  /** The same, with nothing said on the newest entry's card. */
+  function silentOnNewest() {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    delete copy.byCycle[String(newestCycle)];
+    return copy;
+  }
+
+  test("an unanswered ask is open, with a control to minimize it", async () => {
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: silentOnNewest(),
+    });
+    const ask = window.document.querySelector(".entry-ask");
+    const toggle = ask.querySelector(".entry-ask-toggle");
+    assert.ok(toggle, "the ask should carry its own control");
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, false);
+    assert.equal(ask.classList.contains("is-collapsed"), false);
+  });
+
+  test("an ask on a card he has replied to starts minimized", async () => {
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: repliedOnNewest(),
+    });
+    const ask = window.document.querySelector(".entry-ask");
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true);
+    assert.equal(ask.querySelector(".entry-ask-toggle").getAttribute("aria-expanded"), "false");
+    assert.ok(ask.classList.contains("is-collapsed"));
+  });
+
+  test("minimized still says an ask is there, rather than deleting it", async () => {
+    /* "It should not be deleted, but be minimised." The label is what makes
+     * a collapsed ask findable at all -- hide the row and the card looks
+     * like every card with nothing to answer.
+     *
+     * Reviewer finding, Cycle 249. This test used to assert `ask.hidden ===
+     * false` and that the label read "Needs Edvard", which nothing in the
+     * feature can move: `setAskOpen` never touches `ask.hidden`, and the
+     * label was rendered unconditionally before the change too. It passed
+     * with the whole feature reverted. What it has to assert is the
+     * *contrast* -- the prose is gone and the row is not -- because that is
+     * the only thing that distinguishes minimised from deleted. */
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: repliedOnNewest(),
+    });
+    const ask = window.document.querySelector(".entry-ask");
+    assert.ok(ask.classList.contains("is-collapsed"), "this case should be collapsed at all");
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true, "the prose should be folded");
+    assert.equal(ask.querySelector(".entry-ask-label").hidden, false);
+    assert.equal(ask.querySelector(".entry-ask-toggle").hidden, false);
+    assert.match(ask.textContent, /Needs Edvard/, "the row still names itself");
+    assert.doesNotMatch(
+      ask.querySelector(".entry-ask-head").textContent,
+      /Decide about the node/,
+      "the question itself should not be in the row that stays",
+    );
+  });
+
+  test("he can minimize an unanswered ask himself, and open it again", async () => {
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: silentOnNewest(),
+    });
+    const ask = window.document.querySelector(".entry-ask");
+    const toggle = ask.querySelector(".entry-ask-toggle");
+    toggle.click();
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true, "his tap should fold it");
+    toggle.click();
+    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, false, "and unfold it again");
+  });
+
+  test("minimizing the ask does not open or close the card behind it", async () => {
+    /* The card toggles on any tap that is not claimed by a control, so a
+     * missing branch in that one listener would expand the whole cycle
+     * every time he folded its ask. */
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments: silentOnNewest(),
+    });
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    const before = card.classList.contains("is-expanded");
+    card.querySelector(".entry-ask-toggle").click();
+    assert.equal(card.classList.contains("is-expanded"), before);
+  });
+
+  test("a poll does not re-collapse an ask he has opened", async () => {
+    /* The failure a plain boolean would give: he opens an answered ask, a
+     * background poll rebuilds the feed, and the guess overrules his tap.
+     * A real poll, not a hand call of the renderer -- the version has to
+     * move or the page correctly leaves itself alone and this proves
+     * nothing. */
+    let timers;
+    const comments = repliedOnNewest();
+    const window = await loadSite("/", {
+      journal: () => asking("Decide about the node."),
+      comments,
+      install: (win) => { timers = captureTimers(win); },
+    });
+    window.document.querySelector(".entry-ask-toggle").click();
+    assert.equal(window.document.querySelector(".entry-ask-bodies").hidden, false);
+
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    const grown = asking("Decide about the node.");
+    grown.version = 'W/"ask-poll"';
     window.fetch = (url) =>
-      res(url.includes("/api/digest") ? asking : payload.journal);
-    window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    const needs = window.document.getElementById("needs");
-    assert.ok(!needs.hidden);
-    assert.match(needs.textContent, /Decide about the node/);
+      res(
+        String(url).includes("/api/digest") ? payload.digest
+          : String(url).includes("/api/comments") ? comments
+            : grown,
+      );
+    await timers.firePagePoll();
+    assert.ok(!window.document.contains(card), "the old card is still here, so the feed was not actually rebuilt and this proves nothing");
+    assert.equal(
+      window.document.querySelector(".entry-ask-bodies").hidden,
+      false,
+      "his choice should survive the re-render",
+    );
+  });
+
+  test("the ask's minimize control meets the 44px touch minimum", () => {
+    /* Reviewer finding, Cycle 249, and it was reading my own comment back at
+     * me: I wrote "44px of tap height comes from the padding" above a rule
+     * whose padding and font size compute to about 29px. Fifteen rules in
+     * this file set the floor explicitly. Pinned the way the capture box's
+     * picker is pinned, because a comment claiming a number is exactly what
+     * failed here. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const { window } = openWindow("<style>" + css + "</style>");
+    const rules = [...window.document.styleSheets[0].cssRules];
+    const sized = rules.find(
+      (r) => r.selectorText === ".entry-ask-toggle" && /min-height/.test(r.style.cssText),
+    );
+    assert.ok(sized, "no .entry-ask-toggle rule sets a min-height");
+    assert.match(sized.style.cssText, /min-height:\s*44px/);
+  });
+
+  test("a card with no ask keeps its drawer shut", async () => {
+    const window = await loadSite();
+    const card = window.document.querySelector(".entry");
+    assert.equal(card.querySelector(".entry-ask"), null);
+    assert.equal(card.classList.contains("is-commenting"), false);
   });
 });
 
@@ -2027,106 +2236,6 @@ describe("commenting on a cycle", () => {
  * to type an answer. These tests pin the two things that makes it fixed:
  * the box is reachable without a click, and what it sends names the block
  * rather than a cycle. */
-describe("replying to Needs Edvard", () => {
-  const asking = {
-    ...payload.digest,
-    hasNeedsEdvard: true,
-    needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about idea #56." }] }],
-  };
-  const withReply = {
-    byCycle: payload.comments.byCycle,
-    needs: [{ cycle: null, stamp: "2026-08-10 08:20", text: "go ahead and do it", acknowledged: false }],
-  };
-  const needsEl = (window) => window.document.getElementById("needs");
-  const box = (window) => needsEl(window).querySelector(".comment-text");
-
-  test("the box is there without a click, unlike a card's", async () => {
-    /* The one deliberate difference from a journal card. A fold is what
-     * hid this for eight cycles, and the section only exists at all when
-     * something is being asked -- so there is no state where an open box
-     * is noise. */
-    const window = await loadSite("/", { digest: asking });
-    assert.ok(!needsEl(window).hidden);
-    assert.ok(box(window), "the answer field is in the DOM with no interaction");
-    assert.ok(needsEl(window).querySelector(".comment-send"));
-  });
-
-  test("no box at all when nothing is being asked", async () => {
-    // The section is hidden; a reply field inside a hidden section would be
-    // a box he can never reach, which is the bug this feature is fixing.
-    const window = await loadSite();
-    assert.ok(needsEl(window).hidden);
-  });
-
-  test("the reply posts the block, not a cycle", async () => {
-    const window = await loadSite("/", { digest: asking });
-    box(window).value = "  go ahead and do it  ";
-    click(window, needsEl(window).querySelector(".comment-send"));
-    await new Promise((r) => window.setTimeout(r, 0));
-
-    const sent = window.posted.at(-1);
-    assert.equal(sent.url, "/api/comment");
-    assert.deepEqual(sent.body, { target: "needs", text: "go ahead and do it" });
-    assert.ok(!("cycle" in sent.body), "a cycle would file his answer on a random card");
-  });
-
-  test("answers already given are shown, so a saved one is tellable from a lost one", async () => {
-    const window = await loadSite("/", { digest: asking, comments: withReply });
-    assert.match(needsEl(window).textContent, /go ahead and do it/);
-    assert.equal(needsEl(window).querySelectorAll(".comment").length, 1);
-  });
-
-  test("a needs reply never paints onto a journal card", async () => {
-    const window = await loadSite("/", { digest: asking, comments: withReply });
-    const feed = window.document.getElementById("feed");
-    assert.ok(!feed.textContent.includes("go ahead and do it"));
-  });
-
-  test("a failed write keeps what he typed", async () => {
-    const window = await loadSite("/", { digest: asking });
-    window.postReply = { ok: false, message: "409 conflict" };
-    box(window).value = "go ahead and do it";
-    click(window, needsEl(window).querySelector(".comment-send"));
-    await new Promise((r) => window.setTimeout(r, 0));
-    assert.equal(box(window).value, "go ahead and do it");
-    assert.match(needsEl(window).querySelector(".comment-status").textContent, /409/);
-  });
-
-  test("the question and the answer box are still one section", async () => {
-    // Reading the ask and answering it should not be two places to look.
-    const window = await loadSite("/", { digest: asking });
-    assert.match(needsEl(window).textContent, /Decide about idea #56/);
-    assert.ok(needsEl(window).contains(box(window)));
-  });
-});
-
-describe("the Needs Edvard reply box survives a re-render", () => {
-  /* `load()` runs again on popstate and after a capture, so renderNeeds is
-   * not a once-per-page-load function. Without clearing the old drawer the
-   * section would grow a second answer box on every navigation -- two
-   * places to type one answer, and only one of them holding what he wrote. */
-  test("navigating back does not leave two boxes", async () => {
-    const asking = {
-      ...payload.digest,
-      hasNeedsEdvard: true,
-      needsEdvardBlocks: [{ type: "p", spans: [{ kind: "text", text: "Decide about idea #56." }] }],
-    };
-    const window = await loadSite("/", { digest: asking });
-    const needs = window.document.getElementById("needs");
-    assert.equal(needs.querySelectorAll(".comment-text").length, 1);
-
-    window.dispatchEvent(new window.PopStateEvent("popstate"));
-    await new Promise((r) => window.setTimeout(r, 0));
-    assert.equal(needs.querySelectorAll(".comment-text").length, 1, "a second box appeared");
-    assert.equal(needs.querySelectorAll(".comment-drawer").length, 1);
-  });
-});
-
-/* Edvard, issues.md 2026-08-10: "i have to refresh it to see new messages."
- *
- * The page poll that answers it. None of this was pinned when it shipped --
- * the suite it shipped with could not even finish, because these windows keep
- * a rescheduling timer alive and nothing closed them. */
 describe("the page notices new entries on its own", () => {
   /** The site, with its timers under the test's control. */
   async function pollable(options = {}) {
@@ -3065,6 +3174,48 @@ describe("the issues page", () => {
     assert.equal(window.posted[0].body.original, "fix this");
   });
 
+  test("a capture a cycle closed sits in its own section, and keeps its own address", async () => {
+    /* On 08-17 all five captures on the issues board carried a `DONE
+     * (Cycle N):` marker and the page still listed every one of them
+     * under "Not boarded yet". The split is presentational, so the risk
+     * it introduces is the addressing one: `/api/capture/edit` takes the
+     * bullet's position in the file, and rendering the open ones first
+     * would renumber them if the index came from the section. */
+    const blocks = (t) => [{ type: "p", spans: [{ kind: "text", text: t }] }];
+    const board = {
+      ...payload.board,
+      /* The done one is **second** in the file and first in its section.
+       * With it first in the file both numbers are 0 and the assertion
+       * below cannot fail -- which is what it did on the first draft. */
+      captures: [
+        { text: "the thing I typed", body: "the thing I typed", blocks: blocks("the thing I typed") },
+        { text: "DONE (Cycle 247): shipped it", done: "Cycle 247", body: "shipped it", blocks: blocks("shipped it") },
+      ],
+    };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    window.confirm = () => true;
+
+    const titles = [...window.document.querySelectorAll(".captures-title")]
+      .map((n) => n.textContent);
+    assert.deepEqual(titles, ["Not boarded yet", "Done, not yet cleared"]);
+    const open = window.document.querySelector(".captures:not(.captures-done)");
+    assert.equal(open.querySelectorAll(".capture-item").length, 1);
+    assert.match(open.textContent, /the thing I typed/);
+    const shut = window.document.querySelector(".captures-done");
+    assert.equal(shut.querySelector(".capture-done-chip").textContent, "Done · Cycle 247");
+
+    // The done one is second in the file and must still say so.
+    click(window, [...shut.querySelectorAll(".capture-act")].filter(
+      (b) => b.textContent === "Delete")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted[0].body.index, 1,
+      "the section reordered the rows and the page sent the wrong address");
+    assert.equal(window.posted[0].body.original, "DONE (Cycle 247): shipped it",
+      "the marker is part of his bullet and has to round-trip");
+  });
+
   test("Delete asks first, and sends nothing when the answer is no", async () => {
     const window = await loadSite("/issues");
     window.confirm = () => false;
@@ -3100,7 +3251,11 @@ describe("the issues page", () => {
       board: (url) => (url.includes("item=") ? payload.boardItem : board),
     });
     const item = window.document.querySelector(".capture-item");
-    assert.equal(item.querySelector(".capture-body").textContent,
+    // The rendered paragraph, not all of `.capture-body`: the priority
+    // trigger (issues.md #91) is a sibling inside that same element and
+    // its label would otherwise be concatenated onto his text here. `p` is
+    // what `renderBlocks` produced, which is the thing this line is about.
+    assert.equal(item.querySelector(".capture-body p").textContent,
       "the /api/board page is slow", "the fixture does not render differently from its source");
     click(window, [...item.querySelectorAll(".capture-act")].filter(
       (b) => b.textContent === "Edit")[0]);
@@ -3695,6 +3850,71 @@ describe("the service worker says so when it answers from its cache", () => {
   });
 });
 
+describe("a cycle that is running says so in the header", () => {
+  /* The other half of #72. The header names the newest cycle that has
+   * *written*, so for the first 20-45 minutes of every hour it names one
+   * behind the cycle actually running -- which is what Edvard reported as
+   * a failure. The server decides; these assert the page renders that
+   * decision and, more importantly, that it never renders it beside the
+   * badge that contradicts it. */
+  const live = (window) =>
+    [...window.document.querySelectorAll("#status .badge-live")]
+      .map((n) => n.textContent);
+  const warn = (window) =>
+    [...window.document.querySelectorAll("#status .badge-warn")]
+      .map((n) => n.textContent);
+
+  const withStatus = (extra) => {
+    const copy = JSON.parse(JSON.stringify(payload.journal));
+    Object.assign(copy.status, { recentMissingCycles: [] }, extra);
+    return copy;
+  };
+
+  test("a cycle in flight is named on the page", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: false, silentIntervals: 0 }),
+    });
+    assert.deepEqual(live(window), ["cycle running"]);
+  });
+
+  /* The state Edvard is looking at almost every time he opens the app: a
+   * cycle finished, the next has not woken. The badge must be absent, not
+   * merely worded differently -- a badge that is always up is a badge
+   * nobody reads, which is the objection this whole header is built
+   * around. */
+  test("nothing is said between cycles", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: false, stalled: false, silentIntervals: 1 }),
+    });
+    assert.deepEqual(live(window), []);
+    assert.deepEqual(warn(window), []);
+  });
+
+  /* The server already refuses to emit the pair, and this is the second
+   * lock on the same door: if a future change ever lets both through, the
+   * page would tell him the loop is working and has been dead for four
+   * hours, in two lines a centimetre apart. */
+  test("a stalled loop is never also reported as running", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: true, silentIntervals: 4 }),
+    });
+    assert.deepEqual(live(window), []);
+    assert.ok(warn(window).some((t) => t === "no entry for 4 hours"));
+  });
+
+  /* Same reason the stall badge is hidden on a replayed payload: "a cycle
+   * is running" is a claim about right now, and a copy served out of the
+   * service worker's cache after a failed fetch cannot make it. A phone
+   * off the tailnet would otherwise be told a cycle was running for as
+   * long as it stayed offline. */
+  test("a saved copy does not claim a cycle is running", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: false, replayed: true }),
+    });
+    assert.deepEqual(live(window), []);
+  });
+});
+
 describe("a loop that has gone quiet says so in the header", () => {
   const warn = (window) =>
     [...window.document.querySelectorAll("#status .badge-warn")]
@@ -4248,6 +4468,203 @@ describe("the capture row does not scramble", () => {
     // into the text and exposes no property for it, so a property
     // assertion reads `undefined` whatever the sheet says.
     assert.match(sized.style.cssText, /min-height:\s*44px/);
+  });
+});
+
+/* Edvard, issues.md #90: "When i press enter on my keyboard, it
+ * automatically submits my input text as an issue in the Nova text input
+ * field. Pressing enter should create a new line, not submit."
+ *
+ * These pin the *absence* of a handler, which is a shape worth being
+ * careful about: `preventDefault` not being called is the only observable
+ * difference between "Enter inserts a newline" and "Enter did nothing at
+ * all", since jsdom does not type into a textarea for you. So both halves
+ * are asserted -- nothing posted, and the event left un-cancelled so the
+ * browser's own newline survives. */
+describe("Enter in the capture box is a newline", () => {
+  function press(window, el, key, mods) {
+    const event = new window.KeyboardEvent("keydown", Object.assign(
+      { key, bubbles: true, cancelable: true }, mods || {}));
+    el.dispatchEvent(event);
+    return event;
+  }
+
+  test("Enter files nothing and is left to insert a newline, with or without Shift", async () => {
+    /* Both cases in one test on purpose. Written as two, the Shift+Enter
+     * half passed under every mutation I could aim at this -- the old
+     * code let Shift+Enter through too -- so it read as a second guard and
+     * was pinning nothing. The bare-Enter case is the one that discriminates;
+     * Shift is here to say the modifier is no longer load-bearing, which is
+     * the actual bug: a soft keyboard has a return key and no reachable
+     * Shift+Enter, so on the phone he captures from there was no escape. */
+    for (const mods of [{}, { shiftKey: true }]) {
+      const window = await loadSite("/issues");
+      const box = window.document.getElementById("capture-text");
+      box.value = "half a thought";
+      const event = press(window, box, "Enter", mods);
+      await new Promise((r) => window.setTimeout(r, 0));
+      const how = JSON.stringify(mods);
+      assert.equal(window.posted.length, 0, `${how}+Enter filed the half-written capture`);
+      assert.equal(event.defaultPrevented, false,
+        `${how}+Enter cancelled the newline, so it does nothing at all rather than breaking the line`);
+      assert.equal(box.value, "half a thought", `${how}+Enter cleared the box as if it had sent`);
+    }
+  });
+
+  test("Cmd/Ctrl+Enter still sends, to the leftmost button's target", async () => {
+    for (const mods of [{ metaKey: true }, { ctrlKey: true }]) {
+      const window = await loadSite("/issues");
+      const box = window.document.getElementById("capture-text");
+      box.value = "ship the thing";
+      press(window, box, "Enter", mods);
+      await new Promise((r) => window.setTimeout(r, 0));
+      assert.equal(window.posted.length, 1, `no send on ${JSON.stringify(mods)}+Enter`);
+      assert.equal(window.posted[0].url, "/api/capture");
+      assert.equal(window.posted[0].body.text, "ship the thing");
+      /* Both halves, because either alone is weaker than it looks. Review
+       * on #223 flagged the first: comparing against the same selector the
+       * production code reads mirrors the logic rather than pinning an
+       * answer, so a mutation choosing the *last* button would move both
+       * sides together if the real button order were ever reversed. The
+       * literal alone would be wrong in the other direction -- the point of
+       * this change is that the target is not hardcoded -- so the literal
+       * pins today's answer and the second assertion pins why it is that. */
+      assert.equal(window.posted[0].body.target, "issues");
+      assert.equal(
+        window.document.querySelector(".capture-btn").getAttribute("data-target"), "issues",
+        "the leftmost capture button is no longer Issue, so the chord's target changed with it",
+      );
+    }
+  });
+});
+
+/* Edvard, issues.md #91: "All unboarded issues and ideas should have the
+ * priority status icon shown (as they do when its chosen) in the left top
+ * corner, but pressing it should open the modal like it does sin the issue
+ * cards." */
+describe("rating a capture that is not boarded yet", () => {
+  const rated = {
+    text: "🟠 make the picker work here too",
+    body: "make the picker work here too",
+    priority: "🟠 High",
+    priorityKey: "high",
+    blocks: [{ type: "p", spans: [{ kind: "text", text: "make the picker work here too" }] }],
+  };
+  const withCapture = (capture) => ({
+    board: (url) => (url.includes("item=") ? payload.boardItem
+      : { ...payload.board, captures: [capture] }),
+  });
+
+  test("an unrated capture still shows a trigger, so a first rating can be given", async () => {
+    // The read-only chip it replaces was painted only when a rating
+    // existed, which left the one case that needs the control most --
+    // nothing rated yet -- with nothing to press.
+    const window = await loadSite("/issues");
+    const trigger = window.document.querySelector(".capture-item .chip.prio");
+    assert.ok(trigger, "an unrated capture has no priority trigger");
+    assert.equal(trigger.tagName, "BUTTON");
+    assert.equal(trigger.textContent, "Unrated");
+    assert.equal(trigger.className, "chip prio", "an unrated trigger must carry no colour class");
+  });
+
+  test("picking a rating rewrites the bullet's leading glyph through /api/capture/edit", async () => {
+    const window = await loadSite("/issues", withCapture(payload.board.captures[0]));
+    click(window, window.document.querySelector(".capture-item .chip.prio"));
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "🔴 Immediately"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.ok(posted, "no write reached /api/capture/edit");
+    assert.equal(posted.body.target, "issues");
+    assert.equal(posted.body.index, 0);
+    assert.equal(posted.body.original, payload.board.captures[0].text,
+      "the edit did not carry the capture's own text as its address");
+    assert.equal(posted.body.text, "🔴 " + payload.board.captures[0].body);
+  });
+
+  test("re-rating an already-rated capture swaps the glyph rather than stacking a second one", async () => {
+    // `capture.body` is the server's glyph-stripped text, and using
+    // `capture.text` here instead would send "⚪ 🟠 make the picker...".
+    const window = await loadSite("/issues", withCapture(rated));
+    const trigger = window.document.querySelector(".capture-item .chip.prio");
+    assert.equal(trigger.textContent, "🟠 High");
+    assert.equal(trigger.className, "chip prio prio-high");
+    click(window, trigger);
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "⚪ Low"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.equal(posted.body.text, "⚪ make the picker work here too");
+  });
+
+  test("clearing a rating leaves the text and does not send an empty edit", async () => {
+    // `/api/capture/edit` answers a blank text with 400 "nothing to save"
+    // and never deletes -- deletion is its own route. So the point here is
+    // not safety, it is that an Unrated pick on a glyph-only bullet has no
+    // request worth making.
+    const window = await loadSite("/issues", withCapture(rated));
+    click(window, window.document.querySelector(".capture-item .chip.prio"));
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "– Unrated"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.equal(posted.body.text, "make the picker work here too");
+  });
+
+  test("a glyph-only capture sends nothing, rather than a request that can only 400", async () => {
+    const glyphOnly = { text: "🟠", body: "", priority: "🟠 High", priorityKey: "high", blocks: [] };
+    const window = await loadSite("/issues", withCapture(glyphOnly));
+    const trigger = window.document.querySelector(".capture-item .chip.prio");
+    click(window, trigger);
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "– Unrated"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.filter((p) => p.url === "/api/capture/edit").length, 0,
+      "an edit the server can only refuse was sent anyway");
+    assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating it never saved");
+    assert.match(
+      window.document.querySelector(".capture-item .capture-item-status").textContent,
+      /nothing to rate/,
+      "the local refusal said nothing on screen",
+    );
+  });
+
+  test("a failed write reverts the trigger rather than showing an unsaved rating", async () => {
+    const window = await loadSite("/issues", withCapture(rated));
+    window.postReply = { ok: false, message: "conflict" };
+    const trigger = window.document.querySelector(".capture-item .chip.prio");
+    click(window, trigger);
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "⚪ Low"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating the server refused");
+    assert.match(
+      window.document.querySelector(".capture-item .capture-item-status").textContent,
+      /conflict/,
+      "the refusal reverted the chip in silence, so he cannot tell it from a tap that never registered",
+    );
+  });
+
+  test("each capture's trigger names the capture it belongs to", async () => {
+    /* Not a behaviour test and deliberately not written as one. I first
+     * wrote this as "two captures each open their own menu, not each
+     * other's", on the theory that `openMenu` keys the shared popup on
+     * `opts.ariaLabel` so identical labels would make the second tap close
+     * the first's menu. It passed with every capture sharing one label,
+     * because the document-level outside-click handler closes the menu
+     * before the second trigger's handler reads `openFor` -- so it was a
+     * test that could not fail, dressed as a guard. What unique labels
+     * actually buy is a screen reader being able to tell a page of
+     * "Priority, Unrated" triggers apart, so that is what this asserts. */
+    const first = payload.board.captures[0];
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem
+        : { ...payload.board, captures: [first, rated] }),
+    });
+    const labels = [...window.document.querySelectorAll(".capture-item .chip.prio")]
+      .map((t) => t.getAttribute("aria-label"));
+    assert.equal(labels.length, 2);
+    assert.equal(new Set(labels).size, 2, "both triggers announce the same thing");
   });
 });
 

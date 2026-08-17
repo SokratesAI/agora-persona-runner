@@ -24,6 +24,12 @@ The stronger one -- refusing a claim on anything else while a 🔴 is open
 that is wrong in a way you cannot see from inside it. That one is
 Edvard's to approve.
 
+Above the ranking sit Edvard's **unprocessed captures** -- the bare
+bullets he types above `## Board`, which `prompt.md` step 2 places above
+the board, above the handoff and above everything else. They are printed
+first and unranked, because a capture has no rating cell to sort on and
+because there are never many; see `unboarded_captures`.
+
 Ranking is rating first (🔴 > 🟠 > 🔵 > ⚪ > unrated), then oldest
 `Updated` first, then issues before ideas, then row number. Age is the
 tiebreak on purpose: two 🟠 rows are not equally urgent when one has sat
@@ -43,8 +49,11 @@ import subprocess
 import sys
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board, unanswered_comments,
+    BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board, split_capture_done,
+    split_capture_priority,
+    unanswered_comments,
 )
+from agora_runner.nova_capture import CAPTURE_TARGETS
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
@@ -58,6 +67,14 @@ VAULT_TOOL = "/app/bridge/vault_tool.py"
 # not have to.
 ISSUES_PATH = BOARD_PATHS["issues"]["edvard"]
 IDEAS_PATH = BOARD_PATHS["ideas"]["edvard"]
+# Edvard's third capture file, and the last one the opening read could only
+# reach by hand. It is not a board -- a note is never numbered and never
+# rated, so it has no row to rank -- but it carries the same bare-bullet
+# contract as the other two, which is why `parse_board`'s capture half reads
+# it unchanged. Taken from `CAPTURE_TARGETS` for the same reason the two
+# above come from `BOARD_PATHS`: a hand-typed copy of a path that has moved
+# once will be wrong the next time it moves.
+NOTES_PATH = CAPTURE_TARGETS["notes"]
 
 # Ranking order, best first. Unrated sorts last rather than first: a
 # blank cell means nobody has looked, which is a reason to rate it, not
@@ -102,6 +119,62 @@ def _fetch(path):
     if not done.stdout.strip() or done.stdout.lstrip().startswith("[not found:"):
         return None
     return done.stdout
+
+
+def unread_notes(markdown):
+    """`notes.md` -> the notes Edvard has left that no cycle has moved.
+
+    The contract is `prompt.md` step 1a's: he writes bare bullets at the
+    top, a cycle acts on each and moves it under `## Read` with a line on
+    what it did. So "unread" is structural -- everything above the first
+    heading -- and `parse_board`'s capture half already finds exactly that,
+    frontmatter and cursor bullet excluded.
+
+    A note is not a board row and gets no rating. It is printed with the
+    captures rather than ranked, because `rank` sorts on a `Priority` cell
+    that a note does not have and never will.
+    """
+    return [{"board": "note", "priority": "", "text": text}
+            for text in parse_board(markdown or "")["captures"]]
+
+
+def unboarded_captures(markdown, board):
+    """The bare bullets above `## Board` -- Edvard talking, unfiled.
+
+    These outrank every row this tool ranks. `prompt.md` step 2 puts an
+    unprocessed capture above a live incident, above the board and above
+    the handoff; step 1c calls them *"the strongest signal you will get
+    all cycle"*. This tool nonetheless could not see them, because
+    `open_rows` asked `parse_board` for `items` and dropped the
+    `captures` key sitting beside it in the same return value.
+
+    That is not a theoretical gap. Cycle 241 ran this tool, took the row
+    it named, and three of Edvard's captures were sitting above the board
+    unread -- only the delegated subagent found them, and the tool whose
+    entire job is to stop exactly that had reported a confident top row.
+    Filed by that cycle as `[top-board-rows-blind-to-captures]`.
+
+    Rating rides at the front of the bullet rather than in a column, so
+    `split_capture_priority` is what reads it -- the same function the
+    site and the boarding path use, not a second matcher.
+
+    **A capture a cycle already closed is not one of these**, and that is
+    the whole of `split_capture_done`. Marking the bullet `DONE (Cycle
+    N):` is what `prompt.md` step 6 asks for and nothing read it, so at
+    Cycle 251 this function returned five finished items and the renderer
+    printed them under *"these outrank every row below. Take one"*. A
+    section that is entirely noise is worse than no section, because the
+    next cycle learns to skip it -- which is issue #88, the one this tool
+    exists to fix, coming back inverted.
+    """
+    captures = []
+    for bullet in parse_board(markdown or "")["captures"]:
+        done, rest = split_capture_done(bullet)
+        if done:
+            continue
+        priority, text = split_capture_priority(rest)
+        captures.append({"board": board, "priority": priority, "text": text})
+    return captures
 
 
 def open_rows(markdown, board):
@@ -182,12 +255,41 @@ def _line(row):
             f"  (updated {row['updated']})  {row['title']}")
 
 
-def render(rows, runners_up=3):
+def _capture_line(capture):
+    # A note carries no rating cell, so printing "(unrated)" beside one
+    # would invite a cycle to go and rate something that has nowhere to
+    # put a rating.
+    if capture["board"] == "note":
+        return f"notes.md  {capture['text']}"
+    rating = capture["priority"] or "(unrated)"
+    text = capture["text"]
+    return f"{capture['board']}s.md  {rating}  {text}"
+
+
+def render(rows, runners_up=3, captures=()):
+    """The captures first, then the ranked board. Never one without the other.
+
+    The alternative the handoff offered was refusing to rank at all while
+    a capture is open. That throws away the board to make a point, and
+    this loop has a rule against exactly that shape -- keep the data
+    whole and let the presentation carry the priority. So both are
+    printed, and the "take this" sentence moves onto the captures when
+    there are any, because that is where the contract actually points.
+    """
+    out = []
+    if captures:
+        out.append(f"UNPROCESSED CAPTURES FROM EDVARD ({len(captures)}) — "
+                   "these outrank every row below. Take one, or say why not:")
+        out.extend("  -> " + _capture_line(c) for c in captures)
+        out.append("")
     ranked = rank(rows)
     if not ranked:
-        return "TOP OF EDVARD'S BOARD — no open rows on either board."
-    out = ["TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:",
-           "  -> " + _line(ranked[0])]
+        out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
+        return "\n".join(out)
+    header = ("TOP OF EDVARD'S BOARD — below the captures above:" if captures else
+              "TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:")
+    out.append(header)
+    out.append("  -> " + _line(ranked[0]))
     rest = ranked[1:1 + runners_up]
     if rest:
         out.append("  next:")
@@ -208,10 +310,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--issues", help="local issues.md instead of a vault fetch")
     ap.add_argument("--ideas", help="local ideas.md instead of a vault fetch")
+    # A local run has to name all three. Naming two and letting the third
+    # fall through to the vault is what CI caught: it is green on this box,
+    # where `vault_tool.py` exists, and exits 1 anywhere else -- a test that
+    # passes for a reason that has nothing to do with what it asserts.
+    ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
     ap.add_argument("--runners-up", type=int, default=3)
     args = ap.parse_args(argv)
 
     rows = []
+    captures = []
     missing = []
     for board, local, path in (("issue", args.issues, ISSUES_PATH),
                                ("idea", args.ideas, IDEAS_PATH)):
@@ -227,8 +335,18 @@ def main(argv=None):
             missing.append(path)
             continue
         rows.extend(open_rows(text, board))
+        captures.extend(unboarded_captures(text, board))
 
-    print(render(rows, runners_up=args.runners_up))
+    notes_md = open(args.notes, encoding="utf-8").read() if args.notes \
+        else _fetch(NOTES_PATH)
+    if notes_md is None:
+        # Same treatment as a board: said out loud rather than read as
+        # "he has left no notes", which is what silence here would mean.
+        missing.append(NOTES_PATH)
+    else:
+        captures.extend(unread_notes(notes_md))
+
+    print(render(rows, runners_up=args.runners_up, captures=captures))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")

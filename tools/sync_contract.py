@@ -1961,7 +1961,11 @@ def compare_redaction(runner_path, bridge_path):
 # runner has a browser suite. What may not differ is everything from the
 # secret scan down to the manifest commit -- the concurrency group that stops
 # two merges racing, the image and config-repo names, the build-push job and
-# the update-manifest job. Those were deliberately written against
+# the manifest-commit step inside it. That last one was its own
+# `update-manifest` job until Cycle 224 folded it into `build-push`, and this
+# sentence went on calling it a job until Cycle 252; the probe list below is
+# the authority on what is compared, not this paragraph. Those were
+# deliberately written against
 # `${{ github.event.repository.name }}` so the two copies could be textually
 # identical, which is what makes comparing them cheap.
 #
@@ -1977,12 +1981,30 @@ WORKFLOW_PROBES = (
     ("concurrency", lambda doc: doc.get("concurrency")),
     ("image and config repo", lambda doc: doc.get("env")),
     ("secret scan", lambda doc: _workflow_step(doc, "test", "Secret scan")),
+    # Cycle 224 folded `update-manifest` into this job's last steps, to stop
+    # paying GitHub's per-job minute rounding for a `sed` and a `git push`
+    # (idea #73). So the manifest commit is now inside what this probe already
+    # compares whole, and the separate `update-manifest job` probe was removed
+    # rather than pointed at a job that exists in neither copy -- which the
+    # class below would (correctly) have called unreadable rather than
+    # agreement. `manifest commit` below is what replaces it: a probe on the
+    # job dict alone would go on passing if one copy dropped the step, because
+    # the two dicts would then agree about not having it.
+    #
+    # Cycle 224 folded `vault-drift` into `test` in the same change, and Cycle
+    # 252 undid that half before merging -- three jobs, not two. The minutes it
+    # bought stopped existing when all three repos went public on 2026-08-16;
+    # public repos get unmetered GitHub-hosted minutes. What it cost did not
+    # change: `vault-drift` is a separate job so a bridge it cannot reach fails
+    # on its own legible line rather than reddening the unit suite, and so
+    # drift can never gate a deploy. Do not re-fold it for the minutes.
     ("build-push job", lambda doc: doc.get("jobs", {}).get("build-push")),
-    ("update-manifest job", lambda doc: doc.get("jobs", {}).get("update-manifest")),
+    ("manifest commit", lambda doc: _workflow_step(
+        doc, "build-push", "Update image digest in manifest.yaml")),
     # Not the jobs' contents -- just that neither copy has quietly lost one of
-    # the four. An extra repo-specific job is allowed and does not drift.
+    # the three. An extra repo-specific job is allowed and does not drift.
     ("pipeline jobs", lambda doc: sorted(
-        set(doc.get("jobs", {})) & {"test", "vault-drift", "build-push", "update-manifest"})),
+        set(doc.get("jobs", {})) & {"test", "vault-drift", "build-push"})),
 )
 
 

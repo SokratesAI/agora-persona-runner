@@ -7,6 +7,8 @@
         "time": "15:22",
         "title": "verification",
         "kind": "cycle",
+        "ask": "",
+        "askSpans": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -44,6 +46,8 @@
         "time": "15:05",
         "title": "",
         "kind": "cycle",
+        "ask": "",
+        "askSpans": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -81,6 +85,8 @@
         "time": "12:33",
         "title": "",
         "kind": "cycle",
+        "ask": "",
+        "askSpans": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -136,6 +142,8 @@
         "time": "",
         "title": "Edvard's first message (not a cycle)",
         "kind": "cycle",
+        "ask": "",
+        "askSpans": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -186,8 +194,6 @@
     }
   },
   "digest": {
-    "needsEdvard": "**Nothing.**",
-    "hasNeedsEdvard": false,
     "nextCycle": "Whatever the last cycle left.",
     "lines": [
       {
@@ -229,17 +235,6 @@
           {
             "kind": "text",
             "text": "And this fourth one must fall into the remainder."
-          }
-        ]
-      }
-    ],
-    "needsEdvardBlocks": [
-      {
-        "type": "p",
-        "spans": [
-          {
-            "kind": "strong",
-            "text": "Nothing."
           }
         ]
       }
@@ -298,6 +293,7 @@
         "body": "Small pickings on Nova ui - low priority - remove \"Oslo\" text from Journal timestamp.",
         "priority": "",
         "priorityKey": "",
+        "done": "",
         "blocks": [
           {
             "type": "p",

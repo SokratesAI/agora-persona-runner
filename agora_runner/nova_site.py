@@ -144,6 +144,7 @@ from agora_runner.nova_boards import (
     parse_board,
     parse_notes,
     priority_key,
+    split_capture_done,
     split_capture_priority,
 )
 from agora_runner.nova_costs import costs_payload as shape_costs
@@ -336,9 +337,7 @@ def _rendered(entry):
 
 
 def digest_payload():
-    payload = parse_digest(digest_markdown())
-    payload["needsEdvardBlocks"] = render_blocks(payload["needsEdvard"])
-    return payload
+    return parse_digest(digest_markdown())
 
 
 def comments_payload():
@@ -402,6 +401,19 @@ def comments_payload():
     }
 
 
+def _capture_parts(text):
+    """One raw capture bullet -> `(done, priority, body)`.
+
+    Both markers are prefixes on the same line, and the order matters:
+    a closed bullet reads `DONE (Cycle 247): 🟠 the original text`, so
+    reading the rating first sees `D` and reports the capture unrated.
+    Strip the done marker, then hand what is left to the rating matcher.
+    """
+    done, rest = split_capture_done(text)
+    priority, body = split_capture_priority(rest)
+    return done, priority, body
+
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -436,15 +448,26 @@ def board_payload(name):
         # `nova_capture.replace_capture` matches an edit or a delete on
         # exactly this string. The split is presentational: `body` is what
         # the card shows and `priority` is the chip beside it.
+        # `done` is the cycle that closed it, or "". `prompt.md` step 6
+        # asks a cycle to prefix a capture it finished with `DONE (Cycle
+        # N):` and nothing had ever read that, so every closed bullet
+        # went on rendering here under "Not boarded yet" -- at Cycle 251
+        # all five captures on `issues.md` were finished work. Stripping
+        # the marker out of `body` keeps it out of the card's prose; the
+        # page paints it as a chip and sinks those cards below the open
+        # ones.
         "captures": [
             {
                 "text": text,
-                "body": split_capture_priority(text)[1],
-                "priority": split_capture_priority(text)[0],
-                "priorityKey": priority_key(split_capture_priority(text)[0]),
-                "blocks": render_blocks(split_capture_priority(text)[1]),
+                "body": body,
+                "priority": priority,
+                "priorityKey": priority_key(priority),
+                "done": done,
+                "blocks": render_blocks(body),
             }
-            for text in board["captures"]
+            for text, (done, priority, body) in (
+                (bullet, _capture_parts(bullet)) for bullet in board["captures"]
+            )
         ],
         "items": board["items"],
         "details": details,
@@ -896,7 +919,10 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None, record_age
 # is tracking changes a few times a week at most, so anything shorter than
 # minutes would be a poll loop against Agora dressed up as a cache.
 CADENCE_FRESH_SECONDS = 300
-_cadence = None          # (minutes-or-None, fetched_at) once anything has been fetched
+# ((minutes-or-None, lastRunAt-or-None, lastResult-or-None), fetched_at)
+# once anything has been fetched. The name is older than the payload: it
+# held the cadence alone until the run state joined it off the same fetch.
+_cadence = None
 _cadence_lock = threading.Lock()
 _cadence_refreshing = False
 
@@ -904,18 +930,18 @@ _cadence_refreshing = False
 def _refresh_cadence():
     global _cadence, _cadence_refreshing
     try:
-        from agora_runner.cycle_health import nova_cadence_minutes
+        from agora_runner.cycle_health import nova_heartbeat_snapshot
 
-        minutes = nova_cadence_minutes()
+        snapshot = nova_heartbeat_snapshot()
     except Exception as e:
         # Never raised at a reader. A page that cannot render because the
         # freshness of one badge could not be established is a worse
         # answer than a badge judged against the fallback, which is
         # exactly what this function did for its whole life before now.
-        log(f"nova-site: heartbeat cadence lookup failed: {e}")
-        minutes = None
+        log(f"nova-site: heartbeat lookup failed: {e}")
+        snapshot = (None, None, None)
     with _cadence_lock:
-        _cadence = (minutes, time.time())
+        _cadence = (snapshot, time.time())
         _cadence_refreshing = False
 
 
@@ -938,9 +964,30 @@ def cadence_minutes():
     that talks to Nova; what belongs here is only the caching, because
     only this side is on a request path.
     """
-    global _cadence_refreshing
-
     from agora_runner.cycle_health import HEARTBEAT_MINUTES
+
+    return heartbeat_snapshot()[0] or HEARTBEAT_MINUTES
+
+
+def heartbeat_snapshot():
+    """`(minutes, lastRunAt, lastResult)` from the cache, refreshed behind it.
+
+    The caching half of `cycle_health.nova_heartbeat_snapshot`, split out
+    of `cadence_minutes` when the same fetch gained a second reader --
+    `_with_silence` needs the run state for the "running now" badge, and a
+    second `/heartbeats` call on the request path to get it would be a
+    network hop bought for a field the first call already returned.
+
+    Same stale-while-revalidate bargain as before, unchanged: the first
+    caller of a process gets `(None, None, None)` and starts a background
+    fetch. Every field's caller must therefore treat `None` as "not known
+    yet" rather than as an answer -- `cadence_minutes` falls back to the
+    constant, and `_running_now` declines to claim a cycle is running,
+    which is the safe direction: a running cycle unreported for one
+    request is the status quo, and a *dead* cycle reported as running is
+    the false reassurance #72 is about.
+    """
+    global _cadence_refreshing
 
     now = time.time()
     with _cadence_lock:
@@ -967,9 +1014,9 @@ def cadence_minutes():
             with _cadence_lock:
                 _cadence_refreshing = False
             log(f"nova-site: could not start the cadence refresh: {e}")
-    if entry is not None and entry[0]:
+    if entry is not None and entry[0] is not None:
         return entry[0]
-    return HEARTBEAT_MINUTES
+    return (None, None, None)
 
 
 def reset_cadence():
@@ -980,7 +1027,59 @@ def reset_cadence():
         _cadence_refreshing = False
 
 
-def _with_silence(status, now=None, minutes=None, record_age=None):
+def _running_now(written, last_run_at, last_result, stalled):
+    """Is a cycle in flight right now -- measured, not inferred from the clock.
+
+    The half of #72 that had no answer for 130 cycles. Edvard: *"Nova is 1
+    behind agora."* A cycle writes its entry at the end of its hour, so
+    for the first 20-45 minutes of every hour the newest entry names N-1
+    while agora is running N, and that looks on screen exactly like N
+    having died. `stalled` handles the case where it really did die; this
+    handles the far commoner case where it did not, and until now the page
+    said nothing at all in that window.
+
+    The evidence is Agora's own heartbeat record, which the site was
+    already fetching for the cadence: `lastResult` is set to `"running"`
+    when the run is claimed and overwritten with the outcome when it
+    returns. So this is a fact about the runner, not a guess drawn from
+    how long ago the last entry was written.
+
+    Three conditions, and each one is load-bearing:
+
+    - `lastResult == "running"`. The literal Agora writes; any other value
+      is a run that finished, however it finished.
+    - `lastRunAt` strictly newer than the newest journal entry. Without
+      it, the ~15 minutes between a cycle writing its entry and its
+      heartbeat being PATCHed with the outcome would render as a cycle
+      still working, one hour out of every one.
+    - **not `stalled`.** A killed cycle never writes its closing PATCH, so
+      `lastResult` stays `"running"` forever -- exactly the case the badge
+      would be lying about, and the only one that matters. Deferring to
+      the stall clock means the claim expires on its own after the grace
+      window, and the page swaps a "running" badge for a stall badge
+      rather than reassuring him past the point anything is true. This is
+      why the function takes `stalled` instead of computing it: the two
+      must never be able to disagree.
+
+    `False` when anything is missing, including the cold-cache
+    `(None, None, None)`. Silence is the status quo here and a wrong
+    "running" is worse than a late one.
+    """
+    if last_result != "running" or not last_run_at or stalled:
+        return False
+    try:
+        ran = datetime.fromisoformat(last_run_at)
+        stamp = datetime.fromisoformat(written or "")
+    except ValueError:
+        return False
+    if ran.tzinfo is None:
+        ran = ran.replace(tzinfo=OSLO)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=OSLO)
+    return ran > stamp
+
+
+def _with_silence(status, now=None, minutes=None, record_age=None, heartbeat=None):
     """`status` plus how long the loop has been quiet, judged right now.
 
     The live half of #72, and it is computed here rather than in
@@ -1013,8 +1112,21 @@ def _with_silence(status, now=None, minutes=None, record_age=None):
     """
     from agora_runner.cycle_health import STALL_GRACE_INTERVALS
 
+    # One cache read, not two, and only on the path production actually
+    # takes. `minutes` and `heartbeat` come out of the same fetch, so a
+    # caller that states the cadence (every test of the arithmetic does)
+    # is a caller that is not asking about the live loop either --
+    # fetching on its behalf would put a background network call behind
+    # an assertion about subtraction.
     if minutes is None:
-        minutes = cadence_minutes()
+        from agora_runner.cycle_health import HEARTBEAT_MINUTES
+
+        snapshot = heartbeat_snapshot()
+        minutes = snapshot[0] or HEARTBEAT_MINUTES
+        if heartbeat is None:
+            heartbeat = snapshot[1:]
+    if heartbeat is None:
+        heartbeat = (None, None)
     out = dict(status)
     written = out.get("lastWrittenAt") or ""
     silent = None
@@ -1059,6 +1171,9 @@ def _with_silence(status, now=None, minutes=None, record_age=None):
     out["recordStale"] = stale
     out["stalled"] = (
         not stale and silent is not None and silent >= STALL_GRACE_INTERVALS
+    )
+    out["running"] = not stale and _running_now(
+        written, heartbeat[0], heartbeat[1], out["stalled"]
     )
     return out
 
@@ -1146,6 +1261,13 @@ def journal_descriptor(page, limit, offset, cycle):
     the etag turns over at each hour boundary, which is exactly when the
     answer changes and no more often.
 
+    And `running`, for the third instance of that same trap. It turns over
+    twice an hour -- on when a cycle is claimed, off when it writes its
+    entry -- and neither edge lines up with an interval boundary. Left
+    out, the badge would render only in a tab opened mid-cycle, and
+    Edvard's phone, which is already polling, is the one place it would
+    never appear. That phone is the whole reason #72 was filed.
+
     And `recordStale` on top of that, for a sharper version of the same
     trap. It turns over when the *rebuild* starts failing, which does not
     line up with an interval boundary at all -- so keyed on the interval
@@ -1157,7 +1279,9 @@ def journal_descriptor(page, limit, offset, cycle):
     """
     status = page.get("status") or {}
     window = f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}"
-    return f"{window}|silent={status.get('silentIntervals')}|stale={bool(status.get('recordStale'))}"
+    return (f"{window}|silent={status.get('silentIntervals')}"
+            f"|stale={bool(status.get('recordStale'))}"
+            f"|running={bool(status.get('running'))}")
 
 
 def _int_param(query, name, default):
@@ -1598,13 +1722,20 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if "\n" in text or "\r" in text:
             self._send_json(400, {"error": "a comment cannot contain a line break"})
             return
+        # The page is his, so an unstated author is him; a cycle posting a
+        # reply says so. Anything else is refused rather than written into
+        # his board under a name neither of us used.
+        author = payload.get("author") or "Edvard"
+        if author not in ("Edvard", "Nova"):
+            self._send_json(400, {"error": "author must be 'Edvard' or 'Nova'"})
+            return
 
         # `MM-DD` in Oslo, because `append_detail_note` takes the date from
         # its caller rather than a clock -- a module that reaches for one
         # reaches for it in UTC, and this line lands in a file Edvard reads.
         dated = datetime.now(OSLO).strftime("%m-%d")
         try:
-            ok, message = comment_on_row(target, number, text.strip(), dated)
+            ok, message = comment_on_row(target, number, text.strip(), dated, author)
         except Exception as e:
             log(f"nova-site board comment failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})

@@ -431,8 +431,8 @@ def remove_row(target, number):
     return _amend_board(target, number, lambda md: delete_row(md, number), "deleted")
 
 
-def comment_on_row(target, number, comment, dated):
-    """Add one comment from Edvard to a boarded row's write-up.
+def comment_on_row(target, number, comment, dated, author="Edvard"):
+    """Add one comment to a boarded row's write-up. (ok, message)
 
     Idea #64, rated 🔴 Immediately and open since 2026-08-12: *"Lets me
     have the same comment conversation on ideas, notes and issues like
@@ -462,7 +462,7 @@ def comment_on_row(target, number, comment, dated):
     return _amend_board(
         target,
         number,
-        lambda md: append_detail_note(md, number, comment, dated, author="Edvard"),
+        lambda md: append_detail_note(md, number, comment, dated, author=author),
         "commented on",
     )
 
@@ -502,3 +502,5 @@ def set_priority(target, number, priority):
             break
     log(f"nova-capture failed rating #{number} on {target}: {result}")
     return False, f"could not write to {target}: {result}"
+
+
