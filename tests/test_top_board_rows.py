@@ -105,7 +105,10 @@ def test_main_reads_both_local_boards(tmp_path, capsys):
     ideas = tmp_path / "ideas.md"
     issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
     ideas.write_text(board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE)))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
     out = capsys.readouterr().out
     assert code == 0
     assert "-> idea #64" in out
@@ -360,7 +363,10 @@ def test_main_surfaces_captures_from_both_files(tmp_path, capsys):
                                     "an issue I typed"))
     ideas.write_text(with_captures(board((64, "the immediate idea", BACKLOG, "08-12", IMMEDIATE)),
                                    "an idea I typed"))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
     out = capsys.readouterr().out
     assert code == 0
     assert "an issue I typed" in out

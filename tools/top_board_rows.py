@@ -310,6 +310,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--issues", help="local issues.md instead of a vault fetch")
     ap.add_argument("--ideas", help="local ideas.md instead of a vault fetch")
+    # A local run has to name all three. Naming two and letting the third
+    # fall through to the vault is what CI caught: it is green on this box,
+    # where `vault_tool.py` exists, and exits 1 anywhere else -- a test that
+    # passes for a reason that has nothing to do with what it asserts.
     ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
     ap.add_argument("--runners-up", type=int, default=3)
     args = ap.parse_args(argv)
