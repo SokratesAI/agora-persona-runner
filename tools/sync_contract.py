@@ -1961,7 +1961,11 @@ def compare_redaction(runner_path, bridge_path):
 # runner has a browser suite. What may not differ is everything from the
 # secret scan down to the manifest commit -- the concurrency group that stops
 # two merges racing, the image and config-repo names, the build-push job and
-# the update-manifest job. Those were deliberately written against
+# the manifest-commit step inside it. That last one was its own
+# `update-manifest` job until Cycle 224 folded it into `build-push`, and this
+# sentence went on calling it a job until Cycle 252; the probe list below is
+# the authority on what is compared, not this paragraph. Those were
+# deliberately written against
 # `${{ github.event.repository.name }}` so the two copies could be textually
 # identical, which is what makes comparing them cheap.
 #
