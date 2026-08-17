@@ -313,8 +313,22 @@ def needs_items(text):
 # removing one required being sure. An entry document is written once and
 # never edited, so an ask cannot silently outlive its answer here -- it scrolls
 # away with its own card.
+# The colon is required, and that is the whole difference between a label
+# and a mention. Cycles 11 and 12 predate this convention and write about
+# the old digest section in ordinary prose -- "**Needs Edvard**, **Next
+# cycle**, and a one-line-per-cycle **Digest**" -- at the start of a line,
+# which an optional colon matched. Both parsed as open asks, and because
+# they are the oldest cards in the corpus the header's "waiting on you"
+# pill pointed at 2026-08-11 instead of at the live one (Cycle 261 shipped
+# the pill and found this in the live payload; Cycle 262 fixed it here).
+#
+# Requiring the colon rather than adding an age cutoff is not a guess.
+# Across all 315 entries, every one of the five real asks writes
+# `**Needs Edvard:**` and every bare `**Needs Edvard**` is prose naming
+# the section. A horizon would have hidden these two and still have let
+# the next such sentence through.
 _ASK_RE = re.compile(
-    r"^\*\*Needs Edvard:?\*\*[ \t]*:?[ \t]*(?P<ask>.*?)(?=\n[ \t]*\n|\Z)",
+    r"^\*\*Needs Edvard(?::\*\*|\*\*:)[ \t]*(?P<ask>.*?)(?=\n[ \t]*\n|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 
