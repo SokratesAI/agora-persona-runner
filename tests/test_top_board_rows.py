@@ -6,6 +6,7 @@ was competing with.
 """
 
 import pytest
+from unittest.mock import patch
 
 from agora_runner.nova_boards import PRIORITY_LABELS, STATUS_LABELS
 from tools import top_board_rows
@@ -104,7 +105,10 @@ def test_main_reads_both_local_boards(tmp_path, capsys):
     ideas = tmp_path / "ideas.md"
     issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
     ideas.write_text(board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE)))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
     out = capsys.readouterr().out
     assert code == 0
     assert "-> idea #64" in out
@@ -359,9 +363,83 @@ def test_main_surfaces_captures_from_both_files(tmp_path, capsys):
                                     "an issue I typed"))
     ideas.write_text(with_captures(board((64, "the immediate idea", BACKLOG, "08-12", IMMEDIATE)),
                                    "an idea I typed"))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
     out = capsys.readouterr().out
     assert code == 0
     assert "an issue I typed" in out
     assert "an idea I typed" in out
     assert out.index("UNPROCESSED CAPTURES FROM EDVARD (2)") < out.index("idea #64")
+
+
+# --- notes.md, the third capture file (Cycle 253) ---------------------------
+
+NOTES = """---
+type: log
+---
+
+- {}
+
+## Read
+
+- an old note
+  - Read Cycle 1. Did the thing.
+"""
+
+
+def test_main_surfaces_an_unread_note(tmp_path, capsys):
+    """`notes.md` was the last thing in the opening read a cycle could only
+    reach by hand -- and unlike `issues.md` there is no board row to carry a
+    note it walked past. It is not a board: a note is never numbered and
+    never rated, so it is printed with the captures rather than ranked."""
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    notes.write_text(NOTES.format("Stop using the metered API for anything scheduled."))
+    code = top_board_rows.main(
+        ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Stop using the metered API" in out
+    assert "notes.md" in out
+    # Printed with the captures, above the ranking -- not as a board row.
+    assert out.index("Stop using the metered API") < out.index("issue #10")
+    # A note has no rating cell, so it must not be labelled as unrated.
+    note_line = [l for l in out.splitlines() if "Stop using the metered API" in l][0]
+    assert "(unrated)" not in note_line
+
+
+def test_a_note_already_moved_under_read_is_not_unread(tmp_path, capsys):
+    """The other half of step 1a's contract: a cycle acts on a note and
+    moves it under `## Read`. Everything below that heading is answered,
+    and re-surfacing it would make the list grow forever -- the failure
+    the done-capture marker already had to fix once."""
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    notes.write_text(NOTES.format(" "))  # his empty cursor bullet
+    assert top_board_rows.main(
+        ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)]) == 0
+    out = capsys.readouterr().out
+    assert "an old note" not in out
+    assert "UNPROCESSED CAPTURES" not in out
+
+
+def test_a_notes_file_that_cannot_be_read_is_said_out_loud(tmp_path, capsys):
+    """Silence here would read as "he has left no notes", which is the
+    same wrong-answer-wearing-the-right-shape the boards already guard."""
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    with patch.object(top_board_rows, "_fetch", return_value=None):
+        code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "COULD NOT READ" in out and "notes.md" in out

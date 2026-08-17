@@ -53,6 +53,7 @@ from agora_runner.nova_boards import (
     split_capture_priority,
     unanswered_comments,
 )
+from agora_runner.nova_capture import CAPTURE_TARGETS
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
@@ -66,6 +67,14 @@ VAULT_TOOL = "/app/bridge/vault_tool.py"
 # not have to.
 ISSUES_PATH = BOARD_PATHS["issues"]["edvard"]
 IDEAS_PATH = BOARD_PATHS["ideas"]["edvard"]
+# Edvard's third capture file, and the last one the opening read could only
+# reach by hand. It is not a board -- a note is never numbered and never
+# rated, so it has no row to rank -- but it carries the same bare-bullet
+# contract as the other two, which is why `parse_board`'s capture half reads
+# it unchanged. Taken from `CAPTURE_TARGETS` for the same reason the two
+# above come from `BOARD_PATHS`: a hand-typed copy of a path that has moved
+# once will be wrong the next time it moves.
+NOTES_PATH = CAPTURE_TARGETS["notes"]
 
 # Ranking order, best first. Unrated sorts last rather than first: a
 # blank cell means nobody has looked, which is a reason to rate it, not
@@ -110,6 +119,23 @@ def _fetch(path):
     if not done.stdout.strip() or done.stdout.lstrip().startswith("[not found:"):
         return None
     return done.stdout
+
+
+def unread_notes(markdown):
+    """`notes.md` -> the notes Edvard has left that no cycle has moved.
+
+    The contract is `prompt.md` step 1a's: he writes bare bullets at the
+    top, a cycle acts on each and moves it under `## Read` with a line on
+    what it did. So "unread" is structural -- everything above the first
+    heading -- and `parse_board`'s capture half already finds exactly that,
+    frontmatter and cursor bullet excluded.
+
+    A note is not a board row and gets no rating. It is printed with the
+    captures rather than ranked, because `rank` sorts on a `Priority` cell
+    that a note does not have and never will.
+    """
+    return [{"board": "note", "priority": "", "text": text}
+            for text in parse_board(markdown or "")["captures"]]
 
 
 def unboarded_captures(markdown, board):
@@ -230,6 +256,11 @@ def _line(row):
 
 
 def _capture_line(capture):
+    # A note carries no rating cell, so printing "(unrated)" beside one
+    # would invite a cycle to go and rate something that has nowhere to
+    # put a rating.
+    if capture["board"] == "note":
+        return f"notes.md  {capture['text']}"
     rating = capture["priority"] or "(unrated)"
     text = capture["text"]
     return f"{capture['board']}s.md  {rating}  {text}"
@@ -279,6 +310,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--issues", help="local issues.md instead of a vault fetch")
     ap.add_argument("--ideas", help="local ideas.md instead of a vault fetch")
+    # A local run has to name all three. Naming two and letting the third
+    # fall through to the vault is what CI caught: it is green on this box,
+    # where `vault_tool.py` exists, and exits 1 anywhere else -- a test that
+    # passes for a reason that has nothing to do with what it asserts.
+    ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
     ap.add_argument("--runners-up", type=int, default=3)
     args = ap.parse_args(argv)
 
@@ -300,6 +336,15 @@ def main(argv=None):
             continue
         rows.extend(open_rows(text, board))
         captures.extend(unboarded_captures(text, board))
+
+    notes_md = open(args.notes, encoding="utf-8").read() if args.notes \
+        else _fetch(NOTES_PATH)
+    if notes_md is None:
+        # Same treatment as a board: said out loud rather than read as
+        # "he has left no notes", which is what silence here would mean.
+        missing.append(NOTES_PATH)
+    else:
+        captures.extend(unread_notes(notes_md))
 
     print(render(rows, runners_up=args.runners_up, captures=captures))
     if missing:

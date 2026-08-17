@@ -241,3 +241,70 @@ def test_a_row_with_no_write_up_takes_no_comment():
     """#63 is a board row with no `## 63 —` block, which is most rows.
     The route turns this into a 409 rather than a retry."""
     assert append_detail_note(BOARD, 63, "hello", "08-15", author="Edvard") is None
+
+
+# --- who a comment is attributed to (Cycle 253) -----------------------------
+
+_ROW = """---
+type: board
+---
+
+## Board
+
+| # | Item | Status | Updated | Priority |
+|---|------|--------|---------|---|
+| [[#94 — A dormant app\\|94]] | A dormant app | 🟡 In progress | 08-16 | 🟠 High |
+
+## #94 — A dormant app
+
+> His statement of the problem.
+"""
+
+
+def _write_comment(monkeypatch, **kwargs):
+    """`comment_on_row` for real, with only the vault boundary faked."""
+    import agora_runner.nova_capture as nova_capture
+    seen = {}
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (_ROW, "7-abc"))
+    monkeypatch.setattr(
+        nova_capture, "vault_write_path",
+        lambda path, body, if_rev=None: seen.update(body=body) or "written")
+    ok, message = nova_capture.comment_on_row(
+        "issues", 94, "Not taken this cycle.", "08-17", **kwargs)
+    assert ok, message
+    return seen["body"]
+
+
+def test_a_cycles_reply_is_written_under_novas_name(monkeypatch):
+    """The bug this pins is not cosmetic and it is not hypothetical.
+
+    `comment_on_row` hardcoded `author="Edvard"` while its own docstring
+    told a cycle to reply with `author="Nova"`, so two replies this loop
+    made are in his `issues.md` right now as words he said. And
+    `unanswered_comments` calls a row waiting when the **last** note under
+    it is his -- a flag that outranks a 🔴 in `tools.top_board_rows` -- so
+    a cycle commenting on a row raised a permanent "he is waiting" marker
+    that its own reply could never clear. Found by doing exactly that to
+    #94 and watching the flag appear between two runs of the tool.
+    """
+    body = _write_comment(monkeypatch, author="Nova")
+    assert "**Nova, 08-17:**" in body
+    assert "**Edvard, 08-17:**" not in body
+
+
+def test_the_reply_does_not_leave_the_row_reading_as_waiting_on_him(monkeypatch):
+    """The consequence, asserted against the thing that actually reads it.
+
+    Attribution is the mechanism; this is the damage. Asserting only on the
+    rendered name would pass if `unanswered_comments` keyed on something
+    else entirely, so this asks the ranking's own predicate.
+    """
+    from agora_runner.nova_boards import unanswered_comments
+
+    assert 94 in unanswered_comments(_write_comment(monkeypatch, author="Edvard"))
+    assert 94 not in unanswered_comments(_write_comment(monkeypatch, author="Nova"))
+
+
+def test_an_unstated_author_is_still_him(monkeypatch):
+    """The page is his; the default must not move under the site."""
+    assert "**Edvard, 08-17:**" in _write_comment(monkeypatch)
