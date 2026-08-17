@@ -572,6 +572,15 @@ pre code { background: none; padding: 0; }
   border-color: #5c4a1e;
   background: #2a2418;
   text-decoration: none;
+  /* 44px is the iOS touch-target minimum; this is opened on a phone. Every
+   * other tappable link in the header and card chrome carries it, and a
+   * `.badge` on its own computes to well under half that -- it was written
+   * for the outcome pills, which are labels nobody taps. Reviewer finding,
+   * and a fair one: this is the one badge that is a link. `inline-flex`
+   * with it, or the height would apply to a box that does not lay out. */
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
 }
 
 /* The last known header line while the page cannot reach the server. Dimmed

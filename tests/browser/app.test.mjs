@@ -3931,7 +3931,6 @@ describe("an ask nobody answered is named in the header", () => {
     return copy;
   };
 
-  const withComments = (byCycle) => () => ({ byCycle, needs: [] });
 
   test("an unanswered ask links to the card it lives on", async () => {
     const window = await loadSite("/", {
