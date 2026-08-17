@@ -298,9 +298,21 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
             verdict = "leftover"
         else:
             verdict = "unfinished"
+        # Which files, not just that there are some. "has work not on
+        # origin/main" is true of a half-finished feature and equally true of
+        # a `-config` clone whose only delta is a stale `image:` digest --
+        # where the "work" is a rollback of the running deployment, and
+        # pushing it deploys an old image. Cycle 255 read that verdict on
+        # `agora-persona-runner-config`, and the thing that separated the two
+        # cases was one `git diff --name-only`. So the sweep runs it, rather
+        # than leaving every reader to remember to.
+        files = []
+        if verdict == "unfinished" and base is not None:
+            names = _git(root, clone, "diff", "--name-only", base, "HEAD")
+            files = [line for line in names.stdout.split("\n") if line.strip()]
         out.append({"clone": clone, "branch": branch, "base": base,
                     "dirty": dirty, "ahead": ahead, "verdict": verdict,
-                    "fetched": fetched})
+                    "fetched": fetched, "files": files})
     return out
 
 
@@ -419,6 +431,9 @@ def main(argv=None):
             print("%s: branch %s has work not on %s%s"
                   % (entry["clone"], entry["branch"], entry["base"],
                      " (uncommitted)" if entry["dirty"] else ""))
+            if entry["files"]:
+                print("    committed files differing from %s: %s"
+                      % (entry["base"], ", ".join(entry["files"])))
     return 0
 
 

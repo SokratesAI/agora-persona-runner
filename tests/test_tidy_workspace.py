@@ -331,6 +331,55 @@ def test_work_that_really_is_unfinished_survives_the_fetch(squash_merged):
     assert [e["verdict"] for e in survey] == ["unfinished"]
 
 
+def test_unfinished_names_the_files_that_differ(squash_merged):
+    """"has work not on origin/main" is the same sentence for a half-built
+    feature and for a `-config` clone whose only delta is a stale `image:`
+    digest -- where pushing it rolls the deployment back. The file names are
+    what separate the two, so the survey carries them."""
+    root, repo = squash_merged
+    _commit(repo, "manifest.yaml", "image: sha256:stale\n")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "unfinished"
+    assert survey[0]["files"] == ["manifest.yaml"]
+
+
+def test_a_clone_that_is_only_behind_carries_no_file_list(squash_merged):
+    """The list answers "what is unfinished here", so a clone with nothing
+    unfinished must not carry one. A clone that is merely *behind* is the case
+    that makes this test capable of failing: `git diff base..HEAD` is non-empty
+    there, in the other direction, so a survey that collects the names
+    unconditionally would narrate main's own newer files as work somebody left.
+    The `leftover` branch is not that case -- its content is identical to the
+    base, so the diff is empty either way and the assertion would hold with the
+    guard removed."""
+    root, repo = squash_merged
+    _git(repo, "checkout", "-q", "main")   # the pre-merge main, now behind
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    # Asserted after the survey, because the survey is what fetches: before it
+    # runs, this clone's `origin/main` is still the stale pre-merge one and the
+    # diff is empty, which would make the guard check below vacuous.
+    unguarded = tidy_workspace._git(str(root), repo.name, "diff",
+                                    "--name-only", "origin/main", "HEAD")
+    assert unguarded.stdout.strip(), "fixture no longer exercises the guard"
+    assert survey[0]["verdict"] == "clean"
+    assert survey[0]["files"] == []
+
+
+def test_the_cli_prints_the_differing_files(squash_merged, capsys):
+    root, repo = squash_merged
+    _commit(repo, "manifest.yaml", "image: sha256:stale\n")
+
+    tidy_workspace.main(["--root", str(root)])
+
+    out = capsys.readouterr().out
+    assert "has work not on origin/main" in out
+    assert "manifest.yaml" in out
+
+
 def test_uncommitted_changes_are_unfinished_even_on_main(squash_merged):
     """A cycle killed mid-edit leaves no branch and no commit at all."""
     root, repo = squash_merged
