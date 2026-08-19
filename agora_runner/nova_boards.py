@@ -165,10 +165,13 @@ _PRIORITY_ALIASES = {"immediately": "immediate", "now": "immediate", "urgent": "
 # the word to be there, not for the colour to go, and a coloured chip
 # that also says "High" is readable either way.
 #
-# Nothing has to be migrated for *reading* -- `priority_key` strips
-# non-word characters, so a row still spelled `🟠 High` in the vault
-# reduces to `high` exactly as before, and is rewritten to the wordless
-# spelling by the next thing that sets it.
+# A row still spelled `🟠 High` in the vault keeps working, but not
+# for free and not automatically: `priority_key` strips non-word
+# characters so sorting and filtering are unaffected, and `parse_board`
+# normalises the cell on the way out so the *displayed* chip says the
+# word. Those are two different things and conflating them is what this
+# comment did until the reviewer caught it on #244. `tools/
+# retire_priority_glyphs.py` rewrote the cells already in his two files.
 PRIORITY_LABELS = {
     "": "",
     "low": "Low",
@@ -876,6 +879,18 @@ def parse_board(markdown):
                 # a different four-column shape and never carries one --
                 # a finished item has no priority left to argue about.
                 priority = cells[4] if (not done and len(cells) > 4) else ""
+                # Normalised on the way out, so a cell still spelled the
+                # old way renders as the word. Reviewer finding on #244,
+                # and the module comment above was wrong until this line
+                # existed: `priority_key` reducing `🟠 High` to `high` is
+                # enough for sorting and filtering and does nothing for
+                # *display*. `app.js` puts this exact string in the chip
+                # and looks it up in its own `PRIORITIES` array to pick
+                # the colour class, so an un-normalised legacy value came
+                # out as the glyph Edvard cannot read, wearing a dead
+                # `prio-` class with no colour at all -- strictly worse
+                # than before the rename, on every row nobody re-saved.
+                priority = canonical_priority(priority) or priority
                 items.append({
                     "number": number,
                     "title": cells[1],
