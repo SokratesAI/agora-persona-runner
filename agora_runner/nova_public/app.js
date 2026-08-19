@@ -2452,7 +2452,7 @@
    * so three of the four became `U0001f535 Medium` and every write except
    * Low failed. `tests/test_board_priority.py` now reads this line and
    * compares it to the Python side, because nothing else could. */
-  var PRIORITIES = ["", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"];
+  var PRIORITIES = ["", "Low", "Medium", "High", "Immediately"];
 
   /* Parallel to `PRIORITIES`, mirroring `nova_boards.priority_key` --
    * the CSS class suffix each rating carries (`.prio-high` etc). The
@@ -2514,7 +2514,14 @@
    * was never saved. */
   function buildPrioPicker(opts) {
     var current = opts.current || "";
-    function glyph(label) { return label ? label.split(" ")[0] : "–"; }
+    /* The word, or a dash when nothing is rated yet. This returned the
+     * rating's coloured ball until Cycle 268 -- Edvard, 2026-08-19:
+     * *"Please do not use these symbols '🟠' as i can't really see the
+     * difference as they are colors. Please use the full word"*. The
+     * capture box's closed trigger was the worst case of that, because a
+     * bare bullet has no column spelling the word out beside it, so the
+     * colour was carrying the whole meaning on its own. */
+    function label_(label) { return label || "–"; }
     function keyOf(label) {
       var i = PRIORITIES.indexOf(label);
       return i === -1 ? "" : PRIORITY_KEYS[i];
@@ -2533,7 +2540,7 @@
         trigger.textContent = label || "Unrated";
       } else {
         trigger.className = opts.triggerClass;
-        trigger.textContent = glyph(label);
+        trigger.textContent = label_(label);
       }
     }
     render(current);

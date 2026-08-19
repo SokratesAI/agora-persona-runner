@@ -141,6 +141,7 @@ from agora_runner.nova_replies import (
 from agora_runner.nova_boards import (
     BOARD_PATHS,
     PRIORITY_LABELS,
+    canonical_priority,
     parse_board,
     parse_notes,
     priority_key,
@@ -405,8 +406,8 @@ def _capture_parts(text):
     """One raw capture bullet -> `(done, priority, body)`.
 
     Both markers are prefixes on the same line, and the order matters:
-    a closed bullet reads `DONE (Cycle 247): 🟠 the original text`, so
-    reading the rating first sees `D` and reports the capture unrated.
+    a closed bullet reads `DONE (Cycle 247): High: the original text`,
+    so reading the rating first sees `D` and reports the capture unrated.
     Strip the done marker, then hand what is left to the rating matcher.
     """
     done, rest = split_capture_done(text)
@@ -1639,7 +1640,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if not isinstance(number, int) or isinstance(number, bool) or number < 1:
             self._send_json(400, {"error": "number must be a positive integer"})
             return
-        if priority not in PRIORITY_LABELS.values():
+        priority = canonical_priority(priority)
+        if priority is None:
             self._send_json(
                 400, {"error": f"priority must be one of {sorted(PRIORITY_LABELS.values())}"})
             return
@@ -1991,7 +1993,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "text must be a string"})
             return
         priority = payload.get("priority") or ""
-        if priority not in PRIORITY_LABELS.values():
+        priority = canonical_priority(priority)
+        if priority is None:
             self._send_json(
                 400, {"error": f"priority must be one of {sorted(PRIORITY_LABELS.values())}"})
             return

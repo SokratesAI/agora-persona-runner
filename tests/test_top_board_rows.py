@@ -8,7 +8,7 @@ was competing with.
 import pytest
 from unittest.mock import patch
 
-from agora_runner.nova_boards import PRIORITY_LABELS, STATUS_LABELS
+from agora_runner.nova_boards import CAPTURE_PRIORITY_SEP, PRIORITY_LABELS, STATUS_LABELS
 from tools import top_board_rows
 
 
@@ -271,7 +271,7 @@ def test_a_bare_capture_is_read_off_the_board_file():
 
 
 def test_a_rating_on_a_capture_is_read_off_the_front_of_the_bullet():
-    text = with_captures(board(), f"{IMMEDIATE.split()[0]} this one is on fire")
+    text = with_captures(board(), f"{IMMEDIATE}{CAPTURE_PRIORITY_SEP}this one is on fire")
     got = top_board_rows.unboarded_captures(text, "idea")
     assert got[0]["priority"] == IMMEDIATE
     assert got[0]["text"] == "this one is on fire"
@@ -298,7 +298,8 @@ def test_a_rating_survives_being_written_behind_a_done_marker():
     finding on #234.
     """
     from agora_runner.nova_boards import split_capture_done, split_capture_priority
-    done, rest = split_capture_done(f"DONE (Cycle 9): {IMMEDIATE.split()[0]} on fire")
+    done, rest = split_capture_done(
+        f"DONE (Cycle 9): {IMMEDIATE}{CAPTURE_PRIORITY_SEP}on fire")
     assert done == "Cycle 9"
     assert split_capture_priority(rest) == (IMMEDIATE, "on fire")
 
