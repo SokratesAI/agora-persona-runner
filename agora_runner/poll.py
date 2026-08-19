@@ -57,8 +57,10 @@ def poll_once():
     deferred_ids = cycle_ids - live_ids
     # Workflow ids stay in the skip set even when they are also live: a
     # workflow's own steps decide who acts, and that is a different
-    # rationale this ask did not touch.
-    skip_ids = workflow_ids | (deferred_ids - workflow_ids)
+    # rationale this ask did not touch. Union, not difference -- being
+    # workflow-bound wins over being live, and the chip below is behind
+    # the same `continue` so a skipped conversation never gets one.
+    skip_ids = workflow_ids | deferred_ids
 
     debug_log(f"poll_once: {len(conversations)} conversations fetched, "
               f"{len(skip_ids)} heartbeat-driven (skipped), "
