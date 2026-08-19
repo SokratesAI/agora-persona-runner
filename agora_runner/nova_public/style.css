@@ -1667,14 +1667,18 @@ blockquote {
 }
 .item-prio-note { font-size: 0.8rem; opacity: 0.8; }
 
-/* It holds one glyph -- a ball, or a dash for unrated -- rather than a
- * word, so it is fixed-width and centred instead of a pill that grows
- * with text content. 999px from the rule above, at a fixed 44px square,
- * is a circle, which is why this does not also set its own radius; it
- * sits beside `.capture-btn`'s own pills. */
+/* It held one glyph -- a ball, or a dash for unrated -- until Cycle 268,
+ * and was therefore a fixed 44px square, which 999px from the rule above
+ * renders as a circle. Edvard, 2026-08-19: *"Please do not use these
+ * symbols '🟠' as i can't really see the difference as they are colors.
+ * Please use the full word"*. So it now holds a word, and "Immediately"
+ * does not fit in a circle: the fixed width becomes a minimum and the
+ * padding comes back, making it a pill that grows with its text, which
+ * is what the shared rule above already describes. Still 44px tall --
+ * that is the iOS touch target and it was never about the glyph. */
 .capture-prio {
-  width: 44px;
-  padding: 0;
+  min-width: 44px;
+  width: auto;
   background: none;
   text-align: center;
   text-align-last: center;

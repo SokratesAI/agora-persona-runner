@@ -350,7 +350,10 @@ def test_priority_is_read_from_the_fifth_column():
         "| [[#67 — Another\\|67]] | Another | ⚪ Backlog | 08-13 | Low |\n"
     )
     items = {i["number"]: i for i in parse_board(md)["items"]}
-    assert items[68]["priority"] == "🔴 Immediately"
+    # Normalised on the way out even though the fixture cell still
+    # carries the glyph -- that is the point of the reviewer's finding
+    # on #244: the raw cell is what `app.js` puts in the chip.
+    assert items[68]["priority"] == "Immediately"
     assert items[68]["priorityKey"] == "immediate"
     assert items[67]["priorityKey"] == "low"
     # The columns it must not have disturbed.

@@ -47,7 +47,9 @@ capture at all.
 from agora_runner.log import log
 from agora_runner.nova_boards import (
     BOARD_PATHS,
+    CAPTURE_PRIORITY_SEP,
     PRIORITY_LABELS,
+    canonical_priority,
     append_detail_note,
     delete_row,
     set_row_priority,
@@ -314,23 +316,33 @@ def capture(target, text, priority=""):
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
     client sends is ever used to address a vault document.
 
-    `priority` rides at the front of the bullet as its emoji, and only on
-    the first bullet: a paste that splits into four lines is one thought
-    Edvard rated once, not four items each rated separately. It is the
-    same rating vocabulary the board column uses, checked against
-    `PRIORITY_LABELS` here as well as at the endpoint, because this is the
-    function that decides what characters land in his file.
+    `priority` rides at the front of the bullet as its word and a colon
+    (`High: ...`, `CAPTURE_PRIORITY_SEP`), and only on the first bullet: a
+    paste that splits into four lines is one thought Edvard rated once,
+    not four items each rated separately. It is the same rating vocabulary
+    the board column uses, checked against `PRIORITY_LABELS` here as well
+    as at the endpoint, because this is the function that decides what
+    characters land in his file.
+
+    It was the rating's coloured glyph until Cycle 268, which is the one
+    place colour was the *only* signal -- a bare bullet has no column to
+    spell the word out in. Edvard cannot tell the four balls apart
+    (comments board 2026-08-19), so the word is what gets written.
     """
     path = CAPTURE_TARGETS.get(target)
     if path is None:
         return False, f"unknown target: {target!r}"
-    if priority and priority not in PRIORITY_LABELS.values():
-        return False, f"unknown priority: {priority!r}"
+    if priority:
+        # Normalised, not exact-matched, for the reason `canonical_priority`
+        # gives: a caller still on the coloured spelling must not be refused.
+        submitted, priority = priority, canonical_priority(priority)
+        if priority is None:
+            return False, f"unknown priority: {submitted!r}"
     bullets = clean_capture_text(text or "")
     if not bullets:
         return False, "nothing to capture"
     if priority:
-        bullets[0] = priority.split(" ", 1)[0] + " " + bullets[0]
+        bullets[0] = priority + CAPTURE_PRIORITY_SEP + bullets[0]
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):

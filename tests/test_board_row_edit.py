@@ -108,7 +108,7 @@ def test_edit_moves_the_cell_the_link_and_the_heading_together():
     assert "Hold a card\\|84" not in updated
     row = [i for i in parse_board(updated)["items"] if i["number"] == 84][0]
     assert row["title"] == "Hold a card to edit or delete it"
-    assert row["status"] == "🟡 In progress" and row["priority"] == "🔴 Immediately"
+    assert row["status"] == "🟡 In progress" and row["priority"] == "Immediately"
 
 
 def test_edit_keeps_the_heading_depth_it_found():

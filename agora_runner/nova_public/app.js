@@ -2452,7 +2452,16 @@
    * so three of the four became `U0001f535 Medium` and every write except
    * Low failed. `tests/test_board_priority.py` now reads this line and
    * compares it to the Python side, because nothing else could. */
-  var PRIORITIES = ["", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"];
+  var PRIORITIES = ["", "Low", "Medium", "High", "Immediately"];
+
+  /* What separates a rating from the capture text it rides in front of,
+   * byte-identical to `nova_boards.CAPTURE_PRIORITY_SEP` and pinned to it
+   * by `tests/test_board_priority.py` for exactly the reason `PRIORITIES`
+   * above is: this side writes the bullet and the Python side parses it
+   * back, and nothing else would notice them drifting apart. The colon is
+   * not decoration -- without it `High fix the sort order` parses as
+   * unrated prose and the rating is lost in his file. */
+  var PRIORITY_SEP = ": ";
 
   /* Parallel to `PRIORITIES`, mirroring `nova_boards.priority_key` --
    * the CSS class suffix each rating carries (`.prio-high` etc). The
@@ -2514,7 +2523,14 @@
    * was never saved. */
   function buildPrioPicker(opts) {
     var current = opts.current || "";
-    function glyph(label) { return label ? label.split(" ")[0] : "–"; }
+    /* The word, or a dash when nothing is rated yet. This returned the
+     * rating's coloured ball until Cycle 268 -- Edvard, 2026-08-19:
+     * *"Please do not use these symbols '🟠' as i can't really see the
+     * difference as they are colors. Please use the full word"*. The
+     * capture box's closed trigger was the worst case of that, because a
+     * bare bullet has no column spelling the word out beside it, so the
+     * colour was carrying the whole meaning on its own. */
+    function label_(label) { return label || "–"; }
     function keyOf(label) {
       var i = PRIORITIES.indexOf(label);
       return i === -1 ? "" : PRIORITY_KEYS[i];
@@ -2533,7 +2549,7 @@
         trigger.textContent = label || "Unrated";
       } else {
         trigger.className = opts.triggerClass;
-        trigger.textContent = glyph(label);
+        trigger.textContent = label_(label);
       }
     }
     render(current);
@@ -3106,7 +3122,16 @@
           fail(err);
           return Promise.reject(err);
         }
-        var next = label ? label.split(" ")[0] + " " + rest : rest;
+        /* `label + PRIORITY_SEP`, not `label.split(" ")[0] + " "`. That
+         * older form took the rating's first token, which was its glyph
+         * while the labels carried one; after Cycle 268 it takes the word
+         * and drops the colon, writing `High fix the thing` -- which
+         * `nova_boards.split_capture_priority` reads as unrated prose,
+         * because requiring the colon is the only thing standing between
+         * a rating and a bullet that opens with the word "High". The
+         * rating would have vanished and the word would have stayed in
+         * his sentence, in his file, permanently. */
+        var next = label ? label + PRIORITY_SEP + rest : rest;
         return fetch("/api/capture/edit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

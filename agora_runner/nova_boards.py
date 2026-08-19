@@ -153,13 +153,73 @@ _PRIORITY_ALIASES = {"immediately": "immediate", "now": "immediate", "urgent": "
 # reachable: Cycle 188 rated all 71 open rows itself, so every rating on
 # both boards right now is mine, and "actually nobody has decided this"
 # is an answer Edvard must be able to give me back.
+#
+# **Words, no glyph.** These carried a coloured ball until Cycle 268.
+# Edvard, comments board 2026-08-19: *"Please do not use these symbols
+# '🟠' as i can't really see the difference as they are colors. Please
+# use the full word such as 'high' or 'immediately'"*. Colour was the
+# only thing separating one rating from the next everywhere the word was
+# not also printed -- the capture bullet's prefix, and the capture box's
+# closed picker -- so the glyph is gone from what gets written rather
+# than merely supplemented. The CSS chip keeps its colour: he asked for
+# the word to be there, not for the colour to go, and a coloured chip
+# that also says "High" is readable either way.
+#
+# A row still spelled `🟠 High` in the vault keeps working, but not
+# for free and not automatically: `priority_key` strips non-word
+# characters so sorting and filtering are unaffected, and `parse_board`
+# normalises the cell on the way out so the *displayed* chip says the
+# word. Those are two different things and conflating them is what this
+# comment did until the reviewer caught it on #244. `tools/
+# retire_priority_glyphs.py` rewrote the cells already in his two files.
 PRIORITY_LABELS = {
     "": "",
-    "low": "⚪ Low",
-    "medium": "🔵 Medium",
-    "high": "🟠 High",
-    "immediate": "🔴 Immediately",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "immediate": "Immediately",
 }
+
+# The glyph each rating used to be written with, kept only so a bullet
+# Edvard captured before Cycle 268 still parses back to its rating. Read
+# by `split_capture_priority`; never written by anything.
+_LEGACY_PRIORITY_GLYPHS = {
+    "⚪": "low",
+    "🔵": "medium",
+    "🟠": "high",
+    "🔴": "immediate",
+}
+
+# What a rating looks like riding at the front of a capture bullet, now
+# that it is a word rather than a glyph. The colon is load-bearing: a
+# glyph could never begin an ordinary sentence, but "High" can, and
+# `Immediately: ` is the only form that stays unambiguous against a
+# bullet that happens to open with one of the four words.
+CAPTURE_PRIORITY_SEP = ": "
+_CAPTURE_WORD_RE = re.compile(
+    r"^(Low|Medium|High|Immediately):\s+", re.UNICODE)
+
+
+def canonical_priority(value):
+    """A submitted rating -> the exact label to write, or `None` if unknown.
+
+    `"🟠 High"`, `"High"` and `"high"` all give `"High"`; `""` gives `""`,
+    which is the real "unrated" answer and not a rejection.
+
+    The validators used to be `value in PRIORITY_LABELS.values()`, which
+    was fine while that dict never changed. Cycle 268 changed it, and a
+    phone holding a cached `app.js` still sends the coloured spelling --
+    so an exact-match check would have answered 400 to every rating
+    Edvard set from the capture box until he happened to hard-reload,
+    with nothing on screen to explain it. Matching on `priority_key`
+    accepts the old vocabulary and stores the new one, which costs
+    nothing and makes the rename invisible from his side.
+    """
+    if value is None:
+        return ""
+    if not str(value).strip():
+        return ""
+    return PRIORITY_LABELS.get(priority_key(value))
 
 
 def priority_key(priority):
@@ -216,7 +276,7 @@ def _table_rows(body):
 
 
 def split_capture_priority(bullet):
-    """`🟠 text` -> `("🟠 High", "text")`. Unrated -> `("", bullet)`.
+    """`High: text` -> `("High", "text")`. Unrated -> `("", bullet)`.
 
     The other half of Edvard's capture: *"i want that aswell both when i
     input in the textbox in the Nova app"*. A capture is a bare bullet in
@@ -226,18 +286,25 @@ def split_capture_priority(bullet):
     and is what a cycle lifts into the `Priority` cell when it boards the
     item and strips from the title.
 
-    Matched on the emoji alone rather than on `emoji + word`, because the
-    bullet is his text from that point on and he may well rewrite the
-    word. Only a leading glyph counts: a rating is a prefix, and a 🔴 in
-    the middle of a sentence about a red dot is prose.
+    Two accepted spellings, and only one of them is ever written. The
+    word form is current (Cycle 268, `PRIORITY_LABELS`); the bare glyph
+    is every bullet captured before it, still in his two files, and is
+    read for that reason alone.
+
+    The word form needs its colon and the glyph form does not, which is
+    the whole reason the separator exists. A glyph cannot begin an
+    ordinary sentence, so a leading `🔴` is unambiguously a rating; the
+    word "High" very much can, and `High: ` is what keeps a bullet
+    opening "High memory use in the runner pod" from being read as a
+    rating and silently losing its first word.
     """
     text = (bullet or "").strip()
-    for key, label in PRIORITY_LABELS.items():
-        if not key:
-            continue
-        glyph = label.split(" ", 1)[0]
+    found = _CAPTURE_WORD_RE.match(text)
+    if found:
+        return PRIORITY_LABELS[priority_key(found.group(1))], text[found.end():].strip()
+    for glyph, key in _LEGACY_PRIORITY_GLYPHS.items():
         if text.startswith(glyph):
-            return label, text[len(glyph):].strip()
+            return PRIORITY_LABELS[key], text[len(glyph):].strip()
     return "", text
 
 
@@ -300,7 +367,14 @@ def set_row_priority(markdown, number, priority):
     sections, the blank lines the two files disagree about. Only the one
     row is rebuilt, and only from cells that were already in it.
     """
-    if priority not in PRIORITY_LABELS.values():
+    # Normalised rather than exact-matched, so the coloured spelling this
+    # function accepted before Cycle 268 still writes -- and writes the
+    # wordless one. A caller holding the old vocabulary (a cached
+    # `app.js`, a cycle's own script) must not be silently refused; that
+    # is the one failure `None` cannot distinguish itself out of, since
+    # all three of its meanings are "the file was not touched".
+    priority = canonical_priority(priority)
+    if priority is None:
         return None
     lines = (markdown or "").split("\n")
     in_board = False
@@ -805,6 +879,18 @@ def parse_board(markdown):
                 # a different four-column shape and never carries one --
                 # a finished item has no priority left to argue about.
                 priority = cells[4] if (not done and len(cells) > 4) else ""
+                # Normalised on the way out, so a cell still spelled the
+                # old way renders as the word. Reviewer finding on #244,
+                # and the module comment above was wrong until this line
+                # existed: `priority_key` reducing `🟠 High` to `high` is
+                # enough for sorting and filtering and does nothing for
+                # *display*. `app.js` puts this exact string in the chip
+                # and looks it up in its own `PRIORITIES` array to pick
+                # the colour class, so an un-normalised legacy value came
+                # out as the glyph Edvard cannot read, wearing a dead
+                # `prio-` class with no colour at all -- strictly worse
+                # than before the rename, on every row nobody re-saved.
+                priority = canonical_priority(priority) or priority
                 items.append({
                     "number": number,
                     "title": cells[1],

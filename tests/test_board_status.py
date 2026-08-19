@@ -71,7 +71,7 @@ def test_closing_a_row_clears_a_rating_set_row_priority_could_never_clear():
 def test_moving_between_two_open_statuses_keeps_the_rating():
     moved = set_row_status(BOARD, 57, "⚪ Backlog")
     assert _row(moved, 57)["status"] == "⚪ Backlog"
-    assert _row(moved, 57)["priority"] == "🔵 Medium"
+    assert _row(moved, 57)["priority"] == "Medium"
 
 
 def test_reopening_a_closed_row_does_not_bring_its_rating_back():
