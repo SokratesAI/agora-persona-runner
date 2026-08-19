@@ -21,6 +21,7 @@ from agora_runner.reply import generate_reply
 from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
 from agora_runner.conversation_rotation import cycle_tag, rotate_cycle_conversation
+from agora_runner.deferred import ANSWERED_LIVE_CAPABILITY
 
 # How many previous cycle-conversations the pending-message lookback may
 # walk back through, and how much of Edvard's text it may carry into one
@@ -69,12 +70,37 @@ def _unread_from_edvard(detail, since=None):
     filtered by a `since` that has moved past all of it. It is left at
     None for the conversation we just rotated away from, because that
     conversation was created by the previous run: everything in it
-    arrived after that run had already built its trigger."""
+    arrived after that run had already built its trigger.
+
+    2026-08-19: the paragraph above says "Nothing in this thread is ever
+    a reply to him", and that stopped being true the moment poll_once
+    started answering the live cycle conversation in real time. A
+    persona message after his text there is now ambiguous -- the live
+    answer, or the running cycle's report landing underneath him -- so
+    the marker is deferred.ANSWERED_LIVE_CAPABILITY, stamped by exactly
+    one of those two. Anything at or before the newest such chip has
+    been answered where he wrote it and is not carried again.
+
+    Note the asymmetry with `since`, and it is on purpose: `since`
+    filters on a boundary the run owns, while this filters on a chip the
+    conversation carries, so a missing chip degrades to the old
+    behaviour (carry it, answer twice) rather than to silence."""
+    answered_through = ""
+    for message in detail.get("messages") or []:
+        activity = message.get("activity")
+        if (isinstance(activity, dict)
+                and activity.get("capability") == ANSWERED_LIVE_CAPABILITY):
+            ts = str(message.get("ts") or "")
+            if ts > answered_through:
+                answered_through = ts
     texts = []
     for message in detail.get("messages") or []:
         if message.get("sender") != "Edvard" or message.get("forgotten"):
             continue
-        if since and str(message.get("ts") or "") <= since:
+        ts = str(message.get("ts") or "")
+        if since and ts <= since:
+            continue
+        if answered_through and ts <= answered_through:
             continue
         text = (message.get("text") or "").strip()
         if text:
@@ -600,6 +626,40 @@ def workflow_bound_conversation_ids(heartbeats_list):
     }
 
 
+def current_cycle_conversation_ids(heartbeats_list):
+    """Just the conversation each enabled rotating heartbeat is pointed
+    at right now -- the live one, not its retired predecessors.
+
+    Edvard, 2026-08-19: "since he now files ideas/issues/notes through
+    the Nova app's own capture flow ... he no longer uses a heartbeat
+    conversation transcript for routine notes. He now writes directly
+    into a cycle conversation specifically when he wants to talk to the
+    agent that had that session, and getting back only a 'Noted --
+    carried into the next run' chip ... defeats that."
+
+    That is him reversing the 2026-08-03 preference that
+    cycle_bound_conversation_ids was built for, deliberately and with a
+    reason: the accidental-trigger problem was that a routine note fired
+    a full cycle, and routine notes do not land here any more. He scoped
+    the revert himself -- "restore real-time replies for ONLY the single
+    conversation a rotating heartbeat is CURRENTLY pointed at (the
+    live/most-recent one). Every older/retired cycle conversation should
+    keep today's defer + Noted-chip behavior untouched -- that part of
+    PR#45 is still exactly the right fix, a message in a months-old
+    thread should never fire a surprise full cycle."
+
+    So this is the subtrahend, not a replacement: poll_once skips
+    cycle_bound_conversation_ids() MINUS this set. Deliberately does not
+    take `conversations` -- the whole point is that it never reaches
+    back through the tag lookback the way its sibling does.
+    """
+    return {
+        hb["conversationId"] for hb in heartbeats_list
+        if hb.get("enabled") and hb.get("rotateConversationEachRun")
+        and hb.get("conversationId")
+    }
+
+
 def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
     """Conversation ids that are a cycle-transcript of an enabled,
     rotating heartbeat -- the one it currently points at, plus its
@@ -647,6 +707,15 @@ def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
     is also conversation_rotation's retention, so the sets line up --
     but if either bound moves, move it in both places or his messages
     start vanishing again.
+
+    2026-08-19: poll_once no longer skips ALL of these. It subtracts
+    current_cycle_conversation_ids() and defers only the rest -- see that
+    function for Edvard's ask. This function is unchanged and still
+    returns the full set, because the invariant above is about the set
+    the *walk* must reach, and the walk must still reach every one of
+    them: a message typed while a cycle is running is not answered live
+    either (poll_once is blocked for the length of the run), so the
+    current conversation still needs carrying.
 
     `conversations` is poll_once's existing listing, passed in rather
     than re-fetched; without it this degrades to the current-id-only

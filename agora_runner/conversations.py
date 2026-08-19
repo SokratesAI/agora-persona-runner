@@ -274,3 +274,9 @@ def poll_conversation(summary):
     else:
         _conversation_failures.pop(summary["id"], None)
         _conversation_backoff.pop(summary["id"], None)
+        # The one truthy return. Every `return` above is a reason we did
+        # NOT speak, so falsy means "nothing was said" for all of them at
+        # once -- poll_once uses this to decide whether to stamp the
+        # answered-live chip, and stamping it after a skipped turn would
+        # tell the next run a message had been answered when it had not.
+        return True

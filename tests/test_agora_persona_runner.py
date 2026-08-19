@@ -3622,12 +3622,16 @@ def test_cycle_bound_conversation_ids_only_counts_enabled_rotating_heartbeats(ru
     assert runner.cycle_bound_conversation_ids(heartbeats_list) == {"c1", "c5"}
 
 
-def test_poll_once_skips_live_cycle_conversation_but_not_a_plain_heartbeats(runner):
-    """Edvard's report: replying in the live Evolve transcript fired an
-    immediate full cycle, so he stopped writing there. That conversation
-    must be skipped -- run_heartbeat carries his message forward on the
-    next scheduled run -- while an ordinary heartbeat's conversation and
-    a normal chat both still answer him right away."""
+def test_poll_once_answers_live_cycle_conversation_and_a_plain_heartbeats(runner):
+    """A non-rotating heartbeat's conversation (K3s Sentinel) and a normal
+    chat have always answered right away, and still do. Since 2026-08-19
+    the live cycle transcript joins them at Edvard's ask.
+
+    This test used to assert the opposite for `cycle9`, on his 2026-08-03
+    report that replying there fired an immediate full cycle. He reversed
+    that deliberately -- routine notes go through the app's capture flow
+    now, so a message here is him addressing that session on purpose. The
+    part he kept is pinned by the retired-conversation test below."""
     conversations_body = {"conversations": [
         {"id": "cycle9", "name": "Nova — Cycle 9"},
         {"id": "sentinel", "name": "K3s Sentinel"},
@@ -3656,7 +3660,7 @@ def test_poll_once_skips_live_cycle_conversation_but_not_a_plain_heartbeats(runn
          patch.object(runner.poll, "run_due_heartbeats") as mock_run_due:
         runner.poll_once()
 
-    assert polled == ["sentinel", "chat"]
+    assert polled == ["cycle9", "sentinel", "chat"]
     mock_run_due.assert_called_once_with(heartbeats_body["heartbeats"])
 
 
@@ -3667,7 +3671,11 @@ def test_poll_once_skips_a_retired_cycle_conversation_too(runner):
     persona is a full Claude Code cycle, nine seconds later, on quota he
     had not chosen to spend. The old threads carry the heartbeat's cycle
     tag, so they are recognisable from the listing poll_once already
-    has; an archived one is genuinely gone and stays pollable."""
+    has; an archived one is genuinely gone and stays pollable.
+
+    2026-08-19: `cycle9` is the heartbeat's CURRENT conversation and is
+    answered live again, so the row that actually pins this rule is
+    `cycle8` -- retired, un-archived, and still skipped."""
     tag = runner.cycle_tag("hb1")
     conversations_body = {"conversations": [
         {"id": "cycle9", "name": "Nova — Cycle 9", "tags": [tag],
@@ -3701,21 +3709,32 @@ def test_poll_once_skips_a_retired_cycle_conversation_too(runner):
          patch.object(runner.poll, "run_due_heartbeats"):
         runner.poll_once()
 
-    assert polled == ["cycle3", "chat"]
+    assert polled == ["cycle9", "cycle3", "chat"]
 
 
 def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(runner):
     """The two halves of the deal, asserted together: poll_once must NOT
-    answer Edvard in the live cycle transcript, and run_heartbeat MUST
+    answer Edvard in a RETIRED cycle transcript, and run_heartbeat MUST
     then carry what he wrote into the next scheduled run's trigger.
 
     Skipping is only defensible because of the second half. If either
     side is ever changed alone, his message is silently dropped -- which
     is the exact bug #28/#30 were opened for -- so they are pinned in
-    one test rather than two that could drift apart."""
-    conversations_body = {"conversations": [{"id": "c-old", "name": "Nova — Cycle 9"}]}
+    one test rather than two that could drift apart.
+
+    2026-08-19: this used to assert the same thing about the *live*
+    conversation, and Edvard asked for that half back -- see
+    current_cycle_conversation_ids. So the fixture now has both, and the
+    live one is where the assertion flipped: `c-live` is answered on the
+    spot, `c-old` is still deferred."""
+    conversations_body = {"conversations": [
+        {"id": "c-live", "name": "Nova — Cycle 10"},
+        {"id": "c-old", "name": "Nova — Cycle 9",
+         "tags": [runner.cycle_tag("hb1")], "createdAt": "2026-08-19T09:00:00Z"},
+    ]}
     heartbeats_body = {"heartbeats": [
-        {"enabled": True, "rotateConversationEachRun": True, "conversationId": "c-old"},
+        {"id": "hb1", "enabled": True, "rotateConversationEachRun": True,
+         "conversationId": "c-live"},
     ]}
 
     polled = []
@@ -3728,12 +3747,109 @@ def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(
          patch.object(runner.poll, "run_due_heartbeats"):
         runner.poll_once()
 
-    assert polled == []  # no immediate, expensive full run
+    # The retired thread gets no immediate, expensive full run; the live
+    # one does get an ordinary answer.
+    assert polled == ["c-live"]
 
     history = _rotating_heartbeat_run(
         runner, [{"sender": "Edvard", "text": "look at the PWA next", "id": "m1"}])
 
     assert "look at the PWA next" in history[-1]["content"]
+
+
+def test_the_live_cycle_conversation_answers_edvard_on_the_spot(runner):
+    """Edvard's ask, 2026-08-19: "restore real-time replies for ONLY the
+    single conversation a rotating heartbeat is CURRENTLY pointed at."
+
+    Pinned as its own test because it is the assertion that reverses
+    runner#45, and a future cycle reading only that PR's tests would
+    otherwise re-derive the old rule and put the skip back."""
+    conversations_body = {"conversations": [
+        {"id": "c-live", "name": "Nova — Cycle 10"},
+        {"id": "c-old", "name": "Nova — Cycle 9",
+         "tags": [runner.cycle_tag("hb1")], "createdAt": "2026-08-19T09:00:00Z"},
+        {"id": "wf-conv", "name": "Some Workflow"},
+    ]}
+    heartbeats_body = {"heartbeats": [
+        {"id": "hb1", "enabled": True, "rotateConversationEachRun": True,
+         "conversationId": "c-live"},
+        {"id": "hb2", "enabled": True, "workflowId": "wf1", "conversationId": "wf-conv"},
+    ]}
+
+    polled, acked, chipped = [], [], []
+    with patch.object(runner.poll, "agora_get",
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+         patch.object(runner.poll, "agora_internal",
+                      side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
+         patch.object(runner.poll, "poll_conversation",
+                      side_effect=lambda s: polled.append(s["id"]) or True), \
+         patch.object(runner.poll, "acknowledge_deferred",
+                      side_effect=lambda s: acked.append(s["id"])), \
+         patch.object(runner.poll, "mark_answered_live",
+                      side_effect=lambda s: chipped.append(s["id"])), \
+         patch.object(runner.poll, "run_due_heartbeats"):
+        runner.poll_once()
+
+    assert polled == ["c-live"]     # the workflow one stays skipped
+    assert acked == ["c-old"]       # retired keeps the Noted chip
+    assert chipped == ["c-live"]    # and only the live one is marked answered
+
+
+def test_no_answered_live_chip_when_the_turn_did_not_speak(runner):
+    """poll_conversation returns falsy for every reason it declined to
+    reply (archived, backoff, last sender not Edvard). Stamping the chip
+    anyway would tell the next run a message had been answered when
+    nothing was said, and that message would then never be carried --
+    the silent drop #28/#30 exist to prevent."""
+    conversations_body = {"conversations": [{"id": "c-live", "name": "Nova — Cycle 10"}]}
+    heartbeats_body = {"heartbeats": [
+        {"id": "hb1", "enabled": True, "rotateConversationEachRun": True,
+         "conversationId": "c-live"},
+    ]}
+
+    chipped = []
+    with patch.object(runner.poll, "agora_get",
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+         patch.object(runner.poll, "agora_internal",
+                      side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
+         patch.object(runner.poll, "poll_conversation", return_value=None), \
+         patch.object(runner.poll, "acknowledge_deferred"), \
+         patch.object(runner.poll, "mark_answered_live",
+                      side_effect=lambda s: chipped.append(s["id"])), \
+         patch.object(runner.poll, "run_due_heartbeats"):
+        runner.poll_once()
+
+    assert chipped == []
+
+
+def test_a_live_answered_message_is_not_carried_into_the_next_trigger(runner):
+    """The other half of the split: without this, a message answered in
+    real time is answered a SECOND time by the next scheduled cycle,
+    which is the expensive surprise run runner#45 was opened to stop --
+    arriving through the front door instead of the back."""
+    detail = {"messages": [
+        {"sender": "Edvard", "text": "how did that go?", "ts": "2026-08-19T20:00:00Z"},
+        {"sender": "Nova", "text": "it went fine", "ts": "2026-08-19T20:00:05Z"},
+        {"sender": "Nova", "ts": "2026-08-19T20:00:06Z",
+         "activity": {"capability": runner.deferred.ANSWERED_LIVE_CAPABILITY}},
+        {"sender": "Edvard", "text": "and the deploy?", "ts": "2026-08-19T20:05:00Z"},
+    ]}
+
+    assert runner.heartbeats._unread_from_edvard(detail) == "and the deploy?"
+
+
+def test_a_message_typed_mid_cycle_is_still_carried(runner):
+    """The case the chip must NOT swallow. poll_once is blocked for the
+    length of a run, so nothing answers him live; the cycle's own report
+    lands underneath him and the thread stops ending on him. That report
+    stamps no chip, which is the whole reason the marker is a chip and
+    not "a persona spoke after him"."""
+    detail = {"messages": [
+        {"sender": "Edvard", "text": "check the token too", "ts": "2026-08-19T20:00:00Z"},
+        {"sender": "Nova", "text": "Cycle 267 report...", "ts": "2026-08-19T20:40:00Z"},
+    ]}
+
+    assert runner.heartbeats._unread_from_edvard(detail) == "check the token too"
 
 
 def test_capabilities_for_step_empty_whitelist_is_unrestricted(runner):
@@ -5921,14 +6037,21 @@ def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
     defers Edvard's message to the next scheduled run and can promise him
     one; a workflow-bound conversation makes no such promise, and saying
     it did would be a lie in the one place he already cannot see what
-    happened."""
+    happened.
+
+    Since 2026-08-19 the cycle transcript under test has to be a RETIRED
+    one -- the live one is answered on the spot now and so has nothing to
+    defer."""
     conversations_body = {"conversations": [
-        {"id": "cycle9", "name": "Nova — Cycle 9"},
+        {"id": "cycle10", "name": "Nova — Cycle 10"},
+        {"id": "cycle9", "name": "Nova — Cycle 9",
+         "tags": [runner.cycle_tag("hb1")], "createdAt": "2026-08-19T09:00:00Z"},
         {"id": "wf1conv", "name": "Some Workflow"},
         {"id": "chat", "name": "Normal Chat"},
     ]}
     heartbeats_body = {"heartbeats": [
-        {"enabled": True, "rotateConversationEachRun": True, "conversationId": "cycle9"},
+        {"id": "hb1", "enabled": True, "rotateConversationEachRun": True,
+         "conversationId": "cycle10"},
         {"enabled": True, "workflowId": "wf1", "conversationId": "wf1conv"},
     ]}
 
@@ -7049,3 +7172,29 @@ def test_workflow_heartbeat_mute_reaches_a_sub_workflow(runner):
         sub_workflow={"id": "sub1", "steps": [{"prompt": "inner", "loopCount": 1, "toolWhitelist": []}]},
     )
     assert pushes == [False]
+
+
+def test_poll_conversation_reports_whether_it_actually_spoke(runner):
+    """poll_once decides on this return value whether to stamp the
+    answered-live chip, so "did we speak" has to be readable from the
+    outside. Every early return is a reason we did not, and the truthy
+    one only lands after speak() has succeeded.
+
+    Written because the two ends of that contract sit in different
+    modules: a refactor that drops the `return True` breaks nothing that
+    fails loudly -- poll_once just silently stops stamping, and every
+    live-answered message quietly starts getting answered twice."""
+    runner._conversation_failures.clear()
+    runner._conversation_backoff.clear()
+    summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = \
+        _make_poll_fixtures(runner)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn), \
+         patch.object(runner.conversations, "speak", return_value="a reply"):
+        assert runner.poll_conversation(summary) is True
+
+    # An archived conversation is the cheapest of the "did not speak"
+    # branches and stands in for all of them.
+    assert not runner.poll_conversation({"id": "c1", "archived": True})
