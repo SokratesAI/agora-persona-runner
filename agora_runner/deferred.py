@@ -27,9 +27,26 @@ from agora_runner.audit import audit
 # in-process memo would re-post the chip after every pod restart.
 QUEUED_CAPABILITY = "Queued"
 
-# How far back the dedupe scan looks. This fetch runs on a 5-second tick
-# for as long as a cycle is emitting chips, so its size is the whole cost
-# of the feature. Measured 2026-08-05 against a live cycle transcript:
+# Stamped when ordinary turn-taking has just answered him *live* in the
+# conversation a rotating heartbeat currently points at (2026-08-19, at
+# Edvard's ask -- see current_cycle_conversation_ids). It is the same
+# stateless-dedupe trick as QUEUED_CAPABILITY, used for the opposite
+# purpose: _unread_from_edvard reads it as "already answered, do not
+# carry this into the next run's trigger".
+#
+# A chip rather than the persona reply itself, because in a cycle
+# transcript a persona message after Edvard is ambiguous -- it is either
+# the live answer this marks, or the running cycle's own report landing
+# underneath something he typed mid-run, which must still be carried.
+# Only one of those two stamps a chip.
+ANSWERED_LIVE_CAPABILITY = "Answered"
+
+# How far back the dedupe scan looks. Since 2026-08-19 this only ever
+# runs against RETIRED cycle conversations -- the live one is answered by
+# ordinary turn-taking now -- so the load pattern the measurement below
+# was taken under (a 5-second tick against a transcript actively emitting
+# tool chips) no longer applies to this path. The bound is still safe;
+# the numbers are just more headroom than they were sized for. Measured 2026-08-05 against a live cycle transcript:
 # ~22 KB at limit=10 against ~206 KB at limit=40 (the general FETCH_LIMIT),
 # because a tail of tool chips carries their output verbatim.
 #
@@ -102,3 +119,23 @@ def acknowledge_deferred(summary):
           "Noted — carried into the next run. The answer arrives in that "
           "run's own conversation, not here.")
     debug_log(f"[{summary.get('name', conversation_id)}] acknowledged a deferred message")
+
+
+def mark_answered_live(summary):
+    """Stamp the chip saying ordinary turn-taking just answered him here.
+
+    Called by poll_once after poll_conversation reports that it actually
+    spoke, and only for the conversation a rotating heartbeat currently
+    points at. The next run's pending_across_cycles walk reads this chip
+    and stops carrying anything older than it, so a message answered in
+    real time is not answered a second time by a whole scheduled cycle.
+
+    Failing to stamp costs a duplicate answer, never a lost message --
+    which is the right way round for something posted best-effort.
+    """
+    conversation_id = summary.get("id")
+    if not conversation_id:
+        return
+    audit(_speaker_name(summary), conversation_id, ANSWERED_LIVE_CAPABILITY,
+          "Answered here, in this conversation. Not carried into the next run.")
+    debug_log(f"[{summary.get('name', conversation_id)}] answered live, chip stamped")

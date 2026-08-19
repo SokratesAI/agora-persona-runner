@@ -4,11 +4,12 @@ from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.agora_api import clear_persona_cache
 from agora_runner.conversations import poll_conversation, prune_message_window_cache
-from agora_runner.deferred import acknowledge_deferred
+from agora_runner.deferred import acknowledge_deferred, mark_answered_live
 from agora_runner.heartbeats import (
     run_due_heartbeats,
     workflow_bound_conversation_ids,
     cycle_bound_conversation_ids,
+    current_cycle_conversation_ids,
 )
 
 
@@ -44,23 +45,49 @@ def poll_once():
     # a lie in the exact place he already can't see what happened.
     workflow_ids = workflow_bound_conversation_ids(heartbeats_list)
     cycle_ids = cycle_bound_conversation_ids(heartbeats_list, conversations)
-    skip_ids = workflow_ids | cycle_ids
+    # 2026-08-19, Edvard's ask: the conversation a rotating heartbeat is
+    # pointed at RIGHT NOW answers him in real time again; its retired
+    # predecessors keep deferring. He no longer types routine notes into
+    # these transcripts (the app's capture flow takes those), so writing
+    # here is now a deliberate "talk to the agent that had that session"
+    # -- and a Noted chip up to a cycle later is not an answer to that.
+    # The half of runner#45 that matters is untouched: a message in a
+    # months-old thread still never fires a surprise cycle.
+    live_ids = current_cycle_conversation_ids(heartbeats_list) & cycle_ids
+    deferred_ids = cycle_ids - live_ids
+    # Workflow ids stay in the skip set even when they are also live: a
+    # workflow's own steps decide who acts, and that is a different
+    # rationale this ask did not touch. Union, not difference -- being
+    # workflow-bound wins over being live, and the chip below is behind
+    # the same `continue` so a skipped conversation never gets one.
+    skip_ids = workflow_ids | deferred_ids
 
     debug_log(f"poll_once: {len(conversations)} conversations fetched, "
-              f"{len(skip_ids)} heartbeat-driven (skipped)")
+              f"{len(skip_ids)} heartbeat-driven (skipped), "
+              f"{len(live_ids - workflow_ids)} live cycle conversation(s)")
     for summary in conversations:
         if summary.get("id") in skip_ids:
             debug_log(f"[{summary.get('name', summary.get('id'))}] skipped: heartbeat-driven conversation")
-            if summary.get("id") in cycle_ids and not summary.get("archived"):
+            if summary.get("id") in deferred_ids and not summary.get("archived"):
                 try:
                     acknowledge_deferred(summary)
                 except Exception as e:
                     log(f"[{summary.get('name', summary.get('id'))}] deferred ack failed: {e}")
             continue
         try:
-            poll_conversation(summary)
+            spoke = poll_conversation(summary)
         except Exception as e:
             log(f"[{summary.get('name', summary.get('id'))}] poll failed: {e}")
+            continue
+        # Only for the live cycle conversation, and only when a reply
+        # actually went out. The chip is what stops the next scheduled
+        # run carrying this message in its trigger and answering it a
+        # second time -- see heartbeats._unread_from_edvard.
+        if spoke and summary.get("id") in live_ids:
+            try:
+                mark_answered_live(summary)
+            except Exception as e:
+                log(f"[{summary.get('name', summary.get('id'))}] answered-live chip failed: {e}")
     try:
         run_due_heartbeats(heartbeats_list)
     except Exception as e:
