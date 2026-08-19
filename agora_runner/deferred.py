@@ -41,9 +41,12 @@ QUEUED_CAPABILITY = "Queued"
 # Only one of those two stamps a chip.
 ANSWERED_LIVE_CAPABILITY = "Answered"
 
-# How far back the dedupe scan looks. This fetch runs on a 5-second tick
-# for as long as a cycle is emitting chips, so its size is the whole cost
-# of the feature. Measured 2026-08-05 against a live cycle transcript:
+# How far back the dedupe scan looks. Since 2026-08-19 this only ever
+# runs against RETIRED cycle conversations -- the live one is answered by
+# ordinary turn-taking now -- so the load pattern the measurement below
+# was taken under (a 5-second tick against a transcript actively emitting
+# tool chips) no longer applies to this path. The bound is still safe;
+# the numbers are just more headroom than they were sized for. Measured 2026-08-05 against a live cycle transcript:
 # ~22 KB at limit=10 against ~206 KB at limit=40 (the general FETCH_LIMIT),
 # because a tail of tool chips carries their output verbatim.
 #

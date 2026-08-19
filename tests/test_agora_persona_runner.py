@@ -7253,3 +7253,24 @@ def test_a_running_cycle_keeps_its_own_conversation_out_of_the_live_set(runner):
     _poll(acked, polled)
     assert polled == ["c-live"]
     assert acked == []
+
+
+def test_since_and_the_answered_live_chip_filter_together(runner):
+    """Reviewer finding: the two cutoffs in _unread_from_edvard had no
+    test exercising them at once, and the existing `since` fixtures use
+    `+00:00` suffixes while the new chip ones used `Z`. Both filters are
+    plain string comparisons, so the mixed case is the one worth pinning.
+
+    Here `since` retires the first message and the chip retires the
+    second, leaving only the third -- which no single-filter test can
+    distinguish from either filter doing all the work alone."""
+    detail = {"messages": [
+        {"sender": "Edvard", "text": "before the last run", "ts": "2026-08-19T19:00:00+00:00"},
+        {"sender": "Edvard", "text": "answered live", "ts": "2026-08-19T20:00:00+00:00"},
+        {"sender": "Nova", "ts": "2026-08-19T20:00:06+00:00",
+         "activity": {"capability": runner.deferred.ANSWERED_LIVE_CAPABILITY}},
+        {"sender": "Edvard", "text": "still waiting", "ts": "2026-08-19T20:05:00+00:00"},
+    ]}
+
+    got = runner.heartbeats._unread_from_edvard(detail, since="2026-08-19T19:30:00+00:00")
+    assert got == "still waiting"
