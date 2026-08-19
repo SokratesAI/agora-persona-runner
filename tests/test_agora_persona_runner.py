@@ -3839,11 +3839,12 @@ def test_a_live_answered_message_is_not_carried_into_the_next_trigger(runner):
 
 
 def test_a_message_typed_mid_cycle_is_still_carried(runner):
-    """The case the chip must NOT swallow. poll_once is blocked for the
-    length of a run, so nothing answers him live; the cycle's own report
-    lands underneath him and the thread stops ending on him. That report
-    stamps no chip, which is the whole reason the marker is a chip and
-    not "a persona spoke after him"."""
+    """The case the chip must NOT swallow. A message typed while a cycle
+    is running is deferred rather than answered live (the heartbeat drops
+    out of the live set for the length of its run), so the cycle's own
+    report lands underneath him and the thread stops ending on him. That
+    report stamps no chip, which is the whole reason the marker is a chip
+    and not "a persona spoke after him"."""
     detail = {"messages": [
         {"sender": "Edvard", "text": "check the token too", "ts": "2026-08-19T20:00:00Z"},
         {"sender": "Nova", "text": "Cycle 267 report...", "ts": "2026-08-19T20:40:00Z"},
@@ -7198,3 +7199,57 @@ def test_poll_conversation_reports_whether_it_actually_spoke(runner):
     # An archived conversation is the cheapest of the "did not speak"
     # branches and stands in for all of them.
     assert not runner.poll_conversation({"id": "c1", "archived": True})
+
+
+def test_a_running_cycle_keeps_its_own_conversation_out_of_the_live_set(runner):
+    """The race that made the first draft of this change unmergeable.
+
+    Heartbeat runs have had their own thread since 2026-08-08, so
+    poll_once keeps ticking every five seconds while a cycle executes --
+    and rotate_cycle_conversation points `conversationId` at the new
+    transcript at the START of the run. Answering live there would call
+    the bridge with the same conversation_id the running cycle is already
+    resumed on, from the main thread, within five seconds, and again on
+    every tick until the backoff cap.
+
+    So while the run is in flight the conversation is deferred, exactly
+    as it was before this change; it only goes live once the thread is
+    done. Asserted through poll_once rather than the helper, because the
+    bug this pins is that poll_conversation gets called at all."""
+    conversations_body = {"conversations": [{"id": "c-live", "name": "Nova — Cycle 10"}]}
+    heartbeats_body = {"heartbeats": [
+        {"id": "hb1", "enabled": True, "rotateConversationEachRun": True,
+         "conversationId": "c-live"},
+    ]}
+
+    class _StillRunning:
+        def is_alive(self):
+            return True
+
+    def _poll(acked_into, polled_into):
+        with patch.object(runner.poll, "agora_get",
+                          side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+             patch.object(runner.poll, "agora_internal",
+                          side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
+             patch.object(runner.poll, "poll_conversation",
+                          side_effect=lambda s: polled_into.append(s["id"]) or True), \
+             patch.object(runner.poll, "acknowledge_deferred",
+                          side_effect=lambda s: acked_into.append(s["id"])), \
+             patch.object(runner.poll, "mark_answered_live"), \
+             patch.object(runner.poll, "run_due_heartbeats"):
+            runner.poll_once()
+
+    runner.heartbeats._heartbeat_threads["hb1"] = _StillRunning()
+    try:
+        acked, polled = [], []
+        _poll(acked, polled)
+        assert polled == [], "answered live while its own cycle was mid-run"
+        assert acked == ["c-live"], "should still get the deferred chip meanwhile"
+    finally:
+        runner.heartbeats._heartbeat_threads.pop("hb1", None)
+
+    # Same fixture, no run in flight: it goes live.
+    acked, polled = [], []
+    _poll(acked, polled)
+    assert polled == ["c-live"]
+    assert acked == []
