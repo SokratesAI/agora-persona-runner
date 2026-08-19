@@ -2,6 +2,7 @@
 
 import agora_runner.nova_capture as nova_capture
 from agora_runner.nova_boards import (
+    CAPTURE_PRIORITY_SEP,
     OUTDATED_STATUS,
     _CLOSED_STATUS_KEYS,
     PRIORITY_LABELS,
@@ -272,6 +273,15 @@ def test_the_javascript_rating_list_is_byte_identical_to_the_python_one():
     # `json.loads` and not a hand-rolled split: it refuses an escape that is
     # not real JSON, which is the exact class of bug this test exists for.
     assert json.loads(found.group(1)) == list(PRIORITY_LABELS.values())
+
+    # And the separator beside it, for the same reason and with a sharper
+    # failure: `app.js` builds the capture bullet and `split_capture_priority`
+    # parses it back, so a drift here does not raise anything -- it writes
+    # `High fix the thing` into Edvard's file, which reads as unrated prose
+    # with his rating gone and the word left in his sentence.
+    sep = re.search(r'var PRIORITY_SEP = ("[^"]*");', source)
+    assert sep, "app.js no longer declares PRIORITY_SEP as a single-line string"
+    assert json.loads(sep.group(1)) == CAPTURE_PRIORITY_SEP
 
 
 def test_an_outdated_row_is_refused_a_rating_the_same_way_a_done_one_is():
