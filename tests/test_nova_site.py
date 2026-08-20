@@ -4045,3 +4045,41 @@ def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
 # --- Clearing a Needs Edvard item from the page (issue #93) ---------------
 
 
+
+
+def test_the_plan_page_and_its_endpoint_both_answer():
+    """The same pair again, for the same reason (`issues.md` #7).
+
+    `nova_plan`'s own tests call the shaping directly and the browser
+    tests stub `fetch`, so nothing else here would notice `/plan` or
+    `/api/plan` disappearing and the nav tab 404ing on his phone. That
+    is not hypothetical on this page: the two documents it serves live
+    in Edvard's own database, which this process reaches with a
+    different credential from the one the boards use.
+
+    The second half asserts what a *missing* document does, because it
+    is the difference between a page that says "not written yet" and a
+    nav tab that 502s. `plan_markdown` reads two paths through one
+    patched `vault_read_path`, so returning `None` stands in for both
+    files being absent -- the state a fresh vault is in.
+    """
+    roadmap = "---\nupdated: 2026-08-16\n---\n\n# Roadmap\n\n## The five I would do next\n\nCI first.\n"
+    with patch.object(nova_sources, "vault_read_path", return_value=roadmap):
+        nova_site.reset_cache()
+        status, _, body = _get("/api/plan")
+        shell_status, _, shell = _get("/plan")
+    assert status == 200
+    payload = json.loads(body)
+    assert [doc["key"] for doc in payload["documents"]] == ["roadmap", "goals"]
+    assert payload["documents"][0]["title"] == "Roadmap"
+    assert any(
+        section["heading"] == "The five I would do next"
+        for section in payload["documents"][0]["sections"]
+    )
+    assert shell_status == 200 and b"<!doctype html>" in shell.lower()
+
+    with patch.object(nova_sources, "vault_read_path", return_value=None):
+        nova_site.reset_cache()
+        empty_status, _, empty = _get("/api/plan")
+    assert empty_status == 200
+    assert all(doc["missing"] for doc in json.loads(empty)["documents"])

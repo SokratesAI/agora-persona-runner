@@ -129,7 +129,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, digestStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, digestStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -165,6 +165,13 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // Friday, so "nothing supplied" has to mean the empty page rather
       // than a body no live server has ever sent.
       return res(retro || { scoreKeys: [], range: [1, 10], retros: [] }, retroStatus);
+    }
+    if (url.includes("/api/plan")) {
+      // No fixture default, for the reason `/api/retro` has none: both
+      // documents are written by a cycle and a fresh vault has neither,
+      // so "nothing supplied" has to mean the empty page rather than a
+      // body no live server has ever sent.
+      return res(plan || { documents: [] }, planStatus);
     }
     if (url.includes("/api/board")) {
       // Two shapes off one route, told apart the way the server tells
@@ -3480,7 +3487,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/costs", "/retro"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/costs", "/retro", "/plan"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -5611,5 +5618,120 @@ describe("commenting on a boarded row", () => {
     assert.equal(status.className, "item-comment-status is-error");
     assert.equal(composer(window).querySelector(".item-comment-box").value, "Lost?",
       "the comment was cleared on a failure and he would have to retype it");
+  });
+});
+
+/* The `/plan` page (issues.md #7). `roadmap.md` and `goals.md` are the two
+ * documents written so Edvard could argue with Nova's prioritisation, and
+ * until now the only way to read either was to open Obsidian.
+ *
+ * The server tests already pin the payload. What only a rendered DOM can
+ * answer is whether he sees any of it: this repo has shipped a feature
+ * that was built, tested, merged and completely dead on his screen. */
+describe("the plan page", () => {
+  const twoDocuments = {
+    documents: [
+      {
+        key: "roadmap", label: "Roadmap", title: "Roadmap",
+        updated: "2026-08-16", missing: false,
+        sections: [
+          { level: 0, heading: null, blocks: [
+            { type: "p", spans: [{ kind: "text", text: "Written by Nova, Cycle 226." }] },
+          ] },
+          { level: 2, heading: "The five I would do next, in order", blocks: [
+            { type: "p", spans: [
+              { kind: "strong", text: "1. Get CI back." },
+              { kind: "text", text: " Not my work — yours." },
+            ] },
+            { type: "li", spans: [{ kind: "text", text: "One item" }] },
+          ] },
+        ],
+      },
+      {
+        key: "goals", label: "Goals", title: "Goals",
+        updated: "2026-08-17", missing: false,
+        sections: [
+          { level: 2, heading: "Weekly review", blocks: [] },
+          { level: 3, heading: "2026-08-17 — week of 08-16", blocks: [
+            { type: "quote", spans: [{ kind: "text", text: "What moved." }] },
+          ] },
+        ],
+      },
+    ],
+  };
+
+  test("both documents paint, with their headings at their own depth", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments });
+    const cards = window.document.querySelectorAll(".plan-card");
+    assert.equal(cards.length, 2);
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".plan-title")].map((h) => h.textContent),
+      ["Roadmap", "Goals"]
+    );
+    // `##` is an h3 and `###` an h4, because the card's own title is the
+    // h2. A section heading rendered larger than the document it is inside
+    // is the shape this asserts against.
+    assert.equal(window.document.querySelectorAll("h3.plan-heading").length, 2);
+    assert.equal(window.document.querySelectorAll("h4.plan-heading").length, 1);
+    assert.match(window.document.querySelector(".plan-updated").textContent, /2026-08-16/);
+  });
+
+  test("the standfirst above the first heading is rendered, not dropped", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments });
+    assert.match(window.document.querySelector(".plan-card").textContent,
+      /Written by Nova, Cycle 226\./);
+  });
+
+  test("bullets and quotes render as bullets and quotes", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments });
+    assert.equal(window.document.querySelectorAll(".plan-section li").length, 1);
+    assert.equal(window.document.querySelectorAll(".plan-section blockquote").length, 1);
+    assert.equal(window.document.querySelector(".plan-section strong").textContent,
+      "1. Get CI back.");
+  });
+
+  test("a numbered list renders as an ol, and a bullet run beside it stays a ul", async () => {
+    // The reviewer's finding on this page: `goals.md`'s G5 is a real
+    // three-item numbered list, and everything here rendered it as one
+    // run-on paragraph. The mixed run is asserted because the two kinds
+    // share one open element in `renderBlocks`, so a fix that only
+    // handled `oli` would have put numbered items inside the `ul`.
+    const window = await loadSite("/plan", { plan: { documents: [{
+      key: "goals", label: "Goals", title: "Goals", updated: "", missing: false,
+      sections: [{ level: 2, heading: "G5", blocks: [
+        { type: "li", spans: [{ kind: "text", text: "A bullet" }] },
+        { type: "oli", spans: [{ kind: "text", text: "Share of spend" }] },
+        { type: "oli", spans: [{ kind: "text", text: "Median weighted tokens" }] },
+      ] }],
+    }] } });
+    const section = window.document.querySelector(".plan-section");
+    assert.equal(section.querySelectorAll("ul").length, 1);
+    assert.equal(section.querySelectorAll("ol").length, 1);
+    assert.equal(section.querySelector("ul").children.length, 1);
+    assert.equal(section.querySelector("ol").children.length, 2);
+    assert.equal(section.querySelector("ol").children[0].textContent, "Share of spend");
+  });
+
+  test("the nav tab marks itself, so he can tell which page he is on", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments });
+    const tab = window.document.querySelector(".nav-tab[href='/plan']");
+    assert.ok(tab.classList.contains("on"));
+    assert.equal(tab.getAttribute("aria-current"), "page");
+  });
+
+  test("a document that does not exist yet says so instead of vanishing", async () => {
+    const window = await loadSite("/plan", { plan: { documents: [
+      twoDocuments.documents[0],
+      { key: "goals", label: "Goals", title: "Goals", updated: "", missing: true, sections: [] },
+    ] } });
+    assert.equal(window.document.querySelectorAll(".plan-card").length, 2,
+      "the missing document was dropped rather than shown as missing");
+    assert.match(window.document.querySelectorAll(".plan-card")[1].textContent,
+      /Not written yet/);
+  });
+
+  test("a failed fetch says so rather than leaving the page blank", async () => {
+    const window = await loadSite("/plan", { planStatus: 502 });
+    assert.match(window.document.querySelector("#feed").textContent, /Could not load the plan/);
   });
 });

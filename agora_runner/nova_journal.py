@@ -1071,6 +1071,17 @@ _BULLET_RE = re.compile(r"^[ \t]*[-*][ \t]+(.*)$")
 # in front of the one thing on the page he wrote himself. 66 lines across
 # his two files, plus whatever the journal quotes.
 _QUOTE_RE = re.compile(r"^[ \t]*>[ \t]?(.*)$")
+# `1. `, `2. ` -- a numbered list, which until the `/plan` page existed
+# nothing here rendered. The journal survey that scoped this module found
+# only bullets, and it was right about the journal; `roadmap.md` opens on
+# **The five I would do next, in order**, and the order is the entire
+# point of it. Rendered as paragraphs those five ran together into one
+# block of prose with the numbers still typed in the middle of it.
+#
+# Anchored on the digits and a real separator, so a sentence that happens
+# to start "1985. " is the only false positive available and a line
+# starting "2 " is not one at all.
+_ORDERED_RE = re.compile(r"^[ \t]*\d{1,3}[.)][ \t]+(.*)$")
 
 
 def render_inline(text):
@@ -1271,6 +1282,17 @@ def render_blocks(text):
         if bullet:
             flush()
             blocks.append({"type": "li", "spans": render_inline(bullet.group(1))})
+            index += 1
+            continue
+        ordered = _ORDERED_RE.match(line)
+        if ordered:
+            flush()
+            # The number is dropped, not kept: the browser renders it from
+            # the `<ol>`, and keeping it would print it twice. What that
+            # costs is a list that does not start at 1 -- none of these
+            # files has one -- and what it buys is the numbering staying
+            # right when a cycle inserts an item and renumbers only half.
+            blocks.append({"type": "oli", "spans": render_inline(ordered.group(1))})
             index += 1
             continue
         quote = _QUOTE_RE.match(line)

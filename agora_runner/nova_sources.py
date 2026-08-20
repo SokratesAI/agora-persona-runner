@@ -15,6 +15,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_costs import COST_LEDGER_PATH
+from agora_runner.nova_plan import PLAN_DOCUMENTS
 from agora_runner.nova_retro import RETRO_LEDGER_PATH
 from agora_runner.nova_journal import (
     DIGEST_ARCHIVE_PATH,
@@ -241,3 +242,22 @@ def board_markdown(name):
         vault_read_path(paths["nova"]) or "",
         vault_read_path(paths["nova_archive"]) or "",
     )
+
+
+def plan_markdown():
+    """`{key: markdown}` for every document on the `/plan` page.
+
+    Two reads rather than one because they are two files with two jobs --
+    `roadmap.md` is the order of what to do next, `goals.md` is what any
+    of it is for -- and they are fetched together so the page is built
+    from one consistent moment rather than from whichever the client
+    asked for first, the same reason `board_markdown` reads its three at
+    once.
+
+    A missing file comes back as `""`, which `nova_plan` renders as a
+    "not written yet" card. That is the `cost_ledger_json` call rather
+    than the `journal_markdown` one: the journal folder being unreadable
+    means the loop looks dead, which has to be loud, while either of
+    these two genuinely not existing is a state a fresh vault is in.
+    """
+    return {key: vault_read_path(path) or "" for key, _label, path in PLAN_DOCUMENTS}

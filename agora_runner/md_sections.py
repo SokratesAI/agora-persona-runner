@@ -42,6 +42,10 @@ _TITLE_RE = re.compile(r"^#[ \t]+(?P<name>.+?)[ \t]*$")
 
 _FENCE_RE = re.compile(r"^[ \t]*(?P<fence>```+|~~~+)")
 
+# Any heading, with its depth, for `outline` below. The two patterns above
+# each confirm one known heading; this one finds whatever is there.
+_ANY_HEADING_RE = re.compile(r"^(?P<hashes>#{1,6})[ \t]+(?P<name>.+?)[ \t]*$")
+
 
 def _normalise(line):
     """A heading line reduced to what markdown actually renders.
@@ -56,8 +60,8 @@ def _normalise(line):
     return " ".join(line.lower().split())
 
 
-def _skippable(lines):
-    """Line indexes that cannot hold a heading: frontmatter and fenced code.
+def _frontmatter_end(lines):
+    """First line index after the frontmatter, or 0 when there is none.
 
     Frontmatter is only frontmatter when `---` is the very first line, and
     it ends at the next `---` on its own line. A file that opens with a
@@ -65,14 +69,18 @@ def _skippable(lines):
     being entirely frontmatter -- failing that way round means a heading
     stays findable, which is the direction that loses nothing.
     """
-    skip = set()
-    start = 0
-    if lines and lines[0].strip() == "---":
-        for i in range(1, len(lines)):
-            if lines[i].strip() == "---":
-                skip.update(range(0, i + 1))
-                start = i + 1
-                break
+    if not lines or lines[0].strip() != "---":
+        return 0
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return i + 1
+    return 0
+
+
+def _skippable(lines):
+    """Line indexes that cannot hold a heading: frontmatter and fenced code."""
+    start = _frontmatter_end(lines)
+    skip = set(range(start))
 
     fence = None
     for i in range(start, len(lines)):
@@ -177,3 +185,45 @@ def split_at_heading(text, heading):
         return None
     cut = sum(len(line) + 1 for line in lines[: at + 1])
     return text[:cut], text[cut:]
+
+
+def outline(text, max_level=3):
+    """The whole document as ordered sections: `(level, heading, body)`.
+
+    Every other function here is given a heading and asked to confirm it.
+    This one is the general case, and it exists because the `/plan` page
+    renders two documents nobody wrote for it -- `roadmap.md` and
+    `goals.md` are Nova's own prose, restructured by whichever cycle last
+    rewrote them, so the page cannot name the sections it expects. It has
+    to take whatever headings are there.
+
+    The leading `(0, None, body)` is the text above the first heading,
+    always present so a caller never has to special-case a file that
+    opens with prose. Frontmatter and fenced code are skipped through
+    `_skippable`, which is the whole reason this belongs here rather than
+    in the page module: a `## Digest` quoted inside an example block has
+    already cost this repo one silently mis-cut file.
+
+    `max_level` stops at `###` by default because that is what these two
+    files use, and a deeper heading is more usefully rendered as bold
+    text inside its parent than as a section the page has no style for.
+    """
+    lines = text.split("\n")
+    skip = _skippable(lines)
+    # `_skippable` answers "can a heading live here", and it says no to two
+    # different things for two different reasons. A fenced block is content
+    # a reader came for; frontmatter is not, and it is the one thing here
+    # that must not reach the body. Every other caller only ever asks about
+    # heading *lines*, so none of them had to tell the two apart. Rendered
+    # without this, `roadmap.md` opens on its own `contract:` line as a
+    # paragraph, on the page written for the one reader it is addressed to.
+    start = _frontmatter_end(lines)
+    sections = [[0, None, []]]
+    for i in range(start, len(lines)):
+        line = lines[i]
+        match = None if i in skip else _ANY_HEADING_RE.match(line)
+        if match and len(match.group("hashes")) <= max_level:
+            sections.append([len(match.group("hashes")), match.group("name"), []])
+            continue
+        sections[-1][2].append(line)
+    return [(level, name, "\n".join(body).strip("\n")) for level, name, body in sections]
