@@ -31,6 +31,14 @@ a stale page the first time a cycle reorganised its own argument, without
 saying so. So `md_sections.outline` takes whatever headings are there.
 The page can be wrong about the styling of a section it has never seen;
 it cannot silently drop one.
+
+**The one exception, and it is built to keep that rule rather than bend
+it.** Edvard, 2026-08-20: *"It is just a huge wall of text. I hate that
+... i understand visuals much faster."* `/plan` is 4,961 words on one
+route with no number pulled out anywhere, so `goals.md` may now carry an
+optional fenced ```goal block per goal and this module draws a scoreboard
+from it. The block is data a cycle writes for this page; every other word
+in both documents is still prose nothing parses. See `_scoreboard`.
 """
 
 import re
@@ -51,6 +59,134 @@ PLAN_DOCUMENTS = (
 )
 
 _UPDATED_RE = re.compile(r"^updated:[ \t]*(?P<value>.+?)[ \t]*$", re.MULTILINE)
+
+# A ```goal fence: the one structured thing either document is allowed to
+# carry. See `_scoreboard` for why it is a fence and not a regex over prose.
+_GOAL_OPEN_RE = re.compile(r"^[ \t]*```[ \t]*goal[ \t]*$")
+_GOAL_CLOSE_RE = re.compile(r"^[ \t]*```[ \t]*$")
+_FIELD_RE = re.compile(r"^(?P<key>[a-z]+):[ \t]*(?P<value>.*?)[ \t]*$")
+
+# Which way is better. Anything else -- including a missing line -- means
+# the goal has a number worth showing and no opinion about which
+# direction is good, so the row prints the number and no verdict.
+_DIRECTIONS = ("up", "down")
+
+# Every field the block understands. A key outside this set is kept out of
+# the payload rather than passed through: the page can only render what it
+# has a row for, and a silently-ignored `targt:` typo is a goal that shows
+# no target for a week before anybody notices.
+_FIELDS = ("name", "measure", "now", "target", "unit", "direction")
+
+_NUMBER_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$")
+
+
+def _number(text):
+    """`"2.8"` -> `2.8`; anything else -> `None`.
+
+    Deliberately strict. `now: about 2.8` is a legitimate thing for a
+    cycle to write when it does not have a clean number, and the right
+    answer there is a row with the text and no bar -- not a bar drawn
+    from whatever `float()` could be coaxed into parsing out of a
+    sentence, which is the prose-regex failure this block exists to
+    avoid, moved one level down.
+    """
+    value = (text or "").strip().replace("%", "").replace(",", "")
+    if not _NUMBER_RE.match(value):
+        return None
+    return float(value)
+
+
+def _goal(lines):
+    """The body lines of one ```goal fence -> one scoreboard row, or `None`.
+
+    A block with no `name` is dropped: the name is the only field the row
+    cannot be rendered without, and a nameless meter on Edvard's page is
+    a number he cannot attribute to anything.
+    """
+    row = {}
+    for line in lines:
+        match = _FIELD_RE.match(line)
+        if match and match.group("key") in _FIELDS:
+            row[match.group("key")] = match.group("value")
+    if not row.get("name"):
+        return None
+
+    now_value = _number(row.get("now"))
+    target_value = _number(row.get("target"))
+    direction = row.get("direction", "").strip().lower()
+    if direction not in _DIRECTIONS:
+        direction = ""
+
+    on_target = None
+    if direction and now_value is not None and target_value is not None:
+        on_target = (
+            now_value <= target_value if direction == "down" else now_value >= target_value
+        )
+
+    return {
+        "name": row["name"],
+        "measure": row.get("measure", ""),
+        "now": row.get("now", ""),
+        "target": row.get("target", ""),
+        "unit": row.get("unit", ""),
+        "direction": direction,
+        "nowValue": now_value,
+        "targetValue": target_value,
+        "onTarget": on_target,
+    }
+
+
+def _scoreboard(text):
+    """`(rows, text_without_the_blocks)`.
+
+    **Why a fenced block and not a parser over the prose.** The numbers in
+    `goals.md` are hand-written English inside a paragraph -- *"This week:
+    208 PRs merged across the three repos, against 74 of your board rows
+    closed."* A regex over that renders a wrong number the first cycle
+    that rewrites its own sentence, and says nothing when it does. The
+    module docstring above argues these two documents must not be given a
+    contract; this is the exception that keeps the rule, because the block
+    is **optional and additive**. A goal with no block still renders as
+    prose, a document with no blocks renders exactly as it did before, and
+    nothing here reads a word Edvard or a cycle wrote for a human.
+
+    The blocks are removed from the text on the way through, so the fence
+    does not also render as a code block underneath the meter it drew.
+    """
+    rows = []
+    kept = []
+    block = None
+
+    def abandon():
+        # An unterminated fence is a half-written edit, not a row. Put the
+        # lines back rather than swallowing them -- the document is what
+        # Edvard is reading, and text disappearing is worse than a stray
+        # fence appearing. Measured as a real case: deleting a block's last
+        # two lines by hand makes the *next* block's opening fence look like
+        # this one's body, so without this every paragraph in between
+        # vanishes from the page and nothing says so.
+        kept.append("```goal")
+        kept.extend(block)
+
+    for line in (text or "").split("\n"):
+        if block is None:
+            if _GOAL_OPEN_RE.match(line):
+                block = []
+            else:
+                kept.append(line)
+        elif _GOAL_OPEN_RE.match(line):
+            abandon()
+            block = []
+        elif _GOAL_CLOSE_RE.match(line):
+            row = _goal(block)
+            if row:
+                rows.append(row)
+            block = None
+        else:
+            block.append(line)
+    if block is not None:
+        abandon()
+    return rows, "\n".join(kept)
 
 
 def _updated(text):
@@ -91,8 +227,14 @@ def _document(key, label, text):
             "title": label,
             "updated": "",
             "missing": True,
+            "scoreboard": [],
             "sections": [],
         }
+
+    # Before `outline`, so a block sitting under a heading does not have to
+    # be found twice, and after the emptiness check, so a missing document
+    # is still one branch.
+    scoreboard, text = _scoreboard(text)
 
     title = label
     sections = []
@@ -115,6 +257,7 @@ def _document(key, label, text):
         "title": title,
         "updated": _updated(text),
         "missing": False,
+        "scoreboard": scoreboard,
         "sections": sections,
     }
 

@@ -206,3 +206,110 @@ def test_a_bulleted_list_is_still_a_bulleted_list():
     payload = plan_payload({"roadmap": ROADMAP})
     blocks = [b for s in _doc(payload, "roadmap")["sections"] for b in s["blocks"]]
     assert [b["type"] for b in blocks if b["type"] in ("li", "oli")] == ["li", "li"]
+
+
+# --- The goals scoreboard (issue #96, research/plan-page-design.md) ---
+#
+# The page's one structured input. Every case below is one that would ship a
+# wrong number silently: a bar drawn from a sentence, a typo'd field the page
+# ignores without saying so, a fence rendering underneath the meter it drew,
+# and a half-written block eating the text around it.
+
+SCORED = """---
+type: note
+updated: 2026-08-20
+---
+
+# Goals
+
+## The slate
+
+**G1 — The loop works on what you asked for.**
+
+```goal
+name: G1 — The loop works on what you asked for
+measure: Merged PRs per board row closed
+now: 2.8
+target: 2.0
+unit: PRs per closed row
+direction: down
+```
+
+Some prose about G1 that must survive.
+
+**G2 — Everything reaches your phone.**
+
+```goal
+name: G2 — Everything reaches your phone
+measure: Things you still have to leave the app to do
+now: 4
+target: 0
+direction: down
+```
+"""
+
+
+def test_scoreboard_rows_come_off_the_fenced_blocks():
+    goals = _doc(plan_payload({"goals": SCORED}), "goals")
+    assert [row["name"] for row in goals["scoreboard"]] == [
+        "G1 — The loop works on what you asked for",
+        "G2 — Everything reaches your phone",
+    ]
+    first = goals["scoreboard"][0]
+    assert first["measure"] == "Merged PRs per board row closed"
+    assert first["unit"] == "PRs per closed row"
+    assert (first["nowValue"], first["targetValue"]) == (2.8, 2.0)
+
+
+def test_direction_decides_the_verdict_not_the_size_of_the_number():
+    # 2.8 against a target of 2.0 is off target going down, and would be on
+    # target going up. The verdict is the only thing `direction` changes.
+    rows = plan_payload({"goals": SCORED})["documents"]
+    goals = next(d for d in rows if d["key"] == "goals")
+    assert goals["scoreboard"][0]["onTarget"] is False
+    up = SCORED.replace("direction: down", "direction: up", 1)
+    flipped = _doc(plan_payload({"goals": up}), "goals")
+    assert flipped["scoreboard"][0]["onTarget"] is True
+
+
+def test_a_goal_with_no_clean_number_gets_a_row_and_no_bar():
+    # "about 2.8" is a legitimate thing to write when the number is not
+    # clean, and the failure to avoid is a bar drawn from a sentence.
+    vague = SCORED.replace("now: 2.8", "now: about 2.8", 1)
+    goals = _doc(plan_payload({"goals": vague}), "goals")
+    row = goals["scoreboard"][0]
+    assert row["now"] == "about 2.8"
+    assert row["nowValue"] is None
+    assert row["onTarget"] is None
+
+
+def test_the_block_does_not_also_render_as_a_code_block():
+    goals = _doc(plan_payload({"goals": SCORED}), "goals")
+    slate = next(s for s in goals["sections"] if s["heading"] == "The slate")
+    assert "measure:" not in _text(slate)
+    assert "Some prose about G1 that must survive." in _text(slate)
+
+
+def test_an_unknown_field_is_dropped_and_a_nameless_block_is_not_a_row():
+    typo = SCORED.replace("target: 2.0", "targt: 2.0", 1)
+    goals = _doc(plan_payload({"goals": typo}), "goals")
+    assert goals["scoreboard"][0]["target"] == ""
+    assert "targt" not in goals["scoreboard"][0]
+
+    nameless = SCORED.replace("name: G1 — The loop works on what you asked for\n", "", 1)
+    assert len(_doc(plan_payload({"goals": nameless}), "goals")["scoreboard"]) == 1
+
+
+def test_an_unterminated_block_keeps_its_text_rather_than_swallowing_the_rest():
+    half = SCORED.replace("unit: PRs per closed row\ndirection: down\n```\n", "")
+    goals = _doc(plan_payload({"goals": half}), "goals")
+    body = " ".join(_text(s) for s in goals["sections"])
+    assert "Some prose about G1 that must survive." in body
+    assert "G2 — Everything reaches your phone" in body
+
+
+def test_a_document_with_no_blocks_is_unchanged_and_scores_nothing():
+    payload = plan_payload({"roadmap": ROADMAP, "goals": GOALS})
+    assert _doc(payload, "roadmap")["scoreboard"] == []
+    assert _doc(payload, "goals")["scoreboard"] == []
+    assert _doc(payload, "goals")["title"] == "Goals"

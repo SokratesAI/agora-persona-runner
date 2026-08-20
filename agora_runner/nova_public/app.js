@@ -4690,6 +4690,73 @@
    * The server sends blocks and spans, never HTML, and every node below is
    * built with textContent -- the same guarantee the journal card makes, and
    * the reason nothing here touches innerHTML. */
+  /* One scoreboard row: a goal's name, this week's number, its target, and a
+   * bar showing the gap between them.
+   *
+   * The bar encodes `now` and `target` on one shared scale and nothing else.
+   * It is deliberately not a "percent complete" meter: three of the five
+   * goals have no baseline to have progressed *from*, so any completion
+   * figure would be a number I invented rather than one the file carries.
+   * Length is `now / max(now, target)` and a tick sits at the target — read
+   * it as "here is where I am, here is the line", which is true whichever
+   * direction is good.
+   *
+   * Every value on the row is also printed as text. The colour and the tick
+   * are a second encoding of a verdict the word "On target" already gives,
+   * because a bar Edvard has to decode a colour to read is the same failure
+   * as the bare priority symbols he asked me to stop using. */
+  function scoreboardRow(goal) {
+    var row = el("li", "goal-row");
+    var head = el("div", "goal-head");
+    head.appendChild(el("span", "goal-name", goal.name));
+    if (goal.onTarget === true) head.appendChild(el("span", "goal-verdict on", "On target"));
+    else if (goal.onTarget === false) head.appendChild(el("span", "goal-verdict off", "Off target"));
+    row.appendChild(head);
+    if (goal.measure) row.appendChild(el("p", "goal-measure", goal.measure));
+
+    var figures = el("p", "goal-figures");
+    var now = goal.now === "" || goal.now == null ? "not measured yet" : String(goal.now);
+    figures.appendChild(el("span", "goal-now", now + (goal.unit ? " " + goal.unit : "")));
+    if (goal.target !== "" && goal.target != null) {
+      figures.appendChild(el("span", "goal-target", "target " + goal.target));
+    } else {
+      figures.appendChild(el("span", "goal-target", "no target set"));
+    }
+    row.appendChild(figures);
+
+    // A bar needs both numbers to say anything. One of them missing is the
+    // ordinary case for a goal whose number is still a sentence, and the
+    // row above already carries it.
+    var nowValue = goal.nowValue;
+    var targetValue = goal.targetValue;
+    if (typeof nowValue === "number" && typeof targetValue === "number") {
+      var scale = Math.max(Math.abs(nowValue), Math.abs(targetValue));
+      var track = el("div", "goal-track");
+      var fill = el("div", "goal-fill" + (goal.onTarget === true ? " on" : goal.onTarget === false ? " off" : ""));
+      // A scale of zero means both numbers are zero, which is on target and
+      // has no gap to draw — a full bar says that better than an empty one.
+      fill.style.width = (scale === 0 ? 100 : (Math.abs(nowValue) / scale) * 100) + "%";
+      track.appendChild(fill);
+      var tick = el("div", "goal-tick");
+      tick.style.left = (scale === 0 ? 100 : (Math.abs(targetValue) / scale) * 100) + "%";
+      track.appendChild(tick);
+      row.appendChild(track);
+    }
+    return row;
+  }
+
+  function renderScoreboard(goals) {
+    var box = el("section", "goal-board");
+    box.appendChild(el("h3", "goal-board-title", "Where the goals stand"));
+    var list = el("ul", "goal-list");
+    goals.forEach(function (goal) {
+      list.appendChild(scoreboardRow(goal));
+    });
+    box.appendChild(list);
+    box.appendChild(el("p", "goal-board-note", "The reasoning behind each number is below."));
+    return box;
+  }
+
   function renderPlanDocument(doc) {
     var card = el("article", "plan-card");
     var head = el("header", "plan-head");
@@ -4700,6 +4767,10 @@
       card.appendChild(el("p", "empty", "Not written yet."));
       return card;
     }
+    // Above the prose, because it is the answer and the prose is the
+    // argument for it. A document with no `goal` blocks gets nothing here
+    // and renders exactly as it did before this existed.
+    if ((doc.scoreboard || []).length) card.appendChild(renderScoreboard(doc.scoreboard));
     (doc.sections || []).forEach(function (section) {
       var body = el("section", "plan-section");
       // Level 0 is the text above the first heading, and it is the

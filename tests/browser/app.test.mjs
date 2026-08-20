@@ -5906,6 +5906,81 @@ describe("the plan page", () => {
     const window = await loadSite("/plan", { planStatus: 502 });
     assert.match(window.document.querySelector("#feed").textContent, /Could not load the plan/);
   });
+
+  /* The goals scoreboard (issue #96). Edvard: "It is just a huge wall of
+   * text. I hate that ... i understand visuals much faster."
+   *
+   * What only the DOM can answer here is whether the numbers are readable
+   * without decoding a colour, and whether the bar can quietly lie. */
+  const scored = (rows) => ({
+    documents: [{
+      key: "goals", label: "Goals", title: "Goals", updated: "2026-08-20",
+      missing: false, scoreboard: rows,
+      sections: [{ level: 2, heading: "The slate", blocks: [
+        { type: "p", spans: [{ kind: "text", text: "The reasoning." }] },
+      ] }],
+    }],
+  });
+
+  const G1 = {
+    name: "G1 — The loop works on what you asked for",
+    measure: "Merged PRs per board row closed",
+    now: "2.8", target: "2.0", unit: "PRs per closed row",
+    direction: "down", nowValue: 2.8, targetValue: 2.0, onTarget: false,
+  };
+
+  test("the scoreboard paints above the prose, not below it", async () => {
+    const window = await loadSite("/plan", { plan: scored([G1]) });
+    const card = window.document.querySelector(".plan-card");
+    const kids = [...card.children].map((n) => n.className);
+    assert.ok(kids.indexOf("goal-board") < kids.indexOf("plan-section"),
+      "the answer goes above the argument for it: " + kids.join(","));
+    assert.equal(window.document.querySelectorAll(".goal-row").length, 1);
+  });
+
+  test("every value is printed as text, so nothing is carried by colour alone", async () => {
+    const window = await loadSite("/plan", { plan: scored([G1]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.textContent, /G1 — The loop works on what you asked for/);
+    assert.match(row.textContent, /Merged PRs per board row closed/);
+    assert.match(row.textContent, /2\.8 PRs per closed row/);
+    assert.match(row.textContent, /target 2\.0/);
+    // The verdict is a word. The class is the second encoding of it.
+    assert.equal(row.querySelector(".goal-verdict").textContent, "Off target");
+    assert.ok(row.querySelector(".goal-verdict").classList.contains("off"));
+  });
+
+  test("the bar puts now and target on one shared scale", async () => {
+    const window = await loadSite("/plan", { plan: scored([G1]) });
+    const row = window.document.querySelector(".goal-row");
+    // now 2.8 is the larger of the two, so it fills the track and the
+    // target tick sits at 2.0/2.8 — the gap between them is the message.
+    assert.equal(row.querySelector(".goal-fill").style.width, "100%");
+    assert.match(row.querySelector(".goal-tick").style.left, /^71\.4285/);
+  });
+
+  test("a goal whose number is still a sentence gets a row and no bar", async () => {
+    const vague = { ...G1, now: "about 2.8", nowValue: null, onTarget: null };
+    const window = await loadSite("/plan", { plan: scored([vague]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.textContent, /about 2\.8/);
+    assert.equal(row.querySelector(".goal-track"), null,
+      "a bar drawn from a sentence is the failure this block exists to avoid");
+    assert.equal(row.querySelector(".goal-verdict"), null,
+      "no number means no verdict, rather than a guessed one");
+  });
+
+  test("a goal with no target says so instead of leaving a blank", async () => {
+    const open = { ...G1, target: "", targetValue: null, onTarget: null };
+    const window = await loadSite("/plan", { plan: scored([open]) });
+    assert.match(window.document.querySelector(".goal-row").textContent, /no target set/);
+  });
+
+  test("a document with no scoreboard renders exactly as it did before", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments });
+    assert.equal(window.document.querySelector(".goal-board"), null);
+    assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
+  });
 });
 
 /* The Questions page.
