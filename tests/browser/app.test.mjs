@@ -3753,12 +3753,22 @@ describe("a chart can be zoomed and opened full screen", () => {
     assert.equal(scaleOf(window), 1);
   });
 
+  /* Also rewritten: the first version clicked `−` six times from rest and
+   * asserted the transform was still the identity, which it already was
+   * before the loop ran -- so it passed with the `−` handler deleted
+   * outright (the reviewer checked). `−` is also `disabled` at rest, so
+   * it was exercising a path the product cannot reach. Zoom *in* first,
+   * then out past the floor, which is the only sequence where the floor
+   * can be observed at all. */
   test("zooming out can never take the chart below its own box", async () => {
     const window = await loadSite("/costs");
     stubBox(window);
-    for (let i = 0; i < 6; i++) click(window, tool(window, "Zoom out"));
+    for (let i = 0; i < 3; i++) click(window, tool(window, "Zoom in"));
+    assert.ok(scaleOf(window) > 1, "never got off the floor to fall back to it");
+    for (let i = 0; i < 8; i++) click(window, tool(window, "Zoom out"));
     assert.equal(scaleOf(window), 1);
     assert.deepEqual(translateOf(window), { x: 0, y: 0 });
+    assert.equal(tool(window, "Zoom out").disabled, true, "− stayed live at rest");
   });
 
   test("zoom stops at a ceiling instead of running away", async () => {
@@ -3796,13 +3806,32 @@ describe("a chart can be zoomed and opened full screen", () => {
       `got ${translateOf(window).x}`);
   });
 
+  /* Rewritten after the reviewer mutation-verified the first version as
+   * vacuous. It asserted only that the transform stayed at the identity
+   * after a 1x drag -- which `clamp()` guarantees on its own whenever
+   * `k <= 1`, so deleting the `state.k <= 1` guard it was named for left
+   * it green. The guard is load-bearing for the *crosshair*, not for the
+   * transform: without it a one-finger drag at 1x sets `panning` and
+   * hides the tooltip, and the picture looks identical while the thing
+   * Edvard actually uses stops working. So that is what this asserts. */
   test("one finger still works the crosshair and does not pan at 1x", async () => {
     const window = await loadSite("/costs");
     const plot = stubBox(window);
+    const svg = figure(window).querySelector(".chart-svg");
+    const overlay = svg.querySelector(".chart-overlay");
+    svg.getBoundingClientRect = () => ({
+      left: 0, top: 0, width: 360, height: 168, right: 360, bottom: 168,
+    });
     plot.dispatchEvent(pointer(window, "pointerdown", 1, 100, 84));
     plot.dispatchEvent(pointer(window, "pointermove", 1, 40, 84));
+    // Nothing moved, because there is nothing to pan at 1x...
     assert.deepEqual(translateOf(window), { x: 0, y: 0 });
     assert.equal(scaleOf(window), 1);
+    // ...and, the part that actually needs the guard, the drag was never
+    // treated as a pan, so the crosshair still answers.
+    overlay.dispatchEvent(pointer(window, "pointermove", 1, 40, 84, false));
+    const tip = figure(window).querySelector(".chart-tip");
+    assert.equal(tip.hidden, false, "a 1x drag killed the crosshair");
   });
 
   test("a drag pans once zoomed, and only after it is really a drag", async () => {
@@ -3948,6 +3977,24 @@ describe("a chart can be zoomed and opened full screen", () => {
     assert.equal(scaleOf(window), 1);
   });
 
+  /* The reviewer found that only the *closing* path reset the zoom, while
+   * carrying a comment explaining why carrying it across would be wrong.
+   * The plot changes size in both directions, and `tx`/`ty` are pixels
+   * against whichever box was current when they were set. */
+  test("entering full screen drops the zoom too, not just leaving it", async () => {
+    const window = await loadSite("/costs");
+    stubBox(window);
+    click(window, tool(window, "Zoom in"));
+    click(window, tool(window, "Zoom in"));
+    assert.ok(scaleOf(window) > 1, "never zoomed in to begin with");
+    click(window, fullTool(window));
+    assert.ok(figure(window).classList.contains("chart-full"));
+    // A pan measured against a 360px card, re-applied inside a 750px
+    // overlay, points at a different part of the picture.
+    assert.equal(scaleOf(window), 1);
+    assert.deepEqual(translateOf(window), { x: 0, y: 0 });
+  });
+
   test("navigating away does not strand the overlay over the next page", async () => {
     const window = await loadSite("/costs");
     click(window, fullTool(window));
@@ -3963,6 +4010,23 @@ describe("a chart can be zoomed and opened full screen", () => {
    * built there rather than in the costs page: a chart nobody thought
    * about while writing them still gets them. The retro chart is the
    * standing proof of that, so it is asserted rather than assumed. */
+  test("a legend stays with its chart instead of being pushed under the buttons", async () => {
+    const window = await loadSite("/costs");
+    // The quota chart is the one with two series and therefore a legend.
+    const chart = [...window.document.querySelectorAll(".chart")][1];
+    const legend = chart.querySelector(".chart-legend");
+    const tools = chart.querySelector(".chart-tools");
+    assert.ok(legend && tools, "expected both a legend and a zoom row");
+    // `chartFrame` appends the controls when the figure is built and the
+    // chart appends its legend afterwards, so DOM order puts the buttons
+    // in between. The fix is CSS ordering, so that is what is asserted.
+    const styles = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(styles, /\.chart\s*\{[^}]*flex-direction:\s*column/,
+      ".chart is not a flex column, so ordering cannot apply");
+    assert.match(styles, /\.chart-tools\s*\{[^}]*order:\s*2/,
+      "the zoom row is not ordered after the legend");
+  });
+
   test("the retro chart gets the same controls, since they live in the frame", async () => {
     const window = await loadSite("/retro", {
       retro: {
