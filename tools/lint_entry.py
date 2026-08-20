@@ -192,15 +192,55 @@ def _ask_finding(body):
     )
 
 
-# The first sentence-ending punctuation in the ask, ignoring a `.` that is
-# part of an abbreviation (`e.g.`, `i.e.`) or of a decimal (`$0.00`) --
-# both appear in real asks and neither ends a sentence. Two conditions do
-# that: the dot must be followed by whitespace (which excludes `0.00` and
-# the first dot of `i.e.`), and the token before it must not be a single
-# character (which excludes the second one). `(?<!\b[A-Za-z0-9])` is that
-# second test -- a word boundary immediately before the preceding
-# character means that character is the whole token.
-_ASK_SENTENCE_END_RE = re.compile(r"[?!]|(?<!\b[A-Za-z0-9])\.(?=\s|\Z)")
+# Finding the end of the ask's first sentence, which is harder than one
+# regex because both directions of error are live in real asks.
+#
+# **A `?` inside a quotation is not this sentence asking anything**, and
+# that is the failure that matters, because every ask ever written quotes
+# Edvard or quotes an earlier entry. Reviewer's case on #254, run rather
+# than argued: *The card that said "should I proceed?" was from last week
+# and is now stale. Should I proceed now, yes or no?* opens with a
+# statement, is exactly the wall-of-text shape this check exists to
+# refuse, and passed silently on the first version. So quoted spans are
+# masked out before anything is scanned -- with a same-length filler, so
+# every offset still points at the original text.
+_ASK_QUOTED_RE = re.compile(r"\"[^\"]*\"|“[^”]*”|`[^`]*`")
+_ASK_MASK = "░"
+
+# **And a `.` that ends an abbreviation is not the end of a sentence.**
+# The first version tested this with a one-character lookbehind, which
+# covers `i.e.` and `e.g.` -- where every letter is its own token -- and
+# nothing else, so `Should Mr. Anderson sign off, yes or no?` was refused
+# for opening with a statement. That is the expensive direction to fail
+# in: a correctly written ask that cannot be published. A named list is
+# duller than a lookbehind and is right about the cases that occur.
+_ASK_ABBREVIATIONS = frozenset(
+    "mr mrs ms dr prof st jr sr vs etc eg ie approx cf no fig".split()
+)
+_ASK_TERMINATOR_RE = re.compile(r"[?!]|\.(?=\s|\Z)")
+_ASK_WORD_BEFORE_RE = re.compile(r"([A-Za-z0-9]+)\Z")
+
+
+def _first_sentence_end(ask):
+    """The match ending the ask's first sentence, or `None` if it has none.
+
+    Offsets are into `ask` itself: masking preserves length on purpose, so
+    the caller can slice the original text out of a scan of the masked
+    copy.
+    """
+    masked = _ASK_QUOTED_RE.sub(lambda m: _ASK_MASK * len(m.group()), ask)
+    for match in _ASK_TERMINATOR_RE.finditer(masked):
+        if match.group() != ".":
+            return match
+        word = _ASK_WORD_BEFORE_RE.search(masked[: match.start()])
+        token = word.group(1).lower() if word else ""
+        # A one-character token is `i.`, `e.` or a list marker; a decimal
+        # never reaches here at all, because `(?=\s|\Z)` already requires
+        # whitespace after the dot and `$0.00` has none.
+        if len(token) <= 1 or token in _ASK_ABBREVIATIONS:
+            continue
+        return match
+    return None
 
 
 def _ask_question_finding(body):
@@ -232,7 +272,7 @@ def _ask_question_finding(body):
     ask = split_ask(body)[1]
     if not ask:
         return None
-    match = _ASK_SENTENCE_END_RE.search(ask)
+    match = _first_sentence_end(ask)
     if match and match.group() == "?":
         return None
     first = ask[: match.end()] if match else ask

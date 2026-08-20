@@ -20,7 +20,8 @@ import pytest
 from datetime import datetime
 
 from agora_runner.config import OSLO
-from tools.lint_entry import lint, main
+from agora_runner.nova_journal import split_ask
+from tools.lint_entry import _raw_body, lint, main
 
 GOOD = """### Cycle 152 — 2026-08-01 02:00 Oslo
 
@@ -613,29 +614,72 @@ def test_an_ask_opening_with_a_statement_is_caught():
 
 
 def test_an_ask_that_leads_with_the_question_passes():
-    assert (
-        lint(
-            "168-cycle-152.md",
-            _ask_entry(
-                "Yes or no, should the status circles become words like the "
-                "priorities did? You told me on the 19th that the coloured "
-                "circles were unreadable."
-            ),
-        )
-        == []
+    ask = (
+        "Yes or no, should the status circles become words like the "
+        "priorities did? You told me on the 19th that the coloured "
+        "circles were unreadable."
     )
+    entry = _ask_entry(ask)
+    # Asserted first, because `lint(...) == []` on its own cannot tell "the
+    # check read this ask and approved it" from "there was no ask to read".
+    # Reviewer finding on #254.
+    assert split_ask(_raw_body(entry))[1].startswith("Yes or no,")
+    assert lint("168-cycle-152.md", entry) == []
 
 
-def test_an_abbreviation_does_not_end_the_first_sentence():
-    """`i.e.` and a decimal both appear in real asks and neither is a
-    sentence end -- treating them as one would refuse a correctly written
-    ask, which is the expensive direction to fail in."""
+@pytest.mark.parametrize(
+    "opening",
+    [
+        "Should I raise the limit above $0.00, i.e. to any non-zero number?",
+        "Should Mr. Anderson sign off on this change, yes or no?",
+        "Should we go with plan A vs. plan B?",
+        "Should we cover x, y, z, etc. before shipping, yes or no?",
+    ],
+)
+def test_an_abbreviation_does_not_end_the_first_sentence(opening):
+    """Refusing a correctly written ask is the expensive direction to fail
+    in -- it is an ask that cannot be published at all.
+
+    The first version tested only `i.e.`, where every letter is its own
+    token, and that was the one abbreviation shape its one-character
+    lookbehind handled; `Mr.`, `vs.` and `etc.` were all refused. The
+    reviewer found that by running these four rather than reading the
+    regex. `$0.00` is here for completeness and is *not* what pins the
+    abbreviation rule -- it is protected by the `(?=\\s|\\Z)` lookahead
+    instead, since neither of its dots is followed by whitespace.
+    """
+    assert lint("168-cycle-152.md", _ask_entry(opening + " The reason.")) == []
+
+
+def test_a_question_mark_inside_a_quotation_does_not_make_the_opening_a_question():
+    """The failure this check exists to catch, surviving the check.
+
+    Every ask ever written quotes Edvard or an earlier entry, so a `?`
+    early in the paragraph is normal and says nothing about whether *this*
+    paragraph opens by asking something. Reviewer finding on #254; the
+    first version passed both of these silently.
+    """
+    for ask in (
+        'The card that said "should I proceed?" was from last week and is '
+        "now stale. Should I proceed now, yes or no?",
+        "Remember when you asked `is this ready?` -- it still is not. Do you "
+        "want me to keep waiting, yes or no?",
+    ):
+        findings = lint("168-cycle-152.md", _ask_entry(ask))
+        assert _kinds(findings) == ["ask"], ask
+        assert "opens with a statement" in findings[0]
+
+
+def test_a_quoted_question_after_a_real_one_still_passes():
+    """The mirror of the case above -- masking quotations must not refuse an
+    ask that genuinely opens with its question and quotes him afterwards,
+    which is the shape `personality.md` actually asks for."""
     assert (
         lint(
             "168-cycle-152.md",
             _ask_entry(
-                "Should I raise the limit above $0.00, i.e. to any non-zero "
-                "number? Every private repo's build fails at startup."
+                "Yes or no, should the status circles become words? You said "
+                '"i can\'t really see the difference as they are colors".'
             ),
         )
         == []
