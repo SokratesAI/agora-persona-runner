@@ -29,6 +29,7 @@ Covers the three Issues.md bugs fixed 2026-07-22:
      (RBAC read access + repo-read-token auth both confirmed in-cluster).
 """
 
+import contextlib
 import base64
 import io
 import json
@@ -3664,18 +3665,50 @@ def test_poll_once_answers_live_cycle_conversation_and_a_plain_heartbeats(runner
     mock_run_due.assert_called_once_with(heartbeats_body["heartbeats"])
 
 
-def test_poll_once_skips_a_retired_cycle_conversation_too(runner):
-    """2026-08-05: skipping only the CURRENT transcript left the back
-    door wide open. Edvard typed one line into a thread from an earlier
-    cycle and the runner answered it the ordinary way -- which for this
-    persona is a full Claude Code cycle, nine seconds later, on quota he
-    had not chosen to spend. The old threads carry the heartbeat's cycle
-    tag, so they are recognisable from the listing poll_once already
-    has; an archived one is genuinely gone and stays pollable.
+@contextlib.contextmanager
+def _run_in_flight_for(runner, heartbeat_id):
+    """Make `heartbeat_id` look like it has a run executing right now.
 
-    2026-08-19: `cycle9` is the heartbeat's CURRENT conversation and is
-    answered live again, so the row that actually pins this rule is
-    `cycle8` -- retired, un-archived, and still skipped."""
+    `_run_in_flight` reads `run_due_heartbeats`' own thread registry
+    rather than a second notion of "busy", so a test that wants the
+    in-flight branch has to put something alive in that registry. A stub
+    with `is_alive()` is enough and does not start a real thread -- a real
+    one would have to be joined, and its liveness would be a race.
+    """
+    threads = runner.heartbeats._heartbeat_threads
+    previous = threads.get(heartbeat_id)
+
+    class _Alive:
+        def is_alive(self):
+            return True
+
+    threads[heartbeat_id] = _Alive()
+    try:
+        yield
+    finally:
+        if previous is None:
+            threads.pop(heartbeat_id, None)
+        else:
+            threads[heartbeat_id] = previous
+
+
+def test_poll_once_answers_a_retired_cycle_conversation_too(runner):
+    """2026-08-20: this test used to assert the opposite, and the reversal
+    is Edvard's, twice over.
+
+    The original rule (2026-08-05) skipped every cycle transcript because
+    one line typed into an old thread fired a full Claude Code cycle nine
+    seconds later, on quota he had not chosen to spend. On 2026-08-19 he
+    took the live transcript back out of the skip set; on 2026-08-20 he
+    took the rest -- "you should actually answer my responds and do
+    actual work immediately. Like the good old days." What made the old
+    rule necessary was routine notes landing here, and those go through
+    the app's capture flow now.
+
+    So every un-archived cycle transcript is polled, and the one thing
+    that still is not is a transcript whose own run is in flight -- see
+    the in-flight test below, which is now the only row this skip set
+    holds."""
     tag = runner.cycle_tag("hb1")
     conversations_body = {"conversations": [
         {"id": "cycle9", "name": "Nova — Cycle 9", "tags": [tag],
@@ -3709,24 +3742,25 @@ def test_poll_once_skips_a_retired_cycle_conversation_too(runner):
          patch.object(runner.poll, "run_due_heartbeats"):
         runner.poll_once()
 
-    assert polled == ["cycle9", "cycle3", "chat"]
+    assert polled == ["cycle9", "cycle8", "cycle3", "chat"]
 
 
-def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(runner):
+def test_message_in_an_in_flight_cycle_conversation_still_reaches_the_next_trigger(runner):
     """The two halves of the deal, asserted together: poll_once must NOT
-    answer Edvard in a RETIRED cycle transcript, and run_heartbeat MUST
-    then carry what he wrote into the next scheduled run's trigger.
+    answer Edvard in a transcript whose own cycle is still running, and
+    run_heartbeat MUST then carry what he wrote into the next scheduled
+    run's trigger.
 
     Skipping is only defensible because of the second half. If either
     side is ever changed alone, his message is silently dropped -- which
     is the exact bug #28/#30 were opened for -- so they are pinned in
     one test rather than two that could drift apart.
 
-    2026-08-19: this used to assert the same thing about the *live*
-    conversation, and Edvard asked for that half back -- see
-    current_cycle_conversation_ids. So the fixture now has both, and the
-    live one is where the assertion flipped: `c-live` is answered on the
-    spot, `c-old` is still deferred."""
+    2026-08-20: the deferred set shrank to exactly this one case, so the
+    fixture had to shrink with it. `c-live` is `hb1`'s current transcript
+    AND `hb1` has a live run thread, which is the only remaining reason
+    to hold an answer back; `c-old` is retired and is now answered on the
+    spot like anything else."""
     conversations_body = {"conversations": [
         {"id": "c-live", "name": "Nova — Cycle 10"},
         {"id": "c-old", "name": "Nova — Cycle 9",
@@ -3738,7 +3772,8 @@ def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(
     ]}
 
     polled = []
-    with patch.object(runner.poll, "agora_get",
+    with _run_in_flight_for(runner, "hb1"), \
+         patch.object(runner.poll, "agora_get",
                       side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
@@ -3747,9 +3782,9 @@ def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(
          patch.object(runner.poll, "run_due_heartbeats"):
         runner.poll_once()
 
-    # The retired thread gets no immediate, expensive full run; the live
-    # one does get an ordinary answer.
-    assert polled == ["c-live"]
+    # The transcript its own cycle is writing into is left alone; the
+    # retired one gets an ordinary answer.
+    assert polled == ["c-old"]
 
     history = _rotating_heartbeat_run(
         runner, [{"sender": "Edvard", "text": "look at the PWA next", "id": "m1"}])
@@ -3757,13 +3792,17 @@ def test_message_in_a_skipped_cycle_conversation_still_reaches_the_next_trigger(
     assert "look at the PWA next" in history[-1]["content"]
 
 
-def test_the_live_cycle_conversation_answers_edvard_on_the_spot(runner):
-    """Edvard's ask, 2026-08-19: "restore real-time replies for ONLY the
-    single conversation a rotating heartbeat is CURRENTLY pointed at."
+def test_every_cycle_conversation_answers_edvard_on_the_spot(runner):
+    """Edvard's ask, 2026-08-20, after getting the Noted chip in a retired
+    cycle's thread: "What? I thought i could have a conversation with you
+    again? ... you should actually answer my responds and do actual work
+    immediately."
 
     Pinned as its own test because it is the assertion that reverses
     runner#45, and a future cycle reading only that PR's tests would
-    otherwise re-derive the old rule and put the skip back."""
+    otherwise re-derive the old rule and put the skip back. The workflow
+    conversation stays skipped -- that rule is a different one and this
+    ask did not touch it."""
     conversations_body = {"conversations": [
         {"id": "c-live", "name": "Nova — Cycle 10"},
         {"id": "c-old", "name": "Nova — Cycle 9",
@@ -3790,9 +3829,9 @@ def test_the_live_cycle_conversation_answers_edvard_on_the_spot(runner):
          patch.object(runner.poll, "run_due_heartbeats"):
         runner.poll_once()
 
-    assert polled == ["c-live"]     # the workflow one stays skipped
-    assert acked == ["c-old"]       # retired keeps the Noted chip
-    assert chipped == ["c-live"]    # and only the live one is marked answered
+    assert polled == ["c-live", "c-old"]   # the workflow one stays skipped
+    assert acked == []                     # nothing is deferred, so no chip
+    assert chipped == ["c-live", "c-old"]  # both are marked answered
 
 
 def test_no_answered_live_chip_when_the_turn_did_not_speak(runner):
@@ -6040,9 +6079,9 @@ def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
     it did would be a lie in the one place he already cannot see what
     happened.
 
-    Since 2026-08-19 the cycle transcript under test has to be a RETIRED
-    one -- the live one is answered on the spot now and so has nothing to
-    defer."""
+    Since 2026-08-20 the cycle transcript under test has to be one whose
+    own run is IN FLIGHT -- every other cycle transcript, live or
+    retired, is answered on the spot now and so has nothing to defer."""
     conversations_body = {"conversations": [
         {"id": "cycle10", "name": "Nova — Cycle 10"},
         {"id": "cycle9", "name": "Nova — Cycle 9",
@@ -6057,7 +6096,8 @@ def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
     ]}
 
     acked = []
-    with patch.object(runner.poll, "agora_get",
+    with _run_in_flight_for(runner, "hb1"), \
+         patch.object(runner.poll, "agora_get",
                       side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
@@ -6067,7 +6107,7 @@ def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
          patch.object(runner.poll, "run_due_heartbeats"):
         runner.poll_once()
 
-    assert acked == ["cycle9"]
+    assert acked == ["cycle10"]
 
 
 def test_an_archived_cycle_thread_is_not_acknowledged(runner):

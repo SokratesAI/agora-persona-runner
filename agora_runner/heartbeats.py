@@ -626,60 +626,46 @@ def workflow_bound_conversation_ids(heartbeats_list):
     }
 
 
-def current_cycle_conversation_ids(heartbeats_list):
-    """Just the conversation each enabled rotating heartbeat is pointed
-    at right now -- the live one, not its retired predecessors.
+def in_flight_cycle_conversation_ids(heartbeats_list):
+    """The transcript each *currently executing* rotating run is writing
+    into. This is now the entire deferred set.
 
-    Edvard, 2026-08-19: "since he now files ideas/issues/notes through
-    the Nova app's own capture flow ... he no longer uses a heartbeat
-    conversation transcript for routine notes. He now writes directly
-    into a cycle conversation specifically when he wants to talk to the
-    agent that had that session, and getting back only a 'Noted --
-    carried into the next run' chip ... defeats that."
+    Edvard, 2026-08-20, on getting the Noted chip after writing in the
+    conversation of a cycle that had already retired: "What? I thought i
+    could have a conversation with you again? Did cycle 267 in Nova lie?
+    ... you should actually answer my responds and do actual work
+    immediately. Like the good old days."
 
-    That is him reversing the 2026-08-03 preference that
-    cycle_bound_conversation_ids was built for, deliberately and with a
-    reason: the accidental-trigger problem was that a routine note fired
-    a full cycle, and routine notes do not land here any more. He scoped
-    the revert himself -- "restore real-time replies for ONLY the single
-    conversation a rotating heartbeat is CURRENTLY pointed at (the
-    live/most-recent one). Every older/retired cycle conversation should
-    keep today's defer + Noted-chip behavior untouched -- that part of
-    PR#45 is still exactly the right fix, a message in a months-old
-    thread should never fire a surprise full cycle."
+    Cycle 267 did not lie -- it built exactly what he scoped on
+    2026-08-19, which was real-time replies for the live transcript
+    *only*, with every retired one keeping the chip. This is him widening
+    that a second time, and the widening is safe for a reason worth
+    stating rather than assumed: `rotate_cycle_conversation` PATCHes
+    `conversationId` to the NEW transcript at the *start* of a run, so a
+    retired conversation is by construction one no run is writing into.
+    The concurrent-`--resume` hazard this set exists to hold back -- two
+    `--resume` calls against one CLI session, five seconds apart, with the
+    real cycle's own turn in the middle -- can therefore only exist for
+    the one transcript this returns. Runs have had their own thread since
+    2026-08-08, so `poll_once` keeps ticking every five seconds while a
+    cycle executes; without this check, Edvard typing into the transcript
+    of a cycle that is still working would have ordinary turn-taking call
+    the bridge on the same `conversation_id` the run is already resumed
+    on. `_run_in_flight` reuses `run_due_heartbeats`' own thread registry
+    rather than inventing a second notion of "busy" that could disagree
+    with it.
 
-    So this is the subtrahend, not a replacement: poll_once skips
-    cycle_bound_conversation_ids() MINUS this set. Deliberately does not
-    take `conversations` -- the whole point is that it never reaches
-    back through the tag lookback the way its sibling does.
-
-    **A heartbeat whose run is in flight is excluded, and that exclusion
-    is the whole reason this is safe.** Runs have had their own thread
-    since 2026-08-08, so `poll_once` keeps ticking every five seconds
-    while a cycle executes -- and `rotate_cycle_conversation` PATCHes
-    `conversationId` to the new transcript at the *start* of the run.
-    Without this check, Edvard typing into the transcript of a cycle
-    that is still working would have ordinary turn-taking call the
-    bridge with the same `conversation_id` the running cycle is already
-    resumed on, within five seconds, on the main thread. Two concurrent
-    `--resume` calls against one CLI session, every tick until the
-    backoff cap, with the real cycle's own turn in the middle of it.
-
-    The first draft of this function had no such check and its docstring
-    asserted the opposite -- "poll_once is blocked for the length of the
-    run" -- which was true only before runs were threaded. Caught in
-    review before merge; the fix is one `is_alive()`.
-
-    While a run is in flight the conversation therefore stays in the
-    deferred set: he gets the Noted chip, and pending_across_cycles
-    carries his message into the next run exactly as it did before. That
-    is the old behaviour, unchanged, for precisely the window where the
-    old behaviour is the only correct one.
+    So the old fear from runner#45 -- "a message in a months-old thread
+    should never fire a surprise full cycle" -- is the thing he has now
+    reversed on purpose, twice. It stopped being a hazard when routine
+    notes moved to the app's capture flow: writing in a cycle transcript
+    is now a deliberate "talk to the agent that had that session", and
+    the only correct answer to that is an answer.
     """
     return {
         hb["conversationId"] for hb in heartbeats_list
         if hb.get("enabled") and hb.get("rotateConversationEachRun")
-        and hb.get("conversationId") and not _run_in_flight(hb.get("id"))
+        and hb.get("conversationId") and _run_in_flight(hb.get("id"))
     }
 
 
@@ -745,14 +731,14 @@ def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
     but if either bound moves, move it in both places or his messages
     start vanishing again.
 
-    2026-08-19: poll_once no longer skips ALL of these. It subtracts
-    current_cycle_conversation_ids() and defers only the rest -- see that
-    function for Edvard's ask. This function is unchanged and still
-    returns the full set, because the invariant above is about the set
-    the *walk* must reach, and the walk must still reach every one of
-    them: while a run is in flight its own conversation drops back out
-    of the live set (`_run_in_flight`), so a message typed mid-cycle is
-    deferred and the current conversation still needs carrying.
+    2026-08-19, then again 2026-08-20: poll_once no longer skips ALL of
+    these, and now skips almost none of them. It defers only
+    in_flight_cycle_conversation_ids() -- see that function for Edvard's
+    ask. This function is unchanged and still returns the full set,
+    because the invariant above is about the set the *walk* must reach,
+    and the walk must still reach every one of them: a message typed into
+    a transcript while its own cycle is running is deferred, so that
+    conversation still needs carrying.
 
     `conversations` is poll_once's existing listing, passed in rather
     than re-fetched; without it this degrades to the current-id-only
