@@ -473,19 +473,28 @@
       statusEl.appendChild(live);
     }
 
-    /* Shown only once the server calls the loop stalled, which it will not
-     * do while a cycle is merely mid-flight -- an entry is written at the
-     * end of an hour, so "one behind agora" is what a healthy loop looks
-     * like from here and a badge every hour is a badge nobody reads (#72).
-     * The server owns that judgement; this renders it and does not
-     * second-guess the number. */
-    if (status.stalled && !replayed) {
-      var hours = status.silentIntervals;
-      var quiet = el("p", "status-sub");
-      quiet.appendChild(el("span", "badge badge-warn", "no entry for "
-        + hours + (hours === 1 ? " hour" : " hours")));
-      statusEl.appendChild(quiet);
-    }
+    /* The stall badge ("no entry for N hours") and the gap badge ("cycle
+     * 265 wrote no entry") both used to render here, and Edvard asked for
+     * both to go, capture 2026-08-20: *"I do not like he statuses on the
+     * top of Nova. The message 'cycle 265 wrote no entry' just stands
+     * there forever. Please remove all those statuses as i do not want
+     * them. They are more for you than me. Actually, i do like the 'cycle
+     * is running' status."*
+     *
+     * They were built for him and they were not for him. A gap badge is a
+     * true fact about the record that he can do nothing about -- the run
+     * that failed to write is over -- so it sits at the top of his page
+     * permanently, which is exactly what he says it does. The server still
+     * computes `stalled`, `silentIntervals` and `recentMissingCycles` and
+     * still serves them in `/api/status`; a cycle that wants journal health
+     * reads `cycle_health.missing_cycles` directly, which is where a fact
+     * for me rather than for him belongs. Only the rendering is gone.
+     *
+     * `recordStale` below survives on purpose and is not the same kind of
+     * thing. It does not report the loop's health, it reports that *this
+     * page* cannot see current data -- removing it would make a stale page
+     * pass itself off as live, which is a regression he did not ask for.
+     * If he wants it gone too, that is one sentence and one line. */
 
     /* The server saying it cannot see the journal, which until now it had
      * no way to say -- so it said "the loop has stopped" instead, because
@@ -505,32 +514,6 @@
       statusEl.appendChild(frozen);
     }
 
-    /* Edvard, comments board 2026-08-14: "Should be displayed if the
-     * return fetch came in with missing journals."
-     *
-     * The badge above is a clock and this one is evidence. They answer
-     * different questions and neither replaces the other: a loop that
-     * died five minutes ago leaves no hole at all, because a hole only
-     * appears once a later cycle writes an entry over the top of it, and
-     * a loop running one long cycle leaves no hole either. So a stall is
-     * the only thing a clock can catch, and a cycle that woke and failed
-     * is the only thing a hole can catch.
-     *
-     * This one cannot cry wolf, which is the point. "Cycle 128 wrote no
-     * entry" is a fact about the record rather than a guess about the
-     * present, so it does not appear and retract as a cycle finishes.
-     * The server has already cut the list to holes recent enough to act
-     * on -- see `cycle_health.recent_gaps` -- and this renders that
-     * judgement without second-guessing the window, the same way the
-     * stall badge defers to `stalled`. */
-    var holes = status.recentMissingCycles || [];
-    if (holes.length) {
-      var missed = el("p", "status-sub");
-      missed.appendChild(el("span", "badge badge-warn", holes.length === 1
-        ? "cycle " + holes[0] + " wrote no entry"
-        : holes.length + " cycles wrote no entry"));
-      statusEl.appendChild(missed);
-    }
   }
 
   /* Edvard, comments board 2026-08-14: "Or a display error if the fetch
@@ -3285,39 +3268,38 @@
 
   function renderBoardEdvard(board, payload) {
     var wrap = el("div", "board");
-    /* Two sections, not one. A capture a cycle has closed carries a
-     * `DONE (Cycle N):` prefix (`nova_boards.split_capture_done`), and
-     * until Cycle 251 nothing read it -- so every finished bullet went on
-     * sitting under "Not boarded yet" with the open ones. On 08-17 that
-     * heading held five items and all five were done, which makes the
-     * section unreadable in exactly the way that matters: the one place
-     * on this page where Edvard's own unfiled words appear.
+    /* One section. A capture a cycle has closed carries a `DONE (Cycle N):`
+     * prefix (`nova_boards.split_capture_done`); Cycle 251 gave those their
+     * own "Done, not yet cleared" section so they would stop claiming to be
+     * work, and Edvard asked for that section to go, capture 2026-08-20:
+     * *"I do not like or see the point of the 'Done, not yet cleared' list
+     * in issues and ideas. I do not use it and to me its just noise."*
      *
-     * The done ones stay on the page rather than being hidden, because
-     * the marker is a cycle answering him and the answer is worth
-     * reading once. They just stop claiming to be work. The index passed
-     * to `renderCapture` is the index into `payload.captures`, not into
-     * the section -- `/api/capture/edit` addresses a bullet by its
-     * position in the file, so splitting the list for display must not
-     * renumber it. */
+     * So a closed capture is not rendered at all. The reasoning for keeping
+     * them visible was that the `DONE` marker is a cycle answering him and
+     * the answer is worth reading once -- he has now said he does not read
+     * it, which settles it. The bullet stays in the vault file either way;
+     * nothing here deletes anything, and nothing yet prunes them from the
+     * file (see `[roll-edvards-captures]`), so this hides a list that grows
+     * rather than fixing why it grows.
+     *
+     * The index passed to `renderCapture` is the index into
+     * `payload.captures`, not into the filtered list -- `/api/capture/edit`
+     * addresses a bullet by its position in the file, so filtering for
+     * display must not renumber it. */
     var captures = payload.captures || [];
     var open = [];
-    var done = [];
     captures.forEach(function (capture, index) {
-      (capture.done ? done : open).push({ capture: capture, index: index });
+      if (!capture.done) open.push({ capture: capture, index: index });
     });
-    [
-      { rows: open, cls: "captures", title: "Not boarded yet" },
-      { rows: done, cls: "captures captures-done", title: "Done, not yet cleared" }
-    ].forEach(function (section) {
-      if (!section.rows.length) return;
-      var box = el("section", section.cls);
-      box.appendChild(el("h2", "captures-title", section.title));
-      section.rows.forEach(function (row) {
+    if (open.length) {
+      var box = el("section", "captures");
+      box.appendChild(el("h2", "captures-title", "Not boarded yet"));
+      open.forEach(function (row) {
         box.appendChild(renderCapture(board, row.capture, row.index));
       });
       wrap.appendChild(box);
-    });
+    }
 
     var items = payload.items || [];
     wrap.appendChild(renderBoardControls(board, payload, items));
