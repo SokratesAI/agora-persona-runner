@@ -149,6 +149,7 @@ from agora_runner.nova_boards import (
     split_capture_priority,
 )
 from agora_runner.nova_costs import costs_payload as shape_costs
+from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_runtimes import attach_runtimes
 from agora_runner.nova_sources import (
@@ -157,6 +158,7 @@ from agora_runner.nova_sources import (
     cost_ledger_json,
     digest_markdown,
     journal_markdown,
+    plan_markdown,
     retro_ledger_json,
 )
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
@@ -185,7 +187,7 @@ STATIC_ROUTES = {
 # `/cycle/<n>` is a prefix rather than an exact path, so it is matched
 # separately in `do_GET` and carries a representative path here for
 # anything walking the list.
-PAGE_ROUTES = ("/", "/issues", "/ideas", "/costs", "/retro")
+PAGE_ROUTES = ("/", "/issues", "/ideas", "/costs", "/retro", "/plan")
 PAGE_ROUTE_PREFIXES = ("/cycle/",)
 
 # gzip's header and trailer are a fixed 18 bytes, so a short body comes
@@ -532,6 +534,22 @@ def retros_payload():
     a page opened once a week is the wrong side of that trade.
     """
     return shape_retros(retro_ledger_json())
+
+
+def plans_payload():
+    """The roadmap and the goals, as one page (`issues.md` #7).
+
+    Same shape as the two above -- one fetch, one reshape -- and cached
+    for the same reason as `retros_payload` rather than `costs_payload`:
+    these two documents are rewritten *when the reasoning changes*, which
+    their own frontmatter says is not every cycle, so the cache is almost
+    always serving something that cannot have moved.
+
+    Not warmed at startup, for the reason the retro is not: nobody lands
+    here cold. It is reached from the nav, by which time the process has
+    long since served the journal.
+    """
+    return shape_plan(plan_markdown())
 
 
 def board_page(payload, limit=None, item=None, search=None):
@@ -1481,6 +1499,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/retro":
                 self._send_cached_json("retro", retros_payload)
+                return
+            if path == "/api/plan":
+                self._send_cached_json("plan", plans_payload)
                 return
             if path == "/api/comments":
                 # Deliberately not cached. It is 6KB and 20-78ms against

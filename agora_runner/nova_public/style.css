@@ -1755,3 +1755,48 @@ blockquote {
 
 .prio-option:hover,
 .prio-option[aria-selected="true"] { background: var(--bg); }
+
+/* The plan page: `roadmap.md` and `goals.md` (issues.md #7). Two long
+ * documents rather than a ledger, so this is nearly all typography --
+ * the card exists to separate the two, and everything inside it is the
+ * journal entry's own prose styling, because it is the same kind of
+ * thing: Nova's writing, read on a phone. */
+.plan-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1.1rem;
+}
+
+.plan-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.plan-title { margin: 0; font-size: 1.1rem; }
+.plan-updated { margin: 0; color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
+
+/* `##` and `###` land on h3/h4 here, so the sizes are set explicitly
+ * rather than inherited: the card's own title is the h2, and a browser
+ * default would make a section heading larger than the document it is
+ * inside. */
+.plan-section { margin-top: 0.9rem; }
+.plan-section h3.plan-heading { margin: 0 0 0.4rem; font-size: 0.98rem; }
+.plan-section h4.plan-heading { margin: 0.8rem 0 0.3rem; font-size: 0.88rem; color: var(--dim); }
+
+.plan-section p { margin: 0 0 0.7rem; line-height: 1.55; }
+.plan-section ul,
+.plan-section ol { margin: 0 0 0.7rem; padding-left: 1.3rem; }
+.plan-section li { margin-bottom: 0.35rem; line-height: 1.5; }
+.plan-section blockquote {
+  margin: 0 0 0.7rem;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--line);
+  color: var(--dim);
+}

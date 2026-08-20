@@ -59,6 +59,7 @@
     if (path === "/ideas") return { view: "board", cycle: null, board: "ideas" };
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
+    if (path === "/plan") return { view: "plan", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
 
@@ -262,10 +263,16 @@
    * the server emits them flat because a bullet run is just adjacency. */
   function renderBlocks(parent, blocks) {
     var list = null;
+    var listTag = null;
     (blocks || []).forEach(function (block) {
-      if (block.type === "li") {
-        if (!list) {
-          list = el("ul");
+      if (block.type === "li" || block.type === "oli") {
+        var tag = block.type === "oli" ? "ol" : "ul";
+        // A run of bullets that turns into a run of numbers is two lists,
+        // not one: reusing the open element would put numbered items
+        // inside a `<ul>` and lose the numbering the author meant.
+        if (!list || listTag !== tag) {
+          list = el(tag);
+          listTag = tag;
           parent.appendChild(list);
         }
         var item = el("li");
@@ -274,6 +281,7 @@
         return;
       }
       list = null;
+      listTag = null;
       if (block.type === "quote") {
         var quote = el("blockquote");
         renderSpans(quote, block.spans);
@@ -4532,6 +4540,79 @@
       });
   }
 
+  /* The `/plan` page: `roadmap.md` and `goals.md`, which until now reached
+   * Edvard only through Obsidian (issues.md #7, goals.md's own G2).
+   *
+   * No chart, no tiles, no summary line -- unlike every other non-journal
+   * page here. Those exist because their source is a ledger of numbers and
+   * a reader cannot hold 110 rows in their head. This source is two
+   * arguments written to be argued with, and the useful thing to do with an
+   * argument is show it. A tile saying "5 items on the roadmap" would be
+   * this page's version of the noise he has twice asked me to stop putting
+   * at the top of his files.
+   *
+   * The server sends blocks and spans, never HTML, and every node below is
+   * built with textContent -- the same guarantee the journal card makes, and
+   * the reason nothing here touches innerHTML. */
+  function renderPlanDocument(doc) {
+    var card = el("article", "plan-card");
+    var head = el("header", "plan-head");
+    head.appendChild(el("h2", "plan-title", doc.title));
+    if (doc.updated) head.appendChild(el("p", "plan-updated", "Updated " + doc.updated));
+    card.appendChild(head);
+    if (doc.missing) {
+      card.appendChild(el("p", "empty", "Not written yet."));
+      return card;
+    }
+    (doc.sections || []).forEach(function (section) {
+      var body = el("section", "plan-section");
+      // Level 0 is the text above the first heading, and it is the
+      // standfirst of both documents -- rendered with no heading rather
+      // than skipped, because in `goals.md` it is the paragraph that says
+      // the slate is a proposal and not a settled list.
+      if (section.heading) {
+        body.appendChild(el(section.level >= 3 ? "h4" : "h3", "plan-heading", section.heading));
+      }
+      renderBlocks(body, section.blocks);
+      card.appendChild(body);
+    });
+    return card;
+  }
+
+  function renderPlan(payload) {
+    stopPolling();
+    markNav();
+    var docs = payload.documents || [];
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el("p", "status-line", "What I would do next, and what it is for"));
+    if (payload.replayed) statusEl.appendChild(savedCopyLine());
+    feed.textContent = "";
+    if (!docs.length) {
+      feed.appendChild(el("p", "empty", "Nothing here yet."));
+      return;
+    }
+    docs.forEach(function (doc) {
+      feed.appendChild(renderPlanDocument(doc));
+    });
+  }
+
+  function loadPlan() {
+    fetchPage("/api/plan")
+      .then(function (payload) {
+        // The same guard the retro and costs fetches carry: two taps in
+        // quick succession leave two fetches in flight and the loser must
+        // not paint over the winner.
+        if (route(window.location.pathname).view !== "plan") return;
+        renderPlan(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the plan: " + err));
+      });
+  }
+
   function load() {
     var here = route(window.location.pathname);
     if (here.view === "board") {
@@ -4544,6 +4625,10 @@
     }
     if (here.view === "retro") {
       loadRetro();
+      return;
+    }
+    if (here.view === "plan") {
+      loadPlan();
       return;
     }
     markNav();
