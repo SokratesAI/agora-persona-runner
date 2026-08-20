@@ -155,6 +155,17 @@ def claim_next_number(heartbeat_id, conversations, tag):
             log(f"claim_next_number({heartbeat_id}): counter write failed, "
                 f"falling back to scan: {result}")
             break
+    else:
+        # Every attempt lost a 409. Both `break`s above say why they gave
+        # up; this path said nothing, and it is the one where the fallback
+        # is most likely to hand back a number somebody else already holds
+        # -- CLAIM_ATTEMPTS conflicts in a row means real contention, not a
+        # sick CouchDB. A duplicate cycle number is exactly the symptom
+        # Edvard reported as Immediately on 2026-08-20, so the one case
+        # that can still produce one should not be the one that leaves no
+        # trace to find it by.
+        log(f"claim_next_number({heartbeat_id}): {CLAIM_ATTEMPTS} conflicts "
+            f"in a row, falling back to scan -- cycle {floor + 1} may collide")
     return floor + 1
 
 

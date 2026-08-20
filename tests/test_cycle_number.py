@@ -220,3 +220,25 @@ def test_claim_next_number_different_heartbeats_never_collide():
     assert paths_read[0] != paths_read[1]
     assert "hb-1" in paths_read[0] and "hb-2" not in paths_read[0]
     assert "hb-2" in paths_read[1] and "hb-1" not in paths_read[1]
+
+
+def test_claim_next_number_logs_when_it_gives_up_after_repeated_conflicts(caplog):
+    """The two failure `break`s each log why they gave up; exhausting the
+    409 retries used to fall through in silence -- and that is the path
+    most likely to hand back a number another rotation already holds,
+    since CLAIM_ATTEMPTS conflicts in a row means real contention rather
+    than a sick CouchDB. A duplicate cycle number with nothing in the log
+    to find it by is the failure this whole module exists to stop."""
+    conversations = [conv("Nova — Cycle %d" % n) for n in (1, 2, 3, 9)]
+    logged = []
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(cycle_number, "vault_read_path_rev", lambda path: (None, None))
+        m.setattr(cycle_number, "vault_write_path",
+                  lambda path, content, if_rev=None, allow_shrink=False: "FAILED(409 conflict)")
+        m.setattr(cycle_number, "log", logged.append)
+        claimed = cycle_number.claim_next_number("hb-1", conversations, TAG)
+
+    assert claimed == 10
+    assert len(logged) == 1, f"expected exactly one give-up log, got {logged}"
+    assert "conflicts" in logged[0] and "10" in logged[0]
