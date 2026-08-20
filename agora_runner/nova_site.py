@@ -1491,8 +1491,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         is not lazy-loading the rows: the rows were never the weight.
 
         Hashed per request rather than cached. These files are read off
-        disk on every request already, and sha256 over 244KB is ~0.3ms
-        against a read that has to happen anyway; a cache keyed on a
+        disk on every request already, and the hash is measured rather
+        than guessed at: 0.14ms for `app.js` (243,899 bytes) and 0.58ms
+        for the 1.0MB `echarts.min.js`, against a read that has to
+        happen anyway. A cache keyed on a
         path would be one more thing that can serve a stale build after
         a deploy, which is the exact failure the service worker's
         author refused to accept in exchange for the same saving.
