@@ -3181,22 +3181,26 @@ describe("the issues page", () => {
     assert.equal(window.posted[0].body.original, "fix this");
   });
 
-  test("a capture a cycle closed sits in its own section, and keeps its own address", async () => {
-    /* On 08-17 all five captures on the issues board carried a `DONE
-     * (Cycle N):` marker and the page still listed every one of them
-     * under "Not boarded yet". The split is presentational, so the risk
-     * it introduces is the addressing one: `/api/capture/edit` takes the
-     * bullet's position in the file, and rendering the open ones first
-     * would renumber them if the index came from the section. */
+  test("a capture a cycle closed is not shown, and the ones left keep their addresses", async () => {
+    /* Cycle 251 gave closed captures their own "Done, not yet cleared"
+     * section; Edvard asked for that section to go, capture 2026-08-20:
+     * *"I do not like or see the point of the 'Done, not yet cleared' list
+     * in issues and ideas. I do not use it and to me its just noise."*
+     *
+     * Dropping them changes what the addressing risk looks like rather
+     * than removing it. `/api/capture/edit` takes the bullet's position in
+     * the *file*, so a filtered list whose index came from the filtered
+     * array would address the wrong bullet -- and now silently, since the
+     * row it would hit is no longer on screen to look wrong. */
     const blocks = (t) => [{ type: "p", spans: [{ kind: "text", text: t }] }];
     const board = {
       ...payload.board,
-      /* The done one is **second** in the file and first in its section.
-       * With it first in the file both numbers are 0 and the assertion
-       * below cannot fail -- which is what it did on the first draft. */
+      /* The done one is **first** in the file, so the open one's file
+       * index (1) and its index among the rendered rows (0) differ. With
+       * it second both numbers are 0 and the assertion cannot fail. */
       captures: [
-        { text: "the thing I typed", body: "the thing I typed", blocks: blocks("the thing I typed") },
         { text: "DONE (Cycle 247): shipped it", done: "Cycle 247", body: "shipped it", blocks: blocks("shipped it") },
+        { text: "the thing I typed", body: "the thing I typed", blocks: blocks("the thing I typed") },
       ],
     };
     const window = await loadSite("/issues", {
@@ -3206,21 +3210,20 @@ describe("the issues page", () => {
 
     const titles = [...window.document.querySelectorAll(".captures-title")]
       .map((n) => n.textContent);
-    assert.deepEqual(titles, ["Not boarded yet", "Done, not yet cleared"]);
-    const open = window.document.querySelector(".captures:not(.captures-done)");
+    assert.deepEqual(titles, ["Not boarded yet"]);
+    const open = window.document.querySelector(".captures");
     assert.equal(open.querySelectorAll(".capture-item").length, 1);
     assert.match(open.textContent, /the thing I typed/);
-    const shut = window.document.querySelector(".captures-done");
-    assert.equal(shut.querySelector(".capture-done-chip").textContent, "Done · Cycle 247");
+    assert.doesNotMatch(open.textContent, /shipped it/);
+    assert.equal(window.document.querySelector(".capture-done-chip"), null);
 
-    // The done one is second in the file and must still say so.
-    click(window, [...shut.querySelectorAll(".capture-act")].filter(
+    // The open one is second in the file and must still say so.
+    click(window, [...open.querySelectorAll(".capture-act")].filter(
       (b) => b.textContent === "Delete")[0]);
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(window.posted[0].body.index, 1,
-      "the section reordered the rows and the page sent the wrong address");
-    assert.equal(window.posted[0].body.original, "DONE (Cycle 247): shipped it",
-      "the marker is part of his bullet and has to round-trip");
+      "filtering renumbered the rows and the page sent the wrong address");
+    assert.equal(window.posted[0].body.original, "the thing I typed");
   });
 
   test("Delete asks first, and sends nothing when the answer is no", async () => {
@@ -3901,12 +3904,29 @@ describe("a cycle that is running says so in the header", () => {
    * lock on the same door: if a future change ever lets both through, the
    * page would tell him the loop is working and has been dead for four
    * hours, in two lines a centimetre apart. */
+  /* Its second assertion used to be `warn(...)` containing "no entry for 4
+   * hours" — the stall badge, which doubled as this test's positive
+   * control: it proved the stalled fixture had actually reached the page,
+   * so the empty `live(...)` meant something. Removing that badge took the
+   * control with it, and `assert.deepEqual(live(window), [])` alone would
+   * pass against a page that never renders a live badge under any input.
+   *
+   * So the control is rebuilt from the badge he kept: the same fixture
+   * with `stalled: false` must produce "cycle running". One test, both
+   * directions, and it fails if either the flag stops suppressing or the
+   * badge stops rendering. */
   test("a stalled loop is never also reported as running", async () => {
     const window = await loadSite("/", {
       journal: () => withStatus({ running: true, stalled: true, silentIntervals: 4 }),
     });
     assert.deepEqual(live(window), []);
-    assert.ok(warn(window).some((t) => t === "no entry for 4 hours"));
+
+    const healthy = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: false, silentIntervals: 1 }),
+    });
+    assert.ok(live(healthy).some((t) => t === "cycle running"),
+      "the control failed: this fixture cannot raise the live badge either, "
+      + "so the assertion above proves nothing about `stalled`");
   });
 
   /* Same reason the stall badge is hidden on a replayed payload: "a cycle
@@ -4075,35 +4095,13 @@ describe("a loop that has gone quiet says so in the header", () => {
     [...window.document.querySelectorAll("#status .badge-warn")]
       .map((n) => n.textContent);
 
-  /* `/no entry for/` and not `/no entry/`: the fixture journal really does
-   * hole at cycle 56, so once the header started naming holes the looser
-   * pattern matched "cycle 56 wrote no entry" and this test failed on a
-   * badge it was never about. Each of the two badges is asserted by its
-   * own wording. */
-  test("no stall badge while the loop is running to time", async () => {
-    const live = JSON.parse(JSON.stringify(payload.journal));
-    live.status.stalled = false;
-    live.status.silentIntervals = 1;
-    const window = await loadSite("/", { journal: () => live });
-    assert.deepEqual(warn(window).filter((t) => /no entry for/.test(t)), []);
-  });
-
-  /* The test above was called "nothing is said while the loop is healthy"
-   * and did not check that, which the reviewer on runner#195 caught. Every
-   * fixture in this file carries the hole at cycle 56, so narrowing that
-   * assertion to the stall badge left *no* test anywhere asserting the
-   * header is completely quiet — the state Edvard is looking at almost
-   * every time he opens the app. Renaming the old one to what it actually
-   * proves and adding this is the honest split; a fixture has to be
-   * cleared, not a pattern narrowed, to claim silence. */
-  test("a healthy loop with no holes says nothing at all", async () => {
-    const live = JSON.parse(JSON.stringify(payload.journal));
-    live.status.stalled = false;
-    live.status.silentIntervals = 1;
-    live.status.recentMissingCycles = [];
-    const window = await loadSite("/", { journal: () => live });
-    assert.deepEqual(warn(window), []);
-  });
+  /* Two tests stood here asserting the header is quiet when the loop is
+   * healthy. They are gone rather than kept, because with the two
+   * journal-health badges removed there is no state left in which the
+   * header is *not* quiet, so both would pass against a page that had
+   * never rendered a badge in its life. The invariant test below is the
+   * one that survives: it asserts the same silence under the conditions
+   * that used to break it. */
 
   /* Issue #81, the badge that appeared and retracted with nothing wrong on
    * the server. `sw.js` is network-first, so it answers a failed fetch out
@@ -4239,21 +4237,30 @@ describe("a loop that has gone quiet says so in the header", () => {
       /showing a saved copy/);
   });
 
-  test("a stall is named with how long it has been", async () => {
-    const quiet = JSON.parse(JSON.stringify(payload.journal));
-    quiet.status.stalled = true;
-    quiet.status.silentIntervals = 4;
-    const window = await loadSite("/", { journal: () => quiet });
-    assert.ok(warn(window).some((t) => t === "no entry for 4 hours"));
-  });
-
-  test("one hour is not pluralised", async () => {
-    const quiet = JSON.parse(JSON.stringify(payload.journal));
-    quiet.status.stalled = true;
-    quiet.status.silentIntervals = 1;
-    const window = await loadSite("/", { journal: () => quiet });
-    assert.ok(warn(window).some((t) => t === "no entry for 1 hour"));
-  });
+  /* Edvard asked for both journal-health badges to go, capture 2026-08-20:
+   * *"I do not like he statuses on the top of Nova. The message 'cycle 265
+   * wrote no entry' just stands there forever. Please remove all those
+   * statuses as i do not want them."*
+   *
+   * This is the one test that replaces the five that used to assert those
+   * badges appear. It hands the page the strongest possible case for
+   * raising one -- the server reporting a stall *and* two recent holes,
+   * on a live (not replayed) payload -- and requires the header to stay
+   * quiet anyway. Before the badges were removed this failed on both
+   * counts, which is what makes it worth having; an assertion that a
+   * badge is absent under conditions that never produce one would pin
+   * nothing at all. `badge-live` and `badge-error` are deliberately not
+   * in scope: "cycle running" is the status he kept, and the can't-read
+   * badge is a claim about this page rather than about the loop. */
+  test("the header raises no journal-health badge, however bad the record",
+    async () => {
+      const bad = JSON.parse(JSON.stringify(payload.journal));
+      bad.status.stalled = true;
+      bad.status.silentIntervals = 4;
+      bad.status.recentMissingCycles = [204, 205];
+      const window = await loadSite("/", { journal: () => bad });
+      assert.deepEqual(warn(window), []);
+    });
 
   /* The server saying it cannot see the journal, rather than guessing
    * that the loop stopped. Asserted as an error badge and not a warning:
@@ -4287,63 +4294,15 @@ describe("a loop that has gone quiet says so in the header", () => {
       .map((n) => n.textContent), []);
   });
 
-  /* Edvard, comments board 2026-08-14: "Should be displayed if the return
-   * fetch came in with missing journals." The clock and the evidence are
-   * separate badges because they catch separate failures -- see the
-   * comment beside this in app.js. */
-
-  test("a cycle that woke and wrote nothing is named", async () => {
-    const holed = JSON.parse(JSON.stringify(payload.journal));
-    holed.status.stalled = false;
-    holed.status.recentMissingCycles = [128];
-    const window = await loadSite("/", { journal: () => holed });
-    assert.ok(warn(window).some((t) => t === "cycle 128 wrote no entry"));
-  });
-
-  test("more than one hole is counted rather than listed", async () => {
-    const holed = JSON.parse(JSON.stringify(payload.journal));
-    holed.status.stalled = false;
-    holed.status.recentMissingCycles = [127, 128];
-    const window = await loadSite("/", { journal: () => holed });
-    assert.ok(warn(window).some((t) => t === "2 cycles wrote no entry"));
-  });
-
-  test("no recent hole says nothing, and an old one is not recent", async () => {
-    /* The server decides the window; this asserts the client renders that
-     * decision rather than reaching for the full `missingCycles` list,
-     * which is history and never shrinks. */
-    const holed = JSON.parse(JSON.stringify(payload.journal));
-    holed.status.stalled = false;
-    holed.status.missingCycles = [8, 52, 134];
-    holed.status.recentMissingCycles = [];
-    const window = await loadSite("/", { journal: () => holed });
-    assert.deepEqual(warn(window).filter((t) => /wrote no entry/.test(t)), []);
-  });
-
-  test("a stall and a hole are both shown, not one instead of the other",
-    async () => {
-      const both = JSON.parse(JSON.stringify(payload.journal));
-      both.status.stalled = true;
-      both.status.silentIntervals = 3;
-      both.status.recentMissingCycles = [204];
-      const window = await loadSite("/", { journal: () => both });
-      const shown = warn(window);
-      assert.ok(shown.some((t) => t === "no entry for 3 hours"));
-      assert.ok(shown.some((t) => t === "cycle 204 wrote no entry"));
-    });
-
-  test("a payload with no recentMissingCycles at all is not an error",
-    async () => {
-      /* The tailnet can serve the last build's app.js against this
-       * build's server, or the other way round. An absent key must read
-       * as "no holes", not throw and take the header down with it. */
-      const old = JSON.parse(JSON.stringify(payload.journal));
-      old.status.stalled = false;
-      delete old.status.recentMissingCycles;
-      const window = await loadSite("/", { journal: () => old });
-      assert.deepEqual(warn(window).filter((t) => /wrote no entry/.test(t)), []);
-      assert.ok(window.document.querySelector("#status .status-line"));
-    });
+  /* Five tests stood here asserting the stall badge and the gap badge
+   * render, the newest citing Edvard's own 2026-08-14 ask for the second
+   * one. He reversed that on 2026-08-20 and they are replaced by the
+   * single invariant above rather than rewritten one by one -- there is
+   * only one behaviour left to pin, and five tests asserting the absence
+   * of five things would be five ways of measuring nothing. The server
+   * still computes and serves `stalled`, `silentIntervals` and
+   * `recentMissingCycles`; `test_journal_health_display.py` still covers
+   * that, and it is where the remaining value in this feature lives. */
 });
 
 /* An HTTP error is not a network error, and the page could not tell them

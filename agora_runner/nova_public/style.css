@@ -1207,8 +1207,9 @@ body.nav-open { overflow: hidden; }
  * amber border and title colour that mean "this is waiting on nobody but
  * Nova" -- on 08-17 every capture on the issues board was finished and
  * the whole section was still painted as outstanding work. */
-.captures-done { border-color: var(--line); }
-.captures-done .captures-title { color: var(--dim); }
+/* `.captures-done` styled the "Done, not yet cleared" section, removed
+   from `renderBoardEdvard` on 2026-08-20 at Edvard's ask. No element
+   carries the class any more, so these two rules were dead. */
 .capture-item-done { opacity: 0.75; }
 
 .capture-done-chip {
