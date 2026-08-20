@@ -4018,6 +4018,16 @@
   var liveCharts = [];
 
   function mountEChart(chart, option) {
+    /* Hung on the figure synchronously, before anything async starts, and
+     * it is the only reason the charts are testable at all. ECharts draws
+     * to a canvas, and jsdom has no canvas -- so `tests/browser` cannot
+     * assert on a mark the way it did against hand-written SVG. What it
+     * can assert on is the description this app hands the library, which
+     * is now the whole of what this app decides about a chart. Reading a
+     * rect's height was never testing the app's judgement anyway; it was
+     * testing arithmetic that has since been deleted. */
+    chart.option = option;
+    chart.figure.chartOption = option;
     ensureECharts().then(function (echarts) {
       return new Promise(function (resolve) {
         requestAnimationFrame(function () { resolve(echarts); });
