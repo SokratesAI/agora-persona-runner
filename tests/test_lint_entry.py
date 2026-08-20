@@ -503,3 +503,80 @@ def test_an_unquoted_claim_beside_a_quoted_one_is_still_caught():
     )
     assert len(found) == 1
     assert "30 minutes" in found[0]
+
+
+# --- The `Needs Edvard` ask label -----------------------------------------
+#
+# Cycle 262 made `_ASK_RE` require the colon, which fixed two 2026-08-11
+# entries that named the old digest section in prose and parsed as open
+# asks. It also made the opposite mistake silent: the bare label now has
+# its ask dropped with no error, which is worse, because the cycle
+# believes it asked and nothing on the card says otherwise.
+
+
+def test_a_correctly_written_ask_passes():
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs Edvard:** Do you want the status "
+        "glyphs gone as well?",
+    )
+    assert lint("168-cycle-152.md", entry) == []
+
+
+def test_an_ask_that_lost_its_colon_is_caught():
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs Edvard** Do you want the status "
+        "glyphs gone as well?",
+    )
+    findings = lint("168-cycle-152.md", entry)
+    assert _kinds(findings) == ["ask"]
+    assert "colon inside the bold" in findings[0]
+
+
+def test_the_colon_outside_the_bold_is_the_parsers_other_accepted_form():
+    """`_ASK_RE` takes `**Needs Edvard**:` as well, so this check must not
+    contradict it -- a linter that disagrees with the parser is worse than
+    no linter."""
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs Edvard**: Do you want the glyphs "
+        "gone?",
+    )
+    assert lint("168-cycle-152.md", entry) == []
+
+
+def test_an_entry_with_no_ask_at_all_says_nothing():
+    """7 of 326 live entries carry one. Silence is the common answer."""
+    assert lint("168-cycle-152.md", GOOD) == []
+
+
+def test_prose_naming_the_section_mid_paragraph_is_not_an_ask():
+    """The measured false positive, and why the anchor is a blank line
+    rather than a line start.
+
+    `012-cycle-12.md` wraps a sentence so that `**Needs Edvard** and **Next
+    cycle** in there with it` begins a line in the middle of a paragraph.
+    The entries are hard-wrapped, so a line start is not a paragraph start;
+    anchoring on one fires on that entry, and on the blank line it matches
+    none of the 326 live documents.
+    """
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "I moved the digest's three sections into their own file, taking\n"
+        "**Needs Edvard** and **Next cycle** in there with it rather than\n"
+        "leaving two behind.",
+    )
+    assert lint("168-cycle-152.md", entry) == []
+
+
+def test_prose_naming_the_section_at_a_paragraph_start_still_needs_no_colon_after_it():
+    """A paragraph genuinely opening with the label as prose reads
+    `**Needs Edvard**,` -- punctuation, not whitespace -- so it is out of
+    reach of the check by shape rather than by exception."""
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "**Needs Edvard**, **Next cycle**, and a one-line-per-cycle "
+        "**Digest** are what he asked for.",
+    )
+    assert lint("168-cycle-152.md", entry) == []

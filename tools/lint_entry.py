@@ -70,6 +70,7 @@ from agora_runner.nova_journal import (
     normalise_entry,
     parse_journal,
     parse_board_refs,
+    split_ask,
     stray_footer,
 )
 
@@ -146,6 +147,48 @@ def _footer_finding(body):
         "cycle's card would show no PR and no outcome -- which reads as an "
         "hour that shipped nothing. Add it as the last line, e.g. "
         "`PR: #123 | Outcome: merged`, or `PR: none | Outcome: ...`."
+    )
+
+
+# A paragraph that opens `**Needs Edvard**` with no colon, and then says
+# something. Cycle 262 made `_ASK_RE` require the colon (runner#242), which
+# fixed a real defect -- two 2026-08-11 entries name the old digest section
+# in ordinary prose and were parsing as open asks, so the header's "waiting
+# on you" pill pointed at them instead of at the live one. It also made the
+# opposite mistake silent: an entry that writes the bare label now has its
+# ask dropped with no error anywhere, which is worse than the bug that was
+# fixed, because the cycle believes it asked.
+#
+# **The paragraph anchor is what keeps the prose out, and it is measured
+# rather than reasoned.** Anchoring on the line instead fires on
+# `012-cycle-12.md`, which wraps a sentence so that `**Needs Edvard** and
+# **Next cycle** in there with it` starts a line mid-paragraph -- the
+# entries are hard-wrapped, so a line start is not a paragraph start. With
+# the blank-line anchor this matches **0 of the 326 live entries** and
+# still fires on the bare label written as an ask.
+_BARE_ASK_RE = re.compile(r"(?:\A|\n[ \t]*\n)\*\*Needs Edvard\*\*[ \t]+\S")
+
+
+def _ask_finding(body):
+    """A `Needs Edvard` ask the site would drop for want of a colon.
+
+    Runs the real parser rather than restating it, the same way
+    `_board_finding` runs `parse_board_refs`: the finding is "`split_ask`
+    found no ask *and* this looks like one", so the day the parser's shape
+    changes this check changes with it instead of drifting from it.
+
+    Silence is the common answer -- 7 of 326 live entries carry an ask at
+    all. `prompt.md` is explicit that most cycles raise none.
+    """
+    if split_ask(body)[1]:
+        return None
+    if not _BARE_ASK_RE.search(body):
+        return None
+    return (
+        "ask: this paragraph opens `**Needs Edvard**` without the colon, so "
+        "`split_ask` reads it as prose and the site drops the ask -- no "
+        "yellow block, no open comment drawer, and nothing anywhere saying "
+        "so. Write `**Needs Edvard:**`, colon inside the bold."
     )
 
 
@@ -501,6 +544,9 @@ def lint(name, content, now=None, clock=_UNSET):
     board = _board_finding(raw)
     if board:
         findings.append(board)
+    ask = _ask_finding(raw)
+    if ask:
+        findings.append(ask)
     # Runs unconditionally, and that is a measurement rather than an
     # oversight. This started as a blanket "skip when the heading is
     # broken", which hid the wrong cycle number in `## Cycle 153` inside
