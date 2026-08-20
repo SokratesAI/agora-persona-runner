@@ -444,3 +444,40 @@ def test_a_notes_file_that_cannot_be_read_is_said_out_loud(tmp_path, capsys):
     out = capsys.readouterr().out
     assert code == 1
     assert "COULD NOT READ" in out and "notes.md" in out
+
+
+# --- The end of the loop this tool sits in --------------------------------
+
+
+def test_a_nova_note_moves_the_row_it_was_written_on_down_the_ranking():
+    """`append_detail_note` writes the cell; `age_key` reads it. Nothing
+    tested that the two agree.
+
+    This is the failure the stamp was built for, run end to end: two rows
+    at the same rating, the older one worked, and the ranking still naming
+    the one that was just worked. Measured live on 2026-08-20, issue #7 sat
+    at `Updated 08-16` and topped this tool four hours after Cycle 270
+    appended a note to it.
+
+    **The note is Nova's on purpose.** One from Edvard would mark the row
+    `waiting`, which outranks every rating and would move it to the top for
+    a reason that has nothing to do with the date -- a positive result
+    guaranteed in advance, pointing the wrong way.
+    """
+    from agora_runner.nova_boards import append_detail_note
+
+    issues = board(
+        (10, "worked this morning", IN_PROGRESS, "08-16", HIGH),
+        (11, "genuinely untouched", IN_PROGRESS, "08-17", HIGH),
+    ) + "\n# Details\n\n## 10 — worked this morning\n\nHis statement of it.\n"
+
+    stale = top_board_rows.rank(top_board_rows.open_rows(issues, "issue"))
+    assert [r["number"] for r in stale] == [10, 11]
+
+    fresh_md = append_detail_note(issues, 10, "Shipped the first half.", "08-20",
+                                  cycle=273)
+    fresh = top_board_rows.rank(top_board_rows.open_rows(fresh_md, "issue"))
+    assert [r["number"] for r in fresh] == [11, 10]
+    assert fresh[1]["updated"] == "08-20"
+    # And the note did not do it by marking the row as waiting on a reply.
+    assert not any(r.get("waiting") for r in fresh)

@@ -77,16 +77,13 @@ def test_the_write_up_keeps_everything_it_had():
 def test_the_note_stays_inside_the_span_and_does_not_leak_into_the_next_block():
     out = append_detail_note(BOARD, 57, "Closed by #192.", "08-15")
     assert "Closed by #192." not in _detail(out, 59)
-    # The boarded rows are untouched apart from the one `Updated` cell the
-    # note is meant to stamp. This assertion used to demand byte-identical
-    # rows, which was the old behaviour and the bug: a note is the only
-    # signal that a row was worked, so leaving the sort key stale is what
-    # let `top_board_rows` rank issue #7 as the oldest `High` row four
-    # hours after Cycle 270 wrote a note into it.
-    before = {item["number"]: dict(item) for item in parse_board(BOARD)["items"]}
-    after = {item["number"]: dict(item) for item in parse_board(out)["items"]}
-    assert after[57].pop("updated") == "08-15"
-    assert before[57].pop("updated") == "08-11"
+    # And no *other* row moved. This assertion used to cover every row
+    # including #57's, which was the old behaviour and the bug -- it is
+    # narrowed to the rows this call has no business touching, which is
+    # what the test is named for. #57's own cell is
+    # `test_the_stamp_touches_nothing_but_the_date`.
+    before = [i for i in parse_board(BOARD)["items"] if i["number"] != 57]
+    after = [i for i in parse_board(out)["items"] if i["number"] != 57]
     assert after == before
 
 

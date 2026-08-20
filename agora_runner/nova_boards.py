@@ -606,6 +606,17 @@ def _touch_row_updated(markdown, number, dated):
     `top_board_rows` and outranks every rating, ahead of the age key
     entirely.
 
+    **The `|` refusal in `append_detail_note` makes `dated` safe for a
+    table cell; it does not make it a date.** `age_key` falls back to
+    `"99-99"` for anything that is not `MM-DD`, which sorts as the
+    *newest* row -- so a malformed date would sink the row rather than
+    raise. There is no shape check here because there is already one that
+    matters more: `_COMMENT_NOTE_RE` requires `\\d{2}-\\d{2}` to read a
+    note back, so a date the sort key cannot parse is a note the page
+    cannot see, and that fails loudly on Edvard's screen rather than
+    quietly in a ranking. Reviewer finding on the PR that added this,
+    recorded rather than coded.
+
     Never fails, and that is deliberate -- the note is the caller's
     request and the stamp is bookkeeping on top of it. Only some detail
     write-ups have a board row at all (`append_detail_note`'s own
