@@ -204,3 +204,96 @@ def test_rotate_falls_back_safely_on_unexpected_exception():
     with patch.object(rotation, "agora_get", side_effect=RuntimeError("network exploded")):
         result = rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
     assert result == "c-old"
+
+
+def _rotation_calls(folder_response):
+    """Runs one rotation with `folder_response` standing in for
+    POST /folders, and hands back every internal call it made."""
+    heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
+                 "rotateConversationEachRun": True}
+    calls = []
+
+    def fake_get(path):
+        return 200, {"conversations": []}
+
+    def fake_internal(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        if method == "POST" and path == "/folders":
+            if isinstance(folder_response, Exception):
+                raise folder_response
+            return folder_response
+        return 200, {}
+
+    with patch.object(rotation, "agora_get", side_effect=fake_get), \
+         patch.object(rotation, "agora_internal", side_effect=fake_internal):
+        result = rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
+    return result, calls
+
+
+def test_rotate_files_the_new_conversation_into_a_folder_named_after_the_heartbeat():
+    """Edvard, ideas.md #5: "Heartbeat generated conversations should be
+    auto created in the same folder by default"."""
+    result, calls = _rotation_calls((201, {"folder": {"id": "f-nova", "name": "Agora Evolve v1"}}))
+    assert result == "c-new"
+    folder_call = next(c for c in calls if c[1] == "/folders")
+    assert folder_call[2] == {"name": "Agora Evolve v1"}
+    patches = [c[2] for c in calls if c[1] == "/conversations/c-new"]
+    assert {"folderId": "f-nova"} in patches
+    # Filing is its own patch, on purpose: bundled with the tag, a folder
+    # deleted mid-rotation would 400 the whole request and lose the tag.
+    tag_patch = next(p for p in patches if "tags" in p)
+    assert "folderId" not in tag_patch
+    assert tag_patch["tags"] == ["evolve-cycle:hb1"]
+
+
+def test_rotate_reuses_the_existing_folder_rather_than_making_one_per_cycle():
+    """POST /folders is find-or-create by name, so a second cycle gets a 200
+    with the same folder — the rotation must not treat that as a failure."""
+    _, calls = _rotation_calls((200, {"folder": {"id": "f-nova", "name": "Agora Evolve v1"}}))
+    patches = [c[2] for c in calls if c[1] == "/conversations/c-new"]
+    assert {"folderId": "f-nova"} in patches
+
+
+def test_rotate_still_runs_the_cycle_when_the_folder_call_fails():
+    """An unfiled conversation is cosmetic; a cycle that does not run is not."""
+    for response in [(500, {}), (201, {}), ValueError("boom")]:
+        result, calls = _rotation_calls(response)
+        assert result == "c-new", response
+        patches = [c[2] for c in calls if c[1] == "/conversations/c-new"]
+        assert all("folderId" not in p for p in patches), response
+        assert patches[0]["tags"] == ["evolve-cycle:hb1"], response
+        heartbeat_patch = next(c for c in calls if c[1] == "/heartbeats/hb1")
+        assert heartbeat_patch[2] == {"conversationId": "c-new"}, response
+
+
+def test_rotate_keeps_the_cycle_tag_when_filing_is_refused():
+    """Reviewer finding on agora#63: Agora refuses the whole PATCH if
+    `folderId` names a folder that has gone, so bundling the filing with the
+    tag would let a folder Edvard deleted mid-rotation take the tag with it.
+    The tag is how every later cycle finds this conversation."""
+    heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
+                 "rotateConversationEachRun": True}
+    calls = []
+
+    def fake_internal(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        if method == "POST" and path == "/folders":
+            return 201, {"folder": {"id": "f-gone"}}
+        if path == "/conversations/c-new" and "folderId" in (payload or {}):
+            return 400, {"error": "unknown folder"}
+        return 200, {}
+
+    with patch.object(rotation, "agora_get", side_effect=lambda p: (200, {"conversations": []})), \
+         patch.object(rotation, "agora_internal", side_effect=fake_internal):
+        result = rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
+
+    assert result == "c-new"
+    tag_patch = next(c[2] for c in calls if c[1] == "/conversations/c-new" and "tags" in c[2])
+    assert tag_patch["tags"] == ["evolve-cycle:hb1"]
+    assert tag_patch["personas"] == PARTICIPANTS
+    heartbeat_patch = next(c for c in calls if c[1] == "/heartbeats/hb1")
+    assert heartbeat_patch[2] == {"conversationId": "c-new"}

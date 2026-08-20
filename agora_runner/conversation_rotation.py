@@ -86,6 +86,21 @@ def rotate_cycle_conversation(heartbeat, participants):
             "tags": [tag],
         })
 
+        # Filing goes in its OWN patch, deliberately, even though bundling it
+        # with the one above would save a round trip. Agora refuses the whole
+        # request if `folderId` names a folder that has gone -- and it can go
+        # between _ensure_folder returning its id and this patch landing, if
+        # Edvard deletes it. Bundled, that 400 would take the `tags` with it,
+        # and the tag is what every later cycle uses to find this
+        # conversation: pruning, numbering, and the walk-back for a message
+        # of his nobody answered. An unfiled conversation is cosmetic; an
+        # untagged one is invisible.
+        folder_id = _ensure_folder(heartbeat["name"])
+        if folder_id:
+            file_status, _ = agora_internal("PATCH", f"/conversations/{new_id}", {"folderId": folder_id})
+            if file_status not in (200, 201):
+                log(f"rotate_cycle_conversation: could not file into folder (HTTP {file_status}), continuing unfiled")
+
         point_status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}", {
             "conversationId": new_id,
         })
@@ -99,6 +114,28 @@ def rotate_cycle_conversation(heartbeat, participants):
     except Exception as e:
         log(f"rotate_cycle_conversation failed, keeping existing conversation: {e}")
         return heartbeat["conversationId"]
+
+
+def _ensure_folder(name):
+    """The switcher folder this heartbeat's cycle conversations are filed
+    into (Edvard, ideas.md #5: "Heartbeat generated conversations should be
+    auto created in the same folder by default"). Named after the heartbeat,
+    so Nova's 30 retained cycles collapse into one row instead of being the
+    list.
+
+    POST /folders is find-or-create by name, so this is safe to call every
+    cycle without persisting an id anywhere. Returns None on any failure --
+    an unfiled conversation is a cosmetic problem and a cycle that does not
+    run is not, so this never raises into the rotation."""
+    try:
+        status, body = agora_internal("POST", "/folders", {"name": name})
+        if status not in (200, 201):
+            log(f"_ensure_folder: HTTP {status} for {name!r}, leaving the conversation unfiled")
+            return None
+        return (body.get("folder") or {}).get("id")
+    except Exception as e:
+        log(f"_ensure_folder failed for {name!r}, leaving the conversation unfiled: {e}")
+        return None
 
 
 def _prune_old_cycles(existing_before_this_one, retention):
