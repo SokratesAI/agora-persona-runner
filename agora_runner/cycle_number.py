@@ -38,10 +38,25 @@ that has to match Agora. And no historical entry is renumbered -- 326 of
 them exist, hundreds of cross-references in prose name them by number, and
 rewriting that is destructive in exchange for tidiness nobody asked for.
 """
+import json
 import re
 
 from agora_runner.conversation_rotation import cycle_tag
 from agora_runner.http_util import agora_get
+from agora_runner.log import log
+from agora_runner.vault import vault_read_path_rev, vault_write_path
+
+# Matches nova_capture.py's WRITE_ATTEMPTS -- bounding the 409 retry is
+# what stops two genuinely simultaneous claims for the same heartbeat from
+# livelocking on one counter doc.
+CLAIM_ATTEMPTS = 3
+
+# One tiny counter doc per heartbeat, in Nova's own database (path prefix
+# routes it there -- see vault.py's NOVA_DB_FOLDERS). Per-heartbeat rather
+# than one shared doc: two *different* heartbeats claiming a number at the
+# same moment should never contend with each other, only two claims for
+# the *same* heartbeat legitimately need to serialize on the number itself.
+_COUNTER_PATH = "projects/sokrates/projects/agora/nova/_cycle_counters/{}.json"
 
 # `Nova — Cycle 277`. The separator is an em dash today and the heartbeat
 # name is free text, so anchor on the number at the end and nothing else.
@@ -86,6 +101,72 @@ def next_number(conversations, tag):
         return numbers[-1] + 1
     tagged = [c for c in (conversations or []) if tag in (c.get("tags") or [])]
     return len(tagged) + 1
+
+
+def claim_next_number(heartbeat_id, conversations, tag):
+    """Atomically reserve the next cycle number for `heartbeat_id`.
+
+    `next_number` alone is a read-then-write race: it answers from a
+    snapshot of `/conversations` with nothing stopping two rotations that
+    both read before either has created theirs from computing the same
+    "next" number and both creating a conversation claiming it -- exactly
+    the failure this module's own docstring already fixed once for a
+    different cause (two counters instead of one). Concurrent rotations
+    for the same heartbeat is a second way to reach the identical symptom.
+
+    This wraps the same number in a real claim: a tiny per-heartbeat
+    counter doc in Nova's own database, written with the read-modify-write
+    + 409-retry idiom `nova_capture.set_priority` already uses for board
+    edits. `conversations` still matters here as a floor, not a full
+    replacement -- it is what seeds the counter correctly on its first
+    ever use (before this existed, the honest answer was still "the
+    highest number that exists"), and it protects against drift if the
+    counter doc and Agora's conversation list ever disagree (a
+    conversation deleted by hand, a counter doc that predates a cycle it
+    should account for).
+
+    Falls back to the bare `next_number` scan if the counter can't be read
+    or written after retrying -- rotate_cycle_conversation's own rule is
+    that a rotation bug must never be the reason a real cycle doesn't run,
+    and a duplicate number once in a while under a CouchDB outage is a far
+    smaller cost than a heartbeat going silent.
+    """
+    path = _COUNTER_PATH.format(heartbeat_id)
+    floor = next_number(conversations, tag) - 1
+
+    for _ in range(CLAIM_ATTEMPTS):
+        try:
+            existing, rev = vault_read_path_rev(path)
+        except Exception as exc:
+            log(f"claim_next_number({heartbeat_id}): counter read failed, "
+                f"falling back to scan: {type(exc).__name__}: {exc}")
+            break
+        stored = 0
+        if existing:
+            try:
+                stored = int(json.loads(existing).get("n", 0))
+            except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+                stored = 0
+        claim = max(stored, floor) + 1
+        result = vault_write_path(path, json.dumps({"n": claim}), if_rev=rev)
+        if result == "written":
+            return claim
+        if "409" not in result:
+            log(f"claim_next_number({heartbeat_id}): counter write failed, "
+                f"falling back to scan: {result}")
+            break
+    else:
+        # Every attempt lost a 409. Both `break`s above say why they gave
+        # up; this path said nothing, and it is the one where the fallback
+        # is most likely to hand back a number somebody else already holds
+        # -- CLAIM_ATTEMPTS conflicts in a row means real contention, not a
+        # sick CouchDB. A duplicate cycle number is exactly the symptom
+        # Edvard reported as Immediately on 2026-08-20, so the one case
+        # that can still produce one should not be the one that leaves no
+        # trace to find it by.
+        log(f"claim_next_number({heartbeat_id}): {CLAIM_ATTEMPTS} conflicts "
+            f"in a row, falling back to scan -- cycle {floor + 1} may collide")
+    return floor + 1
 
 
 def current_number(heartbeat_id):
