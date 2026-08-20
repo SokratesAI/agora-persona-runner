@@ -2460,7 +2460,7 @@
    * so three of the four became `U0001f535 Medium` and every write except
    * Low failed. `tests/test_board_priority.py` now reads this line and
    * compares it to the Python side, because nothing else could. */
-  var PRIORITIES = ["", "Low", "Medium", "High", "Immediately"];
+  var PRIORITIES = ["", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"];
 
   /* What separates a rating from the capture text it rides in front of,
    * byte-identical to `nova_boards.CAPTURE_PRIORITY_SEP` and pinned to it
@@ -2537,7 +2537,10 @@
      * difference as they are colors. Please use the full word"*. The
      * capture box's closed trigger was the worst case of that, because a
      * bare bullet has no column spelling the word out beside it, so the
-     * colour was carrying the whole meaning on its own. */
+     * colour was carrying the whole meaning on its own. The glyph came
+     * back beside the word in Cycle 274 -- Edvard had asked for the word
+     * to be present, not for the colour to go -- so this trigger now
+     * reads `🟠 High` rather than either half alone. */
     function label_(label) { return label || "–"; }
     function keyOf(label) {
       var i = PRIORITIES.indexOf(label);

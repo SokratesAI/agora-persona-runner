@@ -4699,9 +4699,9 @@ describe("Enter in the capture box is a newline", () => {
  * cards." */
 describe("rating a capture that is not boarded yet", () => {
   const rated = {
-    text: "High: make the picker work here too",
+    text: "🟠 High: make the picker work here too",
     body: "make the picker work here too",
-    priority: "High",
+    priority: "🟠 High",
     priorityKey: "high",
     blocks: [{ type: "p", spans: [{ kind: "text", text: "make the picker work here too" }] }],
   };
@@ -4726,7 +4726,7 @@ describe("rating a capture that is not boarded yet", () => {
     const window = await loadSite("/issues", withCapture(payload.board.captures[0]));
     click(window, window.document.querySelector(".capture-item .chip.prio"));
     click(window, [...window.document.querySelectorAll(".prio-option")]
-      .find((o) => o.textContent === "Immediately"));
+      .find((o) => o.textContent === "🔴 Immediately"));
     await new Promise((r) => window.setTimeout(r, 0));
     const posted = window.posted.find((p) => p.url === "/api/capture/edit");
     assert.ok(posted, "no write reached /api/capture/edit");
@@ -4734,22 +4734,22 @@ describe("rating a capture that is not boarded yet", () => {
     assert.equal(posted.body.index, 0);
     assert.equal(posted.body.original, payload.board.captures[0].text,
       "the edit did not carry the capture's own text as its address");
-    assert.equal(posted.body.text, "Immediately: " + payload.board.captures[0].body);
+    assert.equal(posted.body.text, "🔴 Immediately: " + payload.board.captures[0].body);
   });
 
   test("re-rating an already-rated capture swaps the rating rather than stacking a second one", async () => {
     // `capture.body` is the server's glyph-stripped text, and using
-    // `capture.text` here instead would send "Low: High: make the picker...".
+    // `capture.text` here instead would send "⚪ Low: 🟠 High: make the picker...".
     const window = await loadSite("/issues", withCapture(rated));
     const trigger = window.document.querySelector(".capture-item .chip.prio");
-    assert.equal(trigger.textContent, "High");
+    assert.equal(trigger.textContent, "🟠 High");
     assert.equal(trigger.className, "chip prio prio-high");
     click(window, trigger);
     click(window, [...window.document.querySelectorAll(".prio-option")]
-      .find((o) => o.textContent === "Low"));
+      .find((o) => o.textContent === "⚪ Low"));
     await new Promise((r) => window.setTimeout(r, 0));
     const posted = window.posted.find((p) => p.url === "/api/capture/edit");
-    assert.equal(posted.body.text, "Low: make the picker work here too");
+    assert.equal(posted.body.text, "⚪ Low: make the picker work here too");
   });
 
   test("clearing a rating leaves the text and does not send an empty edit", async () => {
@@ -4767,7 +4767,7 @@ describe("rating a capture that is not boarded yet", () => {
   });
 
   test("a glyph-only capture sends nothing, rather than a request that can only 400", async () => {
-    const glyphOnly = { text: "High:", body: "", priority: "High", priorityKey: "high", blocks: [] };
+    const glyphOnly = { text: "🟠 High:", body: "", priority: "🟠 High", priorityKey: "high", blocks: [] };
     const window = await loadSite("/issues", withCapture(glyphOnly));
     const trigger = window.document.querySelector(".capture-item .chip.prio");
     click(window, trigger);
@@ -4776,7 +4776,7 @@ describe("rating a capture that is not boarded yet", () => {
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.filter((p) => p.url === "/api/capture/edit").length, 0,
       "an edit the server can only refuse was sent anyway");
-    assert.equal(trigger.textContent, "High", "the trigger kept a rating it never saved");
+    assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating it never saved");
     assert.match(
       window.document.querySelector(".capture-item .capture-item-status").textContent,
       /nothing to rate/,
@@ -4790,9 +4790,9 @@ describe("rating a capture that is not boarded yet", () => {
     const trigger = window.document.querySelector(".capture-item .chip.prio");
     click(window, trigger);
     click(window, [...window.document.querySelectorAll(".prio-option")]
-      .find((o) => o.textContent === "Low"));
+      .find((o) => o.textContent === "⚪ Low"));
     await new Promise((r) => window.setTimeout(r, 0));
-    assert.equal(trigger.textContent, "High", "the trigger kept a rating the server refused");
+    assert.equal(trigger.textContent, "🟠 High", "the trigger kept a rating the server refused");
     assert.match(
       window.document.querySelector(".capture-item .capture-item-status").textContent,
       /conflict/,
@@ -4830,7 +4830,7 @@ describe("rating a capture that is not boarded yet", () => {
  * structural test above kept passing throughout -- none of them opened
  * the thing and looked at what was left on screen after a pick. */
 describe("the priority picker (buildPrioPicker)", () => {
-  test("the composer's picker opens with full words and closes to the picked word", async () => {
+  test("the composer's picker opens with glyph and word, and closes to the picked label", async () => {
     const window = await loadSite("/issues");
     const trigger = window.document.getElementById("capture-prio");
     assert.equal(trigger.textContent, "–", "the closed trigger should start on the dash");
@@ -4840,12 +4840,12 @@ describe("the priority picker (buildPrioPicker)", () => {
     assert.equal(menu.hidden, false, "the menu did not open");
     assert.deepEqual(
       [...menu.querySelectorAll(".prio-option")].map((o) => o.textContent),
-      ["– Unrated", "Low", "Medium", "High", "Immediately"],
+      ["– Unrated", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"],
       "the open list must spell out each rating, unlike the closed button",
     );
-    const high = [...menu.querySelectorAll(".prio-option")].find((o) => o.textContent === "High");
+    const high = [...menu.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
     click(window, high);
-    assert.equal(trigger.textContent, "High", "the closed trigger should be back to the plain word");
+    assert.equal(trigger.textContent, "🟠 High", "the closed trigger should be back to the picked label");
     assert.equal(menu.hidden, true, "the menu did not close after a pick");
   });
 
@@ -4853,12 +4853,12 @@ describe("the priority picker (buildPrioPicker)", () => {
     const window = await loadSite("/issues");
     click(window, window.document.getElementById("capture-prio"));
     click(window, [...window.document.querySelectorAll(".prio-option")]
-      .find((o) => o.textContent === "Immediately"));
+      .find((o) => o.textContent === "🔴 Immediately"));
     window.document.getElementById("capture-text").value = "ship the thing";
     click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.length, 1);
-    assert.equal(window.posted[0].body.priority, "Immediately");
+    assert.equal(window.posted[0].body.priority, "🔴 Immediately");
     assert.equal(
       window.document.getElementById("capture-prio").textContent, "–",
       "the picker did not reset after a send",
@@ -4872,14 +4872,14 @@ describe("the priority picker (buildPrioPicker)", () => {
     assert.equal(trigger.textContent, "Unrated", "#57 is unrated in the fixture");
     assert.equal(trigger.className, "chip prio", "an unrated trigger must carry no prio-<key> colour class");
     click(window, trigger);
-    const low = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "Low");
+    const low = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "⚪ Low");
     click(window, low);
     await new Promise((r) => window.setTimeout(r, 0));
     const posted = window.posted.find((p) => p.url === "/api/board/priority");
     assert.ok(posted, "no write reached /api/board/priority");
     assert.equal(posted.body.number, 57);
-    assert.equal(posted.body.priority, "Low");
-    assert.equal(trigger.textContent, "Low", "the trigger did not adopt the full new label");
+    assert.equal(posted.body.priority, "⚪ Low");
+    assert.equal(trigger.textContent, "⚪ Low", "the trigger did not adopt the full new label");
     assert.equal(trigger.className, "chip prio prio-low");
   });
 
@@ -4890,7 +4890,7 @@ describe("the priority picker (buildPrioPicker)", () => {
     const trigger = row.querySelector(".item-meta-row > .chip.prio");
     const before = trigger.textContent;
     click(window, trigger);
-    const high = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "High");
+    const high = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
     click(window, high);
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(trigger.textContent, before, "the chip did not revert once the write failed");
@@ -4927,7 +4927,7 @@ describe("the priority picker (buildPrioPicker)", () => {
         if (url.includes("q=") || url.includes("item=")) return null;
         const board = JSON.parse(JSON.stringify(payload.board));
         const rated = board.items.find((i) => i.statusKey !== "done");
-        rated.priority = "Medium";
+        rated.priority = "🔵 Medium";
         rated.priorityKey = "medium";
         return board;
       },
@@ -4935,7 +4935,7 @@ describe("the priority picker (buildPrioPicker)", () => {
     const rated = payload.board.items.find((i) => i.statusKey !== "done");
     const trigger = window.document.getElementById("item-" + rated.number)
       .querySelector(".item-meta-row > .chip.prio");
-    assert.equal(trigger.textContent, "Medium");
+    assert.equal(trigger.textContent, "🔵 Medium");
     assert.equal(trigger.className, "chip prio prio-medium");
   });
 
@@ -4945,7 +4945,7 @@ describe("the priority picker (buildPrioPicker)", () => {
         if (url.includes("q=") || url.includes("item=")) return null;
         const board = JSON.parse(JSON.stringify(payload.board));
         const done = board.items.find((i) => i.statusKey === "done");
-        done.priority = "High";
+        done.priority = "🟠 High";
         done.priorityKey = "high";
         return board;
       },
@@ -4957,7 +4957,7 @@ describe("the priority picker (buildPrioPicker)", () => {
     const indicator = row.querySelector(".item-meta-row > .chip.prio");
     assert.ok(indicator, "no priority chip on the done row");
     assert.notEqual(indicator.tagName, "BUTTON", "a done row's priority chip must not be a clickable trigger");
-    assert.equal(indicator.textContent, "High");
+    assert.equal(indicator.textContent, "🟠 High");
     assert.equal(indicator.className, "chip prio prio-high");
   });
 
@@ -5116,7 +5116,7 @@ describe("searching, filtering and sorting a board", () => {
       board: (url) => {
         if (url.includes("q=") || url.includes("item=")) return null;
         const board = JSON.parse(JSON.stringify(payload.board));
-        board.items[0].priority = "High";
+        board.items[0].priority = "🟠 High";
         board.items[0].priorityKey = "high";
         return board;
       },
@@ -5235,9 +5235,9 @@ describe("searching, filtering and sorting a board", () => {
       board: (url) => {
         if (url.includes("q=") || url.includes("item=")) return null;
         const board = JSON.parse(JSON.stringify(payload.board));
-        board.items[0].priority = "Low";
+        board.items[0].priority = "⚪ Low";
         board.items[0].priorityKey = "low";
-        board.items[1].priority = "Immediately";
+        board.items[1].priority = "🔴 Immediately";
         board.items[1].priorityKey = "immediately";
         return board;
       },
