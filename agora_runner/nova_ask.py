@@ -112,10 +112,19 @@ def ask(text):
     # sender="Edvard" is not decoration: `decide_turn` speaks only when the
     # last visible message came from him, so any other sender posts a
     # question that nothing ever answers.
-    status, message_id = agora_internal(
+    # `agora_internal` answers `(status, body)`, and the first version of
+    # this unpacked the body straight into `message_id`. Nothing broke
+    # visibly -- the page ignores this value on success -- but the guard
+    # below then read "did Agora answer with a body at all", which is
+    # always true, instead of "was a message actually appended". Caught by
+    # running the live route rather than by a test: the smoke test's reply
+    # carried the whole `{"status": "recorded", ...}` envelope where an id
+    # should have been.
+    status, body = agora_internal(
         "POST", f"/conversations/{cid}/notify",
         {"text": text, "sender": "Edvard", "system": False, "push": False},
     )
+    message_id = (body.get("message") or {}).get("id")
     if status not in (200, 201) or not message_id:
         log(f"nova_ask: notify failed HTTP {status}")
         return False, "could not post the question"

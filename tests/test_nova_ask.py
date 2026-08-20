@@ -62,8 +62,14 @@ def test_the_answering_persona_is_on_the_subscription_lane_not_the_metered_api()
 
 
 def test_a_question_is_posted_as_edvard():
-    (ok, _), calls = _run(lambda: nova_ask.ask("why is the loop slow?"), TAGGED)
+    (ok, message_id), calls = _run(lambda: nova_ask.ask("why is the loop slow?"), TAGGED)
     assert ok
+    # `agora_internal` answers `(status, body)`, and the first version of
+    # ask() unpacked the body into what it called `message_id` -- so this
+    # came back as the whole `{"status": "recorded", ...}` envelope and the
+    # "was a message appended" guard below was really asking "did Agora
+    # answer at all". Found by curling the live route, not by a test.
+    assert message_id == "m-1"
     notify = [c for c in calls if c[1].endswith("/notify")]
     assert len(notify) == 1
     assert notify[0][1] == "/conversations/c-ask/notify"
@@ -155,6 +161,20 @@ def test_the_rendered_thread_is_bounded():
     ]
     payload, _ = _run(nova_ask.thread, TAGGED, messages)
     assert len(payload["messages"]) == nova_ask.MAX_THREAD
+
+
+def test_a_notify_that_appends_nothing_is_a_failure_even_at_http_200():
+    """The 200-with-no-message case the id-unpacking bug made unreachable."""
+    def fake_get(path):
+        return 200, {"conversations": [{"id": "c-ask", "tags": [nova_ask.ASK_TAG]}]}
+
+    def fake_internal(method, path, payload=None):
+        return 200, {"status": "recorded"}
+
+    with patch.object(nova_ask, "agora_get", side_effect=fake_get), \
+         patch.object(nova_ask, "agora_internal", side_effect=fake_internal):
+        ok, message = nova_ask.ask("hello")
+    assert not ok and "could not post" in message
 
 
 def test_a_failed_create_is_reported_rather_than_posting_into_nowhere():
