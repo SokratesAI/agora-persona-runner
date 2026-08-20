@@ -20,7 +20,13 @@ accumulating, same as before this existed.
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.log import log
 
-DEFAULT_RETENTION = 5
+# Edvard, unboarded capture 2026-08-20, rated 🔴 Immediately: "I want Agora
+# to keep the last 30 conversations for a heartbeat so that i'm able to talk
+# to them." It was 5, which is about three hours of a 72-minute cadence --
+# every cycle he had not read within that window was already archived and out
+# of the switcher by the time he opened his phone. Archiving is not deletion,
+# so the cost of 30 is a longer list, not more storage.
+DEFAULT_RETENTION = 30
 
 
 def cycle_tag(heartbeat_id):
