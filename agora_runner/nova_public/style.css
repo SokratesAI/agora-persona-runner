@@ -1860,3 +1860,85 @@ body.has-full-chart { overflow: hidden; }
   border-left: 2px solid var(--line);
   color: var(--dim);
 }
+
+/* The Questions page -- Edvard's ideas.md capture, "a questions page in
+ * Nova where i can ask questions in a box and a Claude sonnet model
+ * answers me."
+ *
+ * The box sits above the thread rather than below it, which is backwards
+ * from a chat app and deliberate: the answers are long and the box is the
+ * thing he came here to use, so it stays reachable without scrolling past
+ * a transcript. Newest-last inside the thread keeps a question next to the
+ * answer it got.
+ *
+ * These borrow `.capture textarea`'s shape rather than reusing the class:
+ * that one is grown to fit by app.js and capped at 60vh for a reason that
+ * does not apply here (nothing sits below it that can be pushed off
+ * screen), so sharing the rule would mean sharing a constraint neither
+ * page wants to explain. */
+.ask-form { margin-bottom: 1.25rem; }
+
+.ask-box {
+  width: 100%;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  font: inherit;
+  resize: vertical;
+}
+
+.ask-box:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ask-send {
+  margin-top: 0.5rem;
+  background: none;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 1.2rem;
+  /* 44px is the tap target the rest of this file uses. */
+  min-height: 44px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ask-send:disabled { color: var(--dim); cursor: default; }
+
+.ask-status {
+  margin: 0.4rem 0 0;
+  color: var(--warn);
+  font-size: 0.82rem;
+}
+
+.ask-thread { display: flex; flex-direction: column; gap: 0.9rem; }
+
+.ask-msg {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.6rem 0.8rem;
+  max-width: 92%;
+}
+
+/* His own question is indented and edged in the accent; the answer sits
+ * flush left and full-width, because it is the part worth reading. */
+.ask-mine { align-self: flex-end; border-color: var(--accent); }
+.ask-theirs { align-self: flex-start; }
+
+.ask-who {
+  color: var(--dim);
+  font-size: 0.78rem;
+  margin-bottom: 0.25rem;
+}
+
+/* `pre-wrap`, not markdown. The answers come back as plain text from the
+ * model and nothing on this path parses them, so honouring the line breaks
+ * it wrote is the whole formatting story -- see nova_ask.thread(). */
+.ask-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.ask-pending { color: var(--dim); font-style: italic; }

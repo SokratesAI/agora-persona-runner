@@ -129,7 +129,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, digestStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, digestStatus = 200, askStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -172,6 +172,18 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // so "nothing supplied" has to mean the empty page rather than a
       // body no live server has ever sent.
       return res(plan || { documents: [] }, planStatus);
+    }
+    if (url.includes("/api/ask")) {
+      // A function, because the point of most of these tests is that the
+      // answer *changes* between polls -- a fixed body could never show
+      // an answer arriving. No default fixture, for the reason retro and
+      // plan have none: an unused questions page really is empty.
+      const body = typeof ask === "function" ? ask(url) : ask;
+      // A fixture may hand back a rejected promise to model the server
+      // being unreachable -- passed straight through, because `res` would
+      // wrap the promise itself as the response body.
+      if (body && typeof body.then === "function") return body;
+      return res(body || { conversationId: null, messages: [], waiting: false }, askStatus);
     }
     if (url.includes("/api/board")) {
       // Two shapes off one route, told apart the way the server tells
@@ -3490,7 +3502,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/costs", "/retro", "/plan"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/costs", "/retro", "/plan", "/ask"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -5893,5 +5905,137 @@ describe("the plan page", () => {
   test("a failed fetch says so rather than leaving the page blank", async () => {
     const window = await loadSite("/plan", { planStatus: 502 });
     assert.match(window.document.querySelector("#feed").textContent, /Could not load the plan/);
+  });
+});
+
+/* The Questions page.
+ *
+ * Edvard, ideas.md 2026-08-19: "Make a questions page in Nova where i can
+ * ask questions in a box and a Claude sonnet model answers me."
+ *
+ * The behaviour worth pinning is the one this page has and no other page
+ * does: the answer does not come back with the request. It arrives a poll
+ * later, from a persona the runner speaks for, so "the question was sent"
+ * and "the answer showed up" are two separate things and both can fail on
+ * their own.
+ */
+describe("the questions page", () => {
+  test("an unused page offers the box and says so", async () => {
+    const window = await loadSite("/ask");
+    assert.ok(window.document.querySelector(".ask-box"), "no question box");
+    assert.ok(window.document.querySelector(".ask-send"), "no send button");
+    assert.match(window.document.querySelector(".ask-thread .empty").textContent, /Ask me anything/);
+  });
+
+  test("an existing thread renders question and answer, his own marked as his", async () => {
+    const window = await loadSite("/ask", {
+      ask: {
+        conversationId: "c-ask",
+        waiting: false,
+        messages: [
+          { id: "1", sender: "Edvard", text: "how many pods?" },
+          { id: "2", sender: "Nova Answers", text: "Seven." },
+        ],
+      },
+    });
+    const rows = [...window.document.querySelectorAll(".ask-msg")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".ask-text").textContent),
+      ["how many pods?", "Seven."]);
+    assert.ok(rows[0].classList.contains("ask-mine"));
+    assert.ok(rows[1].classList.contains("ask-theirs"));
+    assert.equal(rows[1].querySelector(".ask-who").textContent, "Nova Answers");
+  });
+
+  test("asking posts the text and paints the question before any poll", async () => {
+    const window = await loadSite("/ask");
+    const box = window.document.querySelector(".ask-box");
+    box.value = "  why is the loop slow?  ";
+    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/ask", { text: "why is the loop slow?" }]]);
+    assert.equal(box.value, "", "the box should clear once the question is away");
+    const texts = [...window.document.querySelectorAll(".ask-msg")].map((r) => r.textContent);
+    assert.match(texts[0], /why is the loop slow\?/);
+    // Without this the page goes quiet for four seconds after a send, which
+    // is what a lost message looks like.
+    assert.ok(window.document.querySelector(".ask-pending"), "nothing says an answer is coming");
+  });
+
+  test("a refused question keeps the text and says why", async () => {
+    const window = await loadSite("/ask");
+    window.postReply = { ok: false, message: "that is longer than 4000 characters" };
+    const box = window.document.querySelector(".ask-box");
+    box.value = "a very long question";
+    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.match(window.document.querySelector(".ask-status").textContent, /longer than 4000/);
+    assert.equal(box.value, "a very long question", "his text was thrown away on a failure");
+    assert.equal(window.document.querySelector(".ask-send").disabled, false,
+      "the button stayed disabled, so he cannot retry");
+  });
+
+  test("the answer arrives on a poll, and the polling then stops", async () => {
+    let turn = 0;
+    let timers;
+    const window = await loadSite("/ask", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: () => {
+        turn += 1;
+        return turn === 1
+          ? { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] }
+          : {
+            conversationId: "c",
+            waiting: false,
+            messages: [
+              { id: "1", sender: "Edvard", text: "q" },
+              { id: "2", sender: "Nova Answers", text: "Seven." },
+            ],
+          };
+      },
+    });
+    assert.ok(window.document.querySelector(".ask-pending"), "a thread owed an answer should say so");
+    assert.equal(timers.queued.length, 1, "nothing is polling for the answer");
+
+    await timers.fire();
+    assert.deepEqual([...window.document.querySelectorAll(".ask-text")].map((n) => n.textContent),
+      ["q", "Seven."]);
+    assert.equal(window.document.querySelector(".ask-pending"), null);
+    // The half that costs a phone battery rather than a wrong answer.
+    assert.equal(timers.queued.length, 0, "still polling after the answer landed");
+  });
+
+  test("a failed poll keeps waiting instead of painting an error over a live question", async () => {
+    let timers;
+    let fail = false;
+    const window = await loadSite("/ask", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: () => {
+        // Rejected, not thrown: `serve` is called synchronously inside
+        // `window.fetch`, so a throw escapes past the page's own `.catch`
+        // and fails the test rather than exercising it.
+        if (fail) return Promise.reject(new Error("nova is down"));
+        return { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] };
+      },
+    });
+    fail = true;
+    await timers.fire();
+    assert.match(window.document.querySelector(".ask-msg").textContent, /q/,
+      "the question was replaced by an error");
+    assert.equal(timers.queued.length, 1, "gave up after one failed poll");
+  });
+
+  test("navigating away stops the poll", async () => {
+    let timers;
+    const window = await loadSite("/ask", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] },
+    });
+    assert.equal(timers.queued.length, 1);
+    window.history.pushState({}, "", "/costs");
+    await timers.fire();
+    assert.equal(timers.queued.length, 0, "a poll survived the navigation");
   });
 });

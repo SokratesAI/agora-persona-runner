@@ -60,6 +60,7 @@
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
+    if (path === "/ask") return { view: "ask", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
 
@@ -4748,6 +4749,143 @@
       });
   }
 
+  /* The Questions page.
+   *
+   * Edvard, ideas.md 2026-08-19: "Make a questions page in Nova where i can
+   * ask questions in a box and a Claude sonnet model answers me."
+   *
+   * The answer is not synchronous -- the question goes into an Agora
+   * conversation and a Sonnet persona answers it on the runner's next poll
+   * tick (`nova_ask` says why that is the whole mechanism). So this page
+   * has one job the other pages do not: show that something is coming, and
+   * keep looking until it arrives, without a refresh.
+   *
+   * `waiting` comes from the server rather than being re-derived here from
+   * the last sender. The rule for "is an answer owed" lives in
+   * `turns.decide_turn`, and a second copy of it in this file would be the
+   * duplication this loop keeps filing against itself.
+   */
+  var ASK_POLL_MS = 4000;
+  // Roughly four minutes. A CLI turn that has not answered by then has
+  // failed rather than being slow, and a page that polls forever is a
+  // phone battery with a question mark on it.
+  var ASK_POLL_MAX = 60;
+
+  function askMessage(message) {
+    var mine = message.sender === "Edvard";
+    var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs"));
+    row.appendChild(el("div", "ask-who", mine ? "You" : message.sender || "Nova Answers"));
+    row.appendChild(el("div", "ask-text", message.text));
+    return row;
+  }
+
+  function renderAskThread(container, payload) {
+    container.textContent = "";
+    var messages = payload.messages || [];
+    if (!messages.length) {
+      container.appendChild(el("p", "empty", "Ask me anything. I answer here, in a minute or so."));
+      return;
+    }
+    messages.forEach(function (message) {
+      container.appendChild(askMessage(message));
+    });
+    if (payload.waiting) container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+  }
+
+  /* One route guard, in the `.then` below and nowhere else. The first
+   * version checked here too, and a mutation pass showed the pair could
+   * not both be tested: removing either one alone left the other covering
+   * it, so both mutations passed and the navigation test pinned nothing.
+   * The `.then` is the one that has to stay -- it is what catches a fetch
+   * still in flight when Edvard taps another tab -- so this is the copy
+   * that goes. */
+  function pollAsk(container, attempts) {
+    if (attempts >= ASK_POLL_MAX) return;
+    livePolls.push(setTimeout(function () {
+      fetchPage("/api/ask")
+        .then(function (payload) {
+          if (route(window.location.pathname).view !== "ask") return;
+          renderAskThread(container, payload);
+          if (payload.waiting) pollAsk(container, attempts + 1);
+        })
+        // A failed poll is not a failed answer -- the thread is still in
+        // Agora and the next tick may well get it. Painting an error over
+        // a question that is being answered would be the wrong report.
+        .catch(function () { pollAsk(container, attempts + 1); });
+    }, ASK_POLL_MS));
+  }
+
+  function renderAsk(payload) {
+    stopPolling();
+    markNav();
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el("p", "status-line", "Ask me something"));
+    feed.textContent = "";
+
+    var thread = el("div", "ask-thread");
+    var form = el("form", "ask-form");
+    var box = el("textarea", "ask-box");
+    box.setAttribute("rows", "3");
+    box.setAttribute("placeholder", "Ask a question…");
+    box.setAttribute("aria-label", "Your question");
+    var send = el("button", "ask-send", "Ask");
+    send.setAttribute("type", "submit");
+    var status = el("p", "ask-status");
+    form.appendChild(box);
+    form.appendChild(send);
+    form.appendChild(status);
+    feed.appendChild(form);
+    feed.appendChild(thread);
+
+    renderAskThread(thread, payload);
+    if (payload.waiting) pollAsk(thread, 0);
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var text = box.value.trim();
+      if (!text) return;
+      send.disabled = true;
+      status.textContent = "sending…";
+      fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+          box.value = "";
+          status.textContent = "";
+          send.disabled = false;
+          // Paint his question immediately rather than waiting a poll for
+          // the server to echo it back: the send is the one moment the page
+          // knows something happened, and four seconds of a box that has
+          // gone blank with nothing to show for it reads as a lost message.
+          thread.appendChild(askMessage({ sender: "Edvard", text: text }));
+          thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+          pollAsk(thread, 0);
+        })
+        .catch(function (err) {
+          send.disabled = false;
+          status.textContent = "could not send: " + err.message;
+        });
+    });
+  }
+
+  function loadAsk() {
+    fetchPage("/api/ask")
+      .then(function (payload) {
+        if (route(window.location.pathname).view !== "ask") return;
+        renderAsk(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load your questions: " + err));
+      });
+  }
+
   function load() {
     // The overlay is fixed to the viewport and the feed under it is about
     // to be replaced, so a navigation that left it open would strand a
@@ -4769,6 +4907,10 @@
     }
     if (here.view === "plan") {
       loadPlan();
+      return;
+    }
+    if (here.view === "ask") {
+      loadAsk();
       return;
     }
     markNav();
