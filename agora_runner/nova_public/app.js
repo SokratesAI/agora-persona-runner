@@ -3876,8 +3876,286 @@
     });
     plot.appendChild(svg);
     figure.appendChild(plot);
-    return { figure: figure, plot: plot, svg: svg };
+    var chart = { figure: figure, plot: plot, svg: svg };
+    addChartControls(chart, title);
+    return chart;
   }
+
+  /* ---- Making a chart big enough to read on a phone --------------------
+   *
+   * Edvard, capture 2026-08-20: "Improve the cost graphs. They are quite
+   * small on my phone, so i would like options to make the full screen,
+   * zoom (using touch two fingers drag or a +- button. To be able to do
+   * both is best)."
+   *
+   * Both, then, and they are one mechanism rather than two: a scale and an
+   * offset applied to the whole SVG as a CSS transform, driven either by
+   * the buttons or by a two-finger pinch. Transforming the rendered SVG
+   * rather than re-deriving the scales and redrawing is what makes this
+   * generic -- it is wired into `chartFrame`, so the two cost charts and
+   * the retro chart all get it without any of them knowing, and a chart
+   * added later gets it for free.
+   *
+   * It also keeps the crosshair working for free, which a redraw would
+   * not have. `attachHover` locates a point by comparing the pointer
+   * against `getBoundingClientRect()`, and that rect already accounts for
+   * a CSS transform on the element -- so a zoomed chart reports a wider
+   * box at a shifted left edge, and the same arithmetic lands on the same
+   * mark. The one thing that had to be taught is `panning` below: once a
+   * drag is really a drag, the tooltip must stop chasing it.
+   */
+  var ZOOM_MAX = 8;
+  var ZOOM_STEP = 1.6;
+
+  function addChartControls(chart, title) {
+    var state = { k: 1, tx: 0, ty: 0 };
+    chart.zoom = state;
+    chart.title = title;
+
+    var tools = el("div", "chart-tools");
+    tools.appendChild(el("span", "chart-tools-label", "Zoom"));
+
+    function button(className, label, aria) {
+      var node = el("button", className, label);
+      node.type = "button";
+      node.setAttribute("aria-label", aria);
+      node.title = aria;
+      tools.appendChild(node);
+      return node;
+    }
+
+    // The glyphs on these two are the one place a symbol carries the
+    // meaning, so both get the word in `aria-label` and `title`, and the
+    // "Zoom" label above sits beside them permanently.
+    var out = button("chart-tool", "−", "Zoom out");
+    var into = button("chart-tool", "+", "Zoom in");
+    var reset = button("chart-tool chart-tool-reset", "Reset", "Reset zoom");
+    var full = button("chart-tool chart-tool-full", "Full screen", "Full screen: " + title);
+    chart.figure.appendChild(tools);
+
+    /* Keep the picture covering the window it is drawn in.
+     *
+     * At k=1 there is nothing to offset and both are pinned to 0; above
+     * it the offset may run from -(k-1)*size to 0, which is exactly the
+     * range where an edge of the SVG is still outside the plot box. Let
+     * it past that and you can drag the chart off screen and be left
+     * looking at an empty card with no way back except Reset. */
+    function clamp() {
+      if (state.k <= 1) {
+        state.k = 1;
+        state.tx = 0;
+        state.ty = 0;
+        return;
+      }
+      if (state.k > ZOOM_MAX) state.k = ZOOM_MAX;
+      var box = chart.plot.getBoundingClientRect();
+      // jsdom, and a plot that has not been laid out yet, both report 0.
+      // Clamping against 0 would force the offset to 0 and silently undo
+      // a pan, so an unmeasurable box means "do not clamp".
+      if (!box.width || !box.height) return;
+      var minX = -(state.k - 1) * box.width;
+      var minY = -(state.k - 1) * box.height;
+      state.tx = Math.min(0, Math.max(minX, state.tx));
+      state.ty = Math.min(0, Math.max(minY, state.ty));
+    }
+
+    function apply() {
+      clamp();
+      chart.svg.style.transformOrigin = "0 0";
+      chart.svg.style.transform =
+        "translate(" + state.tx + "px, " + state.ty + "px) scale(" + state.k + ")";
+      var zoomed = state.k > 1.001;
+      chart.plot.classList.toggle("is-zoomed", zoomed);
+      reset.disabled = !zoomed;
+      out.disabled = !zoomed;
+      into.disabled = state.k >= ZOOM_MAX - 0.001;
+      chart.plot.setAttribute("aria-label", "Zoomed " + state.k.toFixed(1) + " times");
+    }
+
+    /* Zoom about a fixed point, so the mark under the finger stays under
+     * the finger. Anchoring at the corner instead is the thing that makes
+     * a pinch feel like it is fighting you. */
+    function zoomAt(factor, originX, originY) {
+      var next = Math.max(1, Math.min(ZOOM_MAX, state.k * factor));
+      var ratio = next / state.k;
+      state.tx = originX - ratio * (originX - state.tx);
+      state.ty = originY - ratio * (originY - state.ty);
+      state.k = next;
+      apply();
+    }
+
+    function zoomCentre(factor) {
+      var box = chart.plot.getBoundingClientRect();
+      zoomAt(factor, box.width / 2, box.height / 2);
+    }
+
+    out.addEventListener("click", function () { zoomCentre(1 / ZOOM_STEP); });
+    into.addEventListener("click", function () { zoomCentre(ZOOM_STEP); });
+    reset.addEventListener("click", function () {
+      state.k = 1;
+      apply();
+    });
+    full.addEventListener("click", function () {
+      setChartFullscreen(chart, !chart.figure.classList.contains("chart-full"));
+    });
+    chart.setFullscreen = function (on) { setChartFullscreen(chart, on); };
+    chart.applyZoom = apply;
+    chart.zoomAt = zoomAt;
+
+    attachGestures(chart, state, zoomAt, apply);
+    apply();
+  }
+
+  /* Pinch to zoom, drag to pan.
+   *
+   * Two pointers is a pinch: the distance between them sets the scale and
+   * their midpoint sets the anchor, so a two-finger drag pans and zooms in
+   * the same motion, which is what a phone reader expects.
+   *
+   * One pointer is left alone until it has actually travelled -- under the
+   * threshold it is a tap and the crosshair keeps it. Past the threshold,
+   * and only when there is something to pan, it becomes a pan and
+   * `panning` tells `attachHover` to stop moving the tooltip. Without that
+   * threshold a zoomed chart loses the tooltip entirely, and without
+   * `panning` the tooltip chases the drag it is being dragged out of.
+   */
+  var PAN_THRESHOLD = 6;
+
+  function attachGestures(chart, state, zoomAt, apply) {
+    var live = {};
+    var count = 0;
+    var pinch = null;
+    var drag = null;
+
+    function local(event) {
+      var box = chart.plot.getBoundingClientRect();
+      return { x: event.clientX - box.left, y: event.clientY - box.top };
+    }
+
+    function ids() { return Object.keys(live); }
+
+    chart.plot.addEventListener("pointerdown", function (event) {
+      live[event.pointerId] = local(event);
+      count = ids().length;
+      if (count === 2) {
+        drag = null;
+        chart.panning = false;
+        var pair = ids().map(function (id) { return live[id]; });
+        pinch = { distance: gap(pair[0], pair[1]), mid: midpoint(pair[0], pair[1]) };
+      } else if (count === 1) {
+        drag = { from: live[event.pointerId], tx: state.tx, ty: state.ty, moved: false };
+      }
+    });
+
+    chart.plot.addEventListener("pointermove", function (event) {
+      if (!(event.pointerId in live)) return;
+      live[event.pointerId] = local(event);
+      var open = ids();
+      if (open.length >= 2 && pinch) {
+        var a = live[open[0]];
+        var b = live[open[1]];
+        var distance = gap(a, b);
+        if (pinch.distance > 0 && distance > 0) {
+          var mid = midpoint(a, b);
+          // The midpoint moving is the pan half of the gesture, applied
+          // before the scale so the anchor is where the fingers are now.
+          state.tx += mid.x - pinch.mid.x;
+          state.ty += mid.y - pinch.mid.y;
+          zoomAt(distance / pinch.distance, mid.x, mid.y);
+          pinch.distance = distance;
+          pinch.mid = mid;
+        }
+        return;
+      }
+      if (!drag || state.k <= 1) return;
+      var here = live[event.pointerId];
+      var dx = here.x - drag.from.x;
+      var dy = here.y - drag.from.y;
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) < PAN_THRESHOLD) return;
+      drag.moved = true;
+      chart.panning = true;
+      if (chart.hideTip) chart.hideTip();
+      state.tx = drag.tx + dx;
+      state.ty = drag.ty + dy;
+      apply();
+    });
+
+    function release(event) {
+      delete live[event.pointerId];
+      count = ids().length;
+      if (count < 2) pinch = null;
+      if (count === 0) {
+        drag = null;
+        chart.panning = false;
+      }
+    }
+
+    chart.plot.addEventListener("pointerup", release);
+    chart.plot.addEventListener("pointercancel", release);
+    chart.plot.addEventListener("pointerleave", release);
+  }
+
+  function gap(a, b) {
+    return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
+  }
+
+  function midpoint(a, b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+
+  /* Full screen, without the Fullscreen API.
+   *
+   * `requestFullscreen` is refused on iOS Safari for anything that is not
+   * a <video>, which is the device this ask came from -- so this is a
+   * fixed overlay instead, which works everywhere and can be dismissed
+   * with Escape or the browser's back gesture.
+   *
+   * Honest about what it buys: in portrait the chart is already the full
+   * width of a phone, so the gain there is that the page chrome, the
+   * tiles and the other charts stop competing for the screen and the zoom
+   * has the whole window to pan around in. Turned sideways it is a much
+   * bigger picture, which is the other half of the answer.
+   */
+  var openFullChart = null;
+
+  function setChartFullscreen(chart, on) {
+    if (on && openFullChart && openFullChart !== chart) {
+      setChartFullscreen(openFullChart, false);
+    }
+    chart.figure.classList.toggle("chart-full", on);
+    document.body.classList.toggle("has-full-chart", on);
+    var button = chart.figure.querySelector(".chart-tool-full");
+    if (button) {
+      button.textContent = on ? "Close" : "Full screen";
+      // The chart's own title stays in the label either way. Two charts
+      // on the costs page means two buttons reading "Full screen", and a
+      // screen reader announcing them identically is the same failure as
+      // a bare priority glyph: the control does not say what it acts on.
+      button.setAttribute(
+        "aria-label",
+        (on ? "Close full screen: " : "Full screen: ") + (chart.title || "")
+      );
+      button.title = button.getAttribute("aria-label");
+    }
+    openFullChart = on ? chart : null;
+    // Leaving a chart zoomed behind the overlay would restore it at 4x in
+    // a card a fifth the size, with the pan offset measured against the
+    // wrong box.
+    if (!on && chart.zoom) {
+      chart.zoom.k = 1;
+      if (chart.applyZoom) chart.applyZoom();
+    } else if (chart.applyZoom) {
+      chart.applyZoom();
+    }
+  }
+
+  function closeFullChart() {
+    if (openFullChart) setChartFullscreen(openFullChart, false);
+  }
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") closeFullChart();
+  });
 
   function plotBox() {
     return {
@@ -3948,6 +4226,10 @@
     });
 
     function show(event) {
+      // A drag that is panning a zoomed chart is not asking "what is under
+      // my finger" -- the mark under it is moving with it. See
+      // `attachGestures`.
+      if (chart.panning) return;
       var bounds = chart.svg.getBoundingClientRect();
       if (!bounds.width) return;
       var user = ((event.clientX - bounds.left) / bounds.width) * CHART.w;
@@ -3989,6 +4271,9 @@
     overlay.addEventListener("pointermove", show);
     overlay.addEventListener("pointerdown", show);
     overlay.addEventListener("pointerleave", hide);
+    // The gesture layer owns the tooltip's retreat: it knows a drag has
+    // become a pan a frame before this layer would.
+    chart.hideTip = hide;
     chart.svg.appendChild(overlay);
   }
 
@@ -4607,6 +4892,11 @@
   }
 
   function load() {
+    // The overlay is fixed to the viewport and the feed under it is about
+    // to be replaced, so a navigation that left it open would strand a
+    // chart of the old page on top of the new one -- and the figure it
+    // points at is gone, so nothing could close it.
+    closeFullChart();
     var here = route(window.location.pathname);
     if (here.view === "board") {
       loadBoard(here.board);

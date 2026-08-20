@@ -1528,10 +1528,79 @@ blockquote {
 /* The tooltip is positioned against this, not against the SVG: an
  * absolutely-positioned child of an <svg> is not something CSS will place
  * for you. */
-.chart-plot { position: relative; }
+.chart-plot { position: relative; overflow: hidden; }
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart-axis-label { fill: #7d8296; font-size: 8px; }
 .chart-overlay { cursor: crosshair; touch-action: pan-y; }
+
+/* Zoom, pan and full screen (Edvard's capture, 2026-08-20: the graphs are
+ * too small on his phone).
+ *
+ * `touch-action: none` only once the chart is actually zoomed. Set it
+ * unconditionally and a finger dragged up the page over a chart stops
+ * scrolling the page, which trades one complaint for a worse one; while
+ * the chart is at 1x there is nothing to pan, so the browser keeps the
+ * gesture. A pinch is two fingers and reaches the handler either way. */
+.chart-plot.is-zoomed { touch-action: none; cursor: grab; }
+
+/* The overlay needs its own copy, and finding out why is what this rule
+ * is. `touch-action` is resolved from the element the touch *starts* on,
+ * not from an ancestor -- and every touch on a chart starts on the
+ * overlay, since it covers the plot. So the `none` above would never have
+ * been consulted, and a one-finger drag on a zoomed chart would have
+ * scrolled the page instead of panning the picture. */
+.chart-plot.is-zoomed .chart-overlay { touch-action: none; cursor: grab; }
+
+.chart-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.5rem 0.25rem 0;
+  font-size: 0.8rem;
+}
+
+.chart-tools-label { color: var(--dim); margin-right: 0.1rem; }
+
+.chart-tool {
+  /* 34px is the smallest target that is still comfortable on a phone --
+   * the whole point of this control is that it is used with a thumb. */
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0 0.55rem;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chart-tool:disabled { opacity: 0.4; cursor: default; }
+.chart-tool-full { margin-left: auto; }
+
+/* The full-screen overlay. Not the Fullscreen API -- see app.js. */
+.chart-full {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  margin: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  padding: max(0.5rem, env(safe-area-inset-top)) 0.5rem
+           max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* The plot takes whatever the caption and the controls leave, which is
+ * what makes turning the phone sideways worth doing. */
+.chart-full .chart-plot { flex: 1; display: flex; align-items: center; }
+.chart-full .chart-svg { width: 100%; height: 100%; }
+
+/* Nothing behind the overlay may scroll -- on a phone a stray drag past
+ * the chart would otherwise move the page underneath it. */
+body.has-full-chart { overflow: hidden; }
 
 .chart-tip {
   position: absolute;

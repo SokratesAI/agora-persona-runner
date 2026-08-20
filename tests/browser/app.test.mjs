@@ -3671,6 +3671,330 @@ describe("the costs page", () => {
   });
 });
 
+/* ---- Zoom, pan and full screen on a chart --------------------------------
+ *
+ * Edvard, capture 2026-08-20: "Improve the cost graphs. They are quite
+ * small on my phone, so i would like options to make the full screen, zoom
+ * (using touch two fingers drag or a +- button. To be able to do both is
+ * best)."
+ *
+ * What is worth pinning is not that the buttons exist -- a substring check
+ * would say that -- it is that the transform they set actually changes,
+ * that the pinch arithmetic anchors where the fingers are, and that the
+ * two behaviours which are easy to break by accident stay: the tooltip
+ * must survive a zoom, and a pan must not be allowed to drag the picture
+ * out of its own box.
+ *
+ * jsdom reports every `getBoundingClientRect()` as zeroes, so the plot's
+ * size has to be stubbed for anything that measures. `stubBox` is that,
+ * and its absence is itself a case worth testing: an unmeasurable box must
+ * not silently reset a pan to nothing.
+ */
+describe("a chart can be zoomed and opened full screen", () => {
+  const figure = (window) => window.document.querySelector(".chart");
+  const tool = (window, label) =>
+    [...figure(window).querySelectorAll(".chart-tool")].find(
+      (b) => b.getAttribute("aria-label") === label);
+  const scaleOf = (window) => {
+    const match = /scale\(([-\d.]+)\)/.exec(
+      figure(window).querySelector(".chart-svg").style.transform);
+    return match ? Number(match[1]) : null;
+  };
+  const translateOf = (window) => {
+    const match = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(
+      figure(window).querySelector(".chart-svg").style.transform);
+    return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+  };
+  /** Give the plot a real size, since jsdom lays nothing out. */
+  const stubBox = (window, width = 360, height = 168) => {
+    const plot = figure(window).querySelector(".chart-plot");
+    plot.getBoundingClientRect = () => ({
+      left: 0, top: 0, width, height, right: width, bottom: height,
+    });
+    return plot;
+  };
+  /* `bubbles` is a parameter and not a constant because of one test below.
+   * An event dispatched on the overlay bubbles up to the plot, so the
+   * gesture handler runs *after* the hover handler on the same event --
+   * and a hover that wrongly re-showed the tooltip mid-pan would be hidden
+   * again a microsecond later by the pan. That made the first version of
+   * "the tooltip gets out of the way of a pan" pass with the guard it was
+   * meant to pin taken out. Dispatching without bubbling is what lets the
+   * hover layer be observed on its own. */
+  const pointer = (window, type, id, x, y, bubbles = true) => {
+    const event = new window.Event(type, { bubbles, cancelable: true });
+    event.pointerId = id;
+    event.clientX = x;
+    event.clientY = y;
+    return event;
+  };
+
+  test("every chart on the page gets the controls, not just the first", async () => {
+    const window = await loadSite("/costs");
+    const charts = [...window.document.querySelectorAll(".chart")];
+    assert.equal(charts.length, 2);
+    for (const chart of charts) {
+      const labels = [...chart.querySelectorAll(".chart-tool")].map(
+        (b) => b.getAttribute("aria-label"));
+      assert.deepEqual(labels.slice(0, 3), ["Zoom out", "Zoom in", "Reset zoom"]);
+    }
+  });
+
+  test("the + button scales the picture up and − brings it back", async () => {
+    const window = await loadSite("/costs");
+    stubBox(window);
+    assert.equal(scaleOf(window), 1);
+    click(window, tool(window, "Zoom in"));
+    const zoomed = scaleOf(window);
+    assert.ok(zoomed > 1, `expected a scale above 1, got ${zoomed}`);
+    click(window, tool(window, "Zoom out"));
+    // Back to exactly 1, not merely smaller -- the clamp floor is what
+    // stops a chart being shrunk into a corner of its own card.
+    assert.equal(scaleOf(window), 1);
+  });
+
+  test("zooming out can never take the chart below its own box", async () => {
+    const window = await loadSite("/costs");
+    stubBox(window);
+    for (let i = 0; i < 6; i++) click(window, tool(window, "Zoom out"));
+    assert.equal(scaleOf(window), 1);
+    assert.deepEqual(translateOf(window), { x: 0, y: 0 });
+  });
+
+  test("zoom stops at a ceiling instead of running away", async () => {
+    const window = await loadSite("/costs");
+    stubBox(window);
+    for (let i = 0; i < 20; i++) click(window, tool(window, "Zoom in"));
+    assert.equal(scaleOf(window), 8);
+    assert.equal(tool(window, "Zoom in").disabled, true);
+  });
+
+  test("Reset is dead until there is something to reset", async () => {
+    const window = await loadSite("/costs");
+    stubBox(window);
+    assert.equal(tool(window, "Reset zoom").disabled, true);
+    click(window, tool(window, "Zoom in"));
+    assert.equal(tool(window, "Reset zoom").disabled, false);
+    click(window, tool(window, "Reset zoom"));
+    assert.equal(scaleOf(window), 1);
+    assert.deepEqual(translateOf(window), { x: 0, y: 0 });
+  });
+
+  test("a two-finger pinch zooms about the point between the fingers", async () => {
+    const window = await loadSite("/costs");
+    const plot = stubBox(window);
+    plot.dispatchEvent(pointer(window, "pointerdown", 1, 100, 84));
+    plot.dispatchEvent(pointer(window, "pointerdown", 2, 200, 84));
+    // Same midpoint (150), twice the separation.
+    plot.dispatchEvent(pointer(window, "pointermove", 1, 50, 84));
+    plot.dispatchEvent(pointer(window, "pointermove", 2, 250, 84));
+    assert.ok(Math.abs(scaleOf(window) - 2) < 0.01, `got ${scaleOf(window)}`);
+    // Anchored at the midpoint: x' = 150 - 2 * (150 - 0) = -150. Anchoring
+    // at the corner instead would leave this at 0 and the chart would slide
+    // out from under the fingers.
+    assert.ok(Math.abs(translateOf(window).x + 150) < 0.01,
+      `got ${translateOf(window).x}`);
+  });
+
+  test("one finger still works the crosshair and does not pan at 1x", async () => {
+    const window = await loadSite("/costs");
+    const plot = stubBox(window);
+    plot.dispatchEvent(pointer(window, "pointerdown", 1, 100, 84));
+    plot.dispatchEvent(pointer(window, "pointermove", 1, 40, 84));
+    assert.deepEqual(translateOf(window), { x: 0, y: 0 });
+    assert.equal(scaleOf(window), 1);
+  });
+
+  test("a drag pans once zoomed, and only after it is really a drag", async () => {
+    const window = await loadSite("/costs");
+    const plot = stubBox(window);
+    click(window, tool(window, "Zoom in"));
+    const before = translateOf(window).x;
+    plot.dispatchEvent(pointer(window, "pointerdown", 1, 200, 84));
+    // Two pixels is a tap with a shaky thumb, not a pan.
+    plot.dispatchEvent(pointer(window, "pointermove", 1, 198, 84));
+    assert.equal(translateOf(window).x, before);
+    plot.dispatchEvent(pointer(window, "pointermove", 1, 160, 84));
+    assert.ok(translateOf(window).x < before,
+      `expected the chart to move left, got ${translateOf(window).x}`);
+  });
+
+  test("the tooltip gets out of the way of a pan instead of chasing it", async () => {
+    const window = await loadSite("/costs");
+    const plot = stubBox(window);
+    const svg = figure(window).querySelector(".chart-svg");
+    const overlay = svg.querySelector(".chart-overlay");
+    svg.getBoundingClientRect = () => ({
+      left: 0, top: 0, width: 360, height: 168, right: 360, bottom: 168,
+    });
+    click(window, tool(window, "Zoom in"));
+    overlay.dispatchEvent(pointer(window, "pointermove", 1, 200, 84));
+    const tip = figure(window).querySelector(".chart-tip");
+    assert.equal(tip.hidden, false, "the crosshair never appeared");
+    // Now drag. The mark the tip describes is moving with the finger, so
+    // a tip that stayed up would be labelling whatever slid under it.
+    plot.dispatchEvent(pointer(window, "pointerdown", 1, 200, 84));
+    plot.dispatchEvent(pointer(window, "pointermove", 1, 150, 84));
+    assert.equal(tip.hidden, true, "the tooltip chased the pan");
+    // And the hover layer itself must stay quiet for the rest of it. Not
+    // bubbled, deliberately: see `pointer`. Bubbled, the pan handler
+    // re-hides the tooltip after the hover handler shows it, and this
+    // assertion holds whether or not the guard exists.
+    overlay.dispatchEvent(pointer(window, "pointermove", 1, 140, 84, false));
+    assert.equal(tip.hidden, true, "the tooltip came back mid-pan");
+    // Finger up ends the pan, and the crosshair is available again.
+    plot.dispatchEvent(pointer(window, "pointerup", 1, 140, 84));
+    overlay.dispatchEvent(pointer(window, "pointermove", 1, 140, 84, false));
+    assert.equal(tip.hidden, false, "the tooltip never came back after the pan");
+  });
+
+  test("a pan cannot drag the picture off its own edge", async () => {
+    const window = await loadSite("/costs");
+    const plot = stubBox(window);
+    click(window, tool(window, "Zoom in"));
+    plot.dispatchEvent(pointer(window, "pointerdown", 1, 10, 84));
+    plot.dispatchEvent(pointer(window, "pointermove", 1, 5000, 84));
+    // Dragging right past the left edge exposes blank space; the clamp
+    // pins it at 0 rather than leaving an empty card with no way back.
+    assert.equal(translateOf(window).x, 0);
+    plot.dispatchEvent(pointer(window, "pointerup", 1, 5000, 84));
+    plot.dispatchEvent(pointer(window, "pointerdown", 2, 300, 84));
+    plot.dispatchEvent(pointer(window, "pointermove", 2, -5000, 84));
+    // -(k - 1) * width, and k is one step of 1.6.
+    assert.ok(Math.abs(translateOf(window).x + 0.6 * 360) < 0.5,
+      `got ${translateOf(window).x}`);
+  });
+
+  test("an unmeasurable plot leaves the pan alone instead of zeroing it", async () => {
+    const window = await loadSite("/costs");
+    const plot = stubBox(window);
+    click(window, tool(window, "Zoom in"));
+    plot.dispatchEvent(pointer(window, "pointerdown", 1, 200, 84));
+    plot.dispatchEvent(pointer(window, "pointermove", 1, 160, 84));
+    const panned = translateOf(window).x;
+    assert.ok(panned < 0);
+    // A chart in a hidden tab, or before layout, measures as zeroes. If
+    // that were clamped against, every such frame would silently throw the
+    // reader back to the left edge.
+    plot.getBoundingClientRect = () => ({
+      left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0,
+    });
+    plot.dispatchEvent(pointer(window, "pointermove", 1, 158, 84));
+    assert.ok(translateOf(window).x <= panned,
+      `expected the pan to survive, got ${translateOf(window).x}`);
+  });
+
+  test("the tooltip still finds the right mark on a zoomed chart", async () => {
+    const window = await loadSite("/costs");
+    stubBox(window);
+    const svg = figure(window).querySelector(".chart-svg");
+    // `attachHover` reads the *svg's* rect, which a CSS transform grows in
+    // a real browser. This is that browser: doubled width, left edge
+    // pushed off screen. The same finger must land on the same bar.
+    const overlay = svg.querySelector(".chart-overlay");
+    svg.getBoundingClientRect = () => ({
+      left: -360, top: 0, width: 720, height: 336, right: 360, bottom: 336,
+    });
+    click(window, tool(window, "Zoom in"));
+    overlay.dispatchEvent(pointer(window, "pointermove", 1, 300, 84));
+    const tip = figure(window).querySelector(".chart-tip");
+    assert.equal(tip.hidden, false, "the crosshair went away when zoomed");
+    assert.match(tip.textContent, /Weighted/);
+  });
+
+  /* The full-screen button's label carries the chart's own title, so it is
+   * found by class rather than by an exact label. */
+  const fullTool = (window, chart) =>
+    (chart || figure(window)).querySelector(".chart-tool-full");
+
+  test("full screen puts the chart over the page, and Escape takes it back", async () => {
+    const window = await loadSite("/costs");
+    const button = fullTool(window);
+    // Two charts, two buttons, and a screen reader must be able to tell
+    // them apart.
+    assert.match(button.getAttribute("aria-label"), /^Full screen: What a cycle costs$/);
+    click(window, button);
+    assert.ok(figure(window).classList.contains("chart-full"));
+    assert.ok(window.document.body.classList.contains("has-full-chart"));
+    assert.equal(button.textContent, "Close");
+    window.document.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(figure(window).classList.contains("chart-full"), false);
+    assert.equal(window.document.body.classList.contains("has-full-chart"), false);
+    assert.equal(button.textContent, "Full screen");
+  });
+
+  test("opening one chart full screen closes the other", async () => {
+    const window = await loadSite("/costs");
+    const charts = [...window.document.querySelectorAll(".chart")];
+    click(window, fullTool(window, charts[0]));
+    click(window, fullTool(window, charts[1]));
+    assert.equal(charts[0].classList.contains("chart-full"), false);
+    assert.ok(charts[1].classList.contains("chart-full"));
+    // One overlay closed and another opened must not leave the body locked
+    // open or unlocked by whichever ran last.
+    assert.ok(window.document.body.classList.contains("has-full-chart"));
+  });
+
+  test("leaving full screen drops the zoom with it", async () => {
+    const window = await loadSite("/costs");
+    stubBox(window);
+    click(window, fullTool(window));
+    click(window, tool(window, "Zoom in"));
+    assert.ok(scaleOf(window) > 1);
+    click(window, fullTool(window));
+    // 4x inside a card a fifth the size, with an offset measured against
+    // the overlay's box, is not a state worth restoring anyone to.
+    assert.equal(scaleOf(window), 1);
+  });
+
+  test("navigating away does not strand the overlay over the next page", async () => {
+    const window = await loadSite("/costs");
+    click(window, fullTool(window));
+    assert.ok(window.document.body.classList.contains("has-full-chart"));
+    click(window, [...window.document.querySelectorAll(".nav-tab")].find(
+      (a) => a.getAttribute("href") === "/"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(window.document.body.classList.contains("has-full-chart"), false);
+    assert.equal(window.document.querySelectorAll(".chart-full").length, 0);
+  });
+
+  /* The controls live in `chartFrame`, which is the whole reason this was
+   * built there rather than in the costs page: a chart nobody thought
+   * about while writing them still gets them. The retro chart is the
+   * standing proof of that, so it is asserted rather than assumed. */
+  test("the retro chart gets the same controls, since they live in the frame", async () => {
+    const window = await loadSite("/retro", {
+      retro: {
+        scoreKeys: [
+          { key: "going", label: "How it's going" },
+          { key: "effectiveness", label: "How effective" },
+          { key: "feeling", label: "Overall feeling" },
+        ],
+        range: [1, 10],
+        retros: [
+          {
+            at: Date.UTC(2026, 7, 7), date: "2026-08-07", cycle: 120,
+            scores: { going: 5, effectiveness: 5, feeling: 6 },
+            overall: "Finding its feet.", good: "Ships.", bad: "Re-derives.",
+            changes: [],
+          },
+          {
+            at: Date.UTC(2026, 7, 14), date: "2026-08-14", cycle: 181,
+            scores: { going: 7, effectiveness: 6, feeling: 8 },
+            overall: "Better.", good: "Picks from the board.", bad: "Still slow.",
+            changes: [],
+          },
+        ],
+      },
+    });
+    const chart = window.document.querySelector(".chart");
+    assert.ok(chart, "the retro page rendered no chart at all");
+    assert.ok(chart.querySelector(".chart-tool-full"), "no full-screen control");
+    assert.equal(chart.querySelectorAll(".chart-tool").length, 4);
+  });
+});
+
 /* A cycle that ran and wrote nothing, marked where it happened -- the
  * display half of Edvard's #72. He found cycles 127 and 128 himself by
  * noticing the feed jump from 126 to 129, so the gap goes back exactly
