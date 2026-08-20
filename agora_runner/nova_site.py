@@ -148,6 +148,7 @@ from agora_runner.nova_boards import (
     split_capture_done,
     split_capture_priority,
 )
+from agora_runner.nova_ask import ask as ask_question, thread as ask_thread
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
@@ -193,7 +194,7 @@ STATIC_ROUTES = {
 # `/cycle/<n>` is a prefix rather than an exact path, so it is matched
 # separately in `do_GET` and carries a representative path here for
 # anything walking the list.
-PAGE_ROUTES = ("/", "/issues", "/ideas", "/costs", "/retro", "/plan")
+PAGE_ROUTES = ("/", "/issues", "/ideas", "/costs", "/retro", "/plan", "/ask")
 PAGE_ROUTE_PREFIXES = ("/cycle/",)
 
 # gzip's header and trailer are a fixed 18 bytes, so a short body comes
@@ -1518,6 +1519,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # would buy nothing and cost a comment looking lost.
                 self._send_json(200, comments_payload())
                 return
+            if path == "/api/ask":
+                # Never cached, for `/api/comments`' reason and one more:
+                # this endpoint is polled *because* it is expected to
+                # change, and a CACHE_FRESH_SECONDS window would show
+                # Edvard a thread that stays "waiting" after the answer
+                # has already landed.
+                self._send_json(200, ask_thread())
+                return
             if path == "/api/health":
                 # Never cached, and that is the entire point of it. The
                 # thing this answers -- "which database did you resolve,
@@ -1785,6 +1794,42 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "is not a row" in message
         self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
 
+    def _post_ask(self, payload):
+        """`/api/ask` -- Edvard's question goes into the questions
+        conversation and the Sonnet persona answers it on the next poll
+        tick. See `nova_ask` for why that is the whole mechanism.
+
+        Unlike every other write on this handler, nothing here touches the
+        vault, so there is no cache to invalidate: the page re-reads the
+        thread from Agora, which is the only copy.
+        """
+        text = payload.get("text")
+        if not isinstance(text, str):
+            self._send_json(400, {"error": "text must be a string"})
+            return
+        try:
+            ok, message = ask_question(text)
+        except Exception as e:
+            log(f"nova-site ask failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Question asked · {'ok' if ok else message}",
+            after=text.strip()[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        # A refusal here is the text itself being unusable (empty, or past
+        # MAX_QUESTION_CHARS), which is a 400 and not a 502 -- retrying it
+        # unchanged cannot work.
+        bad_text = not ok and message.startswith(("a question needs", "that is longer"))
+        self._send_json(200 if ok else (400 if bad_text else 502),
+                        {"ok": ok, "message": message})
+
     def _post_board_amend(self, payload, delete):
         """`/api/board/edit` and `/api/board/delete` -- issue #84.
 
@@ -1988,13 +2033,16 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment",
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
-            "/api/board/comment",
+            "/api/board/comment", "/api/ask",
         ):
             self._send_json(404, {"error": "not found"})
             return
 
         payload = self._read_json_body()
         if payload is None:
+            return
+        if path == "/api/ask":
+            self._post_ask(payload)
             return
         if path == "/api/comment":
             self._post_comment(payload)
