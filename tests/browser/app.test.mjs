@@ -3593,18 +3593,29 @@ describe("the board header", () => {
  * epoch, identity carried by colour alone.
  */
 describe("the costs page", () => {
-  const plot = (window) => window.document.querySelector(".chart-svg");
+  /* Since 2026-08-20 the drawing belongs to ECharts, which paints to a
+   * canvas jsdom does not implement -- so there is no mark in the DOM to
+   * count. `figure.chartOption` is the description this app hands the
+   * library, set synchronously by `mountEChart`, and it is now the whole
+   * of what this app decides about a chart. Asserting on it tests the
+   * app's judgement; counting rects used to test arithmetic that has
+   * since been deleted along with the rects. */
+  const optionOf = (window, index = 0) =>
+    window.document.querySelectorAll(".chart")[index].chartOption;
 
   test("it plots the cycles and the quota, not the journal", async () => {
     const window = await loadSite("/costs");
     const charts = window.document.querySelectorAll(".chart");
     assert.equal(charts.length, 2);
-    // One bar per cycle in the ledger, and the fixture has three. The
-    // hover overlay is a `rect` too, hence the exclusion -- counting it
-    // would let a chart that drew two bars pass as three.
-    assert.equal(charts[0].querySelectorAll("rect:not(.chart-overlay)").length, 3);
-    // Two series, two paths.
-    assert.equal(charts[1].querySelectorAll("path").length, 2);
+    // One bar per cycle in the ledger, and the fixture has three.
+    const cycles = optionOf(window, 0);
+    assert.equal(cycles.series.length, 1);
+    assert.equal(cycles.series[0].type, "bar");
+    assert.equal(cycles.series[0].data.length, 3);
+    // Two series, two lines.
+    const quota = optionOf(window, 1);
+    assert.equal(quota.series.length, 2);
+    quota.series.forEach((line) => assert.equal(line.type, "line"));
   });
 
   test("the nav marks Costs, and the journal poll does not paint over it", async () => {
@@ -3623,9 +3634,9 @@ describe("the costs page", () => {
      * stop and start again instead. `M` twice in one `d` is exactly that
      * -- and a single `M` would be the bug. */
     const window = await loadSite("/costs");
-    const paths = [...plot(window).ownerDocument.querySelectorAll(".chart")[1].querySelectorAll("path")];
-    const withHole = paths.map((p) => (p.getAttribute("d").match(/M/g) || []).length);
-    assert.deepEqual(withHole, [1, 1], "the fixture's readings are contiguous");
+    const holes = optionOf(window, 1).series.map(
+      (line) => line.data.filter(([, y]) => y === null).length);
+    assert.deepEqual([...holes], [0, 0], "the fixture's readings are contiguous");
 
     const holed = {
       ...payload.costs,
@@ -3636,9 +3647,13 @@ describe("the costs page", () => {
       ],
     };
     const broken = await loadSite("/costs", { costs: holed });
-    const fiveHour = broken.document.querySelectorAll(".chart")[1].querySelectorAll("path")[0];
-    assert.equal((fiveHour.getAttribute("d").match(/M/g) || []).length, 2,
-      "the five-hour line drew through a missing reading");
+    const fiveHour = optionOf(broken, 1).series[0];
+    // A null y is what ECharts draws as a gap. A zero here would be the
+    // bug -- the line would dive to the axis and back, reading as a quota
+    // that emptied and refilled.
+    assert.deepEqual([...fiveHour.data].map(([, y]) => y), [27.0, null, 78.0]);
+    assert.equal(fiveHour.connectNulls, false,
+      "connectNulls must stay off or the gap is drawn through");
   });
 
   test("two series get a legend, so identity is never colour alone", async () => {
@@ -3655,7 +3670,10 @@ describe("the costs page", () => {
       },
     });
     assert.equal(window.document.querySelectorAll(".chart").length, 2);
-    assert.equal(window.document.querySelectorAll("rect:not(.chart-overlay)").length, 0);
+    // No option is built at all when there is nothing to draw, so the
+    // empty state cannot be a chart that quietly drew zero marks.
+    assert.equal(optionOf(window, 0), undefined);
+    assert.equal(optionOf(window, 1), undefined);
     const empties = [...window.document.querySelectorAll(".empty")].map((n) => n.textContent);
     assert.deepEqual(empties, ["No cycles in the ledger yet.", "No quota readings yet."]);
   });
@@ -3671,392 +3689,145 @@ describe("the costs page", () => {
   });
 });
 
-/* ---- Zoom, pan and full screen on a chart --------------------------------
+/* ---- Zoom, pan, selection and full screen on a chart ---------------------
  *
- * Edvard, capture 2026-08-20: "Improve the cost graphs. They are quite
- * small on my phone, so i would like options to make the full screen, zoom
- * (using touch two fingers drag or a +- button. To be able to do both is
- * best)."
+ * Edvard, 2026-08-20, on the version this replaces: "The zoom works, but
+ * it does not give me any more granulation in the graph, it just makes the
+ * graph bars larger. I want actual graph zoom as in expanding the values
+ * on the x/y axis and showing more granularity. Also the hover effect when
+ * i press the graph only works for a split second. I should be able to
+ * select stuff, move around."
  *
- * What is worth pinning is not that the buttons exist -- a substring check
- * would say that -- it is that the transform they set actually changes,
- * that the pinch arithmetic anchors where the fingers are, and that the
- * two behaviours which are easy to break by accident stay: the tooltip
- * must survive a zoom, and a pan must not be allowed to drag the picture
- * out of its own box.
+ * The old suite here had fifteen tests of a CSS `transform: scale()` and
+ * its pinch arithmetic. That mechanism is gone -- it magnified a picture
+ * and could not add a tick to an axis, which is exactly what he is
+ * describing -- so those tests went with it rather than being ported.
+ * Deleting a test whose subject no longer exists is not a loss of
+ * coverage; keeping it green against a shim would have been.
  *
- * jsdom reports every `getBoundingClientRect()` as zeroes, so the plot's
- * size has to be stubbed for anything that measures. `stubBox` is that,
- * and its absence is itself a case worth testing: an unmeasurable box must
- * not silently reset a pan to nothing.
+ * What is worth pinning now is the description this app hands ECharts,
+ * because that description is the whole of what this app decides. Each
+ * test below names the sentence of his it answers.
  */
-describe("a chart can be zoomed and opened full screen", () => {
-  const figure = (window) => window.document.querySelector(".chart");
-  const tool = (window, label) =>
-    [...figure(window).querySelectorAll(".chart-tool")].find(
-      (b) => b.getAttribute("aria-label") === label);
-  const scaleOf = (window) => {
-    const match = /scale\(([-\d.]+)\)/.exec(
-      figure(window).querySelector(".chart-svg").style.transform);
-    return match ? Number(match[1]) : null;
-  };
-  const translateOf = (window) => {
-    const match = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(
-      figure(window).querySelector(".chart-svg").style.transform);
-    return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
-  };
-  /** Give the plot a real size, since jsdom lays nothing out. */
-  const stubBox = (window, width = 360, height = 168) => {
-    const plot = figure(window).querySelector(".chart-plot");
-    plot.getBoundingClientRect = () => ({
-      left: 0, top: 0, width, height, right: width, bottom: height,
+describe("a chart can be zoomed, panned, selected and opened full screen", () => {
+  const charts = (window) => [...window.document.querySelectorAll(".chart")];
+  const option = (window, index = 0) => charts(window)[index].chartOption;
+
+  test("every chart on the page gets a full-screen control, not just the first", async () => {
+    const window = await loadSite("/costs");
+    assert.equal(charts(window).length, 2);
+    charts(window).forEach((figure) => {
+      assert.ok(figure.querySelector(".chart-tool-full"), "no full-screen control");
     });
-    return plot;
-  };
-  /* `bubbles` is a parameter and not a constant because of one test below.
-   * An event dispatched on the overlay bubbles up to the plot, so the
-   * gesture handler runs *after* the hover handler on the same event --
-   * and a hover that wrongly re-showed the tooltip mid-pan would be hidden
-   * again a microsecond later by the pan. That made the first version of
-   * "the tooltip gets out of the way of a pan" pass with the guard it was
-   * meant to pin taken out. Dispatching without bubbling is what lets the
-   * hover layer be observed on its own. */
-  const pointer = (window, type, id, x, y, bubbles = true) => {
-    const event = new window.Event(type, { bubbles, cancelable: true });
-    event.pointerId = id;
-    event.clientX = x;
-    event.clientY = y;
-    return event;
-  };
-
-  test("every chart on the page gets the controls, not just the first", async () => {
-    const window = await loadSite("/costs");
-    const charts = [...window.document.querySelectorAll(".chart")];
-    assert.equal(charts.length, 2);
-    for (const chart of charts) {
-      const labels = [...chart.querySelectorAll(".chart-tool")].map(
-        (b) => b.getAttribute("aria-label"));
-      assert.deepEqual(labels.slice(0, 3), ["Zoom out", "Zoom in", "Reset zoom"]);
-    }
+    // The two buttons must not announce identically -- the control has to
+    // say what it acts on, which is the same rule as a bare priority glyph.
+    const labels = charts(window).map(
+      (f) => f.querySelector(".chart-tool-full").getAttribute("aria-label"));
+    assert.deepEqual(labels, [
+      "Full screen: What a cycle costs",
+      "Full screen: How much quota is left",
+    ]);
   });
 
-  test("the + button scales the picture up and − brings it back", async () => {
+  test('"expanding the values on the x/y axis": zoom re-scales the axis, not the picture', async () => {
     const window = await loadSite("/costs");
-    stubBox(window);
-    assert.equal(scaleOf(window), 1);
-    click(window, tool(window, "Zoom in"));
-    const zoomed = scaleOf(window);
-    assert.ok(zoomed > 1, `expected a scale above 1, got ${zoomed}`);
-    click(window, tool(window, "Zoom out"));
-    // Back to exactly 1, not merely smaller -- the clamp floor is what
-    // stops a chart being shrunk into a corner of its own card.
-    assert.equal(scaleOf(window), 1);
+    const zooms = option(window).dataZoom;
+    // Pinch and drag-pan on the axis itself...
+    const inside = zooms.filter((z) => z.type === "inside");
+    assert.ok(inside.some((z) => z.xAxisIndex === 0), "no x-axis zoom");
+    assert.ok(inside.some((z) => z.yAxisIndex === 0), "no y-axis zoom");
+    // ...and a slider under it, so there is a visible handle too.
+    assert.ok(zooms.some((z) => z.type === "slider"), "no zoom slider");
+    // The axis is a real time scale, which is what makes zooming in add
+    // ticks. A category axis would give back the old behaviour.
+    assert.equal(option(window).xAxis.type, "time");
+    // Marks outside the window stay drawn rather than being dropped, so
+    // panning never blanks a line.
+    zooms.forEach((z) => assert.equal(z.filterMode, "none"));
   });
 
-  /* Also rewritten: the first version clicked `−` six times from rest and
-   * asserted the transform was still the identity, which it already was
-   * before the loop ran -- so it passed with the `−` handler deleted
-   * outright (the reviewer checked). `−` is also `disabled` at rest, so
-   * it was exercising a path the product cannot reach. Zoom *in* first,
-   * then out past the floor, which is the only sequence where the floor
-   * can be observed at all. */
-  test("zooming out can never take the chart below its own box", async () => {
+  test('"I should be able to select stuff": a rubber-band selection zooms', async () => {
     const window = await loadSite("/costs");
-    stubBox(window);
-    for (let i = 0; i < 3; i++) click(window, tool(window, "Zoom in"));
-    assert.ok(scaleOf(window) > 1, "never got off the floor to fall back to it");
-    for (let i = 0; i < 8; i++) click(window, tool(window, "Zoom out"));
-    assert.equal(scaleOf(window), 1);
-    assert.deepEqual(translateOf(window), { x: 0, y: 0 });
-    assert.equal(tool(window, "Zoom out").disabled, true, "− stayed live at rest");
+    const features = option(window).toolbox.feature;
+    assert.ok(features.dataZoom, "no select-to-zoom");
+    assert.ok(features.restore, "no way back to the whole picture");
   });
 
-  test("zoom stops at a ceiling instead of running away", async () => {
+  test('"only works for a split second": a tap pins the readout', async () => {
     const window = await loadSite("/costs");
-    stubBox(window);
-    for (let i = 0; i < 20; i++) click(window, tool(window, "Zoom in"));
-    assert.equal(scaleOf(window), 8);
-    assert.equal(tool(window, "Zoom in").disabled, true);
+    const tip = option(window).tooltip;
+    assert.equal(tip.trigger, "axis");
+    // `mousemove` alone is hover-only, which on a touch screen lasts
+    // exactly as long as the finger is down. `click` is what makes a tap
+    // leave it up.
+    assert.match(tip.triggerOn, /click/);
+    assert.equal(tip.confine, true, "the readout may not spill off a phone");
   });
 
-  test("Reset is dead until there is something to reset", async () => {
+  test("the readout names its series and never leans on colour alone", async () => {
     const window = await loadSite("/costs");
-    stubBox(window);
-    assert.equal(tool(window, "Reset zoom").disabled, true);
-    click(window, tool(window, "Zoom in"));
-    assert.equal(tool(window, "Reset zoom").disabled, false);
-    click(window, tool(window, "Reset zoom"));
-    assert.equal(scaleOf(window), 1);
-    assert.deepEqual(translateOf(window), { x: 0, y: 0 });
+    const html = option(window, 1).tooltip.formatter([
+      { value: [1786450678872, 78], seriesName: "5-hour window", color: "#5d86dd" },
+      { value: [1786450678872, null], seriesName: "7-day window", color: "#bd8b2f" },
+    ]);
+    assert.match(html, /5-hour window/);
+    assert.match(html, /78%/);
+    // A reading that is missing says so, rather than printing 0%.
+    assert.match(html, /7-day window/);
+    assert.match(html, /—/);
   });
 
-  test("a two-finger pinch zooms about the point between the fingers", async () => {
+  test("a value that could carry markup is escaped, not interpolated", async () => {
+    // The formatter builds HTML, which nothing else in this file does.
+    // That is the library's interface and not a choice, so the escaping
+    // has to be the thing that is checked.
     const window = await loadSite("/costs");
-    const plot = stubBox(window);
-    plot.dispatchEvent(pointer(window, "pointerdown", 1, 100, 84));
-    plot.dispatchEvent(pointer(window, "pointerdown", 2, 200, 84));
-    // Same midpoint (150), twice the separation.
-    plot.dispatchEvent(pointer(window, "pointermove", 1, 50, 84));
-    plot.dispatchEvent(pointer(window, "pointermove", 2, 250, 84));
-    assert.ok(Math.abs(scaleOf(window) - 2) < 0.01, `got ${scaleOf(window)}`);
-    // Anchored at the midpoint: x' = 150 - 2 * (150 - 0) = -150. Anchoring
-    // at the corner instead would leave this at 0 and the chart would slide
-    // out from under the fingers.
-    assert.ok(Math.abs(translateOf(window).x + 150) < 0.01,
-      `got ${translateOf(window).x}`);
+    const html = option(window, 1).tooltip.formatter([
+      { value: [1786450678872, 78], seriesName: "<img src=x onerror=1>", color: "#5d86dd" },
+    ]);
+    assert.doesNotMatch(html, /<img/);
+    assert.match(html, /&lt;img/);
   });
 
-  /* Rewritten after the reviewer mutation-verified the first version as
-   * vacuous. It asserted only that the transform stayed at the identity
-   * after a 1x drag -- which `clamp()` guarantees on its own whenever
-   * `k <= 1`, so deleting the `state.k <= 1` guard it was named for left
-   * it green. The guard is load-bearing for the *crosshair*, not for the
-   * transform: without it a one-finger drag at 1x sets `panning` and
-   * hides the tooltip, and the picture looks identical while the thing
-   * Edvard actually uses stops working. So that is what this asserts. */
-  test("one finger still works the crosshair and does not pan at 1x", async () => {
+  test("full screen toggles the overlay and the button says how to leave", async () => {
     const window = await loadSite("/costs");
-    const plot = stubBox(window);
-    const svg = figure(window).querySelector(".chart-svg");
-    const overlay = svg.querySelector(".chart-overlay");
-    svg.getBoundingClientRect = () => ({
-      left: 0, top: 0, width: 360, height: 168, right: 360, bottom: 168,
-    });
-    plot.dispatchEvent(pointer(window, "pointerdown", 1, 100, 84));
-    plot.dispatchEvent(pointer(window, "pointermove", 1, 40, 84));
-    // Nothing moved, because there is nothing to pan at 1x...
-    assert.deepEqual(translateOf(window), { x: 0, y: 0 });
-    assert.equal(scaleOf(window), 1);
-    // ...and, the part that actually needs the guard, the drag was never
-    // treated as a pan, so the crosshair still answers.
-    overlay.dispatchEvent(pointer(window, "pointermove", 1, 40, 84, false));
-    const tip = figure(window).querySelector(".chart-tip");
-    assert.equal(tip.hidden, false, "a 1x drag killed the crosshair");
-  });
-
-  test("a drag pans once zoomed, and only after it is really a drag", async () => {
-    const window = await loadSite("/costs");
-    const plot = stubBox(window);
-    click(window, tool(window, "Zoom in"));
-    const before = translateOf(window).x;
-    plot.dispatchEvent(pointer(window, "pointerdown", 1, 200, 84));
-    // Two pixels is a tap with a shaky thumb, not a pan.
-    plot.dispatchEvent(pointer(window, "pointermove", 1, 198, 84));
-    assert.equal(translateOf(window).x, before);
-    plot.dispatchEvent(pointer(window, "pointermove", 1, 160, 84));
-    assert.ok(translateOf(window).x < before,
-      `expected the chart to move left, got ${translateOf(window).x}`);
-  });
-
-  test("the tooltip gets out of the way of a pan instead of chasing it", async () => {
-    const window = await loadSite("/costs");
-    const plot = stubBox(window);
-    const svg = figure(window).querySelector(".chart-svg");
-    const overlay = svg.querySelector(".chart-overlay");
-    svg.getBoundingClientRect = () => ({
-      left: 0, top: 0, width: 360, height: 168, right: 360, bottom: 168,
-    });
-    click(window, tool(window, "Zoom in"));
-    overlay.dispatchEvent(pointer(window, "pointermove", 1, 200, 84));
-    const tip = figure(window).querySelector(".chart-tip");
-    assert.equal(tip.hidden, false, "the crosshair never appeared");
-    // Now drag. The mark the tip describes is moving with the finger, so
-    // a tip that stayed up would be labelling whatever slid under it.
-    plot.dispatchEvent(pointer(window, "pointerdown", 1, 200, 84));
-    plot.dispatchEvent(pointer(window, "pointermove", 1, 150, 84));
-    assert.equal(tip.hidden, true, "the tooltip chased the pan");
-    // And the hover layer itself must stay quiet for the rest of it. Not
-    // bubbled, deliberately: see `pointer`. Bubbled, the pan handler
-    // re-hides the tooltip after the hover handler shows it, and this
-    // assertion holds whether or not the guard exists.
-    overlay.dispatchEvent(pointer(window, "pointermove", 1, 140, 84, false));
-    assert.equal(tip.hidden, true, "the tooltip came back mid-pan");
-    // Finger up ends the pan, and the crosshair is available again.
-    plot.dispatchEvent(pointer(window, "pointerup", 1, 140, 84));
-    overlay.dispatchEvent(pointer(window, "pointermove", 1, 140, 84, false));
-    assert.equal(tip.hidden, false, "the tooltip never came back after the pan");
-  });
-
-  test("a pan cannot drag the picture off its own edge", async () => {
-    const window = await loadSite("/costs");
-    const plot = stubBox(window);
-    click(window, tool(window, "Zoom in"));
-    plot.dispatchEvent(pointer(window, "pointerdown", 1, 10, 84));
-    plot.dispatchEvent(pointer(window, "pointermove", 1, 5000, 84));
-    // Dragging right past the left edge exposes blank space; the clamp
-    // pins it at 0 rather than leaving an empty card with no way back.
-    assert.equal(translateOf(window).x, 0);
-    plot.dispatchEvent(pointer(window, "pointerup", 1, 5000, 84));
-    plot.dispatchEvent(pointer(window, "pointerdown", 2, 300, 84));
-    plot.dispatchEvent(pointer(window, "pointermove", 2, -5000, 84));
-    // -(k - 1) * width, and k is one step of 1.6.
-    assert.ok(Math.abs(translateOf(window).x + 0.6 * 360) < 0.5,
-      `got ${translateOf(window).x}`);
-  });
-
-  test("an unmeasurable plot leaves the pan alone instead of zeroing it", async () => {
-    const window = await loadSite("/costs");
-    const plot = stubBox(window);
-    click(window, tool(window, "Zoom in"));
-    plot.dispatchEvent(pointer(window, "pointerdown", 1, 200, 84));
-    plot.dispatchEvent(pointer(window, "pointermove", 1, 160, 84));
-    const panned = translateOf(window).x;
-    assert.ok(panned < 0);
-    // A chart in a hidden tab, or before layout, measures as zeroes. If
-    // that were clamped against, every such frame would silently throw the
-    // reader back to the left edge.
-    plot.getBoundingClientRect = () => ({
-      left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0,
-    });
-    plot.dispatchEvent(pointer(window, "pointermove", 1, 158, 84));
-    assert.ok(translateOf(window).x <= panned,
-      `expected the pan to survive, got ${translateOf(window).x}`);
-  });
-
-  test("the tooltip still finds the right mark on a zoomed chart", async () => {
-    const window = await loadSite("/costs");
-    stubBox(window);
-    const svg = figure(window).querySelector(".chart-svg");
-    // `attachHover` reads the *svg's* rect, which a CSS transform grows in
-    // a real browser. This is that browser: doubled width, left edge
-    // pushed off screen. The same finger must land on the same bar.
-    const overlay = svg.querySelector(".chart-overlay");
-    svg.getBoundingClientRect = () => ({
-      left: -360, top: 0, width: 720, height: 336, right: 360, bottom: 336,
-    });
-    click(window, tool(window, "Zoom in"));
-    overlay.dispatchEvent(pointer(window, "pointermove", 1, 300, 84));
-    const tip = figure(window).querySelector(".chart-tip");
-    assert.equal(tip.hidden, false, "the crosshair went away when zoomed");
-    assert.match(tip.textContent, /Weighted/);
-  });
-
-  /* The full-screen button's label carries the chart's own title, so it is
-   * found by class rather than by an exact label. */
-  const fullTool = (window, chart) =>
-    (chart || figure(window)).querySelector(".chart-tool-full");
-
-  test("full screen puts the chart over the page, and Escape takes it back", async () => {
-    const window = await loadSite("/costs");
-    const button = fullTool(window);
-    // Two charts, two buttons, and a screen reader must be able to tell
-    // them apart.
-    assert.match(button.getAttribute("aria-label"), /^Full screen: What a cycle costs$/);
+    const figure = charts(window)[0];
+    const button = figure.querySelector(".chart-tool-full");
     click(window, button);
-    assert.ok(figure(window).classList.contains("chart-full"));
+    assert.ok(figure.classList.contains("chart-full"));
     assert.ok(window.document.body.classList.contains("has-full-chart"));
     assert.equal(button.textContent, "Close");
-    window.document.dispatchEvent(
-      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    assert.equal(figure(window).classList.contains("chart-full"), false);
-    assert.equal(window.document.body.classList.contains("has-full-chart"), false);
+    click(window, button);
+    assert.ok(!figure.classList.contains("chart-full"));
+    assert.ok(!window.document.body.classList.contains("has-full-chart"));
     assert.equal(button.textContent, "Full screen");
   });
 
   test("opening one chart full screen closes the other", async () => {
     const window = await loadSite("/costs");
-    const charts = [...window.document.querySelectorAll(".chart")];
-    click(window, fullTool(window, charts[0]));
-    click(window, fullTool(window, charts[1]));
-    assert.equal(charts[0].classList.contains("chart-full"), false);
-    assert.ok(charts[1].classList.contains("chart-full"));
-    // One overlay closed and another opened must not leave the body locked
-    // open or unlocked by whichever ran last.
-    assert.ok(window.document.body.classList.contains("has-full-chart"));
+    const [first, second] = charts(window);
+    click(window, first.querySelector(".chart-tool-full"));
+    click(window, second.querySelector(".chart-tool-full"));
+    assert.ok(!first.classList.contains("chart-full"), "two overlays at once");
+    assert.ok(second.classList.contains("chart-full"));
   });
 
-  test("leaving full screen drops the zoom with it", async () => {
+  test("Escape leaves full screen, since a phone has a back reflex and a desktop has a key", async () => {
     const window = await loadSite("/costs");
-    stubBox(window);
-    click(window, fullTool(window));
-    click(window, tool(window, "Zoom in"));
-    assert.ok(scaleOf(window) > 1);
-    click(window, fullTool(window));
-    // 4x inside a card a fifth the size, with an offset measured against
-    // the overlay's box, is not a state worth restoring anyone to.
-    assert.equal(scaleOf(window), 1);
+    const figure = charts(window)[0];
+    click(window, figure.querySelector(".chart-tool-full"));
+    window.document.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.ok(!figure.classList.contains("chart-full"));
   });
 
-  /* The reviewer found that only the *closing* path reset the zoom, while
-   * carrying a comment explaining why carrying it across would be wrong.
-   * The plot changes size in both directions, and `tx`/`ty` are pixels
-   * against whichever box was current when they were set. */
-  test("entering full screen drops the zoom too, not just leaving it", async () => {
+  test("the gestures are named in words, because nothing else says they exist", async () => {
     const window = await loadSite("/costs");
-    stubBox(window);
-    click(window, tool(window, "Zoom in"));
-    click(window, tool(window, "Zoom in"));
-    assert.ok(scaleOf(window) > 1, "never zoomed in to begin with");
-    click(window, fullTool(window));
-    assert.ok(figure(window).classList.contains("chart-full"));
-    // A pan measured against a 360px card, re-applied inside a 750px
-    // overlay, points at a different part of the picture.
-    assert.equal(scaleOf(window), 1);
-    assert.deepEqual(translateOf(window), { x: 0, y: 0 });
+    const hint = charts(window)[0].querySelector(".chart-tools-hint").textContent;
+    assert.match(hint, /zoom/i);
+    assert.match(hint, /pan/i);
   });
 
-  test("navigating away does not strand the overlay over the next page", async () => {
-    const window = await loadSite("/costs");
-    click(window, fullTool(window));
-    assert.ok(window.document.body.classList.contains("has-full-chart"));
-    click(window, [...window.document.querySelectorAll(".nav-tab")].find(
-      (a) => a.getAttribute("href") === "/"));
-    await new Promise((r) => setTimeout(r, 0));
-    assert.equal(window.document.body.classList.contains("has-full-chart"), false);
-    assert.equal(window.document.querySelectorAll(".chart-full").length, 0);
-  });
-
-  /* The controls live in `chartFrame`, which is the whole reason this was
-   * built there rather than in the costs page: a chart nobody thought
-   * about while writing them still gets them. The retro chart is the
-   * standing proof of that, so it is asserted rather than assumed. */
-  test("a legend stays with its chart instead of being pushed under the buttons", async () => {
-    const window = await loadSite("/costs");
-    // The quota chart is the one with two series and therefore a legend.
-    const chart = [...window.document.querySelectorAll(".chart")][1];
-    const legend = chart.querySelector(".chart-legend");
-    const tools = chart.querySelector(".chart-tools");
-    assert.ok(legend && tools, "expected both a legend and a zoom row");
-    // `chartFrame` appends the controls when the figure is built and the
-    // chart appends its legend afterwards, so DOM order puts the buttons
-    // in between. The fix is CSS ordering, so that is what is asserted.
-    const styles = readFileSync(join(publicDir, "style.css"), "utf8");
-    assert.match(styles, /\.chart\s*\{[^}]*flex-direction:\s*column/,
-      ".chart is not a flex column, so ordering cannot apply");
-    assert.match(styles, /\.chart-tools\s*\{[^}]*order:\s*2/,
-      "the zoom row is not ordered after the legend");
-  });
-
-  test("the retro chart gets the same controls, since they live in the frame", async () => {
-    const window = await loadSite("/retro", {
-      retro: {
-        scoreKeys: [
-          { key: "going", label: "How it's going" },
-          { key: "effectiveness", label: "How effective" },
-          { key: "feeling", label: "Overall feeling" },
-        ],
-        range: [1, 10],
-        retros: [
-          {
-            at: Date.UTC(2026, 7, 7), date: "2026-08-07", cycle: 120,
-            scores: { going: 5, effectiveness: 5, feeling: 6 },
-            overall: "Finding its feet.", good: "Ships.", bad: "Re-derives.",
-            changes: [],
-          },
-          {
-            at: Date.UTC(2026, 7, 14), date: "2026-08-14", cycle: 181,
-            scores: { going: 7, effectiveness: 6, feeling: 8 },
-            overall: "Better.", good: "Picks from the board.", bad: "Still slow.",
-            changes: [],
-          },
-        ],
-      },
-    });
-    const chart = window.document.querySelector(".chart");
-    assert.ok(chart, "the retro page rendered no chart at all");
-    assert.ok(chart.querySelector(".chart-tool-full"), "no full-screen control");
-    assert.equal(chart.querySelectorAll(".chart-tool").length, 4);
-  });
 });
 
 /* A cycle that ran and wrote nothing, marked where it happened -- the
@@ -4805,25 +4576,34 @@ describe("the retrospective page", () => {
     assert.doesNotMatch(feedText(window), /Could not load/);
   });
 
-  test("one line per score, drawn with a dot at every real retro", async () => {
+  test("one line per score, with a dot at every real retro", async () => {
     const window = await loadSite("/retro", { retro: twoRetros });
-    const paths = [...window.document.querySelectorAll(".chart-svg path")];
-    assert.equal(paths.length, 3, "three scores, three lines");
-    // Two retros, so every path is a single segment: one M and one L. A
-    // path that swallowed the second point would still be a <path>.
-    paths.forEach((p) => {
-      assert.equal((p.getAttribute("d").match(/[ML]/g) || []).join(""), "ML");
+    const series = window.document.querySelector(".chart").chartOption.series;
+    assert.equal(series.length, 3, "three scores, three lines");
+    series.forEach((line) => {
+      assert.equal(line.data.length, 2, "a retro was swallowed");
+      // A dot per retro as well as the line: with one retro there is no
+      // line to see at all, and with five there are still only five real
+      // observations -- marking them stops the eye reading the segments
+      // between as data.
+      assert.equal(line.showSymbol, true);
     });
-    assert.equal(window.document.querySelectorAll(".chart-svg circle").length, 6);
   });
 
-  test("a higher score sits higher on the axis", async () => {
-    // The one assertion that catches an inverted y, which every other test
-    // on this page passes happily.
+  test("the axis runs the right way up, and the scale is the ledger's own", async () => {
+    /* The old version of this test read a y pixel out of a path, because
+     * this file drew the path. ECharts draws it now, so an inverted axis
+     * is no longer something this app can get wrong by arithmetic -- it
+     * would take `yAxis.inverse`, which is not set. What this app still
+     * decides, and can still get wrong, is the range: hardcode 0-10 or
+     * 1-100 and every score is drawn against the wrong scale. */
     const window = await loadSite("/retro", { retro: twoRetros });
-    const feeling = [...window.document.querySelectorAll(".chart-svg path")][2];
-    const [, y1, , y2] = feeling.getAttribute("d").match(/-?[\d.]+/g).map(Number);
-    assert.ok(y2 < y1, `8/10 must be drawn above 6/10, got ${y1} then ${y2}`);
+    const chart = window.document.querySelector(".chart").chartOption;
+    assert.equal(chart.yAxis.min, 1);
+    assert.equal(chart.yAxis.max, 10);
+    assert.ok(!chart.yAxis.inverse, "a higher score must sit higher");
+    const feeling = chart.series[2];
+    assert.deepEqual([...feeling.data].map(([, v]) => v), [6, 8]);
   });
 
   test("the legend names all three, so identity never rests on colour", async () => {
@@ -4838,11 +4618,12 @@ describe("the retrospective page", () => {
     const window = await loadSite("/retro", {
       retro: { ...twoRetros, retros: [twoRetros.retros[0]] },
     });
-    const dots = [...window.document.querySelectorAll(".chart-svg circle")];
-    assert.equal(dots.length, 3);
-    dots.forEach((dot) => {
-      assert.ok(Number.isFinite(Number(dot.getAttribute("cx"))), "x must be a number");
-    });
+    const chart = window.document.querySelector(".chart").chartOption;
+    assert.equal(chart.series.length, 3);
+    chart.series.forEach((line) => assert.equal(line.data.length, 1));
+    // The domain is widened to a week either side rather than left at
+    // zero width, which is where the NaN used to come from.
+    assert.ok(chart.xAxis.max > chart.xAxis.min, "the x-axis collapsed to a point");
   });
 
   test("the cards read newest first and carry the prose, not just the scores", async () => {
@@ -4865,22 +4646,33 @@ describe("the retrospective page", () => {
     assert.deepEqual(on, ["/retro"]);
   });
 
-  test("the hover label names a day, never an invented time of day", async () => {
+  test("the readout names a day, never an invented time of day", async () => {
     // The ledger stores dates and the payload converts them to midnight
-    // UTC, so the shared tooltip's default stamp would print "14 Aug,
-    // 02:00" in Oslo -- a real-looking time that corresponds to nothing.
-    // jsdom lays nothing out, so the overlay's box has to be supplied for
-    // the handler to get past its own zero-width guard.
+    // UTC, so the cost charts' stamp would print "14 Aug, 02:00" in Oslo
+    // -- a real-looking time that corresponds to nothing. This page
+    // overrides it, and the override is what is being pinned.
     const window = await loadSite("/retro", { retro: twoRetros });
-    const svg = window.document.querySelector(".chart-svg");
-    svg.getBoundingClientRect = () => ({ left: 0, width: 360, top: 0, height: 168 });
-    const overlay = window.document.querySelector(".chart-overlay");
-    const move = new window.Event("pointermove", { bubbles: true });
-    move.clientX = 359;
-    overlay.dispatchEvent(move);
-    const label = window.document.querySelector(".chart-tip-when").textContent;
+    const chart = window.document.querySelector(".chart").chartOption;
+    const at = chart.series[0].data[1][0];
+    const label = chart.tooltip.formatter([
+      { value: [at, 8], seriesName: "Overall feeling", color: "#8fd694" },
+    ]);
     assert.doesNotMatch(label, /\d{1,2}:\d{2}/, `a time of day was invented: ${label}`);
     assert.match(label, /14/, `the newest retro's day is missing: ${label}`);
+    // And the score reads as a score, not a bare number.
+    assert.match(label, /8\/10/);
+  });
+
+  test("the retro chart gets the same treatment, since it lives in the same frame", async () => {
+    const window = await loadSite("/retro", { retro: twoRetros });
+    const figure = window.document.querySelector(".chart");
+    assert.ok(figure, "the retro page rendered no chart at all");
+    assert.ok(figure.querySelector(".chart-tool-full"), "no full-screen control");
+    assert.ok(figure.chartOption.dataZoom.some((z) => z.type === "slider"));
+    // The one deliberate difference: 1-to-10 is ten possible values, so
+    // there is nothing to zoom into on the y axis.
+    assert.ok(!figure.chartOption.dataZoom.some((z) => z.yAxisIndex === 0),
+      "the score axis should not be zoomable");
   });
 
   test("a 502 on the retro page reaches the retro page's own message", async () => {

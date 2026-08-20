@@ -176,6 +176,12 @@ STATIC_ROUTES = {
     "/manifest.webmanifest": "manifest.webmanifest",
     "/sw.js": "sw.js",
     "/icon.svg": "icon.svg",
+    # Apache ECharts 5.5.1, Apache-2.0, vendored rather than pulled off a
+    # CDN: this app is served over a tailnet and is meant to survive a dead
+    # link, and a CDN script tag is a chart page that goes blank when the
+    # phone is off the internet. `app.js` loads it lazily on the first
+    # chart, so the 1.0 MB is not in the shell's critical path.
+    "/vendor/echarts.min.js": os.path.join("vendor", "echarts.min.js"),
 }
 
 # The page routes the server answers with the SPA shell. A module

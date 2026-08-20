@@ -1531,35 +1531,21 @@ blockquote {
 .chart-title { margin: 0 0.25rem; font-size: 1rem; font-weight: 600; }
 .chart-sub { margin: 0.1rem 0.25rem 0.5rem; color: var(--dim); font-size: 0.82rem; }
 
-/* The tooltip is positioned against this, not against the SVG: an
- * absolutely-positioned child of an <svg> is not something CSS will place
- * for you. */
-.chart-plot { position: relative; overflow: hidden; }
-.chart-svg { display: block; width: 100%; height: auto; }
-.chart-axis-label { fill: #7d8296; font-size: 8px; }
-.chart-overlay { cursor: crosshair; touch-action: pan-y; }
-
-/* Zoom, pan and full screen (Edvard's capture, 2026-08-20: the graphs are
- * too small on his phone).
- *
- * `touch-action: none` only once the chart is actually zoomed. Set it
- * unconditionally and a finger dragged up the page over a chart stops
- * scrolling the page, which trades one complaint for a worse one; while
- * the chart is at 1x there is nothing to pan, so the browser keeps the
- * gesture. A pinch is two fingers and reaches the handler either way. */
-.chart-plot.is-zoomed { touch-action: none; cursor: grab; }
-
-/* The overlay needs its own copy, and the reason I first wrote here was
- * wrong, so it is worth replacing rather than deleting. I claimed
- * `touch-action` resolves only from the element a touch starts on, which
- * would have made the `none` above dead. It does not: the UA intersects
- * the hit element's value with every ancestor up to the nearest scroll
- * container, so `none` on the plot already governs. This line is belt and
- * braces -- it keeps the overlay's own `pan-y` from being the value that
- * survives if that intersection is ever narrowed -- not the load-bearing
- * fix the old comment claimed. Believing the old version would have led
- * the next reader to delete the plot's rule as redundant. */
-.chart-plot.is-zoomed .chart-overlay { touch-action: none; cursor: grab; }
+/* ECharts mounts into this box and sizes its canvas from it, so unlike
+ * the hand-written SVG it replaced, the height has to be a real number
+ * here rather than something the drawing implies. 240px is a chart worth
+ * reading on a phone without pushing the tiles above it off the screen;
+ * full screen below is the answer to wanting more than that. */
+.chart-plot {
+  position: relative;
+  height: 240px;
+  width: 100%;
+  /* The library asks the browser for the pinch and the drag itself. Its
+   * `dataZoom: inside` handler calls preventDefault on a two-finger
+   * gesture and leaves a one-finger vertical drag to the page, so the
+   * page still scrolls when a thumb passes over a chart. */
+  touch-action: pan-y;
+}
 
 .chart-tools {
   order: 2;
@@ -1570,7 +1556,10 @@ blockquote {
   font-size: 0.8rem;
 }
 
-.chart-tools-label { color: var(--dim); margin-right: 0.1rem; }
+/* One line of plain words rather than icons for the gestures, because
+ * nothing else on the chart says the gestures exist. It wraps to two
+ * lines on a narrow phone and that is fine. */
+.chart-tools-hint { color: var(--dim); font-size: 0.72rem; line-height: 1.3; }
 
 .chart-tool {
   /* 34px is the smallest target that is still comfortable on a phone --
@@ -1605,27 +1594,17 @@ blockquote {
 }
 
 /* The plot takes whatever the caption and the controls leave, which is
- * what makes turning the phone sideways worth doing. */
-.chart-full .chart-plot { flex: 1; display: flex; align-items: center; }
-.chart-full .chart-svg { width: 100%; height: 100%; }
+ * what makes turning the phone sideways worth doing. `height: auto` has
+ * to override the fixed 240px above or `flex: 1` cannot grow it. */
+.chart-full .chart-plot { flex: 1; height: auto; min-height: 0; }
 
 /* Nothing behind the overlay may scroll -- on a phone a stray drag past
  * the chart would otherwise move the page underneath it. */
 body.has-full-chart { overflow: hidden; }
 
-.chart-tip {
-  position: absolute;
-  top: 0.25rem;
-  background: #0d0e13ee;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.76rem;
-  line-height: 1.45;
-  pointer-events: none;
-  min-width: 8.5rem;
-}
-
+/* The tooltip box itself is the library's now (positioning, the arrow,
+ * staying inside the plot); these classes style the rows this app puts
+ * inside it, which is why they survived the rewrite unchanged. */
 .chart-tip-when { margin: 0 0 0.15rem; color: var(--dim); }
 .chart-tip-row { margin: 0; display: flex; align-items: center; gap: 0.35rem; }
 .chart-tip-swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
