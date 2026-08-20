@@ -68,10 +68,18 @@ def test_rotate_creates_conversation_carries_personas_and_points_heartbeat():
 def test_rotate_numbers_the_cycle_from_existing_tagged_conversations():
     heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
                  "rotateConversationEachRun": True}
+    # Every fixture carries the `name` a real conversation carries. Without
+    # it this test passed on the fallback path -- `numbers_in` found nothing
+    # to parse, `next_number` counted instead, and reverting the whole fix to
+    # `len(existing) + 1` still produced "Cycle 3". Reviewer finding on #250:
+    # a test named for the numbering rule, pinning the rule it replaced.
     existing = [
-        {"id": "c1", "tags": ["evolve-cycle:hb1"], "createdAt": "2026-08-01T00:00:00Z"},
-        {"id": "c2", "tags": ["evolve-cycle:hb1"], "createdAt": "2026-08-01T06:00:00Z"},
-        {"id": "c3", "tags": ["some-other-tag"], "createdAt": "2026-08-01T12:00:00Z"},
+        {"id": "c1", "name": "Agora Evolve v1 — Cycle 4",
+         "tags": ["evolve-cycle:hb1"], "createdAt": "2026-08-01T00:00:00Z"},
+        {"id": "c2", "name": "Agora Evolve v1 — Cycle 5",
+         "tags": ["evolve-cycle:hb1"], "createdAt": "2026-08-01T06:00:00Z"},
+        {"id": "c3", "name": "K3s Sentinel — Cycle 99",
+         "tags": ["some-other-tag"], "createdAt": "2026-08-01T12:00:00Z"},
     ]
     calls = []
 
@@ -89,9 +97,14 @@ def test_rotate_numbers_the_cycle_from_existing_tagged_conversations():
         rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
 
     create_call = next(c for c in calls if c[0] == "POST" and c[1] == "/conversations")
-    # 2 existing conversations tagged for THIS heartbeat -> this is cycle 3.
-    # The untagged c3 must not count.
-    assert create_call[2]["name"] == "Agora Evolve v1 — Cycle 3"
+    # The highest number named by a conversation tagged for THIS heartbeat
+    # is 5, so this is cycle 6. Counting the two of them would say 3 -- a
+    # number cycle 3 already holds -- which is why the numbers 4 and 5 are
+    # not 1 and 2 here: the live store really is non-contiguous (276
+    # conversations, highest 277, measured 2026-08-20), and a contiguous
+    # fixture cannot tell the two rules apart. c3 carries a higher number
+    # and the wrong tag, and must not be read at all.
+    assert create_call[2]["name"] == "Agora Evolve v1 — Cycle 6"
 
 
 def test_rotate_prunes_beyond_retention_keeping_the_newest():
