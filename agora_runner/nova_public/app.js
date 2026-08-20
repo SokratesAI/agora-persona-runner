@@ -3800,11 +3800,10 @@
    * are different units, so they are two charts sharing one time axis
    * rather than one chart with two y-scales.
    *
-   * Every mark is built with createElementNS for the same reason nothing
-   * in this file uses innerHTML: an SVG string assembled out of numbers is
-   * still markup this client would be producing.
+   * Every mark used to be built by hand with createElementNS. As of
+   * 2026-08-20 the drawing belongs to Apache ECharts and this file only
+   * describes what to draw -- see the chart layer below for why.
    */
-  var SVG_NS = "http://www.w3.org/2000/svg";
 
   /* The two series colours. Validated against this app's own dark surface
    * (#12131a) rather than chosen: lightness band, chroma floor, contrast,
@@ -3817,14 +3816,6 @@
   var SERIES_B = "#bd8b2f";
   var GRID = "#2a2d3a";
   var AXIS_INK = "#7d8296";
-
-  function svgEl(tag, attrs) {
-    var node = document.createElementNS(SVG_NS, tag);
-    Object.keys(attrs || {}).forEach(function (key) {
-      node.setAttribute(key, attrs[key]);
-    });
-    return node;
-  }
 
   function fmtTokens(n) {
     if (!isFinite(n)) return "—";
@@ -3853,271 +3844,218 @@
     });
   }
 
-  /* One chart's frame: the box, its grid, and its two axes.
+  /* ---- Charts, on a real charting library --------------------------------
    *
-   * `viewBox` is 360 wide because that is roughly a phone, and the SVG
-   * scales up from there -- so a font-size in user units is about the
-   * pixel size it will have on the device this is actually read on, and
-   * larger on a desktop. Sizing the other way round (a wide viewBox
-   * scaled down) is what makes hand-written SVG unreadable on a phone.
+   * Edvard, 2026-08-20, on the hand-rolled version this replaces: "there
+   * are still quite the amount of bugs and better ux improvements. Can we
+   * just use a third party library for this? We do not have to reinvent
+   * the wheel here. ... The zoom works, but it does not give me any more
+   * granulation in the graph, it just makes the graph bars larger. I want
+   * actual graph zoom as in expanding the values on the x/y axis and
+   * showing more granularity. Also the hover effect when i press the graph
+   * only works for a split second. I should be able to select stuff, move
+   * around."
+   *
+   * He is describing the exact limit of what the old code could do. It
+   * zoomed by putting a CSS `transform: scale()` on the rendered SVG,
+   * which magnifies the picture and cannot add a tick to an axis: the
+   * bars got fatter and the two date labels stayed the same two dates.
+   * Real zoom means re-deriving the scales and redrawing, and doing that
+   * with a crosshair, a sticky tooltip, pinch, drag-pan and rubber-band
+   * selection on top is a charting library. So: Apache ECharts 5.5.1,
+   * vendored at `/vendor/echarts.min.js` (Apache-2.0), and about 400
+   * lines of hand-written SVG deleted.
+   *
+   * Vendored rather than a CDN because the app is served over a tailnet
+   * and is meant to work on a dead link -- a CDN script tag is a chart
+   * page that goes blank the moment the phone is off the internet, which
+   * is the failure the service worker exists to prevent. It is 1.0 MB, so
+   * it is loaded lazily on the first chart rather than in the shell, and
+   * cached by the worker on first use.
    */
-  var CHART = { w: 360, h: 168, left: 30, right: 6, top: 10, bottom: 16 };
+  var ECHARTS_SRC = "/vendor/echarts.min.js";
+  var echartsLoading = null;
 
+  function ensureECharts() {
+    if (window.echarts) return Promise.resolve(window.echarts);
+    if (echartsLoading) return echartsLoading;
+    echartsLoading = new Promise(function (resolve, reject) {
+      var tag = document.createElement("script");
+      tag.src = ECHARTS_SRC;
+      tag.async = true;
+      tag.onload = function () {
+        if (window.echarts) resolve(window.echarts);
+        else reject(new Error("echarts loaded but did not register"));
+      };
+      tag.onerror = function () { reject(new Error("could not load " + ECHARTS_SRC)); };
+      document.head.appendChild(tag);
+    });
+    // A failed load must not poison every later chart: drop the memo so
+    // the next page visit retries. Offline once is not offline forever.
+    echartsLoading.catch(function () { echartsLoading = null; });
+    return echartsLoading;
+  }
+
+  /* One chart's frame: the caption, the box ECharts mounts into, and the
+   * full-screen button. Everything inside the box -- axes, grid, marks,
+   * crosshair, tooltip, zoom, pan, selection -- belongs to the library
+   * now, which is the point of the change.
+   */
   function chartFrame(title, subtitle) {
     var figure = el("figure", "chart");
     figure.appendChild(el("figcaption", "chart-title", title));
     if (subtitle) figure.appendChild(el("p", "chart-sub", subtitle));
     var plot = el("div", "chart-plot");
-    var svg = svgEl("svg", {
-      viewBox: "0 0 " + CHART.w + " " + CHART.h,
-      class: "chart-svg",
-      role: "img",
-      "aria-label": title + (subtitle ? ". " + subtitle : ""),
-    });
-    plot.appendChild(svg);
     figure.appendChild(plot);
-    var chart = { figure: figure, plot: plot, svg: svg };
-    addChartControls(chart, title);
+    var chart = { figure: figure, plot: plot, title: title };
+
+    var tools = el("div", "chart-tools");
+    // Said in words, not left to an icon. The library's own toolbox
+    // glyphs sit inside the plot and are unlabelled; this is the one
+    // control that changes the page rather than the picture.
+    var full = el("button", "chart-tool chart-tool-full", "Full screen");
+    full.type = "button";
+    full.setAttribute("aria-label", "Full screen: " + title);
+    full.title = full.getAttribute("aria-label");
+    full.addEventListener("click", function () {
+      setChartFullscreen(chart, !figure.classList.contains("chart-full"));
+    });
+    tools.appendChild(el(
+      "span", "chart-tools-hint",
+      "Pinch or scroll to zoom · drag to pan · tap a point to pin the readout"
+    ));
+    tools.appendChild(full);
+    figure.appendChild(tools);
     return chart;
   }
 
-  /* ---- Making a chart big enough to read on a phone --------------------
+  /* Shared option scaffolding.
    *
-   * Edvard, capture 2026-08-20: "Improve the cost graphs. They are quite
-   * small on my phone, so i would like options to make the full screen,
-   * zoom (using touch two fingers drag or a +- button. To be able to do
-   * both is best)."
-   *
-   * Both, then, and they are one mechanism rather than two: a scale and an
-   * offset applied to the whole SVG as a CSS transform, driven either by
-   * the buttons or by a two-finger pinch. Transforming the rendered SVG
-   * rather than re-deriving the scales and redrawing is what makes this
-   * generic -- it is wired into `chartFrame`, so the two cost charts and
-   * the retro chart all get it without any of them knowing, and a chart
-   * added later gets it for free.
-   *
-   * It also keeps the crosshair working for free, which a redraw would
-   * not have. `attachHover` locates a point by comparing the pointer
-   * against `getBoundingClientRect()`, and that rect already accounts for
-   * a CSS transform on the element -- so a zoomed chart reports a wider
-   * box at a shifted left edge, and the same arithmetic lands on the same
-   * mark. The one thing that had to be taught is `panning` below: once a
-   * drag is really a drag, the tooltip must stop chasing it.
+   * The three things Edvard asked for, each named where it is set:
+   *  - granularity: `dataZoom` re-scales the axis and ECharts re-derives
+   *    its ticks, so zooming in genuinely turns "14 Aug — 20 Aug" into
+   *    hours. `filterMode: "none"` keeps the marks outside the window
+   *    drawn rather than dropped, so panning does not blank a line.
+   *  - a readout that stays: `triggerOn: "mousemove|click"` means a tap
+   *    on a phone pins the tooltip instead of showing it for the length
+   *    of the touch, which is the "split second" he is describing.
+   *  - selection and moving around: `toolbox.dataZoom` is rubber-band
+   *    select-to-zoom, `type: "inside"` is pinch and drag-pan, and
+   *    `restore` puts it all back.
    */
-  var ZOOM_MAX = 8;
-  var ZOOM_STEP = 1.6;
+  var CHART_FONT = 11;
 
-  function addChartControls(chart, title) {
-    var state = { k: 1, tx: 0, ty: 0 };
-    chart.zoom = state;
-    chart.title = title;
-
-    var tools = el("div", "chart-tools");
-    tools.appendChild(el("span", "chart-tools-label", "Zoom"));
-
-    function button(className, label, aria) {
-      var node = el("button", className, label);
-      node.type = "button";
-      node.setAttribute("aria-label", aria);
-      node.title = aria;
-      tools.appendChild(node);
-      return node;
-    }
-
-    // The glyphs on these two are the one place a symbol carries the
-    // meaning, so both get the word in `aria-label` and `title`, and the
-    // "Zoom" label above sits beside them permanently.
-    var out = button("chart-tool", "−", "Zoom out");
-    var into = button("chart-tool", "+", "Zoom in");
-    var reset = button("chart-tool chart-tool-reset", "Reset", "Reset zoom");
-    var full = button("chart-tool chart-tool-full", "Full screen", "Full screen: " + title);
-    chart.figure.appendChild(tools);
-
-    /* Keep the picture covering the window it is drawn in.
-     *
-     * At k=1 there is nothing to offset and both are pinned to 0; above
-     * it the offset may run from -(k-1)*size to 0, which is exactly the
-     * range where an edge of the SVG is still outside the plot box. Let
-     * it past that and you can drag the chart off screen and be left
-     * looking at an empty card with no way back except Reset. */
-    function clamp() {
-      if (state.k <= 1) {
-        state.k = 1;
-        state.tx = 0;
-        state.ty = 0;
-        return;
-      }
-      if (state.k > ZOOM_MAX) state.k = ZOOM_MAX;
-      var box = chart.plot.getBoundingClientRect();
-      // jsdom, and a plot that has not been laid out yet, both report 0.
-      // Clamping against 0 would force the offset to 0 and silently undo
-      // a pan, so an unmeasurable box means "do not clamp".
-      if (!box.width || !box.height) return;
-      var minX = -(state.k - 1) * box.width;
-      var minY = -(state.k - 1) * box.height;
-      state.tx = Math.min(0, Math.max(minX, state.tx));
-      state.ty = Math.min(0, Math.max(minY, state.ty));
-    }
-
-    function apply() {
-      clamp();
-      chart.svg.style.transformOrigin = "0 0";
-      chart.svg.style.transform =
-        "translate(" + state.tx + "px, " + state.ty + "px) scale(" + state.k + ")";
-      var zoomed = state.k > 1.001;
-      chart.plot.classList.toggle("is-zoomed", zoomed);
-      reset.disabled = !zoomed;
-      out.disabled = !zoomed;
-      into.disabled = state.k >= ZOOM_MAX - 0.001;
-    }
-
-    /* Zoom about a fixed point, so the mark under the finger stays under
-     * the finger. Anchoring at the corner instead is the thing that makes
-     * a pinch feel like it is fighting you. */
-    function zoomAt(factor, originX, originY) {
-      var next = Math.max(1, Math.min(ZOOM_MAX, state.k * factor));
-      var ratio = next / state.k;
-      state.tx = originX - ratio * (originX - state.tx);
-      state.ty = originY - ratio * (originY - state.ty);
-      state.k = next;
-      apply();
-    }
-
-    function zoomCentre(factor) {
-      var box = chart.plot.getBoundingClientRect();
-      zoomAt(factor, box.width / 2, box.height / 2);
-    }
-
-    out.addEventListener("click", function () { zoomCentre(1 / ZOOM_STEP); });
-    into.addEventListener("click", function () { zoomCentre(ZOOM_STEP); });
-    reset.addEventListener("click", function () {
-      state.k = 1;
-      apply();
-    });
-    full.addEventListener("click", function () {
-      setChartFullscreen(chart, !chart.figure.classList.contains("chart-full"));
-    });
-    chart.applyZoom = apply;
-
-    attachGestures(chart, state, zoomAt, apply);
-    apply();
+  function baseOption(opts) {
+    var yZoom = opts.zoomY === false ? [] : [
+      { type: "inside", yAxisIndex: 0, filterMode: "none", zoomOnMouseWheel: "shift" },
+    ];
+    return {
+      animation: false,
+      backgroundColor: "transparent",
+      textStyle: { color: AXIS_INK, fontSize: CHART_FONT },
+      grid: { left: 44, right: 12, top: 12, bottom: 56, containLabel: false },
+      tooltip: {
+        trigger: "axis",
+        triggerOn: "mousemove|click",
+        confine: true,
+        axisPointer: { type: "cross", label: { show: false },
+                       crossStyle: { color: AXIS_INK }, lineStyle: { color: AXIS_INK } },
+        backgroundColor: "rgba(16,18,26,0.94)",
+        borderColor: GRID,
+        textStyle: { color: "#e6e8f0", fontSize: CHART_FONT + 1 },
+        formatter: opts.tooltip,
+      },
+      toolbox: {
+        right: 8, top: 2, itemSize: 13,
+        iconStyle: { borderColor: AXIS_INK },
+        emphasis: { iconStyle: { borderColor: "#e6e8f0" } },
+        feature: {
+          dataZoom: { yAxisIndex: "none", title: { zoom: "Select an area to zoom", back: "Undo zoom" } },
+          restore: { title: "Reset" },
+        },
+      },
+      dataZoom: [
+        { type: "inside", xAxisIndex: 0, filterMode: "none" },
+        {
+          type: "slider", xAxisIndex: 0, filterMode: "none",
+          height: 22, bottom: 8,
+          borderColor: GRID, fillerColor: "rgba(93,134,221,0.16)",
+          handleStyle: { color: SERIES_A, borderColor: SERIES_A },
+          moveHandleStyle: { color: GRID },
+          dataBackground: { lineStyle: { color: AXIS_INK }, areaStyle: { color: GRID } },
+          textStyle: { color: AXIS_INK, fontSize: CHART_FONT - 1 },
+        },
+      ].concat(yZoom),
+      xAxis: {
+        type: "time",
+        min: opts.from, max: opts.to,
+        axisLine: { lineStyle: { color: GRID } },
+        axisTick: { lineStyle: { color: GRID } },
+        axisLabel: { color: AXIS_INK, hideOverlap: true },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: "value",
+        min: opts.min, max: opts.max,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: AXIS_INK, formatter: opts.yLabel },
+        splitLine: { lineStyle: { color: GRID } },
+      },
+      series: opts.series,
+    };
   }
 
-  /* Pinch to zoom, drag to pan.
+  /* Mount a built option into a frame once the library and the layout are
+   * both ready.
    *
-   * Two pointers is a pinch: the distance between them sets the scale and
-   * their midpoint sets the anchor, so a two-finger drag pans and zooms in
-   * the same motion, which is what a phone reader expects.
-   *
-   * One pointer is left alone until it has actually travelled -- under the
-   * threshold it is a tap and the crosshair keeps it. Past the threshold,
-   * and only when there is something to pan, it becomes a pan and
-   * `panning` tells `attachHover` to stop moving the tooltip. Without that
-   * threshold a zoomed chart loses the tooltip entirely, and without
-   * `panning` the tooltip chases the drag it is being dragged out of.
+   * `init` needs a box with a real size, and the figure is not in the
+   * document at the moment the render function returns it -- the caller
+   * appends it afterwards. So this waits a frame and checks: an element
+   * that never lands (the reader navigated away mid-load) is dropped
+   * rather than initialised into a zero-width canvas.
    */
-  var PAN_THRESHOLD = 6;
+  var liveCharts = [];
 
-  function attachGestures(chart, state, zoomAt, apply) {
-    var live = {};
-    var count = 0;
-    var pinch = null;
-    var drag = null;
-
-    function local(event) {
-      var box = chart.plot.getBoundingClientRect();
-      return { x: event.clientX - box.left, y: event.clientY - box.top };
-    }
-
-    function ids() { return Object.keys(live); }
-
-    chart.plot.addEventListener("pointerdown", function (event) {
-      live[event.pointerId] = local(event);
-      count = ids().length;
-      if (count === 2) {
-        drag = null;
-        chart.panning = false;
-        var pair = ids().map(function (id) { return live[id]; });
-        pinch = { distance: gap(pair[0], pair[1]), mid: midpoint(pair[0], pair[1]) };
-      } else if (count === 1) {
-        drag = { from: live[event.pointerId], tx: state.tx, ty: state.ty, moved: false };
-      }
+  function mountEChart(chart, option) {
+    ensureECharts().then(function (echarts) {
+      return new Promise(function (resolve) {
+        requestAnimationFrame(function () { resolve(echarts); });
+      });
+    }).then(function (echarts) {
+      if (!chart.plot.isConnected) return;
+      var instance = echarts.init(chart.plot, null, { renderer: "canvas" });
+      instance.setOption(option);
+      chart.instance = instance;
+      liveCharts.push(chart);
+    }).catch(function (err) {
+      // Never a blank box. A chart that cannot draw says so, in the space
+      // it would have used.
+      if (chart.plot.childNodes.length) return;
+      chart.plot.appendChild(el("p", "empty", "Chart could not load: " + err.message));
     });
+  }
 
-    chart.plot.addEventListener("pointermove", function (event) {
-      if (!(event.pointerId in live)) return;
-      live[event.pointerId] = local(event);
-      var open = ids();
-      if (open.length >= 2 && pinch) {
-        var a = live[open[0]];
-        var b = live[open[1]];
-        var distance = gap(a, b);
-        if (pinch.distance > 0 && distance > 0) {
-          var mid = midpoint(a, b);
-          // The midpoint moving is the pan half of the gesture, applied
-          // before the scale so the anchor is where the fingers are now.
-          state.tx += mid.x - pinch.mid.x;
-          state.ty += mid.y - pinch.mid.y;
-          zoomAt(distance / pinch.distance, mid.x, mid.y);
-          pinch.distance = distance;
-          pinch.mid = mid;
-        }
-        return;
+  window.addEventListener("resize", function () {
+    liveCharts = liveCharts.filter(function (chart) {
+      if (!chart.plot.isConnected) {
+        chart.instance.dispose();
+        return false;
       }
-      if (!drag || state.k <= 1) return;
-      var here = live[event.pointerId];
-      var dx = here.x - drag.from.x;
-      var dy = here.y - drag.from.y;
-      if (!drag.moved && Math.abs(dx) + Math.abs(dy) < PAN_THRESHOLD) return;
-      drag.moved = true;
-      chart.panning = true;
-      if (chart.hideTip) chart.hideTip();
-      state.tx = drag.tx + dx;
-      state.ty = drag.ty + dy;
-      apply();
+      chart.instance.resize();
+      return true;
     });
+  });
 
-    function release(event) {
-      delete live[event.pointerId];
-      count = ids().length;
-      if (count < 2) pinch = null;
-      if (count === 0) {
-        drag = null;
-        chart.panning = false;
-      }
-    }
-
-    chart.plot.addEventListener("pointerup", release);
-    chart.plot.addEventListener("pointercancel", release);
-    chart.plot.addEventListener("pointerleave", release);
-  }
-
-  function gap(a, b) {
-    return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
-  }
-
-  function midpoint(a, b) {
-    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-  }
-
-  /* Full screen, without the Fullscreen API.
+  /* Full screen, unchanged in spirit from the version Edvard asked for --
+   * the phone-sized figure gets the whole window, which in landscape is a
+   * much bigger picture and in portrait at least stops the tiles and the
+   * other charts competing for it.
    *
-   * `requestFullscreen` is refused on iOS Safari for anything that is not
-   * a <video>, which is the device this ask came from -- so this is a
-   * fixed overlay instead, which works everywhere. It is dismissed with
-   * the button or with Escape. **Not** with the back gesture, which this
-   * comment claimed until the reviewer checked: no history entry is
-   * pushed, so back leaves the costs page entirely and the overlay goes
-   * with it. On a phone there is no Escape key and back is the reflex, so
-   * pushing a history entry is worth doing -- filed rather than done
-   * here, because it changes what the browser's back button means on
-   * this page and wants its own change.
-   *
-   * Honest about what it buys: in portrait the chart is already the full
-   * width of a phone, so the gain there is that the page chrome, the
-   * tiles and the other charts stop competing for the screen and the zoom
-   * has the whole window to pan around in. Turned sideways it is a much
-   * bigger picture, which is the other half of the answer.
+   * The one thing it must now do that it did not before: tell the chart
+   * its box changed. ECharts sizes its canvas at `init` and does not
+   * watch the element, so without the `resize` the overlay would open on
+   * a phone-width picture stretched across the screen.
    */
   var openFullChart = null;
 
@@ -4130,10 +4068,10 @@
     var button = chart.figure.querySelector(".chart-tool-full");
     if (button) {
       button.textContent = on ? "Close" : "Full screen";
-      // The chart's own title stays in the label either way. Two charts
-      // on the costs page means two buttons reading "Full screen", and a
-      // screen reader announcing them identically is the same failure as
-      // a bare priority glyph: the control does not say what it acts on.
+      // Two charts on the costs page means two buttons reading "Full
+      // screen", and a screen reader announcing them identically is the
+      // same failure as a bare priority glyph: the control does not say
+      // what it acts on.
       button.setAttribute(
         "aria-label",
         (on ? "Close full screen: " : "Full screen: ") + (chart.title || "")
@@ -4141,15 +4079,7 @@
       button.title = button.getAttribute("aria-label");
     }
     openFullChart = on ? chart : null;
-    // Both directions, and the reviewer caught that this used to be one.
-    // The plot changes size when the overlay opens *and* when it closes,
-    // and `tx`/`ty` are pixel offsets against whichever box was current
-    // when they were set -- so carrying them across either transition
-    // lands the reader somewhere they did not choose, in a picture whose
-    // clamp bounds have also just changed. Entering full screen had this
-    // bug while leaving it carried a comment explaining why it must not.
-    if (chart.zoom) chart.zoom.k = 1;
-    if (chart.applyZoom) chart.applyZoom();
+    if (chart.instance) requestAnimationFrame(function () { chart.instance.resize(); });
   }
 
   function closeFullChart() {
@@ -4160,124 +4090,27 @@
     if (event.key === "Escape") closeFullChart();
   });
 
-  function plotBox() {
-    return {
-      x0: CHART.left,
-      x1: CHART.w - CHART.right,
-      y0: CHART.top,
-      y1: CHART.h - CHART.bottom,
-    };
-  }
-
-  /* Horizontal gridlines and their value labels. Recessive on purpose:
-   * the grid is a reading aid, not data, so it never competes with a
-   * mark. */
-  function drawYAxis(svg, box, ticks, label) {
-    ticks.forEach(function (tick) {
-      svg.appendChild(svgEl("line", {
-        x1: box.x0, x2: box.x1, y1: tick.y, y2: tick.y,
-        stroke: GRID, "stroke-width": 1,
-      }));
-      var text = svgEl("text", {
-        x: box.x0 - 4, y: tick.y + 3, "text-anchor": "end",
-        class: "chart-axis-label",
-      });
-      text.textContent = label(tick.value);
-      svg.appendChild(text);
-    });
-  }
-
-  function drawXDates(svg, box, from, to) {
-    [
-      { at: from, x: box.x0, anchor: "start" },
-      { at: to, x: box.x1, anchor: "end" },
-    ].forEach(function (mark) {
-      var text = svgEl("text", {
-        x: mark.x, y: CHART.h - 4, "text-anchor": mark.anchor,
-        class: "chart-axis-label",
-      });
-      text.textContent = fmtDay(mark.at);
-      svg.appendChild(text);
-    });
-  }
-
-  /* The hover layer, shared by both charts.
-   *
-   * `points` is `[{x, at, lines}]` already in user units; the overlay
-   * finds the nearest one by x and moves a crosshair to it. One
-   * implementation for a bar chart and a line chart because "which moment
-   * is under my finger" is the same question in both, and a phone has no
-   * pointer to hover with -- pointerdown counts, which is why this listens
-   * for that as well as for pointermove.
+  /* A tooltip body, in the shape all three charts want: a stamp, then one
+   * row per series with its own swatch. ECharts hands the formatter the
+   * params for every series under the pointer; `rows` maps those to the
+   * label and value this particular chart wants to print.
    */
-  function attachHover(chart, box, points, when) {
-    if (!points.length) return;
-    var rule = svgEl("line", {
-      y1: box.y0, y2: box.y1, stroke: AXIS_INK, "stroke-width": 1,
-      "stroke-dasharray": "2 2", class: "chart-rule", x1: box.x0, x2: box.x0,
+  function tipHtml(when, rows) {
+    var html = '<div class="chart-tip-when">' + escapeHtml(when) + "</div>";
+    rows.forEach(function (row) {
+      html += '<div class="chart-tip-row">'
+        + '<span class="chart-tip-swatch" style="background:' + row.color + '"></span>'
+        + '<span class="chart-tip-label">' + escapeHtml(row.label) + "</span>"
+        + '<span class="chart-tip-value">' + escapeHtml(row.value) + "</span>"
+        + "</div>";
     });
-    rule.style.opacity = "0";
-    chart.svg.appendChild(rule);
+    return html;
+  }
 
-    var tip = el("div", "chart-tip");
-    tip.hidden = true;
-    chart.plot.appendChild(tip);
-
-    var overlay = svgEl("rect", {
-      x: box.x0, y: box.y0, width: box.x1 - box.x0, height: box.y1 - box.y0,
-      fill: "transparent", class: "chart-overlay",
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"]/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch];
     });
-
-    function show(event) {
-      // A drag that is panning a zoomed chart is not asking "what is under
-      // my finger" -- the mark under it is moving with it. See
-      // `attachGestures`.
-      if (chart.panning) return;
-      var bounds = chart.svg.getBoundingClientRect();
-      if (!bounds.width) return;
-      var user = ((event.clientX - bounds.left) / bounds.width) * CHART.w;
-      var best = points[0];
-      points.forEach(function (point) {
-        if (Math.abs(point.x - user) < Math.abs(best.x - user)) best = point;
-      });
-      rule.setAttribute("x1", best.x);
-      rule.setAttribute("x2", best.x);
-      rule.style.opacity = "1";
-      tip.textContent = "";
-      // `when` overrides the stamp for a series whose x is a date rather
-      // than a moment: the retro ledger stores days, so the default would
-      // print "14 Aug, 02:00" -- a real-looking time that corresponds to
-      // nothing, invented by the midnight-UTC conversion.
-      tip.appendChild(el("p", "chart-tip-when", (when || fmtStamp)(best.at)));
-      best.lines.forEach(function (line) {
-        var row = el("p", "chart-tip-row");
-        row.appendChild(el("span", "chart-tip-swatch"));
-        row.lastChild.style.background = line.color;
-        row.appendChild(el("span", "chart-tip-label", line.label));
-        row.appendChild(el("span", "chart-tip-value", line.value));
-        tip.appendChild(row);
-      });
-      tip.hidden = false;
-      // Kept inside the plot: the tip is ~120px wide against a 360-unit
-      // box, so pinning it to the side the pointer is *not* on is what
-      // stops it covering the mark it describes.
-      var left = best.x / CHART.w > 0.5;
-      tip.style.left = left ? "4px" : "auto";
-      tip.style.right = left ? "auto" : "4px";
-    }
-
-    function hide() {
-      rule.style.opacity = "0";
-      tip.hidden = true;
-    }
-
-    overlay.addEventListener("pointermove", show);
-    overlay.addEventListener("pointerdown", show);
-    overlay.addEventListener("pointerleave", hide);
-    // The gesture layer owns the tooltip's retreat: it knows a drag has
-    // become a pan a frame before this layer would.
-    chart.hideTip = hide;
-    chart.svg.appendChild(overlay);
   }
 
   /* What one cycle costs, as a bar per cycle placed at the moment it ran.
@@ -4294,53 +4127,44 @@
       "Weighted tokens per cycle, placed when it ran"
     );
     if (!rows.length) {
-      chart.figure.appendChild(el("p", "empty", "No cycles in the ledger yet."));
+      chart.plot.appendChild(el("p", "empty", "No cycles in the ledger yet."));
       return chart.figure;
     }
-    var box = plotBox();
-    var from = domain.from;
-    var to = domain.to;
-    var span = Math.max(to - from, 1);
-    var max = rows.reduce(function (best, row) { return Math.max(best, row[4]); }, 0) || 1;
-
-    var x = function (at) { return box.x0 + ((at - from) / span) * (box.x1 - box.x0); };
-    var y = function (value) { return box.y1 - (value / max) * (box.y1 - box.y0); };
-
-    drawYAxis(chart.svg, box, [
-      { value: max, y: y(max) },
-      { value: max / 2, y: y(max / 2) },
-      { value: 0, y: box.y1 },
-    ], fmtTokens);
-
-    // Wide enough to see, never wide enough to overlap its neighbour --
-    // which means the *narrowest* gap between two cycles, not the median
-    // one. Sized on the median, 31 of the real ledger's 109 gaps are
-    // tighter than the bar, so the busiest stretches render as a solid
-    // smear and the gaps this chart exists to show stop being visible.
-    var gaps = [];
-    for (var i = 1; i < rows.length; i++) gaps.push(x(rows[i][0]) - x(rows[i - 1][0]));
-    var width = gaps.length ? Math.min.apply(null, gaps) : 4;
-    width = Math.max(1, Math.min(width - 0.4, 8));
-
-    var points = [];
-    rows.forEach(function (row) {
-      var height = Math.max(box.y1 - y(row[4]), 0.6);
-      chart.svg.appendChild(svgEl("rect", {
-        x: x(row[0]) - width / 2, y: box.y1 - height,
-        width: width, height: height, rx: Math.min(width / 2, 2),
-        fill: SERIES_A,
-      }));
-      points.push({
-        x: x(row[0]), at: row[0],
-        lines: [
-          { color: SERIES_A, label: "Weighted", value: fmtTokens(row[4]) },
-          { color: "transparent", label: "Ran for", value: row[1] + " min" },
-          { color: "transparent", label: "Turns", value: String(row[2]) },
-        ],
-      });
+    // [when, minutes, turns, ?, weighted] -- the library wants [x, y] and
+    // carries the rest through untouched for the tooltip.
+    var data = rows.map(function (row) {
+      return { value: [row[0], row[4]], minutes: row[1], turns: row[2] };
     });
-    drawXDates(chart.svg, box, from, to);
-    attachHover(chart, box, points);
+    mountEChart(chart, baseOption({
+      from: domain.from, to: domain.to,
+      min: 0, max: null,
+      yLabel: fmtTokens,
+      series: [{
+        type: "bar",
+        name: "Weighted",
+        data: data,
+        itemStyle: { color: SERIES_A },
+        // A bar per cycle placed at the moment it ran, not evenly spaced:
+        // the loop has been idle for days at a stretch and run fourteen
+        // cycles in one, and the gaps are the finding. On a time axis the
+        // library sizes bars from the *smallest* gap in the data, which
+        // used to be arithmetic this file did by hand; a minimum keeps a
+        // lone cycle in a quiet week visible rather than sub-pixel.
+        barMinWidth: 1,
+        barMaxWidth: 14,
+        large: true,
+      }],
+      tooltip: function (params) {
+        var point = params[0];
+        if (!point) return "";
+        var extra = point.data || {};
+        return tipHtml(fmtStamp(point.value[0]), [
+          { color: SERIES_A, label: "Weighted", value: fmtTokens(point.value[1]) },
+          { color: "transparent", label: "Ran for", value: extra.minutes + " min" },
+          { color: "transparent", label: "Turns", value: String(extra.turns) },
+        ]);
+      },
+    }));
     return chart.figure;
   }
 
@@ -4361,57 +4185,47 @@
       "Percent of each window used, at every reading"
     );
     if (!rows.length) {
-      chart.figure.appendChild(el("p", "empty", "No quota readings yet."));
+      chart.plot.appendChild(el("p", "empty", "No quota readings yet."));
       return chart.figure;
     }
-    var box = plotBox();
-    var from = domain.from;
-    var to = domain.to;
-    var span = Math.max(to - from, 1);
-    var x = function (at) { return box.x0 + ((at - from) / span) * (box.x1 - box.x0); };
-    var y = function (pct) { return box.y1 - (pct / 100) * (box.y1 - box.y0); };
-
-    drawYAxis(chart.svg, box, [
-      { value: 100, y: y(100) },
-      { value: 50, y: y(50) },
-      { value: 0, y: box.y1 },
-    ], function (v) { return v + "%"; });
-
-    [
-      { index: 1, color: SERIES_A, label: "5-hour" },
-      { index: 3, color: SERIES_B, label: "7-day" },
-    ].forEach(function (series) {
-      var d = "";
-      var open = false;
-      rows.forEach(function (row) {
-        var value = row[series.index];
-        if (value === null || value === undefined) {
-          // A reading that predates this field is a hole, not a zero. The
-          // path stops and starts again rather than drawing a line down to
-          // the axis and back, which would read as the quota emptying.
-          open = false;
-          return;
-        }
-        d += (open ? "L" : "M") + x(row[0]).toFixed(1) + " " + y(value).toFixed(1) + " ";
-        open = true;
-      });
-      chart.svg.appendChild(svgEl("path", {
-        d: d.trim(), fill: "none", stroke: series.color, "stroke-width": 2,
-        "stroke-linejoin": "round", "stroke-linecap": "round",
-      }));
-    });
-
-    var points = rows.map(function (row) {
+    var series = [
+      { index: 1, color: SERIES_A, label: "5-hour window" },
+      { index: 3, color: SERIES_B, label: "7-day window" },
+    ].map(function (spec) {
       return {
-        x: x(row[0]), at: row[0],
-        lines: [
-          { color: SERIES_A, label: "5-hour", value: row[1] === null ? "—" : row[1] + "%" },
-          { color: SERIES_B, label: "7-day", value: row[3] === null ? "—" : row[3] + "%" },
-        ],
+        type: "line",
+        name: spec.label,
+        // A reading that predates this field is a hole, not a zero, and
+        // `connectNulls: false` is what stops the line dropping to the
+        // axis and back -- which would read as the quota emptying.
+        connectNulls: false,
+        showSymbol: false,
+        symbol: "circle",
+        symbolSize: 6,
+        lineStyle: { width: 2, color: spec.color },
+        itemStyle: { color: spec.color },
+        data: rows.map(function (row) {
+          var value = row[spec.index];
+          return [row[0], value === null || value === undefined ? null : value];
+        }),
       };
     });
-    drawXDates(chart.svg, box, from, to);
-    attachHover(chart, box, points);
+    mountEChart(chart, baseOption({
+      from: domain.from, to: domain.to,
+      min: 0, max: 100,
+      yLabel: function (v) { return v + "%"; },
+      series: series,
+      tooltip: function (params) {
+        if (!params.length) return "";
+        return tipHtml(fmtStamp(params[0].value[0]), params.map(function (point) {
+          return {
+            color: point.color,
+            label: point.seriesName,
+            value: point.value[1] === null ? "—" : point.value[1] + "%",
+          };
+        }));
+      },
+    }));
 
     // Two series, so a legend is not optional -- identity must not rest on
     // colour alone.
@@ -4419,12 +4233,12 @@
     [
       { color: SERIES_A, label: "5-hour window" },
       { color: SERIES_B, label: "7-day window" },
-    ].forEach(function (series) {
+    ].forEach(function (spec) {
       var key = el("span", "legend-key");
       var swatch = el("span", "legend-swatch");
-      swatch.style.background = series.color;
+      swatch.style.background = spec.color;
       key.appendChild(swatch);
-      key.appendChild(el("span", "legend-label", series.label));
+      key.appendChild(el("span", "legend-label", spec.label));
       legend.appendChild(key);
     });
     chart.figure.appendChild(legend);
@@ -4620,80 +4434,63 @@
       "Each Friday's self-rating, 1 to 10"
     );
     if (!rows.length) {
-      chart.figure.appendChild(el("p", "empty", "No retrospectives yet."));
+      chart.plot.appendChild(el("p", "empty", "No retrospectives yet."));
       return chart.figure;
     }
-    var box = plotBox();
     var range = payload.range || [1, 10];
     var lo = range[0];
     var hi = range[1];
     var from = rows[0].at;
     var to = rows[rows.length - 1].at;
-    // One retro is a single moment, so the domain has no width and every
-    // x would be NaN. Give it a week either side, which is what the axis
-    // would show once the second retro lands.
+    // One retro is a single moment, so the domain has no width. Give it a
+    // week either side, which is what the axis would show once the second
+    // retro lands.
     if (to === from) {
       from -= 3.5 * 24 * 3600 * 1000;
       to += 3.5 * 24 * 3600 * 1000;
     }
-    var span = to - from;
-    var x = function (at) { return box.x0 + ((at - from) / span) * (box.x1 - box.x0); };
-    var y = function (v) { return box.y1 - ((v - lo) / (hi - lo)) * (box.y1 - box.y0); };
-
-    drawYAxis(chart.svg, box, [
-      { value: hi, y: y(hi) },
-      { value: Math.round((hi + lo) / 2), y: y(Math.round((hi + lo) / 2)) },
-      { value: lo, y: box.y1 },
-    ], function (v) { return String(v); });
-
-    series.forEach(function (line) {
-      var d = "";
-      var open = false;
-      rows.forEach(function (row) {
-        var value = (row.scores || {})[line.key];
-        if (typeof value !== "number") {
+    mountEChart(chart, baseOption({
+      from: from, to: to,
+      min: lo, max: hi,
+      // Five retros are five observations however wide the window is, so
+      // the y axis is not something to zoom into -- it is a 1-to-10 scale
+      // with ten possible values.
+      zoomY: false,
+      yLabel: function (v) { return String(v); },
+      series: series.map(function (line) {
+        return {
+          type: "line",
+          name: line.label,
           // Same rule as the quota chart: a missing score is a hole, not
           // a zero, and a line drawn down to the axis and back would read
           // as a week that went catastrophically.
-          open = false;
-          return;
-        }
-        d += (open ? "L" : "M") + x(row.at).toFixed(1) + " " + y(value).toFixed(1) + " ";
-        open = true;
-      });
-      if (!d) return;
-      chart.svg.appendChild(svgEl("path", {
-        d: d.trim(), fill: "none", stroke: line.color, "stroke-width": line.width,
-        "stroke-linejoin": "round", "stroke-linecap": "round",
-      }));
-      // A dot per retro as well as the line. With one retro there is no
-      // line to see at all, and with five there are still only five real
-      // observations -- marking them stops the eye reading the segments
-      // between as data.
-      rows.forEach(function (row) {
-        var value = (row.scores || {})[line.key];
-        if (typeof value !== "number") return;
-        chart.svg.appendChild(svgEl("circle", {
-          cx: x(row.at).toFixed(1), cy: y(value).toFixed(1), r: line.width,
-          fill: line.color,
-        }));
-      });
-    });
-
-    drawXDates(chart.svg, box, from, to);
-    attachHover(chart, box, rows.map(function (row) {
-      return {
-        x: x(row.at), at: row.at,
-        lines: series.map(function (line) {
-          var value = (row.scores || {})[line.key];
+          connectNulls: false,
+          // A dot per retro as well as the line. With one retro there is
+          // no line to see at all, and with five there are still only five
+          // real observations -- marking them stops the eye reading the
+          // segments between as data.
+          showSymbol: true,
+          symbol: "circle",
+          symbolSize: line.width * 2.5,
+          lineStyle: { width: line.width, color: line.color },
+          itemStyle: { color: line.color },
+          data: rows.map(function (row) {
+            var value = (row.scores || {})[line.key];
+            return [row.at, typeof value === "number" ? value : null];
+          }),
+        };
+      }),
+      tooltip: function (params) {
+        if (!params.length) return "";
+        return tipHtml(fmtDay(params[0].value[0]), params.map(function (point) {
           return {
-            color: line.color,
-            label: line.label,
-            value: typeof value === "number" ? value + "/" + hi : "—",
+            color: point.color,
+            label: point.seriesName,
+            value: point.value[1] === null ? "—" : point.value[1] + "/" + hi,
           };
-        }),
-      };
-    }), fmtDay);
+        }));
+      },
+    }));
 
     var legend = el("div", "chart-legend");
     series.forEach(function (line) {
