@@ -9,7 +9,7 @@ from agora_runner.heartbeats import (
     run_due_heartbeats,
     workflow_bound_conversation_ids,
     cycle_bound_conversation_ids,
-    current_cycle_conversation_ids,
+    in_flight_cycle_conversation_ids,
 )
 
 
@@ -45,16 +45,21 @@ def poll_once():
     # a lie in the exact place he already can't see what happened.
     workflow_ids = workflow_bound_conversation_ids(heartbeats_list)
     cycle_ids = cycle_bound_conversation_ids(heartbeats_list, conversations)
-    # 2026-08-19, Edvard's ask: the conversation a rotating heartbeat is
-    # pointed at RIGHT NOW answers him in real time again; its retired
-    # predecessors keep deferring. He no longer types routine notes into
-    # these transcripts (the app's capture flow takes those), so writing
-    # here is now a deliberate "talk to the agent that had that session"
-    # -- and a Noted chip up to a cycle later is not an answer to that.
-    # The half of runner#45 that matters is untouched: a message in a
-    # months-old thread still never fires a surprise cycle.
-    live_ids = current_cycle_conversation_ids(heartbeats_list) & cycle_ids
-    deferred_ids = cycle_ids - live_ids
+    # 2026-08-20, Edvard's ask: EVERY cycle transcript answers him in real
+    # time, not just the one a heartbeat currently points at. He got the
+    # Noted chip after writing in a retired cycle's conversation and said
+    # "you should actually answer my responds and do actual work
+    # immediately. Like the good old days."
+    #
+    # This is the second widening of the same rule (2026-08-19 restored
+    # replies for the live transcript only) and it leaves exactly one
+    # conversation deferring: the one a run is writing into right now.
+    # That is not a leftover of the old policy, it is the one case with a
+    # real hazard -- two concurrent `--resume` calls against one CLI
+    # session -- and `in_flight_cycle_conversation_ids` says why the
+    # retired ones cannot have it.
+    deferred_ids = in_flight_cycle_conversation_ids(heartbeats_list) & cycle_ids
+    live_ids = cycle_ids - deferred_ids
     # Workflow ids stay in the skip set even when they are also live: a
     # workflow's own steps decide who acts, and that is a different
     # rationale this ask did not touch. Union, not difference -- being

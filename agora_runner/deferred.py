@@ -29,7 +29,7 @@ QUEUED_CAPABILITY = "Queued"
 
 # Stamped when ordinary turn-taking has just answered him *live* in the
 # conversation a rotating heartbeat currently points at (2026-08-19, at
-# Edvard's ask -- see current_cycle_conversation_ids). It is the same
+# Edvard's ask -- see in_flight_cycle_conversation_ids). It is the same
 # stateless-dedupe trick as QUEUED_CAPABILITY, used for the opposite
 # purpose: _unread_from_edvard reads it as "already answered, do not
 # carry this into the next run's trigger".
@@ -115,9 +115,24 @@ def acknowledge_deferred(summary):
     # That is the behaviour we want -- he is already looking at the app if
     # he just typed here, and a run that fires four times a day should not
     # ring his phone to say it has not started yet.
+    # Edvard, 2026-08-20, on the text this replaces ("Noted — carried into
+    # the next run. The answer arrives in that run's own conversation, not
+    # here."): "That message should be removed and you should actually
+    # answer my responds and do actual work immediately. Like the good old
+    # days."
+    #
+    # He is right about every case he could have hit. The fix is upstream
+    # of this line -- in_flight_cycle_conversation_ids narrowed the
+    # deferred set from "every retired transcript" to "the one a run is
+    # writing into right now", so the old text now fires nowhere it was
+    # wrong. What is left is the one case where deferring is the only
+    # correct behaviour, and it deserves a sentence that says what is
+    # actually happening rather than a brush-off: a cycle is mid-run in
+    # this thread, and answering on top of it would be two concurrent
+    # `--resume` calls against one CLI session.
     audit(_speaker_name(summary), conversation_id, QUEUED_CAPABILITY,
-          "Noted — carried into the next run. The answer arrives in that "
-          "run's own conversation, not here.")
+          "A cycle is running in this thread right now, so I am not "
+          "replying on top of it — this goes into its next run.")
     debug_log(f"[{summary.get('name', conversation_id)}] acknowledged a deferred message")
 
 
