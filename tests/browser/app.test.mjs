@@ -3828,6 +3828,27 @@ describe("a chart can be zoomed, panned, selected and opened full screen", () =>
     assert.match(hint, /pan/i);
   });
 
+  /* The costs page is two full-width charts stacked, and ECharts' pan
+   * handler calls preventDefault on the event it is given -- a touchmove,
+   * on a phone. Left at the library's default of on, a finger that lands
+   * on a chart pans the chart and the page underneath does not scroll,
+   * which is most of the page. So the app decides it per pointer rather
+   * than inheriting it, and this pins the decision being made at all: an
+   * `undefined` here passes every other test in this file and is the bug.
+   */
+  test("drag-to-pan is a mouse behaviour, so a finger can still scroll the page", async () => {
+    const window = await loadSite("/costs");
+    const inside = option(window).dataZoom.filter((z) => z.type === "inside");
+    assert.ok(inside.length, "no inside zoom to decide about");
+    inside.forEach((z) => assert.equal(
+      typeof z.moveOnMouseMove, "boolean", "drag-pan left to the library's default"));
+    // jsdom answers `(pointer: coarse)` with no, so this window is the
+    // mouse case -- where drag-to-pan is on, and the hint says so.
+    inside.forEach((z) => assert.equal(z.moveOnMouseMove, true));
+    assert.match(
+      charts(window)[0].querySelector(".chart-tools-hint").textContent, /drag to pan/i);
+  });
+
 });
 
 /* A cycle that ran and wrote nothing, marked where it happened -- the

@@ -15,7 +15,15 @@
  * genuinely offline first load work.
  */
 var CACHE = "nova-v1";
-var SHELL = ["/", "/app.js", "/style.css", "/icon.svg", "/manifest.webmanifest"];
+/* The vendored charting library is in here for the same reason it is
+ * vendored at all: the costs page has to draw on a dead tailnet link.
+ * app.js loads it lazily on the first chart, so the fetch handler below
+ * only ever caches it after a visit made *while online* -- which makes
+ * the costs page the one page whose first offline load is a blank box.
+ * It is 1.0 MB and the install pays for it once.
+ */
+var SHELL = ["/", "/app.js", "/style.css", "/icon.svg", "/manifest.webmanifest",
+             "/vendor/echarts.min.js"];
 
 self.addEventListener("install", function (event) {
   event.waitUntil(

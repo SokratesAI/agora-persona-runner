@@ -3896,6 +3896,33 @@
     return echartsLoading;
   }
 
+  /* A finger is not a mouse, and on these charts the difference decides
+   * whether the page can scroll.
+   *
+   * ECharts' `inside` dataZoom pans on drag, and its drag handler calls
+   * preventDefault on the event it was handed -- which on a phone is the
+   * touchmove. Two full-width charts stacked down the costs page therefore
+   * become a wall: a finger that lands on a chart pans the chart, and the
+   * page underneath does not move. Nova is read on a phone first, so that
+   * is the common case, not the edge one.
+   *
+   * On a coarse pointer the finger belongs to the page, and the chart is
+   * moved with the slider under it instead -- a control that cannot be hit
+   * by accident. Pinch-to-zoom is untouched: ECharts registers its pinch
+   * handler on the zoom branch of the roam controller and gates only the
+   * drag on `moveOnMouseMove`, so turning pan off leaves zooming alone. On
+   * a mouse, drag-to-pan stays exactly as it was.
+   */
+  var COARSE_POINTER = (function () {
+    try {
+      return !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+    } catch (err) {
+      // A browser that cannot answer the question is treated as a mouse:
+      // that is the behaviour this app already shipped.
+      return false;
+    }
+  })();
+
   /* One chart's frame: the caption, the box ECharts mounts into, and the
    * full-screen button. Everything inside the box -- axes, grid, marks,
    * crosshair, tooltip, zoom, pan, selection -- belongs to the library
@@ -3922,7 +3949,9 @@
     });
     tools.appendChild(el(
       "span", "chart-tools-hint",
-      "Pinch or scroll to zoom · drag to pan · tap a point to pin the readout"
+      COARSE_POINTER
+        ? "Pinch to zoom · drag the bar below to pan · tap a point to pin the readout"
+        : "Scroll to zoom · drag to pan · click a point to pin the readout"
     ));
     tools.appendChild(full);
     figure.appendChild(tools);
@@ -3946,8 +3975,12 @@
   var CHART_FONT = 11;
 
   function baseOption(opts) {
+    // See COARSE_POINTER: drag-to-pan on a touchscreen eats the page's
+    // scroll, so on a phone the slider does the panning.
+    var dragPans = !COARSE_POINTER;
     var yZoom = opts.zoomY === false ? [] : [
-      { type: "inside", yAxisIndex: 0, filterMode: "none", zoomOnMouseWheel: "shift" },
+      { type: "inside", yAxisIndex: 0, filterMode: "none",
+        zoomOnMouseWheel: "shift", moveOnMouseMove: dragPans },
     ];
     return {
       animation: false,
@@ -3975,7 +4008,7 @@
         },
       },
       dataZoom: [
-        { type: "inside", xAxisIndex: 0, filterMode: "none" },
+        { type: "inside", xAxisIndex: 0, filterMode: "none", moveOnMouseMove: dragPans },
         {
           type: "slider", xAxisIndex: 0, filterMode: "none",
           height: 22, bottom: 8,
@@ -4017,6 +4050,25 @@
    */
   var liveCharts = [];
 
+  /* Forget the charts whose element has left the document, and give the
+   * library back the canvas.
+   *
+   * Every ECharts instance holds a canvas and its own zrender event
+   * handlers, and this is one page that swaps its whole view on
+   * navigation -- so each visit to the costs page left two more instances
+   * alive behind a detached element, with a window resize as the only
+   * thing that ever pruned them. On a phone that is a tab left open all
+   * day and never resized. Pruning at mount too bounds it at the charts
+   * actually on screen.
+   */
+  function pruneCharts() {
+    liveCharts = liveCharts.filter(function (chart) {
+      if (chart.plot.isConnected) return true;
+      chart.instance.dispose();
+      return false;
+    });
+  }
+
   function mountEChart(chart, option) {
     /* Hung on the figure synchronously, before anything async starts, and
      * it is the only reason the charts are testable at all. ECharts draws
@@ -4034,6 +4086,7 @@
       });
     }).then(function (echarts) {
       if (!chart.plot.isConnected) return;
+      pruneCharts();
       var instance = echarts.init(chart.plot, null, { renderer: "canvas" });
       instance.setOption(option);
       chart.instance = instance;
@@ -4047,14 +4100,8 @@
   }
 
   window.addEventListener("resize", function () {
-    liveCharts = liveCharts.filter(function (chart) {
-      if (!chart.plot.isConnected) {
-        chart.instance.dispose();
-        return false;
-      }
-      chart.instance.resize();
-      return true;
-    });
+    pruneCharts();
+    liveCharts.forEach(function (chart) { chart.instance.resize(); });
   });
 
   /* Full screen, unchanged in spirit from the version Edvard asked for --
