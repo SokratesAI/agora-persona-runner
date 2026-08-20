@@ -591,6 +591,70 @@ def test_root_serves_the_shell():
     assert b'<div id="feed"' in body or b'id="feed"' in body
 
 
+"""Edvard, capture 2026-08-20: "Issues and ideas takes a while to load."
+
+Measured against the live site the same day, gzipped and on the wire:
+`app.js` 76,254 bytes and `style.css` 19,637 bytes against 13,429 for the
+board payload. The shell was 87KB of the ~110KB a board page cost, and it
+was re-fetched in full on every navigation -- the service worker is
+network-first, and no static response carried a validator, so there was
+nothing for a returning client to make its request conditional on.
+"""
+
+
+@pytest.mark.parametrize("path", ["/app.js", "/style.css", "/", "/issues"])
+def test_a_static_response_carries_a_validator(path):
+    status, head, _ = _get(path)
+    assert status == 200
+    assert re.search(r"^ETag: ", head, re.M), f"{path} went out with no ETag"
+    # Not `max-age`: the file changes on every deploy under the same URL,
+    # so the only correct freshness rule is "ask me".
+    assert re.search(r"^Cache-Control: no-cache", head, re.M)
+
+
+@pytest.mark.parametrize("path", ["/app.js", "/style.css", "/issues"])
+def test_a_returning_client_is_told_304_rather_than_sent_the_shell_again(path):
+    _, head, body = _get(path)
+    etag = re.search(r"^ETag: (\S+)", head, re.M).group(1)
+    assert len(body) > 0
+    status, head, again = _get(path, f"If-None-Match: {etag}\r\n")
+    assert status == 304
+    assert again == b"", "a 304 carried a body"
+    # The saving is the whole point of the change, so assert it rather
+    # than the status alone: a 304 that still shipped the file would pass
+    # every other check here.
+    assert len(again) < len(body)
+
+
+def test_a_rebuilt_asset_is_not_answered_304_against_the_old_one():
+    """The failure this must never have: the service worker is
+    network-first precisely so a deploy cannot be pinned out, and an
+    etag that did not follow the bytes would reintroduce that by the
+    back door."""
+    _, head, _ = _get("/app.js")
+    before = re.search(r"^ETag: (\S+)", head, re.M).group(1)
+    path = pathlib.Path(nova_site.PUBLIC_DIR) / "app.js"
+    original = path.read_bytes()
+    try:
+        path.write_bytes(original + b"\n/* a later build */\n")
+        status, head, _ = _get("/app.js", f"If-None-Match: {before}\r\n")
+    finally:
+        path.write_bytes(original)
+    assert status == 200, "a client holding the previous build was told 304"
+    assert re.search(r"^ETag: (\S+)", head, re.M).group(1) != before
+
+
+def test_two_static_files_do_not_share_an_etag():
+    """A validator derived from anything but the bytes -- a build stamp,
+    a constant -- would pass every test above while answering `style.css`
+    with `app.js`'s tag, and the client would then skip the fetch for
+    whichever it asked for second."""
+    _, js, _ = _get("/app.js")
+    _, css, _ = _get("/style.css")
+    assert re.search(r"^ETag: (\S+)", js, re.M).group(1) != \
+        re.search(r"^ETag: (\S+)", css, re.M).group(1)
+
+
 @pytest.mark.parametrize("path", ["/cycle/49", "/cycle/7/"])
 def test_a_cycle_deep_link_resolves_on_a_cold_load(path):
     """Item 4 is only worth anything if the URL survives being pasted

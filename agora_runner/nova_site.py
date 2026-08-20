@@ -1332,7 +1332,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # quiet default request logging
         pass
 
-    def _send(self, status, body, content_type, etag=None):
+    def _send(self, status, body, content_type, etag=None, cache_control=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
 
@@ -1349,6 +1349,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         if etag:
             self.send_header("ETag", etag)
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         if compressible:
             # Sent whether or not this particular response was compressed:
             # it is a statement that the body *varies* by the request
@@ -1452,18 +1454,52 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         page["version"] = etag
         self._send_json_or_304(json.dumps(page), etag)
 
-    def _send_json_or_304(self, body, etag):
+    def _send_json_or_304(self, body, etag, content_type="application/json",
+                          cache_control=None):
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.send_header("ETag", etag)
             # A 304 must carry the headers that would decide which cached
             # representation it validates, and the body varies by encoding.
             self.send_header("Vary", "Accept-Encoding")
+            if cache_control:
+                self.send_header("Cache-Control", cache_control)
             self.end_headers()
             return
-        self._send(200, body, "application/json", etag=etag)
+        self._send(200, body, content_type, etag=etag, cache_control=cache_control)
 
     def _send_static(self, filename):
+        """The shell, and why it is conditional.
+
+        The service worker is network-first for `/app.js` and
+        `/style.css` as well as for `/api`, and its own note says why:
+        cache-first would pin the app to the first build it ever saw,
+        and network-first "costs one conditional request on a tailnet
+        and cannot do that."
+
+        It did not cost one conditional request. Until this function
+        passed an etag, no static response carried a validator at all,
+        so there was nothing for a returning client to make its request
+        conditional *on* -- every navigation to `/issues` re-downloaded
+        the whole shell. Measured against the live site 2026-08-20,
+        gzipped and on the wire: `app.js` 76,254 bytes and `style.css`
+        19,637 bytes, against 13,429 for the board payload those two
+        pages exist to render. 87KB of the ~110KB a board page costs was
+        bytes the phone already had, re-fetched because the server never
+        said which build they came from. That is Edvard's capture --
+        "Issues and ideas takes a while to load" -- and it is why the fix
+        is not lazy-loading the rows: the rows were never the weight.
+
+        Hashed per request rather than cached. These files are read off
+        disk on every request already, and sha256 over 244KB is ~0.3ms
+        against a read that has to happen anyway; a cache keyed on a
+        path would be one more thing that can serve a stale build after
+        a deploy, which is the exact failure the service worker's
+        author refused to accept in exchange for the same saving.
+
+        `/vendor/echarts.min.js` gets this too and gains the most from
+        it -- 1,030,855 bytes, re-fetched on every visit to a chart page.
+        """
         path = os.path.join(PUBLIC_DIR, filename)
         try:
             with open(path, "rb") as handle:
@@ -1474,7 +1510,21 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         if content_type.startswith("text/") or filename.endswith((".js", ".webmanifest")):
             content_type += "; charset=utf-8"
-        self._send(200, body, content_type)
+        # Strong rather than `W/`: this is the file's own bytes, not a
+        # slice derived from a payload etag, so byte-equality is exactly
+        # what it asserts.
+        etag = '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
+        # `no-cache` means "store it, but ask me every time", not "do not
+        # store it". Without it the response has a validator and no
+        # freshness rule, and a browser then invents one -- heuristic
+        # freshness off `Last-Modified`, which we do not send either, so
+        # the behaviour is up to the implementation and one of the
+        # permitted answers is serving a build Edvard has already
+        # replaced without asking. That is precisely the trap the service
+        # worker's own comment refuses. `no-cache` buys the saving and
+        # keeps the guarantee: one conditional request, always the
+        # current build.
+        self._send_json_or_304(body, etag, content_type, cache_control="no-cache")
 
     def do_GET(self):
         path, _, raw_query = self.path.partition("?")
