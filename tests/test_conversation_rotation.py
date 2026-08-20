@@ -204,3 +204,63 @@ def test_rotate_falls_back_safely_on_unexpected_exception():
     with patch.object(rotation, "agora_get", side_effect=RuntimeError("network exploded")):
         result = rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
     assert result == "c-old"
+
+
+def _rotation_calls(folder_response):
+    """Runs one rotation with `folder_response` standing in for
+    POST /folders, and hands back every internal call it made."""
+    heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
+                 "rotateConversationEachRun": True}
+    calls = []
+
+    def fake_get(path):
+        return 200, {"conversations": []}
+
+    def fake_internal(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        if method == "POST" and path == "/folders":
+            if isinstance(folder_response, Exception):
+                raise folder_response
+            return folder_response
+        return 200, {}
+
+    with patch.object(rotation, "agora_get", side_effect=fake_get), \
+         patch.object(rotation, "agora_internal", side_effect=fake_internal):
+        result = rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
+    return result, calls
+
+
+def test_rotate_files_the_new_conversation_into_a_folder_named_after_the_heartbeat():
+    """Edvard, ideas.md #5: "Heartbeat generated conversations should be
+    auto created in the same folder by default"."""
+    result, calls = _rotation_calls((201, {"folder": {"id": "f-nova", "name": "Agora Evolve v1"}}))
+    assert result == "c-new"
+    folder_call = next(c for c in calls if c[1] == "/folders")
+    assert folder_call[2] == {"name": "Agora Evolve v1"}
+    conversation_patch = next(c for c in calls if c[1] == "/conversations/c-new")
+    assert conversation_patch[2]["folderId"] == "f-nova"
+    # The filing rides along on the PATCH that was already being sent, so it
+    # costs no extra round trip per cycle.
+    assert len([c for c in calls if c[1] == "/conversations/c-new"]) == 1
+
+
+def test_rotate_reuses_the_existing_folder_rather_than_making_one_per_cycle():
+    """POST /folders is find-or-create by name, so a second cycle gets a 200
+    with the same folder — the rotation must not treat that as a failure."""
+    _, calls = _rotation_calls((200, {"folder": {"id": "f-nova", "name": "Agora Evolve v1"}}))
+    conversation_patch = next(c for c in calls if c[1] == "/conversations/c-new")
+    assert conversation_patch[2]["folderId"] == "f-nova"
+
+
+def test_rotate_still_runs_the_cycle_when_the_folder_call_fails():
+    """An unfiled conversation is cosmetic; a cycle that does not run is not."""
+    for response in [(500, {}), (201, {}), ValueError("boom")]:
+        result, calls = _rotation_calls(response)
+        assert result == "c-new", response
+        conversation_patch = next(c for c in calls if c[1] == "/conversations/c-new")
+        assert "folderId" not in conversation_patch[2], response
+        assert conversation_patch[2]["tags"] == ["evolve-cycle:hb1"], response
+        heartbeat_patch = next(c for c in calls if c[1] == "/heartbeats/hb1")
+        assert heartbeat_patch[2] == {"conversationId": "c-new"}, response

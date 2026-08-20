@@ -81,10 +81,14 @@ def rotate_cycle_conversation(heartbeat, participants):
         # Carry the full persona list forward (create only bootstraps
         # the one curator) and tag it so future rotations/pruning can
         # find it.
-        agora_internal("PATCH", f"/conversations/{new_id}", {
+        patch = {
             "personas": [dict(p) for p in participants],
             "tags": [tag],
-        })
+        }
+        folder_id = _ensure_folder(heartbeat["name"])
+        if folder_id:
+            patch["folderId"] = folder_id
+        agora_internal("PATCH", f"/conversations/{new_id}", patch)
 
         point_status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}", {
             "conversationId": new_id,
@@ -99,6 +103,28 @@ def rotate_cycle_conversation(heartbeat, participants):
     except Exception as e:
         log(f"rotate_cycle_conversation failed, keeping existing conversation: {e}")
         return heartbeat["conversationId"]
+
+
+def _ensure_folder(name):
+    """The switcher folder this heartbeat's cycle conversations are filed
+    into (Edvard, ideas.md #5: "Heartbeat generated conversations should be
+    auto created in the same folder by default"). Named after the heartbeat,
+    so Nova's 30 retained cycles collapse into one row instead of being the
+    list.
+
+    POST /folders is find-or-create by name, so this is safe to call every
+    cycle without persisting an id anywhere. Returns None on any failure --
+    an unfiled conversation is a cosmetic problem and a cycle that does not
+    run is not, so this never raises into the rotation."""
+    try:
+        status, body = agora_internal("POST", "/folders", {"name": name})
+        if status not in (200, 201):
+            log(f"_ensure_folder: HTTP {status} for {name!r}, leaving the conversation unfiled")
+            return None
+        return (body.get("folder") or {}).get("id")
+    except Exception as e:
+        log(f"_ensure_folder failed for {name!r}, leaving the conversation unfiled: {e}")
+        return None
 
 
 def _prune_old_cycles(existing_before_this_one, retention):
