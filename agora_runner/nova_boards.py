@@ -523,15 +523,29 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
     attributing his sentence to me is exactly the corruption worth
     refusing.
 
+    **It also stamps the row's `Updated` cell with `dated`**, via
+    `_touch_row_updated` -- read that docstring for why, and for why a
+    missing row is not a refusal. The consequence for callers is that
+    `dated` now reaches a table cell as well as the prose, so a `|` in it
+    is refused alongside the line breaks.
+
     `None` means not written: no write-up for that number (the row may
     still exist -- only some rows have one), an empty note, a line break
-    in either free-text argument, or an author who is not one of the two.
+    in either free-text argument, a `|` in `dated`, or an author who is
+    not one of the two.
     """
     note = (note or "").strip()
     dated = (dated or "").strip()
     if not note or not dated:
         return None
     if any(c in note or c in dated for c in "\r\n"):
+        return None
+    # `dated` now lands in a table cell as well as in the prose, so it has
+    # to survive being one. A `|` there splits the row into an extra
+    # column and shifts `Priority` off the end -- the same corruption
+    # `_row_span` masks the wiki-link's escaped pipe to avoid. The note
+    # body is unaffected and keeps taking any `|` it likes.
+    if "|" in dated:
         return None
     span = _detail_spans(markdown).get(number)
     if span is None:
@@ -560,7 +574,65 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
     # leading blank line there would render as one.
     if tail == body_start:
         entry = entry[1:]
-    return "\n".join(lines[:tail] + entry + lines[tail:])
+    return _touch_row_updated(
+        "\n".join(lines[:tail] + entry + lines[tail:]), number, dated)
+
+
+def _touch_row_updated(markdown, number, dated):
+    """Set one `## Board` row's `Updated` cell to `dated`. Never fails.
+
+    **The `Updated` cell is a sort key, and until now nothing kept it
+    true.** `tools.top_board_rows` ranks Edvard's two boards by rating and
+    then by `age_key(updated)`, oldest first, so the cell decides which
+    row a cycle is told to take. `append_detail_note` is the one call that
+    always means the row was genuinely worked -- it is how a status change
+    gets its reason, and how Edvard's own comments land (`nova_capture`'s
+    comment route) -- and it wrote the note into the write-up while
+    leaving the cell alone.
+
+    Measured on the live board, 2026-08-20: issue #7 was `Updated 08-16`
+    and topped `top_board_rows` as the oldest `High` row, while its
+    write-up already carried `**Nova, 08-20 (Cycle 270):**` from four
+    hours earlier. The instrument that exists to stop a cycle picking the
+    cheapest row was ranking on a date four days stale, on the row it
+    named first. Edvard filed the general version as issue #85 -- a row
+    that does not say what happened to it -- and this is that same drift
+    in the column that gets sorted.
+
+    Both authors stamp it. The cell means "when did this row last change",
+    not "when did I last work it", and a comment from Edvard changes it as
+    much as a note from me. That cannot bury an unanswered question: a row
+    whose write-up ends on one of his notes is marked `UNANSWERED` by
+    `top_board_rows` and outranks every rating, ahead of the age key
+    entirely.
+
+    **The `|` refusal in `append_detail_note` makes `dated` safe for a
+    table cell; it does not make it a date.** `age_key` falls back to
+    `"99-99"` for anything that is not `MM-DD`, which sorts as the
+    *newest* row -- so a malformed date would sink the row rather than
+    raise. There is no shape check here because there is already one that
+    matters more: `_COMMENT_NOTE_RE` requires `\\d{2}-\\d{2}` to read a
+    note back, so a date the sort key cannot parse is a note the page
+    cannot see, and that fails loudly on Edvard's screen rather than
+    quietly in a ranking. Reviewer finding on the PR that added this,
+    recorded rather than coded.
+
+    Never fails, and that is deliberate -- the note is the caller's
+    request and the stamp is bookkeeping on top of it. Only some detail
+    write-ups have a board row at all (`append_detail_note`'s own
+    docstring says so), and refusing the whole append because the row is
+    missing would lose Edvard's sentence to fix a sort order. A `## Done`
+    row is out of reach for `set_row_status`'s reason -- the two tables do
+    not share a column layout and the fourth cell there is `Where`, a list
+    of PRs, not a date.
+    """
+    lines = (markdown or "").split("\n")
+    index, cells = _row_span(lines, number, tables=("board",))
+    if index is None:
+        return markdown
+    cells[3] = dated
+    lines[index] = "| " + " | ".join(cells) + " |"
+    return "\n".join(lines)
 
 
 # One dated note, as `append_detail_note` writes it: `**Edvard, 08-15:** ...`

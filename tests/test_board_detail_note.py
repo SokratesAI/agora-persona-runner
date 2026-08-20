@@ -77,9 +77,14 @@ def test_the_write_up_keeps_everything_it_had():
 def test_the_note_stays_inside_the_span_and_does_not_leak_into_the_next_block():
     out = append_detail_note(BOARD, 57, "Closed by #192.", "08-15")
     assert "Closed by #192." not in _detail(out, 59)
-    # And the boarded rows are the same bytes -- this writes prose, not
-    # table cells.
-    assert parse_board(out)["items"] == parse_board(BOARD)["items"]
+    # And no *other* row moved. This assertion used to cover every row
+    # including #57's, which was the old behaviour and the bug -- it is
+    # narrowed to the rows this call has no business touching, which is
+    # what the test is named for. #57's own cell is
+    # `test_the_stamp_touches_nothing_but_the_date`.
+    before = [i for i in parse_board(BOARD)["items"] if i["number"] != 57]
+    after = [i for i in parse_board(out)["items"] if i["number"] != 57]
+    assert after == before
 
 
 def test_two_notes_stack_in_the_order_they_were_written():
@@ -308,3 +313,68 @@ def test_the_reply_does_not_leave_the_row_reading_as_waiting_on_him(monkeypatch)
 def test_an_unstated_author_is_still_him(monkeypatch):
     """The page is his; the default must not move under the site."""
     assert "**Edvard, 08-17:**" in _write_comment(monkeypatch)
+
+
+# --- The `Updated` cell ------------------------------------------------
+#
+# `tools.top_board_rows` ranks Edvard's boards by rating and then by
+# `age_key(updated)`, oldest first, so this cell decides which row a cycle
+# is told to take. A note is the only call that always means the row was
+# genuinely worked, and it used to leave the cell alone -- measured live on
+# 2026-08-20, issue #7 topped the ranking as the oldest `High` row while
+# its write-up already carried a note from four hours earlier.
+
+
+def test_a_note_stamps_the_rows_updated_cell():
+    out = append_detail_note(BOARD, 57, "Closed by #192.", "08-15", cycle=204)
+    row = next(i for i in parse_board(out)["items"] if i["number"] == 57)
+    assert row["updated"] == "08-15"
+
+
+def test_edvards_comment_stamps_it_too():
+    """The cell means "when did this row last change", not "when did I work it"."""
+    out = append_detail_note(BOARD, 57, "Why is this still open?", "08-16",
+                             author="Edvard")
+    row = next(i for i in parse_board(out)["items"] if i["number"] == 57)
+    assert row["updated"] == "08-16"
+
+
+def test_the_stamp_touches_nothing_but_the_date():
+    """The row is rebuilt from its own cells, so the rest must come back whole.
+
+    The first cell is a wiki-link holding an escaped `\\|`; splitting a row
+    on a bare pipe yields five cells where the table has four and shifts
+    every column right. `_row_span` masks it, and this is the assertion
+    that would catch the day something stops.
+    """
+    out = append_detail_note(BOARD, 57, "Closed.", "08-15")
+    assert "| [[#57 — More pages\\|57]] | More pages | 🟡 In progress | 08-15 | 🔵 Medium |" in out
+
+
+def test_a_row_with_no_priority_cell_does_not_grow_one():
+    """#59's row is four cells wide. Stamping it must not append a fifth.
+
+    `set_row_priority` grows the row on purpose; this call has no rating to
+    write, and a blank fifth cell here would put an empty chip on the page.
+    """
+    out = append_detail_note(BOARD, 59, "Closed.", "08-15")
+    assert "| [[#59 — Small pickings\\|59]] | Small pickings | ⚪ Backlog | 08-15 |" in out
+    row = next(i for i in parse_board(out)["items"] if i["number"] == 59)
+    assert row["priority"] == ""
+
+
+def test_a_write_up_with_no_board_row_still_gets_its_note():
+    """Only some write-ups have a row. Losing his sentence to fix a sort order
+    would be the worse trade, so the stamp is best-effort and the note is not.
+    """
+    out = append_detail_note(BOARD, 60, "Closed by #192.", "08-15")
+    assert out is not None
+    assert _detail(out, 60) == "**Nova, 08-15:** Closed by #192."
+    assert parse_board(out)["items"] == parse_board(BOARD)["items"]
+
+
+def test_a_pipe_in_the_date_is_refused():
+    """`dated` reaches a table cell now, so it has to survive being one."""
+    assert append_detail_note(BOARD, 57, "Closed.", "08-15 | evil") is None
+    # The note body is not a table cell and keeps taking any pipe it likes.
+    assert append_detail_note(BOARD, 57, "Closed by a | b.", "08-15") is not None
