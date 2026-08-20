@@ -81,14 +81,25 @@ def rotate_cycle_conversation(heartbeat, participants):
         # Carry the full persona list forward (create only bootstraps
         # the one curator) and tag it so future rotations/pruning can
         # find it.
-        patch = {
+        agora_internal("PATCH", f"/conversations/{new_id}", {
             "personas": [dict(p) for p in participants],
             "tags": [tag],
-        }
+        })
+
+        # Filing goes in its OWN patch, deliberately, even though bundling it
+        # with the one above would save a round trip. Agora refuses the whole
+        # request if `folderId` names a folder that has gone -- and it can go
+        # between _ensure_folder returning its id and this patch landing, if
+        # Edvard deletes it. Bundled, that 400 would take the `tags` with it,
+        # and the tag is what every later cycle uses to find this
+        # conversation: pruning, numbering, and the walk-back for a message
+        # of his nobody answered. An unfiled conversation is cosmetic; an
+        # untagged one is invisible.
         folder_id = _ensure_folder(heartbeat["name"])
         if folder_id:
-            patch["folderId"] = folder_id
-        agora_internal("PATCH", f"/conversations/{new_id}", patch)
+            file_status, _ = agora_internal("PATCH", f"/conversations/{new_id}", {"folderId": folder_id})
+            if file_status not in (200, 201):
+                log(f"rotate_cycle_conversation: could not file into folder (HTTP {file_status}), continuing unfiled")
 
         point_status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}", {
             "conversationId": new_id,

@@ -239,19 +239,21 @@ def test_rotate_files_the_new_conversation_into_a_folder_named_after_the_heartbe
     assert result == "c-new"
     folder_call = next(c for c in calls if c[1] == "/folders")
     assert folder_call[2] == {"name": "Agora Evolve v1"}
-    conversation_patch = next(c for c in calls if c[1] == "/conversations/c-new")
-    assert conversation_patch[2]["folderId"] == "f-nova"
-    # The filing rides along on the PATCH that was already being sent, so it
-    # costs no extra round trip per cycle.
-    assert len([c for c in calls if c[1] == "/conversations/c-new"]) == 1
+    patches = [c[2] for c in calls if c[1] == "/conversations/c-new"]
+    assert {"folderId": "f-nova"} in patches
+    # Filing is its own patch, on purpose: bundled with the tag, a folder
+    # deleted mid-rotation would 400 the whole request and lose the tag.
+    tag_patch = next(p for p in patches if "tags" in p)
+    assert "folderId" not in tag_patch
+    assert tag_patch["tags"] == ["evolve-cycle:hb1"]
 
 
 def test_rotate_reuses_the_existing_folder_rather_than_making_one_per_cycle():
     """POST /folders is find-or-create by name, so a second cycle gets a 200
     with the same folder — the rotation must not treat that as a failure."""
     _, calls = _rotation_calls((200, {"folder": {"id": "f-nova", "name": "Agora Evolve v1"}}))
-    conversation_patch = next(c for c in calls if c[1] == "/conversations/c-new")
-    assert conversation_patch[2]["folderId"] == "f-nova"
+    patches = [c[2] for c in calls if c[1] == "/conversations/c-new"]
+    assert {"folderId": "f-nova"} in patches
 
 
 def test_rotate_still_runs_the_cycle_when_the_folder_call_fails():
@@ -259,8 +261,39 @@ def test_rotate_still_runs_the_cycle_when_the_folder_call_fails():
     for response in [(500, {}), (201, {}), ValueError("boom")]:
         result, calls = _rotation_calls(response)
         assert result == "c-new", response
-        conversation_patch = next(c for c in calls if c[1] == "/conversations/c-new")
-        assert "folderId" not in conversation_patch[2], response
-        assert conversation_patch[2]["tags"] == ["evolve-cycle:hb1"], response
+        patches = [c[2] for c in calls if c[1] == "/conversations/c-new"]
+        assert all("folderId" not in p for p in patches), response
+        assert patches[0]["tags"] == ["evolve-cycle:hb1"], response
         heartbeat_patch = next(c for c in calls if c[1] == "/heartbeats/hb1")
         assert heartbeat_patch[2] == {"conversationId": "c-new"}, response
+
+
+def test_rotate_keeps_the_cycle_tag_when_filing_is_refused():
+    """Reviewer finding on agora#63: Agora refuses the whole PATCH if
+    `folderId` names a folder that has gone, so bundling the filing with the
+    tag would let a folder Edvard deleted mid-rotation take the tag with it.
+    The tag is how every later cycle finds this conversation."""
+    heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
+                 "rotateConversationEachRun": True}
+    calls = []
+
+    def fake_internal(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        if method == "POST" and path == "/folders":
+            return 201, {"folder": {"id": "f-gone"}}
+        if path == "/conversations/c-new" and "folderId" in (payload or {}):
+            return 400, {"error": "unknown folder"}
+        return 200, {}
+
+    with patch.object(rotation, "agora_get", side_effect=lambda p: (200, {"conversations": []})), \
+         patch.object(rotation, "agora_internal", side_effect=fake_internal):
+        result = rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
+
+    assert result == "c-new"
+    tag_patch = next(c[2] for c in calls if c[1] == "/conversations/c-new" and "tags" in c[2])
+    assert tag_patch["tags"] == ["evolve-cycle:hb1"]
+    assert tag_patch["personas"] == PARTICIPANTS
+    heartbeat_patch = next(c for c in calls if c[1] == "/heartbeats/hb1")
+    assert heartbeat_patch[2] == {"conversationId": "c-new"}
