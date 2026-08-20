@@ -28,6 +28,12 @@ from agora_runner.log import log
 # so the cost of 30 is a longer list, not more storage.
 DEFAULT_RETENTION = 30
 
+# How many older conversations one rotation will file into the heartbeat's
+# folder. 100 covers the whole retained window several times over, so the
+# switcher is right after a single rotation; the long archived tail drains
+# over the next few. See `_backfill_folder`.
+BACKFILL_PER_ROTATION = 100
+
 
 def cycle_tag(heartbeat_id):
     """The tag every conversation this heartbeat creates carries. Public
@@ -109,6 +115,8 @@ def rotate_cycle_conversation(heartbeat, participants):
             return heartbeat["conversationId"]
 
         _prune_old_cycles(existing, heartbeat.get("conversationRetention") or DEFAULT_RETENTION)
+        if folder_id:
+            _backfill_folder(existing, folder_id)
         log(f"rotate_cycle_conversation: {heartbeat['name']} now on {new_id} (Cycle {cycle_n})")
         return new_id
     except Exception as e:
@@ -136,6 +144,53 @@ def _ensure_folder(name):
     except Exception as e:
         log(f"_ensure_folder failed for {name!r}, leaving the conversation unfiled: {e}")
         return None
+
+
+def _backfill_folder(existing, folder_id):
+    """File this heartbeat's *older* conversations into the folder too.
+
+    `_ensure_folder`'s docstring says the folder makes "Nova's 30 retained
+    cycles collapse into one row instead of being the list". That was the
+    intent and it was not what the code did: filing only ever touched the
+    conversation this rotation had just created, so the folder started with
+    one conversation in it and every older one stayed at the top level.
+    Measured on the live service 2026-08-20, an hour after the feature went
+    out: 296 conversations, 1 filed. Edvard's switcher was exactly as long
+    as before, plus a folder holding a single row -- the feature looked
+    broken rather than absent, which is worse.
+
+    Newest first, because the 30 that survive pruning are the only ones in
+    the switcher and they are what he judges this by; the archived tail is
+    invisible until he unarchives one, and filing it now is what stops that
+    row coming back loose. Capped per rotation so a first run against a long
+    history cannot sit in the startup path of a cycle indefinitely -- what is
+    left over is filed by the next rotation, and the count is logged so a
+    backlog that never drains is visible rather than silent.
+
+    Never raises, for the same reason `_ensure_folder` doesn't: this runs
+    after the heartbeat has already been pointed at the new conversation, so
+    an exception escaping here would reach the caller's `except` and return
+    the *old* conversation id for a cycle that is now running in the new one.
+    """
+    unfiled = [c for c in existing if c.get("id") and not c.get("folderId")]
+    if not unfiled:
+        return
+    unfiled.sort(key=lambda c: c.get("lastMessageAt") or c.get("createdAt") or "", reverse=True)
+    batch, remaining = unfiled[:BACKFILL_PER_ROTATION], len(unfiled) - BACKFILL_PER_ROTATION
+    filed = 0
+    for conversation in batch:
+        try:
+            status, _ = agora_internal(
+                "PATCH", f"/conversations/{conversation['id']}", {"folderId": folder_id}
+            )
+            if status in (200, 201):
+                filed += 1
+        except Exception as e:
+            log(f"_backfill_folder: {conversation['id']} failed, leaving it unfiled: {e}")
+    log(
+        f"_backfill_folder: filed {filed} of {len(batch)} older conversation(s), "
+        f"{max(0, remaining)} left for the next rotation"
+    )
 
 
 def _prune_old_cycles(existing_before_this_one, retention):
