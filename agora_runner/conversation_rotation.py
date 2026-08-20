@@ -51,7 +51,14 @@ def rotate_cycle_conversation(heartbeat, participants):
             c for c in (listing.get("conversations", []) if status == 200 else [])
             if tag in (c.get("tags") or [])
         ]
-        cycle_n = len(existing) + 1
+        # Read the next number off the names already out there rather than
+        # counting them, so this and `cycle_number.current_number` -- which
+        # is what a live cycle asks for its own number -- can never answer
+        # differently. Imported here because `cycle_number` imports
+        # `cycle_tag` from this module.
+        from agora_runner.cycle_number import next_number
+
+        cycle_n = next_number(existing, tag)
 
         create_status, created = agora_internal("POST", "/conversations", {
             "name": f"{heartbeat['name']} — Cycle {cycle_n}",
