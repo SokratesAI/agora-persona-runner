@@ -146,6 +146,48 @@ def _ensure_folder(name):
         return None
 
 
+def _backfill_batch(unfiled):
+    """Which unfiled conversations this rotation files, and how many are left.
+
+    Two things decide the order, and both are reviewer findings on #264 that
+    held up when I went and measured them.
+
+    **Sorted by `createdAt`, not by `lastMessageAt`.** `_prune_old_cycles`
+    sorts by `createdAt` and it is the one that decides what stays out of the
+    archive -- so it decides what is in the switcher at all. Ordering the
+    backfill by recent *activity* instead meant the two functions disagreed
+    about which conversations matter, which is precisely the justification
+    `_backfill_folder`'s docstring gives for going newest-first. On the live
+    listing the two orders diverge from the fifth conversation on, so this
+    was a real disagreement rather than a tidy-up.
+
+    **Whole lineage groups, never split.** The switcher buckets a
+    conversation by its own `folderId` and only groups roots with their forks
+    *inside* a bucket, so a root left at the top level while its fork sits in
+    the folder loses its `↳` and reads as an unrelated conversation --
+    `conversation-store.fork()` copies `folderId` at fork time for exactly
+    this reason, and that guard does nothing for conversations filed after
+    the fact. Filing by lineage group and cutting only at a group boundary
+    means the cap can never introduce the split. There are no forks among the
+    tagged conversations today; this costs a few lines and stops the cap
+    quietly creating the problem the first time there is one.
+    """
+    groups = {}
+    for conversation in unfiled:
+        groups.setdefault(conversation.get("rootId") or conversation["id"], []).append(conversation)
+    ordered = sorted(
+        groups.values(),
+        key=lambda g: max(c.get("createdAt") or "" for c in g),
+        reverse=True,
+    )
+    batch = []
+    for group in ordered:
+        if batch and len(batch) + len(group) > BACKFILL_PER_ROTATION:
+            break
+        batch.extend(sorted(group, key=lambda c: c.get("createdAt") or "", reverse=True))
+    return batch, len(unfiled) - len(batch)
+
+
 def _backfill_folder(existing, folder_id):
     """File this heartbeat's *older* conversations into the folder too.
 
@@ -166,6 +208,12 @@ def _backfill_folder(existing, folder_id):
     history cannot sit in the startup path of a cycle indefinitely -- what is
     left over is filed by the next rotation, and the count is logged so a
     backlog that never drains is visible rather than silent.
+    `_backfill_batch` picks the order and the cut.
+
+    A non-2xx gets its own log line rather than only being absent from the
+    total: if Edvard deletes the folder midway through a batch, every
+    remaining conversation fails identically, and "filed 3 of 100" alone does
+    not say why.
 
     Never raises, for the same reason `_ensure_folder` doesn't: this runs
     after the heartbeat has already been pointed at the new conversation, so
@@ -175,8 +223,7 @@ def _backfill_folder(existing, folder_id):
     unfiled = [c for c in existing if c.get("id") and not c.get("folderId")]
     if not unfiled:
         return
-    unfiled.sort(key=lambda c: c.get("lastMessageAt") or c.get("createdAt") or "", reverse=True)
-    batch, remaining = unfiled[:BACKFILL_PER_ROTATION], len(unfiled) - BACKFILL_PER_ROTATION
+    batch, remaining = _backfill_batch(unfiled)
     filed = 0
     for conversation in batch:
         try:
@@ -185,11 +232,13 @@ def _backfill_folder(existing, folder_id):
             )
             if status in (200, 201):
                 filed += 1
+            else:
+                log(f"_backfill_folder: HTTP {status} for {conversation['id']}, leaving it unfiled")
         except Exception as e:
             log(f"_backfill_folder: {conversation['id']} failed, leaving it unfiled: {e}")
     log(
         f"_backfill_folder: filed {filed} of {len(batch)} older conversation(s), "
-        f"{max(0, remaining)} left for the next rotation"
+        f"{remaining} left for the next rotation"
     )
 
 

@@ -407,3 +407,54 @@ def test_rotate_backfill_does_not_run_when_there_is_no_folder():
 
     assert result == "c-new"
     assert all("folderId" not in (c[2] or {}) for c in calls)
+
+
+def test_backfill_orders_by_createdat_not_by_recent_activity():
+    """Reviewer finding on #264. `_prune_old_cycles` sorts by `createdAt` and
+    is what decides who stays out of the archive, so it decides who is in the
+    switcher. Ordering the backfill by `lastMessageAt` instead made the two
+    disagree about which conversations matter -- and on the live listing the
+    two orders diverge from the fifth conversation on."""
+    old_but_active = {"id": "c-old", "createdAt": "2026-08-01T00:00:00Z",
+                      "lastMessageAt": "2026-08-20T23:00:00Z", "tags": ["evolve-cycle:hb1"]}
+    new_and_quiet = {"id": "c-new-quiet", "createdAt": "2026-08-19T00:00:00Z",
+                     "lastMessageAt": "2026-08-19T00:00:00Z", "tags": ["evolve-cycle:hb1"]}
+    batch, _ = rotation._backfill_batch([old_but_active, new_and_quiet])
+    assert [c["id"] for c in batch] == ["c-new-quiet", "c-old"]
+
+
+def test_backfill_never_splits_a_root_from_its_forks_across_the_cap():
+    """The switcher buckets a conversation by its own folderId and only pairs
+    a root with its forks *inside* a bucket, so a root left at the top level
+    while its fork sits in the folder loses its arrow and reads as an
+    unrelated conversation. The cap must cut at a lineage boundary."""
+    def member(n, root):
+        return {"id": f"c-{n}", "rootId": root, "createdAt": f"2026-08-{n:02d}T00:00:00Z",
+                "tags": ["evolve-cycle:hb1"]}
+
+    # Two singles fit; the three-member lineage behind them does not, so the
+    # cut lands before it rather than through it.
+    singles = [member(20, "c-20"), member(19, "c-19")]
+    lineage = [member(18, "c-18"), member(17, "c-18"), member(16, "c-18")]
+    original = rotation.BACKFILL_PER_ROTATION
+    try:
+        rotation.BACKFILL_PER_ROTATION = 4
+        batch, remaining = rotation._backfill_batch(singles + lineage)
+    finally:
+        rotation.BACKFILL_PER_ROTATION = original
+    ids = [c["id"] for c in batch]
+    assert ids == ["c-20", "c-19"], ids
+    assert remaining == 3
+    # The whole lineage travels together or not at all -- never partially.
+    assert not ({"c-18", "c-17", "c-16"} & set(ids)), "lineage was split by the cap"
+
+
+def test_backfill_logs_a_refused_patch_rather_than_only_a_lower_total():
+    """If Edvard deletes the folder midway through a batch every remaining
+    conversation fails identically, and "filed 3 of 100" alone does not say
+    why."""
+    lines = []
+    with patch.object(rotation, "agora_internal", side_effect=lambda m, p, b=None: (400, {})), \
+         patch.object(rotation, "log", side_effect=lines.append):
+        rotation._backfill_folder([_cycle(1)], "f-gone")
+    assert any("HTTP 400" in line and "c-1" in line for line in lines), lines
