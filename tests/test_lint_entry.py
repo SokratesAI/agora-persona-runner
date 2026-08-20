@@ -580,3 +580,84 @@ def test_prose_naming_the_section_at_a_paragraph_start_still_needs_no_colon_afte
         "**Digest** are what he asked for.",
     )
     assert lint("168-cycle-152.md", entry) == []
+
+
+# --- The ask has to open with the question --------------------------------
+#
+# Edvard, unboarded capture 2026-08-20, naming Cycle 273's block: *"its a
+# wall of text and a question hidden in it at the very bottom ... Example
+# is 'yes or no, keep the symbols for x, y, z?' After that, you can explain
+# the reason"*. Measured over all 333 live entries before the check was
+# written: 8 carry an ask, and it fires on exactly 6 of them.
+
+
+def _ask_entry(ask):
+    return GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs Edvard:** " + ask,
+    )
+
+
+def test_an_ask_opening_with_a_statement_is_caught():
+    """Cycle 273's shape, shortened: the reason first, the question buried."""
+    findings = lint(
+        "168-cycle-152.md",
+        _ask_entry(
+            "You told me on the 19th that the coloured circles were "
+            "unreadable, and the priorities now carry words. Should the "
+            "status circles follow?"
+        ),
+    )
+    assert _kinds(findings) == ["ask"]
+    assert "opens with a statement" in findings[0]
+
+
+def test_an_ask_that_leads_with_the_question_passes():
+    assert (
+        lint(
+            "168-cycle-152.md",
+            _ask_entry(
+                "Yes or no, should the status circles become words like the "
+                "priorities did? You told me on the 19th that the coloured "
+                "circles were unreadable."
+            ),
+        )
+        == []
+    )
+
+
+def test_an_abbreviation_does_not_end_the_first_sentence():
+    """`i.e.` and a decimal both appear in real asks and neither is a
+    sentence end -- treating them as one would refuse a correctly written
+    ask, which is the expensive direction to fail in."""
+    assert (
+        lint(
+            "168-cycle-152.md",
+            _ask_entry(
+                "Should I raise the limit above $0.00, i.e. to any non-zero "
+                "number? Every private repo's build fails at startup."
+            ),
+        )
+        == []
+    )
+
+
+def test_an_ask_with_no_sentence_end_at_all_is_caught():
+    """A trailing fragment has no `?` anywhere, so it is not a question --
+    the `match is None` branch, which the two cases above never reach."""
+    findings = lint("168-cycle-152.md", _ask_entry("The token has expired"))
+    assert _kinds(findings) == ["ask"]
+    assert "opens with a statement" in findings[0]
+
+
+def test_the_bare_label_is_told_about_the_colon_and_not_about_the_shape():
+    """The two ask checks are mutually exclusive by construction: one needs
+    `split_ask` to have found nothing, the other needs it to have found
+    something. An entry missing the colon should get one finding, not two."""
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs Edvard** The token has expired.",
+    )
+    findings = lint("168-cycle-152.md", entry)
+    assert _kinds(findings) == ["ask"]
+    assert "colon inside the bold" in findings[0]

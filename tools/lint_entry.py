@@ -192,6 +192,61 @@ def _ask_finding(body):
     )
 
 
+# The first sentence-ending punctuation in the ask, ignoring a `.` that is
+# part of an abbreviation (`e.g.`, `i.e.`) or of a decimal (`$0.00`) --
+# both appear in real asks and neither ends a sentence. Two conditions do
+# that: the dot must be followed by whitespace (which excludes `0.00` and
+# the first dot of `i.e.`), and the token before it must not be a single
+# character (which excludes the second one). `(?<!\b[A-Za-z0-9])` is that
+# second test -- a word boundary immediately before the preceding
+# character means that character is the whole token.
+_ASK_SENTENCE_END_RE = re.compile(r"[?!]|(?<!\b[A-Za-z0-9])\.(?=\s|\Z)")
+
+
+def _ask_question_finding(body):
+    """A `Needs Edvard` ask whose first sentence is not the question.
+
+    Edvard, unboarded capture 2026-08-20: *"The 'needs Edvard' blocks needs
+    to present the issue in the first line to me as a question. Take the
+    block in cycle 273, its a wall of text and a question hidden in it at
+    the very bottom ... is it a simple yes and no question? Or something
+    else? ... Example is 'yes or no, keep the symbols for x, y, z?' After
+    that, you can explain the reason"*.
+
+    So the mechanical half of that is binary and is the half worth
+    refusing on: **the first sentence of the ask ends in a question mark.**
+    Measured against all 333 live entries before it was written -- 8 carry
+    an ask, and 6 of them open with a statement, including the Cycle 273
+    block he named (35 words before the first full stop, no question in
+    it). The two that pass are the same ask written twice, opening *"Do you
+    use ChatGPT Codex against these repos?"* at 8 words. So this check can
+    fail and can pass, which the six-out-of-eight split is the evidence
+    for -- a rule that every existing document already satisfies would have
+    been a rule that pins nothing.
+
+    The other half of his ask -- be *direct*, be *specific*, say whether it
+    is yes/no -- is judgement, and a word cap standing in for it would be a
+    number I invented rather than measured. That half is written into
+    `personality.md` as prose instead, deliberately.
+    """
+    ask = split_ask(body)[1]
+    if not ask:
+        return None
+    match = _ASK_SENTENCE_END_RE.search(ask)
+    if match and match.group() == "?":
+        return None
+    first = ask[: match.end()] if match else ask
+    return (
+        f"ask: this ask opens with a statement, not a question -- {first!r}. "
+        "Edvard has to read to the bottom to find out what is being asked of "
+        "him, which is the thing he reported on 2026-08-20. Lead with the "
+        "question in one sentence, say whether it is yes/no, and put the "
+        "reasoning after it: `**Needs Edvard:** Yes or no, should the status "
+        "circles become words like the priorities did? You told me on the "
+        "19th that ...`"
+    )
+
+
 def _board_finding(body):
     """A `Board:` field the site cannot turn into a single link.
 
@@ -547,6 +602,14 @@ def lint(name, content, now=None, clock=_UNSET):
     ask = _ask_finding(raw)
     if ask:
         findings.append(ask)
+    # Only one of these two can ever fire: `_ask_finding` needs `split_ask`
+    # to have found nothing, `_ask_question_finding` needs it to have found
+    # something. So an entry that writes the bare label is told about the
+    # colon and not also lectured on the shape of an ask the site is going
+    # to drop anyway.
+    ask_question = _ask_question_finding(raw)
+    if ask_question:
+        findings.append(ask_question)
     # Runs unconditionally, and that is a measurement rather than an
     # oversight. This started as a blanket "skip when the heading is
     # broken", which hid the wrong cycle number in `## Cycle 153` inside
