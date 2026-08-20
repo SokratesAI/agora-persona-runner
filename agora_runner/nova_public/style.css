@@ -1842,6 +1842,50 @@ body.has-full-chart { overflow: hidden; }
 .plan-title { margin: 0; font-size: 1.1rem; }
 .plan-updated { margin: 0; color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
 
+/* The goals scoreboard, above the prose (issue #96).
+ *
+ * Five rows of small type rather than five cards: the whole point is that
+ * it fits on one phone screen, so the prose underneath is a choice he makes
+ * rather than the first thing he lands in. */
+.goal-board {
+  margin: 0.9rem 0 0.2rem;
+  padding: 0.75rem 0.85rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(122, 162, 247, 0.05);
+}
+
+.goal-board-title { margin: 0 0 0.6rem; font-size: 0.82rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.goal-board-note { margin: 0.55rem 0 0; font-size: 0.76rem; color: var(--dim); }
+.goal-list { list-style: none; margin: 0; padding: 0; }
+.goal-row + .goal-row { margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--line); }
+
+.goal-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.goal-name { font-size: 0.9rem; font-weight: 600; }
+
+/* The verdict is a word first. The colour is the second encoding, never
+ * the only one -- Edvard, 2026-08-20, on bare priority symbols. */
+.goal-verdict { font-size: 0.72rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid; }
+.goal-verdict.on { color: var(--good); border-color: rgba(123, 216, 143, 0.45); }
+.goal-verdict.off { color: var(--warn); border-color: rgba(232, 183, 92, 0.45); }
+
+.goal-measure { margin: 0.2rem 0 0; font-size: 0.78rem; color: var(--dim); line-height: 1.4; }
+.goal-figures { margin: 0.3rem 0 0; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.goal-now { font-size: 1.05rem; font-weight: 600; }
+.goal-target { font-size: 0.78rem; color: var(--dim); }
+
+/* Thin mark, rounded data-end, anchored to the left baseline. The tick is
+ * the target on the same scale, so the gap between the fill's end and the
+ * tick is the only thing the bar is saying. */
+/* No `overflow: hidden` -- the tick deliberately stands 2px proud of the
+ * track at both ends so it reads as a line across it rather than as a
+ * segment of the fill, and clipping the track would cut exactly that off. */
+.goal-track { position: relative; height: 8px; margin-top: 0.45rem; border-radius: 4px; background: var(--line); }
+.goal-fill { height: 100%; border-radius: 4px; background: var(--accent); }
+.goal-fill.on { background: var(--good); }
+.goal-fill.off { background: var(--warn); }
+.goal-tick { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: var(--text); opacity: 0.75; }
+
 /* `##` and `###` land on h3/h4 here, so the sizes are set explicitly
  * rather than inherited: the card's own title is the h2, and a browser
  * default would make a section heading larger than the document it is
