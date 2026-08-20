@@ -5,13 +5,30 @@ every tool-call-heavy round of every cycle it has ever run, unbounded,
 in a UI meant for human chat."""
 from unittest.mock import patch
 
+import pytest
+
 import agora_runner.conversation_rotation as rotation
+from agora_runner import cycle_number
 
 
 PARTICIPANTS = [
     {"personaId": "coder-1", "name": "Evolve-Coder", "role": "curator"},
     {"personaId": "reviewer-1", "name": "Evolve-Reviewer", "role": "listener"},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _stub_cycle_number_counter(monkeypatch):
+    """Rotation now claims its number through cycle_number.claim_next_number,
+    which reads/writes a tiny CouchDB doc -- see test_cycle_number.py for
+    that doc's own conflict-retry behaviour. None of the tests in this file
+    are about that; they're about the number rotation ends up using. Stub
+    the counter as permanently empty and immediately writable so
+    claim_next_number falls straight through to the same answer the bare
+    scan (`next_number`) always gave, unchanged."""
+    monkeypatch.setattr(cycle_number, "vault_read_path_rev", lambda path: (None, None))
+    monkeypatch.setattr(cycle_number, "vault_write_path",
+                        lambda path, content, if_rev=None, allow_shrink=False: "written")
 
 
 def test_rotate_is_noop_when_flag_unset():

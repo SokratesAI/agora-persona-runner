@@ -68,9 +68,19 @@ def rotate_cycle_conversation(heartbeat, participants):
         # is what a live cycle asks for its own number -- can never answer
         # differently. Imported here because `cycle_number` imports
         # `cycle_tag` from this module.
-        from agora_runner.cycle_number import next_number
+        #
+        # `claim_next_number` rather than the bare scan-and-compute
+        # `next_number`: two rotations for the same heartbeat starting
+        # close together would otherwise both read the same "highest" and
+        # both create a conversation claiming the same number (see
+        # cycle_number.claim_next_number's own docstring). Not reachable
+        # yet -- heartbeats.run_due_heartbeats still skips a heartbeat
+        # that is already running -- but landing it ahead of time means
+        # relaxing that guard doesn't have to happen in the same change
+        # as fixing the race it would expose.
+        from agora_runner.cycle_number import claim_next_number
 
-        cycle_n = next_number(existing, tag)
+        cycle_n = claim_next_number(heartbeat["id"], existing, tag)
 
         create_status, created = agora_internal("POST", "/conversations", {
             "name": f"{heartbeat['name']} — Cycle {cycle_n}",
