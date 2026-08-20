@@ -154,7 +154,7 @@ def main(argv=None):
 
     with open(args.path, encoding="utf-8") as fh:
         original = fh.read()
-    rewritten, changes = retire(original)
+    rewritten, changes = normalise(original)
 
     for kind, before, after in changes:
         print(f"  [{kind}] {before[:90]}\n      -> {after[:90]}")
@@ -164,7 +164,7 @@ def main(argv=None):
     # ratings themselves, the two documents must be identical. Anything
     # else moving means the walk escaped the board table.
     def _strip(text):
-        for glyph in _LEGACY_PRIORITY_GLYPHS:
+        for glyph in ("⚪", "🔵", "🟠", "🔴"):
             text = text.replace(glyph, " ")
         for word in ("Low", "Medium", "High", "Immediately"):
             text = text.replace(word, " ")
