@@ -100,10 +100,14 @@ def test_rotate_numbers_the_cycle_from_existing_tagged_conversations():
     # The highest number named by a conversation tagged for THIS heartbeat
     # is 5, so this is cycle 6. Counting the two of them would say 3 -- a
     # number cycle 3 already holds -- which is why the numbers 4 and 5 are
-    # not 1 and 2 here: the live store really is non-contiguous (276
-    # conversations, highest 277, measured 2026-08-20), and a contiguous
-    # fixture cannot tell the two rules apart. c3 carries a higher number
-    # and the wrong tag, and must not be read at all.
+    # not 1 and 2 here: a contiguous fixture cannot tell the two rules
+    # apart. The live store is NOT in that state today and #250 said it was:
+    # 277 tagged conversations, 276 of them carrying a parseable number, max
+    # 277, and the one without a number is the very first, named
+    # `Agora Evolve` from before the convention existed. Both rules answer
+    # 278 there. Parsing is protection against a conversation being deleted,
+    # which counting cannot survive -- not a live discrepancy.
+    # c3 carries a higher number and the wrong tag, and must not be read.
     assert create_call[2]["name"] == "Agora Evolve v1 — Cycle 6"
 
 
