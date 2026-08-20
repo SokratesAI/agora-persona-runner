@@ -214,8 +214,16 @@ _ASK_MASK = "░"
 # for opening with a statement. That is the expensive direction to fail
 # in: a correctly written ask that cannot be published. A named list is
 # duller than a lookbehind and is right about the cases that occur.
+#
+# `no` and `fig` are deliberately **not** in it, though they are ordinary
+# abbreviations. A sentence of mine ends in "no." far more often than it
+# contains "No. 5", and listing it would let *The answer is no. Should I
+# proceed?* pass as a question-first ask -- buying a rare false refusal at
+# the price of a common false acceptance. My own re-read after the
+# reviewer's; the rule for this list is that a word only earns a place if
+# it is likelier mid-sentence than sentence-final.
 _ASK_ABBREVIATIONS = frozenset(
-    "mr mrs ms dr prof st jr sr vs etc eg ie approx cf no fig".split()
+    "mr mrs ms dr prof st jr sr vs etc eg ie approx cf".split()
 )
 _ASK_TERMINATOR_RE = re.compile(r"[?!]|\.(?=\s|\Z)")
 _ASK_WORD_BEFORE_RE = re.compile(r"([A-Za-z0-9]+)\Z")

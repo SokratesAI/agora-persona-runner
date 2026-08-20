@@ -670,6 +670,18 @@ def test_a_question_mark_inside_a_quotation_does_not_make_the_opening_a_question
         assert "opens with a statement" in findings[0]
 
 
+def test_a_sentence_ending_in_no_is_still_the_end_of_a_sentence():
+    """`no.` is an abbreviation for "number" and is not on the list, on
+    purpose: a sentence of mine ends in "no." far more often than it
+    contains "No. 5", so listing it would trade a rare false refusal for a
+    common false acceptance."""
+    findings = lint(
+        "168-cycle-152.md",
+        _ask_entry("Last time the answer was no. Should I proceed now?"),
+    )
+    assert _kinds(findings) == ["ask"]
+
+
 def test_a_quoted_question_after_a_real_one_still_passes():
     """The mirror of the case above -- masking quotations must not refuse an
     ask that genuinely opens with its question and quotes him afterwards,
