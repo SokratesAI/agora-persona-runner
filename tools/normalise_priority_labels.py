@@ -1,14 +1,25 @@
-"""Rewrite the four priority ratings from coloured ball to plain word.
+"""Rewrite every priority rating already in Edvard's files to `PRIORITY_LABELS`.
 
-Edvard, comments board 2026-08-19: *"Please do not use these symbols
-'🟠' as i can't really see the difference as they are colors. Please use
-the full word such as 'high' or 'immediately'"*.
+This was `retire_priority_glyphs.py` and it only knew how to go one way:
+coloured ball -> plain word, on Edvard's *"Please do not use these
+symbols '🟠' as i can't really see the difference as they are colors"*
+(comments board 2026-08-19). He reversed that the next morning --
+*"There has been a missinderstanding here. I do like the symbols ... if
+you use the symbol and text, thats completely fine!"* -- and a
+one-directional tool had nothing to offer, because the cells it had
+rewritten no longer carried the glyph it matched on.
 
-Cycle 268 stopped *writing* the glyph. Nothing rewrites what is already
-in his two files, and both parse the old spelling forever, so without
-this the boards he actually opens in Obsidian keep showing the balls
-indefinitely -- the code change alone would only have fixed rows nobody
-has touched yet.
+So it matches on `priority_key` now instead of on a spelling. Whatever
+`PRIORITY_LABELS` currently says is what gets written, and every
+spelling that has ever been in these files (`🟠 High`, `High`,
+`🟠 High:` on a bullet) reads back to the same key. Reversing this
+decision a third time is a four-line edit to that dict followed by one
+run of this, in whichever direction it now points.
+
+The code change alone reaches only rows something touches again, which
+is why this exists at all: the boards Edvard opens in Obsidian would
+otherwise keep whatever spelling was current when each row was last
+written.
 
 **Two places, and only two.** A row's fifth `## Board` cell, and the
 leading glyph on a bare capture bullet above that table. Everything else
@@ -31,14 +42,15 @@ from agora_runner.nova_boards import (
     CAPTURE_PRIORITY_SEP,
     PRIORITY_LABELS,
     _ALIAS_PIPE,
-    _LEGACY_PRIORITY_GLYPHS,
     _SECTION_RE,
     _WIKILINK_RE,
+    priority_key,
+    split_capture_priority,
 )
 
 
 def _rewrite_row(line):
-    """One `## Board` table line -> the line with its rating cell in words.
+    """One `## Board` table line -> the line with its rating cell normalised.
 
     Returns `(line, changed)`. The wiki-link mask is the same one
     `nova_boards` uses: `| [[#57 — Title|57]] | ... |` contains the
@@ -54,20 +66,34 @@ def _rewrite_row(line):
     if len(cells) < 5:
         return line, False
     cell = cells[4].strip()
-    for glyph, key in _LEGACY_PRIORITY_GLYPHS.items():
-        if cell.startswith(glyph):
-            cells[4] = " " + PRIORITY_LABELS[key] + " "
-            rebuilt = "|" + "|".join(cells) + "|"
-            return rebuilt.replace(_ALIAS_PIPE, "|"), True
-    return line, False
+    # Keyed, not spelling-matched. `priority_key` strips emoji and
+    # aliases, so `🟠 High`, `High` and `high` all land on the same
+    # bucket -- and any cell that is not a rating at all keys to
+    # something absent from `PRIORITY_LABELS` and is left alone. That is
+    # what makes this work in whichever direction the labels point.
+    key = priority_key(cell)
+    if not key or key not in PRIORITY_LABELS:
+        return line, False
+    if cell == PRIORITY_LABELS[key]:
+        return line, False
+    cells[4] = " " + PRIORITY_LABELS[key] + " "
+    rebuilt = "|" + "|".join(cells) + "|"
+    return rebuilt.replace(_ALIAS_PIPE, "|"), True
 
 
 def _rewrite_capture(line):
-    """One bare capture bullet -> the bullet with its rating as a word.
+    """One bare capture bullet -> the bullet with its rating normalised.
 
-    `- 🟠 fix the sort order` -> `- High: fix the sort order`. The colon
-    is not cosmetic: `split_capture_priority` requires it, because unlike
-    a glyph the word "High" can legitimately open one of his sentences.
+    `- 🟠 fix the sort order` -> `- 🟠 High: fix the sort order`. The
+    colon is not cosmetic and does not go away when the glyph comes
+    back: `split_capture_priority` requires it on any spelling carrying
+    the word, because unlike a glyph the word "High" can legitimately
+    open one of his sentences.
+
+    Reading is delegated to `split_capture_priority` rather than
+    duplicated here, which is what keeps the two agreeing about which
+    spellings are ratings -- this tool exists to rewrite his files and
+    must never recognise one the parser does not.
 
     A `DONE (Cycle N):` marker sits *outside* the rating, so it is
     stepped over rather than matched through -- reading the rating first
@@ -81,19 +107,19 @@ def _rewrite_capture(line):
     prefix = ""
     if done:
         prefix, rest = done.group(1), done.group(2)
-    for glyph, key in _LEGACY_PRIORITY_GLYPHS.items():
-        if rest.startswith(glyph):
-            body = rest[len(glyph):].strip()
-            if not body:
-                # A bullet that is nothing but a glyph carries no text to
-                # rate. Rewriting it to a bare `High:` would invent a
-                # capture; leave it exactly as it is.
-                return line, False
-            return lead + prefix + PRIORITY_LABELS[key] + CAPTURE_PRIORITY_SEP + body, True
-    return line, False
+    label, body = split_capture_priority(rest)
+    if not label:
+        return line, False
+    if not body:
+        # A bullet that is nothing but a rating carries no text to rate.
+        # Rewriting it to a bare `🟠 High:` would invent a capture;
+        # leave it exactly as it is.
+        return line, False
+    rewritten = lead + prefix + label + CAPTURE_PRIORITY_SEP + body
+    return (rewritten, True) if rewritten != line else (line, False)
 
 
-def retire(markdown):
+def normalise(markdown):
     """`(rewritten, [(kind, before, after)])`. Pure; no I/O."""
     lines = markdown.split("\n")
     out = []

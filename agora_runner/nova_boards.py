@@ -154,35 +154,47 @@ _PRIORITY_ALIASES = {"immediately": "immediate", "now": "immediate", "urgent": "
 # both boards right now is mine, and "actually nobody has decided this"
 # is an answer Edvard must be able to give me back.
 #
-# **Words, no glyph.** These carried a coloured ball until Cycle 268.
-# Edvard, comments board 2026-08-19: *"Please do not use these symbols
+# **Glyph and word together, and the word is the part that is not
+# optional.** Cycle 268 read Edvard's *"Please do not use these symbols
 # '🟠' as i can't really see the difference as they are colors. Please
-# use the full word such as 'high' or 'immediately'"*. Colour was the
-# only thing separating one rating from the next everywhere the word was
-# not also printed -- the capture bullet's prefix, and the capture box's
-# closed picker -- so the glyph is gone from what gets written rather
-# than merely supplemented. The CSS chip keeps its colour: he asked for
-# the word to be there, not for the colour to go, and a coloured chip
-# that also says "High" is readable either way.
+# use the full word such as 'high' or 'immediately'"* as "delete the
+# glyph", stripped it from these labels and from 87 cells in his two
+# files, and got told the next morning that it had over-read him:
+# *"There has been a missinderstanding here. I do like the symbols such
+# as 🟠 for priority, so please add them back to where it was removed.
+# What i ment was in your journals or other explanations, please use
+# your words instead of only using the symbol ... But if you use the
+# symbol and text, thats completely fine!"* (comments board 2026-08-20,
+# said twice).
 #
-# A row still spelled `🟠 High` in the vault keeps working, but not
-# for free and not automatically: `priority_key` strips non-word
-# characters so sorting and filtering are unaffected, and `parse_board`
-# normalises the cell on the way out so the *displayed* chip says the
-# word. Those are two different things and conflating them is what this
-# comment did until the reviewer caught it on #244. `tools/
-# retire_priority_glyphs.py` rewrote the cells already in his two files.
+# So the defect was never the glyph. It was the glyph *alone*, in the
+# two places no word was printed beside it -- the capture bullet's
+# prefix and the capture box's closed picker -- where colour carried the
+# whole meaning. Both of those now read `🟠 High`, which fixes what he
+# could not read without throwing away what he could. The narrower rule
+# that survives, and the one worth applying anywhere else: **a rating is
+# allowed to show a glyph, and is never allowed to show only a glyph.**
+#
+# Both spellings still parse. `priority_key` strips non-word characters,
+# so sorting and filtering never saw the difference; `parse_board`
+# normalises the cell on the way out, so a row left in either spelling
+# displays the current one. `tools/normalise_priority_labels.py` rewrites
+# the cells already written into his two files, in whichever direction
+# these labels currently point.
 PRIORITY_LABELS = {
     "": "",
-    "low": "Low",
-    "medium": "Medium",
-    "high": "High",
-    "immediate": "Immediately",
+    "low": "⚪ Low",
+    "medium": "🔵 Medium",
+    "high": "🟠 High",
+    "immediate": "🔴 Immediately",
 }
 
-# The glyph each rating used to be written with, kept only so a bullet
-# Edvard captured before Cycle 268 still parses back to its rating. Read
-# by `split_capture_priority`; never written by anything.
+# The glyph each rating carries, indexed the other way round so a bullet
+# written as a bare glyph -- every capture Edvard typed before Cycle 268,
+# and every one his phone writes from an `app.js` cached before Cycle 274
+# -- still parses back to its rating. Read by `split_capture_priority`;
+# what gets *written* comes from `PRIORITY_LABELS` and always has the
+# word in it.
 _LEGACY_PRIORITY_GLYPHS = {
     "⚪": "low",
     "🔵": "medium",
@@ -190,14 +202,18 @@ _LEGACY_PRIORITY_GLYPHS = {
     "🔴": "immediate",
 }
 
-# What a rating looks like riding at the front of a capture bullet, now
-# that it is a word rather than a glyph. The colon is load-bearing: a
-# glyph could never begin an ordinary sentence, but "High" can, and
-# `Immediately: ` is the only form that stays unambiguous against a
-# bullet that happens to open with one of the four words.
+# What a rating looks like riding at the front of a capture bullet:
+# `🟠 High: fix the sort order`. The colon is load-bearing and the glyph
+# is not -- a glyph could never begin an ordinary sentence, but "High"
+# can, and `Immediately: ` is the only form that stays unambiguous
+# against a bullet that happens to open with one of the four words. The
+# glyph is therefore optional in what this matches and always present in
+# what `capture()` writes, which is what lets a phone holding a cached
+# `app.js` keep writing the wordless spelling without losing a rating.
 CAPTURE_PRIORITY_SEP = ": "
 _CAPTURE_WORD_RE = re.compile(
-    r"^(Low|Medium|High|Immediately):\s+", re.UNICODE)
+    r"^(?:[⚪🔵🟠🔴]\s*)?(Low|Medium|High|Immediately):\s+",
+    re.UNICODE)
 
 
 def canonical_priority(value):
@@ -276,7 +292,7 @@ def _table_rows(body):
 
 
 def split_capture_priority(bullet):
-    """`High: text` -> `("High", "text")`. Unrated -> `("", bullet)`.
+    """`🟠 High: text` -> `("🟠 High", "text")`. Unrated -> `("", bullet)`.
 
     The other half of Edvard's capture: *"i want that aswell both when i
     input in the textbox in the Nova app"*. A capture is a bare bullet in
@@ -286,10 +302,12 @@ def split_capture_priority(bullet):
     and is what a cycle lifts into the `Priority` cell when it boards the
     item and strips from the title.
 
-    Two accepted spellings, and only one of them is ever written. The
-    word form is current (Cycle 268, `PRIORITY_LABELS`); the bare glyph
-    is every bullet captured before it, still in his two files, and is
-    read for that reason alone.
+    Three accepted spellings, and only one of them is ever written.
+    `🟠 High: ` is current (Cycle 274, `PRIORITY_LABELS`); `High: ` is
+    what Cycle 268 wrote for a day and is still all over his two files;
+    the bare `🟠` is every bullet captured before that, and is read for
+    that reason alone. All three key to the same rating, so which one a
+    bullet happens to carry never changes what it means.
 
     The word form needs its colon and the glyph form does not, which is
     the whole reason the separator exists. A glyph cannot begin an

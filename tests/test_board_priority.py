@@ -39,7 +39,7 @@ Body text I must not touch.
 def test_changes_the_cell_and_parse_board_reads_it_back():
     updated = set_row_priority(BOARD, 57, "Immediately")
     row = [i for i in parse_board(updated)["items"] if i["number"] == 57][0]
-    assert row["priority"] == "Immediately"
+    assert row["priority"] == "🔴 Immediately"
     assert row["priorityKey"] == "immediate"
     assert row["title"] == "More pages" and row["status"] == "🟡 In progress"
 
@@ -47,7 +47,7 @@ def test_changes_the_cell_and_parse_board_reads_it_back():
 def test_grows_the_fifth_cell_on_a_row_that_never_had_one():
     updated = set_row_priority(BOARD, 59, "High")
     row = [i for i in parse_board(updated)["items"] if i["number"] == 59][0]
-    assert row["priority"] == "High"
+    assert row["priority"] == "🟠 High"
     assert row["updated"] == "08-11"
 
 
@@ -74,20 +74,22 @@ def test_refuses_a_done_row_a_missing_row_and_a_rating_i_did_not_offer():
 
 
 def test_a_rating_spelled_the_old_way_writes_the_new_way():
-    """Cycle 268 renamed the four labels; callers did not all get the memo.
+    """The four labels have now been renamed twice; callers get the memo late.
 
-    `"high"` and `"🟠 High"` were both refused before, on an exact match
-    against `PRIORITY_LABELS.values()`. That was safe while the values
-    never moved. They moved -- so a phone holding a cached `app.js` would
+    `"high"` and `"🟠 High"` were both refused before Cycle 268, on an
+    exact match against `PRIORITY_LABELS.values()`. That was safe while
+    the values never moved. They moved -- twice, in two days and in
+    opposite directions -- so a phone holding a cached `app.js` would
     have had every rating it set answered with a 400, and nothing on the
-    page would have said why. Normalising accepts what it means and
-    stores the one spelling, which is the point.
+    page would have said why. Normalising accepts what any of them means
+    and stores the current spelling, which is the point, and is why this
+    reversal cost nothing on the wire.
     """
-    for spelled in ("🟠 High", "high", "HIGH", " High "):
+    for spelled in ("🟠 High", "High", "high", "HIGH", " High "):
         updated = set_row_priority(BOARD, 57, spelled)
         assert updated is not None, spelled
         row = [i for i in parse_board(updated)["items"] if i["number"] == 57][0]
-        assert row["priority"] == "High", spelled
+        assert row["priority"] == "🟠 High", spelled
 
 
 def test_labels_round_trip_through_priority_key():
@@ -115,9 +117,13 @@ def test_set_priority_writes_once_and_sends_the_revision_it_read(monkeypatch):
     assert ok and "#57" in message
     assert len(calls) == 1
     assert seen["if_rev"] == "7-abc"
-    assert "High" in seen["body"]
-    # The glyph is gone from what gets written, not merely from what is read.
-    assert "🟠" not in seen["body"]
+    # The invariant that survived both renames, and the only one Edvard
+    # ever actually asked for: the **word** is in what gets written. The
+    # glyph came back beside it in Cycle 274 (*"if you use the symbol and
+    # text, thats completely fine!"*); what may never come back is the
+    # glyph on its own, which is what he could not read.
+    assert "🟠 High" in seen["body"]
+    assert "🟠" not in seen["body"].replace("🟠 High", "")
 
 
 def test_set_priority_does_not_write_when_the_row_is_not_open(monkeypatch):
@@ -137,9 +143,11 @@ from agora_runner.nova_boards import split_capture_priority
 
 
 def test_a_rated_bullet_splits_into_a_rating_and_his_words():
-    assert split_capture_priority("High: fix the sort order") == ("High", "fix the sort order")
-    assert split_capture_priority("Immediately: the app is down") == (
-        "Immediately", "the app is down")
+    assert split_capture_priority("🟠 High: fix the sort order") == ("🟠 High", "fix the sort order")
+    assert split_capture_priority("🔴 Immediately: the app is down") == (
+        "🔴 Immediately", "the app is down")
+    # The wordless spelling Cycle 268 wrote into his files still reads.
+    assert split_capture_priority("High: fix the sort order") == ("🟠 High", "fix the sort order")
 
 
 def test_a_bullet_captured_before_the_glyph_was_dropped_still_reads():
@@ -149,8 +157,8 @@ def test_a_bullet_captured_before_the_glyph_was_dropped_still_reads():
     before it still carries one, so dropping the read would silently
     demote each of them to unrated and swallow the glyph into his prose.
     """
-    assert split_capture_priority("🟠 fix the sort order") == ("High", "fix the sort order")
-    assert split_capture_priority("🔴 the app is down") == ("Immediately", "the app is down")
+    assert split_capture_priority("🟠 fix the sort order") == ("🟠 High", "fix the sort order")
+    assert split_capture_priority("🔴 the app is down") == ("🔴 Immediately", "the app is down")
 
 
 def test_the_word_form_needs_its_colon_because_a_word_can_open_a_sentence():
@@ -191,9 +199,9 @@ def test_an_open_capture_comes_back_whole():
 def test_the_page_reads_the_marker_before_the_rating_not_after():
     """Both are prefixes on one line and the done marker sits outermost --
     read the rating first and every closed capture reports as unrated."""
-    assert _capture_parts("DONE (Cycle 247): High: fix the sort order") == (
-        "Cycle 247", "High", "fix the sort order")
-    assert _capture_parts("High: fix the sort order") == ("", "High", "fix the sort order")
+    assert _capture_parts("DONE (Cycle 247): 🟠 High: fix the sort order") == (
+        "Cycle 247", "🟠 High", "fix the sort order")
+    assert _capture_parts("🟠 High: fix the sort order") == ("", "🟠 High", "fix the sort order")
 
 
 def test_an_unrated_bullet_comes_back_whole():
@@ -210,9 +218,9 @@ def test_capture_prefixes_only_the_first_bullet_of_a_paste(monkeypatch):
         lambda path, body, if_rev=None: written.update(body=body) or "written")
     ok, _ = nova_capture.capture("issues", "first line\nsecond line", "High")
     assert ok
-    assert "- High: first line" in written["body"]
+    assert "- 🟠 High: first line" in written["body"]
     assert "- second line" in written["body"]
-    assert "High: second line" not in written["body"]
+    assert "🟠 High: second line" not in written["body"]
 
 
 def test_capture_refuses_a_rating_that_is_not_one_of_the_four(monkeypatch):
