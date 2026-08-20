@@ -55,6 +55,13 @@ def numbers_in(conversations, tag):
     silently goes backwards the day a conversation is deleted, and would
     then hand a fresh cycle a number an older one already used. A name that
     does not parse is skipped rather than guessed at.
+
+    That is a future hazard, not a present one, and #250 claimed otherwise
+    on a misread probe. Measured 2026-08-20 08:06 Oslo: 277 tagged
+    conversations, 276 of them carrying a parseable number, highest 277, and
+    the only number with no conversation is 1 -- the very first, named
+    `Agora Evolve`, from before the naming convention existed. Counting and
+    parsing both answer 278 today.
     """
     found = []
     for conversation in conversations or []:
