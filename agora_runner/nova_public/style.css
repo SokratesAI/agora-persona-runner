@@ -1515,6 +1515,12 @@ blockquote {
 .tile-note { margin: 0; color: var(--dim); font-size: 0.78rem; }
 
 .chart {
+  /* A column, so the zoom row can be ordered after a legend the chart
+     appends later. `chartFrame` adds the controls when the figure is
+     built and both legend-bearing charts add their key afterwards, which
+     put the buttons between a chart and the key that explains it. */
+  display: flex;
+  flex-direction: column;
   margin: 0 0 1.25rem;
   padding: 0.75rem 0.5rem 0.5rem;
   background: var(--card);
@@ -1543,15 +1549,20 @@ blockquote {
  * gesture. A pinch is two fingers and reaches the handler either way. */
 .chart-plot.is-zoomed { touch-action: none; cursor: grab; }
 
-/* The overlay needs its own copy, and finding out why is what this rule
- * is. `touch-action` is resolved from the element the touch *starts* on,
- * not from an ancestor -- and every touch on a chart starts on the
- * overlay, since it covers the plot. So the `none` above would never have
- * been consulted, and a one-finger drag on a zoomed chart would have
- * scrolled the page instead of panning the picture. */
+/* The overlay needs its own copy, and the reason I first wrote here was
+ * wrong, so it is worth replacing rather than deleting. I claimed
+ * `touch-action` resolves only from the element a touch starts on, which
+ * would have made the `none` above dead. It does not: the UA intersects
+ * the hit element's value with every ancestor up to the nearest scroll
+ * container, so `none` on the plot already governs. This line is belt and
+ * braces -- it keeps the overlay's own `pan-y` from being the value that
+ * survives if that intersection is ever narrowed -- not the load-bearing
+ * fix the old comment claimed. Believing the old version would have led
+ * the next reader to delete the plot's rule as redundant. */
 .chart-plot.is-zoomed .chart-overlay { touch-action: none; cursor: grab; }
 
 .chart-tools {
+  order: 2;
   display: flex;
   align-items: center;
   gap: 0.35rem;

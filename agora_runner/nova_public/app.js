@@ -3969,7 +3969,6 @@
       reset.disabled = !zoomed;
       out.disabled = !zoomed;
       into.disabled = state.k >= ZOOM_MAX - 0.001;
-      chart.plot.setAttribute("aria-label", "Zoomed " + state.k.toFixed(1) + " times");
     }
 
     /* Zoom about a fixed point, so the mark under the finger stays under
@@ -3998,9 +3997,7 @@
     full.addEventListener("click", function () {
       setChartFullscreen(chart, !chart.figure.classList.contains("chart-full"));
     });
-    chart.setFullscreen = function (on) { setChartFullscreen(chart, on); };
     chart.applyZoom = apply;
-    chart.zoomAt = zoomAt;
 
     attachGestures(chart, state, zoomAt, apply);
     apply();
@@ -4107,8 +4104,14 @@
    *
    * `requestFullscreen` is refused on iOS Safari for anything that is not
    * a <video>, which is the device this ask came from -- so this is a
-   * fixed overlay instead, which works everywhere and can be dismissed
-   * with Escape or the browser's back gesture.
+   * fixed overlay instead, which works everywhere. It is dismissed with
+   * the button or with Escape. **Not** with the back gesture, which this
+   * comment claimed until the reviewer checked: no history entry is
+   * pushed, so back leaves the costs page entirely and the overlay goes
+   * with it. On a phone there is no Escape key and back is the reflex, so
+   * pushing a history entry is worth doing -- filed rather than done
+   * here, because it changes what the browser's back button means on
+   * this page and wants its own change.
    *
    * Honest about what it buys: in portrait the chart is already the full
    * width of a phone, so the gain there is that the page chrome, the
@@ -4138,15 +4141,15 @@
       button.title = button.getAttribute("aria-label");
     }
     openFullChart = on ? chart : null;
-    // Leaving a chart zoomed behind the overlay would restore it at 4x in
-    // a card a fifth the size, with the pan offset measured against the
-    // wrong box.
-    if (!on && chart.zoom) {
-      chart.zoom.k = 1;
-      if (chart.applyZoom) chart.applyZoom();
-    } else if (chart.applyZoom) {
-      chart.applyZoom();
-    }
+    // Both directions, and the reviewer caught that this used to be one.
+    // The plot changes size when the overlay opens *and* when it closes,
+    // and `tx`/`ty` are pixel offsets against whichever box was current
+    // when they were set -- so carrying them across either transition
+    // lands the reader somewhere they did not choose, in a picture whose
+    // clamp bounds have also just changed. Entering full screen had this
+    // bug while leaving it carried a comment explaining why it must not.
+    if (chart.zoom) chart.zoom.k = 1;
+    if (chart.applyZoom) chart.applyZoom();
   }
 
   function closeFullChart() {
