@@ -4083,3 +4083,28 @@ def test_the_plan_page_and_its_endpoint_both_answer():
         empty_status, _, empty = _get("/api/plan")
     assert empty_status == 200
     assert all(doc["missing"] for doc in json.loads(empty)["documents"])
+
+
+def test_service_worker_precaches_the_chart_library():
+    """The costs page has to draw with the tailnet down, and it was the one
+    page that could not.
+
+    `app.js` loads ECharts lazily on the first chart, so the worker's
+    network-first fetch handler only ever files it away *after* a visit
+    made while online. A phone that installs the app and then loses the
+    link therefore has every page but this one, which is the exact failure
+    vendoring the library instead of using a CDN was meant to prevent.
+
+    Both halves are asserted together on purpose: the path the worker
+    precaches has to be a path this server actually answers, and nothing
+    else checks that those two agree. `cache.addAll` is atomic, so a
+    precache entry the server 404s does not degrade -- it fails the whole
+    install and the app stops being offline-capable at all.
+    """
+    status, _, worker = _get("/sw.js")
+    assert status == 200
+    assert b'"/vendor/echarts.min.js"' in worker
+
+    served, _, library = _get("/vendor/echarts.min.js")
+    assert served == 200
+    assert len(library) > 500_000
