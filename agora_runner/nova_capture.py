@@ -316,18 +316,23 @@ def capture(target, text, priority=""):
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
     client sends is ever used to address a vault document.
 
-    `priority` rides at the front of the bullet as its word and a colon
-    (`High: ...`, `CAPTURE_PRIORITY_SEP`), and only on the first bullet: a
+    `priority` rides at the front of the bullet as its full label and a
+    colon (`🟠 High: ...`, `CAPTURE_PRIORITY_SEP`), and only on the
+    first bullet: a
     paste that splits into four lines is one thought Edvard rated once,
     not four items each rated separately. It is the same rating vocabulary
     the board column uses, checked against `PRIORITY_LABELS` here as well
     as at the endpoint, because this is the function that decides what
     characters land in his file.
 
-    It was the rating's coloured glyph until Cycle 268, which is the one
-    place colour was the *only* signal -- a bare bullet has no column to
-    spell the word out in. Edvard cannot tell the four balls apart
-    (comments board 2026-08-19), so the word is what gets written.
+    It was a bare coloured glyph until Cycle 268 -- this is the one place
+    colour was the *only* signal, because a bare bullet has no column to
+    spell the word out in, and Edvard cannot tell the four balls apart
+    (comments board 2026-08-19). Cycle 268 then dropped the glyph
+    entirely, which he corrected the next morning (*"if you use the
+    symbol and text, thats completely fine!"*), so what gets written now
+    is both: the glyph for the colour he likes, and the word without
+    which the colour means nothing.
     """
     path = CAPTURE_TARGETS.get(target)
     if path is None:

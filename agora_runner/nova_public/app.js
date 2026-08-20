@@ -2482,13 +2482,21 @@
   var PRIORITY_KEYS = ["", "low", "medium", "high", "immediate"];
 
   /* A small custom dropdown, not a native <select> -- Edvard, 2026-08-14:
-   * the closed control must show only the glyph (or a dash), but the open
-   * list must still spell out each rating's word. No native form control
-   * can show one thing closed and another open: a <select> renders its
-   * selected <option>'s own text in both the box and the popup, so a
-   * version of this built on <select> could satisfy one of those asks but
-   * never both -- which is exactly the bug he found (the popup was as
-   * wordless as the box).
+   * the closed control had to stay compact while the open list still
+   * spelled out each rating's word. No native form control can show one
+   * thing closed and another open: a <select> renders its selected
+   * <option>'s own text in both the box and the popup, so a version of
+   * this built on <select> could satisfy one of those asks but never
+   * both -- which is exactly the bug he found (the popup was as wordless
+   * as the box).
+   *
+   * That 2026-08-14 ask said the closed control should show *only* the
+   * glyph, and that is no longer true of either control: Cycle 274 put
+   * the word back beside the glyph everywhere, on his 2026-08-20
+   * correction. The custom dropdown is still the right shape -- the two
+   * controls still differ, the closed one showing `🟠 High` and the open
+   * list a full column of options -- but read the sentence above as the
+   * history of why this is not a <select>, not as a live spec.
    *
    * One popup, shared by every picker on the page, appended straight to
    * <body> rather than living under each trigger, and centered on the
