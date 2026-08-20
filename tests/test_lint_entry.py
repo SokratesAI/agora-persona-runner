@@ -20,7 +20,8 @@ import pytest
 from datetime import datetime
 
 from agora_runner.config import OSLO
-from tools.lint_entry import lint, main
+from agora_runner.nova_journal import split_ask
+from tools.lint_entry import _raw_body, lint, main
 
 GOOD = """### Cycle 152 — 2026-08-01 02:00 Oslo
 
@@ -580,3 +581,139 @@ def test_prose_naming_the_section_at_a_paragraph_start_still_needs_no_colon_afte
         "**Digest** are what he asked for.",
     )
     assert lint("168-cycle-152.md", entry) == []
+
+
+# --- The ask has to open with the question --------------------------------
+#
+# Edvard, unboarded capture 2026-08-20, naming Cycle 273's block: *"its a
+# wall of text and a question hidden in it at the very bottom ... Example
+# is 'yes or no, keep the symbols for x, y, z?' After that, you can explain
+# the reason"*. Measured over all 333 live entries before the check was
+# written: 8 carry an ask, and it fires on exactly 6 of them.
+
+
+def _ask_entry(ask):
+    return GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs Edvard:** " + ask,
+    )
+
+
+def test_an_ask_opening_with_a_statement_is_caught():
+    """Cycle 273's shape, shortened: the reason first, the question buried."""
+    findings = lint(
+        "168-cycle-152.md",
+        _ask_entry(
+            "You told me on the 19th that the coloured circles were "
+            "unreadable, and the priorities now carry words. Should the "
+            "status circles follow?"
+        ),
+    )
+    assert _kinds(findings) == ["ask"]
+    assert "opens with a statement" in findings[0]
+
+
+def test_an_ask_that_leads_with_the_question_passes():
+    ask = (
+        "Yes or no, should the status circles become words like the "
+        "priorities did? You told me on the 19th that the coloured "
+        "circles were unreadable."
+    )
+    entry = _ask_entry(ask)
+    # Asserted first, because `lint(...) == []` on its own cannot tell "the
+    # check read this ask and approved it" from "there was no ask to read".
+    # Reviewer finding on #254.
+    assert split_ask(_raw_body(entry))[1].startswith("Yes or no,")
+    assert lint("168-cycle-152.md", entry) == []
+
+
+@pytest.mark.parametrize(
+    "opening",
+    [
+        "Should I raise the limit above $0.00, i.e. to any non-zero number?",
+        "Should Mr. Anderson sign off on this change, yes or no?",
+        "Should we go with plan A vs. plan B?",
+        "Should we cover x, y, z, etc. before shipping, yes or no?",
+    ],
+)
+def test_an_abbreviation_does_not_end_the_first_sentence(opening):
+    """Refusing a correctly written ask is the expensive direction to fail
+    in -- it is an ask that cannot be published at all.
+
+    The first version tested only `i.e.`, where every letter is its own
+    token, and that was the one abbreviation shape its one-character
+    lookbehind handled; `Mr.`, `vs.` and `etc.` were all refused. The
+    reviewer found that by running these four rather than reading the
+    regex. `$0.00` is here for completeness and is *not* what pins the
+    abbreviation rule -- it is protected by the `(?=\\s|\\Z)` lookahead
+    instead, since neither of its dots is followed by whitespace.
+    """
+    assert lint("168-cycle-152.md", _ask_entry(opening + " The reason.")) == []
+
+
+def test_a_question_mark_inside_a_quotation_does_not_make_the_opening_a_question():
+    """The failure this check exists to catch, surviving the check.
+
+    Every ask ever written quotes Edvard or an earlier entry, so a `?`
+    early in the paragraph is normal and says nothing about whether *this*
+    paragraph opens by asking something. Reviewer finding on #254; the
+    first version passed both of these silently.
+    """
+    for ask in (
+        'The card that said "should I proceed?" was from last week and is '
+        "now stale. Should I proceed now, yes or no?",
+        "Remember when you asked `is this ready?` -- it still is not. Do you "
+        "want me to keep waiting, yes or no?",
+    ):
+        findings = lint("168-cycle-152.md", _ask_entry(ask))
+        assert _kinds(findings) == ["ask"], ask
+        assert "opens with a statement" in findings[0]
+
+
+def test_a_sentence_ending_in_no_is_still_the_end_of_a_sentence():
+    """`no.` is an abbreviation for "number" and is not on the list, on
+    purpose: a sentence of mine ends in "no." far more often than it
+    contains "No. 5", so listing it would trade a rare false refusal for a
+    common false acceptance."""
+    findings = lint(
+        "168-cycle-152.md",
+        _ask_entry("Last time the answer was no. Should I proceed now?"),
+    )
+    assert _kinds(findings) == ["ask"]
+
+
+def test_a_quoted_question_after_a_real_one_still_passes():
+    """The mirror of the case above -- masking quotations must not refuse an
+    ask that genuinely opens with its question and quotes him afterwards,
+    which is the shape `personality.md` actually asks for."""
+    assert (
+        lint(
+            "168-cycle-152.md",
+            _ask_entry(
+                "Yes or no, should the status circles become words? You said "
+                '"i can\'t really see the difference as they are colors".'
+            ),
+        )
+        == []
+    )
+
+
+def test_an_ask_with_no_sentence_end_at_all_is_caught():
+    """A trailing fragment has no `?` anywhere, so it is not a question --
+    the `match is None` branch, which the two cases above never reach."""
+    findings = lint("168-cycle-152.md", _ask_entry("The token has expired"))
+    assert _kinds(findings) == ["ask"]
+    assert "opens with a statement" in findings[0]
+
+
+def test_the_bare_label_is_told_about_the_colon_and_not_about_the_shape():
+    """The two ask checks are mutually exclusive by construction: one needs
+    `split_ask` to have found nothing, the other needs it to have found
+    something. An entry missing the colon should get one finding, not two."""
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs Edvard** The token has expired.",
+    )
+    findings = lint("168-cycle-152.md", entry)
+    assert _kinds(findings) == ["ask"]
+    assert "colon inside the bold" in findings[0]

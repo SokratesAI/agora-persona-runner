@@ -192,6 +192,109 @@ def _ask_finding(body):
     )
 
 
+# Finding the end of the ask's first sentence, which is harder than one
+# regex because both directions of error are live in real asks.
+#
+# **A `?` inside a quotation is not this sentence asking anything**, and
+# that is the failure that matters, because every ask ever written quotes
+# Edvard or quotes an earlier entry. Reviewer's case on #254, run rather
+# than argued: *The card that said "should I proceed?" was from last week
+# and is now stale. Should I proceed now, yes or no?* opens with a
+# statement, is exactly the wall-of-text shape this check exists to
+# refuse, and passed silently on the first version. So quoted spans are
+# masked out before anything is scanned -- with a same-length filler, so
+# every offset still points at the original text.
+_ASK_QUOTED_RE = re.compile(r"\"[^\"]*\"|“[^”]*”|`[^`]*`")
+_ASK_MASK = "░"
+
+# **And a `.` that ends an abbreviation is not the end of a sentence.**
+# The first version tested this with a one-character lookbehind, which
+# covers `i.e.` and `e.g.` -- where every letter is its own token -- and
+# nothing else, so `Should Mr. Anderson sign off, yes or no?` was refused
+# for opening with a statement. That is the expensive direction to fail
+# in: a correctly written ask that cannot be published. A named list is
+# duller than a lookbehind and is right about the cases that occur.
+#
+# `no` and `fig` are deliberately **not** in it, though they are ordinary
+# abbreviations. A sentence of mine ends in "no." far more often than it
+# contains "No. 5", and listing it would let *The answer is no. Should I
+# proceed?* pass as a question-first ask -- buying a rare false refusal at
+# the price of a common false acceptance. My own re-read after the
+# reviewer's; the rule for this list is that a word only earns a place if
+# it is likelier mid-sentence than sentence-final.
+_ASK_ABBREVIATIONS = frozenset(
+    "mr mrs ms dr prof st jr sr vs etc eg ie approx cf".split()
+)
+_ASK_TERMINATOR_RE = re.compile(r"[?!]|\.(?=\s|\Z)")
+_ASK_WORD_BEFORE_RE = re.compile(r"([A-Za-z0-9]+)\Z")
+
+
+def _first_sentence_end(ask):
+    """The match ending the ask's first sentence, or `None` if it has none.
+
+    Offsets are into `ask` itself: masking preserves length on purpose, so
+    the caller can slice the original text out of a scan of the masked
+    copy.
+    """
+    masked = _ASK_QUOTED_RE.sub(lambda m: _ASK_MASK * len(m.group()), ask)
+    for match in _ASK_TERMINATOR_RE.finditer(masked):
+        if match.group() != ".":
+            return match
+        word = _ASK_WORD_BEFORE_RE.search(masked[: match.start()])
+        token = word.group(1).lower() if word else ""
+        # A one-character token is `i.`, `e.` or a list marker; a decimal
+        # never reaches here at all, because `(?=\s|\Z)` already requires
+        # whitespace after the dot and `$0.00` has none.
+        if len(token) <= 1 or token in _ASK_ABBREVIATIONS:
+            continue
+        return match
+    return None
+
+
+def _ask_question_finding(body):
+    """A `Needs Edvard` ask whose first sentence is not the question.
+
+    Edvard, unboarded capture 2026-08-20: *"The 'needs Edvard' blocks needs
+    to present the issue in the first line to me as a question. Take the
+    block in cycle 273, its a wall of text and a question hidden in it at
+    the very bottom ... is it a simple yes and no question? Or something
+    else? ... Example is 'yes or no, keep the symbols for x, y, z?' After
+    that, you can explain the reason"*.
+
+    So the mechanical half of that is binary and is the half worth
+    refusing on: **the first sentence of the ask ends in a question mark.**
+    Measured against all 333 live entries before it was written -- 8 carry
+    an ask, and 6 of them open with a statement, including the Cycle 273
+    block he named (35 words before the first full stop, no question in
+    it). The two that pass are the same ask written twice, opening *"Do you
+    use ChatGPT Codex against these repos?"* at 8 words. So this check can
+    fail and can pass, which the six-out-of-eight split is the evidence
+    for -- a rule that every existing document already satisfies would have
+    been a rule that pins nothing.
+
+    The other half of his ask -- be *direct*, be *specific*, say whether it
+    is yes/no -- is judgement, and a word cap standing in for it would be a
+    number I invented rather than measured. That half is written into
+    `personality.md` as prose instead, deliberately.
+    """
+    ask = split_ask(body)[1]
+    if not ask:
+        return None
+    match = _first_sentence_end(ask)
+    if match and match.group() == "?":
+        return None
+    first = ask[: match.end()] if match else ask
+    return (
+        f"ask: this ask opens with a statement, not a question -- {first!r}. "
+        "Edvard has to read to the bottom to find out what is being asked of "
+        "him, which is the thing he reported on 2026-08-20. Lead with the "
+        "question in one sentence, say whether it is yes/no, and put the "
+        "reasoning after it: `**Needs Edvard:** Yes or no, should the status "
+        "circles become words like the priorities did? You told me on the "
+        "19th that ...`"
+    )
+
+
 def _board_finding(body):
     """A `Board:` field the site cannot turn into a single link.
 
@@ -547,6 +650,14 @@ def lint(name, content, now=None, clock=_UNSET):
     ask = _ask_finding(raw)
     if ask:
         findings.append(ask)
+    # Only one of these two can ever fire: `_ask_finding` needs `split_ask`
+    # to have found nothing, `_ask_question_finding` needs it to have found
+    # something. So an entry that writes the bare label is told about the
+    # colon and not also lectured on the shape of an ask the site is going
+    # to drop anyway.
+    ask_question = _ask_question_finding(raw)
+    if ask_question:
+        findings.append(ask_question)
     # Runs unconditionally, and that is a measurement rather than an
     # oversight. This started as a blanket "skip when the heading is
     # broken", which hid the wrong cycle number in `## Cycle 153` inside
