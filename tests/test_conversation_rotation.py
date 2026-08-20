@@ -140,6 +140,39 @@ def test_rotate_prunes_beyond_retention_keeping_the_newest():
     assert archived_ids == {"c1", "c2", "c3"}
 
 
+def test_rotate_default_retention_keeps_thirty_when_heartbeat_says_nothing():
+    """Edvard's 🔴 Immediately capture, 2026-08-20: "keep the last 30
+    conversations for a heartbeat so that i'm able to talk to them". A
+    heartbeat that sets no `conversationRetention` must keep 30 active,
+    not the 5 this defaulted to for the first eighteen days."""
+    heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
+                 "rotateConversationEachRun": True}
+    # 40 pre-existing tagged conversations, c01 (oldest) .. c40 (newest).
+    existing = [
+        {"id": f"c{i:02d}", "tags": ["evolve-cycle:hb1"], "createdAt": f"2026-08-20T{i:02d}:00:00Z"}
+        for i in range(1, 41)
+    ]
+    calls = []
+
+    def fake_get(path):
+        return 200, {"conversations": existing}
+
+    def fake_internal(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        return 200, {}
+
+    with patch.object(rotation, "agora_get", side_effect=fake_get), \
+         patch.object(rotation, "agora_internal", side_effect=fake_internal):
+        rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
+
+    archived_ids = {c[1].rsplit("/", 1)[-1] for c in calls if c[2] == {"archived": True}}
+    # 30 active total = the new one + the newest 29 pre-existing (c40..c12),
+    # so exactly c01..c11 get archived.
+    assert archived_ids == {f"c{i:02d}" for i in range(1, 12)}
+
+
 def test_rotate_falls_back_to_existing_conversation_on_create_failure():
     heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
                  "rotateConversationEachRun": True}
