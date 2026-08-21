@@ -506,9 +506,16 @@ def test_a_blocked_row_is_still_open_and_keeps_its_rating():
 
 
 def test_an_unanswered_comment_still_beats_blocked():
-    """If he has just written on a blocked row, that is likely the unblock."""
-    text = (board((94, "needs his click", BLOCKED, "08-16", HIGH),
-                  (95, "ordinary", BACKLOG, "08-20", LOW))
+    """If he has just written on a blocked row, that is likely the unblock.
+
+    The blocked row is rated **below** the other one and is **newer**, so
+    every tiebreak except the unanswered comment says it should lose. That
+    is the only way this test can tell the two sort terms apart: written
+    the obvious way -- blocked row rated High and oldest -- it wins for
+    three independent reasons and pins none of them.
+    """
+    text = (board((94, "needs his click", BLOCKED, "08-20", LOW),
+                  (95, "ordinary", BACKLOG, "08-01", HIGH))
             + "\n# Details\n\n### #94 — needs his click\n\n"
               "**Edvard, 08-21:** done, I clicked it.\n")
     ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))

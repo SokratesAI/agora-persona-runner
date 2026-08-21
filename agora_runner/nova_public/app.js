@@ -2298,7 +2298,14 @@
       // carries "in progress" for a row a cycle has started. Both mean
       // this loop has actually touched the row, which is the backwards
       // reading of the board links in ideas.md #68.
-      match: function (i) { return !!i.where || i.statusKey === "in-progress"; },
+      // "blocked on edvard" belongs here for a stronger reason than
+      // either: it means a cycle did all the work there was and the only
+      // step left is his. Leaving it out would drop the row out of this
+      // filter at the exact moment it becomes the answer to it.
+      match: function (i) {
+        return !!i.where || i.statusKey === "in-progress"
+          || i.statusKey === "blocked-on-edvard";
+      },
     },
   ];
 
