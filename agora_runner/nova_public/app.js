@@ -160,6 +160,152 @@
     return node;
   }
 
+  /* An attach button for any composer on this site.
+   *
+   * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"* He
+   * could see a layout bug on his Galaxy S25 that no renderer in this loop
+   * can reproduce, and the only channel between us was text. Cycle 299 had
+   * to answer "you can't" and ask him to describe the pixels instead.
+   *
+   * The upload happens on *pick*, not on send. Two reasons, and the second
+   * is the one that decided it: a 3MB POST from a phone takes long enough
+   * that doing it inside send() would make the send button look hung, and
+   * the markdown line lands in the textarea where he can see it, edit it,
+   * or delete it before committing to anything. The composer stays a plain
+   * text box that happens to have been typed into for him.
+   *
+   * `FileReader.readAsDataURL` rather than an ArrayBuffer walk: the server
+   * accepts a `data:` URL as-is (`store_upload` splits on the comma), so
+   * this is one call with no manual base64 in JavaScript. */
+  function buildAttach(opts) {
+    var input = el("input", "attach-input");
+    input.type = "file";
+    // `image/*` and not a list of extensions -- an Android camera roll
+    // offers HEIC and WebP alongside JPEG, and an extension allowlist here
+    // would hide his own photos from the picker. The server has the real
+    // allowlist and answers with a sentence he can read.
+    input.accept = "image/*";
+    input.hidden = true;
+
+    var button = el("button", "attach-btn " + (opts.buttonClass || ""), "📎");
+    button.type = "button";
+    button.title = "Attach an image";
+    button.setAttribute("aria-label", "Attach an image");
+
+    function status(text, isError) {
+      if (opts.onStatus) opts.onStatus(text, isError);
+    }
+
+    /* Whether an upload is in flight, and the composer's own send controls
+     * follow it.
+     *
+     * Without this the two controls race, and the race loses the picture
+     * silently: `submit()` reads `box.value` synchronously, so tapping
+     * Comment while the POST is still going sends the text *without* the
+     * markdown line -- and then the upload resolves, `onInsert` writes into
+     * a box `submit()` has already cleared, and the image reappears as an
+     * orphaned draft attached to nothing. He gets a comment with no
+     * screenshot in it and no sign that anything went wrong.
+     *
+     * Disabling send is the fix rather than queueing the upload, because
+     * the upload is the slow part and "wait for it" is the honest thing to
+     * show. `status` already says "uploading …" while it runs. */
+    function busy(isBusy) {
+      button.disabled = isBusy;
+      if (opts.onBusy) opts.onBusy(isBusy);
+    }
+
+    button.addEventListener("click", function () { input.click(); });
+
+    input.addEventListener("change", function () {
+      var file = input.files && input.files[0];
+      if (!file) return;
+      busy(true);
+      status("uploading " + file.name + "…", false);
+      var reader = new FileReader();
+      reader.onerror = function () {
+        busy(false);
+        status("could not read that file", true);
+      };
+      reader.onload = function () {
+        fetch("/api/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type,
+            data: String(reader.result || ""),
+          }),
+        })
+          .then(function (r) { return r.json().catch(function () { return {}; }); })
+          .then(function (result) {
+            if (!result || !result.ok) {
+              throw new Error((result && (result.message || result.error)) || "upload failed");
+            }
+            opts.onInsert("![" + (file.name || "image") + "](" + result.url + ")");
+            status("attached", false);
+          })
+          .catch(function (err) { status(String(err.message || err), true); })
+          .then(function () {
+            busy(false);
+            // Cleared so picking the *same* file twice still fires
+            // `change` -- otherwise a failed upload cannot be retried
+            // without choosing a different image first.
+            input.value = "";
+          });
+      };
+      reader.readAsDataURL(file);
+    });
+
+    return { button: button, input: input };
+  }
+
+  /* Append `text` to `container` as paragraphs, rendering an attached
+   * image as an image.
+   *
+   * Deliberately not a markdown renderer. It recognises exactly one
+   * construct -- `![alt](/api/upload/<name>)`, which is the line
+   * `buildAttach` writes -- and everything else stays the plain text it
+   * has always been. The comment painter's own note says "nothing here
+   * interprets it as markdown", and that stays true of everything Edvard
+   * types himself; what changed is that this site now generates one
+   * specific line on his behalf and has to be able to read it back.
+   *
+   * The URL is required to start with `/api/upload/` rather than being
+   * escaped, so a pasted `![](javascript:…)` or a remote tracker URL is
+   * shown as the text it is instead of being turned into an element. */
+  var ATTACH_RE = /!\[([^\]]*)\]\((\/api\/upload\/[A-Za-z0-9._-]+)\)/g;
+
+  function appendRichText(container, paraClass, text) {
+    String(text || "").split(/\n{2,}/).forEach(function (para) {
+      if (!para.trim()) return;
+      var node = el("p", paraClass);
+      var last = 0;
+      var match;
+      ATTACH_RE.lastIndex = 0;
+      while ((match = ATTACH_RE.exec(para)) !== null) {
+        var before = para.slice(last, match.index);
+        if (before) node.appendChild(document.createTextNode(before));
+        var link = el("a", "attach-link");
+        link.href = match[2];
+        link.target = "_blank";
+        link.rel = "noopener";
+        var img = el("img", "attach-img");
+        img.src = match[2];
+        img.alt = match[1] || "attached image";
+        // Lazy, because a thread can hold many of these and they are the
+        // heaviest thing on the page by an order of magnitude.
+        img.loading = "lazy";
+        link.appendChild(img);
+        node.appendChild(link);
+        last = match.index + match[0].length;
+      }
+      var rest = para.slice(last);
+      if (rest) node.appendChild(document.createTextNode(rest));
+      container.appendChild(node);
+    });
+  }
+
   /* Make a pager fire when it is scrolled to, instead of when it is tapped.
    *
    * Edvard, issues.md #71: "Make it more lazy load when i scroll down
@@ -705,6 +851,28 @@
     var status = el("p", "comment-status");
     status.setAttribute("role", "status");
     actions.appendChild(status);
+    /* The attach button rides in the same row as Comment, before it, so
+     * the primary action stays at the right edge where it already was.
+     * It writes into the box rather than into the request, which is what
+     * lets the draft-preserving `input` handler below see it: without the
+     * explicit `drafts` write, an image attached and then left unsent
+     * would vanish on the next poll while the typed text survived. */
+    var attach = buildAttach({
+      // Send is blocked while the image is going up, or the comment sends
+      // without it -- see `busy` in `buildAttach`.
+      onBusy: function (isBusy) { send.disabled = isBusy; },
+      onStatus: function (text, isError) {
+        status.textContent = text;
+        status.className = isError ? "comment-status is-error" : "comment-status";
+      },
+      onInsert: function (markdown) {
+        box.value = (box.value ? box.value.replace(/\s*$/, "") + "\n\n" : "") + markdown;
+        drafts[target.key] = box.value;
+        fit();
+      },
+    });
+    actions.appendChild(attach.input);
+    actions.appendChild(attach.button);
     var send = el("button", "comment-send", "Comment");
     send.type = "button";
     actions.appendChild(send);
@@ -747,10 +915,9 @@
         item.appendChild(head);
         // The text is Edvard's own prose and the server sends it as plain
         // text, so each blank-line-separated paragraph becomes its own <p>.
-        // Nothing here interprets it as markdown.
-        String(comment.text || "").split(/\n{2,}/).forEach(function (para) {
-          if (para.trim()) item.appendChild(el("p", "comment-body", para));
-        });
+        // Nothing here interprets it as markdown *except* the one attach
+        // line this site writes for him -- see `appendRichText`.
+        appendRichText(item, "comment-body", comment.text);
         /* Nova's answer to this comment, or the fact that one is coming.
          * The bridge serialises every CLI call, so a reply posted while a
          * cycle is running can be forty minutes behind -- saying nothing
@@ -768,9 +935,9 @@
           meta.appendChild(el("span", "comment-who", "Nova"));
           meta.appendChild(el("span", "comment-stamp", comment.replyStamp || ""));
           reply.appendChild(meta);
-          String(comment.reply).split(/\n{2,}/).forEach(function (para) {
-            if (para.trim()) reply.appendChild(el("p", "comment-body", para));
-          });
+          // Same treatment as his own comment above: a reply that quotes
+          // the image he attached should show it, not the raw line.
+          appendRichText(reply, "comment-body", comment.reply);
           after = reply;
         } else if (comment.replyWaiting) {
           /* Past the server's threshold, so this is no longer a reply being
@@ -5353,6 +5520,48 @@
      * control is a fixed 44px circle now, not a word, so it rejoins the
      * group it was split out of. See `.capture-submit` in style.css. */
     document.querySelector(".capture-submit").appendChild(prioPicker.el);
+
+    /* The same attach button the comment drawer gets, on the box that
+     * files an issue, an idea or a note -- which is the rest of Edvard's
+     * list, *"next to a comment, issue, note or idea"*.
+     *
+     * **After the three targets and before the picker**, which is not
+     * where I first put it. I prepended it, on the argument that Issue /
+     * Idea / Note are three *destinations* and a fourth control among them
+     * would read as a fourth place to file -- so it belonged before the
+     * choice, which is also when it is used. A browser test caught that
+     * immediately, and it was pinning something Edvard asked for: *"The
+     * issue, idea, note and priority dropdown are now just scrambled"*,
+     * and the row was rebuilt so the three targets come first and the
+     * picker sits at the right edge. Prepending broke the first half.
+     *
+     * This position keeps both. The picker is still the last child and the
+     * three targets are still the first three; the attach button takes the
+     * one slot between them that neither rule claims. The hidden <input>
+     * goes on the form rather than in this group, so it does not count as
+     * a child of a row whose child count is itself pinned.
+     *
+     * One thing this does not yet do: the bullet it writes is rendered on
+     * the board as the literal `![…](/api/upload/…)` text, because a
+     * capture goes through the server's markdown span parser and that
+     * parser has no image span. The bytes are stored and I can read them,
+     * which is the half he asked for; the picture showing up on his own
+     * board is filed separately. */
+    var captureAttach = buildAttach({
+      // All three destinations, not just one: whichever he taps mid-upload
+      // files the text without the image. Same race as the comment drawer.
+      onBusy: function (isBusy) {
+        buttons.forEach(function (b) { b.disabled = isBusy; });
+      },
+      onStatus: setStatus,
+      onInsert: function (markdown) {
+        textEl.value = (textEl.value ? textEl.value.replace(/\s*$/, "") + "\n\n" : "") + markdown;
+        fit();
+      },
+    });
+    var submitRow = document.querySelector(".capture-submit");
+    form.appendChild(captureAttach.input);
+    submitRow.insertBefore(captureAttach.button, prioPicker.el);
 
 
     /* Edvard, issues.md 2026-08-09: "the input box for the Nova pwa is too

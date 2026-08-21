@@ -4736,6 +4736,54 @@ describe("the retrospective page", () => {
  * after them in app.js rather than inserted, so it always renders at the
  * right edge of the row rather than somewhere the flex order does not
  * expect. */
+/* The attach button, in a DOM rather than in a substring.
+
+ * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"*
+ *
+ * The Python side of this feature is pinned by tests that `open(app.js)`
+ * and count substrings, and those cannot see placement. That is not a
+ * hypothetical: the first version of this button was prepended to
+ * `.capture-submit`, every one of those string assertions stayed green,
+ * and the only thing that caught it was `the capture row does not
+ * scramble` below -- a test written for something else entirely. So the
+ * button gets asserted here, as a node, where being in the wrong place
+ * is a thing a test can see. */
+describe("the attach button is on the page, not just in the source", () => {
+  test("the capture box has a paperclip and a file input", async () => {
+    const window = await loadSite("/");
+    const group = window.document.querySelector(".capture-submit");
+    const attach = group.querySelector(".attach-btn");
+    assert.ok(attach, "no attach button in the capture row");
+    assert.equal(attach.type, "button", "a submit button would post the form");
+    assert.ok(
+      attach.getAttribute("aria-label"),
+      "the button shows a glyph, so it needs a label to be announced",
+    );
+    // On the form and deliberately not in the group whose child count is
+    // pinned -- a hidden input is not something anyone laid out.
+    const input = window.document.querySelector("#capture-form .attach-input");
+    assert.ok(input, "no file input reachable from the capture form");
+    assert.equal(input.type, "file");
+    assert.equal(input.accept, "image/*", "an extension list would hide his own photos");
+    assert.equal(group.querySelector(".attach-input"), null,
+      "the hidden input is inside the pinned button group");
+  });
+
+  test("the comment drawer has one too", async () => {
+    const window = await loadSite("/");
+    const actions = window.document.querySelector(".comment-actions");
+    assert.ok(actions, "no comment composer rendered at all");
+    const attach = actions.querySelector(".attach-btn");
+    assert.ok(attach, "no attach button in the comment composer");
+    // Before Comment, so the primary action keeps the right edge it had.
+    const kids = [...actions.children];
+    assert.ok(
+      kids.indexOf(attach) < kids.findIndex((el) => el.className.includes("comment-send")),
+      "the attach button is after the send button",
+    );
+  });
+});
+
 describe("the capture row does not scramble", () => {
   test("the priority picker joins the targets as the last item in the group", async () => {
     const window = await loadSite("/");
@@ -4747,9 +4795,19 @@ describe("the capture row does not scramble", () => {
       ["issues", "ideas", "notes"],
       "the button group does not hold the three targets first",
     );
-    assert.equal(kids.length, 4, "the priority picker is not in the button group");
+    // Five since the attach button joined the row: the three targets, the
+    // paperclip, the picker. The count is still asserted rather than
+    // loosened, because the whole point of this test is that nothing gets
+    // to appear in this row without someone deciding where it goes -- the
+    // attach button was prepended first and this assertion is what caught
+    // it putting the targets at 1, 2, 3.
+    assert.equal(kids.length, 5, "the priority picker is not in the button group");
     assert.equal(
-      kids[3] && kids[3].id, "capture-prio",
+      kids[3] && kids[3].className.includes("attach-btn"), true,
+      "the attach button is not between the targets and the picker",
+    );
+    assert.equal(
+      kids[4] && kids[4].id, "capture-prio",
       "the picker is not the last (rightmost) item in the row",
     );
   });
