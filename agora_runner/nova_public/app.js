@@ -5503,11 +5503,21 @@
      * files an issue, an idea or a note -- which is the rest of Edvard's
      * list, *"next to a comment, issue, note or idea"*.
      *
-     * Prepended rather than appended: Issue / Idea / Note are three
-     * *destinations* and the row reads as a choice between them, so a
-     * fourth control dropped among them would look like a fourth place to
-     * file. At the front it sits before the choice, which is also when it
-     * is used -- attach, then pick where it goes.
+     * **After the three targets and before the picker**, which is not
+     * where I first put it. I prepended it, on the argument that Issue /
+     * Idea / Note are three *destinations* and a fourth control among them
+     * would read as a fourth place to file -- so it belonged before the
+     * choice, which is also when it is used. A browser test caught that
+     * immediately, and it was pinning something Edvard asked for: *"The
+     * issue, idea, note and priority dropdown are now just scrambled"*,
+     * and the row was rebuilt so the three targets come first and the
+     * picker sits at the right edge. Prepending broke the first half.
+     *
+     * This position keeps both. The picker is still the last child and the
+     * three targets are still the first three; the attach button takes the
+     * one slot between them that neither rule claims. The hidden <input>
+     * goes on the form rather than in this group, so it does not count as
+     * a child of a row whose child count is itself pinned.
      *
      * One thing this does not yet do: the bullet it writes is rendered on
      * the board as the literal `![…](/api/upload/…)` text, because a
@@ -5524,8 +5534,8 @@
       },
     });
     var submitRow = document.querySelector(".capture-submit");
-    submitRow.appendChild(captureAttach.input);
-    submitRow.insertBefore(captureAttach.button, submitRow.firstChild);
+    form.appendChild(captureAttach.input);
+    submitRow.insertBefore(captureAttach.button, prioPicker.el);
 
 
     /* Edvard, issues.md 2026-08-09: "the input box for the Nova pwa is too

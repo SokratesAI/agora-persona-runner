@@ -4747,9 +4747,19 @@ describe("the capture row does not scramble", () => {
       ["issues", "ideas", "notes"],
       "the button group does not hold the three targets first",
     );
-    assert.equal(kids.length, 4, "the priority picker is not in the button group");
+    // Five since the attach button joined the row: the three targets, the
+    // paperclip, the picker. The count is still asserted rather than
+    // loosened, because the whole point of this test is that nothing gets
+    // to appear in this row without someone deciding where it goes -- the
+    // attach button was prepended first and this assertion is what caught
+    // it putting the targets at 1, 2, 3.
+    assert.equal(kids.length, 5, "the priority picker is not in the button group");
     assert.equal(
-      kids[3] && kids[3].id, "capture-prio",
+      kids[3] && kids[3].className.includes("attach-btn"), true,
+      "the attach button is not between the targets and the picker",
+    );
+    assert.equal(
+      kids[4] && kids[4].id, "capture-prio",
       "the picker is not the last (rightmost) item in the row",
     );
   });
