@@ -2153,3 +2153,55 @@ body.has-full-chart { overflow: hidden; }
 .rank-chip { flex: none; font-size: 0.72rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
 .rank-claim { margin: 0.25rem 0 0 1.8rem; font-size: 0.8rem; line-height: 1.45; }
 .rank-board { margin: 0.2rem 0 0 1.8rem; font-size: 0.74rem; color: var(--dim); }
+
+/* The attach button and what it puts on the page.
+ *
+ * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"* —
+ * he could see a layout bug on his Galaxy S25 that no renderer in this
+ * loop can reproduce, and the only channel between us was text.
+ *
+ * A 44px circle, the same shape and touch target as `.capture-prio`
+ * beside it, rather than a labelled pill like Comment or Issue. Those
+ * pills each name a destination and this one does not go anywhere — it
+ * writes a line into the box above it. A glyph with an `aria-label` is
+ * what that difference looks like. */
+.attach-btn {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  background: none;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0;
+  font: inherit;
+  font-size: 1.05rem;
+  line-height: 1;
+  text-align: center;
+  cursor: pointer;
+}
+
+.attach-btn:hover:not(:disabled) { border-color: var(--accent); }
+.attach-btn:disabled { color: var(--dim); cursor: default; }
+
+/* `max-width: 100%` and not a fixed width: a phone screenshot is taller
+ * than it is wide and a desktop one is the reverse, so anything that
+ * pins one dimension distorts half of them. The height cap is what
+ * stops a portrait screenshot filling the whole scroll — it is a
+ * thumbnail, and the anchor around it opens the full image. */
+.attach-link {
+  display: inline-block;
+  margin-top: 0.35rem;
+  max-width: 100%;
+}
+
+.attach-img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  /* Set before the bytes arrive, so a thread of images does not reflow
+   * the text under it as each one loads. */
+  background: var(--line);
+}

@@ -107,6 +107,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from agora_runner.audit import audit
 from agora_runner.config import NOVA_PORT, OSLO
 from agora_runner.log import log
+from agora_runner.nova_uploads import (
+    MAX_UPLOAD_BYTES,
+    UploadRejected,
+    read_upload,
+    store_upload,
+)
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
     MAX_BODY_BYTES,
@@ -1544,6 +1550,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path in STATIC_ROUTES:
             self._send_static(STATIC_ROUTES[path])
             return
+        if path.startswith("/api/upload/"):
+            self._send_upload(path[len("/api/upload/"):])
+            return
         try:
             if path == "/api/journal":
                 self._send_journal(query)
@@ -1608,6 +1617,85 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(502, {"error": str(e)[:300]})
             return
         self._send_json(404, {"error": "not found"})
+
+    def _send_upload(self, name):
+        """Serve one stored image. `name` is validated in `read_upload`.
+
+        Outside the `try` in `do_GET` on purpose: this is the one GET that
+        answers with bytes rather than JSON, so the JSON-shaped 502 that
+        block ends in would be a broken image with an explanation nothing
+        renders.
+        """
+        try:
+            found = read_upload(urllib.parse.unquote(name))
+        except Exception as e:
+            log(f"nova-site /api/upload/{name} failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        if found is None:
+            self._send_json(404, {"error": "not found"})
+            return
+        content_type, raw = found
+        # `immutable`, which nothing else on this site gets: the name *is*
+        # the sha256 of these bytes, so the response can never go stale
+        # without the URL changing. Unlike `/app.js`, where the same URL
+        # legitimately means different bytes after every deploy, there is
+        # no build here to serve a superseded copy of.
+        etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
+        self._send_json_or_304(
+            raw, etag, content_type,
+            cache_control="public, max-age=31536000, immutable")
+
+    def _post_upload(self):
+        """`/api/upload` -- Edvard attaching a screenshot to what he types.
+
+        It reads its own body rather than going through `_read_json_body`,
+        for the one reason that matters: that reader caps at
+        `MAX_BODY_BYTES`, which is 64KiB because a capture is a sentence
+        typed on a phone. An image is four orders of magnitude past that,
+        so sharing the reader would mean raising the cap for the capture
+        box too, and the cap on the capture box is the thing standing
+        between a 256Mi pod and an unbounded `rfile.read`.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length <= 0:
+            self._send_json(411, {"error": "a Content-Length is required"})
+            return
+        if length > MAX_UPLOAD_BYTES:
+            self._send_json(
+                413,
+                {"error": f"image over {MAX_UPLOAD_BYTES // (1024 * 1024)}MB"})
+            return
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if content_type != "application/json":
+            self._send_json(415, {"error": "Content-Type must be application/json"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            self._send_json(400, {"error": f"invalid JSON: {e}"})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "expected a JSON object"})
+            return
+
+        try:
+            name, url, size = store_upload(
+                payload.get("filename"),
+                payload.get("contentType") or payload.get("content_type"),
+                payload.get("data"),
+            )
+        except UploadRejected as e:
+            self._send_json(400, {"ok": False, "error": str(e)})
+            return
+        except Exception as e:
+            log(f"nova-site /api/upload failed: {e}")
+            self._send_json(502, {"ok": False, "error": str(e)[:300]})
+            return
+        self._send_json(200, {"ok": True, "name": name, "url": url, "bytes": size})
 
     def do_HEAD(self):
         self.do_GET()
@@ -2091,6 +2179,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path == "/mcp":
             self._handle_mcp()
+            return
+        # Before the allowlist below, because it carries its own body
+        # reader with its own cap -- see `_post_upload`.
+        if path == "/api/upload":
+            self._post_upload()
             return
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment",
