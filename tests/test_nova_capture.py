@@ -138,7 +138,33 @@ def test_a_filename_containing_a_square_bracket_does_not_fold():
     assert clean_capture_text("here it is\n\n" + link) == ["here it is", link]
 
 
-def test_an_image_with_no_text_before_it_is_still_its_own_capture():
+def test_attaching_before_typing_still_files_one_capture():
+    """He taps attach with an empty box, then types -- his complaint mirrored.
+
+    Reviewer finding on #281. Fixing only the order he happened to report
+    would have left him hitting the same split from the other side.
+    """
+    assert clean_capture_text(IMG + "\n\ntesting image upload") == [
+        IMG + " testing image upload"
+    ]
+
+
+def test_two_images_attached_before_any_text_all_join_it():
+    other = "![b.png](/api/upload/00112233445566778899aabbccddeeff.png)"
+    assert clean_capture_text(IMG + "\n" + other + "\n\nboth of these") == [
+        IMG + " " + other + " both of these"
+    ]
+
+
+def test_only_the_first_bullet_takes_the_images_he_attached_first():
+    """A second thought typed after is still its own capture."""
+    assert clean_capture_text(IMG + "\n\nfirst\n\nsecond") == [
+        IMG + " first",
+        "second",
+    ]
+
+
+def test_an_image_with_no_text_on_either_side_is_still_its_own_capture():
     """Nothing to attach it to, and dropping it would lose the picture."""
     assert clean_capture_text(IMG) == [IMG]
 

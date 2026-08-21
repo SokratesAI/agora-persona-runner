@@ -280,14 +280,27 @@ def clean_capture_text(text):
     that is *nothing but* a link this site generated on his behalf
     (`nova_uploads.is_attachment_line`) -- never on a markdown image he
     typed, never on a remote URL -- so the "several captures" reasoning
-    still governs every line a person actually wrote. An attachment with
-    no text before it is still its own bullet: there is nothing to attach
-    it to, and dropping it would lose the picture.
+    still governs every line a person actually wrote.
+
+    **An attachment reaches forwards as well as backwards, because he can
+    tap attach before he types.** The box is often empty when he picks the
+    photo, and then the link is the *first* line and his sentence the
+    second -- which is his own complaint mirrored, and fixing only the
+    order he happened to report would leave him hitting it again the next
+    day. So an attachment with nothing before it is held and joined to the
+    next bullet instead. Typing order is preserved either way, so what
+    lands in his file reads back in the order he built it.
+
+    An attachment with no text on *either* side is still its own bullet:
+    there is genuinely nothing to attach it to, and dropping it would lose
+    the picture.
 
     A leading `- ` is stripped so typing the bullet character yields one
     bullet rather than `- - like this`.
     """
     bullets = []
+    # Attachment lines seen before any text line -- he attached first.
+    pending = []
     for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         line = raw.strip()
         if line.startswith("- "):
@@ -296,11 +309,18 @@ def clean_capture_text(text):
             line = ""
         if not line:
             continue
-        if bullets and is_attachment_line(line):
-            bullets[-1] = bullets[-1] + " " + line
+        if is_attachment_line(line):
+            if bullets:
+                bullets[-1] = bullets[-1] + " " + line
+            else:
+                pending.append(line)
+        elif pending:
+            bullets.append(" ".join(pending + [line]))
+            pending = []
         else:
             bullets.append(line)
-    return bullets
+    # Nothing ever came to attach them to.
+    return bullets + pending
 
 
 def insert_captures(markdown, bullets):
