@@ -137,6 +137,32 @@ def test_the_prompt_carries_the_rest_of_the_thread_including_earlier_replies():
     assert "No -- it came back verbatim." in body["prompt"]
 
 
+def test_a_cycle_s_own_note_in_the_thread_reaches_the_prompt_too():
+    """A comment can carry more than one `#### Nova` block: the first is this
+    worker's answer, and an hourly cycle appends its own when it acts on the
+    comment. Both are part of the conversation the model is continuing.
+
+    This came through by accident until now -- `comment["reply"]` was every
+    block glued into one string. It is the worker's own answer alone once the
+    blocks are parsed separately, so without this the cycle notes go silently
+    missing and the model contradicts what a cycle already told him."""
+    thread = THREAD_MD.replace(
+        "No -- it came back verbatim.",
+        "No -- it came back verbatim.\n\n#### Nova · 2026-08-10 14:05\n\nCycle 81: restored from the backup and boarded as #64.",
+    )
+    entry, journal, comments = _sources(comments=thread)
+    with entry, journal, comments, \
+            patch.object(nova_replies, "http_json", return_value=(200, {"text": "sure"})) as post, \
+            patch.object(nova_replies, "add_reply", return_value=(True, "replied")):
+        nova_replies.reply_to(80, "2026-08-10 13:54")
+    prompt = post.call_args[0][2]["prompt"]
+    assert "Cycle 81: restored from the backup and boarded as #64." in prompt
+    # And it is attributed, so the model does not read a cycle's work as its
+    # own and answer for something it never did.
+    assert "A Nova cycle (2026-08-10 14:05):" in prompt
+    assert "You (2026-08-10 13:50):" in prompt
+
+
 def test_the_earlier_thread_is_ordered_oldest_first_as_the_prompt_claims():
     """The prompt says "oldest first" in so many words, so the model reads
     the exchange in that order. `comments_by_cycle` now hands the thread

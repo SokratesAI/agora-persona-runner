@@ -168,8 +168,15 @@ def build_prompt(entry, thread, stamp):
         # failing, so the two move together.
         for comment in earlier:
             lines += [f"Edvard ({comment.get('stamp')}): {comment.get('text')}"]
-            if comment.get("reply"):
-                lines.append(f"You ({comment.get('replyStamp')}): {comment.get('reply')}")
+            # Every answer under his comment, not only the first. This read
+            # `comment["reply"]`, which was once every `#### Nova` block glued
+            # into one string -- so a note an hourly cycle appended came
+            # through by accident. `reply` is now just this worker's own
+            # answer, and dropping the cycle notes would quietly narrow what
+            # the model can see of a conversation it is continuing.
+            for answer in comment.get("replies") or []:
+                who = "A Nova cycle" if answer.get("author") == "cycle" else "You"
+                lines.append(f"{who} ({answer.get('stamp')}): {answer.get('text')}")
             lines.append("")
 
     current = next((c for c in thread if c.get("stamp") == stamp), None)
