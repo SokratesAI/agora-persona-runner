@@ -31,9 +31,11 @@ def client_tool_schemas(caps, active_step=None):
             "name": "nova_read_image",
             "description": (
                 "Look at an image Edvard attached. When his text carries a markdown link like "
-                "![something.jpg](/api/upload/<name>), pass that <name> here and the picture "
-                "itself comes back to you -- you can then describe it, read text off it, or "
-                "answer a question about it. Without this tool the link is just a URL you "
+                "![something.jpg](/api/upload/<name>), pass that <name> here and you get the "
+                "picture back -- on a transport that can carry one, which is the CLI. On the "
+                "direct-API providers the result is a one-line description of the file "
+                "instead, and it says so; do not claim to have seen an image you were only "
+                "told the size of. Without this tool the link is just a URL you "
                 "cannot open, and telling him you are blind to an image he can see sitting "
                 "in the vault is the failure this exists to stop."
             ),

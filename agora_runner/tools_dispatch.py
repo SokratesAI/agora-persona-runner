@@ -260,7 +260,17 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             if match:
                 upload = match.group(1)
             audit(persona_name, conversation_id, "nova_read_image", upload)
-            found = read_upload(upload)
+            try:
+                found = read_upload(upload)
+            except (VaultIncompleteDocument, VaultUnreadableDocument) as e:
+                # An upload is one document holding ~450KB of base64 across
+                # many chunks, so a partly-stored one is the realistic
+                # failure here, not a theoretical one. Without this the
+                # exception falls to `execute_tool`'s outer handler, which
+                # returns "[tool error: ...]" -- no `FAILED` prefix, so
+                # `tools_mcp` reports isError=False and the model is told a
+                # read succeeded when it did not. Reviewer finding on #280.
+                return f"FAILED: could not read the image {upload}: {e}"
             if found is None:
                 return f"FAILED: no image stored under {upload or '(no name)'}"
             content_type, raw = found

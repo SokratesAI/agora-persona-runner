@@ -341,7 +341,7 @@ def test_an_attached_image_reaches_the_reply_turn_as_a_picture():
     )
     try:
         with patch("agora_runner.tools_dispatch.read_upload",
-                   return_value=("image/png", png)), \
+                   return_value=("image/png", png)) as reader, \
                 patch("agora_runner.tools_dispatch.audit"):
             status, payload = tools_mcp.handle_http(
                 f"Bearer {token}",
@@ -362,6 +362,51 @@ def test_an_attached_image_reaches_the_reply_turn_as_a_picture():
     image = result["content"][1]
     assert image["mimeType"] == "image/png"
     assert base64.b64decode(image["data"]) == png
+    # The model copies the name out of markdown it was shown, so the tool
+    # strips `/api/upload/` rather than making it round-trip to be told to.
+    # Asserting only on the returned image left that stripping unpinned --
+    # the reviewer disabled it and this test still passed, because a mocked
+    # `read_upload` answers the same whatever it is handed.
+    reader.assert_called_once_with("abc.png")
+
+
+def test_the_upload_name_is_extracted_from_whatever_shape_he_pasted():
+    """A bare name, a URL, and a whole markdown line must all resolve.
+
+    `read_upload` refuses anything that is not `<32 hex>.<ext>`, so a name
+    that arrives still wrapped in markdown is not a cosmetic problem -- it
+    is a failed read reported to Edvard as "no image stored under that".
+    """
+    from agora_runner.tools_dispatch import execute_tool
+    name = "89f92e607e3e8a3e85a40b40f4a07609.jpg"
+    for pasted in (name, f"/api/upload/{name}", f"![1000031053.jpg](/api/upload/{name})"):
+        with patch("agora_runner.tools_dispatch.read_upload",
+                   return_value=("image/jpeg", b"\xff\xd8\xff")) as reader, \
+                patch("agora_runner.tools_dispatch.audit"):
+            execute_tool("nova_read_image", {"name": pasted},
+                         nova_replies.REPLY_PERSONA, nova_replies.CONVERSATION_ID)
+        reader.assert_called_once_with(name), f"{pasted!r} did not resolve"
+
+
+def test_an_upload_the_vault_cannot_fully_read_is_not_reported_as_seen():
+    """A half-stored upload must not arrive looking like a picture.
+
+    An upload is ~450KB of base64 spread over many chunk documents, so a
+    partly-missing one is the realistic failure. `read_upload` raises, and
+    without an explicit catch that lands in `execute_tool`'s outer handler
+    as `[tool error: ...]` -- which carries no `FAILED` prefix, so
+    `tools_mcp` reports `isError: false` and the model is told a read
+    worked when it did not. Reviewer finding on #280.
+    """
+    from agora_runner.tools_dispatch import execute_tool
+    from agora_runner.vault import VaultIncompleteDocument
+    with patch("agora_runner.tools_dispatch.read_upload",
+               side_effect=VaultIncompleteDocument("3 of 9 chunks missing")), \
+            patch("agora_runner.tools_dispatch.audit"):
+        out = execute_tool("nova_read_image", {"name": "abc.png"},
+                           nova_replies.REPLY_PERSONA, nova_replies.CONVERSATION_ID)
+    assert out.startswith("FAILED"), f"reported as success: {out!r}"
+    assert "chunks missing" in out
 
 
 def test_a_missing_image_is_an_error_not_a_confident_blank():
