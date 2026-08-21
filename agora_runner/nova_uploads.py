@@ -208,6 +208,29 @@ def is_image(content_type):
     return content_type in IMAGE_TYPES
 
 
+def _stored_extension(filename, content_type):
+    """The extension the stored name gets. Canonical first, his second.
+
+    Two things pull in opposite directions here and the reviewer caught me
+    getting it wrong. The stored name has to be a function of the *bytes*,
+    or the same file sent twice stores twice — that is the whole reason the
+    name is a hash. But it also has to be something his phone can open,
+    which the type table alone cannot give for a `.docx` it has never heard
+    of.
+
+    So: an extension the table recognises is canonicalised through it, and
+    `photo.jpeg` and `photo.jpg` become the same document again. An
+    extension it does not recognise is kept as he sent it, because a name
+    that cannot be identified is better than one that cannot be opened.
+    The residue is real and narrow — identical bytes sent as `a.docx` and
+    `a.doc` are still two documents — and shrinking it further would mean
+    dropping his extension entirely, which is the trade the other way.
+    """
+    ext = _extension_of(filename)
+    canonical = CONTENT_TYPES.get(EXTENSION_TYPES.get(ext, ""), "")
+    return canonical or ext or CONTENT_TYPES[content_type]
+
+
 def store_upload(filename, content_type, data_b64):
     """Write one file into the vault. Returns `(name, url, bytes, type)`.
 
@@ -241,11 +264,7 @@ def store_upload(filename, content_type, data_b64):
     # collisions are not an adversarial concern here and the name ends up
     # on Edvard's screen.
     digest = hashlib.sha256(raw).hexdigest()[:32]
-    # His own extension wins over the table's default, because the stored
-    # name is what the browser saves the download as: a `.docx` stored as
-    # `<hash>.bin` is a file he cannot open by tapping it. The table is the
-    # fallback for a file that arrived without one.
-    name = f"{digest}.{_extension_of(safe_name) or CONTENT_TYPES[content_type]}"
+    name = f"{digest}.{_stored_extension(safe_name, content_type)}"
     path = UPLOAD_PREFIX + name
 
     encoded = base64.b64encode(raw).decode("ascii")

@@ -30,9 +30,13 @@ def client_tool_schemas(caps, active_step=None):
         tools.append({
             "name": "nova_read_image",
             "description": (
-                "Look at an image Edvard attached. When his text carries a markdown link like "
-                "![something.jpg](/api/upload/<name>), pass that <name> here and you get the "
-                "picture back -- on a transport that can carry one, which is the CLI. On the "
+                "Look at a file Edvard attached. When his text carries a markdown link like "
+                "![something.jpg](/api/upload/<name>) or [runner.log](/api/upload/<name>), pass "
+                "that <name> here and you get the "
+                "picture back -- on a transport that can carry one, which is the CLI. He can "
+                "attach anything now, not only images: a text file, a log or a markdown "
+                "document comes back as its contents, and anything else says what it is and "
+                "how big it is rather than pretending to be a picture. On the "
                 "direct-API providers the result is a one-line description of the file "
                 "instead, and it says so; do not claim to have seen an image you were only "
                 "told the size of. Without this tool the link is just a URL you "

@@ -353,6 +353,31 @@ def test_the_stored_name_keeps_his_own_extension(store):
     assert bare.endswith(".bin")
 
 
+def test_the_same_bytes_under_two_spellings_of_one_extension_store_once(store):
+    """`photo.jpg` and `photo.jpeg` are one document, not two.
+
+    Reviewer finding on #283, and a regression I introduced into *existing*
+    image behaviour rather than a gap in the new one. Keeping the sender's
+    extension made the stored name a function of his filename as well as of
+    the bytes, which is exactly what the content-addressed name exists to
+    stop. `test_name_is_the_content_hash_so_the_same_image_stores_once`
+    could not catch it: both filenames there share one extension.
+    """
+    encoded = base64.b64encode(PNG).decode()
+    first, _, _, _ = store_upload("photo.jpg", "image/jpeg", encoded)
+    second, _, _, _ = store_upload("photo.jpeg", "image/jpeg", encoded)
+    assert first == second, "two spellings of one extension stored twice"
+    assert len(store) == 1, "the vault holds one document per distinct byte string"
+
+    # Case is part of the same question: `_extension_of` lowercases, so
+    # `NOTES.MD` and `notes.md` are one name and not two.
+    text = base64.b64encode(b"# notes\n").decode()
+    third, _, _, _ = store_upload("NOTES.MD", "", text)
+    fourth, _, _, _ = store_upload("notes.md", "text/markdown", text)
+    assert third == fourth
+    assert len(store) == 2
+
+
 @pytest.mark.parametrize(
     "line, folds",
     [
