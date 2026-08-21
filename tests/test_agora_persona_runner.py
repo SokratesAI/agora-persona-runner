@@ -2504,6 +2504,57 @@ def test_speak_streams_each_chunk_with_push_only_on_the_final_one(runner):
     assert reply == "final answer"
 
 
+def _speak_capturing_model(runner, detail, persona, model_override=None):
+    """Runs speak() and returns the model_override generate_reply was
+    handed -- which is what actually decides the model in reply.py."""
+    seen = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
+                             sticky=False, on_text=None, on_thinking=None):
+        seen["model_override"] = model_override
+        return "ok"
+
+    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+         patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.conversations, "notify", return_value=(200, "mid-1")):
+        runner.speak({"id": "conv-1"}, detail, [], "Test", model_override)
+    return seen["model_override"]
+
+
+def test_speak_prefers_the_conversations_model_over_the_personas(runner):
+    """Idea #95 slice 1. One persona curates many conversations -- Nova's
+    own, one per cycle -- so resolving off the persona moved all of them
+    together whenever a model was picked in any one of them."""
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test",
+              "model": "gemini:gemini-flash-latest"}
+
+    assert _speak_capturing_model(runner, detail, persona) == "gemini:gemini-flash-latest"
+
+
+def test_speak_falls_back_to_the_persona_when_the_conversation_has_no_model(runner):
+    """Every conversation stored before the create route copied the model
+    looks like this, and Agora's joined view sends the curator's model in
+    that case -- but an empty string must not win over the persona here."""
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test",
+              "model": ""}
+
+    assert _speak_capturing_model(runner, detail, persona) is None
+
+
+def test_speak_lets_an_explicit_per_message_override_beat_the_conversations_model(runner):
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test",
+              "model": "gemini:gemini-flash-latest"}
+
+    picked = _speak_capturing_model(runner, detail, persona, "claude-cli:claude-opus-5")
+    assert picked == "claude-cli:claude-opus-5"
+
+
 def test_speak_streams_thinking_chunks_with_thinking_true_and_push_false(runner):
     persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
                "capabilities": dict(runner.NO_CAPS)}

@@ -94,6 +94,17 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
     history = merge_history(thread, persona["name"], multi)
     sticky = bool(detail.get("stickyFallback", False))
 
+    # The model belongs to the conversation, not the persona (idea #95,
+    # slice 1). `detail["model"]` is the joined field Agora now resolves as
+    # conversation-then-curator, so preferring it here is the half that
+    # makes a model picked in one conversation actually take effect in that
+    # conversation and nowhere else -- one persona curates many
+    # conversations (Nova's own, one per cycle), and resolving off the
+    # persona meant all of them moved together. Precedence: an explicit
+    # per-message override still wins over both, and a conversation with no
+    # model of its own falls back to the persona exactly as before.
+    model_override = model_override or detail.get("model") or None
+
     # Live streaming (2026-07-24): each text block posts as its own
     # message the moment it's generated (push only on the turn's last
     # chunk), instead of the whole reply landing in one message at the
