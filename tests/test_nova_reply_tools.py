@@ -464,3 +464,31 @@ def test_a_comment_with_no_attachment_says_nothing_about_images():
     thread = [{"stamp": "2026-08-21 16:06", "text": "Looks good, thanks."}]
     prompt = nova_replies.build_prompt(entry, thread, "2026-08-21 16:06")
     assert "nova_read_image" not in prompt
+
+
+def test_nova_read_image_on_a_text_file_returns_its_text_not_a_picture():
+    """He can attach a `.log` now, and the vision API cannot take one.
+
+    Reviewer finding on #283: the branch existed and nothing exercised it.
+    Handing a non-image to `ToolImage` is a rejected request rather than a
+    picture, so a text file comes back as text and anything else says what
+    it is.
+    """
+    from agora_runner.tools_dispatch import execute_tool
+    name = "0123456789abcdef0123456789abcdef.log"
+    with patch("agora_runner.tools_dispatch.read_upload",
+               return_value=("text/plain", b"traceback: boom")), \
+            patch("agora_runner.tools_dispatch.audit"):
+        result = execute_tool("nova_read_image", {"name": name},
+                              nova_replies.REPLY_PERSONA, nova_replies.CONVERSATION_ID)
+    assert isinstance(result, str)
+    assert "traceback: boom" in result
+
+    with patch("agora_runner.tools_dispatch.read_upload",
+               return_value=("application/pdf", b"%PDF-1.4")), \
+            patch("agora_runner.tools_dispatch.audit"):
+        result = execute_tool("nova_read_image", {"name": name},
+                              nova_replies.REPLY_PERSONA, nova_replies.CONVERSATION_ID)
+    assert isinstance(result, str)
+    assert result.startswith("FAILED")
+    assert "application/pdf" in result

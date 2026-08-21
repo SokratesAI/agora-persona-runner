@@ -24,7 +24,7 @@ from agora_runner.tools_github import github_read, create_pr, github_comment, me
 from agora_runner.tools_terminal import terminal_exec
 from agora_runner.tools_search import web_search_tinyfish
 from agora_runner.nova_capture import capture as capture_to_backlog
-from agora_runner.nova_uploads import read_upload
+from agora_runner.nova_uploads import is_image, read_upload
 
 #: The shape `store_upload` writes into Edvard's files. Deliberately the
 #: same pattern `tools.fetch_attachments` matches on, because both are
@@ -274,6 +274,20 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             if found is None:
                 return f"FAILED: no image stored under {upload or '(no name)'}"
             content_type, raw = found
+            if not is_image(content_type):
+                # An upload is no longer necessarily an image (Cycle 309).
+                # Handing a PDF to the vision API as an image is a rejected
+                # request rather than a picture, so say what it actually is
+                # — the model can then read the text of `text/*` itself
+                # instead of being told the tool failed.
+                if content_type.startswith("text/"):
+                    try:
+                        return (f"[{content_type}, {len(raw)} bytes]\n\n"
+                                + raw.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        pass
+                return (f"FAILED: {upload} is a {content_type} file, not an image "
+                        f"({len(raw)} bytes). This tool only shows pictures.")
             return ToolImage(
                 f"[image {upload}, {content_type}, {len(raw)} bytes]",
                 data_b64=base64.b64encode(raw).decode("ascii"),

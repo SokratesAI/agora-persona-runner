@@ -1,4 +1,15 @@
-"""Image uploads: the attachment Edvard has never had.
+"""File uploads: the attachment Edvard has never had.
+
+**Images first, then everything else.** This module was images-only until
+2026-08-21 21:09, when Edvard tried to send something that was not one:
+*"How about a file? It seems i only can upload images. Or atleas the ui
+forces only my Google photos to open and i have no option to upload
+files."* Both halves of that were true and they were separate bugs — the
+picker was pinned to `image/*` in `app.js`, and the server refused any
+content type that was not an image. Widening it is `resolve_content_type`
+and `RENDERED_TYPES` below; the rest of this docstring is unchanged and
+still describes where the bytes go.
+
 
 Edvard, comments board 2026-08-21 12:07, trying to show me a bug he could
 see and I could not: *"How do i send a screenshot?"* — and, three minutes
@@ -62,12 +73,10 @@ UPLOAD_PREFIX = "projects/sokrates/projects/agora/nova/resources/uploads/"
 #: 12 MiB of request body, against the runner pod's measured 256Mi limit.
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 
-#: What a phone camera or a screenshot tool actually produces. The
-#: allowlist is not a security boundary — the site serves what it is
-#: given and the browser sniffs anyway — it is what stops a typo in the
-#: client sending `application/json` and getting a document nothing can
-#: render back.
-CONTENT_TYPES = {
+#: What a phone camera or a screenshot tool actually produces. These are
+#: the types the site renders inline as a picture; everything else is a
+#: file, shown as a link.
+IMAGE_TYPES = {
     "image/png": "png",
     "image/jpeg": "jpg",
     "image/gif": "gif",
@@ -75,6 +84,66 @@ CONTENT_TYPES = {
     "image/heic": "heic",
     "image/avif": "avif",
 }
+
+#: Everything else Edvard might send. Edvard, comments board 2026-08-21
+#: 21:09: *"How about a file? It seems i only can upload images. Or atleas
+#: the ui forces only my Google photos to open and i have no option to
+#: upload files."*
+#:
+#: The fallback is `application/octet-stream` rather than a refusal, so a
+#: `.docx` or a `.log` uploads and downloads instead of being turned away
+#: for not being on a list. What the table is still for is `RENDERED_TYPES`
+#: below — a type that a browser *executes* in this site's own origin is
+#: the one thing that must never be served back as itself.
+FILE_TYPES = {
+    "application/pdf": "pdf",
+    "text/plain": "txt",
+    "text/markdown": "md",
+    "text/csv": "csv",
+    "application/json": "json",
+    "application/zip": "zip",
+    "application/octet-stream": "bin",
+}
+
+#: Every type a stored envelope may declare. Kept as one flat mapping
+#: because `decode_envelope`, `is_upload_name` and `tools.fetch_attachments`
+#: all ask the same question of it: is this a type this site wrote?
+CONTENT_TYPES = {**IMAGE_TYPES, **FILE_TYPES}
+
+#: Filename extension -> content type, for the case the browser gives us
+#: nothing. Android's file picker reports `""` for `.md` and `.log` and
+#: `application/octet-stream` for plenty else, so without this every
+#: text file Edvard sends would be stored as an opaque blob.
+EXTENSION_TYPES = {
+    "pdf": "application/pdf",
+    "txt": "text/plain",
+    "log": "text/plain",
+    "md": "text/markdown",
+    "csv": "text/csv",
+    "json": "application/json",
+    "zip": "application/zip",
+    **{ext: ctype for ctype, ext in IMAGE_TYPES.items()},
+    "jpeg": "image/jpeg",
+}
+
+#: Types a browser will *run* if this origin hands them back — script in an
+#: uploaded `.html` or `.svg` executes as the Nova site, with its cookies
+#: and its API. These are stored (he can still send one) and served as
+#: `application/octet-stream`, so the file downloads instead of running.
+#: The old allowlist blocked these as a side effect of only allowing
+#: images; widening it makes the block have to be deliberate.
+RENDERED_TYPES = {
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "application/xml",
+    "text/xml",
+}
+
+#: A stored name's extension. Anything longer or stranger than this is not
+#: an extension, and the name goes into a vault path, so it is checked
+#: rather than sanitised.
+EXTENSION = re.compile(r"^[a-z0-9]{1,8}$")
 
 
 class UploadRejected(ValueError):
@@ -102,20 +171,80 @@ def _safe_filename(filename):
     return name[:120] or "upload"
 
 
+def _extension_of(filename):
+    """The filename's own extension, lowercased, or `""` if it hasn't one."""
+    _, dot, ext = (filename or "").rpartition(".")
+    ext = ext.strip().lower()
+    return ext if dot and EXTENSION.match(ext) else ""
+
+
+def resolve_content_type(filename, content_type):
+    """What to store this as, given what the browser claimed.
+
+    Three cases, in the order they actually happen on a phone. A known type
+    is taken as given. A blank or unknown one is looked up by extension,
+    which is the `.md`/`.log` case Android reports as `""`. Anything still
+    unresolved is `application/octet-stream` — a file this site will hand
+    back but never interpret.
+
+    `application/octet-stream` from the browser is deliberately *not* taken
+    as given: Android sends it for files whose extension we can read
+    perfectly well, and storing a PDF as an opaque blob would make it
+    download rather than open.
+    """
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if content_type in RENDERED_TYPES:
+        return "application/octet-stream"
+    if content_type in CONTENT_TYPES and content_type != "application/octet-stream":
+        return content_type
+    guessed = EXTENSION_TYPES.get(_extension_of(filename), "")
+    if guessed:
+        return guessed
+    return "application/octet-stream"
+
+
+def is_image(content_type):
+    """Does this render inline as a picture, or is it a file to download?"""
+    return content_type in IMAGE_TYPES
+
+
+def _stored_extension(filename, content_type):
+    """The extension the stored name gets. Canonical first, his second.
+
+    Two things pull in opposite directions here and the reviewer caught me
+    getting it wrong. The stored name has to be a function of the *bytes*,
+    or the same file sent twice stores twice — that is the whole reason the
+    name is a hash. But it also has to be something his phone can open,
+    which the type table alone cannot give for a `.docx` it has never heard
+    of.
+
+    So: an extension the table recognises is canonicalised through it, and
+    `photo.jpeg` and `photo.jpg` become the same document again. An
+    extension it does not recognise is kept as he sent it, because a name
+    that cannot be identified is better than one that cannot be opened.
+    The residue is real and narrow — identical bytes sent as `a.docx` and
+    `a.doc` are still two documents — and shrinking it further would mean
+    dropping his extension entirely, which is the trade the other way.
+    """
+    ext = _extension_of(filename)
+    canonical = CONTENT_TYPES.get(EXTENSION_TYPES.get(ext, ""), "")
+    return canonical or ext or CONTENT_TYPES[content_type]
+
+
 def store_upload(filename, content_type, data_b64):
-    """Write one image into the vault. Returns `(name, url, bytes)`.
+    """Write one file into the vault. Returns `(name, url, bytes, type)`.
 
     `data_b64` is the payload as the browser's `FileReader` produced it —
     either bare base64 or a full `data:` URL, because both are one line of
     client code apart and rejecting the wrong one is a round trip Edvard
     pays for on a phone.
+
+    The fourth return value is the resolved content type, so the caller can
+    tell the client whether to write an image link or a file link without
+    re-deriving `resolve_content_type`'s answer from `filename`.
     """
-    content_type = (content_type or "").split(";", 1)[0].strip().lower()
-    if content_type not in CONTENT_TYPES:
-        raise UploadRejected(
-            f"content type {content_type or '(none)'} is not one of "
-            f"{sorted(CONTENT_TYPES)}"
-        )
+    safe_name = _safe_filename(filename)
+    content_type = resolve_content_type(safe_name, content_type)
     if not isinstance(data_b64, str) or not data_b64.strip():
         raise UploadRejected("data must be a base64 string")
 
@@ -135,11 +264,11 @@ def store_upload(filename, content_type, data_b64):
     # collisions are not an adversarial concern here and the name ends up
     # on Edvard's screen.
     digest = hashlib.sha256(raw).hexdigest()[:32]
-    name = f"{digest}.{CONTENT_TYPES[content_type]}"
+    name = f"{digest}.{_stored_extension(safe_name, content_type)}"
     path = UPLOAD_PREFIX + name
 
     encoded = base64.b64encode(raw).decode("ascii")
-    body = _envelope(content_type, _safe_filename(filename), encoded)
+    body = _envelope(content_type, safe_name, encoded)
 
     result = vault_write_path(path, body, if_rev=None)
     # `if_rev=None` means "this must not exist". For a content-addressed
@@ -149,11 +278,12 @@ def store_upload(filename, content_type, data_b64):
     if isinstance(result, str) and result.startswith("FAILED"):
         if vault_read_path(path) is None:
             raise UploadRejected(result)
-    return name, f"/api/upload/{name}", len(raw)
+    return name, f"/api/upload/{name}", len(raw), content_type
 
 
 #: A whole line that is nothing but an attachment link this site wrote on
-#: Edvard's behalf — `![alt](/api/upload/<name>)`, the exact construct
+#: Edvard's behalf — `![alt](/api/upload/<name>)` for an image and
+#: `[alt](/api/upload/<name>)` for any other file, the two constructs
 #: `buildAttach`'s `onInsert` inserts into a text box in `app.js`. It lives
 #: here rather than in the caller because this module is the one that
 #: *builds* that string (`store_upload` returns the URL half), so the
@@ -161,11 +291,16 @@ def store_upload(filename, content_type, data_b64):
 #: `app.js` carries its own copy (`ATTACH_RE`) and cannot share this one;
 #: that one is anchored nowhere and matches inline, this one is anchored
 #: and matches a line, so they are deliberately different questions.
-ATTACHMENT_LINE = re.compile(r"^!\[[^\]]*\]\(/api/upload/[A-Za-z0-9._-]+\)$")
+#:
+#: The `!` is optional, and that is the whole of what file attachments
+#: changed here: without it a capture of a PDF would file as its own bullet
+#: instead of folding onto the sentence above it — the bug Cycle 307 fixed
+#: for images, reintroduced for everything else.
+ATTACHMENT_LINE = re.compile(r"^!?\[[^\]]*\]\(/api/upload/[A-Za-z0-9._-]+\)$")
 
 
 def is_attachment_line(line):
-    """Is this line only an image the attach button inserted?
+    """Is this line only a file the attach button inserted?
 
     Used to decide whether a line is a capture of its own or belongs to
     the one above it. Deliberately narrow: it matches the single construct
@@ -180,16 +315,23 @@ def is_upload_name(name):
     """Is `name` exactly the shape `store_upload` produces?
 
     A name comes off a URL path, so it is checked rather than sanitised. A
-    name is a 32-hex-character hash and a known extension; anything else is
-    not ours, and refusing is cheaper than reasoning about what `..` means
-    to a CouchDB `_id`.
+    name is a 32-hex-character hash and a short alphanumeric extension;
+    anything else is not ours, and refusing is cheaper than reasoning about
+    what `..` means to a CouchDB `_id`.
+
+    The extension used to be checked against the type table. It cannot be
+    any more — `store_upload` keeps the sender's own extension, so a name
+    can legitimately end `.docx` or `.log`. The path guard does not weaken:
+    the stem is still exactly 32 hex characters and the extension is still
+    `[a-z0-9]{1,8}`, so `..`, `/` and every traversal shape are refused for
+    the same reason they always were.
     """
     stem, _, ext = (name or "").rpartition(".")
     if not stem or not ext:
         return False
     if len(stem) != 32 or not all(c in "0123456789abcdef" for c in stem):
         return False
-    return ext in set(CONTENT_TYPES.values())
+    return bool(EXTENSION.match(ext))
 
 
 def decode_envelope(text):

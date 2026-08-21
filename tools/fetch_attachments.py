@@ -196,7 +196,10 @@ def main(argv=None):
     if failed:
         print(f"\n{failed} of {len(results)} could not be fetched", file=sys.stderr)
         return 1
-    print(f"\nRead these {len(results)} file(s) -- they are images Edvard sent you.")
+    print(f"\nRead these {len(results)} file(s) -- they are attachments Edvard "
+          "sent you. Not all of them are images: your Read tool renders an "
+          "image or a PDF and shows text as text, so open each one rather "
+          "than guessing from the extension.")
     return 0
 
 

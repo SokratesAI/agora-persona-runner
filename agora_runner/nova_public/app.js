@@ -181,17 +181,19 @@
   function buildAttach(opts) {
     var input = el("input", "attach-input");
     input.type = "file";
-    // `image/*` and not a list of extensions -- an Android camera roll
-    // offers HEIC and WebP alongside JPEG, and an extension allowlist here
-    // would hide his own photos from the picker. The server has the real
-    // allowlist and answers with a sentence he can read.
-    input.accept = "image/*";
+    // No `accept` at all. It was `image/*`, and on Android that is not a
+    // filter over a file browser -- it is what makes the picker open
+    // Google Photos with no way out. Edvard, 2026-08-21: "It seems i only
+    // can upload images. Or atleas the ui forces only my Google photos to
+    // open and i have no option to upload files." The server resolves and
+    // bounds the type, and answers with a sentence he can read, so an
+    // allowlist here only ever hid his own files from him.
     input.hidden = true;
 
     var button = el("button", "attach-btn " + (opts.buttonClass || ""), "📎");
     button.type = "button";
-    button.title = "Attach an image";
-    button.setAttribute("aria-label", "Attach an image");
+    button.title = "Attach a file";
+    button.setAttribute("aria-label", "Attach a file");
 
     function status(text, isError) {
       if (opts.onStatus) opts.onStatus(text, isError);
@@ -243,7 +245,12 @@
             if (!result || !result.ok) {
               throw new Error((result && (result.message || result.error)) || "upload failed");
             }
-            opts.onInsert("![" + (file.name || "image") + "](" + result.url + ")");
+            // `![…]` only for something that renders as a picture. The
+            // server decides that, not `file.type` -- Android reports `""`
+            // for plenty of files and the extension lookup happens server
+            // side. A `![pdf]` here would paint a broken image icon.
+            var bang = result.isImage === false ? "" : "!";
+            opts.onInsert(bang + "[" + (file.name || "file") + "](" + result.url + ")");
             status("attached", false);
           })
           .catch(function (err) { status(String(err.message || err), true); })
@@ -264,9 +271,10 @@
   /* Append `text` to `container` as paragraphs, rendering an attached
    * image as an image.
    *
-   * Deliberately not a markdown renderer. It recognises exactly one
-   * construct -- `![alt](/api/upload/<name>)`, which is the line
-   * `buildAttach` writes -- and everything else stays the plain text it
+   * Deliberately not a markdown renderer. It recognises exactly two
+   * constructs -- `![alt](/api/upload/<name>)` and `[alt](/api/upload/
+   * <name>)`, which are the two lines `buildAttach` writes, an image and
+   * any other file -- and everything else stays the plain text it
    * has always been. The comment painter's own note says "nothing here
    * interprets it as markdown", and that stays true of everything Edvard
    * types himself; what changed is that this site now generates one
@@ -275,7 +283,7 @@
    * The URL is required to start with `/api/upload/` rather than being
    * escaped, so a pasted `![](javascript:…)` or a remote tracker URL is
    * shown as the text it is instead of being turned into an element. */
-  var ATTACH_RE = /!\[([^\]]*)\]\((\/api\/upload\/[A-Za-z0-9._-]+)\)/g;
+  var ATTACH_RE = /(!?)\[([^\]]*)\]\((\/api\/upload\/[A-Za-z0-9._-]+)\)/g;
 
   function appendRichText(container, paraClass, text) {
     String(text || "").split(/\n{2,}/).forEach(function (para) {
@@ -288,16 +296,26 @@
         var before = para.slice(last, match.index);
         if (before) node.appendChild(document.createTextNode(before));
         var link = el("a", "attach-link");
-        link.href = match[2];
+        link.href = match[3];
         link.target = "_blank";
         link.rel = "noopener";
-        var img = el("img", "attach-img");
-        img.src = match[2];
-        img.alt = match[1] || "attached image";
-        // Lazy, because a thread can hold many of these and they are the
-        // heaviest thing on the page by an order of magnitude.
-        img.loading = "lazy";
-        link.appendChild(img);
+        if (match[1]) {
+          var img = el("img", "attach-img");
+          img.src = match[3];
+          img.alt = match[2] || "attached image";
+          // Lazy, because a thread can hold many of these and they are the
+          // heaviest thing on the page by an order of magnitude.
+          img.loading = "lazy";
+          link.appendChild(img);
+        } else {
+          // A file rather than a picture. It gets its name and a paperclip
+          // instead of a thumbnail, because there is nothing to show and a
+          // bare URL would be the 32-hex hash, which tells him nothing
+          // about what he sent.
+          link.className = "attach-link attach-file";
+          link.textContent = "📎 " + (match[2] || "attached file");
+          link.setAttribute("download", match[2] || "");
+        }
         node.appendChild(link);
         last = match.index + match[0].length;
       }

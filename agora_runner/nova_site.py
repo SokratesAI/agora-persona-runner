@@ -110,6 +110,7 @@ from agora_runner.log import log
 from agora_runner.nova_uploads import (
     MAX_UPLOAD_BYTES,
     UploadRejected,
+    is_image,
     read_upload,
     store_upload,
 )
@@ -1677,7 +1678,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if length > MAX_UPLOAD_BYTES:
             self._send_json(
                 413,
-                {"error": f"image over {MAX_UPLOAD_BYTES // (1024 * 1024)}MB"})
+                {"error": f"file over {MAX_UPLOAD_BYTES // (1024 * 1024)}MB"})
             return
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         if content_type != "application/json":
@@ -1693,7 +1694,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            name, url, size = store_upload(
+            name, url, size, stored_type = store_upload(
                 payload.get("filename"),
                 payload.get("contentType") or payload.get("content_type"),
                 payload.get("data"),
@@ -1705,7 +1706,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             log(f"nova-site /api/upload failed: {e}")
             self._send_json(502, {"ok": False, "error": str(e)[:300]})
             return
-        self._send_json(200, {"ok": True, "name": name, "url": url, "bytes": size})
+        # `isImage` rather than leaving the client to re-guess from the
+        # filename: the server is the one that resolved the type (an
+        # extension lookup when the phone sent nothing), so it is the only
+        # side that knows whether this renders inline or is a download.
+        self._send_json(200, {
+            "ok": True, "name": name, "url": url, "bytes": size,
+            "contentType": stored_type, "isImage": is_image(stored_type),
+        })
 
     def do_HEAD(self):
         self.do_GET()
