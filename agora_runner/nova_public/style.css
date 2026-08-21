@@ -1464,6 +1464,40 @@ body.nav-open { overflow: hidden; }
 .note-cycle { color: var(--accent); text-decoration: none; }
 .note-body p { margin: 0.3rem 0; }
 
+/* The `/notes` page. `.note` above is the card on a board page's Nova
+ * tab and these are the two things a note on its own page has that a
+ * board note does not: a state, and Nova's answer under it.
+ *
+ * A waiting note gets a left edge in the warn colour rather than a
+ * different background. The badge already carries the meaning in words
+ * -- `personality.md`'s rule that a colour alone is not a sentence --
+ * so the stripe is there to find the card while scrolling, not to say
+ * anything on its own. */
+.note-waiting { border-left: 3px solid var(--warn); }
+
+.note-reply {
+  margin-top: 0.6rem;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--line);
+}
+
+.note-reply-who {
+  color: var(--accent);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.15rem;
+}
+
+.note-reply-body p { margin: 0.3rem 0; }
+.note-reply-body { color: var(--dim); }
+
+.note-reply-missing {
+  margin: 0.6rem 0 0;
+  color: var(--warn);
+  font-size: 0.85rem;
+}
+
 /* Edvard's own words. Every item on his boards opens with one, and until
  * the board pages existed nothing rendered a blockquote -- the `>` showed
  * on screen in front of the one paragraph on the page he wrote himself. */

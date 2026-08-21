@@ -129,7 +129,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, digestStatus = 200, askStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -172,6 +172,13 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // so "nothing supplied" has to mean the empty page rather than a
       // body no live server has ever sent.
       return res(plan || { documents: [] }, planStatus);
+    }
+    if (url.includes("/api/notes")) {
+      // No fixture default, for the reason `/api/retro` and `/api/plan`
+      // have none: a vault where Edvard has never left a note really is
+      // empty, and "nothing supplied" must mean that rather than a body
+      // no live server has ever sent.
+      return res(notes || { notes: [], waitingTotal: 0, readTotal: 0 }, notesStatus);
     }
     if (url.includes("/api/ask")) {
       // A function, because the point of most of these tests is that the
@@ -3502,7 +3509,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/costs", "/retro", "/plan", "/ask"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/costs", "/retro", "/plan", "/ask"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -5800,6 +5807,98 @@ describe("commenting on a boarded row", () => {
  * The server tests already pin the payload. What only a rendered DOM can
  * answer is whether he sees any of it: this repo has shipped a feature
  * that was built, tested, merged and completely dead on his screen. */
+describe("the notes page", () => {
+  /* Edvard, issues.md 2026-08-21: "I do not have a notes page that shows
+   * any overview of the notes made."
+   *
+   * The question this page answers is "did anyone pick my note up", so
+   * every test below is some form of that: which state a card is in, and
+   * whether the answer is on it. */
+  const feedText = (window) => window.document.getElementById("feed").textContent;
+  const twoNotes = {
+    waitingTotal: 1,
+    readTotal: 1,
+    notes: [
+      {
+        text: "Nobody has read this one.",
+        blocks: [{ kind: "p", spans: [{ text: "Nobody has read this one." }] }],
+        responses: [],
+        answered: false,
+        waiting: true,
+      },
+      {
+        text: "Platform-config billing block is fine as-is.",
+        blocks: [{ kind: "p", spans: [{ text: "Platform-config billing block is fine as-is." }] }],
+        responses: [
+          {
+            cycle: 258,
+            blocks: [{ kind: "p", spans: [{ text: "Read Cycle 258. Recorded it." }] }],
+          },
+        ],
+        answered: true,
+        waiting: false,
+      },
+    ],
+  };
+
+  test("a vault with no notes is a page that says so, not an error", async () => {
+    const window = await loadSite("/notes");
+    assert.match(feedText(window), /No notes yet/);
+    assert.equal(window.document.querySelectorAll(".note-card").length, 0);
+    assert.doesNotMatch(feedText(window), /Could not load/);
+  });
+
+  test("a waiting note says Waiting in words, not only in colour", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const cards = [...window.document.querySelectorAll(".note-card")];
+    assert.equal(cards.length, 2);
+    assert.match(cards[0].querySelector(".badge").textContent, /Waiting/);
+    assert.ok(cards[0].classList.contains("note-waiting"));
+    assert.match(cards[1].querySelector(".badge").textContent, /Read/);
+  });
+
+  test("the waiting count is the headline, because it is the question", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    assert.match(window.document.querySelector(".status-line").textContent, /1 note waiting/);
+  });
+
+  test("an answered note carries the reply and links the cycle that wrote it", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const answered = [...window.document.querySelectorAll(".note-card")][1];
+    assert.match(answered.querySelector(".note-reply-body").textContent, /Recorded it/);
+    assert.equal(answered.querySelector(".note-cycle").getAttribute("href"), "/cycle/258");
+  });
+
+  test("a note moved to Read with no reply is not drawn as answered", async () => {
+    const window = await loadSite("/notes", {
+      notes: {
+        waitingTotal: 0,
+        readTotal: 1,
+        notes: [{
+          text: "Moved and never written up.",
+          blocks: [{ kind: "p", spans: [{ text: "Moved and never written up." }] }],
+          responses: [], answered: false, waiting: false,
+        }],
+      },
+    });
+    assert.match(feedText(window), /no reply written/i);
+    assert.equal(window.document.querySelectorAll(".note-cycle").length, 0);
+  });
+
+  test("a failed fetch says so instead of leaving the last page up", async () => {
+    const window = await loadSite("/notes", { notesStatus: 502 });
+    assert.match(feedText(window), /Could not load the notes/);
+  });
+
+  test("the nav marks Notes, and only Notes", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const on = [...window.document.querySelectorAll(".nav-tab")]
+      .filter((tab) => tab.classList.contains("on"))
+      .map((tab) => tab.getAttribute("href"));
+    assert.deepEqual(on, ["/notes"]);
+  });
+});
+
 describe("the plan page", () => {
   const twoDocuments = {
     documents: [

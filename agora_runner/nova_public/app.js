@@ -57,6 +57,7 @@
     if (cycle) return { view: "journal", cycle: parseInt(cycle[1], 10), board: null };
     if (path === "/issues") return { view: "board", cycle: null, board: "issues" };
     if (path === "/ideas") return { view: "board", cycle: null, board: "ideas" };
+    if (path === "/notes") return { view: "notes", cycle: null, board: null };
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
@@ -4891,6 +4892,105 @@
       });
   }
 
+  /* The Notes page.
+   *
+   * Edvard, issues.md 2026-08-21: *"I do not have a notes page that shows
+   * any overview of the notes made."*
+   *
+   * His third capture file had a button that writes to it and nothing
+   * that reads it back, so a note he had left was invisible from the app
+   * the moment he tapped save.
+   *
+   * Deliberately not a board. A note is *"never numbered, never boarded"*
+   * (`notes.md`'s own contract), so there is no priority chip, no row
+   * editor and no comment thread here -- the two states a note actually
+   * has are "no cycle has picked this up" and "a cycle did, and said what
+   * it did". The page is those two states and nothing else.
+   */
+  function renderNoteCard(note) {
+    var card = el("article", "note note-card" + (note.waiting ? " note-waiting" : ""));
+    var head = el("div", "note-head");
+    head.appendChild(el(
+      "span",
+      note.waiting ? "badge badge-warn" : "badge",
+      note.waiting ? "Waiting" : "Read"
+    ));
+    // The cycle that answered, taken from the first reply rather than
+    // re-derived here -- `nova_notes._response_cycle` owns the shape of a
+    // reply line and a second reading of it in this file is the
+    // duplication this repo keeps filing against itself.
+    var answered = (note.responses || []).filter(function (r) {
+      return r.cycle !== null && r.cycle !== undefined;
+    });
+    if (answered.length) {
+      var link = el("a", "note-cycle", "Cycle " + answered[0].cycle);
+      link.href = "/cycle/" + answered[0].cycle;
+      head.appendChild(link);
+    }
+    card.appendChild(head);
+    var body = el("div", "note-body");
+    renderBlocks(body, note.blocks || []);
+    card.appendChild(body);
+    (note.responses || []).forEach(function (response) {
+      var reply = el("div", "note-reply");
+      reply.appendChild(el("div", "note-reply-who", "Nova"));
+      var text = el("div", "note-reply-body");
+      renderBlocks(text, response.blocks || []);
+      reply.appendChild(text);
+      card.appendChild(reply);
+    });
+    // A note moved under `## Read` with nothing written under it is a
+    // real state -- half the contract done -- and saying so beats an
+    // answered-looking card with no answer in it.
+    if (!note.waiting && !(note.responses || []).length) {
+      card.appendChild(el("p", "note-reply-missing", "Moved to Read with no reply written."));
+    }
+    return card;
+  }
+
+  function renderNotes(payload) {
+    stopPolling();
+    markNav();
+    var notes = payload.notes || [];
+    var waiting = payload.waitingTotal || 0;
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el(
+      "p",
+      "status-line",
+      waiting === 1
+        ? "1 note waiting for a cycle to pick it up"
+        : waiting + " notes waiting for a cycle to pick them up"
+    ));
+    if (payload.replayed) statusEl.appendChild(savedCopyLine());
+    feed.textContent = "";
+    if (!notes.length) {
+      feed.appendChild(el("p", "empty", "No notes yet. The Note button on the Journal page writes here."));
+      return;
+    }
+    var wrap = el("div", "board");
+    notes.forEach(function (note) {
+      wrap.appendChild(renderNoteCard(note));
+    });
+    feed.appendChild(wrap);
+  }
+
+  function loadNotes() {
+    fetchPage("/api/notes")
+      .then(function (payload) {
+        // The guard the retro, costs and plan fetches carry: two taps in
+        // quick succession leave two fetches in flight and the loser must
+        // not paint over the winner.
+        if (route(window.location.pathname).view !== "notes") return;
+        renderNotes(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the notes: " + err));
+      });
+  }
+
   /* The Questions page.
    *
    * Edvard, ideas.md 2026-08-19: "Make a questions page in Nova where i can
@@ -5037,6 +5137,10 @@
     var here = route(window.location.pathname);
     if (here.view === "board") {
       loadBoard(here.board);
+      return;
+    }
+    if (here.view === "notes") {
+      loadNotes();
       return;
     }
     if (here.view === "costs") {
