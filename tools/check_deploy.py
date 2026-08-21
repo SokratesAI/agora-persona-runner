@@ -40,33 +40,75 @@ them side by side. That is the same shape as `top_board_rows`: the
 information existed, and was never once put next to the decision it was
 supposed to change.
 
-    python3 -m tools.check_deploy
+    python3 -m tools.check_deploy                       # the runner
+    python3 -m tools.check_deploy agora-claude-bridge   # any sibling
 
-`verdict` is pure and takes the four facts; `main` gathers them with
-`gh` and `kubectl`, which exist in the bridge pod. The split is so the
-interesting half is testable without a cluster.
+**Every repo here shares one deploy chain and only this repo was
+checked.** `agora-claude-bridge`, `agora`, `sokrates-docs` and
+`vault-bridge` build the same way, write a digest into the same shape of
+paired `-config` repo, and are picked up by the same ArgoCD -- so the
+2026-08-15 failure above is available to all five and was detectable in
+none of them but this one. Cycle 258 filed that; Cycle 295 parameterised
+the one tool rather than copying it, which is the whole point: a second
+copy is a second thing to keep true.
+
+The generalisation needs no lookup table, and that matters more than it
+sounds. A repo name is all four facts: `SokratesAI/<name>` is the repo,
+`<name>-config` is where the manifest lives, `<name>` is the GHCR
+package, and **the deployments are whichever ones in `agents` run that
+package's image** -- discovered, not listed. A table keyed on names
+would have been wrong on the first repo that needed it: the deployment
+running `ghcr.io/sokratesai/vault-bridge` is called `newspaper`.
+
+`verdict` is pure and takes a `Target` plus the four facts; `main`
+gathers them with `gh` and `kubectl`, which exist in the bridge pod. The
+split is so the interesting half is testable without a cluster.
 """
 
 import argparse
 import json
 import subprocess
+from typing import NamedTuple
 
-REPO = "SokratesAI/agora-persona-runner"
-CONFIG_REPO = REPO + "-config"
-PACKAGE = "agora-persona-runner"
-
-# Both deployments run the same image off the same `image:` line, which is
-# why the manifest carries a comment saying so. Reading them separately is
-# what makes a partial rollout visible instead of averaged away.
-DEPLOYMENTS = ("agora-persona-runner", "nova-site")
+ORG = "SokratesAI"
+REGISTRY_OWNER = "sokratesai"
+DEFAULT_REPO = "agora-persona-runner"
 
 IN_SYNC = "IN SYNC"
 ROLLOUT_PENDING = "ROLLOUT PENDING"
 NOT_DEPLOYED = "NOT DEPLOYED"
 NOT_BUILT = "NOT BUILT"
+NOT_RUNNING = "NOT RUNNING"
+NO_MANIFEST = "NO MANIFEST"
 
 
-def verdict(tip_sha, tip_digest, manifest_digest, deployed):
+class Target(NamedTuple):
+    """The four names a deploy check needs, all derived from one.
+
+    Kept as a value rather than module constants so the tool can answer
+    for any repo in the org without a second copy of itself.
+    """
+
+    name: str
+    repo: str
+    config_repo: str
+    package: str
+
+    @classmethod
+    def named(cls, name):
+        return cls(
+            name=name,
+            repo=f"{ORG}/{name}",
+            config_repo=f"{ORG}/{name}-config",
+            package=name,
+        )
+
+    @property
+    def image_prefix(self):
+        return f"ghcr.io/{REGISTRY_OWNER}/{self.package}@"
+
+
+def verdict(target, tip_sha, tip_digest, manifest_digest, deployed):
     """Compare main's tip against the manifest and the cluster.
 
     `tip_digest` is the digest of the image tagged `sha-<tip_sha>`, or
@@ -75,27 +117,46 @@ def verdict(tip_sha, tip_digest, manifest_digest, deployed):
     means the deployment could not be read, which is reported rather
     than treated as agreement.
 
-    Returns `(state, lines)`. Only `NOT_BUILT` and `NOT_DEPLOYED` are
-    faults -- `ROLLOUT_PENDING` is the expected reading for a cycle that
-    merged minutes ago, and calling that a failure would make the check
-    cry wolf on exactly the cycles that did the right thing.
+    Returns `(state, lines)`. `ROLLOUT_PENDING` is not a fault -- it is
+    the expected reading for a cycle that merged minutes ago, and calling
+    that a failure would make the check cry wolf on exactly the cycles
+    that did the right thing. Every other state is.
+
+    **Two of those states exist only because the target is no longer
+    fixed.** With `DEPLOYMENTS` a hardcoded pair, `deployed` could never
+    be empty and the manifest could never be missing, so an empty
+    `deployed` fell through to "0 deployment(s) all agree" -- IN SYNC,
+    guaranteed in advance, for a service nothing runs. Discovery makes
+    both reachable: `vault-bridge` has no `-config` repo at all.
     """
     lines = []
     if tip_digest is None:
         lines.append(
             f"{NOT_BUILT}: main is at {tip_sha} and the registry has no image "
             f"tagged sha-{tip_sha}. The build either failed before build-push "
-            f"or is still running. Check `gh run list --repo {REPO} "
+            f"or is still running. Check `gh run list --repo {target.repo} "
             f"--branch main --limit 3 --json conclusion,createdAt`."
         )
         return NOT_BUILT, lines
 
+    if manifest_digest is None:
+        lines.append(
+            f"{NO_MANIFEST}: could not read a single pinned digest from "
+            f"{target.config_repo}/manifest.yaml. Either that repo does not "
+            f"exist -- {target.name} may still deploy through platform-config, "
+            "which is what vault-bridge does -- or its `image:` lines "
+            "disagree with each other. Nothing below this can be checked, so "
+            "this is reported rather than guessed past."
+        )
+        return NO_MANIFEST, lines
+
     if manifest_digest != tip_digest:
         lines.append(
             f"{NOT_DEPLOYED}: main is at {tip_sha}, whose image is "
-            f"{_short(tip_digest)}, but {CONFIG_REPO}/manifest.yaml still pins "
-            f"{_short(manifest_digest)}. The image exists and nothing points at "
-            f"it, so the merged code will never reach the cluster on its own."
+            f"{_short(tip_digest)}, but {target.config_repo}/manifest.yaml "
+            f"still pins {_short(manifest_digest)}. The image exists and "
+            "nothing points at it, so the merged code will never reach the "
+            "cluster on its own."
         )
         lines.append(
             "  This is what a manifest write that never happened looks like -- "
@@ -103,9 +164,19 @@ def verdict(tip_sha, tip_digest, manifest_digest, deployed):
             "after it. Either way it is not visible in `gh pr checks`, in pod "
             "status, or in the logs. Check the `build-push` job on main's "
             "newest run, then fix it by hand: commit the digest above to "
-            f"{CONFIG_REPO}/manifest.yaml, which is all the step does."
+            f"{target.config_repo}/manifest.yaml, which is all the step does."
         )
         return NOT_DEPLOYED, lines
+
+    if not deployed:
+        lines.append(
+            f"{NOT_RUNNING}: main {tip_sha} is built and "
+            f"{target.config_repo}/manifest.yaml pins it, but no deployment in "
+            f"`agents` runs {target.image_prefix[:-1]}. The manifest may "
+            "describe something nothing deploys -- check what the workload is "
+            "actually called before concluding the pin is wrong."
+        )
+        return NOT_RUNNING, lines
 
     stale = {n: d for n, d in deployed.items() if d != manifest_digest}
     if stale:
@@ -151,14 +222,17 @@ def _run(cmd):
     return out.stdout.strip()
 
 
-def tip_sha():
-    return _run(["gh", "api", f"repos/{REPO}/commits/main", "--jq", ".sha"])
+def tip_sha(target):
+    return _run([
+        "gh", "api", f"repos/{target.repo}/commits/main", "--jq", ".sha",
+    ])
 
 
-def digest_for_tag(tag):
+def digest_for_tag(target, tag):
     """Digest of the package version carrying `tag`, or None."""
     raw = _run([
-        "gh", "api", f"/orgs/SokratesAI/packages/container/{PACKAGE}/versions",
+        "gh", "api",
+        f"/orgs/{ORG}/packages/container/{target.package}/versions",
         "--paginate",
     ])
     if raw is None:
@@ -174,11 +248,11 @@ def digest_for_tag(tag):
     return None
 
 
-def manifest_digest():
-    """The digest pinned in the config repo, or None if the two
-    `image:` lines disagree -- which is itself a fault worth seeing."""
+def manifest_digest(target):
+    """The digest pinned in the config repo, or None if the `image:`
+    lines disagree -- which is itself a fault worth seeing."""
     raw = _run([
-        "gh", "api", f"repos/{CONFIG_REPO}/contents/manifest.yaml",
+        "gh", "api", f"repos/{target.config_repo}/contents/manifest.yaml",
         "--jq", ".content",
     ])
     if raw is None:
@@ -198,33 +272,65 @@ def manifest_digest():
     return found.pop()
 
 
-def deployed_digests():
+def select_deployments(target, listing):
+    """Deployments in `listing` running this target's image.
+
+    `listing` is `name\\timage` lines. Selecting by image rather than by
+    name is the whole reason this needs no lookup table -- and it is not
+    a tidiness argument: the deployment running
+    `ghcr.io/sokratesai/vault-bridge` is named `newspaper`, so a table
+    keyed on repo names would have been wrong on its first new entry.
+    Two deployments sharing one image both appear, which is what keeps a
+    partial rollout visible instead of averaged away.
+    """
     out = {}
-    for name in DEPLOYMENTS:
-        img = _run([
-            "kubectl", "get", "deploy", name, "-n", "agents", "-o",
-            "jsonpath={.spec.template.spec.containers[0].image}",
-        ])
-        out[name] = img.split("@", 1)[1] if img and "@" in img else None
+    for line in (listing or "").splitlines():
+        name, _, image = line.partition("\t")
+        if not image.startswith(target.image_prefix):
+            continue
+        out[name.strip()] = image.split("@", 1)[1]
     return out
+
+
+def deployed_digests(target):
+    listing = _run([
+        "kubectl", "get", "deploy", "-n", "agents", "-o",
+        "jsonpath={range .items[*]}{.metadata.name}{'\\t'}"
+        "{.spec.template.spec.containers[0].image}{'\\n'}{end}",
+    ])
+    if listing is None:
+        return None
+    return select_deployments(target, listing)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "repo", nargs="?", default=DEFAULT_REPO,
+        help=f"repo name inside {ORG} (default: {DEFAULT_REPO})",
+    )
     ap.add_argument("--tip", help="override main's tip sha")
     args = ap.parse_args(argv)
 
-    sha = args.tip or tip_sha()
+    target = Target.named(args.repo)
+    sha = args.tip or tip_sha(target)
     if not sha:
-        print("COULD NOT READ: main's tip sha. Check `gh auth status`.")
+        print(
+            f"COULD NOT READ: main's tip sha for {target.repo}. Check the name "
+            "and `gh auth status`."
+        )
+        return 1
+    deployed = deployed_digests(target)
+    if deployed is None:
+        print("COULD NOT READ: deployments in `agents`. Check `kubectl`.")
         return 1
     short = sha[:7]
     state, lines = verdict(
-        short, digest_for_tag(f"sha-{short}"), manifest_digest(),
-        deployed_digests(),
+        target, short, digest_for_tag(target, f"sha-{short}"),
+        manifest_digest(target), deployed,
     )
     print("\n".join(lines))
-    return 1 if state in (NOT_BUILT, NOT_DEPLOYED) else 0
+    return 0 if state in (IN_SYNC, ROLLOUT_PENDING) else 1
 
 
 if __name__ == "__main__":
