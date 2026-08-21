@@ -233,6 +233,8 @@ _STATUSES = {
     "in progress": ("🟡", "In progress"),
     "in-progress": ("🟡", "In progress"),
     "backlog": ("⚪", "Backlog"),
+    "blocked on edvard": ("⏸", "Blocked on Edvard"),
+    "blocked-on-edvard": ("⏸", "Blocked on Edvard"),
     "outdated": ("⚫", "Outdated"),
 }
 

@@ -1463,6 +1463,13 @@ body.nav-open { overflow: hidden; }
    for done at a glance. It spends no colour, because the three that do are
    all states the row is still alive in. */
 .chip-outdated { color: var(--dim); opacity: 0.7; text-decoration: line-through; }
+/* Blocked on Edvard is the one status that is a request rather than a
+   report, so it is the one that should catch his eye and not mine. It
+   borrows the in-progress hue because the row is still alive, and adds a
+   dashed edge because nothing is moving on it until he acts. Not struck
+   through -- that is outdated's meaning and these rows are the opposite of
+   abandoned. */
+.chip-blocked-on-edvard { color: var(--warn); border-color: var(--warn); border-style: dashed; }
 
 /* Priority sits beside the status chip, so it must not read as a second
    status. Filled rather than outlined, and the four ratings step down in

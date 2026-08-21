@@ -49,8 +49,8 @@ import subprocess
 import sys
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board, split_capture_done,
-    split_capture_priority,
+    BLOCKED_STATUS, BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board,
+    split_capture_done, split_capture_priority, status_key,
     unanswered_comments,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
@@ -90,6 +90,12 @@ _RANK = {"immediate": 0, "high": 1, "medium": 2, "low": 3, "": 4}
 # guard number ten against it, so: one definition, in the module that
 # owns the board vocabulary.
 _CLOSED = _CLOSED_STATUS_KEYS
+
+# Derived from the label rather than typed, for the reason directly above:
+# the day the wording changes, a hand-typed `"blocked-on-edvard"` here goes
+# on matching nothing and this tool quietly returns to ranking a row nobody
+# can take at the top of the list.
+_BLOCKED = status_key(BLOCKED_STATUS)
 
 
 def _fetch(path):
@@ -191,6 +197,7 @@ def open_rows(markdown, board):
             "status": item["status"],
             "priority": item["priority"],
             "priorityKey": item["priorityKey"],
+            "statusKey": item["statusKey"],
             "updated": item["updated"],
             # A row whose write-up ends on one of his comments. Read off the
             # same markdown the rows come from, so a row and its thread can
@@ -235,9 +242,20 @@ def rank(rows):
     someone changes it, and an unanswered comment stops existing the
     moment a cycle replies, so nothing is lost by putting it first and a
     question of his is lost by not.
+
+    **And a row blocked on Edvard sinks below every actionable one,
+    whatever its rating.** The point of this tool is to name the row a
+    cycle should take, and a row whose only remaining step is a click in
+    a settings page is one no cycle can take at any rating. It is ranked
+    down rather than hidden, and `render` names it separately, because
+    the failure being fixed is a cycle *skipping* it silently -- issue
+    #94 topped this list for five days while every cycle walked past.
+    An unanswered comment still beats it: if he has just written on a
+    blocked row, that is very likely the thing that unblocks it.
     """
     return sorted(rows, key=lambda r: (
         0 if r.get("waiting") else 1,
+        1 if r.get("statusKey") == _BLOCKED else 0,
         _RANK.get(r["priorityKey"], len(_RANK)),
         age_key(r["updated"]),
         0 if r["board"] == "issue" else 1,
@@ -251,6 +269,8 @@ def _line(row):
     # that explains the order is worth more than one appended as a footnote
     # to a line whose position it already decided.
     waiting = "💬 UNANSWERED  " if row.get("waiting") else ""
+    if row.get("statusKey") == _BLOCKED:
+        waiting += "⏸ ON EDVARD  "
     return (f"{row['board']} #{row['number']}  {waiting}{rating}  {row['status']}"
             f"  (updated {row['updated']})  {row['title']}")
 
@@ -303,6 +323,18 @@ def render(rows, runners_up=3, captures=()):
                    + ", ".join(f"{r['board']} #{r['number']}" for r in waiting))
         out.append("  Reply on the row (POST /api/board/comment, author Nova) "
                    "even if you do not take it as this cycle's work.")
+    # Named, not hidden. The whole reason this status exists is that a row
+    # only Edvard can finish was being skipped in silence; sinking it in the
+    # ranking without saying so would automate the silence instead of the
+    # skip. If one of these has in fact become actionable, the fix is to
+    # change its status back, and a cycle can only notice that if it can see
+    # the row.
+    blocked = [r for r in ranked if r.get("statusKey") == _BLOCKED]
+    if blocked:
+        out.append(f"  {len(blocked)} row(s) ranked down as blocked on Edvard: "
+                   + ", ".join(f"{r['board']} #{r['number']}" for r in blocked))
+        out.append("  Nothing for a cycle to build on these. If one is "
+                   "actually actionable now, set its status back.")
     return "\n".join(out)
 
 
