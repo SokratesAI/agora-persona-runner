@@ -502,8 +502,16 @@ def run_heartbeat(heartbeat):
         # silent HEARTBEAT_NO_REPORT_SENTINEL reply when there's nothing
         # worth Edvard's attention, and that decision can only be made
         # once the full reply is in hand, before anything is posted.
-        reply = generate_reply(persona, caps, system, history, conversation_id, sticky=False,
-                                unattended=True)
+        # 2026-08-21 (idea #95 slice 1): the model comes off the bound
+        # conversation, not the persona. This path is how Nova's own cycles
+        # run, so without it a model picked on a cycle conversation would
+        # still resolve to the persona's -- the exact coupling this slice
+        # exists to remove. `detail` is the rotated-into conversation when
+        # rotation ran, which is the one the turn actually posts to. Empty
+        # or absent falls back to the persona, same as everywhere else.
+        reply = generate_reply(persona, caps, system, history, conversation_id,
+                                model_override=detail.get("model") or None,
+                                sticky=False, unattended=True)
         if reply.strip().upper().startswith(HEARTBEAT_NO_REPORT_SENTINEL):
             result = "checked, nothing to report (not posted to chat)"
             silent = True
