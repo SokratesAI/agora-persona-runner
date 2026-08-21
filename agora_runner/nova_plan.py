@@ -293,6 +293,73 @@ def _updated(text):
     return ""
 
 
+# A heading that opens with a bare `YYYY-MM-DD`. The weekly reviews in
+# `goals.md` are written `### 2026-08-17 — week of 08-16 to 08-17 (Cycle
+# 257)`, newest first, and that date is the only thing about them this
+# module is willing to recognise.
+_DATED_HEADING_RE = re.compile(r"^\s*\d{4}-\d{2}-\d{2}\b")
+
+
+def _mark_open(sections):
+    """Give every section an `open` flag: is it expanded when the page paints?
+
+    `/plan` is 4,961 words on one route -- a 25-minute read on a phone,
+    with no entry point but the top, which is the complaint Edvard filed
+    as issue #96 (*"It is just a huge wall of text. I hate that."*). So
+    every headed section arrives collapsed and the page opens at two
+    screens of scoreboard and ranked strip instead of at paragraph one.
+
+    Two exceptions, and both are the accordion rule from NN/g that
+    `research/plan-page-design.md` settles on: **never hide crucial
+    information inside a collapsed panel.**
+
+    - **The standfirst is never folded at all** (level 0, no heading). In
+      `goals.md` it is the paragraph saying the slate is a proposal and
+      not a settled list, and a reader who never opens a fold still has
+      to see it.
+    - **The newest entry of a dated stack opens.** A run of two or more
+      consecutive sections at the same level whose headings begin with a
+      `YYYY-MM-DD` is a stack, and the first one in document order is the
+      newest, because both files that have one are written newest-first.
+
+    That second rule is deliberately structural rather than named. This
+    module's contract is that sections are *discovered, never named* --
+    matching on the literal text "Weekly review" would put a heading
+    Edvard is free to retitle into the parser, and the page would go
+    quietly back to a wall the day he did. A date prefix is a shape.
+
+    A lone dated section is not a stack and stays collapsed: with nothing
+    to be newer *than*, opening it is just an opinion about one section.
+    """
+    def is_dated(section):
+        return bool(
+            section["heading"] and _DATED_HEADING_RE.match(section["heading"])
+        )
+
+    # Maximal runs of adjacent dated sections at one level. Adjacency is
+    # what makes it a stack: two dated headings with an undated section
+    # between them are two separate things that happen to carry dates.
+    newest = set()
+    start = 0
+    while start < len(sections):
+        if not is_dated(sections[start]):
+            start += 1
+            continue
+        end = start + 1
+        while (
+            end < len(sections)
+            and is_dated(sections[end])
+            and sections[end]["level"] == sections[start]["level"]
+        ):
+            end += 1
+        if end - start > 1:
+            newest.add(start)
+        start = end
+
+    for i, section in enumerate(sections):
+        section["open"] = not section["heading"] or i in newest
+
+
 def _document(key, label, text):
     """One markdown document -> one card's worth of payload.
 
@@ -336,6 +403,7 @@ def _document(key, label, text):
         if not heading and not blocks:
             continue
         sections.append({"level": level, "heading": heading, "blocks": blocks})
+    _mark_open(sections)
 
     return {
         "key": key,
