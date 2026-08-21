@@ -151,23 +151,33 @@ def store_upload(filename, content_type, data_b64):
     return name, f"/api/upload/{name}", len(raw)
 
 
-def read_upload(name):
-    """`(content_type, raw_bytes)` for a stored upload, or `None`.
+def is_upload_name(name):
+    """Is `name` exactly the shape `store_upload` produces?
 
-    `name` comes off a URL path, so it is checked to be exactly the shape
-    `store_upload` produces rather than sanitised. A name is a hash and an
-    extension; anything else is not ours, and refusing is cheaper than
-    reasoning about what `..` means to a CouchDB `_id`.
+    A name comes off a URL path, so it is checked rather than sanitised. A
+    name is a 32-hex-character hash and a known extension; anything else is
+    not ours, and refusing is cheaper than reasoning about what `..` means
+    to a CouchDB `_id`.
     """
     stem, _, ext = (name or "").rpartition(".")
     if not stem or not ext:
-        return None
+        return False
     if len(stem) != 32 or not all(c in "0123456789abcdef" for c in stem):
-        return None
-    if ext not in set(CONTENT_TYPES.values()):
-        return None
+        return False
+    return ext in set(CONTENT_TYPES.values())
 
-    text = vault_read_path(UPLOAD_PREFIX + name)
+
+def decode_envelope(text):
+    """`(content_type, raw_bytes)` for a stored envelope, or `None`.
+
+    Split out so the one inverse of `store_upload`'s encoder is written
+    once. `read_upload` reads the document through `agora_runner.vault`,
+    which needs `COUCHDB_*` and therefore only works in the runner pod;
+    `tools.fetch_attachments` reads the same document through
+    `/app/bridge/vault_tool.py` from the bridge pod. Two readers, two sets
+    of credentials, and exactly one decoder — a second copy of this would
+    be the drift bug this repo keeps writing detectors for.
+    """
     if not text:
         return None
     fields, payload = _parse_envelope(text)
@@ -178,4 +188,13 @@ def read_upload(name):
         raw = base64.b64decode("".join(payload.split()), validate=True)
     except (binascii.Error, ValueError):
         return None
+    if not raw:
+        return None
     return content_type, raw
+
+
+def read_upload(name):
+    """`(content_type, raw_bytes)` for a stored upload, or `None`."""
+    if not is_upload_name(name):
+        return None
+    return decode_envelope(vault_read_path(UPLOAD_PREFIX + name))
