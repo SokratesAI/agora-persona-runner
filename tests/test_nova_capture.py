@@ -114,6 +114,30 @@ def test_two_attached_images_both_ride_along():
     ]
 
 
+def test_a_real_filename_with_brackets_in_it_still_folds():
+    """`buildAttach` puts `file.name` into the alt text verbatim.
+
+    Android and Windows hand back names like `photo (1).jpg` all the time,
+    and a fixture of clean `shot.jpg` names would never exercise that. The
+    parentheses sit inside the alt text, which is `[^\\]]*`, so they are
+    fine -- this test is what says so rather than my reading of the regex.
+    """
+    link = "![photo (1).jpg](/api/upload/89f92e607e3e8a3e85a40b40f4a07609.jpg)"
+    assert clean_capture_text("here it is\n\n" + link) == ["here it is " + link]
+
+
+def test_a_filename_containing_a_square_bracket_does_not_fold():
+    """Known limit, written down rather than discovered later.
+
+    `app.js`'s own `ATTACH_RE` cannot match this either, so the line does
+    not render as an image on any surface — it degrades the same way on
+    both sides instead of one of them silently disagreeing. The picture is
+    still captured, as its own bullet; nothing is lost but the pairing.
+    """
+    link = "![photo[1].jpg](/api/upload/89f92e607e3e8a3e85a40b40f4a07609.jpg)"
+    assert clean_capture_text("here it is\n\n" + link) == ["here it is", link]
+
+
 def test_an_image_with_no_text_before_it_is_still_its_own_capture():
     """Nothing to attach it to, and dropping it would lose the picture."""
     assert clean_capture_text(IMG) == [IMG]
