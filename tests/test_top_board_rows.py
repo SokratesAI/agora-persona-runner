@@ -481,3 +481,50 @@ def test_a_nova_note_moves_the_row_it_was_written_on_down_the_ranking():
     assert fresh[1]["updated"] == "08-20"
     # And the note did not do it by marking the row as waiting on a reply.
     assert not any(r.get("waiting") for r in fresh)
+
+
+BLOCKED = STATUS_LABELS["blocked-on-edvard"]
+
+
+def test_a_blocked_row_sinks_below_a_lower_rated_actionable_one():
+    """Issue #94's exact shape: 🟠 High, oldest, and nothing a cycle can do.
+
+    It topped this list for five days on rating and age while every cycle
+    walked past it, which is the tax `⏸ Blocked on Edvard` exists to stop.
+    """
+    text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
+                 (99, "a low one I can actually take", BACKLOG, "08-20", LOW))
+    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    assert [r["number"] for r in ranked] == [99, 94]
+
+
+def test_a_blocked_row_is_still_open_and_keeps_its_rating():
+    """Ranked down, never closed — the row comes back the moment he acts."""
+    text = board((94, "needs his click", BLOCKED, "08-16", HIGH))
+    rows = top_board_rows.open_rows(text, "issue")
+    assert [(r["number"], r["priority"]) for r in rows] == [(94, HIGH)]
+
+
+def test_an_unanswered_comment_still_beats_blocked():
+    """If he has just written on a blocked row, that is likely the unblock.
+
+    The blocked row is rated **below** the other one and is **newer**, so
+    every tiebreak except the unanswered comment says it should lose. That
+    is the only way this test can tell the two sort terms apart: written
+    the obvious way -- blocked row rated High and oldest -- it wins for
+    three independent reasons and pins none of them.
+    """
+    text = (board((94, "needs his click", BLOCKED, "08-20", LOW),
+                  (95, "ordinary", BACKLOG, "08-01", HIGH))
+            + "\n# Details\n\n### #94 — needs his click\n\n"
+              "**Edvard, 08-21:** done, I clicked it.\n")
+    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    assert [r["number"] for r in ranked] == [94, 95]
+
+
+def test_render_names_the_blocked_rows_rather_than_hiding_them():
+    text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
+                 (99, "actionable", BACKLOG, "08-20", LOW))
+    out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
+    assert "issue #99" in out.splitlines()[1]
+    assert "blocked on Edvard: issue #94" in out

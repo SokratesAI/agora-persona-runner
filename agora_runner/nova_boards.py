@@ -127,9 +127,23 @@ OUTDATED_STATUS = "⚫ Outdated"
 # said #63 until the reviewer checked: #63 is a different row and is
 # already `✅ Done`. A cycle sweeping the board would have gone looking
 # for the stray spelling in the wrong place and left the real one alone.)
+# The sixth status, and the only one that says *why* a row is not moving.
+# Issue #94 is the case it was written for: the investigation finished on
+# 2026-08-16, Edvard approved the change on 08-17, and the remaining step is
+# a click on a GitHub settings page no token in this loop can make. It stayed
+# `🟡 In progress` because that was the closest thing available, so it kept
+# winning `top_board_rows` on rating and age, and four cycles each spent a
+# sentence explaining why they skipped it -- the same tax issue #73 paid
+# until Cycle 259 hand-edited its rating down. Lowering a rating to move a
+# row down the list is a lie about how much it matters; this says the true
+# thing instead. It is deliberately **not** in `_CLOSED_STATUS_KEYS`: the row
+# is open, keeps its rating, and comes straight back the moment he acts.
+BLOCKED_STATUS = "⏸ Blocked on Edvard"
+
 STATUS_LABELS = {
     "backlog": "⚪ Backlog",
     "in-progress": "🟡 In progress",
+    "blocked-on-edvard": BLOCKED_STATUS,
     "done": "✅ Done",
     "outdated": OUTDATED_STATUS,
 }
