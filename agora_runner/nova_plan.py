@@ -36,9 +36,10 @@ it cannot silently drop one.
 it.** Edvard, 2026-08-20: *"It is just a huge wall of text. I hate that
 ... i understand visuals much faster."* `/plan` is 4,961 words on one
 route with no number pulled out anywhere, so `goals.md` may now carry an
-optional fenced ```goal block per goal and this module draws a scoreboard
-from it. The block is data a cycle writes for this page; every other word
-in both documents is still prose nothing parses. See `_scoreboard`.
+optional fenced ```goal block per goal and `roadmap.md` a ```next block per
+item of its ranked five, and this module draws a scoreboard and a ranked
+strip from them. The blocks are data a cycle writes for this page; every
+other word in both documents is still prose nothing parses. See `_fenced`.
 """
 
 import re
@@ -60,11 +61,16 @@ PLAN_DOCUMENTS = (
 
 _UPDATED_RE = re.compile(r"^updated:[ \t]*(?P<value>.+?)[ \t]*$", re.MULTILINE)
 
-# A ```goal fence: the one structured thing either document is allowed to
-# carry. See `_scoreboard` for why it is a fence and not a regex over prose.
-_GOAL_OPEN_RE = re.compile(r"^[ \t]*```[ \t]*goal[ \t]*$")
-_GOAL_CLOSE_RE = re.compile(r"^[ \t]*```[ \t]*$")
+# The fences these two documents may carry: ```goal for a scoreboard row and
+# ```next for one item of the roadmap's ranked strip. See `_scoreboard` for
+# why a fence and not a regex over prose. Everything else in both files is
+# prose nothing parses, and that is the rule these two are the exception to.
+_FENCE_CLOSE_RE = re.compile(r"^[ \t]*```[ \t]*$")
 _FIELD_RE = re.compile(r"^(?P<key>[a-z]+):[ \t]*(?P<value>.*?)[ \t]*$")
+
+
+def _fence_open_re(name):
+    return re.compile(r"^[ \t]*```[ \t]*" + name + r"[ \t]*$")
 
 # Which way is better. Anything else -- including a missing line -- means
 # the goal has a number worth showing and no opinion about which
@@ -136,8 +142,8 @@ def _goal(lines):
     }
 
 
-def _scoreboard(text):
-    """`(rows, text_without_the_blocks)`.
+def _fenced(text, name, build):
+    """`(rows, text_without_the_blocks)` for every ```<name> fence in `text`.
 
     **Why a fenced block and not a parser over the prose.** The numbers in
     `goals.md` are hand-written English inside a paragraph -- *"This week:
@@ -151,11 +157,18 @@ def _scoreboard(text):
     nothing here reads a word Edvard or a cycle wrote for a human.
 
     The blocks are removed from the text on the way through, so the fence
-    does not also render as a code block underneath the meter it drew.
+    does not also render as a code block underneath the row it drew.
+
+    `build` turns the body lines of one fence into a row, or returns `None`
+    to drop it. This scan is shared rather than written once per fence,
+    and it was generalised on the second caller rather than the fourth: the
+    subtle half is `abandon` below, and a second copy of that is a bug
+    waiting for whichever fence gets fixed alone.
     """
     rows = []
     kept = []
     block = None
+    opens = _fence_open_re(name)
 
     def abandon():
         # An unterminated fence is a half-written edit, not a row. Put the
@@ -165,20 +178,20 @@ def _scoreboard(text):
         # two lines by hand makes the *next* block's opening fence look like
         # this one's body, so without this every paragraph in between
         # vanishes from the page and nothing says so.
-        kept.append("```goal")
+        kept.append("```" + name)
         kept.extend(block)
 
     for line in (text or "").split("\n"):
         if block is None:
-            if _GOAL_OPEN_RE.match(line):
+            if opens.match(line):
                 block = []
             else:
                 kept.append(line)
-        elif _GOAL_OPEN_RE.match(line):
+        elif opens.match(line):
             abandon()
             block = []
-        elif _GOAL_CLOSE_RE.match(line):
-            row = _goal(block)
+        elif _FENCE_CLOSE_RE.match(line):
+            row = build(block)
             if row:
                 rows.append(row)
             block = None
@@ -187,6 +200,61 @@ def _scoreboard(text):
     if block is not None:
         abandon()
     return rows, "\n".join(kept)
+
+
+# The three states a roadmap item can be in, and the words for them. The
+# vocabulary is the boards' own -- `issues.md` and `ideas.md` use these exact
+# three -- so a row does not mean one thing on `/plan` and another on `/board`.
+#
+# **The word travels with the symbol, and that is not decoration.** Edvard,
+# 2026-08-20: *"always pair priority symbols (e.g. 🟠) with the word (e.g.
+# 'High') -- don't use the symbol alone, it was hard to read"*, after saying he
+# cannot tell the coloured circles apart by colour. So the payload carries both
+# and the page prints both; a status this map has never seen carries neither,
+# because a chip reading `⚪ Backlog` for something a cycle called `blocked`
+# would be the page inventing a fact the file does not state.
+_STATUSES = {
+    "done": ("✅", "Done"),
+    "in progress": ("🟡", "In progress"),
+    "in-progress": ("🟡", "In progress"),
+    "backlog": ("⚪", "Backlog"),
+}
+
+# Every field a ```next block understands, same rule as `_FIELDS`: a key
+# outside this set is dropped rather than passed through.
+_NEXT_FIELDS = ("rank", "title", "status", "claim", "board")
+
+
+def _next(lines):
+    """The body lines of one ```next fence -> one ranked-strip card, or `None`.
+
+    A block with no `title` is dropped, for the same reason a nameless goal
+    is: the card is unreadable without it.
+
+    `rank` is taken from the block rather than from the card's position in
+    the strip. The file numbers these items in its own prose and strikes one
+    through when it is done without renumbering the rest -- item 3 is
+    finished and still called 3 -- so position and rank genuinely disagree,
+    and the number Edvard reads in the paragraph is the one that has to be
+    on the card.
+    """
+    row = {}
+    for line in lines:
+        match = _FIELD_RE.match(line)
+        if match and match.group("key") in _NEXT_FIELDS:
+            row[match.group("key")] = match.group("value")
+    if not row.get("title"):
+        return None
+
+    symbol, label = _STATUSES.get(row.get("status", "").strip().lower(), ("", ""))
+    return {
+        "rank": row.get("rank", ""),
+        "title": row["title"],
+        "claim": row.get("claim", ""),
+        "board": row.get("board", ""),
+        "statusSymbol": symbol,
+        "statusLabel": label,
+    }
 
 
 def _updated(text):
@@ -228,13 +296,15 @@ def _document(key, label, text):
             "updated": "",
             "missing": True,
             "scoreboard": [],
+            "ranked": [],
             "sections": [],
         }
 
     # Before `outline`, so a block sitting under a heading does not have to
     # be found twice, and after the emptiness check, so a missing document
     # is still one branch.
-    scoreboard, text = _scoreboard(text)
+    scoreboard, text = _fenced(text, "goal", _goal)
+    ranked, text = _fenced(text, "next", _next)
 
     title = label
     sections = []
@@ -258,6 +328,7 @@ def _document(key, label, text):
         "updated": _updated(text),
         "missing": False,
         "scoreboard": scoreboard,
+        "ranked": ranked,
         "sections": sections,
     }
 

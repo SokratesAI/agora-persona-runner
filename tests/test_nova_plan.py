@@ -313,3 +313,90 @@ def test_a_document_with_no_blocks_is_unchanged_and_scores_nothing():
     assert _doc(payload, "roadmap")["scoreboard"] == []
     assert _doc(payload, "goals")["scoreboard"] == []
     assert _doc(payload, "goals")["title"] == "Goals"
+
+
+# The roadmap's ranked strip (issue #96, design item 2). Same fence machinery
+# as the scoreboard, deliberately -- these tests pin the parts that are not
+# shared: the status vocabulary and the rank coming off the block.
+RANKED = """---
+updated: 2026-08-21
+---
+
+# Roadmap
+
+## The five I would do next, in order
+
+**1. Get CI back.** Prose that must survive.
+
+```next
+rank: 1
+title: Get CI back
+status: in progress
+claim: Not my work — yours, and it is two minutes.
+board: idea #73
+```
+
+**3. ~~Fix my vault write path~~ — done.**
+
+```next
+rank: 3
+title: Fix my vault write path
+status: done
+claim: It was garbage collection, not a write bug.
+board: idea #61
+```
+"""
+
+
+def test_ranked_cards_come_off_the_fenced_blocks():
+    roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
+    assert [r["title"] for r in roadmap["ranked"]] == [
+        "Get CI back",
+        "Fix my vault write path",
+    ]
+    assert roadmap["ranked"][0]["claim"] == "Not my work — yours, and it is two minutes."
+    assert roadmap["ranked"][0]["board"] == "idea #73"
+
+
+def test_a_status_always_carries_its_word_and_an_unknown_one_carries_neither():
+    roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
+    assert roadmap["ranked"][0]["statusLabel"] == "In progress"
+    assert roadmap["ranked"][0]["statusSymbol"] == "\U0001f7e1"
+    assert roadmap["ranked"][1]["statusLabel"] == "Done"
+    assert roadmap["ranked"][1]["statusSymbol"] == "\u2705"
+
+    # A word this page has never seen gets no chip rather than a guessed one:
+    # rendering `Backlog` for something a cycle called `blocked` would be the
+    # page stating a fact the file does not.
+    blocked = RANKED.replace("status: in progress", "status: blocked", 1)
+    row = _doc(plan_payload({"roadmap": blocked}), "roadmap")["ranked"][0]
+    assert row["statusLabel"] == "" and row["statusSymbol"] == ""
+
+
+def test_the_rank_is_the_files_number_and_not_the_cards_position():
+    # The file strikes item 3 through without renumbering 4 and 5, so the
+    # second card really is rank 3. Counting positions would print "2".
+    ranks = [r["rank"] for r in _doc(plan_payload({"roadmap": RANKED}), "roadmap")["ranked"]]
+    assert ranks == ["1", "3"]
+
+
+def test_a_next_block_does_not_also_render_as_a_code_block():
+    roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
+    body = " ".join(_text(s) for s in roadmap["sections"])
+    assert "status:" not in body
+    assert "Prose that must survive." in body
+
+
+def test_a_titleless_next_block_is_not_a_card():
+    untitled = RANKED.replace("title: Get CI back\n", "", 1)
+    assert len(_doc(plan_payload({"roadmap": untitled}), "roadmap")["ranked"]) == 1
+
+
+def test_goal_and_next_blocks_do_not_eat_each_other():
+    both = RANKED + SCORED.split("---", 2)[-1]
+    doc = _doc(plan_payload({"roadmap": both}), "roadmap")
+    assert len(doc["ranked"]) == 2
+    assert len(doc["scoreboard"]) == 2
+    body = " ".join(_text(s) for s in doc["sections"])
+    assert "Some prose about G1 that must survive." in body
+    assert "Prose that must survive." in body
