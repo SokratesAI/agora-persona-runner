@@ -6577,6 +6577,131 @@ describe("the device page", () => {
     assert.ok(keys.includes("Display mode"), "no display-mode row");
     assert.ok(keys.includes("Hamburger, on paint"), "no first hamburger reading");
     assert.ok(keys.includes("Hamburger, 3s later"), "no second hamburger reading");
+    assert.ok(keys.includes("Menu drawer, opened"), "no drawer reading -- the symptom he actually reported");
+    assert.ok(keys.includes("Priority popup, opened"), "no popup reading -- the other dropdown he reported");
+  });
+
+  /* The dropdown readings, and the one thing about them that is not
+   * obvious: both elements are invisible until something opens them, so a
+   * reading taken without opening one measures the parked box -- the
+   * drawer sits at `translateX(100%)` off the right edge, which would
+   * report a spectacular fault on every device forever and mean only that
+   * the drawer was shut. That is a positive result guaranteed in advance,
+   * the failure this page was built to stop being committed by the page
+   * itself.
+   *
+   * jsdom's `getBoundingClientRect` is all zeros, so the numbers here pin
+   * nothing and are deliberately not asserted. The first draft of this
+   * test leaned on computed `visibility` instead, on the theory that
+   * `.nav` is `visibility: hidden` until `.nav.open` -- and the mutation
+   * that deleted `setMenu(true)` altogether **passed it**. jsdom does not
+   * carry that rule through to `getComputedStyle`, so the reading said
+   * `visible` whether or not anything had opened, which is a positive
+   * result guaranteed in advance on the diff that exists to stop them.
+   *
+   * So each reading now names its own precondition -- "drawer was open",
+   * "popup was open" -- read off DOM state rather than the cascade, which
+   * is both what these assertions can honestly pin and the thing I would
+   * want to know first when reading the note he sends back. */
+  test("each dropdown is measured while it is open, not while it is parked", async () => {
+    const window = await loadSite("/diag");
+    const reading = (label) => [...window.document.querySelectorAll(".diag-key")]
+      .find((k) => k.textContent === label).nextElementSibling.textContent;
+    assert.match(reading("Menu drawer, opened"), /measuring/, "the drawer was measured before it could be opened");
+
+    await new Promise((r) => window.setTimeout(r, 1200));
+
+    assert.match(reading("Menu drawer, opened"), /drawer was open/,
+      `the drawer was measured while shut: ${reading("Menu drawer, opened")}`);
+    assert.match(reading("Priority popup, opened"), /popup was open/,
+      `the popup was measured while hidden: ${reading("Priority popup, opened")}`);
+    /* And the cascade reading kept as a second, weaker check on the popup,
+     * because it does work there: jsdom answers `block` where his browser
+     * answers `flex`, but the UA stylesheet's `[hidden] { display: none }`
+     * is honoured, so `none` is the one value a measurement taken while
+     * open cannot produce. Mutation-checked. */
+    assert.doesNotMatch(reading("Priority popup, opened"), /display none/,
+      `the popup computed as display:none, so it was not drawn: ${reading("Priority popup, opened")}`);
+    /* An empty popup is a 17px box whose height says nothing about the
+     * real one, and `max-height: 70vh` against the real height is one of
+     * the few ways this thing could genuinely land wrong on a short
+     * screen. */
+    assert.match(reading("Priority popup, opened"), /5 options/,
+      "the popup was measured empty, so its height is not the height he sees");
+  });
+
+  /* The one assertion that pins the diagnostic itself rather than the
+   * plumbing around it, and it needed a fake box to exist: jsdom hands
+   * back a 0x0 rect in a 0x0 viewport for everything, so every reading is
+   * trivially "fully inside" and a broken overflow test would never say
+   * otherwise. Mutation-checked -- disabling the right-edge branch in
+   * `boxReport` left every other test in this file green, which is how
+   * this one came to be written. */
+  test("a dropdown hanging off the screen is reported as hanging off the screen", async () => {
+    const window = await loadSite("/diag");
+    const doc = window.document.documentElement;
+    Object.defineProperty(doc, "clientWidth", { value: 360, configurable: true });
+    Object.defineProperty(doc, "clientHeight", { value: 697, configurable: true });
+    // An S25-shaped drawer that starts 40px past the right edge -- the
+    // exact shape of "the dropdowns are out of place" he reported.
+    window.document.getElementById("nav").getBoundingClientRect = () => ({
+      left: 128, top: 0, right: 400, bottom: 697, width: 272, height: 697,
+    });
+    await new Promise((r) => window.setTimeout(r, 600));
+
+    const drawer = [...window.document.querySelectorAll(".diag-key")]
+      .find((k) => k.textContent === "Menu drawer, opened").nextElementSibling.textContent;
+    assert.match(drawer, /OUTSIDE VIEWPORT: right by 40/,
+      `a drawer 40px off the right edge did not report as off the edge: ${drawer}`);
+    assert.match(drawer, /in a 360x697 viewport/, "the viewport it was judged against is not in the reading");
+  });
+
+  /* The overlay is one shared node reused by every priority picker on the
+   * site, and the capture box carrying one of them is on this page too --
+   * so he can open a real picker inside the ~650ms before the measurement
+   * runs. Emptying it under him would make his popup vanish on its own
+   * while its trigger still said `aria-expanded="true"`, and nothing in
+   * the note would record that it had happened. */
+  test("a real picker already open is left alone, and the reading says so", async () => {
+    const window = await loadSite("/diag");
+    /* Opened through the real trigger rather than by setting `hidden`
+     * directly. The overlay does not exist until something asks for it --
+     * `getPrioMenuOverlay` creates it lazily -- so a test that reached for
+     * `.prio-menu` at load time got null, and faking the open state would
+     * not have exercised the picker's own bookkeeping (`dataset.openFor`,
+     * `aria-expanded`, the document-level dismiss handler) that this guard
+     * exists to protect. */
+    click(window, window.document.getElementById("capture-prio"));
+    const popup = window.document.querySelector(".prio-menu");
+    assert.ok(popup && !popup.hidden, "tapping the capture box's priority button did not open the picker");
+    await new Promise((r) => window.setTimeout(r, 1200));
+
+    const reading = [...window.document.querySelectorAll(".diag-key")]
+      .find((k) => k.textContent === "Priority popup, opened").nextElementSibling.textContent;
+    assert.match(reading, /skipped/, `the measurement ran over an open picker: ${reading}`);
+    assert.ok(!popup.hidden, "the picker he opened was closed by the measurement");
+    assert.equal(popup.children.length, 5, "the picker he opened had its options replaced under him");
+    assert.equal(window.document.getElementById("capture-prio").getAttribute("aria-expanded"), "true",
+      "the trigger was left claiming a popup that is no longer open");
+  });
+
+  /* Both elements are shared with the rest of the app -- one drawer, one
+   * popup overlay reused by every picker on the page. A measurement that
+   * left either open would hand him a page with the menu stuck out and no
+   * memory of having opened it. */
+  test("measuring the dropdowns puts the page back exactly as it was", async () => {
+    const window = await loadSite("/diag");
+    await new Promise((r) => window.setTimeout(r, 1200));
+    const nav = window.document.getElementById("nav");
+    assert.ok(!nav.classList.contains("open"), "the drawer was left open after measuring");
+    assert.equal(nav.getAttribute("aria-hidden"), "true", "the drawer was left exposed to a screen reader");
+    assert.ok(!window.document.body.classList.contains("nav-open"), "the page was left unable to scroll");
+    assert.ok(!window.document.getElementById("menu-btn").classList.contains("open"),
+      "the hamburger was left in its open state");
+    const popup = window.document.querySelector(".prio-menu");
+    assert.ok(popup.hidden, "the shared priority popup was left on screen");
+    assert.equal(popup.children.length, 0,
+      "the shared popup kept the options this page put in it, so the next real picker opens showing them");
   });
 
   /* The two readings are the point of the page, not decoration: what he
