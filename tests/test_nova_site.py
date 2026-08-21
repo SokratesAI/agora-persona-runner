@@ -4149,6 +4149,56 @@ def test_the_plan_page_and_its_endpoint_both_answer():
     assert all(doc["missing"] for doc in json.loads(empty)["documents"])
 
 
+def test_the_notes_page_and_its_endpoint_both_answer():
+    """The same pair as `/plan`, for the same reason (`issues.md` #7).
+
+    `nova_notes`' own tests call the shaping directly and the browser
+    tests stub `fetch`, so nothing else here would notice `/notes` or
+    `/api/notes` disappearing and the nav tab 404ing on his phone.
+
+    Edvard's capture, 2026-08-21: *"I do not have a notes page that shows
+    any overview of the notes made."* `notes.md` is in his own database,
+    which this process reaches with a different credential from the one
+    the boards use -- so the empty half matters here as much as it does
+    on `/plan`: a vault where he has never left a note must render an
+    empty page, not a 502.
+    """
+    markdown = (
+        "---\ntype: log\n---\n\n- Waiting on someone.\n- \n\n"
+        "## Read\n\n- Answered one.\n  - Read Cycle 258. Did the thing.\n"
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=markdown):
+        nova_site.reset_cache()
+        status, _, body = _get("/api/notes")
+        shell_status, _, shell = _get("/notes")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["waitingTotal"] == 1 and payload["readTotal"] == 1
+    assert payload["notes"][0]["text"] == "Waiting on someone."
+    assert payload["notes"][1]["responses"][0]["cycle"] == 258
+    assert shell_status == 200 and b"<!doctype html>" in shell.lower()
+
+    with patch.object(nova_sources, "vault_read_path", return_value=None):
+        nova_site.reset_cache()
+        empty_status, _, empty = _get("/api/notes")
+    assert empty_status == 200
+    assert json.loads(empty)["notes"] == []
+
+
+def test_capturing_a_note_clears_the_notes_page_cache():
+    """The failure the old comment beside `invalidate` predicted.
+
+    It said `board:notes` never exists because notes had no page. Now
+    they have one, cached under its own name -- so without the second
+    invalidate, tapping Note and landing on `/notes` shows the file as
+    it was *before* the note the app just told him it saved.
+    """
+    with patch.object(nova_site, "capture", return_value=(True, "ok")), \
+            patch.object(nova_site, "invalidate") as inv:
+        _post("/api/capture", {"target": "notes", "text": "a new note"})
+    assert [call.args[0] for call in inv.call_args_list] == ["board:notes", "notes"]
+
+
 def test_service_worker_precaches_the_chart_library():
     """The costs page has to draw with the tailnet down, and it was the one
     page that could not.

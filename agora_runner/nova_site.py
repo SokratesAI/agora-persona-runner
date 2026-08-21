@@ -149,6 +149,7 @@ from agora_runner.nova_boards import (
     split_capture_priority,
 )
 from agora_runner.nova_ask import ask as ask_question, thread as ask_thread
+from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
@@ -194,7 +195,7 @@ STATIC_ROUTES = {
 # `/cycle/<n>` is a prefix rather than an exact path, so it is matched
 # separately in `do_GET` and carries a representative path here for
 # anything walking the list.
-PAGE_ROUTES = ("/", "/issues", "/ideas", "/costs", "/retro", "/plan", "/ask")
+PAGE_ROUTES = ("/", "/issues", "/ideas", "/notes", "/costs", "/retro", "/plan", "/ask")
 PAGE_ROUTE_PREFIXES = ("/cycle/",)
 
 # gzip's header and trailer are a fixed 18 bytes, so a short body comes
@@ -1553,6 +1554,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             if path == "/api/board":
                 self._send_board(query)
                 return
+            if path == "/api/notes":
+                # Cached like the boards and for the same reason: the
+                # vault read is the slow part and the file changes when
+                # Edvard types a note or a cycle answers one, not
+                # between two taps. It is also the smallest payload on
+                # the site -- 11KB of markdown -- so nothing here wants
+                # a window.
+                self._send_cached_json("notes", notes_payload)
+                return
             if path == "/api/costs":
                 self._send_cached_json("costs", costs_payload)
                 return
@@ -2137,10 +2147,19 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             # The board page Edvard is looking at has just gone stale, and
             # `app.js` reloads it on the very next tick. Without this the
             # reload is served the pre-capture payload -- see `invalidate`.
-            # `board:notes` never exists (notes have no board page yet) and
-            # popping a missing key is a no-op, so this needs no special
-            # case and cannot forget a target that grows one later.
+            # `board:notes` never exists -- notes are not a board -- and
+            # popping a missing key is a no-op, so this line stays exactly
+            # as it was for the two targets that are boards.
             invalidate("board:" + target)
+            # Notes now have a page of their own, cached under its own
+            # name (`/api/notes`). The comment above used to say notes had
+            # no page and that popping a missing key made a special case
+            # unnecessary -- half of that is still true and the other half
+            # is what a note captured from the app would have hit: the
+            # `/notes` reload landing on the pre-capture payload, with his
+            # new note missing from the page that just told him it saved.
+            if target == "notes":
+                invalidate("notes")
 
         # Recorded whether or not it succeeded, and the Tailscale identity
         # headers go in as evidence rather than as a check -- nothing here

@@ -63,6 +63,7 @@ API_KEYS = {
     "/api/digest": ("nextCycle", "lines"),
     "/api/comments": ("byCycle",),
     "/api/costs": ("generatedAt", "cycleColumns"),
+    "/api/notes": ("notes", "waitingTotal"),
     "/api/retro": ("scoreKeys", "retros"),
     "/api/health": ("ok", "databases"),
 }
