@@ -201,7 +201,17 @@ STATIC_ROUTES = {
 # `/cycle/<n>` is a prefix rather than an exact path, so it is matched
 # separately in `do_GET` and carries a representative path here for
 # anything walking the list.
-PAGE_ROUTES = ("/", "/issues", "/ideas", "/notes", "/costs", "/retro", "/plan", "/ask")
+PAGE_ROUTES = (
+    "/",
+    "/issues",
+    "/ideas",
+    "/notes",
+    "/costs",
+    "/retro",
+    "/plan",
+    "/ask",
+    "/diag",
+)
 PAGE_ROUTE_PREFIXES = ("/cycle/",)
 
 # gzip's header and trailer are a fixed 18 bytes, so a short body comes

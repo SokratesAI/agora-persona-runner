@@ -3509,7 +3509,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/costs", "/retro", "/plan", "/ask"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/costs", "/retro", "/plan", "/ask", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -6406,5 +6406,101 @@ describe("the questions page", () => {
     window.history.pushState({}, "", "/costs");
     await timers.fire();
     assert.equal(timers.queued.length, 0, "a poll survived the navigation");
+  });
+});
+
+describe("the device page", () => {
+  /* `/diag` exists because three cycles in a row shipped a fix for a
+   * rendering fault on a phone none of them could look at -- an iPhone
+   * safe-area fix for a man on a Galaxy S25, then a Chromium compositor
+   * workaround on a theory. Headless Chromium at six widths from 320 to
+   * 412 CSS px reproduced neither symptom, so the variable is his device.
+   *
+   * These tests are deliberately about the *contract with the next cycle*
+   * -- a report reaches `notes.md`, as one bullet, carrying the readings
+   * that were on screen -- and not about the values, which are whatever
+   * the browser running the test happens to be. Asserting a number here
+   * would pin jsdom, which is exactly the renderer whose agreement proves
+   * nothing. */
+
+  test("the page renders without asking the server for anything", async () => {
+    const window = await loadSite("/diag");
+    assert.equal(window.posted.length, 0, "the device page fetched something it should not have");
+    const keys = [...window.document.querySelectorAll(".diag-key")].map((k) => k.textContent);
+    assert.ok(keys.includes("User agent"), `no user agent row, got ${JSON.stringify(keys)}`);
+    assert.ok(keys.includes("Safe-area insets"), "no safe-area row -- the reading Cycle 299 guessed at");
+    assert.ok(keys.includes("Display mode"), "no display-mode row");
+    assert.ok(keys.includes("Hamburger, on paint"), "no first hamburger reading");
+    assert.ok(keys.includes("Hamburger, 3s later"), "no second hamburger reading");
+  });
+
+  /* The two readings are the point of the page, not decoration: what he
+   * reported is "I see it 1 sec ... and then it vanishes", and one sample
+   * cannot tell a button that was never drawn from one that was drawn and
+   * lost. A single-sample page would have looked complete and answered the
+   * wrong question. */
+  /* The button is *changed* between the two samples, and that is the whole
+   * test. The reviewer caught the first version asserting only that the
+   * placeholder was replaced by something matching /visibility/ -- which a
+   * mutation reusing the on-paint string verbatim would have survived,
+   * because jsdom's button never moves on its own. A test that cannot tell
+   * a fresh reading from a cached one cannot pin the one claim this page
+   * makes. */
+  test("the second hamburger reading is a fresh measurement, not the first one again", async () => {
+    const window = await loadSite("/diag");
+    /* By label, not by index. The first draft of this test read `.at(-1)`
+     * and `.at(-2)`, and adding one row above them silently repointed the
+     * second one at a different reading entirely. */
+    const reading = (label) => [...window.document.querySelectorAll(".diag-key")]
+      .find((k) => k.textContent === label).nextElementSibling.textContent;
+    const later = () => reading("Hamburger, 3s later");
+    const onPaint = reading("Hamburger, on paint");
+    assert.match(later(), /measuring/, "the later reading was not pending on paint");
+
+    window.document.getElementById("menu-btn").style.visibility = "hidden";
+    await new Promise((r) => window.setTimeout(r, 3100));
+
+    assert.match(later(), /visibility hidden/, "the 3s sample did not see the button change");
+    assert.match(onPaint, /visibility visible/, "the on-paint sample was overwritten, so there is only one reading");
+  });
+
+  test("Send files the readings as one note, not one bullet per line", async () => {
+    const window = await loadSite("/diag");
+    click(window, window.document.getElementById("diag-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, 1, "Send reached no endpoint");
+    assert.equal(window.posted[0].url, "/api/capture");
+    assert.equal(window.posted[0].body.target, "notes", "a device report is a note, not a board row");
+    const text = window.posted[0].body.text;
+    /* `nova_capture.clean_capture_text` makes a bullet out of every newline, so
+     * a multi-line body would land in `notes.md` as twenty separate notes
+     * and read as twenty things waiting for a cycle. */
+    assert.ok(!text.includes("\n"), "the report has newlines, so it would land as many notes");
+    assert.match(text, /^\[device report\] /);
+    assert.match(text, /User agent: /);
+    assert.match(text, /Hamburger, 3s later: /, "the second sample is missing from what was sent");
+    assert.match(text, /Page vs viewport width: /, "the width reading is missing from what was sent");
+  });
+
+  test("what is sent is what is on screen", async () => {
+    const window = await loadSite("/diag");
+    const onScreen = [...window.document.querySelectorAll(".diag-value")].map((v) => v.textContent);
+    click(window, window.document.getElementById("diag-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const text = window.posted[0].body.text;
+    for (const value of onScreen) {
+      assert.ok(text.includes(value), `a reading on screen never reached the note: ${value}`);
+    }
+  });
+
+  test("a refused send says so and stays sendable", async () => {
+    const window = await loadSite("/diag");
+    window.postReply = { ok: false, message: "the vault said no" };
+    const send = window.document.getElementById("diag-send");
+    click(window, send);
+    await new Promise((r) => window.setTimeout(r, 0));
+    const status = window.document.querySelector(".diag-actions .capture-status");
+    assert.match(status.textContent, /the vault said no/, `status did not carry the server's reason: ${status.textContent}`);
+    assert.equal(send.disabled, false, "a failed send left the only button on the page dead");
   });
 });

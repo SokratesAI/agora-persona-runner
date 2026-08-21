@@ -2205,3 +2205,47 @@ body.has-full-chart { overflow: hidden; }
    * the text under it as each one loads. */
   background: var(--line);
 }
+
+/* `/diag` (Cycle 303). A definition list rather than a table because the
+ * values are long -- a user-agent string is 120 characters and a two-column
+ * table at 360px would either scroll sideways or wrap to one character per
+ * line. Key above value, both full width, is the only layout that survives
+ * the narrowest phone this app has to work on.
+ *
+ * `overflow-wrap: anywhere` on the value: a user agent has no spaces in its
+ * longest run, so `break-word` alone leaves it pushing the page wider --
+ * which would be this page introducing the exact class of fault it exists
+ * to diagnose. */
+.diag-lede {
+  margin: 0 0 1rem;
+  color: var(--dim);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.diag-list {
+  margin: 0;
+}
+
+.diag-key {
+  margin: 0.9rem 0 0.15rem;
+  color: var(--dim);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.diag-value {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.diag-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.4rem;
+}
