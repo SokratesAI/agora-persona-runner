@@ -67,6 +67,7 @@ from agora_runner.nova_journal import (
     _ENTRY_HEADING_RE,
     _FOOTER_RE,
     ASK_LABEL,
+    clean_title,
     JOURNAL_DIR,
     normalise_entry,
     parse_journal,
@@ -379,14 +380,26 @@ def _title_finding(entry, path, normalised):
     """The heading carries no title, so the card is labelled by nothing.
 
     `parse_heading` splits a heading into date, time, cycle number and
-    whatever prose is left; when nothing is left the title is `""`, and
-    `app.js` then appends no `entry-title` paragraph at all. That is a
+    whatever prose is left, and `app.js` appends an `entry-title`
+    paragraph only when `cleanTitle` of that leftover is non-empty. So
+    the question this asks is `clean_title`, the Python port of that
+    function, and **not** whether the raw field is truthy. Those two
+    disagree on real live headings: `### Cycle 91 (2026-08-10 22:00)`
+    leaves `(2026-08-10 22:00)`, which is truthy and renders as nothing,
+    because `cleanTitle` strips a whole parenthesised stamp. Five live
+    entries have exactly that shape (Cycles 91, 92, 97, 100, 119), and a
+    first version of this check was silent on all five -- a checker
+    disagreeing with the renderer, which this tool's docstring calls
+    worse than no checker at all. That is a
     graceful render rather than a broken one, which is exactly why it has
     gone unnoticed: the card looks fine and simply says nothing about
     what the hour did. Edvard reads the journal as a list of these cards.
 
-    Measured against the live feed on 2026-08-22 (`/api/journal`, 366
-    entries): **169 carry an empty title.** Most are pre-convention --
+    Measured by running this check over all 366 live entries on
+    2026-08-22: **174 render with no title.** The live feed's own `title`
+    field says 169 -- the five it misses are the parenthesised-stamp
+    shape above, and that gap is the whole reason this asks
+    `clean_title`. Most are pre-convention --
     Cycles 4-66 all wrote `### <date> (Oslo) — Cycle N` and there was no
     title rule yet -- so the number that decides whether this check is
     worth having is the recent one: **6 of the newest 60 entries, and 0
@@ -418,7 +431,7 @@ def _title_finding(entry, path, normalised):
     """
     if entry.get("kind") == "report" or entry.get("cycle") is None:
         return None
-    if (entry.get("title") or "").strip():
+    if clean_title(entry.get("title")):
         return None
     if _first_heading(normalised) == "### " + synthetic_heading(path):
         return None

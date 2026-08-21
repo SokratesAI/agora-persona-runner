@@ -789,8 +789,85 @@ def test_a_synthesised_heading_does_not_report_a_missing_title_too():
     assert _kinds(lint("168-cycle-152.md", body)) == ["heading"]
 
 
-def test_edvards_own_message_needs_no_title():
-    """The one live filename with no cycle token is Edvard's own first
-    message. It is not a cycle and owes no title."""
-    body = "### 2026-08-02 — Edvard\n\nA message.\n"
-    assert "title" not in _kinds(lint("004-2026-08-02-edvard-s-first-message-not-a.md", body))
+
+
+def test_a_junk_title_is_deliberately_not_caught():
+    """The known blind spot, pinned rather than left to be rediscovered.
+
+    `_SEGMENT_SPLIT_RE` splits a heading on em-dashes only, so a heading
+    separated by anything else keeps its date and time *inside* the
+    title: `### Cycle 152 · 2026-08-01 02:00` parses to
+    `title: "· 2026-08-01 02:00"`. That is a card titled with a raw
+    timestamp, which is arguably worse than a blank one -- and this check
+    does not fire on it, because the title is not empty.
+
+    Left alone on purpose. Fixing it means changing the splitter, which
+    re-parses all 366 live entries, and that needs its own measurement
+    rather than being smuggled in behind a check for the opposite
+    problem. Filed in `nova/resources/issues.md`.
+    """
+    body = "### Cycle 152 · 2026-08-01 02:00\n\nA body.\n\n---\nPR: none | Outcome: no-op\n"
+    assert "title" not in _kinds(lint("168-cycle-152.md", body))
+
+
+# The reviewer's lead finding on #285, and it was right: the first
+# version of this check asked whether `parse_heading`'s raw title was
+# truthy, which is not the question the card answers.
+
+PAREN_STAMP = """### Cycle 152 (2026-08-01 02:00)
+
+A body.
+
+---
+PR: none | Outcome: no-op
+"""
+
+
+def test_a_parenthesised_stamp_is_not_a_title():
+    """`Cycle 91 (2026-08-10 22:00)` -- five live entries (Cycles 91, 92,
+    97, 100, 119). `parse_heading` leaves `(2026-08-10 22:00)`, which is
+    truthy; `cleanTitle` strips a whole parenthesised stamp and returns
+    `""`, so the card renders with no title. Asking the raw field was
+    silent on all five."""
+    assert _kinds(lint("168-cycle-152.md", PAREN_STAMP)) == ["title"]
+
+
+def test_the_check_asks_the_renderers_question_not_the_raw_field():
+    """Pins the disagreement itself, so a future edit cannot quietly go
+    back to the raw field with every other test still green."""
+    from agora_runner.nova_journal import clean_title, parse_heading
+
+    raw = parse_heading("Cycle 152 (2026-08-01 02:00)")["title"]
+    assert raw.strip(), "the raw field is truthy -- that is the trap"
+    assert clean_title(raw) == "", "the renderer shows nothing for it"
+
+
+def test_clean_title_matches_the_renderer():
+    """`clean_title` is a hand-copy of `cleanTitle` in `app.js` and
+    nothing else enforces that it stays one. Pin the four rules against
+    the literal JS source: if the JS moves and Python does not, this
+    fails rather than the two silently disagreeing on Edvard's cards."""
+    import os
+    from agora_runner import nova_journal
+
+    js = open(
+        os.path.join(os.path.dirname(nova_journal.__file__), "nova_public", "app.js"),
+        encoding="utf-8",
+    ).read()
+    start = js.index("function cleanTitle(")
+    body = js[start:js.index("\n  }", start)]
+    for fragment in (
+        r'.replace(/^[\s·—–-]+/, "")',
+        r'.replace(/\(\s*\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2})?\s*\)/g, "")',
+        r'if (/^\([^()]*\)$/.test(text)) text = text.slice(1, -1).trim();',
+    ):
+        assert fragment in body, f"cleanTitle no longer contains {fragment!r}"
+
+
+def test_an_entry_with_no_cycle_number_is_skipped_even_with_no_title():
+    """Pins the `cycle is None` clause rather than a truthy title that
+    would have skipped anyway -- the reviewer's finding 3 on #285."""
+    body = "### 2026-08-02 02:00\n\nA message.\n"
+    assert "title" not in _kinds(
+        lint("004-2026-08-02-edvard-s-first-message-not-a.md", body)
+    )
