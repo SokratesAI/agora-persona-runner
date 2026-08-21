@@ -26,10 +26,34 @@ import re
 CSS = pathlib.Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public" / "style.css"
 
 
+def _without_comments(css):
+    """The stylesheet a browser sees, with `/* ... */` removed.
+
+    Not decoration. The first version of `_declarations` read the raw file,
+    and the reviewer on runner#279 found it passing over a stray `*/` that
+    had split one comment in two: the orphaned prose became part of the next
+    rule's prelude, which makes the selector invalid, which makes a browser
+    drop the whole rule -- and the test still passed, because the garbage
+    prelude happened to contain the literal `.comment.is-acknowledged` among
+    its words. A regex that reads comments as if they were code agrees with
+    the author for reasons that have nothing to do with the assertion.
+    """
+    return re.sub(r"/\*.*?\*/", " ", css, flags=re.S)
+
+
+def test_no_stray_comment_delimiter_splits_a_rule():
+    """A `*/` outside a comment ends a comment that was never opened, and
+    everything before it joins the next selector. Nothing in CSS reports
+    that -- the rule is simply dropped, silently, on his phone."""
+    stripped = _without_comments(CSS.read_text(encoding="utf-8"))
+    assert "*/" not in stripped, "a `*/` outside a comment -- the rule after it is dropped"
+    assert "/*" not in stripped, "an unterminated comment -- everything after it is eaten"
+
+
 def _declarations(selector):
     """Every declaration inside the blocks whose selector list contains `selector`."""
     out = []
-    for match in re.finditer(r"([^{}]+)\{([^}]*)\}", CSS.read_text(encoding="utf-8")):
+    for match in re.finditer(r"([^{}]+)\{([^}]*)\}", _without_comments(CSS.read_text(encoding="utf-8"))):
         heads = [h.strip() for h in match.group(1).split(",")]
         if any(h.endswith(selector) or selector in h.split() for h in heads):
             out.append(match.group(2))

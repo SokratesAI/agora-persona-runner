@@ -238,9 +238,17 @@ def split_replies(lines):
     bubble. Edvard sent a screenshot of exactly that on 2026-08-21.
 
     `author` is `commentator` for the first block and `cycle` for every
-    later one, which is a fact about who can write them rather than a
-    guess: `add_reply` is called only by the instant reply worker, and it
-    gives up when a reply is already there.
+    later one. That is positional, and it is right for the ordinary
+    ordering -- the worker answers in seconds and a cycle appends later --
+    but it is not the fact an earlier version of this docstring claimed.
+    The reviewer on runner#279 found the interleaving that breaks it: if a
+    cycle acknowledges a comment before the worker's reply lands, the
+    cycle's note is the first block and is labelled `commentator`, and the
+    worker's own reply is then dropped by `insert_reply` for finding a
+    heading already there. Getting that right needs the author written into
+    the heading, which changes the shape of a file Edvard reads, so it is
+    not done here. The failure is one bubble in the wrong colour, not lost
+    text.
     """
     starts = [i for i, line in enumerate(lines) if _REPLY_HEADING_RE.match(line)]
     body = "\n".join(lines[: starts[0]] if starts else lines).strip("\n")

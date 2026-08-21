@@ -729,7 +729,7 @@ pre code { background: none; padding: 0; }
 
 /* Acknowledged means a cycle has read it and acted. Dimmed rather than
  * hidden -- what he said stays visible, it just stops being the thing
- * asking for attention. */
+ * asking for attention.
  *
  * The rule itself stays green. Edvard, comments board 2026-08-21: *"my
  * previous comments in this chat gets a grey backline, i want to have it

@@ -186,7 +186,11 @@ def _verify(original, updated, before, cycle, stamp, note):
     # that each block is parsed separately (so the app can paint a cycle's
     # answer purple instead of printing its heading as text), the note is in
     # the last of them.
-    if note and not any(note in reply["text"] for reply in moved["replies"]):
+    # The last block specifically, not any of them: the note goes on the end,
+    # and searching every block would let a short generic note ("Filed.")
+    # match text that was already there and report a write that did not
+    # happen. Reviewer on runner#279.
+    if note and note not in (moved["replies"][-1]["text"] if moved["replies"] else ""):
         raise AckError(f"{target} lost the note -- nothing written")
 
 
