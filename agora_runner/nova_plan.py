@@ -70,7 +70,7 @@ _FIELD_RE = re.compile(r"^(?P<key>[a-z]+):[ \t]*(?P<value>.*?)[ \t]*$")
 
 
 def _fence_open_re(name):
-    return re.compile(r"^[ \t]*```[ \t]*" + name + r"[ \t]*$")
+    return re.compile(r"^[ \t]*```[ \t]*" + re.escape(name) + r"[ \t]*$")
 
 # Which way is better. Anything else -- including a missing line -- means
 # the goal has a number worth showing and no opinion about which
@@ -142,8 +142,8 @@ def _goal(lines):
     }
 
 
-def _fenced(text, name, build):
-    """`(rows, text_without_the_blocks)` for every ```<name> fence in `text`.
+def _fenced(text, builders):
+    """`({name: rows}, text_without_the_blocks)`, in one pass over `text`.
 
     **Why a fenced block and not a parser over the prose.** The numbers in
     `goals.md` are hand-written English inside a paragraph -- *"This week:
@@ -159,16 +159,30 @@ def _fenced(text, name, build):
     The blocks are removed from the text on the way through, so the fence
     does not also render as a code block underneath the row it drew.
 
-    `build` turns the body lines of one fence into a row, or returns `None`
-    to drop it. This scan is shared rather than written once per fence,
-    and it was generalised on the second caller rather than the fourth: the
-    subtle half is `abandon` below, and a second copy of that is a bug
-    waiting for whichever fence gets fixed alone.
+    `builders` maps a fence name to the function that turns one fence's body
+    lines into a row, or returns `None` to drop it.
+
+    **Every fence name is scanned in the same pass, and that is the whole
+    point rather than an optimisation.** The first version of this ran once
+    per fence type, and a bare ``` closes whatever is open regardless of what
+    opened it -- so an unterminated ```goal immediately followed by a
+    well-formed ```next had its close eaten by the goal pass, and the entire
+    `next` block vanished from the card *and* from the prose, with a
+    data-free scoreboard row appearing in its place. Measured, not reasoned
+    about. `abandon` below is written to make exactly that editing mistake
+    survivable, and splitting the scan in two walked straight around it.
     """
-    rows = []
+    rows = {name: [] for name in builders}
     kept = []
     block = None
-    opens = _fence_open_re(name)
+    kind = None
+    opens = [(name, _fence_open_re(name)) for name in builders]
+
+    def opener(line):
+        for name, pattern in opens:
+            if pattern.match(line):
+                return name
+        return None
 
     def abandon():
         # An unterminated fence is a half-written edit, not a row. Put the
@@ -178,22 +192,23 @@ def _fenced(text, name, build):
         # two lines by hand makes the *next* block's opening fence look like
         # this one's body, so without this every paragraph in between
         # vanishes from the page and nothing says so.
-        kept.append("```" + name)
+        kept.append("```" + kind)
         kept.extend(block)
 
     for line in (text or "").split("\n"):
+        found = opener(line)
         if block is None:
-            if opens.match(line):
-                block = []
+            if found:
+                block, kind = [], found
             else:
                 kept.append(line)
-        elif opens.match(line):
+        elif found:
             abandon()
-            block = []
+            block, kind = [], found
         elif _FENCE_CLOSE_RE.match(line):
-            row = build(block)
+            row = builders[kind](block)
             if row:
-                rows.append(row)
+                rows[kind].append(row)
             block = None
         else:
             block.append(line)
@@ -218,6 +233,7 @@ _STATUSES = {
     "in progress": ("🟡", "In progress"),
     "in-progress": ("🟡", "In progress"),
     "backlog": ("⚪", "Backlog"),
+    "outdated": ("⚫", "Outdated"),
 }
 
 # Every field a ```next block understands, same rule as `_FIELDS`: a key
@@ -303,8 +319,8 @@ def _document(key, label, text):
     # Before `outline`, so a block sitting under a heading does not have to
     # be found twice, and after the emptiness check, so a missing document
     # is still one branch.
-    scoreboard, text = _fenced(text, "goal", _goal)
-    ranked, text = _fenced(text, "next", _next)
+    blocks, text = _fenced(text, {"goal": _goal, "next": _next})
+    scoreboard, ranked = blocks["goal"], blocks["next"]
 
     title = label
     sections = []

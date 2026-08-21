@@ -400,3 +400,65 @@ def test_goal_and_next_blocks_do_not_eat_each_other():
     body = " ".join(_text(s) for s in doc["sections"])
     assert "Some prose about G1 that must survive." in body
     assert "Prose that must survive." in body
+
+
+# The test above concatenates two well-formed blobs, so every fence in it
+# opens and closes correctly and it cannot see the failure its name promises.
+# This is that failure, and it was real: a bare ``` closes whatever block is
+# open regardless of what opened it, so scanning one fence name at a time let
+# an unterminated ```goal eat the ```next after it -- card and prose both --
+# and put a data-free scoreboard row on a card that has no scoreboard.
+EATEN = """# Roadmap
+
+## Five
+
+```goal
+name: Something
+```next
+rank: 1
+title: Get CI back
+status: done
+```
+
+Trailing prose that must survive.
+"""
+
+
+def test_a_forgotten_closing_fence_does_not_swallow_the_next_block():
+    doc = _doc(plan_payload({"roadmap": EATEN}), "roadmap")
+    assert [r["title"] for r in doc["ranked"]] == ["Get CI back"]
+    assert doc["scoreboard"] == [], "a half-written goal block is not a row"
+    body = " ".join(_text(s) for s in doc["sections"])
+    assert "Trailing prose that must survive." in body
+
+
+def test_a_forgotten_closing_fence_survives_in_the_other_direction_too():
+    swapped = EATEN.replace("```goal\nname: Something", "```next\ntitle: Half written")
+    swapped = swapped.replace("```next\nrank: 1", "```goal\nname: G1")
+    doc = _doc(plan_payload({"roadmap": swapped}), "roadmap")
+    assert [r["name"] for r in doc["scoreboard"]] == ["G1"]
+    assert doc["ranked"] == []
+    # The well-formed block on the other side of the mistake still parses,
+    # and no text is lost -- which is what `abandon` promises and all it
+    # promises. It does *not* promise the prose stays prose: the fence line
+    # it restores opens a markdown code block that runs to the end of the
+    # document, so the trailing paragraph is served as code. That is true of
+    # a single fence type too and predates the second one; it is filed rather
+    # than fixed here, and this assertion says which of the two it is so the
+    # next reader does not have to re-derive it.
+    body = " ".join(_text(s) for s in doc["sections"])
+    assert "Trailing prose that must survive." in body
+    assert "Half written" in body, "an abandoned block puts its text back"
+
+
+def test_the_plan_and_the_boards_agree_on_every_status_word():
+    # Two hand-kept copies of one vocabulary, in two modules, with nothing
+    # detecting drift -- `outdated` was in the boards and missing here, while
+    # a comment claimed the two were the same list. One assertion beats a
+    # fourth restatement of the rule.
+    from agora_runner.nova_boards import STATUS_LABELS
+    from agora_runner.nova_plan import _STATUSES
+
+    for key, label in STATUS_LABELS.items():
+        symbol, word = _STATUSES[key]
+        assert symbol + " " + word == label, key
