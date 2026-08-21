@@ -717,3 +717,29 @@ def test_the_bare_label_is_told_about_the_colon_and_not_about_the_shape():
     findings = lint("168-cycle-152.md", entry)
     assert _kinds(findings) == ["ask"]
     assert "colon inside the bold" in findings[0]
+
+
+def test_the_new_ask_label_without_a_colon_is_a_finding():
+    """`**Needs input**` drops the same silent way `**Needs Edvard**` did.
+
+    The bare-label check imports `ASK_LABEL` from the parser instead of
+    respelling it, so this is the test that the import actually carries
+    both spellings rather than the linter guarding only the old one.
+    """
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs input** Do you want the status "
+        "glyphs gone as well?",
+    )
+    findings = lint("168-cycle-152.md", entry)
+    assert _kinds(findings) == ["ask"]
+    assert "colon inside the bold" in findings[0]
+
+
+def test_the_new_ask_label_with_a_colon_is_clean():
+    entry = GOOD.replace(
+        "Something real happened and here is the honest account of it.",
+        "Something real happened.\n\n**Needs input:** Do you want the status "
+        "glyphs gone as well?",
+    )
+    assert lint("168-cycle-152.md", entry) == []

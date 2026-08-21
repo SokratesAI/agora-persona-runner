@@ -198,3 +198,42 @@ def test_the_status_header_carries_the_asks():
     assert build_status(entries)["asks"] == [
         {"cycle": 247, "date": "2026-08-16", "time": "21:20"},
     ]
+
+
+# --- The label Edvard reads changed; the archive's did not -----------------
+#
+# Edvard, unboarded capture 2026-08-21: *"Change the 'needs Edvard' to
+# 'needs input'."* Every test above this line writes the old spelling, and
+# that is the backward-compatibility half of this change under test -- the
+# 363 entries already in the vault are never edited, so the day `Needs
+# Edvard` stops parsing is the day every ask in the archive unrenders.
+
+
+def test_the_new_label_parses_as_an_ask():
+    body = (
+        "I did the thing.\n\n"
+        "**Needs input:** do you use Codex against these repos?\n\n"
+        "And then I did the other thing."
+    )
+    remainder, ask = split_ask(body)
+    assert ask == "do you use Codex against these repos?"
+    assert "Needs input" not in remainder
+    assert "I did the thing." in remainder
+
+
+def test_the_new_label_needs_the_colon_too():
+    """The colon is what separates a label from a mention, both spellings."""
+    assert split_ask("**Needs input** raise the spending limit.")[1] == ""
+    assert split_ask("**Needs input**: raise the limit.")[1] == "raise the limit."
+
+
+def test_the_new_label_reaches_the_status_header():
+    entries = parse_journal(
+        "### 2026-08-21 21:20 (Oslo) — Cycle 308 · an ask\n\n"
+        "**Needs input:** Yes or no, is this the label you meant?\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert build_status(entries)["asks"] == [
+        {"cycle": 308, "date": "2026-08-21", "time": "21:20"},
+    ]
+    assert "Needs input" not in entries[0]["body"]

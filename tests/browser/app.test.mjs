@@ -980,7 +980,7 @@ describe("an ask lives on the card that raised it", () => {
     const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
     const ask = window.document.querySelector(".entry-ask");
     assert.ok(ask, "the card should carry the ask");
-    assert.match(ask.textContent, /Needs Edvard/);
+    assert.match(ask.textContent, /Needs input/);
     assert.match(ask.textContent, /Decide about the node/);
   });
 
@@ -1098,7 +1098,7 @@ describe("an ask lives on the card that raised it", () => {
     assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true, "the prose should be folded");
     assert.equal(ask.querySelector(".entry-ask-label").hidden, false);
     assert.equal(ask.querySelector(".entry-ask-toggle").hidden, false);
-    assert.match(ask.textContent, /Needs Edvard/, "the row still names itself");
+    assert.match(ask.textContent, /Needs input/, "the row still names itself");
     assert.doesNotMatch(
       ask.querySelector(".entry-ask-head").textContent,
       /Decide about the node/,
