@@ -5507,6 +5507,21 @@
    * cleared overlay is the state it already expects. */
   function measurePrioMenu(write) {
     var menu = getPrioMenuOverlay();
+    /* If a real picker got there first, leave it alone and say so.
+     *
+     * The capture box sits on this page too, so he can tap its priority
+     * button inside the ~650ms before this runs. Without this guard the
+     * measurement would empty the overlay under a picker he had just
+     * opened, repopulate it with dead options carrying no click handlers,
+     * then hide the whole thing -- his popup vanishing on its own, the
+     * trigger still reading `aria-expanded="true"`, and no way to tell
+     * from the note that it happened. A skipped reading he can retake by
+     * reloading is worth more than a reading taken by breaking the page
+     * under him. */
+    if (!menu.hidden) {
+      write("skipped — a priority picker was already open; reload the page to measure it");
+      return;
+    }
     menu.textContent = "";
     PRIORITIES.forEach(function (label) {
       var item = el("button", "prio-option", label || "– Unrated");

@@ -6656,6 +6656,35 @@ describe("the device page", () => {
     assert.match(drawer, /in a 360x697 viewport/, "the viewport it was judged against is not in the reading");
   });
 
+  /* The overlay is one shared node reused by every priority picker on the
+   * site, and the capture box carrying one of them is on this page too --
+   * so he can open a real picker inside the ~650ms before the measurement
+   * runs. Emptying it under him would make his popup vanish on its own
+   * while its trigger still said `aria-expanded="true"`, and nothing in
+   * the note would record that it had happened. */
+  test("a real picker already open is left alone, and the reading says so", async () => {
+    const window = await loadSite("/diag");
+    /* Opened through the real trigger rather than by setting `hidden`
+     * directly. The overlay does not exist until something asks for it --
+     * `getPrioMenuOverlay` creates it lazily -- so a test that reached for
+     * `.prio-menu` at load time got null, and faking the open state would
+     * not have exercised the picker's own bookkeeping (`dataset.openFor`,
+     * `aria-expanded`, the document-level dismiss handler) that this guard
+     * exists to protect. */
+    click(window, window.document.getElementById("capture-prio"));
+    const popup = window.document.querySelector(".prio-menu");
+    assert.ok(popup && !popup.hidden, "tapping the capture box's priority button did not open the picker");
+    await new Promise((r) => window.setTimeout(r, 1200));
+
+    const reading = [...window.document.querySelectorAll(".diag-key")]
+      .find((k) => k.textContent === "Priority popup, opened").nextElementSibling.textContent;
+    assert.match(reading, /skipped/, `the measurement ran over an open picker: ${reading}`);
+    assert.ok(!popup.hidden, "the picker he opened was closed by the measurement");
+    assert.equal(popup.children.length, 5, "the picker he opened had its options replaced under him");
+    assert.equal(window.document.getElementById("capture-prio").getAttribute("aria-expanded"), "true",
+      "the trigger was left claiming a popup that is no longer open");
+  });
+
   /* Both elements are shared with the rest of the app -- one drawer, one
    * popup overlay reused by every picker on the page. A measurement that
    * left either open would hand him a page with the menu stuck out and no
