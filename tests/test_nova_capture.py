@@ -91,6 +91,111 @@ def test_nothing_typed_is_no_bullets(empty):
     assert clean_capture_text(empty) == []
 
 
+# --- an attached image belongs to the text it was attached to -------------
+#
+# Edvard, capture 2026-08-21: "I see that my image upload test was split
+# into two idea entries. The image for its own separate entry and the text
+# got the other." `buildAttach` inserts the link as its own paragraph, so
+# the line rule above filed his sentence and his screenshot separately.
+
+IMG = "![shot.jpg](/api/upload/89f92e607e3e8a3e85a40b40f4a07609.jpg)"
+
+
+def test_an_attached_image_stays_on_the_bullet_it_was_attached_to():
+    assert clean_capture_text("testing image upload\n\n" + IMG) == [
+        "testing image upload " + IMG
+    ]
+
+
+def test_two_attached_images_both_ride_along():
+    other = "![b.png](/api/upload/00112233445566778899aabbccddeeff.png)"
+    assert clean_capture_text("look\n\n" + IMG + "\n" + other) == [
+        "look " + IMG + " " + other
+    ]
+
+
+def test_a_real_filename_with_brackets_in_it_still_folds():
+    """`buildAttach` puts `file.name` into the alt text verbatim.
+
+    Android and Windows hand back names like `photo (1).jpg` all the time,
+    and a fixture of clean `shot.jpg` names would never exercise that. The
+    parentheses sit inside the alt text, which is `[^\\]]*`, so they are
+    fine -- this test is what says so rather than my reading of the regex.
+    """
+    link = "![photo (1).jpg](/api/upload/89f92e607e3e8a3e85a40b40f4a07609.jpg)"
+    assert clean_capture_text("here it is\n\n" + link) == ["here it is " + link]
+
+
+def test_a_filename_containing_a_square_bracket_does_not_fold():
+    """Known limit, written down rather than discovered later.
+
+    `app.js`'s own `ATTACH_RE` cannot match this either, so the line does
+    not render as an image on any surface — it degrades the same way on
+    both sides instead of one of them silently disagreeing. The picture is
+    still captured, as its own bullet; nothing is lost but the pairing.
+    """
+    link = "![photo[1].jpg](/api/upload/89f92e607e3e8a3e85a40b40f4a07609.jpg)"
+    assert clean_capture_text("here it is\n\n" + link) == ["here it is", link]
+
+
+def test_attaching_before_typing_still_files_one_capture():
+    """He taps attach with an empty box, then types -- his complaint mirrored.
+
+    Reviewer finding on #281. Fixing only the order he happened to report
+    would have left him hitting the same split from the other side.
+    """
+    assert clean_capture_text(IMG + "\n\ntesting image upload") == [
+        IMG + " testing image upload"
+    ]
+
+
+def test_two_images_attached_before_any_text_all_join_it():
+    other = "![b.png](/api/upload/00112233445566778899aabbccddeeff.png)"
+    assert clean_capture_text(IMG + "\n" + other + "\n\nboth of these") == [
+        IMG + " " + other + " both of these"
+    ]
+
+
+def test_only_the_first_bullet_takes_the_images_he_attached_first():
+    """A second thought typed after is still its own capture."""
+    assert clean_capture_text(IMG + "\n\nfirst\n\nsecond") == [
+        IMG + " first",
+        "second",
+    ]
+
+
+def test_an_image_with_no_text_on_either_side_is_still_its_own_capture():
+    """Nothing to attach it to, and dropping it would lose the picture."""
+    assert clean_capture_text(IMG) == [IMG]
+
+
+def test_text_typed_after_an_image_starts_a_new_capture():
+    """Only the attachment folds backwards; a sentence is still a sentence."""
+    assert clean_capture_text("first\n\n" + IMG + "\n\nsecond") == [
+        "first " + IMG,
+        "second",
+    ]
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "![local](/img/cat.png)",
+        "![remote](https://example.com/api/upload/x.jpg)",
+        "see the shot: " + IMG,
+        "![half](/api/upload/x.jpg",
+    ],
+)
+def test_only_a_line_this_site_wrote_folds_backwards(typed):
+    """The exception is narrow on purpose: anything he typed is a capture.
+
+    The third case is the one that matters most -- an attachment already
+    sharing a line with text is not a line of its own, and folding it
+    would silently merge two things he wrote separately.
+    """
+    assert clean_capture_text("first thing\n" + typed) == ["first thing", typed]
+
+
 # --- where the bullet lands -----------------------------------------------
 
 

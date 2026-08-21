@@ -53,6 +53,7 @@ is that the number is bounded by a real ceiling rather than by taste.
 import base64
 import binascii
 import hashlib
+import re
 
 from agora_runner.vault import vault_read_path, vault_write_path
 
@@ -149,6 +150,30 @@ def store_upload(filename, content_type, data_b64):
         if vault_read_path(path) is None:
             raise UploadRejected(result)
     return name, f"/api/upload/{name}", len(raw)
+
+
+#: A whole line that is nothing but an attachment link this site wrote on
+#: Edvard's behalf — `![alt](/api/upload/<name>)`, the exact construct
+#: `buildAttach`'s `onInsert` inserts into a text box in `app.js`. It lives
+#: here rather than in the caller because this module is the one that
+#: *builds* that string (`store_upload` returns the URL half), so the
+#: pattern and the thing it has to match cannot drift apart in a rename.
+#: `app.js` carries its own copy (`ATTACH_RE`) and cannot share this one;
+#: that one is anchored nowhere and matches inline, this one is anchored
+#: and matches a line, so they are deliberately different questions.
+ATTACHMENT_LINE = re.compile(r"^!\[[^\]]*\]\(/api/upload/[A-Za-z0-9._-]+\)$")
+
+
+def is_attachment_line(line):
+    """Is this line only an image the attach button inserted?
+
+    Used to decide whether a line is a capture of its own or belongs to
+    the one above it. Deliberately narrow: it matches the single construct
+    this site generates and nothing Edvard types himself, so a plain
+    markdown image, a remote URL or a stray `![` stays the ordinary text
+    it has always been.
+    """
+    return bool(ATTACHMENT_LINE.match((line or "").strip()))
 
 
 def is_upload_name(name):
