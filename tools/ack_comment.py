@@ -179,7 +179,14 @@ def _verify(original, updated, before, cycle, stamp, note):
         raise AckError(f"{target} did not end up under {ACKNOWLEDGED_HEADING}")
     if moved["text"] != before[target]["text"]:
         raise AckError(f"{target}'s text changed -- nothing written")
-    if note and note not in moved["reply"]:
+    # The note goes into its own `#### Nova` block, which is a *second* one
+    # whenever the reply worker already answered him -- so look across every
+    # block, not just the first. This used to read `moved["reply"]` and pass
+    # because that field was once everything below the first heading; now
+    # that each block is parsed separately (so the app can paint a cycle's
+    # answer purple instead of printing its heading as text), the note is in
+    # the last of them.
+    if note and not any(note in reply["text"] for reply in moved["replies"]):
         raise AckError(f"{target} lost the note -- nothing written")
 
 

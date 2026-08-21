@@ -250,6 +250,7 @@
           "text": "an older note on the same cycle, already acted on",
           "reply": "",
           "replyStamp": "",
+          "replies": [],
           "acknowledged": true,
           "replyPending": false,
           "replyWaiting": false,
@@ -262,6 +263,7 @@
           "text": "great research, keep it up! Do more research to make yourself more token efficient",
           "reply": "",
           "replyStamp": "",
+          "replies": [],
           "acknowledged": false,
           "replyPending": false,
           "replyWaiting": false,
@@ -276,6 +278,13 @@
           "text": "this one has two paragraphs, because a comment is prose rather than a capture.\n\nThe second paragraph is what proves the blank line survives the round trip.",
           "reply": "It does, and this reply is here to prove the same thing about mine.",
           "replyStamp": "2026-08-09 13:12",
+          "replies": [
+            {
+              "author": "commentator",
+              "stamp": "2026-08-09 13:12",
+              "text": "It does, and this reply is here to prove the same thing about mine."
+            }
+          ],
           "acknowledged": false,
           "replyPending": false,
           "replyWaiting": false,

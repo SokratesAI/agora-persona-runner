@@ -206,6 +206,45 @@ def test_a_heading_inside_his_text_does_not_split_the_comment():
     assert parsed[0]["text"] == text
 
 
+def test_a_second_nova_block_is_its_own_reply_not_text_inside_the_first():
+    """Edvard's screenshot, 2026-08-21: a cycle appended its own answer under
+    a comment the reply worker had already answered, and the app painted
+    `#### Nova · 2026-08-21 16:23` as literal text in the middle of the blue
+    bubble. Only the first block can be written by `add_reply`, so a later
+    one is a cycle's."""
+    out = insert_comment(EMPTY, 63, "testing image upload", "2026-08-21 15:51")
+    out = insert_reply(out, 63, "2026-08-21 15:51", "Didn't get an image.", "2026-08-21 15:51")
+    out = out.replace(
+        "Didn't get an image.",
+        "Didn't get an image.\n\n#### Nova · 2026-08-21 16:23\n\nCycle 304: the upload worked.",
+    )
+    replies = parse_comments(out)[0]["replies"]
+    assert [(r["author"], r["stamp"], r["text"]) for r in replies] == [
+        ("commentator", "2026-08-21 15:51", "Didn't get an image."),
+        ("cycle", "2026-08-21 16:23", "Cycle 304: the upload worked."),
+    ]
+
+
+def test_the_reply_field_stays_the_reply_worker_s_own_answer():
+    """`_verify_replied` and `nova_replies` both mean the auto-reply when
+    they say "the reply", so a cycle appending a second block below it must
+    not change what either of them reads back."""
+    out = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    out = insert_reply(out, 63, "2026-08-09 22:40", "Thanks.", "2026-08-09 22:41")
+    out = out.replace("Thanks.", "Thanks.\n\n#### Nova · 2026-08-09 23:10\n\nCycle 64 here.")
+    parsed = parse_comments(out)[0]
+    assert parsed["reply"] == "Thanks."
+    assert parsed["replyStamp"] == "2026-08-09 22:41"
+    assert parsed["text"] == "keep it up"
+
+
+def test_an_unanswered_comment_has_no_replies():
+    out = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    parsed = parse_comments(out)[0]
+    assert parsed["replies"] == []
+    assert parsed["reply"] == ""
+
+
 def test_parse_reads_the_cycle_the_stamp_and_the_section():
     parsed = parse_comments(ONE_COMMENT)
     assert [(c["cycle"], c["acknowledged"]) for c in parsed] == [(63, False), (60, True)]
@@ -316,6 +355,7 @@ def test_a_comment_is_written_to_the_comments_file():
         "text": "keep it up",
         "reply": "",
         "replyStamp": "",
+        "replies": [],
         "acknowledged": False,
     }
 

@@ -157,10 +157,17 @@ def test_it_goes_to_the_top_of_acknowledged_not_the_bottom():
 
 
 def test_the_note_is_appended_inside_the_comment():
+    """The note is its own `#### Nova` block below whatever the reply worker
+    already said, so the two are separate replies rather than one -- which is
+    what lets the app paint the cycle's answer purple instead of printing its
+    heading as text in the middle of the blue one."""
     out = _ack()
     moved = [c for c in parse_comments(out) if c["cycle"] == 156][0]
-    assert "Boarded as #73." in moved["reply"]
-    assert "Filed." in moved["reply"], "an existing reply must survive the move"
+    assert [(r["author"], r["text"]) for r in moved["replies"]] == [
+        ("commentator", "Filed."),
+        ("cycle", "Boarded as #73."),
+    ]
+    assert moved["reply"] == "Filed.", "an existing reply must survive the move"
 
 
 def test_the_other_comments_are_untouched():
