@@ -539,3 +539,35 @@ More prose.
 """
     payload = plan_payload({"goals": mixed})
     assert all(o is False for _h, o in _open(payload, "goals"))
+
+
+def test_a_parent_with_its_own_prose_still_folds_above_the_open_newest():
+    """The real shape of `goals.md`, which the shared fixture does not have.
+
+    `## Weekly review` carries a one-line standfirst of its own, so it is a
+    *non-empty* closed fold sitting directly above an *open* one. Reviewer
+    finding on #269: every fixture here had that heading empty, and an
+    empty headed section takes the other branch in `planSection` entirely
+    -- it renders plain rather than as a `<details>`. So the composition
+    that is actually on Edvard's screen was the one composition untested.
+    """
+    real_shape = """# Goals
+
+## Weekly review
+
+Appended once a week, newest first.
+
+### 2026-08-17 — the newest
+
+Body.
+
+### 2026-08-16 — the older
+
+Body.
+"""
+    sections = _doc(plan_payload({"goals": real_shape}), "goals")["sections"]
+    assert [(s["heading"], s["open"], bool(s["blocks"])) for s in sections] == [
+        ("Weekly review", False, True),
+        ("2026-08-17 — the newest", True, True),
+        ("2026-08-16 — the older", False, True),
+    ]

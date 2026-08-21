@@ -6086,6 +6086,30 @@ describe("the plan page folds its prose", () => {
     assert.match(window.document.querySelector(".plan-section").textContent, /The reasoning\./);
   });
 
+  test("a closed parent does not swallow the open review beneath it", async () => {
+    // The real shape of `goals.md`, and the one the other fixtures here
+    // miss: `## Weekly review` has prose of its own, so it is a *non-empty*
+    // closed fold sitting directly above an open one. Reviewer finding on
+    // #269. What makes this work is that sections are flat siblings rather
+    // than nested by level -- so this asserts the sibling relationship
+    // directly, because a later cycle nesting them would hide the newest
+    // review with every other test still green.
+    const window = await loadSite("/plan", {
+      plan: folded([
+        { level: 2, heading: "Weekly review", open: false,
+          blocks: [{ type: "p", spans: [{ kind: "text", text: "Appended once a week." }] }] },
+        { level: 3, heading: "2026-08-17 — the newest", open: true, blocks: prose },
+        { level: 3, heading: "2026-08-16 — the older", open: false, blocks: prose },
+      ]),
+    });
+    const folds = [...window.document.querySelectorAll(".plan-fold")];
+    assert.deepEqual(folds.map((f) => f.open), [false, true, false]);
+    const [parent, newest] = folds;
+    assert.equal(parent.contains(newest), false, "the open review must not be inside the closed parent");
+    assert.equal(newest.parentNode, parent.parentNode, "they are siblings");
+    assert.match(newest.querySelector(".plan-fold-body").textContent, /The reasoning\./);
+  });
+
   test("a heading with an empty body renders plainly rather than as a control that lies", async () => {
     const window = await loadSite("/plan", {
       plan: folded([{ level: 2, heading: "Nothing under here", blocks: [], open: false }]),
