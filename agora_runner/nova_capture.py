@@ -55,6 +55,7 @@ from agora_runner.nova_boards import (
     set_row_priority,
     set_row_title,
 )
+from agora_runner.nova_uploads import is_attachment_line
 from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 # These three moved out of `projects/sokrates/projects/agora/` on
@@ -264,6 +265,25 @@ def clean_capture_text(text):
     than a guess about intent: a bullet containing a raw newline would
     break the list it lives in.
 
+    **With one exception, and it is not a guess about intent either: a
+    line the attach button wrote.** Edvard, capture 2026-08-21: *"I see
+    that my image upload test was split into two idea entries. The image
+    for its own separate entry and the text got the other."* That is
+    exactly what the rule above does to him -- `buildAttach`'s `onInsert`
+    puts `![…](/api/upload/…)` in as its own paragraph, so his sentence
+    files as one capture and his screenshot as another, and neither half
+    means much alone. So an attachment line is folded onto the bullet
+    above it with a space, which is the same joining rule
+    `capture_entries` already uses to read a wrapped bullet back.
+
+    The exception stays this narrow on purpose. It fires only on a line
+    that is *nothing but* a link this site generated on his behalf
+    (`nova_uploads.is_attachment_line`) -- never on a markdown image he
+    typed, never on a remote URL -- so the "several captures" reasoning
+    still governs every line a person actually wrote. An attachment with
+    no text before it is still its own bullet: there is nothing to attach
+    it to, and dropping it would lose the picture.
+
     A leading `- ` is stripped so typing the bullet character yields one
     bullet rather than `- - like this`.
     """
@@ -274,7 +294,11 @@ def clean_capture_text(text):
             line = line[2:].strip()
         elif line == "-":
             line = ""
-        if line:
+        if not line:
+            continue
+        if bullets and is_attachment_line(line):
+            bullets[-1] = bullets[-1] + " " + line
+        else:
             bullets.append(line)
     return bullets
 

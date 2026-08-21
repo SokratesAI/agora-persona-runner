@@ -91,6 +91,61 @@ def test_nothing_typed_is_no_bullets(empty):
     assert clean_capture_text(empty) == []
 
 
+# --- an attached image belongs to the text it was attached to -------------
+#
+# Edvard, capture 2026-08-21: "I see that my image upload test was split
+# into two idea entries. The image for its own separate entry and the text
+# got the other." `buildAttach` inserts the link as its own paragraph, so
+# the line rule above filed his sentence and his screenshot separately.
+
+IMG = "![shot.jpg](/api/upload/89f92e607e3e8a3e85a40b40f4a07609.jpg)"
+
+
+def test_an_attached_image_stays_on_the_bullet_it_was_attached_to():
+    assert clean_capture_text("testing image upload\n\n" + IMG) == [
+        "testing image upload " + IMG
+    ]
+
+
+def test_two_attached_images_both_ride_along():
+    other = "![b.png](/api/upload/00112233445566778899aabbccddeeff.png)"
+    assert clean_capture_text("look\n\n" + IMG + "\n" + other) == [
+        "look " + IMG + " " + other
+    ]
+
+
+def test_an_image_with_no_text_before_it_is_still_its_own_capture():
+    """Nothing to attach it to, and dropping it would lose the picture."""
+    assert clean_capture_text(IMG) == [IMG]
+
+
+def test_text_typed_after_an_image_starts_a_new_capture():
+    """Only the attachment folds backwards; a sentence is still a sentence."""
+    assert clean_capture_text("first\n\n" + IMG + "\n\nsecond") == [
+        "first " + IMG,
+        "second",
+    ]
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "![local](/img/cat.png)",
+        "![remote](https://example.com/api/upload/x.jpg)",
+        "see the shot: " + IMG,
+        "![half](/api/upload/x.jpg",
+    ],
+)
+def test_only_a_line_this_site_wrote_folds_backwards(typed):
+    """The exception is narrow on purpose: anything he typed is a capture.
+
+    The third case is the one that matters most -- an attachment already
+    sharing a line with text is not a line of its own, and folding it
+    would silently merge two things he wrote separately.
+    """
+    assert clean_capture_text("first thing\n" + typed) == ["first thing", typed]
+
+
 # --- where the bullet lands -----------------------------------------------
 
 
