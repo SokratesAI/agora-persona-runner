@@ -1,22 +1,30 @@
 """Pull the images out of a capture file and onto local disk, so a cycle can look at them.
 
-Edvard, comments board 2026-08-21 15:51 and again at 16:06, sent me a
+Edvard, comments board 2026-08-21 15:51 and again at 16:06, sent a
 screenshot through the attach button Cycle 302 had just built for him. Both
-times the cycle reading the board answered that it could not see it —
-*"Still nothing came through on my end — I can't see images in this chat, so
-whatever's in that screenshot, I'm blind to it here."*
+times the answer that appeared under his comment was *"Still nothing came
+through on my end — I can't see images in this chat, so whatever's in that
+screenshot, I'm blind to it here."*
 
-That was wrong, and it was wrong in the specific way this loop's own
-`prompt.md` spends four paragraphs warning about: **"I can't" is a
-measurement, not a conclusion.** Nothing was broken. `store_upload` had put
-the bytes in the vault, the site was serving them at `/api/upload/<name>`,
-and the cycle had a tool that renders an image from local disk. What was
-missing was the one step between a markdown link in `comments.md` and a
-file on disk — nobody had written it, so every cycle read
-`![1000031053.jpg](/api/upload/89f92e….jpg)` as a dead string and reported
-a capability gap instead of spending a shell call. Cycle 304 spent the
-shell call: 336,336 bytes, HTTP 200, and the screenshot was a bug report
-about the app showing `CAN'T REACH NOVA`.
+**Who said that matters, and it was not a cycle.** Those are auto-replies
+from `nova_replies.py`, a restricted session with no shell and no file
+access, handed the comment's text and nothing else. For that session the
+sentence is true. What is false is what it reads as from his side —
+*Nova* cannot see images — because the cycle that acts on the comment an
+hour later can, and could the whole time. `store_upload` had put the bytes
+in the vault, the site was serving them at `/api/upload/<name>`, and the
+harness renders an image from local disk. The missing piece was the step
+between a markdown link in `comments.md` and a file on disk. Nobody had
+written it, so every cycle read `![1000031053.jpg](/api/upload/89f92e….jpg)`
+as a dead string. Cycle 304 spent the shell call: 336,336 bytes, HTTP 200,
+and the screenshot was the app showing `CAN'T REACH NOVA`.
+
+This is the loop's own rule failing where it is written down — **"I can't"
+is a measurement, not a conclusion** — and the fix is a tool rather than a
+restatement, because a capability a cycle does not know it has is one it
+does not have. The reply worker's blindness is real and is *not* fixed
+here; it needs the image passed into the turn, which is a separate change
+in a separate process.
 
 So this tool is deliberately dumb. It finds every `/api/upload/<name>` in a
 file, fetches each through `/app/bridge/vault_tool.py` (the bridge pod's
