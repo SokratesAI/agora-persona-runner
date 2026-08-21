@@ -205,7 +205,7 @@ def test_the_status_header_carries_the_asks():
 # Edvard, unboarded capture 2026-08-21: *"Change the 'needs Edvard' to
 # 'needs input'."* Every test above this line writes the old spelling, and
 # that is the backward-compatibility half of this change under test -- the
-# 336 entries already in the vault are never edited, so the day `Needs
+# 363 entries already in the vault are never edited, so the day `Needs
 # Edvard` stops parsing is the day every ask in the archive unrenders.
 
 

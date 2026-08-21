@@ -329,7 +329,7 @@ def needs_items(text):
 # the next such sentence through.
 # **Two labels, forever.** Edvard, unboarded capture 2026-08-21: *"Change
 # the 'needs Edvard' to 'needs input'."* New entries write `**Needs
-# input:**`; the 336 entries already written say `**Needs Edvard:**` and
+# input:**`; the 363 entries already written say `**Needs Edvard:**` and
 # are never edited, so dropping the old spelling would unrender every ask
 # in the archive. This is the one place the alternation is defined --
 # `tools/lint_entry` imports it rather than restating it, because a
