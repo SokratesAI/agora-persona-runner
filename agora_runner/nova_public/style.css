@@ -58,6 +58,14 @@ body {
   max-width: 46rem;
   margin-inline: auto;
   -webkit-text-size-adjust: 100%;
+  /* `.menu-btn` and `.nav` are pinned with `right: ...`, not `left: ...`,
+   * so a document that ever gets wider than the viewport again -- the
+   * `.entry` fix above closes the one way that happened, not every way it
+   * could -- pushes them off the edge of the screen instead of just adding
+   * a horizontal scrollbar. Nothing on this page scrolls sideways on
+   * purpose (`.chart-plot` and `pre` carry their own `overflow-x: auto`
+   * and stay clipped by this regardless), so there is nothing this costs. */
+  overflow-x: hidden;
 }
 
 code, pre {
@@ -310,6 +318,19 @@ pre code { background: none; padding: 0; }
    * card says so -- including the body, where a click really does collapse
    * it. Anchors keep the pointer they already had. */
   cursor: pointer;
+  /* Edvard, 2026-08-21: cycle 289's "Needs Edvard" block links a raw
+   * GitHub URL as its visible text (`renderSpans`' `pr-link`, same as
+   * every PR reference), and that one line was long enough to push the
+   * whole document wider than the viewport. On a real phone browser that
+   * is not a scrollbar, it is `.menu-btn` and everything else pinned via
+   * `right: ...` sliding off the edge of a page now wider than the screen
+   * -- and every render function in this file only ever touches `#status`
+   * or `#feed`, never `#menu-btn` itself, so nothing there could explain
+   * it. `.capture-item-status` and `.ask-text` already carry this same
+   * rule for the same reason; entry prose never did. Inherited, so it
+   * reaches the ask body, the brief, the full journal text and every list
+   * item under this card without naming each one. */
+  overflow-wrap: anywhere;
 }
 
 /* The eight-cycle report (Edvard, comments board at cycle 156): "They
