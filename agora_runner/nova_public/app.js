@@ -5425,6 +5425,102 @@
       + ", transform " + cs.transform;
   }
 
+  /** A node's live box, judged against the viewport it is drawn in.
+   *
+   * `menuBtnReport` above answers "is the button there"; this answers "is
+   * this thing where it should be", which is the other half of the S25
+   * report and the half no instrument in this loop has ever measured. It
+   * names the overflow per edge rather than printing a bare rect, because
+   * "out of place" is a direction and a distance, and a rect leaves the
+   * reader to subtract.
+   *
+   * The visual-viewport clause is the reading I would actually bet on.
+   * Both dropdowns are `position: fixed`, which pins them to the *layout*
+   * viewport — so a pinch-zoom, or Android's keyboard, or a URL bar that
+   * has not settled, moves what he sees without moving anything CSS knows
+   * about. Headless Chromium has a visual viewport identical to its
+   * layout viewport at every width, which is exactly why Cycle 303 could
+   * drive six widths and reproduce nothing. */
+  function boxReport(node) {
+    if (!node) return "not in the DOM";
+    var box = node.getBoundingClientRect();
+    var cs = window.getComputedStyle(node);
+    var vw = document.documentElement.clientWidth;
+    var vh = document.documentElement.clientHeight;
+    var over = [];
+    if (box.left < -0.5) over.push("left by " + Math.round(-box.left));
+    if (box.top < -0.5) over.push("top by " + Math.round(-box.top));
+    if (box.right > vw + 0.5) over.push("right by " + Math.round(box.right - vw));
+    if (box.bottom > vh + 0.5) over.push("bottom by " + Math.round(box.bottom - vh));
+    var out = "at " + Math.round(box.left) + "," + Math.round(box.top)
+      + " sized " + Math.round(box.width) + "x" + Math.round(box.height)
+      + " in a " + vw + "x" + vh + " viewport"
+      + ", display " + cs.display
+      + ", visibility " + cs.visibility
+      + ", transform " + cs.transform
+      + (over.length ? ", OUTSIDE VIEWPORT: " + over.join(" and ") : ", fully inside");
+    var vv = window.visualViewport;
+    if (vv) {
+      // What he is looking at, versus what CSS positioned. Equal on every
+      // desktop and on headless Chromium; the gap is the whole point.
+      var seenX = Math.round((box.left + box.width / 2) - (vv.offsetLeft + vv.width / 2));
+      var seenY = Math.round((box.top + box.height / 2) - (vv.offsetTop + vv.height / 2));
+      out += ", centre offset from visual viewport " + seenX + "," + seenY
+        + " (scale " + vv.scale + ")";
+    }
+    return out;
+  }
+
+  /** Open the drawer, measure it once the slide has finished, put it back.
+   *
+   * Measuring it closed would report the parked box — `translateX(100%)`,
+   * off the right edge — which reads as a spectacular fault every time
+   * and is simply the drawer being shut. So this opens the real element
+   * rather than a copy, waits out the 220ms transform transition with a
+   * margin, and restores the exact state it found. The brief slide is
+   * visible and the lede says so; a measurement he cannot see happening
+   * is not obviously better than one he can. */
+  function measureDrawer(write) {
+    var was = menuOpen();
+    setMenu(true);
+    window.setTimeout(function () {
+      /* The state is reported beside the box, not assumed from the label.
+       * Every number here is meaningless if the drawer was shut when it
+       * was taken, and nothing else in the line would say so -- the parked
+       * box is a perfectly ordinary-looking rect off the right edge. This
+       * is the same discipline as the `CSS.supports` check on the
+       * safe-area row: a reading that cannot distinguish its own
+       * precondition is not evidence. */
+      write(boxReport(navEl) + ", drawer was "
+        + (menuOpen() ? "open" : "SHUT — this is the parked box, not the drawn one"));
+      setMenu(was);
+    }, 350);
+  }
+
+  /** Same, for the centred priority popup.
+   *
+   * Populated with the real options before measuring: an empty `.prio-menu`
+   * is a 17px-tall box, and its height against `max-height: 70vh` is one of
+   * the few ways this thing could genuinely land wrong. The overlay is
+   * shared with every picker on the page, so this hands it back emptied and
+   * hidden — `openMenu` rebuilds the list from scratch on every open, so a
+   * cleared overlay is the state it already expects. */
+  function measurePrioMenu(write) {
+    var menu = getPrioMenuOverlay();
+    menu.textContent = "";
+    PRIORITIES.forEach(function (label) {
+      var item = el("button", "prio-option", label || "– Unrated");
+      item.type = "button";
+      item.setAttribute("role", "option");
+      menu.appendChild(item);
+    });
+    menu.hidden = false;
+    write(boxReport(menu) + ", popup was " + (menu.hidden ? "HIDDEN — not the drawn box" : "open")
+      + ", " + menu.children.length + " options");
+    menu.hidden = true;
+    menu.textContent = "";
+  }
+
   function displayMode() {
     if (!window.matchMedia) return "matchMedia unsupported";
     var modes = ["standalone", "fullscreen", "minimal-ui", "browser"];
@@ -5473,7 +5569,9 @@
     card.appendChild(el("p", "diag-lede",
       "Nothing on this page comes from the server — every line is measured in the browser "
       + "showing it. If the app looks wrong on your phone, open this page there and tap Send. "
-      + "The next cycle then reads what your device actually did, instead of guessing at it."));
+      + "The next cycle then reads what your device actually did, instead of guessing at it. "
+      + "The side menu will slide in and out once on its own — that is this page measuring "
+      + "where your phone actually puts it."));
 
     var list = el("dl", "diag-list");
     var rows = diagRows();
@@ -5493,6 +5591,16 @@
     var extras = [
       ["Page vs viewport width", el("dd", "diag-value", "measuring…")],
       ["Hamburger, 3s later", el("dd", "diag-value", "measuring…")],
+      /* The two he actually reported and nothing has ever measured. His
+       * capture says "the dropdowns are out of place on his S25"; the
+       * device report he sent on 2026-08-21 closed the hamburger half of
+       * that — 40x40 at 304,26, visible, no sideways scroll — and carried
+       * not one number about either dropdown, because this page did not
+       * ask for any. Three blind fixes were shipped before the page
+       * existed and the page then measured the symptom that was already
+       * fine. */
+      ["Menu drawer, opened", el("dd", "diag-value", "measuring…")],
+      ["Priority popup, opened", el("dd", "diag-value", "measuring…")],
     ];
     extras.forEach(function (extra) {
       list.appendChild(el("dt", "diag-key", extra[0]));
@@ -5555,6 +5663,19 @@
     // harmless -- the alternative is a timer to cancel and a handle to
     // carry, for a value nobody reads once the page is gone.
     window.setTimeout(function () { extras[1][1].textContent = menuBtnReport(); }, 3000);
+
+    /* Both dropdowns, in sequence rather than at once, and both finished
+     * well before the 3s hamburger sample above -- opening the drawer puts
+     * `.open` on the button, so an overlapping measurement would report a
+     * hamburger in a state he never put it in. */
+    measureDrawer(function (value) {
+      extras[2][1].textContent = value;
+      // After the drawer's 220ms slide back out, so `body.nav-open`'s
+      // `overflow: hidden` is no longer in force while the popup is sized.
+      window.setTimeout(function () {
+        measurePrioMenu(function (v) { extras[3][1].textContent = v; });
+      }, 300);
+    });
   }
 
   function load() {
