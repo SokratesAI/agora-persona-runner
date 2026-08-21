@@ -66,6 +66,7 @@ from agora_runner.config import OSLO
 from agora_runner.nova_journal import (
     _ENTRY_HEADING_RE,
     _FOOTER_RE,
+    ASK_LABEL,
     JOURNAL_DIR,
     normalise_entry,
     parse_journal,
@@ -166,7 +167,11 @@ def _footer_finding(body):
 # entries are hard-wrapped, so a line start is not a paragraph start. With
 # the blank-line anchor this matches **0 of the 326 live entries** and
 # still fires on the bare label written as an ask.
-_BARE_ASK_RE = re.compile(r"(?:\A|\n[ \t]*\n)\*\*Needs Edvard\*\*[ \t]+\S")
+#
+# `ASK_LABEL` is imported rather than respelled here so that the two
+# spellings -- the current `Needs input` and the archive's `Needs Edvard`
+# -- can never drift apart between the parser and its own linter.
+_BARE_ASK_RE = re.compile(r"(?:\A|\n[ \t]*\n)\*\*" + ASK_LABEL + r"\*\*[ \t]+\S")
 
 
 def _ask_finding(body):
@@ -185,10 +190,10 @@ def _ask_finding(body):
     if not _BARE_ASK_RE.search(body):
         return None
     return (
-        "ask: this paragraph opens `**Needs Edvard**` without the colon, so "
+        "ask: this paragraph opens the ask label without the colon, so "
         "`split_ask` reads it as prose and the site drops the ask -- no "
         "yellow block, no open comment drawer, and nothing anywhere saying "
-        "so. Write `**Needs Edvard:**`, colon inside the bold."
+        "so. Write `**Needs input:**`, colon inside the bold."
     )
 
 
@@ -289,7 +294,7 @@ def _ask_question_finding(body):
         "Edvard has to read to the bottom to find out what is being asked of "
         "him, which is the thing he reported on 2026-08-20. Lead with the "
         "question in one sentence, say whether it is yes/no, and put the "
-        "reasoning after it: `**Needs Edvard:** Yes or no, should the status "
+        "reasoning after it: `**Needs input:** Yes or no, should the status "
         "circles become words like the priorities did? You told me on the "
         "19th that ...`"
     )

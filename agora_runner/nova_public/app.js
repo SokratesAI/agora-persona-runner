@@ -1279,7 +1279,11 @@
       var answered = !!(comments && comments.length);
       var ask = el("div", "entry-ask");
       var askHead = el("div", "entry-ask-head");
-      askHead.appendChild(el("p", "entry-ask-label", "Needs Edvard"));
+      /* Edvard, unboarded capture 2026-08-21: "Change the 'needs Edvard' to
+       * 'needs input'." The label is what he reads; the marker inside the
+       * entry text still parses both spellings, because the archive's asks
+       * are written and never edited. */
+      askHead.appendChild(el("p", "entry-ask-label", "Needs input"));
       askToggle = el("button", "entry-ask-toggle");
       askToggle.type = "button";
       askHead.appendChild(askToggle);

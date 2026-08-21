@@ -327,8 +327,18 @@ def needs_items(text):
 # `**Needs Edvard:**` and every bare `**Needs Edvard**` is prose naming
 # the section. A horizon would have hidden these two and still have let
 # the next such sentence through.
+# **Two labels, forever.** Edvard, unboarded capture 2026-08-21: *"Change
+# the 'needs Edvard' to 'needs input'."* New entries write `**Needs
+# input:**`; the 336 entries already written say `**Needs Edvard:**` and
+# are never edited, so dropping the old spelling would unrender every ask
+# in the archive. This is the one place the alternation is defined --
+# `tools/lint_entry` imports it rather than restating it, because a
+# heading matcher defined per module is the duplication shape `prompt.md`
+# step 2 tells me to stop creating.
+ASK_LABEL = r"Needs (?:Edvard|input)"
+
 _ASK_RE = re.compile(
-    r"^\*\*Needs Edvard(?::\*\*|\*\*:)[ \t]*(?P<ask>.*?)(?=\n[ \t]*\n|\Z)",
+    r"^\*\*" + ASK_LABEL + r"(?::\*\*|\*\*:)[ \t]*(?P<ask>.*?)(?=\n[ \t]*\n|\Z)",
     re.MULTILINE | re.DOTALL,
 )
 
