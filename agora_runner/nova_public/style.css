@@ -950,6 +950,18 @@ body.nav-open { overflow: hidden; }
   z-index: 30;
   width: 2.5rem;
   height: 2.5rem;
+  /* Edvard, 2026-08-21: "the hamburger button ... I see it 1 sec when I
+   * open or refresh the app and then it vanishes." Reproduced nowhere in
+   * headless Chromium -- every jsdom test and every server-rendered
+   * screenshot shows it -- which is the signature of Chromium's
+   * long-standing bug where a `position: fixed` element's compositor layer
+   * gets dropped when a sibling reflows underneath it (see
+   * crbug.com/128375), and this element sits right above `#feed`, which
+   * goes from "loading..." to the whole journal the instant the first
+   * fetch resolves -- about a second in, which is exactly when he loses
+   * it. `translateZ(0)` forces the button onto its own compositor layer so
+   * that reflow cannot take it down with it. */
+  transform: translateZ(0);
   display: flex;
   flex-direction: column;
   align-items: center;
