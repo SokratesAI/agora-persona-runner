@@ -73,6 +73,7 @@ from agora_runner.nova_journal import (
     parse_board_refs,
     split_ask,
     stray_footer,
+    synthetic_heading,
 )
 
 # `<seq>-cycle-<n>.md`, and the `-addendum` suffixes twelve live files
@@ -96,6 +97,21 @@ def _heading_finding(path, content):
         "frontmatter and exactly three hashes -- two makes the whole hour "
         "render as the tail of the previous cycle's card."
     )
+
+
+def _first_heading(normalised):
+    """The first `### ` line of a normalised document, or `""`.
+
+    Read off the normalised text rather than the entry, because
+    `parse_heading` hands back the heading already split into four fields
+    and there is no way to reassemble the line from them.
+    """
+    match = _ENTRY_HEADING_RE.search(normalised)
+    if not match:
+        return ""
+    end = normalised.find("\n", match.start())
+    line = normalised[match.start():] if end == -1 else normalised[match.start():end]
+    return line.strip()
 
 
 def _raw_body(normalised):
@@ -356,6 +372,62 @@ def _cycle_finding(name, entry):
         "detector counts cycles from the filenames and the cards title "
         "themselves from the headings, so a disagreement puts one cycle's "
         "words under another cycle's name."
+    )
+
+
+def _title_finding(entry, path, normalised):
+    """The heading carries no title, so the card is labelled by nothing.
+
+    `parse_heading` splits a heading into date, time, cycle number and
+    whatever prose is left; when nothing is left the title is `""`, and
+    `app.js` then appends no `entry-title` paragraph at all. That is a
+    graceful render rather than a broken one, which is exactly why it has
+    gone unnoticed: the card looks fine and simply says nothing about
+    what the hour did. Edvard reads the journal as a list of these cards.
+
+    Measured against the live feed on 2026-08-22 (`/api/journal`, 366
+    entries): **169 carry an empty title.** Most are pre-convention --
+    Cycles 4-66 all wrote `### <date> (Oslo) — Cycle N` and there was no
+    title rule yet -- so the number that decides whether this check is
+    worth having is the recent one: **6 of the newest 60 entries, and 0
+    of the newest 30** (Cycles 257, 258, 266, 271, 277, 278). So it is
+    not a regression and not an epidemic; it is a defect that lands about
+    one cycle in ten, in bursts, and an entry is written once and never
+    edited, so each one is permanent.
+
+    This does not report a repair -- the renderer does not repair it, it
+    omits the title -- which puts it with the stamp and clock checks
+    rather than with the heading and footer ones. The tool is "what must
+    not be written", a superset of "what would be repaired".
+
+    Skipped for a `report`, whose title *is* its declaration and cannot be
+    empty by construction (`kind` is only `report` when
+    `_REPORT_TITLE_RE` matched the title), and for an entry with no cycle
+    number, which is Edvard's own message rather than a cycle's.
+
+    Also skipped when the heading was *synthesised* -- when the document
+    wrote no heading at all, `normalise_entry` builds one out of the
+    filename, and `synthetic_heading` emits `Cycle 311`, which
+    `parse_heading` reads as a cycle number with no prose left over. So
+    the title is empty by construction there and this check could only
+    ever repeat what `_heading_finding` already said, which is the "fix
+    one thing and see two" problem the body assembly is careful about. A
+    heading merely written at the wrong *depth* is not skipped: `## Cycle
+    311 — 00:44 Oslo — A Title` is promoted with its text intact, so a
+    missing title there is the author's and worth saying.
+    """
+    if entry.get("kind") == "report" or entry.get("cycle") is None:
+        return None
+    if (entry.get("title") or "").strip():
+        return None
+    if _first_heading(normalised) == "### " + synthetic_heading(path):
+        return None
+    return (
+        "title: this heading carries no title, so the card renders with the "
+        "cycle number and the time and nothing that says what the hour did. "
+        "The convention is `### Cycle N — HH:MM Oslo — <Title>`, em-dashes, "
+        "title last. Add one -- an entry is written once and never edited, so "
+        "this is the last moment it is cheap."
     )
 
 
@@ -680,6 +752,9 @@ def lint(name, content, now=None, clock=_UNSET):
     cycle = _cycle_finding(name, entry)
     if cycle:
         findings.append(cycle)
+    title = _title_finding(entry, path, normalised)
+    if title:
+        findings.append(title)
     stamp = _stamp_finding(entry, now)
     if stamp:
         findings.append(stamp)
