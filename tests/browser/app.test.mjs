@@ -5981,6 +5981,56 @@ describe("the plan page", () => {
     assert.equal(window.document.querySelector(".goal-board"), null);
     assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
   });
+
+  /* The roadmap's ranked strip (issue #96, design item 2). The DOM is the
+   * only place that can answer whether the status reaches him as a word
+   * rather than as a coloured circle he cannot tell apart. */
+  const ranked = (rows) => ({
+    documents: [{
+      key: "roadmap", label: "Roadmap", title: "Roadmap", updated: "2026-08-21",
+      missing: false, scoreboard: [], ranked: rows,
+      sections: [{ level: 2, heading: "The five I would do next, in order", blocks: [
+        { type: "p", spans: [{ kind: "text", text: "The argument." }] },
+      ] }],
+    }],
+  });
+
+  const R1 = {
+    rank: "1", title: "Get CI back",
+    claim: "Not my work — yours, and it is two minutes.",
+    board: "idea #73", statusSymbol: "\u{1F7E1}", statusLabel: "In progress",
+  };
+
+  test("the strip paints above the argument for it", async () => {
+    const window = await loadSite("/plan", { plan: ranked([R1]) });
+    const kids = [...window.document.querySelector(".plan-card").children].map((n) => n.className);
+    assert.ok(kids.indexOf("rank-strip") < kids.indexOf("plan-section"),
+      "the answer goes above the argument: " + kids.join(","));
+    assert.equal(window.document.querySelectorAll(".rank-card").length, 1);
+  });
+
+  test("the status chip carries the word, not just the symbol", async () => {
+    const window = await loadSite("/plan", { plan: ranked([R1]) });
+    const card = window.document.querySelector(".rank-card");
+    assert.equal(card.querySelector(".rank-chip").textContent, "\u{1F7E1} In progress");
+    assert.match(card.textContent, /Get CI back/);
+    assert.match(card.textContent, /two minutes/);
+    assert.match(card.textContent, /idea #73/);
+    assert.equal(card.querySelector(".rank-num").textContent, "1");
+  });
+
+  test("a status the server did not recognise gets no chip rather than a guessed one", async () => {
+    const unknown = { ...R1, statusSymbol: "", statusLabel: "" };
+    const window = await loadSite("/plan", { plan: ranked([unknown]) });
+    assert.equal(window.document.querySelector(".rank-chip"), null);
+    assert.match(window.document.querySelector(".rank-card").textContent, /Get CI back/);
+  });
+
+  test("a document with no ranked strip renders exactly as it did before", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments });
+    assert.equal(window.document.querySelector(".rank-strip"), null);
+    assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
+  });
 });
 
 /* The Questions page.

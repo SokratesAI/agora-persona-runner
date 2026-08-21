@@ -4757,6 +4757,47 @@
     return box;
   }
 
+  /* One card of the roadmap's ranked strip: its rank, its title, a status
+   * chip, the one-sentence claim and the board row it came from.
+   *
+   * The chip prints the symbol and the word together, always, and the server
+   * sends both or neither -- Edvard cannot tell the coloured circles apart by
+   * colour and asked for the word beside the symbol on 2026-08-20. A status
+   * the server did not recognise arrives with both fields empty and gets no
+   * chip at all, which is the page declining to guess rather than defaulting
+   * to Backlog.
+   *
+   * There is no bar and no number here on purpose. This strip answers "what
+   * is next and where is it", and the scoreboard above it is the only thing
+   * on this page with a figure worth drawing. */
+  function rankedCard(item) {
+    var card = el("li", "rank-card");
+    var head = el("div", "rank-head");
+    if (item.rank) head.appendChild(el("span", "rank-num", String(item.rank)));
+    head.appendChild(el("span", "rank-title", item.title));
+    if (item.statusLabel) {
+      head.appendChild(
+        el("span", "rank-chip", (item.statusSymbol ? item.statusSymbol + " " : "") + item.statusLabel)
+      );
+    }
+    card.appendChild(head);
+    if (item.claim) card.appendChild(el("p", "rank-claim", item.claim));
+    if (item.board) card.appendChild(el("p", "rank-board", item.board));
+    return card;
+  }
+
+  function renderRanked(items) {
+    var box = el("section", "rank-strip");
+    box.appendChild(el("h3", "rank-strip-title", "What I would do next, in order"));
+    var list = el("ol", "rank-list");
+    items.forEach(function (item) {
+      list.appendChild(rankedCard(item));
+    });
+    box.appendChild(list);
+    box.appendChild(el("p", "rank-strip-note", "The argument for each one is below."));
+    return box;
+  }
+
   function renderPlanDocument(doc) {
     var card = el("article", "plan-card");
     var head = el("header", "plan-head");
@@ -4771,6 +4812,7 @@
     // argument for it. A document with no `goal` blocks gets nothing here
     // and renders exactly as it did before this existed.
     if ((doc.scoreboard || []).length) card.appendChild(renderScoreboard(doc.scoreboard));
+    if ((doc.ranked || []).length) card.appendChild(renderRanked(doc.ranked));
     (doc.sections || []).forEach(function (section) {
       var body = el("section", "plan-section");
       // Level 0 is the text above the first heading, and it is the

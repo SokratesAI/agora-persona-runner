@@ -1986,3 +1986,37 @@ body.has-full-chart { overflow: hidden; }
 .ask-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .ask-pending { color: var(--dim); font-style: italic; }
+
+/* The roadmap's five as a ranked strip, above the argument for them.
+ * Same box as `.goal-board` deliberately -- one idiom for "the answer,
+ * before the prose", not a second one invented three sections later.
+ *
+ * The chip carries a symbol and a word together and is sized for the word,
+ * because the word is the part Edvard can read: he cannot tell the coloured
+ * circles apart by colour and said so on 2026-08-20. */
+.rank-strip {
+  margin: 0.9rem 0 0.2rem;
+  padding: 0.75rem 0.85rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(122, 162, 247, 0.05);
+}
+
+.rank-strip-title { margin: 0 0 0.6rem; font-size: 0.82rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.rank-strip-note { margin: 0.55rem 0 0; font-size: 0.76rem; color: var(--dim); }
+.rank-list { list-style: none; margin: 0; padding: 0; }
+.rank-card + .rank-card { margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--line); }
+
+.rank-head { display: flex; align-items: baseline; gap: 0.45rem; flex-wrap: wrap; }
+.rank-num {
+  flex: none;
+  min-width: 1.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.rank-title { flex: 1 1 8rem; font-size: 0.9rem; font-weight: 600; }
+.rank-chip { flex: none; font-size: 0.72rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+.rank-claim { margin: 0.25rem 0 0 1.8rem; font-size: 0.8rem; line-height: 1.45; }
+.rank-board { margin: 0.2rem 0 0 1.8rem; font-size: 0.74rem; color: var(--dim); }
