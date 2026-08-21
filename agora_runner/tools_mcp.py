@@ -78,7 +78,7 @@ import traceback
 
 from agora_runner.log import log, debug_log
 from agora_runner.tools_schemas import client_tool_schemas
-from agora_runner.tools_dispatch import execute_tool
+from agora_runner.tools_dispatch import ToolImage, execute_tool
 
 # The MCP revision we implement. The CLI sends its own in initialize's
 # params and we echo that back when it is a string, which is what the
@@ -267,6 +267,20 @@ def handle(token, request):
             log(f"mcp tools/call {name} raised: {e}\n{traceback.format_exc()}")
             output = f"[{name} failed: {e}]"
             is_error = True
+        # An image comes back as a `ToolImage`, which *is* a string (its
+        # own text fallback), so it survives everything below untouched --
+        # but MCP can carry the picture itself and nothing else in this
+        # process can. Text block first, then the image, so a client that
+        # renders only text still gets a true sentence about the file
+        # rather than a silently empty result.
+        if isinstance(output, ToolImage) and not is_error:
+            return _result(request_id, {
+                "content": [
+                    {"type": "text", "text": str(output)},
+                    {"type": "image", "data": output.data_b64, "mimeType": output.mime},
+                ],
+                "isError": False,
+            })
         if not isinstance(output, str):
             output = json.dumps(output) if output is not None else ""
         # A tool that failed *logically* rather than by raising was reported

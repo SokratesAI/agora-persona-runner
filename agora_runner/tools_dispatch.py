@@ -1,6 +1,8 @@
 """execute_tool -- the single dispatch point every provider calls for every tool_use block."""
 
+import base64
 import json
+import re
 import threading
 from collections import OrderedDict
 
@@ -22,6 +24,12 @@ from agora_runner.tools_github import github_read, create_pr, github_comment, me
 from agora_runner.tools_terminal import terminal_exec
 from agora_runner.tools_search import web_search_tinyfish
 from agora_runner.nova_capture import capture as capture_to_backlog
+from agora_runner.nova_uploads import read_upload
+
+#: The shape `store_upload` writes into Edvard's files. Deliberately the
+#: same pattern `tools.fetch_attachments` matches on, because both are
+#: pulling a name out of the same markdown line he never types by hand.
+UPLOAD_LINK = re.compile(r"/api/upload/([A-Za-z0-9._-]+)")
 
 
 def _resolve_scoped_target(active_step, args):
@@ -200,6 +208,30 @@ def _audit_vault_write(persona_name, conversation_id, capability, path, result, 
     audit(persona_name, conversation_id, capability, path, before=before, after=after)
 
 
+class ToolImage(str):
+    """A tool result that is a picture, carrying its own text fallback.
+
+    Every caller of `execute_tool` already handles a string, and three of
+    them -- the Anthropic provider, the Gemini provider, and the audit
+    trail -- have no notion of an image and no reason to grow one. So this
+    *is* a string: `isinstance(output, str)` stays true, the JSON coercion
+    in `tools_mcp` never fires, and a provider that cannot show a picture
+    still gets an honest sentence saying what the file was.
+
+    Only `tools_mcp` looks for the subclass, because MCP is the one
+    transport that can carry `{"type": "image"}` back to the model. That
+    keeps the roster single -- one tool, one dispatch -- rather than
+    growing a second image-shaped tool list for one consumer, which is the
+    duplication this repo keeps writing drift detectors for.
+    """
+
+    def __new__(cls, text, *, data_b64, mime):
+        obj = super().__new__(cls, text)
+        obj.data_b64 = data_b64
+        obj.mime = mime
+        return obj
+
+
 def execute_tool(name, args, persona, conversation_id, active_step=None):
     persona_name = persona.get("name", "?")
     debug_log(f"execute_tool: {name} args={json.dumps(args)[:200]} persona={persona_name} conversation={conversation_id}")
@@ -218,6 +250,25 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # of them disappearing.
             _remember_read_rev(conversation_id, path, rev)
             return content if content is not None else f"[not found: {path}]"
+        if name == "nova_read_image":
+            upload = str(args.get("name", "")).strip()
+            # A link, a bare name, or the whole markdown line -- whichever
+            # he pasted. The model is copying a name out of text it was
+            # shown, and refusing the URL form would just cost a round trip
+            # to be told to strip a prefix.
+            match = UPLOAD_LINK.search(upload)
+            if match:
+                upload = match.group(1)
+            audit(persona_name, conversation_id, "nova_read_image", upload)
+            found = read_upload(upload)
+            if found is None:
+                return f"FAILED: no image stored under {upload or '(no name)'}"
+            content_type, raw = found
+            return ToolImage(
+                f"[image {upload}, {content_type}, {len(raw)} bytes]",
+                data_b64=base64.b64encode(raw).decode("ascii"),
+                mime=content_type,
+            )
         if name == "vault_list":
             prefix = str(args.get("prefix", ""))
             audit(persona_name, conversation_id, "vault_list", prefix)

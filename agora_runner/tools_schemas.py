@@ -28,6 +28,19 @@ def client_tool_schemas(caps, active_step=None):
                              "required": ["path"]},
         })
         tools.append({
+            "name": "nova_read_image",
+            "description": (
+                "Look at an image Edvard attached. When his text carries a markdown link like "
+                "![something.jpg](/api/upload/<name>), pass that <name> here and the picture "
+                "itself comes back to you -- you can then describe it, read text off it, or "
+                "answer a question about it. Without this tool the link is just a URL you "
+                "cannot open, and telling him you are blind to an image he can see sitting "
+                "in the vault is the failure this exists to stop."
+            ),
+            "input_schema": {"type": "object", "properties": {"name": {"type": "string"}},
+                             "required": ["name"]},
+        })
+        tools.append({
             "name": "vault_list",
             "description": (
                 "List vault file paths under a prefix (use '' for a shallow overview via known "
@@ -547,6 +560,7 @@ TOOL_TO_CAPABILITY = {
     "vault_get_token_metrics": "vaultRead",
     "vault_git_revision_history": "vaultRead",
     "vault_summarize_recent_agent_work": "vaultRead",
+    "nova_read_image": "vaultRead",
     "vault_write": "vaultWrite",
     "vault_append": "vaultWrite",
     "vault_update_frontmatter_batch": "vaultWrite",
