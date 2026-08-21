@@ -11,6 +11,7 @@ comment can provoke is a security property, not a convenience -- and it is
 an allowlist (`REPLY_CAPS`) rather than a subtraction, which is the part a
 future edit could quietly widen without anything failing.
 """
+import base64
 import json
 
 from unittest.mock import patch
@@ -320,3 +321,146 @@ def test_the_capture_tool_offers_every_target_the_backend_accepts():
     tools = client_tool_schemas({"novaCapture": True})
     schema = next(t for t in tools if t["name"] == "nova_capture")
     assert schema["input_schema"]["properties"]["target"]["enum"] == sorted(CAPTURE_TARGETS)
+
+
+def test_an_attached_image_reaches_the_reply_turn_as_a_picture():
+    """The whole point: bytes in the vault must arrive as image content.
+
+    Edvard attached a screenshot to a comment on 2026-08-21 and the instant
+    reply under it said "I can't see images in this chat" while the bytes
+    were already stored and being served at HTTP 200. The hourly cycle got
+    a fix that same day (`tools.fetch_attachments`, PR #278); this lane did
+    not, because it is `restricted` and has no file access at all. MCP is
+    the one channel it does have that can carry a picture, so the assertion
+    that matters is the shape of the content array -- a text block the
+    model can always read, and a real `image` block beside it.
+    """
+    png = b"\x89PNG\r\n\x1a\n" + b"not really a png, but real bytes"
+    token = tools_mcp.grant(
+        nova_replies.REPLY_PERSONA, nova_replies.REPLY_CAPS, nova_replies.CONVERSATION_ID
+    )
+    try:
+        with patch("agora_runner.tools_dispatch.read_upload",
+                   return_value=("image/png", png)) as reader, \
+                patch("agora_runner.tools_dispatch.audit"):
+            status, payload = tools_mcp.handle_http(
+                f"Bearer {token}",
+                json.dumps({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "nova_read_image",
+                               "arguments": {"name": "/api/upload/abc.png"}},
+                }).encode(),
+            )
+    finally:
+        tools_mcp.revoke(token)
+
+    assert status == 200
+    result = payload["result"]
+    assert result["isError"] is False
+    kinds = [block["type"] for block in result["content"]]
+    assert kinds == ["text", "image"], f"reply turn got {kinds}, not a picture"
+    image = result["content"][1]
+    assert image["mimeType"] == "image/png"
+    assert base64.b64decode(image["data"]) == png
+    # The model copies the name out of markdown it was shown, so the tool
+    # strips `/api/upload/` rather than making it round-trip to be told to.
+    # Asserting only on the returned image left that stripping unpinned --
+    # the reviewer disabled it and this test still passed, because a mocked
+    # `read_upload` answers the same whatever it is handed.
+    reader.assert_called_once_with("abc.png")
+
+
+def test_the_upload_name_is_extracted_from_whatever_shape_he_pasted():
+    """A bare name, a URL, and a whole markdown line must all resolve.
+
+    `read_upload` refuses anything that is not `<32 hex>.<ext>`, so a name
+    that arrives still wrapped in markdown is not a cosmetic problem -- it
+    is a failed read reported to Edvard as "no image stored under that".
+    """
+    from agora_runner.tools_dispatch import execute_tool
+    name = "89f92e607e3e8a3e85a40b40f4a07609.jpg"
+    for pasted in (name, f"/api/upload/{name}", f"![1000031053.jpg](/api/upload/{name})"):
+        with patch("agora_runner.tools_dispatch.read_upload",
+                   return_value=("image/jpeg", b"\xff\xd8\xff")) as reader, \
+                patch("agora_runner.tools_dispatch.audit"):
+            execute_tool("nova_read_image", {"name": pasted},
+                         nova_replies.REPLY_PERSONA, nova_replies.CONVERSATION_ID)
+        reader.assert_called_once_with(name), f"{pasted!r} did not resolve"
+
+
+def test_an_upload_the_vault_cannot_fully_read_is_not_reported_as_seen():
+    """A half-stored upload must not arrive looking like a picture.
+
+    An upload is ~450KB of base64 spread over many chunk documents, so a
+    partly-missing one is the realistic failure. `read_upload` raises, and
+    without an explicit catch that lands in `execute_tool`'s outer handler
+    as `[tool error: ...]` -- which carries no `FAILED` prefix, so
+    `tools_mcp` reports `isError: false` and the model is told a read
+    worked when it did not. Reviewer finding on #280.
+    """
+    from agora_runner.tools_dispatch import execute_tool
+    from agora_runner.vault import VaultIncompleteDocument
+    with patch("agora_runner.tools_dispatch.read_upload",
+               side_effect=VaultIncompleteDocument("3 of 9 chunks missing")), \
+            patch("agora_runner.tools_dispatch.audit"):
+        out = execute_tool("nova_read_image", {"name": "abc.png"},
+                           nova_replies.REPLY_PERSONA, nova_replies.CONVERSATION_ID)
+    assert out.startswith("FAILED"), f"reported as success: {out!r}"
+    assert "chunks missing" in out
+
+
+def test_a_missing_image_is_an_error_not_a_confident_blank():
+    """`read_upload` returns None for a name that is not ours or not there.
+
+    Reported as a success it would reach the model as an empty-ish text
+    block, and the model would then tell Edvard something about a picture
+    it never saw. `FAILED` is the convention `tools_mcp` already maps onto
+    `isError`, so this rides the existing channel rather than adding one.
+    """
+    token = tools_mcp.grant(
+        nova_replies.REPLY_PERSONA, nova_replies.REPLY_CAPS, nova_replies.CONVERSATION_ID
+    )
+    try:
+        with patch("agora_runner.tools_dispatch.read_upload", return_value=None), \
+                patch("agora_runner.tools_dispatch.audit"):
+            status, payload = tools_mcp.handle_http(
+                f"Bearer {token}",
+                json.dumps({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "nova_read_image", "arguments": {"name": "nope.png"}},
+                }).encode(),
+            )
+    finally:
+        tools_mcp.revoke(token)
+    assert payload["result"]["isError"] is True
+    assert "nope.png" in payload["result"]["content"][0]["text"]
+
+
+def test_the_prompt_names_the_attachment_so_the_model_cannot_miss_it():
+    """A capability in the system prompt is not the same as noticing.
+
+    The failure was never that the tool was absent -- it is that the model
+    reads `![x.jpg](/api/upload/89f9….jpg)` as a link it cannot open and
+    apologises. So the user message names the file and says to call the
+    tool, and this pins that the argument it names is the upload name
+    rather than the markdown alt text.
+    """
+    entry = {"cycle": 303, "body": "Did a thing.", "pr": "none", "outcome": "shipped"}
+    thread = [{"stamp": "2026-08-21 16:06",
+               "text": "![1000031053.jpg](/api/upload/89f92e607e3e8a3e85a40b40f4a07609.jpg)"}]
+    prompt = nova_replies.build_prompt(entry, thread, "2026-08-21 16:06")
+    assert "nova_read_image" in prompt
+    assert "89f92e607e3e8a3e85a40b40f4a07609.jpg" in prompt
+
+
+def test_a_comment_with_no_attachment_says_nothing_about_images():
+    """The nudge above must not fire on every comment.
+
+    Without this, the fix for "he never looks at the image" becomes "he
+    hunts for an image that is not there", which costs a tool call and a
+    round trip on every ordinary comment Edvard writes.
+    """
+    entry = {"cycle": 303, "body": "Did a thing.", "pr": "none", "outcome": "shipped"}
+    thread = [{"stamp": "2026-08-21 16:06", "text": "Looks good, thanks."}]
+    prompt = nova_replies.build_prompt(entry, thread, "2026-08-21 16:06")
+    assert "nova_read_image" not in prompt

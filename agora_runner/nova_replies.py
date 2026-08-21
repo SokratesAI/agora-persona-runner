@@ -86,6 +86,7 @@ from agora_runner.nova_sources import (
     journal_entry_markdown,
     journal_folder_best_effort,
 )
+from agora_runner.tools_dispatch import UPLOAD_LINK
 from agora_runner.tools_mcp import grant as grant_mcp, revoke as revoke_mcp
 
 # One stable id, used for both the bridge's stateless call and the audit
@@ -106,6 +107,7 @@ Edvard has left a comment on one of those entries and you are answering it, in t
 You do have tools this turn, and they are the difference between answering him and apologising to him:
 
 - `vault_read`, `vault_list`, `vault_search` and the vault query tools read Edvard's vault. They are all read-only; check the tool list you were given for the full set. That is where everything about this loop lives: every journal entry under 'projects/sokrates/projects/agora/nova/journal/', the digest at 'projects/sokrates/projects/agora/journal-digest.md', his own backlog at 'projects/sokrates/projects/nova/issues.md' and '.../ideas.md' (his three capture files -- issues, ideas and notes -- moved out of the agora folder into 'projects/sokrates/projects/nova/' on 2026-08-12), and Nova's own constitution under '.../nova/resources/' -- identity.md, personality.md, prompt.md. If he asks what you are, what your limits are, why a cycle did something, or what happened in some other cycle, the answer is in there. Go and read it instead of guessing or deferring.
+- `nova_read_image` shows you a picture he attached. His comment arrives as markdown, so an image in it looks like `![something.jpg](/api/upload/<name>)` -- a link you cannot open. Pass that name to this tool and you see the actual image. Do this whenever his comment carries one: he attached it because it is the point of what he is saying, and "I can't see images" is a sentence he has now read from Nova several times while the picture sat in the vault the whole time. Do not say you are blind to an attachment without calling this first.
 - `nova_capture` files one line in his own backlog. If he reports a bug or asks for something you cannot do from here, file it and tell him you did -- that is what turns a comment into work the next cycle picks up.
 
 What you cannot do: run commands, edit code, open or merge a PR, or write anywhere in the vault except that one capture line. If he asks for one of those, file it and tell him you did -- in those words, not in a paragraph about the boundary.
@@ -181,7 +183,23 @@ def build_prompt(entry, thread, stamp):
 
     current = next((c for c in thread if c.get("stamp") == stamp), None)
     lines += ["This is what he just wrote, and what you are replying to:", ""]
-    lines += ["<comment>", (current or {}).get("text", "").strip(), "</comment>", ""]
+    comment_text = (current or {}).get("text", "").strip()
+    lines += ["<comment>", comment_text, "</comment>", ""]
+    # Said here as well as in SYSTEM, because this one names the actual
+    # file. The system prompt describes a capability; a model reading a
+    # long list of them can still fail to notice that *this* comment is
+    # the case. Naming the argument turns "you have a tool for images"
+    # into "call it with this".
+    attached = UPLOAD_LINK.findall(comment_text)
+    if attached:
+        lines += [
+            "He attached "
+            + ("an image to this comment" if len(attached) == 1 else f"{len(attached)} images to this comment")
+            + ". Call `nova_read_image` and look before you answer -- "
+            + ", ".join(attached)
+            + ". The attachment is usually the whole point of what he is saying.",
+            "",
+        ]
     lines.append("Reply to him directly. No preamble, no sign-off, just what you would say.")
     return "\n".join(lines)
 
