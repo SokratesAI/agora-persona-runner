@@ -9,8 +9,11 @@ happened, not a shape someone imagined.
 """
 
 from tools.check_deploy import (
-    IN_SYNC, NOT_BUILT, NOT_DEPLOYED, ROLLOUT_PENDING, verdict,
+    IN_SYNC, NO_MANIFEST, NOT_BUILT, NOT_DEPLOYED, NOT_RUNNING,
+    ROLLOUT_PENDING, Target, select_deployments, verdict,
 )
+
+RUNNER = Target.named("agora-persona-runner")
 
 TIP = "09ead5b"
 NEW = "sha256:f5406109f55051e52f9e2987accb80d37284d0815930d922b5b6b34f61c1945c"
@@ -26,7 +29,7 @@ def _deployed(digest):
 def test_the_actual_incident_reads_as_not_deployed():
     # Exactly the state at 20:02 Oslo: image built and pushed, manifest
     # untouched, cluster serving the previous cycle's code.
-    state, lines = verdict(TIP, NEW, OLD, _deployed(OLD))
+    state, lines = verdict(RUNNER, TIP, NEW, OLD, _deployed(OLD))
     assert state == NOT_DEPLOYED
     body = "\n".join(lines)
     assert "f5406109f550" in body and "44c269960014" in body
@@ -46,7 +49,7 @@ def test_not_deployed_outranks_the_stale_cluster():
     """The cluster is stale in the incident too, and saying ROLLOUT
     PENDING there would be the wrong answer wearing the right shape --
     it reads as 'wait a few minutes' for a state that never resolves."""
-    state, _ = verdict(TIP, NEW, OLD, _deployed(OLD))
+    state, _ = verdict(RUNNER, TIP, NEW, OLD, _deployed(OLD))
     assert state != ROLLOUT_PENDING
     # And say which state it must be. Asserting only the negative left the
     # name's claim resting on the neighbouring test: NOT_BUILT would also
@@ -55,14 +58,14 @@ def test_not_deployed_outranks_the_stale_cluster():
 
 
 def test_missing_image_is_not_built():
-    state, lines = verdict(TIP, None, OLD, _deployed(OLD))
+    state, lines = verdict(RUNNER, TIP, None, OLD, _deployed(OLD))
     assert state == NOT_BUILT
     assert "sha-09ead5b" in "\n".join(lines)
 
 
 def test_state_right_after_the_manifest_was_fixed():
     # Manifest bumped, ArgoCD has not synced yet. Both deployments stale.
-    state, lines = verdict(TIP, NEW, NEW, _deployed(OLD))
+    state, lines = verdict(RUNNER, TIP, NEW, NEW, _deployed(OLD))
     assert state == ROLLOUT_PENDING
     assert "agora-persona-runner" in "\n".join(lines)
     assert "nova-site" in "\n".join(lines)
@@ -73,7 +76,7 @@ def test_partial_rollout_is_visible_per_deployment():
     together; naming only the one that lagged is the point of reading
     them separately."""
     state, lines = verdict(
-        TIP, NEW, NEW,
+        RUNNER, TIP, NEW, NEW,
         {"agora-persona-runner": OLD, "nova-site": NEW},
     )
     assert state == ROLLOUT_PENDING
@@ -84,14 +87,14 @@ def test_partial_rollout_is_visible_per_deployment():
 
 def test_unreadable_deployment_is_not_agreement():
     state, lines = verdict(
-        TIP, NEW, NEW, {"agora-persona-runner": None, "nova-site": NEW},
+        RUNNER, TIP, NEW, NEW, {"agora-persona-runner": None, "nova-site": NEW},
     )
     assert state == ROLLOUT_PENDING
     assert "could not be read" in "\n".join(lines)
 
 
 def test_everything_agreeing_is_in_sync():
-    state, lines = verdict(TIP, NEW, NEW, _deployed(NEW))
+    state, lines = verdict(RUNNER, TIP, NEW, NEW, _deployed(NEW))
     assert state == IN_SYNC
     assert "09ead5b" in "\n".join(lines)
 
@@ -100,9 +103,173 @@ def test_in_sync_is_reachable_only_when_all_three_agree():
     """Guards against a verdict that collapses to IN SYNC by default --
     every fault state must be distinguishable from it."""
     faults = [
-        verdict(TIP, None, OLD, _deployed(OLD))[0],
-        verdict(TIP, NEW, OLD, _deployed(OLD))[0],
-        verdict(TIP, NEW, NEW, _deployed(OLD))[0],
+        verdict(RUNNER, TIP, None, OLD, _deployed(OLD))[0],
+        verdict(RUNNER, TIP, NEW, OLD, _deployed(OLD))[0],
+        verdict(RUNNER, TIP, NEW, NEW, _deployed(OLD))[0],
     ]
     assert IN_SYNC not in faults
     assert len(set(faults)) == 3
+
+
+# --- The generalisation, Cycle 295 -------------------------------------
+#
+# Everything above pins the 2026-08-15 incident on the one repo this tool
+# was born checking. What follows pins the part that made it checkable for
+# the other four: a target derived from a name, deployments discovered by
+# image, and the two states that only became reachable once `DEPLOYMENTS`
+# stopped being a hardcoded pair.
+
+BRIDGE = Target.named("agora-claude-bridge")
+
+# Real, from `kubectl get deploy -n agents` at 05:30 Oslo on 2026-08-21.
+# `newspaper` is the reason this is discovery and not a table.
+LISTING = "\n".join([
+    "agents/agora\tghcr.io/sokratesai/agora@" + NEW,
+    "agents/agora-claude-bridge\tghcr.io/sokratesai/agora-claude-bridge@" + OLD,
+    "agents/agora-persona-runner\tghcr.io/sokratesai/agora-persona-runner@" + NEW,
+    "agents/newspaper\tghcr.io/sokratesai/vault-bridge@" + OLD,
+    "agents/nova-site\tghcr.io/sokratesai/agora-persona-runner@" + NEW,
+    "agents/sokrates-docs\tghcr.io/sokratesai/sokrates-docs@" + NEW,
+    "obsidian/vault-bridge\tghcr.io/sokratesai/vault-bridge@" + NEW,
+])
+
+
+def test_a_name_is_all_four_facts():
+    assert BRIDGE.repo == "SokratesAI/agora-claude-bridge"
+    assert BRIDGE.config_repo == "SokratesAI/agora-claude-bridge-config"
+    assert BRIDGE.package == "agora-claude-bridge"
+    assert BRIDGE.image_path == "ghcr.io/sokratesai/agora-claude-bridge"
+
+
+def test_discovery_finds_the_pair_the_constant_used_to_hold():
+    """The old `DEPLOYMENTS = ("agora-persona-runner", "nova-site")`
+    exactly, derived rather than declared."""
+    assert select_deployments(RUNNER, LISTING) == {
+        "agents/agora-persona-runner": NEW, "agents/nova-site": NEW,
+    }
+
+
+def test_discovery_finds_a_deployment_not_named_after_its_repo():
+    """`newspaper` runs the `vault-bridge` image. A lookup table keyed on
+    repo names would have missed it and reported NOT RUNNING -- which is
+    the specific wrong answer this test exists to keep out.
+
+    It also finds `obsidian/vault-bridge`, which is the deployment
+    `platform-config` actually pins, on a different digest. Searching
+    only `agents` returns `newspaper` alone and answers confidently
+    about the wrong one."""
+    assert select_deployments(Target.named("vault-bridge"), LISTING) == {
+        "agents/newspaper": OLD, "obsidian/vault-bridge": NEW,
+    }
+
+
+def test_two_namespaces_on_different_digests_read_as_a_split_rollout():
+    """The real 2026-08-21 state. Averaging these into one answer, or
+    seeing only the `agents` one, is the failure the namespace key
+    exists to prevent."""
+    state, lines = verdict(
+        Target.named("vault-bridge"), TIP, NEW, NEW,
+        {"agents/newspaper": OLD, "obsidian/vault-bridge": NEW},
+    )
+    assert state == ROLLOUT_PENDING
+    body = "\n".join(lines)
+    assert "agents/newspaper is on" in body
+    assert "obsidian/vault-bridge is on" not in body
+
+
+def test_discovery_does_not_match_on_a_name_prefix():
+    """`agora` is a prefix of `agora-claude-bridge` and of
+    `agora-persona-runner`. Matching `ghcr.io/sokratesai/agora` without
+    the `@` would sweep in all three and average three services into one
+    verdict."""
+    assert select_deployments(Target.named("agora"), LISTING) == {
+        "agents/agora": NEW,
+    }
+
+
+def test_nothing_running_is_not_in_sync():
+    """Reachable only since discovery: with the pair hardcoded, `deployed`
+    could never be empty, so this fell through to `0 deployment(s) all
+    agree` -- IN SYNC guaranteed in advance for a service nothing runs."""
+    state, lines = verdict(BRIDGE, TIP, NEW, NEW, {})
+    assert state == NOT_RUNNING
+    assert "ghcr.io/sokratesai/agora-claude-bridge" in "\n".join(lines)
+
+
+def test_missing_config_repo_is_not_read_as_a_stale_pin():
+    """`vault-bridge` has no `-config` repo, so `manifest_digest` returns
+    None for it. Falling through to the `!= tip_digest` branch would have
+    printed NOT DEPLOYED and told a cycle to hand-commit a digest into a
+    repo that does not exist."""
+    state, lines = verdict(Target.named("vault-bridge"), TIP, NEW, None, {})
+    assert state == NO_MANIFEST
+    body = "\n".join(lines)
+    assert state != NOT_DEPLOYED
+    assert "vault-bridge-config/manifest.yaml" in body
+
+
+def test_advice_names_the_target_repo_not_the_runner():
+    """Every actionable sentence used to interpolate module constants, so
+    a check of any other repo would have sent the reader to
+    agora-persona-runner's build and manifest."""
+    _, built = verdict(BRIDGE, TIP, None, NEW, {})
+    _, pinned = verdict(BRIDGE, TIP, NEW, OLD, {"agents/agora-claude-bridge": OLD})
+    for body in ("\n".join(built), "\n".join(pinned)):
+        assert "agora-claude-bridge" in body
+        assert "agora-persona-runner" not in body
+
+
+# --- Reviewer findings on runner#271, fixed in the same PR ---------------
+
+def test_a_tag_pinned_deployment_is_running_not_missing():
+    """Reviewer finding. Matching on `path + '@'` dropped a tag-pinned
+    deployment as though it were an unrelated service, so a service that
+    was running could report NOT RUNNING -- and it made verdict's 'could
+    not be read' branch dead from the real call path, since discovery
+    could no longer produce a None."""
+    listing = "agents/newspaper\tghcr.io/sokratesai/vault-bridge:v3"
+    assert select_deployments(Target.named("vault-bridge"), listing) == {
+        "agents/newspaper": None,
+    }
+
+
+def test_a_tag_pinned_deployment_reaches_the_could_not_be_read_line():
+    """The end-to-end half of the finding: the None above must render as
+    'could not be read' rather than as agreement or as NOT RUNNING."""
+    listing = "agents/newspaper\tghcr.io/sokratesai/vault-bridge:v3"
+    deployed = select_deployments(Target.named("vault-bridge"), listing)
+    state, lines = verdict(Target.named("vault-bridge"), TIP, NEW, NEW, deployed)
+    assert state == ROLLOUT_PENDING
+    assert state != NOT_RUNNING
+    assert "could not be read" in "\n".join(lines)
+
+
+def test_a_longer_package_name_is_not_matched_by_a_shorter_one():
+    """`agora` must not match `agora-claude-bridge`'s image now that the
+    match is on the path rather than on `path + '@'`. The `@`/`:`/end
+    check is what keeps that true."""
+    listing = "agents/agora-claude-bridge\tghcr.io/sokratesai/agora-claude-bridge@" + NEW
+    assert select_deployments(Target.named("agora"), listing) == {}
+
+
+def test_the_kubectl_query_asks_every_namespace_and_returns_the_namespace():
+    """`select_deployments` keys on `namespace/name`, but every test above
+    feeds it a fixture string -- so deleting the namespace from the real
+    query left all of them green. Caught mutating the jsonpath during the
+    Cycle 295 mutation pass. This pins the one place the two have to
+    agree: the query must span namespaces and must emit the namespace,
+    or the keys are names again and `obsidian/vault-bridge` and
+    `agents/newspaper` collapse into one."""
+    import inspect
+
+    from tools import check_deploy
+
+    src = inspect.getsource(check_deploy.deployed_digests)
+    assert '"-A"' in src
+    assert "metadata.namespace" in src
+    # The separator, not just the field. Dropping only the `/` leaves
+    # `metadata.namespace` in the source and yields `agentsnewspaper`,
+    # which the two assertions above both accept -- measured, by mutating
+    # exactly that and watching 20 tests stay green.
+    assert "{'/'}{.metadata.name}" in src
+    assert "-n" not in src.split("jsonpath")[0].replace("--", "")
