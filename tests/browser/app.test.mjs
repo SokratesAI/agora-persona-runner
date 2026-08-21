@@ -4736,6 +4736,54 @@ describe("the retrospective page", () => {
  * after them in app.js rather than inserted, so it always renders at the
  * right edge of the row rather than somewhere the flex order does not
  * expect. */
+/* The attach button, in a DOM rather than in a substring.
+
+ * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"*
+ *
+ * The Python side of this feature is pinned by tests that `open(app.js)`
+ * and count substrings, and those cannot see placement. That is not a
+ * hypothetical: the first version of this button was prepended to
+ * `.capture-submit`, every one of those string assertions stayed green,
+ * and the only thing that caught it was `the capture row does not
+ * scramble` below -- a test written for something else entirely. So the
+ * button gets asserted here, as a node, where being in the wrong place
+ * is a thing a test can see. */
+describe("the attach button is on the page, not just in the source", () => {
+  test("the capture box has a paperclip and a file input", async () => {
+    const window = await loadSite("/");
+    const group = window.document.querySelector(".capture-submit");
+    const attach = group.querySelector(".attach-btn");
+    assert.ok(attach, "no attach button in the capture row");
+    assert.equal(attach.type, "button", "a submit button would post the form");
+    assert.ok(
+      attach.getAttribute("aria-label"),
+      "the button shows a glyph, so it needs a label to be announced",
+    );
+    // On the form and deliberately not in the group whose child count is
+    // pinned -- a hidden input is not something anyone laid out.
+    const input = window.document.querySelector("#capture-form .attach-input");
+    assert.ok(input, "no file input reachable from the capture form");
+    assert.equal(input.type, "file");
+    assert.equal(input.accept, "image/*", "an extension list would hide his own photos");
+    assert.equal(group.querySelector(".attach-input"), null,
+      "the hidden input is inside the pinned button group");
+  });
+
+  test("the comment drawer has one too", async () => {
+    const window = await loadSite("/");
+    const actions = window.document.querySelector(".comment-actions");
+    assert.ok(actions, "no comment composer rendered at all");
+    const attach = actions.querySelector(".attach-btn");
+    assert.ok(attach, "no attach button in the comment composer");
+    // Before Comment, so the primary action keeps the right edge it had.
+    const kids = [...actions.children];
+    assert.ok(
+      kids.indexOf(attach) < kids.findIndex((el) => el.className.includes("comment-send")),
+      "the attach button is after the send button",
+    );
+  });
+});
+
 describe("the capture row does not scramble", () => {
   test("the priority picker joins the targets as the last item in the group", async () => {
     const window = await loadSite("/");

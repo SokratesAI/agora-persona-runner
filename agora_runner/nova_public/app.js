@@ -196,16 +196,35 @@
       if (opts.onStatus) opts.onStatus(text, isError);
     }
 
+    /* Whether an upload is in flight, and the composer's own send controls
+     * follow it.
+     *
+     * Without this the two controls race, and the race loses the picture
+     * silently: `submit()` reads `box.value` synchronously, so tapping
+     * Comment while the POST is still going sends the text *without* the
+     * markdown line -- and then the upload resolves, `onInsert` writes into
+     * a box `submit()` has already cleared, and the image reappears as an
+     * orphaned draft attached to nothing. He gets a comment with no
+     * screenshot in it and no sign that anything went wrong.
+     *
+     * Disabling send is the fix rather than queueing the upload, because
+     * the upload is the slow part and "wait for it" is the honest thing to
+     * show. `status` already says "uploading …" while it runs. */
+    function busy(isBusy) {
+      button.disabled = isBusy;
+      if (opts.onBusy) opts.onBusy(isBusy);
+    }
+
     button.addEventListener("click", function () { input.click(); });
 
     input.addEventListener("change", function () {
       var file = input.files && input.files[0];
       if (!file) return;
-      button.disabled = true;
+      busy(true);
       status("uploading " + file.name + "…", false);
       var reader = new FileReader();
       reader.onerror = function () {
-        button.disabled = false;
+        busy(false);
         status("could not read that file", true);
       };
       reader.onload = function () {
@@ -228,7 +247,7 @@
           })
           .catch(function (err) { status(String(err.message || err), true); })
           .then(function () {
-            button.disabled = false;
+            busy(false);
             // Cleared so picking the *same* file twice still fires
             // `change` -- otherwise a failed upload cannot be retried
             // without choosing a different image first.
@@ -839,6 +858,9 @@
      * explicit `drafts` write, an image attached and then left unsent
      * would vanish on the next poll while the typed text survived. */
     var attach = buildAttach({
+      // Send is blocked while the image is going up, or the comment sends
+      // without it -- see `busy` in `buildAttach`.
+      onBusy: function (isBusy) { send.disabled = isBusy; },
       onStatus: function (text, isError) {
         status.textContent = text;
         status.className = isError ? "comment-status is-error" : "comment-status";
@@ -5526,7 +5548,11 @@
      * which is the half he asked for; the picture showing up on his own
      * board is filed separately. */
     var captureAttach = buildAttach({
-      buttonClass: "capture-btn-attach",
+      // All three destinations, not just one: whichever he taps mid-upload
+      // files the text without the image. Same race as the comment drawer.
+      onBusy: function (isBusy) {
+        buttons.forEach(function (b) { b.disabled = isBusy; });
+      },
       onStatus: setStatus,
       onInsert: function (markdown) {
         textEl.value = (textEl.value ? textEl.value.replace(/\s*$/, "") + "\n\n" : "") + markdown;
