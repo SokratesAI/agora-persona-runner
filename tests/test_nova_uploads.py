@@ -63,17 +63,18 @@ def store():
 
 
 def test_round_trip_returns_the_exact_bytes(store):
-    name, url, size = store_upload("shot.png", "image/png", base64.b64encode(PNG).decode())
+    name, url, size, ctype = store_upload("shot.png", "image/png", base64.b64encode(PNG).decode())
 
     assert size == len(PNG)
+    assert ctype == "image/png"
     assert url == "/api/upload/" + name
     assert read_upload(name) == ("image/png", PNG)
 
 
 def test_name_is_the_content_hash_so_the_same_image_stores_once(store):
     encoded = base64.b64encode(PNG).decode()
-    first, _, _ = store_upload("a.png", "image/png", encoded)
-    second, _, _ = store_upload("b-different-filename.png", "image/png", encoded)
+    first, _, _, _ = store_upload("a.png", "image/png", encoded)
+    second, _, _, _ = store_upload("b-different-filename.png", "image/png", encoded)
 
     assert first == second == hashlib.sha256(PNG).hexdigest()[:32] + ".png"
     # The second write is refused by `if_rev=None` and that refusal is
@@ -84,7 +85,7 @@ def test_name_is_the_content_hash_so_the_same_image_stores_once(store):
 def test_a_data_url_is_accepted_as_the_browser_produces_it(store):
     """`FileReader.readAsDataURL` is one call; an ArrayBuffer walk is not."""
     payload = "data:image/png;base64," + base64.b64encode(PNG).decode()
-    name, _, size = store_upload("shot.png", "image/png", payload)
+    name, _, size, _ = store_upload("shot.png", "image/png", payload)
 
     assert size == len(PNG)
     assert read_upload(name) == ("image/png", PNG)
@@ -115,9 +116,6 @@ def test_it_lands_in_novas_database_not_edvards(store):
 @pytest.mark.parametrize(
     "filename, content_type, data, expected",
     [
-        ("x.svg", "image/svg+xml", "aGk=", "not one of"),
-        ("x.png", "", "aGk=", "not one of"),
-        ("x.png", "application/json", "aGk=", "not one of"),
         ("x.png", "image/png", "not base64!!", "not valid base64"),
         ("x.png", "image/png", "", "must be a base64 string"),
         ("x.png", "image/png", None, "must be a base64 string"),
@@ -151,7 +149,8 @@ def test_malformed_uploads_are_refused_with_a_readable_reason(
         "a/b.png",
         "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ.png",       # right length, not hex
         "0123456789abcdef0123456789abcde.png",        # 31 hex characters
-        "0123456789abcdef0123456789abcdef.exe",       # not an image extension
+        "0123456789abcdef0123456789abcdef.toolongext",  # 10-character extension
+        "0123456789abcdef0123456789abcdef.p n g",     # spaces are not an extension
         "0123456789abcdef0123456789abcdef",           # no extension
         "",
         None,
@@ -273,3 +272,102 @@ def test_the_content_type_allowlist_covers_what_an_android_phone_produces():
     # Every extension is distinct, or two content types would collide on
     # one name and `read_upload` would hand back the wrong header.
     assert len(set(CONTENT_TYPES.values())) == len(CONTENT_TYPES)
+
+
+# --- Files that are not images (Cycle 309) ------------------------------
+#
+# Edvard, comments board 2026-08-21 21:09: *"How about a file? It seems i
+# only can upload images. Or atleas the ui forces only my Google photos to
+# open and i have no option to upload files."* Two bugs behind that one
+# sentence -- the picker was pinned to `image/*` in `app.js`, and
+# `store_upload` refused every content type that was not an image. These
+# pin the server half.
+
+PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+
+
+def test_a_pdf_stores_and_reads_back_as_a_pdf(store):
+    name, url, size, ctype = store_upload(
+        "invoice.pdf", "application/pdf", base64.b64encode(PDF).decode())
+
+    assert ctype == "application/pdf"
+    assert size == len(PDF)
+    assert name.endswith(".pdf")
+    assert url == "/api/upload/" + name
+    assert read_upload(name) == ("application/pdf", PDF)
+    assert nova_uploads.is_image(ctype) is False
+
+
+@pytest.mark.parametrize(
+    "filename, declared, expected",
+    [
+        # Android's picker reports nothing at all for these two.
+        ("notes.md", "", "text/markdown"),
+        ("runner.log", "", "text/plain"),
+        # ...and `application/octet-stream` for plenty it could have named.
+        # Taking that as given would store a readable PDF as an opaque blob.
+        ("invoice.pdf", "application/octet-stream", "application/pdf"),
+        ("shot.jpeg", "application/octet-stream", "image/jpeg"),
+        # A type it does name is taken as given.
+        ("data.csv", "text/csv", "text/csv"),
+        # Nothing recognisable either way is still stored, as a download.
+        ("report.docx", "", "application/octet-stream"),
+        ("mystery", "", "application/octet-stream"),
+    ],
+)
+def test_the_type_is_resolved_from_the_extension_when_the_phone_sends_nothing(
+        store, filename, declared, expected):
+    _, _, _, ctype = store_upload(filename, declared, base64.b64encode(PDF).decode())
+    assert ctype == expected
+
+
+@pytest.mark.parametrize("declared", ["text/html", "image/svg+xml", "application/xml"])
+def test_a_type_the_browser_would_execute_is_stored_as_a_download(store, declared):
+    """Script in an uploaded `.html` or `.svg` would run as *this* origin.
+
+    The old images-only allowlist blocked these as a side effect. Widening
+    it makes the block have to be deliberate, so this is the test that says
+    the widening did not quietly open an XSS on the Nova site: the file is
+    still accepted -- he can send one -- and it comes back as
+    `application/octet-stream`, which a browser downloads rather than runs.
+    """
+    name, _, _, ctype = store_upload("page." + declared[-3:], declared,
+                                     base64.b64encode(b"<script>alert(1)</script>").decode())
+    assert ctype == "application/octet-stream"
+    assert read_upload(name)[0] == "application/octet-stream"
+
+
+def test_the_stored_name_keeps_his_own_extension(store):
+    """`<hash>.docx`, not `<hash>.bin`.
+
+    The stored name is what the browser saves the download as, so an
+    extension resolved from the *type* table would hand him a file his
+    phone cannot open by tapping it. The type table is only the fallback
+    for something that arrived with no extension at all.
+    """
+    encoded = base64.b64encode(PDF).decode()
+    named, _, _, _ = store_upload("report.docx", "", encoded)
+    assert named.endswith(".docx")
+
+    bare, _, _, _ = store_upload("mystery", "", base64.b64encode(b"other bytes").decode())
+    assert bare.endswith(".bin")
+
+
+@pytest.mark.parametrize(
+    "line, folds",
+    [
+        ("![shot.png](/api/upload/" + "a" * 32 + ".png)", True),
+        ("[report.docx](/api/upload/" + "a" * 32 + ".docx)", True),
+        ("here is a file [x](/api/upload/" + "a" * 32 + ".pdf)", False),
+        ("[remote](https://example.com/api/upload/x.pdf)", False),
+    ],
+)
+def test_a_file_attachment_folds_onto_the_capture_above_it_like_an_image_does(line, folds):
+    """Cycle 307 stopped an attached image filing as its own capture bullet.
+
+    That fix keyed on `![...]`, so a *file* attachment -- which has no `!`
+    -- would have reintroduced exactly the bug he reported, for everything
+    that is not a picture. This is the half of the change that is invisible
+    until he attaches a PDF to a sentence.
+    """
+    assert nova_uploads.is_attachment_line(line) is folds

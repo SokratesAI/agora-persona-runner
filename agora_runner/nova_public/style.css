@@ -2222,6 +2222,23 @@ body.has-full-chart { overflow: hidden; }
   max-width: 100%;
 }
 
+/* A file rather than a picture (Cycle 309). It has no thumbnail, so it
+ * needs to look like something tappable on its own — a chip with the
+ * sender's filename in it. `word-break` because a filename off a phone is
+ * often one 40-character token with no space in it, and at 360px that is
+ * the difference between a wrapped chip and sideways scroll. */
+.attach-file {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.attach-file:hover { border-color: var(--accent); }
+
 .attach-img {
   display: block;
   max-width: 100%;

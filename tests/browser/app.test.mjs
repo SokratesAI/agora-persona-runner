@@ -4805,9 +4805,48 @@ describe("the attach button is on the page, not just in the source", () => {
     const input = window.document.querySelector("#capture-form .attach-input");
     assert.ok(input, "no file input reachable from the capture form");
     assert.equal(input.type, "file");
-    assert.equal(input.accept, "image/*", "an extension list would hide his own photos");
+    // Was `image/*` until Cycle 309. Edvard, 2026-08-21: "It seems i only
+    // can upload images. Or atleas the ui forces only my Google photos to
+    // open and i have no option to upload files." On Android that
+    // attribute is not a filter over a file browser -- it is what opens
+    // Google Photos with no way out -- so the picker takes anything and
+    // the server resolves and bounds the type.
+    assert.equal(input.accept, "", "an accept list traps the Android picker in Photos");
     assert.equal(group.querySelector(".attach-input"), null,
       "the hidden input is inside the pinned button group");
+  });
+
+  /* The insert side, which is what decides whether a `!` is written at all.
+   * Cycle 309: the render tests above pin what happens to a line that
+   * already exists, and would all stay green if `buildAttach` wrote `![...]`
+   * for a PDF -- which is the bug they look like they cover. */
+  async function pickFile(window, { name, type, isImage }) {
+    const input = window.document.querySelector("#capture-form .attach-input");
+    const box = window.document.querySelector("#capture-form textarea");
+    box.value = "";
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new window.File([new Uint8Array([1, 2, 3])], name, { type })],
+    });
+    window.fetch = () => res({ ok: true, name: "x", url: "/api/upload/x." + name.split(".").pop(), bytes: 3, isImage });
+    input.dispatchEvent(new window.Event("change"));
+    // `FileReader` resolves on a task, and the POST on a microtask after it.
+    for (let i = 0; i < 20 && !box.value; i++) await new Promise((r) => setTimeout(r, 5));
+    return box.value;
+  }
+
+  test("picking a picture writes an image link", async () => {
+    const window = await loadSite("/");
+    assert.match(await pickFile(window, { name: "shot.jpg", type: "image/jpeg", isImage: true }),
+      /^!\[shot\.jpg\]\(\/api\/upload\/x\.jpg\)$/);
+  });
+
+  test("picking a file writes a plain link, with no bang", async () => {
+    const window = await loadSite("/");
+    const written = await pickFile(window, { name: "runner.log", type: "", isImage: false });
+    assert.match(written, /^\[runner\.log\]\(\/api\/upload\/x\.log\)$/);
+    assert.equal(written.startsWith("!"), false,
+      "a `!` here paints a broken-image icon for a file that has nothing to show");
   });
 
   test("the comment drawer has one too", async () => {
@@ -4822,6 +4861,71 @@ describe("the attach button is on the page, not just in the source", () => {
       kids.indexOf(attach) < kids.findIndex((el) => el.className.includes("comment-send")),
       "the attach button is after the send button",
     );
+  });
+});
+
+/* Cycle 309. Edvard, comments board 2026-08-21 21:09: "How about a file?
+ * It seems i only can upload images. Or atleas the ui forces only my
+ * Google photos to open and i have no option to upload files."
+ *
+ * There was no browser test over the render half at all before this --
+ * `appendRichText` recognised one construct and nothing on this side
+ * pinned it -- so these two cover the branch I added *and* the branch that
+ * was already there, because a regex change is exactly the edit that can
+ * fix the new case and silently break the old one. */
+describe("an attachment renders as what it is", () => {
+  const HASH = "89f92e607e3e8a3e85a40b40f4a07609";
+
+  function commentSaying(text) {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["57"] = [{
+      cycle: 57, stamp: "2026-08-21 21:09", text,
+      reply: "", replyStamp: "", replies: [], acknowledged: false,
+      replyPending: false, replyWaiting: false, replyWaitingSeconds: 0,
+      replyFailed: false,
+    }];
+    return copy;
+  }
+
+  test("an image is a thumbnail you can open", async () => {
+    const window = await loadSite("/", {
+      comments: commentSaying(`look at this ![shot.jpg](/api/upload/${HASH}.jpg)`),
+    });
+    const body = window.document.querySelector(".comment-body");
+    const img = body.querySelector("img.attach-img");
+    assert.ok(img, "an image attachment should still paint as an image");
+    assert.equal(img.getAttribute("src"), `/api/upload/${HASH}.jpg`);
+    assert.equal(img.alt, "shot.jpg");
+    assert.equal(body.textContent.includes("/api/upload/"), false,
+      "the markdown should be replaced, not printed beside the image");
+  });
+
+  test("a file is a named link, not a broken image", async () => {
+    const window = await loadSite("/", {
+      comments: commentSaying(`the log is [runner.log](/api/upload/${HASH}.log)`),
+    });
+    const body = window.document.querySelector(".comment-body");
+    assert.equal(body.querySelector("img"), null,
+      "a .log has nothing to show; an <img> here is a broken-image icon");
+    const link = body.querySelector("a.attach-file");
+    assert.ok(link, "a file attachment should paint as a link");
+    assert.equal(link.getAttribute("href"), `/api/upload/${HASH}.log`);
+    assert.ok(link.textContent.includes("runner.log"),
+      "the link must carry his filename -- the URL is a 32-hex hash and says nothing");
+  });
+
+  test("a link he typed himself is still text, not an element", async () => {
+    // The URL is required to start with `/api/upload/`, and dropping the
+    // required `!` is the change that could have loosened that. A remote
+    // link and a `javascript:` one must stay the characters he typed.
+    const window = await loadSite("/", {
+      comments: commentSaying("[x](https://example.com/api/upload/a.png) [y](javascript:alert(1))"),
+    });
+    const body = window.document.querySelector(".comment-body");
+    assert.equal(body.querySelector("a"), null, "no anchor should be built");
+    assert.equal(body.querySelector("img"), null);
+    assert.ok(body.textContent.includes("javascript:alert(1)"),
+      "it stays the text he typed");
   });
 });
 
