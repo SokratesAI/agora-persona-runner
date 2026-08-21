@@ -7,8 +7,8 @@ hamburger sodemenu button anymore."*
 `display: standalone`, so once the app is added to an iPhone home screen
 the layout viewport starts at the top of the display and iOS paints the
 status bar over the page. The hamburger was pinned at a flat `top:
-1.6rem`, a 26px-66px box against a 47px notch or a 59px Dynamic Island
-inset -- so the button was under the clock. `--shell-top` is
+1.6rem`, a 26px-66px box against the 44-47px a notch reports or the
+59px of a Dynamic Island -- so the button was under the clock. `--shell-top` is
 `max(1.6rem, env(safe-area-inset-top) + 0.5rem)`, which is unchanged
 wherever the inset is zero.
 

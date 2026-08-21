@@ -32,9 +32,12 @@
    * so on a notched iPhone added to the home screen the layout viewport
    * starts at the top of the *display* and iOS draws the status bar over
    * it. At a flat `1.6rem` the hamburger's box was 26px-66px, and the
-   * inset it has to clear is 47px on a notch or 59px on a Dynamic
-   * Island -- so most of the button, and most of the wordmark beside it,
-   * sat underneath the clock.
+   * inset it has to clear is 44px on a standard notch, 47px on the
+   * larger notched bodies and 59px on a Dynamic Island -- so most of the
+   * button, and most of the wordmark beside it, sat underneath the
+   * clock. Those three numbers are illustration, not input: the `env()`
+   * reads whatever the device reports, so being wrong about a model
+   * costs a stale comment and not a wrong layout.
    *
    * `max()` is what makes this safe to ship without an iPhone to test
    * on: where the inset is zero -- every desktop browser, Safari with
