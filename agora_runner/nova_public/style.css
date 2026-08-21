@@ -17,6 +17,31 @@
    * the four above: those all already mean something about an outcome. */
   --report: #c9a2f7;
   --report-bg: #1e1a29;
+
+  /* Where the top of the shell starts: the wordmark's line, the
+   * hamburger's line, and the first link in the drawer.
+   *
+   * It is one custom property rather than three literals because the
+   * three have to agree -- `.menu-btn`'s own comment already said "if
+   * either of those two numbers changes, this one has to change with
+   * it", and a comment is not a mechanism.
+   *
+   * The `env()` is the bug Edvard reported on 2026-08-21 ("I can't see
+   * the hamburger sodemenu button anymore"). `index.html` sets
+   * `viewport-fit=cover` and the manifest sets `display: standalone`,
+   * so on a notched iPhone added to the home screen the layout viewport
+   * starts at the top of the *display* and iOS draws the status bar over
+   * it. At a flat `1.6rem` the hamburger's box was 26px-66px, and the
+   * inset it has to clear is 47px on a notch or 59px on a Dynamic
+   * Island -- so most of the button, and most of the wordmark beside it,
+   * sat underneath the clock.
+   *
+   * `max()` is what makes this safe to ship without an iPhone to test
+   * on: where the inset is zero -- every desktop browser, Safari with
+   * its own chrome, Android -- it resolves to the same 1.6rem it always
+   * was, so nothing moves. The fallback `0px` is for anything that
+   * parses `env()` but does not know this variable. */
+  --shell-top: max(1.6rem, calc(env(safe-area-inset-top, 0px) + 0.5rem));
 }
 
 * { box-sizing: border-box; }
@@ -56,7 +81,9 @@ pre code { background: none; padding: 0; }
 
 /* Status header (item 2) */
 .status {
-  padding: 1.6rem 0 1rem;
+  /* `--shell-top`, not `1.6rem` -- the hamburger centres on the wordmark
+   * and the two move together. See the variable's own comment. */
+  padding: var(--shell-top) 0 1rem;
   border-bottom: 1px solid var(--line);
   margin-bottom: 1.5rem;
 }
@@ -833,7 +860,12 @@ pre code { background: none; padding: 0; }
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  padding: 4.6rem 1rem 1rem;
+  /* The top was a literal 4.6rem: the hamburger's line (1.6rem) plus its
+   * height (2.5rem) plus half a rem of air. It has to follow the button
+   * down when the status bar pushes it, or the drawer's first link ends
+   * up under the clock the moment the button stops being. At a zero
+   * inset this is still exactly 4.6rem. */
+  padding: calc(var(--shell-top) + 3rem) 1rem 1rem;
   background: var(--card);
   border-left: 1px solid var(--line);
   box-shadow: -12px 0 28px #0008;
@@ -893,12 +925,15 @@ body.nav-open { overflow: hidden; }
  * positioned button scrolls away with the header, so opening the menu
  * halfway down the feed would leave the close control off screen.
  *
- * `top: 1.6rem` is `.status`'s own padding-top and `height: 2.5rem` is
+ * `top` is `.status`'s own padding-top and `height: 2.5rem` is
  * the wordmark's line box (1.5rem at the inherited 1.65 line-height =
  * 2.475rem), so at rest the button centres on the "Nova" line to within
  * a rounding error -- which is the "same horizontal line as the Nova
- * header" that was asked for. If either of those two numbers changes,
- * this one has to change with it.
+ * header" that was asked for. That agreement used to be two literal
+ * `1.6rem`s and a comment asking the next author to keep them in step;
+ * it is now `--shell-top` in both places, so there is nothing to keep in
+ * step. `tests/test_shell_top_is_shared.py` fails if either goes back to
+ * a literal.
  *
  * `right` tracks the content column rather than the viewport: `body` is
  * capped at 46rem and centred with 1rem of padding, so once the window
@@ -907,7 +942,7 @@ body.nav-open { overflow: hidden; }
  * edge, which is the phone case and the common one. */
 .menu-btn {
   position: fixed;
-  top: 1.6rem;
+  top: var(--shell-top);
   right: max(1rem, calc(50% - 23rem + 1rem));
   z-index: 30;
   width: 2.5rem;
