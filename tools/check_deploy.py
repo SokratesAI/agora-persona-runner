@@ -43,22 +43,31 @@ supposed to change.
     python3 -m tools.check_deploy                       # the runner
     python3 -m tools.check_deploy agora-claude-bridge   # any sibling
 
-**Every repo here shares one deploy chain and only this repo was
-checked.** `agora-claude-bridge`, `agora`, `sokrates-docs` and
-`vault-bridge` build the same way, write a digest into the same shape of
-paired `-config` repo, and are picked up by the same ArgoCD -- so the
-2026-08-15 failure above is available to all five and was detectable in
-none of them but this one. Cycle 258 filed that; Cycle 295 parameterised
-the one tool rather than copying it, which is the whole point: a second
-copy is a second thing to keep true.
+**Four repos share this deploy chain and only one of them was checked.**
+`agora-claude-bridge`, `agora` and `sokrates-docs` build the way this
+repo does, write a digest into a paired `-config` repo, and are picked up
+by the same ArgoCD -- so the 2026-08-15 failure above is available to all
+four and was detectable in none of them but this one. Cycle 258 filed
+that; Cycle 295 parameterised the one tool rather than copying it, which
+is the whole point: a second copy is a second thing to keep true.
+
+**`vault-bridge` is the fifth and it is deliberately not one of those
+four.** It has no `-config` repo; its manifest lives in `platform-config`
+and it is the last repo still on the older path. Running the tool against
+it is still worth doing and answers honestly rather than pretending --
+that is what `NO_MANIFEST` is for. Do not read the paragraph above as a
+uniformity this org has; it does not.
 
 The generalisation needs no lookup table, and that matters more than it
 sounds. A repo name is all four facts: `SokratesAI/<name>` is the repo,
 `<name>-config` is where the manifest lives, `<name>` is the GHCR
-package, and **the deployments are whichever ones in `agents` run that
-package's image** -- discovered, not listed. A table keyed on names
-would have been wrong on the first repo that needed it: the deployment
-running `ghcr.io/sokratesai/vault-bridge` is called `newspaper`.
+package, and **the deployments are whichever ones in the cluster run
+that package's image** -- discovered, not listed, in every namespace. A
+table keyed on names would have been wrong on the first repo that needed
+it, twice over: the deployment running `ghcr.io/sokratesai/vault-bridge`
+in `agents` is called `newspaper`, and there is a *second* one in
+`obsidian` on a different digest, which is the one `platform-config`
+actually pins.
 
 `verdict` is pure and takes a `Target` plus the four facts; `main`
 gathers them with `gh` and `kubectl`, which exist in the bridge pod. The
@@ -104,8 +113,33 @@ class Target(NamedTuple):
         )
 
     @property
-    def image_prefix(self):
-        return f"ghcr.io/{REGISTRY_OWNER}/{self.package}@"
+    def image_path(self):
+        return f"ghcr.io/{REGISTRY_OWNER}/{self.package}"
+
+
+def digest_of(image, path):
+    """`(matches, digest)` for one deployment's image string.
+
+    Matching on the path and reading the digest separately is deliberate.
+    Requiring `path + "@"` to match at all looked equivalent and was not:
+    a deployment pinned by *tag* (`path:v3`, or a hand-run `kubectl set
+    image` during an incident) then failed the match and was dropped as
+    though it were some unrelated service, so a running workload could
+    report `NOT RUNNING`. Worse, it made `verdict`'s "could not be read"
+    branch dead from the real call path -- the per-name lookup this
+    replaced could return None for a deployment it could not resolve, and
+    discovery could no longer produce one at all. So a tag-pinned match
+    returns None here, which is the existing word for "running, and I
+    cannot tell you on what". Reviewer finding, Cycle 295.
+    """
+    if not image.startswith(path):
+        return False, None
+    rest = image[len(path):]
+    if rest.startswith("@"):
+        return True, rest[1:]
+    if rest == "" or rest.startswith(":"):
+        return True, None
+    return False, None
 
 
 def verdict(target, tip_sha, tip_digest, manifest_digest, deployed):
@@ -172,7 +206,7 @@ def verdict(target, tip_sha, tip_digest, manifest_digest, deployed):
         lines.append(
             f"{NOT_RUNNING}: main {tip_sha} is built and "
             f"{target.config_repo}/manifest.yaml pins it, but no deployment in "
-            f"`agents` runs {target.image_prefix[:-1]}. The manifest may "
+            f"the cluster runs {target.image_path}. The manifest may "
             "describe something nothing deploys -- check what the workload is "
             "actually called before concluding the pin is wrong."
         )
@@ -275,28 +309,41 @@ def manifest_digest(target):
 def select_deployments(target, listing):
     """Deployments in `listing` running this target's image.
 
-    `listing` is `name\\timage` lines. Selecting by image rather than by
-    name is the whole reason this needs no lookup table -- and it is not
-    a tidiness argument: the deployment running
-    `ghcr.io/sokratesai/vault-bridge` is named `newspaper`, so a table
-    keyed on repo names would have been wrong on its first new entry.
+    `listing` is `namespace/name\\timage` lines, and both halves of that
+    are load-bearing.
+
+    **Selecting by image rather than by name** is why this needs no
+    lookup table, and it is not a tidiness argument: the deployment
+    running `ghcr.io/sokratesai/vault-bridge` in `agents` is named
+    `newspaper`, so a table keyed on repo names would have been wrong on
+    its first new entry.
+
+    **Reading every namespace, not just `agents`,** is the same lesson
+    one step further out. `vault-bridge` has *two* deployments on two
+    different images -- `agents/newspaper` on one, `obsidian/vault-bridge`
+    on another -- and only the second is what
+    `platform-config/deployments/vault-bridge/vault-bridge.yaml` pins.
+    Looking only in `agents` finds the wrong one and reports a confident
+    answer about it. Keys are `namespace/name` so the two can never be
+    confused for one.
+
     Two deployments sharing one image both appear, which is what keeps a
     partial rollout visible instead of averaged away.
     """
     out = {}
     for line in (listing or "").splitlines():
         name, _, image = line.partition("\t")
-        if not image.startswith(target.image_prefix):
-            continue
-        out[name.strip()] = image.split("@", 1)[1]
+        matches, digest = digest_of(image, target.image_path)
+        if matches:
+            out[name.strip()] = digest
     return out
 
 
 def deployed_digests(target):
     listing = _run([
-        "kubectl", "get", "deploy", "-n", "agents", "-o",
-        "jsonpath={range .items[*]}{.metadata.name}{'\\t'}"
-        "{.spec.template.spec.containers[0].image}{'\\n'}{end}",
+        "kubectl", "get", "deploy", "-A", "-o",
+        "jsonpath={range .items[*]}{.metadata.namespace}{'/'}{.metadata.name}"
+        "{'\\t'}{.spec.template.spec.containers[0].image}{'\\n'}{end}",
     ])
     if listing is None:
         return None

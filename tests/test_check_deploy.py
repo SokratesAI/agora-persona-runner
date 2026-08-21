@@ -124,12 +124,13 @@ BRIDGE = Target.named("agora-claude-bridge")
 # Real, from `kubectl get deploy -n agents` at 05:30 Oslo on 2026-08-21.
 # `newspaper` is the reason this is discovery and not a table.
 LISTING = "\n".join([
-    "agora\tghcr.io/sokratesai/agora@" + NEW,
-    "agora-claude-bridge\tghcr.io/sokratesai/agora-claude-bridge@" + OLD,
-    "agora-persona-runner\tghcr.io/sokratesai/agora-persona-runner@" + NEW,
-    "newspaper\tghcr.io/sokratesai/vault-bridge@" + OLD,
-    "nova-site\tghcr.io/sokratesai/agora-persona-runner@" + NEW,
-    "sokrates-docs\tghcr.io/sokratesai/sokrates-docs@" + NEW,
+    "agents/agora\tghcr.io/sokratesai/agora@" + NEW,
+    "agents/agora-claude-bridge\tghcr.io/sokratesai/agora-claude-bridge@" + OLD,
+    "agents/agora-persona-runner\tghcr.io/sokratesai/agora-persona-runner@" + NEW,
+    "agents/newspaper\tghcr.io/sokratesai/vault-bridge@" + OLD,
+    "agents/nova-site\tghcr.io/sokratesai/agora-persona-runner@" + NEW,
+    "agents/sokrates-docs\tghcr.io/sokratesai/sokrates-docs@" + NEW,
+    "obsidian/vault-bridge\tghcr.io/sokratesai/vault-bridge@" + NEW,
 ])
 
 
@@ -137,24 +138,43 @@ def test_a_name_is_all_four_facts():
     assert BRIDGE.repo == "SokratesAI/agora-claude-bridge"
     assert BRIDGE.config_repo == "SokratesAI/agora-claude-bridge-config"
     assert BRIDGE.package == "agora-claude-bridge"
-    assert BRIDGE.image_prefix == "ghcr.io/sokratesai/agora-claude-bridge@"
+    assert BRIDGE.image_path == "ghcr.io/sokratesai/agora-claude-bridge"
 
 
 def test_discovery_finds_the_pair_the_constant_used_to_hold():
     """The old `DEPLOYMENTS = ("agora-persona-runner", "nova-site")`
     exactly, derived rather than declared."""
     assert select_deployments(RUNNER, LISTING) == {
-        "agora-persona-runner": NEW, "nova-site": NEW,
+        "agents/agora-persona-runner": NEW, "agents/nova-site": NEW,
     }
 
 
 def test_discovery_finds_a_deployment_not_named_after_its_repo():
     """`newspaper` runs the `vault-bridge` image. A lookup table keyed on
     repo names would have missed it and reported NOT RUNNING -- which is
-    the specific wrong answer this test exists to keep out."""
+    the specific wrong answer this test exists to keep out.
+
+    It also finds `obsidian/vault-bridge`, which is the deployment
+    `platform-config` actually pins, on a different digest. Searching
+    only `agents` returns `newspaper` alone and answers confidently
+    about the wrong one."""
     assert select_deployments(Target.named("vault-bridge"), LISTING) == {
-        "newspaper": OLD,
+        "agents/newspaper": OLD, "obsidian/vault-bridge": NEW,
     }
+
+
+def test_two_namespaces_on_different_digests_read_as_a_split_rollout():
+    """The real 2026-08-21 state. Averaging these into one answer, or
+    seeing only the `agents` one, is the failure the namespace key
+    exists to prevent."""
+    state, lines = verdict(
+        Target.named("vault-bridge"), TIP, NEW, NEW,
+        {"agents/newspaper": OLD, "obsidian/vault-bridge": NEW},
+    )
+    assert state == ROLLOUT_PENDING
+    body = "\n".join(lines)
+    assert "agents/newspaper is on" in body
+    assert "obsidian/vault-bridge is on" not in body
 
 
 def test_discovery_does_not_match_on_a_name_prefix():
@@ -163,7 +183,7 @@ def test_discovery_does_not_match_on_a_name_prefix():
     the `@` would sweep in all three and average three services into one
     verdict."""
     assert select_deployments(Target.named("agora"), LISTING) == {
-        "agora": NEW,
+        "agents/agora": NEW,
     }
 
 
@@ -193,7 +213,63 @@ def test_advice_names_the_target_repo_not_the_runner():
     a check of any other repo would have sent the reader to
     agora-persona-runner's build and manifest."""
     _, built = verdict(BRIDGE, TIP, None, NEW, {})
-    _, pinned = verdict(BRIDGE, TIP, NEW, OLD, {"agora-claude-bridge": OLD})
+    _, pinned = verdict(BRIDGE, TIP, NEW, OLD, {"agents/agora-claude-bridge": OLD})
     for body in ("\n".join(built), "\n".join(pinned)):
         assert "agora-claude-bridge" in body
         assert "agora-persona-runner" not in body
+
+
+# --- Reviewer findings on runner#271, fixed in the same PR ---------------
+
+def test_a_tag_pinned_deployment_is_running_not_missing():
+    """Reviewer finding. Matching on `path + '@'` dropped a tag-pinned
+    deployment as though it were an unrelated service, so a service that
+    was running could report NOT RUNNING -- and it made verdict's 'could
+    not be read' branch dead from the real call path, since discovery
+    could no longer produce a None."""
+    listing = "agents/newspaper\tghcr.io/sokratesai/vault-bridge:v3"
+    assert select_deployments(Target.named("vault-bridge"), listing) == {
+        "agents/newspaper": None,
+    }
+
+
+def test_a_tag_pinned_deployment_reaches_the_could_not_be_read_line():
+    """The end-to-end half of the finding: the None above must render as
+    'could not be read' rather than as agreement or as NOT RUNNING."""
+    listing = "agents/newspaper\tghcr.io/sokratesai/vault-bridge:v3"
+    deployed = select_deployments(Target.named("vault-bridge"), listing)
+    state, lines = verdict(Target.named("vault-bridge"), TIP, NEW, NEW, deployed)
+    assert state == ROLLOUT_PENDING
+    assert state != NOT_RUNNING
+    assert "could not be read" in "\n".join(lines)
+
+
+def test_a_longer_package_name_is_not_matched_by_a_shorter_one():
+    """`agora` must not match `agora-claude-bridge`'s image now that the
+    match is on the path rather than on `path + '@'`. The `@`/`:`/end
+    check is what keeps that true."""
+    listing = "agents/agora-claude-bridge\tghcr.io/sokratesai/agora-claude-bridge@" + NEW
+    assert select_deployments(Target.named("agora"), listing) == {}
+
+
+def test_the_kubectl_query_asks_every_namespace_and_returns_the_namespace():
+    """`select_deployments` keys on `namespace/name`, but every test above
+    feeds it a fixture string -- so deleting the namespace from the real
+    query left all of them green. Caught mutating the jsonpath during the
+    Cycle 295 mutation pass. This pins the one place the two have to
+    agree: the query must span namespaces and must emit the namespace,
+    or the keys are names again and `obsidian/vault-bridge` and
+    `agents/newspaper` collapse into one."""
+    import inspect
+
+    from tools import check_deploy
+
+    src = inspect.getsource(check_deploy.deployed_digests)
+    assert '"-A"' in src
+    assert "metadata.namespace" in src
+    # The separator, not just the field. Dropping only the `/` leaves
+    # `metadata.namespace` in the source and yields `agentsnewspaper`,
+    # which the two assertions above both accept -- measured, by mutating
+    # exactly that and watching 20 tests stay green.
+    assert "{'/'}{.metadata.name}" in src
+    assert "-n" not in src.split("jsonpath")[0].replace("--", "")
