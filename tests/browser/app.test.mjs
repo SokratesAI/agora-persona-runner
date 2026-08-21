@@ -6439,13 +6439,29 @@ describe("the device page", () => {
    * cannot tell a button that was never drawn from one that was drawn and
    * lost. A single-sample page would have looked complete and answered the
    * wrong question. */
-  test("the hamburger is sampled twice, and the second sample really lands", async () => {
+  /* The button is *changed* between the two samples, and that is the whole
+   * test. The reviewer caught the first version asserting only that the
+   * placeholder was replaced by something matching /visibility/ -- which a
+   * mutation reusing the on-paint string verbatim would have survived,
+   * because jsdom's button never moves on its own. A test that cannot tell
+   * a fresh reading from a cached one cannot pin the one claim this page
+   * makes. */
+  test("the second hamburger reading is a fresh measurement, not the first one again", async () => {
     const window = await loadSite("/diag");
-    const values = () => [...window.document.querySelectorAll(".diag-value")].map((v) => v.textContent);
-    assert.match(values().at(-1), /measuring/, "the later reading was not pending on paint");
+    /* By label, not by index. The first draft of this test read `.at(-1)`
+     * and `.at(-2)`, and adding one row above them silently repointed the
+     * second one at a different reading entirely. */
+    const reading = (label) => [...window.document.querySelectorAll(".diag-key")]
+      .find((k) => k.textContent === label).nextElementSibling.textContent;
+    const later = () => reading("Hamburger, 3s later");
+    const onPaint = reading("Hamburger, on paint");
+    assert.match(later(), /measuring/, "the later reading was not pending on paint");
+
+    window.document.getElementById("menu-btn").style.visibility = "hidden";
     await new Promise((r) => window.setTimeout(r, 3100));
-    assert.doesNotMatch(values().at(-1), /measuring/, "the 3s sample never replaced the placeholder");
-    assert.match(values().at(-1), /visibility/, "the 3s sample is not a hamburger reading");
+
+    assert.match(later(), /visibility hidden/, "the 3s sample did not see the button change");
+    assert.match(onPaint, /visibility visible/, "the on-paint sample was overwritten, so there is only one reading");
   });
 
   test("Send files the readings as one note, not one bullet per line", async () => {
@@ -6456,13 +6472,14 @@ describe("the device page", () => {
     assert.equal(window.posted[0].url, "/api/capture");
     assert.equal(window.posted[0].body.target, "notes", "a device report is a note, not a board row");
     const text = window.posted[0].body.text;
-    /* `nova_capture.split_captures` makes a bullet out of every newline, so
+    /* `nova_capture.clean_capture_text` makes a bullet out of every newline, so
      * a multi-line body would land in `notes.md` as twenty separate notes
      * and read as twenty things waiting for a cycle. */
     assert.ok(!text.includes("\n"), "the report has newlines, so it would land as many notes");
     assert.match(text, /^\[device report\] /);
     assert.match(text, /User agent: /);
-    assert.match(text, /Hamburger 3s later: /, "the second sample is missing from what was sent");
+    assert.match(text, /Hamburger, 3s later: /, "the second sample is missing from what was sent");
+    assert.match(text, /Page vs viewport width: /, "the width reading is missing from what was sent");
   });
 
   test("what is sent is what is on screen", async () => {

@@ -5323,19 +5323,31 @@
    * number four. It fetches nothing -- every value on it is read from the
    * browser that is drawing it -- and `Send this to Nova` files the lot as
    * one note, which is a file step 1a already opens on every wake. The
-   * one-line join is not cosmetic: `nova_capture.split_captures` turns each
-   * newline into its own bullet, so a multi-line report would land as
-   * twenty separate notes. */
+   * one-line join is not cosmetic: `nova_capture.clean_capture_text` turns
+   * each newline into its own bullet, so a multi-line report would land as
+   * fourteen separate notes. */
 
   /** Resolved `env(safe-area-inset-*)`, in `top right bottom left` order.
    *
    * Read off a throwaway fixed element rather than `--shell-top`, because a
    * custom property computes to its unresolved token (`max(1.6rem, ...)`)
    * in every engine -- the padding it feeds is the only place the number
-   * exists. Returns "unsupported" where `env()` is not understood at all,
-   * which is the answer that would explain Cycle 299's fix doing nothing
-   * for him. */
+   * exists.
+   *
+   * The support test is `CSS.supports` rather than a look at the numbers,
+   * and the reviewer is why. Reading the probe alone cannot answer the
+   * question this row exists for: an engine that does not understand
+   * `env()` drops the declaration and leaves the initial `0px`, which is
+   * byte-identical to an engine that understands it perfectly and has no
+   * notch to report. So "0px 0px 0px 0px" would have been printed in both
+   * cases, and the case that matters -- the one that would explain Cycle
+   * 299's fix doing nothing on his phone -- was unreachable. That is a
+   * negative result guaranteed in advance, on the page built to stop
+   * exactly that. */
   function safeAreaInsets() {
+    var supported = !!(window.CSS && window.CSS.supports
+      && window.CSS.supports("padding-top", "env(safe-area-inset-top, 0px)"));
+    if (!supported) return "env() unsupported by this browser";
     var probe = document.createElement("div");
     probe.style.position = "fixed";
     probe.style.visibility = "hidden";
@@ -5390,7 +5402,6 @@
     var docStyle = window.getComputedStyle(doc);
     var header = document.getElementById("status");
     var vv = window.visualViewport;
-    var wide = doc.scrollWidth > doc.clientWidth;
     return [
       ["User agent", navigator.userAgent],
       ["Display mode", displayMode()],
@@ -5405,8 +5416,6 @@
       ["Safe-area insets", safeAreaInsets() + " (top right bottom left)"],
       ["Header top padding", header ? window.getComputedStyle(header).paddingTop : "no header"],
       ["Root font size", docStyle.fontSize],
-      ["Page vs viewport width", doc.scrollWidth + " vs " + doc.clientWidth
-        + (wide ? " — SCROLLS SIDEWAYS" : " — no sideways scroll")],
       ["Colour scheme", window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
         ? "dark" : "light"],
       ["Hamburger, on paint", menuBtnReport()],
@@ -5433,9 +5442,23 @@
       list.appendChild(el("dt", "diag-key", row[0]));
       list.appendChild(el("dd", "diag-value", row[1]));
     });
-    list.appendChild(el("dt", "diag-key", "Hamburger, 3s later"));
-    var later = el("dd", "diag-value", "measuring…");
-    list.appendChild(later);
+    /* Two readings that cannot be taken yet, so they are rows now and
+     * values later. The width one is the reviewer's catch and it was the
+     * serious finding on this diff: `scrollWidth > clientWidth` was being
+     * read inside `diagRows()`, while `feed` was still empty -- so it
+     * measured the shell and never the 120-character monospace user-agent
+     * string that is the one thing on this page capable of pushing it
+     * wider. It would have reported "no sideways scroll" while scrolling
+     * sideways, which is this page introducing the exact class of fault it
+     * exists to diagnose, and reporting itself clean while doing it. */
+    var extras = [
+      ["Page vs viewport width", el("dd", "diag-value", "measuring…")],
+      ["Hamburger, 3s later", el("dd", "diag-value", "measuring…")],
+    ];
+    extras.forEach(function (extra) {
+      list.appendChild(el("dt", "diag-key", extra[0]));
+      list.appendChild(extra[1]);
+    });
     card.appendChild(list);
 
     var status = el("p", "capture-status");
@@ -5444,8 +5467,11 @@
     send.type = "button";
     send.id = "diag-send";
     send.addEventListener("click", function () {
-      var parts = rows.map(function (row) { return row[0] + ": " + row[1]; });
-      parts.push("Hamburger 3s later: " + later.textContent);
+      // Labels come from the same two lists the table was built from, so
+      // what is sent and what is on screen cannot use different words for
+      // the same reading.
+      var parts = rows.map(function (row) { return row[0] + ": " + row[1]; })
+        .concat(extras.map(function (extra) { return extra[0] + ": " + extra[1].textContent; }));
       send.disabled = true;
       status.textContent = "sending…";
       status.className = "capture-status";
@@ -5478,10 +5504,18 @@
     card.appendChild(actions);
     feed.appendChild(card);
 
+    /* Only now is there a page to measure. Reading `scrollWidth` forces
+     * layout, so this is a real measurement of the document as rendered
+     * rather than of an empty feed -- no frame to wait for. */
+    var doc = document.documentElement;
+    var wide = doc.scrollWidth > doc.clientWidth;
+    extras[0][1].textContent = doc.scrollWidth + " vs " + doc.clientWidth
+      + (wide ? " — SCROLLS SIDEWAYS" : " — no sideways scroll");
+
     // Writes into a node the next navigation will have discarded, which is
     // harmless -- the alternative is a timer to cancel and a handle to
     // carry, for a value nobody reads once the page is gone.
-    window.setTimeout(function () { later.textContent = menuBtnReport(); }, 3000);
+    window.setTimeout(function () { extras[1][1].textContent = menuBtnReport(); }, 3000);
   }
 
   function load() {
