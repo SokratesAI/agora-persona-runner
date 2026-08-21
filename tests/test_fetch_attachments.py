@@ -45,9 +45,20 @@ def test_finds_links_with_the_heading_they_sit_under():
     ]
 
 
-def test_the_same_image_linked_twice_is_fetched_once():
+def test_the_same_image_linked_twice_is_fetched_once(tmp_path):
+    """The name says *fetched*, so count the fetches, not the parsed links."""
     text = f"![a](/api/upload/{NAME})\nand again ![a](/api/upload/{NAME})\n"
     assert fetch_attachments.find_links(text) == [(NAME, "")]
+
+    calls = []
+
+    def counting(path):
+        calls.append(path)
+        return envelope("image/jpeg", RAW)
+
+    results = fetch_attachments.fetch(text, str(tmp_path), getter=counting)
+    assert calls == [UPLOAD_PREFIX + NAME]
+    assert len(results) == 1
 
 
 def test_a_file_with_no_attachments_finds_nothing():
@@ -143,3 +154,44 @@ def test_every_extension_the_upload_side_can_store_is_one_this_side_can_find(ext
     assert fetch_attachments.find_links(f"![x](/api/upload/{name})") == [(name, "")]
     from agora_runner.nova_uploads import is_upload_name
     assert is_upload_name(name)
+
+
+def test_an_envelope_that_decodes_to_nothing_is_a_failure_not_an_empty_file(tmp_path):
+    """I introduced this guard, so it gets pinned rather than assumed.
+
+    `store_upload` refuses zero bytes, so a stored upload cannot legitimately
+    be empty — but without the guard this tool writes a 0-byte file and
+    reports it as a fetched image, which is a failure reported as success and
+    is exactly the blindness the tool exists to remove.
+    """
+    text = f"![x](/api/upload/{NAME})\n"
+    results = fetch_attachments.fetch(
+        text, str(tmp_path),
+        getter=store({UPLOAD_PREFIX + NAME: "content-type: image/jpeg\n\n\n"}),
+    )
+    assert results[0][2] is None
+    assert results[0][3] == "envelope did not decode"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_vault_error_is_not_reported_as_a_missing_document(tmp_path, monkeypatch):
+    """The reviewer's first finding, and the one that mattered most.
+
+    `vault_tool.py` exits non-zero for an unreadable or incomplete document
+    and keeps that distinct from a genuine 404 on purpose. Collapsing both
+    into "not in the vault" tells a cycle the image was never sent when in
+    fact the reader is broken -- which is the same class of mistake as
+    reporting a capability absent because nobody wrote the step that uses
+    it. The stderr text has to survive, because it is what says which.
+    """
+    class Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "VaultIncompleteDocument: 3 of 5 chunks\n"
+
+    monkeypatch.setattr(fetch_attachments.subprocess, "run", lambda cmd, **kw: Proc())
+    results = fetch_attachments.fetch(f"![x](/api/upload/{NAME})\n", str(tmp_path))
+    assert results[0][2] is None
+    assert results[0][3] != "not in the vault"
+    assert "VaultIncompleteDocument: 3 of 5 chunks" in results[0][3]
+    assert list(tmp_path.iterdir()) == []

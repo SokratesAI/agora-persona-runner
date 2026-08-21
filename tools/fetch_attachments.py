@@ -60,8 +60,15 @@ from agora_runner.nova_uploads import UPLOAD_PREFIX, decode_envelope, is_upload_
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
 #: Where fetched attachments land. `/data/workspace` persists across cycles
-#: and `tools.tidy_workspace` archives what is left in it, so an image a
-#: cycle looked at is cleaned up by the machinery that already exists.
+#: and **nothing cleans this directory up** -- `tools.tidy_workspace` sweeps
+#: loose files at the workspace root (depth 1, `os.path.isfile`) and only
+#: recognises `_scratch-archive-<date>` and `_review-*` directories, so this
+#: one is invisible to it. That is a considered trade rather than an
+#: oversight: the names are content hashes, so re-fetching the same image
+#: overwrites rather than accumulates, and the total is bounded by the number
+#: of distinct images Edvard has ever sent, not by the number of cycles that
+#: looked at them. If that stops being a small number, the fix is a rule in
+#: `tidy_workspace` that knows about this directory, not a cap here.
 DEFAULT_DIR = "/data/workspace/attachments"
 
 #: The shape `store_upload` puts into Edvard's files: `/api/upload/<32 hex>.<ext>`.
@@ -94,13 +101,28 @@ def find_links(text):
     return found
 
 
+class Unreadable(Exception):
+    """The vault could not answer. Distinct from the document being absent.
+
+    `vault_tool.py` exits non-zero for `VaultUnreadableDocument` and
+    `VaultIncompleteDocument`, and it keeps those separate from a genuine
+    404 on purpose -- its own docstring says the replacement answer *"is
+    plausible ... a 500, a 503 or a 401 on the pre-write lookup made a live
+    document look absent"*. Collapsing both into "not in the vault" would
+    reintroduce that bug for images specifically, in a tool whose entire
+    reason for existing is that a missing capability got reported as an
+    absent one.
+    """
+
+
 def _vault_get(path, vault_tool):
     proc = subprocess.run(
         [sys.executable, vault_tool, "get", path],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
-        return None
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise Unreadable(detail[-1] if detail else f"exit {proc.returncode}")
     body = proc.stdout
     # `vault_tool.py get` prints `[not found: ...]` and exits 0 for a path
     # that does not exist -- measured, and `tools.append_retro` documents
@@ -123,7 +145,15 @@ def fetch(text, out_dir, vault_tool=VAULT_TOOL, getter=None):
         if not is_upload_name(name):
             results.append((name, heading, None, "not an upload name"))
             continue
-        body = getter(UPLOAD_PREFIX + name)
+        try:
+            body = getter(UPLOAD_PREFIX + name)
+        except Unreadable as exc:
+            # Not "not in the vault". The document may be perfectly fine and
+            # the reader broken -- wrong credentials, CouchDB down, a chunk
+            # that did not assemble. Saying which one is the difference
+            # between a cycle re-fetching and a cycle concluding.
+            results.append((name, heading, None, f"vault could not answer: {exc}"))
+            continue
         if body is None:
             results.append((name, heading, None, "not in the vault"))
             continue

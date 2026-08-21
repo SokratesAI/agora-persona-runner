@@ -177,6 +177,15 @@ def decode_envelope(text):
     `/app/bridge/vault_tool.py` from the bridge pod. Two readers, two sets
     of credentials, and exactly one decoder — a second copy of this would
     be the drift bug this repo keeps writing detectors for.
+
+    **This is extraction plus one deliberate behaviour change.** The old
+    `read_upload` returned `(content_type, b"")` for an envelope whose
+    payload decoded to nothing; this returns `None`. `store_upload` refuses
+    zero bytes, so no legitimately stored upload can hit it — but a caller
+    that writes the result to disk would otherwise produce a 0-byte file
+    and report it as a fetched image, which is a failure reported as
+    success. Pinned by
+    `test_an_envelope_that_decodes_to_nothing_is_a_failure_not_an_empty_file`.
     """
     if not text:
         return None
