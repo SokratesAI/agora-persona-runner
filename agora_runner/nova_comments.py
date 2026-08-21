@@ -224,23 +224,43 @@ def insert_comment(markdown, cycle, text, stamp):
     return "\n".join(lines[:start] + block + lines[start:])
 
 
-def split_reply(lines):
-    """A comment's raw lines -> (his text, Nova's reply, the reply's stamp).
+def split_replies(lines):
+    """A comment's raw lines -> (his text, one entry per `#### Nova` block).
 
-    The reply is everything below the first `#### Nova` heading. Split on
-    the first rather than the last so a reply that itself contains such a
-    line stays inside the reply, where it is Nova's own text, instead of
-    swallowing part of it into Edvard's.
+    Each entry is `{author, stamp, text}`. This used to return a single
+    reply -- everything below the *first* `#### Nova` heading, later
+    headings left inside it as raw text. That was right while only
+    `add_reply` could write one, and `insert_reply` still refuses to add a
+    second, so a comment can only ever grow one that way. But a cycle
+    reading `comments.md` can append its own answer by hand, and several
+    have; those landed inside the auto-reply's body and the app painted
+    `#### Nova · 2026-08-21 16:23` as literal text in the middle of a
+    bubble. Edvard sent a screenshot of exactly that on 2026-08-21.
+
+    `author` is `commentator` for the first block and `cycle` for every
+    later one. That is positional, and it is right for the ordinary
+    ordering -- the worker answers in seconds and a cycle appends later --
+    but it is not the fact an earlier version of this docstring claimed.
+    The reviewer on runner#279 found the interleaving that breaks it: if a
+    cycle acknowledges a comment before the worker's reply lands, the
+    cycle's note is the first block and is labelled `commentator`, and the
+    worker's own reply is then dropped by `insert_reply` for finding a
+    heading already there. Getting that right needs the author written into
+    the heading, which changes the shape of a file Edvard reads, so it is
+    not done here. The failure is one bubble in the wrong colour, not lost
+    text.
     """
-    for i, line in enumerate(lines):
-        heading = _REPLY_HEADING_RE.match(line)
-        if heading:
-            return (
-                "\n".join(lines[:i]).strip("\n"),
-                "\n".join(lines[i + 1:]).strip("\n"),
-                (heading.group("stamp") or "").strip(),
-            )
-    return "\n".join(lines).strip("\n"), "", ""
+    starts = [i for i, line in enumerate(lines) if _REPLY_HEADING_RE.match(line)]
+    body = "\n".join(lines[: starts[0]] if starts else lines).strip("\n")
+    replies = []
+    for n, i in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        replies.append({
+            "author": "commentator" if n == 0 else "cycle",
+            "stamp": (_REPLY_HEADING_RE.match(lines[i]).group("stamp") or "").strip(),
+            "text": "\n".join(lines[i + 1:end]).strip("\n"),
+        })
+    return body, replies
 
 
 def insert_reply(markdown, cycle, stamp, reply, reply_stamp):
@@ -350,13 +370,17 @@ def parse_comments(markdown):
     def flush():
         if current is None:
             return
-        body, reply, reply_stamp = split_reply(current["lines"])
+        body, replies = split_replies(current["lines"])
         out.append({
             "cycle": current["cycle"],
             "stamp": current["stamp"],
             "text": body,
-            "reply": reply,
-            "replyStamp": reply_stamp,
+            # `reply`/`replyStamp` are the *first* reply, kept because
+            # `_verify_replied` and `nova_replies` both mean the auto-reply
+            # when they say "the reply". `replies` is the whole thread.
+            "reply": replies[0]["text"] if replies else "",
+            "replyStamp": replies[0]["stamp"] if replies else "",
+            "replies": replies,
             "acknowledged": current["acknowledged"],
         })
 
@@ -427,7 +451,7 @@ def comment_index(markdown):
 # kept its text and its section but lost the reply Nova wrote it is still a
 # comment the write damaged, so all four are compared, not the one or two a
 # given write is about.
-COMPARED_FIELDS = ("text", "acknowledged", "reply", "replyStamp")
+COMPARED_FIELDS = ("text", "acknowledged", "reply", "replyStamp", "replies")
 
 
 def verify_write(original, updated, exempt=()):

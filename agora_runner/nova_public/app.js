@@ -929,17 +929,34 @@
          * on the same indentation. So the comments alternates between blue
          * and green downwards." Which comment a reply belongs to is now
          * carried by the order alone, and the order is the conversation. */
-        var after = null;
-        if (comment.reply) {
-          var reply = el("div", "comment comment-reply");
+        /* Every `#### Nova` block under his comment, each its own bubble.
+         * There used to be one, painted from `comment.reply`, and a second
+         * block appended by a cycle ended up inside it as the literal text
+         * `#### Nova · 2026-08-21 16:23`. `comment.reply` is still the
+         * first of them, so an old cached app.js against a new server
+         * shows what it always did rather than nothing. */
+        var after = [];
+        var replies = comment.replies;
+        if (!(replies && replies.length) && comment.reply) {
+          replies = [{ author: "commentator", stamp: comment.replyStamp, text: comment.reply }];
+        }
+        (replies || []).forEach(function (answer) {
+          var cycleReply = answer.author === "cycle";
+          var reply = el("div", cycleReply ? "comment comment-reply comment-reply-cycle"
+                                           : "comment comment-reply");
           var meta = el("p", "comment-meta");
-          meta.appendChild(el("span", "comment-who", "Nova"));
-          meta.appendChild(el("span", "comment-stamp", comment.replyStamp || ""));
+          // Named as well as coloured: the colour is the glance and the
+          // word is what makes it readable without knowing the code.
+          meta.appendChild(el("span", "comment-who", cycleReply ? "Nova · cycle" : "Nova"));
+          meta.appendChild(el("span", "comment-stamp", answer.stamp || ""));
           reply.appendChild(meta);
           // Same treatment as his own comment above: a reply that quotes
           // the image he attached should show it, not the raw line.
-          appendRichText(reply, "comment-body", comment.reply);
-          after = reply;
+          appendRichText(reply, "comment-body", answer.text);
+          after.push(reply);
+        });
+        if (after.length) {
+          // Answered. The waiting lines below are the unanswered states.
         } else if (comment.replyWaiting) {
           /* Past the server's threshold, so this is no longer a reply being
            * written in the ordinary way -- but nothing here knows why, and
@@ -949,19 +966,19 @@
            * fact the server has -- how long it has been -- and name no
            * cause; the elapsed time is also what tells him apart a slow
            * answer from a stuck one, which the fixed sentence never could. */
-          after = el("p", "comment-waiting",
+          after.push(el("p", "comment-waiting",
             "Still working on this — " + waitedFor(comment.replyWaitingSeconds) +
-            " so far. The answer appears here on its own.");
+            " so far. The answer appears here on its own."));
         } else if (comment.replyPending) {
-          after = el("p", "comment-waiting", "Nova is replying…");
+          after.push(el("p", "comment-waiting", "Nova is replying…"));
         } else if (comment.replyFailed) {
           /* The line used to just vanish, which reads exactly like an
            * answer that never came. A comment that got no reply is still in
            * `## New`, so the next cycle does read it. */
-          after = el("p", "comment-waiting", "Couldn't answer this one — the next cycle will read it.");
+          after.push(el("p", "comment-waiting", "Couldn't answer this one — the next cycle will read it."));
         }
         list.appendChild(item);
-        if (after) list.appendChild(after);
+        after.forEach(function (node) { list.appendChild(node); });
       });
       // Both of these read the whole thread, not the shown slice. The
       // count on the 💬 toggle is how many comments a cycle has, which the

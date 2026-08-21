@@ -1934,6 +1934,47 @@ describe("commenting on a cycle", () => {
     assert.equal(reply.querySelector(".comment-stamp").textContent, "2026-08-09 13:12");
   });
 
+  test("a cycle's answer is its own purple bubble, not text inside the blue one", async () => {
+    /* Edvard, ideas board 2026-08-21: *"Give Nova cycle comments a purple
+     * background/border in the app (mine is green, commentator is blue,
+     * Nova should be purple)"*. Two different things answer him under one
+     * name -- the instant reply worker, and an hourly cycle -- and until
+     * now they wore the same blue. Worse, a cycle's answer is a second
+     * `#### Nova` block in `comments.md`, and the app used to paint its
+     * heading as literal text in the middle of the first bubble; his
+     * screenshot the same day is of exactly that. */
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    const comment = copy.byCycle["55"][0];
+    comment.replies = [
+      { author: "commentator", stamp: "2026-08-09 13:12", text: comment.reply },
+      { author: "cycle", stamp: "2026-08-09 14:20", text: "Cycle 56: boarded it." },
+    ];
+    const w = await loadSite("/", { comments: copy });
+    const card = cardFor(w, 55);
+    const replies = [...card.querySelectorAll(".comment-reply")];
+    assert.equal(replies.length, 2, "one bubble per block, not one bubble with a heading in it");
+    assert.ok(!replies[0].classList.contains("comment-reply-cycle"));
+    assert.ok(replies[1].classList.contains("comment-reply-cycle"));
+    assert.equal(replies[1].querySelector(".comment-body").textContent, "Cycle 56: boarded it.");
+    assert.equal(replies[1].querySelector(".comment-who").textContent, "Nova · cycle");
+    assert.equal(replies[1].querySelector(".comment-stamp").textContent, "2026-08-09 14:20");
+    // Both sit beside his comment, not inside it -- the alternating-downwards
+    // shape he asked for in issues.md 2026-08-10 still holds with two.
+    const his = card.querySelector(".comment:not(.comment-reply)");
+    assert.equal(his.nextElementSibling, replies[0]);
+    assert.equal(replies[0].nextElementSibling, replies[1]);
+  });
+
+  test("an old cached app.js payload with only `reply` still paints one bubble", async () => {
+    // `replies` is new. A browser holding yesterday's app.js against today's
+    // server is not a case worth breaking, and the fallback is two lines.
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    delete copy.byCycle["55"][0].replies;
+    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    assert.equal(card.querySelectorAll(".comment-reply").length, 1);
+    assert.equal(card.querySelector(".comment-waiting"), null);
+  });
+
   test("a comment with no reply gets no empty reply block", () => {
     const card = cardFor(window, 57);
     assert.equal(card.querySelector(".comment-reply"), null);

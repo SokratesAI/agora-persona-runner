@@ -13,6 +13,12 @@
    * --warn so "high" and "medium" do not collapse into one colour, and
    * light enough to carry --bg as its own text when filled. */
   --danger: #f07178;
+  /* A cycle talking, as opposed to the instant reply worker -- see
+   * `.comment-reply-cycle`. Its own variable rather than --report's
+   * purple: that one is scoped to report cards by its own comment, and a
+   * cycle reply is not a report. Kept a shade deeper so the two are
+   * telling apart if they ever do share a screen. */
+  --nova: #b48ef2;
   /* Report cards only -- see `.entry.is-report`. Deliberately not one of
    * the four above: those all already mean something about an outcome. */
   --report: #c9a2f7;
@@ -723,8 +729,17 @@ pre code { background: none; padding: 0; }
 
 /* Acknowledged means a cycle has read it and acted. Dimmed rather than
  * hidden -- what he said stays visible, it just stops being the thing
- * asking for attention. */
-.comment.is-acknowledged { border-left-color: var(--line); }
+ * asking for attention.
+ *
+ * The rule itself stays green. Edvard, comments board 2026-08-21: *"my
+ * previous comments in this chat gets a grey backline, i want to have it
+ * green all the time so i clearly see it's my comments."* The colour was
+ * carrying two meanings at once here -- whose comment it is, and whether
+ * it has been read -- and on his phone the second one wins, so a thread
+ * he has been in all day is mostly grey rules with no way to tell his
+ * side from Nova's. The `READ` chip already says read, in a word, which
+ * is the same lesson as the priority symbols: if the reader has to know a
+ * colour code to know what I said, I have not said it. */
 .comment.is-acknowledged .comment-body { color: var(--dim); }
 
 .comment-meta {
@@ -759,6 +774,18 @@ pre code { background: none; padding: 0; }
 .comment-reply .comment-body { color: var(--dim); }
 
 .comment-who { color: var(--accent); }
+
+/* Two different things answer him under one name, and until now they wore
+ * the same blue. The instant reply is `nova_replies.py` -- a restricted
+ * session with the comment's text and nothing else, answering in seconds.
+ * A cycle reply is written by an hourly cycle that read the vault, the
+ * board and the code first, and it can land forty minutes later. Edvard,
+ * ideas board 2026-08-21: *"Give Nova cycle comments a purple
+ * background/border in the app (mine is green, commentator is blue, Nova
+ * should be purple)"*. So the rule's colour now says which of the two is
+ * talking, and the name beside the stamp says it in words as well. */
+.comment-reply-cycle { border-left-color: var(--nova); }
+.comment-reply-cycle .comment-who { color: var(--nova); }
 
 /* The bridge runs one CLI call at a time and a cycle can hold it for the
  * better part of an hour, so this line is often the honest answer for
