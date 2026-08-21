@@ -1,9 +1,15 @@
 """`notes.md` -> the `/notes` page.
 
-Every case here is shaped off the live file as it stood on 2026-08-21 --
-nine answered notes, one of them carrying two cycle replies, one running
-onto a wrapped line, and the empty bullet `nova_capture` leaves at the
-top as Edvard's cursor.
+`LIVE_SHAPE` is shaped off the live file as it stood on 2026-08-21 --
+nine answered notes, one of them carrying two cycle replies, and the
+empty bullet `nova_capture` leaves at the top as Edvard's cursor.
+
+**The two wrapping cases are not in that file and the fixture does not
+pretend they are.** Every note there is a single line, because the file
+is written one line per paragraph by convention. The convention is not
+enforced anywhere -- the Note button posts whatever was typed -- so both
+wrap tests below are written against text the live file has never
+contained, which is the point of them.
 """
 
 from unittest.mock import patch
@@ -63,9 +69,10 @@ def test_a_cycles_reply_belongs_to_the_note_above_it():
 def test_a_wrapped_note_is_one_note():
     """A line break belongs to whoever wrapped it, not to the text.
 
-    Same rule `parse_notes` follows for my own capture files, and the
-    same failure if it is skipped: the tail sentence disappears from the
-    page without anything saying so.
+    The indented half: markdown's own continuation, which is what a
+    hand-edit of the file produces. Same rule `parse_notes` follows for
+    my own capture files, and the same failure if it is skipped -- the
+    tail sentence disappears from the page without anything saying so.
     """
     parsed = parse_notes_page(LIVE_SHAPE)
     assert parsed["read"][1]["text"] == (
