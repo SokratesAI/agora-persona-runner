@@ -5484,16 +5484,27 @@
     var was = menuOpen();
     setMenu(true);
     window.setTimeout(function () {
-      /* The state is reported beside the box, not assumed from the label.
+      /* `finally`, because this one mutates app-wide singletons rather
+       * than a node the next navigation throws away. A throw between the
+       * open and the restore leaves the drawer out, the scrim dimming the
+       * whole app and `body.nav-open` holding the scroll lock, on every
+       * page, until he reloads -- a page-wide lockup caused by the
+       * diagnostic page, which is a strictly worse outcome than the
+       * missing reading. Reviewer's finding.
+       *
+       * The state is reported beside the box, not assumed from the label.
        * Every number here is meaningless if the drawer was shut when it
        * was taken, and nothing else in the line would say so -- the parked
        * box is a perfectly ordinary-looking rect off the right edge. This
        * is the same discipline as the `CSS.supports` check on the
        * safe-area row: a reading that cannot distinguish its own
        * precondition is not evidence. */
-      write(boxReport(navEl) + ", drawer was "
-        + (menuOpen() ? "open" : "SHUT — this is the parked box, not the drawn one"));
-      setMenu(was);
+      try {
+        write(boxReport(navEl) + ", drawer was "
+          + (menuOpen() ? "open" : "SHUT — this is the parked box, not the drawn one"));
+      } finally {
+        setMenu(was);
+      }
     }, 350);
   }
 
@@ -5530,10 +5541,15 @@
       menu.appendChild(item);
     });
     menu.hidden = false;
-    write(boxReport(menu) + ", popup was " + (menu.hidden ? "HIDDEN — not the drawn box" : "open")
-      + ", " + menu.children.length + " options");
-    menu.hidden = true;
-    menu.textContent = "";
+    try {
+      write(boxReport(menu) + ", popup was " + (menu.hidden ? "HIDDEN — not the drawn box" : "open")
+        + ", " + menu.children.length + " options");
+    } finally {
+      // Same reason as the drawer: a throw here would strand this overlay
+      // centred over every page of the app until he reloads.
+      menu.hidden = true;
+      menu.textContent = "";
+    }
   }
 
   function displayMode() {
@@ -5685,8 +5701,11 @@
      * hamburger in a state he never put it in. */
     measureDrawer(function (value) {
       extras[2][1].textContent = value;
-      // After the drawer's 220ms slide back out, so `body.nav-open`'s
-      // `overflow: hidden` is no longer in force while the popup is sized.
+      /* After the drawer's 220ms slide back out, so the two are never on
+       * screen together. The first version of this comment said the pause
+       * was to get `body.nav-open`'s `overflow: hidden` out of the way,
+       * and the reviewer was right that it is not: `setMenu` drops that
+       * class synchronously, and only the CSS transform is delayed. */
       window.setTimeout(function () {
         measurePrioMenu(function (v) { extras[3][1].textContent = v; });
       }, 300);
