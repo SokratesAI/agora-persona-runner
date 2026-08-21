@@ -74,6 +74,24 @@ def test_a_wrapped_note_is_one_note():
     )
 
 
+def test_a_note_hard_wrapped_at_column_zero_keeps_its_tail():
+    """The half of the wrapping rule an indent-only matcher misses.
+
+    `notes.md` is one line per paragraph by convention, not by
+    enforcement, and the Note button in the app posts whatever was
+    typed. A note pasted in from something that wraps at 80 columns has
+    every line after the first at column zero -- and dropping those
+    loses sentences off the page without anything saying so, which is
+    the one failure mode worse than not rendering at all.
+    """
+    parsed = parse_notes_page(
+        "- A note that wrapped\nonto a second line at column zero.\n"
+    )
+    assert [note["text"] for note in parsed["waiting"]] == [
+        "A note that wrapped onto a second line at column zero."
+    ]
+
+
 def test_a_reply_carries_the_cycle_it_links_to():
     payload = _payload(LIVE_SHAPE)
     read = [note for note in payload["notes"] if not note["waiting"]]

@@ -39,9 +39,19 @@ READ_HEADING = "read"
 # `- ` is a cycle answering the note above it. The file is written by
 # hand and by `nova_capture`, so the indent is not guaranteed to be
 # exactly two -- anything indented counts as a response.
-_NOTE_RE = re.compile(r"^-\s+(.*)$")
-_RESPONSE_RE = re.compile(r"^\s+[-*]\s+(.*)$")
-_CONTINUATION_RE = re.compile(r"^\s+(\S.*)$")
+# `\s*` rather than `\s+` after the dash, so a bare `-` still reads as a
+# bullet. That is Edvard's cursor, and it has to be *recognised* and then
+# dropped for being empty -- matched as prose instead, it gets joined
+# onto the note above it as a stray dash.
+_NOTE_RE = re.compile(r"^-\s*(.*)$")
+_RESPONSE_RE = re.compile(r"^\s+[-*]\s*(.*)$")
+# Anything that is not a heading and not a bullet continues whatever came
+# before it, indented or not. It has to accept column zero: this file is
+# written one line per paragraph *by convention*, and a note pasted in
+# from somewhere that hard-wraps would otherwise have every line after
+# the first silently vanish off the page. `|` is excluded for
+# `parse_notes`' reason -- a table row is not prose.
+_CONTINUATION_RE = re.compile(r"^\s*([^\s|].*)$")
 
 # "Read Cycle 290." / "Corrected Cycle 244," / "Cycle 247:" -- the number
 # is what links; the verb in front of it varies and is not worth pinning.
