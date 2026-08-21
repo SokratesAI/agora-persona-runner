@@ -62,6 +62,7 @@
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
     if (path === "/ask") return { view: "ask", cycle: null, board: null };
+    if (path === "/diag") return { view: "diag", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
 
@@ -5302,6 +5303,187 @@
       });
   }
 
+  /* `/diag` -- what Edvard's own device reports about itself.
+   *
+   * Three cycles running have now shipped a fix for a rendering fault on a
+   * phone none of them could look at. Cycle 299 attributed a missing
+   * hamburger to an iPhone notch and shipped `env(safe-area-inset-top)`;
+   * the cycle after it shipped `translateZ(0)` on a Chromium
+   * compositor-bug theory; and then a capture landed saying he is on an
+   * Android Galaxy S25 and a Windows desktop, so the first of those
+   * targeted a platform he does not own. None of that was careless -- the
+   * loop simply has no instrument pointed at his hardware. Cycle 303 drove
+   * headless Chromium over the live site at six widths from 320 to 412 CSS
+   * px with S25 metrics and a Samsung user agent: the button held
+   * [x, 26, 40, 40] at every one of them and the priority popup centred
+   * inside the viewport at every one of them. Reproducing nothing is the
+   * measurement, and it says the variable is on his device, not in a width.
+   *
+   * So this page is guess number four's replacement rather than guess
+   * number four. It fetches nothing -- every value on it is read from the
+   * browser that is drawing it -- and `Send this to Nova` files the lot as
+   * one note, which is a file step 1a already opens on every wake. The
+   * one-line join is not cosmetic: `nova_capture.split_captures` turns each
+   * newline into its own bullet, so a multi-line report would land as
+   * twenty separate notes. */
+
+  /** Resolved `env(safe-area-inset-*)`, in `top right bottom left` order.
+   *
+   * Read off a throwaway fixed element rather than `--shell-top`, because a
+   * custom property computes to its unresolved token (`max(1.6rem, ...)`)
+   * in every engine -- the padding it feeds is the only place the number
+   * exists. Returns "unsupported" where `env()` is not understood at all,
+   * which is the answer that would explain Cycle 299's fix doing nothing
+   * for him. */
+  function safeAreaInsets() {
+    var probe = document.createElement("div");
+    probe.style.position = "fixed";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.top = "0";
+    probe.style.left = "0";
+    probe.style.paddingTop = "env(safe-area-inset-top, 0px)";
+    probe.style.paddingRight = "env(safe-area-inset-right, 0px)";
+    probe.style.paddingBottom = "env(safe-area-inset-bottom, 0px)";
+    probe.style.paddingLeft = "env(safe-area-inset-left, 0px)";
+    document.body.appendChild(probe);
+    var cs = window.getComputedStyle(probe);
+    var sides = [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft];
+    document.body.removeChild(probe);
+    if (sides.some(function (v) { return !v; })) return "unsupported";
+    return sides.join(" ");
+  }
+
+  /** The hamburger's live box and every property that could hide it.
+   *
+   * Sampled twice -- once on paint and once three seconds later -- because
+   * what he reported is "I see it 1 sec when I open or refresh the app and
+   * then it vanishes", and a single reading cannot tell a button that was
+   * never drawn from one that was drawn and then lost. */
+  function menuBtnReport() {
+    var node = document.getElementById("menu-btn");
+    if (!node) return "not in the DOM";
+    var box = node.getBoundingClientRect();
+    var cs = window.getComputedStyle(node);
+    return "at " + Math.round(box.left) + "," + Math.round(box.top)
+      + " sized " + Math.round(box.width) + "x" + Math.round(box.height)
+      + ", visibility " + cs.visibility
+      + ", opacity " + cs.opacity
+      + ", display " + cs.display
+      + ", z-index " + cs.zIndex
+      + ", transform " + cs.transform;
+  }
+
+  function displayMode() {
+    if (!window.matchMedia) return "matchMedia unsupported";
+    var modes = ["standalone", "fullscreen", "minimal-ui", "browser"];
+    for (var i = 0; i < modes.length; i += 1) {
+      if (window.matchMedia("(display-mode: " + modes[i] + ")").matches) return modes[i];
+    }
+    return "unknown";
+  }
+
+  /** Every reading, as `[label, value]` pairs. One place, so the table on
+   * screen and the note that gets sent can never drift apart. */
+  function diagRows() {
+    var doc = document.documentElement;
+    var docStyle = window.getComputedStyle(doc);
+    var header = document.getElementById("status");
+    var vv = window.visualViewport;
+    var wide = doc.scrollWidth > doc.clientWidth;
+    return [
+      ["User agent", navigator.userAgent],
+      ["Display mode", displayMode()],
+      ["Window", window.innerWidth + " x " + window.innerHeight + " CSS px"],
+      ["Device pixel ratio", String(window.devicePixelRatio)],
+      ["Screen", (window.screen ? window.screen.width + " x " + window.screen.height : "unknown")
+        + (window.screen && window.screen.orientation ? ", " + window.screen.orientation.type : "")],
+      ["Visual viewport", vv
+        ? Math.round(vv.width) + " x " + Math.round(vv.height)
+          + ", offset top " + Math.round(vv.offsetTop) + ", scale " + vv.scale
+        : "unsupported"],
+      ["Safe-area insets", safeAreaInsets() + " (top right bottom left)"],
+      ["Header top padding", header ? window.getComputedStyle(header).paddingTop : "no header"],
+      ["Root font size", docStyle.fontSize],
+      ["Page vs viewport width", doc.scrollWidth + " vs " + doc.clientWidth
+        + (wide ? " — SCROLLS SIDEWAYS" : " — no sideways scroll")],
+      ["Colour scheme", window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark" : "light"],
+      ["Hamburger, on paint", menuBtnReport()],
+    ];
+  }
+
+  function renderDiag() {
+    stopPolling();
+    markNav();
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el("p", "status-line", "What this device reports about itself"));
+    feed.textContent = "";
+
+    var card = el("div", "plan-card");
+    card.appendChild(el("p", "diag-lede",
+      "Nothing on this page comes from the server — every line is measured in the browser "
+      + "showing it. If the app looks wrong on your phone, open this page there and tap Send. "
+      + "The next cycle then reads what your device actually did, instead of guessing at it."));
+
+    var list = el("dl", "diag-list");
+    var rows = diagRows();
+    rows.forEach(function (row) {
+      list.appendChild(el("dt", "diag-key", row[0]));
+      list.appendChild(el("dd", "diag-value", row[1]));
+    });
+    list.appendChild(el("dt", "diag-key", "Hamburger, 3s later"));
+    var later = el("dd", "diag-value", "measuring…");
+    list.appendChild(later);
+    card.appendChild(list);
+
+    var status = el("p", "capture-status");
+    status.setAttribute("role", "status");
+    var send = el("button", "capture-btn", "Send this to Nova");
+    send.type = "button";
+    send.id = "diag-send";
+    send.addEventListener("click", function () {
+      var parts = rows.map(function (row) { return row[0] + ": " + row[1]; });
+      parts.push("Hamburger 3s later: " + later.textContent);
+      send.disabled = true;
+      status.textContent = "sending…";
+      status.className = "capture-status";
+      fetch("/api/capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: "notes",
+          text: "[device report] " + parts.join(" | "),
+          priority: "",
+        }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          status.textContent = "sent — the next cycle reads it as a note";
+        })
+        .catch(function (err) {
+          status.textContent = String(err.message || err);
+          status.className = "capture-status is-error";
+          send.disabled = false;
+        });
+    });
+
+    var actions = el("div", "diag-actions");
+    actions.appendChild(status);
+    actions.appendChild(send);
+    card.appendChild(actions);
+    feed.appendChild(card);
+
+    // Writes into a node the next navigation will have discarded, which is
+    // harmless -- the alternative is a timer to cancel and a handle to
+    // carry, for a value nobody reads once the page is gone.
+    window.setTimeout(function () { later.textContent = menuBtnReport(); }, 3000);
+  }
+
   function load() {
     // The overlay is fixed to the viewport and the feed under it is about
     // to be replaced, so a navigation that left it open would strand a
@@ -5331,6 +5513,12 @@
     }
     if (here.view === "ask") {
       loadAsk();
+      return;
+    }
+    // No `loadDiag` -- this is the one view with no payload behind it, so
+    // there is nothing to fetch and nothing that can fail on the way.
+    if (here.view === "diag") {
+      renderDiag();
       return;
     }
     markNav();
