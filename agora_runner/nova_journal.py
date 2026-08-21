@@ -434,6 +434,41 @@ def parse_heading(heading):
     }
 
 
+# The renderer's own answer to "does this entry have a title", ported
+# from `cleanTitle` in `nova_public/app.js`. `parse_heading`'s raw
+# `title` is *not* that answer: `Cycle 91 (2026-08-10 22:00)` leaves
+# `(2026-08-10 22:00)` behind, which is non-empty and which the card
+# then renders as nothing at all. Anything deciding whether a card will
+# be labelled has to ask this, not the raw field.
+#
+# **This is a hand-copy of JavaScript and nothing enforces that it stays
+# one.** `test_clean_title_matches_the_renderer` pins the four rules
+# against the literal source of `app.js`, which is the cheapest drift
+# check available from Python; if that test starts failing, the JS moved
+# and this did not.
+_CLEAN_TITLE_LEAD_RE = re.compile(r"^[\s·—–-]+")
+_CLEAN_TITLE_STAMP_RE = re.compile(r"\(\s*\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2})?\s*\)")
+_CLEAN_TITLE_WRAPPED_RE = re.compile(r"^\([^()]*\)$")
+
+
+def clean_title(title):
+    """`parse_heading`'s raw title -> the text the card actually shows.
+
+    Empty means the card is labelled by nothing. Mirrors `cleanTitle` in
+    `app.js` rule for rule, including the order they are applied in: the
+    leading separator run goes first, then whole parenthesised stamps
+    anywhere in the string, then a pair of parentheses wrapping *all* of
+    what is left (`(addendum)` loses them; `a fix (and the bug under it)`
+    keeps them), then the leading run again.
+    """
+    text = _CLEAN_TITLE_LEAD_RE.sub("", str(title or ""))
+    text = _CLEAN_TITLE_STAMP_RE.sub("", text).strip()
+    if _CLEAN_TITLE_WRAPPED_RE.match(text):
+        text = text[1:-1].strip()
+    text = _CLEAN_TITLE_LEAD_RE.sub("", text).strip()
+    return text[:1].upper() + text[1:] if text else ""
+
+
 _OUTCOME_SPLIT_RE = re.compile(r"^(?P<label>[A-Za-z-]+(?:[ \t]+[A-Za-z-]+)?)[ \t]*(?P<detail>[(,—-].*)?$", re.DOTALL)
 
 

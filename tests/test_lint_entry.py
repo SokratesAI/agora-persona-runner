@@ -23,7 +23,7 @@ from agora_runner.config import OSLO
 from agora_runner.nova_journal import split_ask
 from tools.lint_entry import _raw_body, lint, main
 
-GOOD = """### Cycle 152 — 2026-08-01 02:00 Oslo
+GOOD = """### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title
 
 Something real happened and here is the honest account of it.
 
@@ -92,7 +92,7 @@ def test_a_broken_heading_is_reported_once_not_twice():
     the same defect three ways is how a cycle fixes one thing and sees the
     count go up.
     """
-    entry = GOOD.replace("### Cycle 152 — 2026-08-01 02:00 Oslo\n\n", "")
+    entry = GOOD.replace("### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title\n\n", "")
     assert _kinds(lint("168-cycle-152.md", entry)) == ["heading"]
 
 
@@ -100,7 +100,7 @@ def test_footer_bolded_at_the_top_is_caught():
     """Cycles 146 and 147, verbatim in shape. The site repairs it; the badge
     is right and the author is not there to be told."""
     entry = (
-        "### Cycle 152 — 2026-08-01 02:00 Oslo\n\n"
+        "### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title\n\n"
         "**PR: #133 | Outcome: merged**\n\n"
         "Something real happened and here is the honest account of it.\n"
     )
@@ -120,7 +120,7 @@ def test_footer_hard_wrapped_is_caught():
 
 
 def test_missing_footer_says_so_differently_than_a_misplaced_one():
-    entry = "### Cycle 152 — 2026-08-01 02:00 Oslo\n\nNo footer at all.\n"
+    entry = "### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title\n\nNo footer at all.\n"
     findings = lint("168-cycle-152.md", entry)
     assert _kinds(findings) == ["footer"]
     assert "reads as an hour that shipped nothing" in findings[0]
@@ -130,7 +130,7 @@ def test_a_quoted_footer_in_a_code_fence_is_not_mistaken_for_the_real_one():
     """`personality.md` states the footer format as a fenced block, so an
     entry quoting it is a thing a cycle would plausibly write."""
     entry = (
-        "### Cycle 152 — 2026-08-01 02:00 Oslo\n\n"
+        "### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title\n\n"
         "The rule says to end with:\n\n"
         "```\nPR: #23 | Outcome: merged\n```\n\n"
         "and I did not.\n"
@@ -216,7 +216,7 @@ def test_an_entry_that_quotes_the_entries_marker_is_accepted():
     `strip_header=False` or the marker cuts this entry's own heading off
     and the document reports as `unparseable` instead."""
     entry = (
-        "### Cycle 152 — 2026-08-01 02:00 Oslo\n\n"
+        "### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title\n\n"
         "The marker matters here:\n\n## Entries\n\nis what the old file used.\n\n"
         "---\nPR: #133 | Outcome: merged\n"
     )
@@ -236,7 +236,7 @@ def test_the_footer_check_is_bounded_to_this_entry_not_the_document():
     `_FOOTER_RE`'s end-anchor match the *second* entry's footer, so a
     missing footer on the first went unreported."""
     entry = (
-        "### Cycle 152 — 2026-08-01 02:00 Oslo\n\nNo footer on this one.\n\n"
+        "### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title\n\nNo footer on this one.\n\n"
         "### Cycle 152 — 2026-08-01 02:30 Oslo\n\nBody.\n\n---\nPR: #133 | Outcome: merged\n"
     )
     kinds = _kinds(lint("168-cycle-152.md", entry))
@@ -250,7 +250,7 @@ NOW = datetime(2026, 8, 13, 7, 23, tzinfo=OSLO)
 
 def _stamped(time):
     return (
-        f"### 2026-08-13 {time} (Oslo) — Cycle 158\n\n"
+        f"### 2026-08-13 {time} (Oslo) — Cycle 158 — A Real Title\n\n"
         "Something real happened and here is the honest account of it.\n\n"
         "---\nPR: #141 | Outcome: merged\n"
     )
@@ -345,7 +345,7 @@ def test_a_missing_footer_is_not_also_reported_as_a_bad_board():
     """Same rule as the heading: one defect, one finding. The board check
     reads the same match `_footer_finding` did, so an entry with no footer
     at all must report only that."""
-    entry = "### Cycle 152 — 2026-08-01 02:00 Oslo\n\nNo footer here at all.\n"
+    entry = "### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title\n\nNo footer here at all.\n"
     assert _kinds(lint("168-cycle-152.md", entry)) == ["footer"]
 
 
@@ -359,7 +359,7 @@ def test_a_missing_footer_is_not_also_reported_as_a_bad_board():
 # about time.
 
 def _with(body):
-    return f"### Cycle 250 — 2026-08-17 00:20 Oslo\n\n{body}\n\nPR: none | Outcome: n/a"
+    return f"### Cycle 250 — 2026-08-17 00:20 Oslo — A Real Title\n\n{body}\n\nPR: none | Outcome: n/a"
 
 
 def _clock_findings_only(body, clock):
@@ -743,3 +743,131 @@ def test_the_new_ask_label_with_a_colon_is_clean():
         "glyphs gone as well?",
     )
     assert lint("168-cycle-152.md", entry) == []
+
+
+# --- the title check -------------------------------------------------
+#
+# `parse_heading` leaves `title: ""` when the heading is nothing but a
+# date, a time and a cycle number, and `app.js` then appends no
+# `entry-title` paragraph at all -- a card labelled by nothing. Measured
+# on the live feed 2026-08-22: 169 of 366 entries, 6 of the newest 60.
+
+UNTITLED = """### 2026-08-01 02:00 (Oslo) — Cycle 152
+
+Something real happened and here is the honest account of it.
+
+---
+PR: #133 | Outcome: merged
+"""
+
+
+def test_a_heading_with_no_title_is_caught():
+    assert _kinds(lint("168-cycle-152.md", UNTITLED)) == ["title"]
+
+
+def test_the_title_finding_names_the_convention():
+    finding = lint("168-cycle-152.md", UNTITLED)[0]
+    assert "### Cycle N — HH:MM Oslo — <Title>" in finding
+
+
+def test_a_promoted_heading_with_no_title_is_still_caught():
+    """A `## ` heading keeps its text through `normalise_entry`, so an
+    empty title there is the author's and not an artefact of the repair.
+    Two findings, deliberately -- the depth and the title are independent
+    defects and fixing one does not fix the other."""
+    assert _kinds(lint("168-cycle-152.md", UNTITLED.replace("### ", "## ", 1))) == [
+        "heading",
+        "title",
+    ]
+
+
+def test_a_synthesised_heading_does_not_report_a_missing_title_too():
+    """No heading at all -> `normalise_entry` builds `Cycle 152` from the
+    filename, which has no prose left over by construction. Reporting a
+    missing title there is the same defect said twice."""
+    body = "Something real happened.\n\n---\nPR: #133 | Outcome: merged\n"
+    assert _kinds(lint("168-cycle-152.md", body)) == ["heading"]
+
+
+
+
+def test_a_junk_title_is_deliberately_not_caught():
+    """The known blind spot, pinned rather than left to be rediscovered.
+
+    `_SEGMENT_SPLIT_RE` splits a heading on em-dashes only, so a heading
+    separated by anything else keeps its date and time *inside* the
+    title: `### Cycle 152 · 2026-08-01 02:00` parses to
+    `title: "· 2026-08-01 02:00"`. That is a card titled with a raw
+    timestamp, which is arguably worse than a blank one -- and this check
+    does not fire on it, because the title is not empty.
+
+    Left alone on purpose. Fixing it means changing the splitter, which
+    re-parses all 366 live entries, and that needs its own measurement
+    rather than being smuggled in behind a check for the opposite
+    problem. Filed in `nova/resources/issues.md`.
+    """
+    body = "### Cycle 152 · 2026-08-01 02:00\n\nA body.\n\n---\nPR: none | Outcome: no-op\n"
+    assert "title" not in _kinds(lint("168-cycle-152.md", body))
+
+
+# The reviewer's lead finding on #285, and it was right: the first
+# version of this check asked whether `parse_heading`'s raw title was
+# truthy, which is not the question the card answers.
+
+PAREN_STAMP = """### Cycle 152 (2026-08-01 02:00)
+
+A body.
+
+---
+PR: none | Outcome: no-op
+"""
+
+
+def test_a_parenthesised_stamp_is_not_a_title():
+    """`Cycle 91 (2026-08-10 22:00)` -- five live entries (Cycles 91, 92,
+    97, 100, 119). `parse_heading` leaves `(2026-08-10 22:00)`, which is
+    truthy; `cleanTitle` strips a whole parenthesised stamp and returns
+    `""`, so the card renders with no title. Asking the raw field was
+    silent on all five."""
+    assert _kinds(lint("168-cycle-152.md", PAREN_STAMP)) == ["title"]
+
+
+def test_the_check_asks_the_renderers_question_not_the_raw_field():
+    """Pins the disagreement itself, so a future edit cannot quietly go
+    back to the raw field with every other test still green."""
+    from agora_runner.nova_journal import clean_title, parse_heading
+
+    raw = parse_heading("Cycle 152 (2026-08-01 02:00)")["title"]
+    assert raw.strip(), "the raw field is truthy -- that is the trap"
+    assert clean_title(raw) == "", "the renderer shows nothing for it"
+
+
+def test_clean_title_matches_the_renderer():
+    """`clean_title` is a hand-copy of `cleanTitle` in `app.js` and
+    nothing else enforces that it stays one. Pin the four rules against
+    the literal JS source: if the JS moves and Python does not, this
+    fails rather than the two silently disagreeing on Edvard's cards."""
+    import os
+    from agora_runner import nova_journal
+
+    js = open(
+        os.path.join(os.path.dirname(nova_journal.__file__), "nova_public", "app.js"),
+        encoding="utf-8",
+    ).read()
+    start = js.index("function cleanTitle(")
+    body = js[start:js.index("\n  }", start)]
+    for fragment in (
+        r'.replace(/^[\s·—–-]+/, "")',
+        r'.replace(/\(\s*\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2})?\s*\)/g, "")',
+        r'if (/^\([^()]*\)$/.test(text)) text = text.slice(1, -1).trim();',
+    ):
+        assert fragment in body, f"cleanTitle no longer contains {fragment!r}"
+
+
+def test_an_entry_with_no_cycle_number_is_skipped_even_with_no_title():
+    """Pins the `cycle is None` clause rather than a truthy title that
+    would have skipped anyway -- the reviewer's finding 3 on #285."""
+    body = "### 2026-08-02 02:00\n\nA message.\n"
+    assert "title" not in _kinds(
+        lint("004-2026-08-02-edvard-s-first-message-not-a.md", body)
+    )
