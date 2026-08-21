@@ -5932,9 +5932,13 @@ describe("the plan page", () => {
   test("the scoreboard paints above the prose, not below it", async () => {
     const window = await loadSite("/plan", { plan: scored([G1]) });
     const card = window.document.querySelector(".plan-card");
-    const kids = [...card.children].map((n) => n.className);
-    assert.ok(kids.indexOf("goal-board") < kids.indexOf("plan-section"),
-      "the answer goes above the argument for it: " + kids.join(","));
+    // By class token, not by the whole `className`: a folded section
+    // carries `plan-section plan-fold`, and an exact-string match here
+    // silently became `indexOf(...) === -1` when the fold shipped.
+    const kids = [...card.children].map((n) => [...n.classList]);
+    const at = (name) => kids.findIndex((c) => c.includes(name));
+    assert.ok(at("goal-board") < at("plan-section") && at("plan-section") !== -1,
+      "the answer goes above the argument for it: " + JSON.stringify(kids));
     assert.equal(window.document.querySelectorAll(".goal-row").length, 1);
   });
 
@@ -6003,9 +6007,10 @@ describe("the plan page", () => {
 
   test("the strip paints above the argument for it", async () => {
     const window = await loadSite("/plan", { plan: ranked([R1]) });
-    const kids = [...window.document.querySelector(".plan-card").children].map((n) => n.className);
-    assert.ok(kids.indexOf("rank-strip") < kids.indexOf("plan-section"),
-      "the answer goes above the argument: " + kids.join(","));
+    const kids = [...window.document.querySelector(".plan-card").children].map((n) => [...n.classList]);
+    const at = (name) => kids.findIndex((c) => c.includes(name));
+    assert.ok(at("rank-strip") < at("plan-section") && at("plan-section") !== -1,
+      "the answer goes above the argument: " + JSON.stringify(kids));
     assert.equal(window.document.querySelectorAll(".rank-card").length, 1);
   });
 
@@ -6030,6 +6035,88 @@ describe("the plan page", () => {
     const window = await loadSite("/plan", { plan: twoDocuments });
     assert.equal(window.document.querySelector(".rank-strip"), null);
     assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
+  });
+});
+
+/* The per-section fold (issue #96, design items 4 and 5).
+ *
+ * The DOM is the only place that can answer whether the prose is actually
+ * behind a control and whether the heading survived going into a summary.
+ * The server decides `open`; these assert the client honours it. */
+describe("the plan page folds its prose", () => {
+  const folded = (sections) => ({
+    documents: [{
+      key: "goals", label: "Goals", title: "Goals", updated: "2026-08-21",
+      missing: false, scoreboard: [], ranked: [], sections,
+    }],
+  });
+  const prose = [{ type: "p", spans: [{ kind: "text", text: "The reasoning." }] }];
+
+  test("a headed section becomes a details, closed, with its heading in the summary", async () => {
+    const window = await loadSite("/plan", {
+      plan: folded([{ level: 2, heading: "The slate", blocks: prose, open: false }]),
+    });
+    const fold = window.document.querySelector(".plan-fold");
+    assert.equal(fold.tagName, "DETAILS");
+    assert.equal(fold.open, false);
+    // The heading is *inside* the summary, not replaced by it -- the scan
+    // down the left edge has to read the same headings it always did.
+    assert.equal(fold.querySelector("summary h3.plan-heading").textContent, "The slate");
+    assert.match(fold.querySelector(".plan-fold-body").textContent, /The reasoning\./);
+  });
+
+  test("the server's open flag is what opens a section", async () => {
+    const window = await loadSite("/plan", {
+      plan: folded([
+        { level: 3, heading: "2026-08-17 — newest", blocks: prose, open: true },
+        { level: 3, heading: "2026-08-16 — older", blocks: prose, open: false },
+      ]),
+    });
+    const folds = [...window.document.querySelectorAll(".plan-fold")];
+    assert.deepEqual(folds.map((f) => f.open), [true, false]);
+    assert.equal(folds[0].querySelector("summary h4.plan-heading").textContent,
+      "2026-08-17 — newest");
+  });
+
+  test("the standfirst is not a fold at all", async () => {
+    const window = await loadSite("/plan", {
+      plan: folded([{ level: 0, heading: null, blocks: prose, open: true }]),
+    });
+    assert.equal(window.document.querySelector(".plan-fold"), null);
+    assert.match(window.document.querySelector(".plan-section").textContent, /The reasoning\./);
+  });
+
+  test("a closed parent does not swallow the open review beneath it", async () => {
+    // The real shape of `goals.md`, and the one the other fixtures here
+    // miss: `## Weekly review` has prose of its own, so it is a *non-empty*
+    // closed fold sitting directly above an open one. Reviewer finding on
+    // #269. What makes this work is that sections are flat siblings rather
+    // than nested by level -- so this asserts the sibling relationship
+    // directly, because a later cycle nesting them would hide the newest
+    // review with every other test still green.
+    const window = await loadSite("/plan", {
+      plan: folded([
+        { level: 2, heading: "Weekly review", open: false,
+          blocks: [{ type: "p", spans: [{ kind: "text", text: "Appended once a week." }] }] },
+        { level: 3, heading: "2026-08-17 — the newest", open: true, blocks: prose },
+        { level: 3, heading: "2026-08-16 — the older", open: false, blocks: prose },
+      ]),
+    });
+    const folds = [...window.document.querySelectorAll(".plan-fold")];
+    assert.deepEqual(folds.map((f) => f.open), [false, true, false]);
+    const [parent, newest] = folds;
+    assert.equal(parent.contains(newest), false, "the open review must not be inside the closed parent");
+    assert.equal(newest.parentNode, parent.parentNode, "they are siblings");
+    assert.match(newest.querySelector(".plan-fold-body").textContent, /The reasoning\./);
+  });
+
+  test("a heading with an empty body renders plainly rather than as a control that lies", async () => {
+    const window = await loadSite("/plan", {
+      plan: folded([{ level: 2, heading: "Nothing under here", blocks: [], open: false }]),
+    });
+    assert.equal(window.document.querySelector(".plan-fold"), null);
+    assert.equal(window.document.querySelector("h3.plan-heading").textContent,
+      "Nothing under here");
   });
 });
 

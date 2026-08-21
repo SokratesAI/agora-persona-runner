@@ -4798,6 +4798,44 @@
     return box;
   }
 
+  /* One section of a plan document, folded under its own heading.
+   *
+   * `/plan` was 4,961 words in one scroll with no entry point but the top
+   * -- issue #96, in Edvard's words "just a huge wall of text. I hate
+   * that." The scoreboard and the ranked strip above answer the page's two
+   * questions; this puts the reasoning behind a control instead of
+   * deleting it, which is the half he has twice asked to keep.
+   *
+   * The server decides what is open, not this function: `section.open` is
+   * true for the standfirst and for the newest entry of a dated stack.
+   * Doing it here would mean matching heading text in two places.
+   *
+   * Two things stay unfolded on purpose. Level 0 has no heading -- it is
+   * the standfirst, and in `goals.md` it is the paragraph saying the slate
+   * is a proposal, so a `<summary>` would have nothing to print and the
+   * one sentence that stops him misreading the page would be behind a
+   * click. And a heading with an empty body renders plainly: a `<details>`
+   * that opens onto nothing is a control that lies. */
+  function planSection(section) {
+    var headingTag = section.level >= 3 ? "h4" : "h3";
+    var blocks = section.blocks || [];
+    if (!section.heading || !blocks.length) {
+      var plain = el("section", "plan-section");
+      if (section.heading) plain.appendChild(el(headingTag, "plan-heading", section.heading));
+      renderBlocks(plain, blocks);
+      return plain;
+    }
+    var fold = el("details", "plan-section plan-fold");
+    if (section.open) fold.open = true;
+    var summary = el("summary", "plan-summary");
+    summary.appendChild(el(headingTag, "plan-heading", section.heading));
+    fold.appendChild(summary);
+    var body = el("div", "plan-fold-body");
+    renderBlocks(body, blocks);
+    fold.appendChild(body);
+    return fold;
+  }
+
   function renderPlanDocument(doc) {
     var card = el("article", "plan-card");
     var head = el("header", "plan-head");
@@ -4814,16 +4852,7 @@
     if ((doc.scoreboard || []).length) card.appendChild(renderScoreboard(doc.scoreboard));
     if ((doc.ranked || []).length) card.appendChild(renderRanked(doc.ranked));
     (doc.sections || []).forEach(function (section) {
-      var body = el("section", "plan-section");
-      // Level 0 is the text above the first heading, and it is the
-      // standfirst of both documents -- rendered with no heading rather
-      // than skipped, because in `goals.md` it is the paragraph that says
-      // the slate is a proposal and not a settled list.
-      if (section.heading) {
-        body.appendChild(el(section.level >= 3 ? "h4" : "h3", "plan-heading", section.heading));
-      }
-      renderBlocks(body, section.blocks);
-      card.appendChild(body);
+      card.appendChild(planSection(section));
     });
     return card;
   }

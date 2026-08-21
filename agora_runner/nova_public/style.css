@@ -1894,6 +1894,39 @@ body.has-full-chart { overflow: hidden; }
 .plan-section h3.plan-heading { margin: 0 0 0.4rem; font-size: 0.98rem; }
 .plan-section h4.plan-heading { margin: 0.8rem 0 0.3rem; font-size: 0.88rem; color: var(--dim); }
 
+/* A folded section. The heading stays the heading -- it is inside the
+ * `<summary>` rather than replaced by it, so the F-pattern scan down the
+ * left edge reads the same list of headings it always did, and only the
+ * prose underneath has moved behind a tap.
+ *
+ * The row is the tap target, so it gets a real one: 44px is the minimum
+ * Apple and Google both publish, and this page is read on a phone. The
+ * marker sits on the right rather than the left for the same reason --
+ * the left edge is where the headings line up. */
+.plan-fold { border-top: 1px solid var(--line); padding-top: 0.5rem; }
+.plan-fold > .plan-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-height: 44px;
+  cursor: pointer;
+  list-style: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.plan-fold > .plan-summary::-webkit-details-marker { display: none; }
+.plan-fold > .plan-summary .plan-heading { margin: 0; }
+.plan-fold > .plan-summary::after {
+  content: "▸";
+  flex: none;
+  color: var(--dim);
+  font-size: 0.8rem;
+  transition: transform 0.15s ease;
+}
+.plan-fold[open] > .plan-summary::after { transform: rotate(90deg); }
+.plan-fold > .plan-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.plan-fold-body { padding-top: 0.5rem; }
+
 .plan-section p { margin: 0 0 0.7rem; line-height: 1.55; }
 .plan-section ul,
 .plan-section ol { margin: 0 0 0.7rem; padding-left: 1.3rem; }

@@ -462,3 +462,112 @@ def test_the_plan_and_the_boards_agree_on_every_status_word():
     for key, label in STATUS_LABELS.items():
         symbol, word = _STATUSES[key]
         assert symbol + " " + word == label, key
+
+
+def _open(payload, key):
+    """`[(heading, open)]` for one document, standfirst included as `None`."""
+    return [(s["heading"], s["open"]) for s in _doc(payload, key)["sections"]]
+
+
+def test_every_headed_section_arrives_collapsed():
+    """Issue #96: 4,961 words in one scroll, no entry point but the top.
+
+    The fold is the whole point of the change, so this is the assertion
+    that fails if a later cycle "simplifies" it away.
+    """
+    payload = plan_payload({"roadmap": ROADMAP})
+    headed = [(h, o) for h, o in _open(payload, "roadmap") if h]
+    assert headed, "the fixture must have headings for this to mean anything"
+    assert all(o is False for _h, o in headed), headed
+
+
+def test_the_standfirst_is_never_folded():
+    """NN/g's binding rule: crucial information does not go behind a fold.
+
+    In `goals.md` the standfirst is the paragraph saying the slate is a
+    proposal, and it has no heading -- so a `<summary>` would have nothing
+    to print and the sentence would be behind a click for no gain.
+    """
+    payload = plan_payload({"goals": GOALS})
+    assert [o for h, o in _open(payload, "goals") if h is None] == [True]
+
+
+def test_the_newest_of_a_dated_stack_opens_and_the_rest_fold():
+    payload = plan_payload({"goals": GOALS})
+    assert _open(payload, "goals") == [
+        (None, True),
+        ("The slate", False),
+        ("Weekly review", False),
+        ("2026-08-17 — week of 08-16 to 08-17", True),
+        ("2026-08-16 — week of 08-09 to 08-16", False),
+    ]
+
+
+def test_a_lone_dated_section_stays_folded():
+    """One entry is not a stack -- there is nothing for it to be newer than.
+
+    Opening it would be this module having an opinion about a single
+    section, which is the thing the "discovered, never named" rule exists
+    to stop.
+    """
+    lone = """# Goals
+
+## Weekly review
+
+### 2026-08-17 — the first one
+
+Only entry.
+"""
+    payload = plan_payload({"goals": lone})
+    assert _open(payload, "goals") == [
+        ("Weekly review", False),
+        ("2026-08-17 — the first one", False),
+    ]
+
+
+def test_a_dated_heading_at_another_level_is_not_the_same_stack():
+    """Adjacency and level both, or a `###` under a dated `##` opens itself."""
+    mixed = """# Goals
+
+## 2026-08-17 — a dated section
+
+Prose.
+
+### 2026-08-16 — a child that happens to carry a date
+
+More prose.
+"""
+    payload = plan_payload({"goals": mixed})
+    assert all(o is False for _h, o in _open(payload, "goals"))
+
+
+def test_a_parent_with_its_own_prose_still_folds_above_the_open_newest():
+    """The real shape of `goals.md`, which the shared fixture does not have.
+
+    `## Weekly review` carries a one-line standfirst of its own, so it is a
+    *non-empty* closed fold sitting directly above an *open* one. Reviewer
+    finding on #269: every fixture here had that heading empty, and an
+    empty headed section takes the other branch in `planSection` entirely
+    -- it renders plain rather than as a `<details>`. So the composition
+    that is actually on Edvard's screen was the one composition untested.
+    """
+    real_shape = """# Goals
+
+## Weekly review
+
+Appended once a week, newest first.
+
+### 2026-08-17 — the newest
+
+Body.
+
+### 2026-08-16 — the older
+
+Body.
+"""
+    sections = _doc(plan_payload({"goals": real_shape}), "goals")["sections"]
+    assert [(s["heading"], s["open"], bool(s["blocks"])) for s in sections] == [
+        ("Weekly review", False, True),
+        ("2026-08-17 — the newest", True, True),
+        ("2026-08-16 — the older", False, True),
+    ]
