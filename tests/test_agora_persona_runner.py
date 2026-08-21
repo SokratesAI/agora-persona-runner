@@ -1564,6 +1564,48 @@ def test_heartbeat_always_non_sticky_even_if_bound_conversation_is_sticky(runner
     assert captured["sticky"] is False
 
 
+def _run_heartbeat_capturing_model(runner, detail, persona):
+    """Runs run_heartbeat and returns the model_override generate_reply was
+    handed. This is the path Nova's own cycles run on."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@1h", "name": "HB"}
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
+                             sticky=False, on_text=None, on_thinking=None, unattended=False):
+        captured["model_override"] = model_override
+        return "heartbeat reply"
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.heartbeats, "notify", return_value=200), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})):
+        runner.run_heartbeat(heartbeat)
+
+    return captured["model_override"]
+
+
+def test_heartbeat_takes_its_model_from_the_bound_conversation(runner):
+    """Idea #95 slice 1. Nova's persona curates one conversation per cycle,
+    so resolving a heartbeat turn's model off the persona is the coupling
+    this slice removes -- and heartbeats are the path Nova itself runs on."""
+    persona = {"id": "p1", "name": "Test", "model": "gemini:gemini-pro-latest",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "model": "claude-cli:claude-opus-5"}
+
+    assert _run_heartbeat_capturing_model(runner, detail, persona) == "claude-cli:claude-opus-5"
+
+
+def test_heartbeat_falls_back_to_the_persona_when_the_conversation_has_no_model(runner):
+    persona = {"id": "p1", "name": "Test", "model": "gemini:gemini-pro-latest",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "model": ""}
+
+    assert _run_heartbeat_capturing_model(runner, detail, persona) is None
+
+
 # ---------------------------------------------------------------------------
 # 2026-07-24: image/file attachments were stored and rendered in the UI
 # (agora#12) but the persona-runner never actually read them -- an
