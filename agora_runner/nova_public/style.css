@@ -1536,6 +1536,10 @@ body.nav-open { overflow: hidden; }
 .chip.prio[aria-expanded="true"] { border-color: var(--accent); }
 
 .item-body { padding: 0 0.9rem 0.8rem; border-top: 1px solid var(--line); }
+/* The visible way into the row editor (Edvard, 2026-08-22). Right-aligned
+   and quiet: it is a control he needs to find once, not one competing with
+   the write-up underneath it. */
+.item-actions { display: flex; justify-content: flex-end; padding: 0.5rem 0 0.2rem; }
 .item-where { color: var(--dim); font-size: 0.9rem; }
 
 .note {

@@ -3047,8 +3047,38 @@
     if (boardState.open !== item.number) body.hidden = true;
     row.appendChild(body);
 
+    /* Edvard, capture 2026-08-22: *"I can't delete, edit or upload a file
+     * to a boarded issues. I wanted to delete issue #4 but i'm not able
+     * to."* #4 is an ordinary open row, so nothing about that row made it
+     * read-only -- the only way into the editor was the one-second hold,
+     * an invisible gesture with no label anywhere on the page.
+     *
+     * **I did not try to work out whether the hold also fails on his S25,
+     * and that is the point of fixing it this way.** A phone gesture is
+     * not measurable from in here (three cycles have already guessed at
+     * one), so the repair is chosen to land whichever theory is true: if
+     * the hold breaks on his device the button reaches the editor anyway,
+     * and if it works and he simply never knew it existed, the button
+     * says so. The hold stays -- it costs nothing and he asked for it.
+     */
+    function actionBar() {
+      var bar = el("div", "item-actions");
+      var edit = el("button", "capture-act", "Edit / Delete");
+      edit.type = "button";
+      edit.addEventListener("click", function (event) {
+        // The body sits inside the row but outside `head`, so this does
+        // not reach the head's toggle -- stopping it anyway keeps that
+        // true if the markup is ever rearranged.
+        event.stopPropagation();
+        openEditor();
+      });
+      bar.appendChild(edit);
+      return bar;
+    }
+
     function fill() {
       body.textContent = "";
+      body.appendChild(actionBar());
       if (item.where) body.appendChild(el("p", "item-where", "Landed in " + item.where));
       var blocks = boardState.details[board + ":" + item.number];
       if (!blocks) {
