@@ -181,3 +181,33 @@ def test_the_first_snapshot_starts_from_an_absent_ledger(tmp_path):
 
     assert code == 0
     assert len(load(history.read_text())) == 1
+
+
+def test_two_goals_with_the_same_short_id_refuse_rather_than_overwrite():
+    # The reviewer's finding on runner#287. `goal_key` is what keeps a
+    # series attached to its goal across a rename, so a collision is not
+    # a tie to break -- it is one goal's whole week disappearing with no
+    # error and no gap visible on the chart.
+    collided = GOALS_MD.replace("name: G4 — More than one tenant", "name: G1 — a copy-paste")
+    collided = collided.replace("now: not counted yet", "now: 9.9")
+    with pytest.raises(GoalHistoryError, match="keyed 'G1'"):
+        snapshot(collided)
+    with pytest.raises(GoalHistoryError, match="keyed 'G1'"):
+        append("", {"date": "2026-08-24", "cycle": 1,
+                    "values": {"G1 — one": 1, "G1 — two": 2}})
+
+
+def test_the_tool_refuses_a_colliding_file_without_touching_the_ledger(tmp_path, capsys):
+    goals = tmp_path / "goals.md"
+    goals.write_text(GOALS_MD.replace("name: G4 — More than one tenant", "name: G1 — a copy-paste")
+                     .replace("now: not counted yet", "now: 9.9"))
+    history = tmp_path / "history.json"
+    history.write_text(LEDGER)
+
+    code = snapshot_main(
+        ["--goals", str(goals), "--history", str(history), "--date", "2026-08-24", "--cycle", "1"]
+    )
+
+    assert code == 2
+    assert "keyed 'G1'" in capsys.readouterr().err
+    assert history.read_text() == LEDGER

@@ -100,7 +100,16 @@ def _row(raw, index):
             raise GoalHistoryError(
                 f"row {index} ({date}) has a non-numeric value for {name!r}: {value!r}"
             )
-        clean[goal_key(name)] = value
+        key = goal_key(name)
+        if key in clean:
+            # Last-write-wins here would drop a goal's whole week with no
+            # error and no line on its chart. Everything else in this
+            # module rests on that key being one goal, so a collision is
+            # the one failure it must not absorb.
+            raise GoalHistoryError(
+                f"row {index} ({date}) has two goals keyed {key!r}; a key is one goal"
+            )
+        clean[key] = value
 
     extra = set(raw) - {"date", "cycle", "values"}
     if extra:

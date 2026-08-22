@@ -71,7 +71,14 @@ def snapshot(goals_markdown):
     for goal in blocks["goal"]:
         if goal["nowValue"] is None:
             continue
-        values[goal_key(goal["name"])] = goal["nowValue"]
+        key = goal_key(goal["name"])
+        if key in values:
+            # Two goals with the same short id -- a copy-paste when a
+            # sixth goal was added, an id half-renumbered. Overwriting
+            # would file one of them and lose the other for that week,
+            # silently and permanently.
+            raise GoalHistoryError(f"two goals in that file are keyed {key!r}: {goal['name']!r}")
+        values[key] = goal["nowValue"]
     return values
 
 
@@ -93,7 +100,11 @@ def main(argv=None):
         print(f"cannot read goals.md: {exc}", file=sys.stderr)
         return 2
 
-    values = snapshot(goals_markdown)
+    try:
+        values = snapshot(goals_markdown)
+    except GoalHistoryError as exc:
+        print(f"refusing to write: {exc}", file=sys.stderr)
+        return 2
     if not values:
         # Not an empty snapshot: `goals.md` with no readable ```goal```
         # fence is a file that did not fetch, or a slate somebody has
