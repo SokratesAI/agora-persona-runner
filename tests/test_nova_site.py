@@ -1261,7 +1261,21 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
         encoding="utf-8",
     ).read()
     code = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
-    assert "substring(" not in code and "slice(0," not in code
+    # The ban is on cutting an *entry's* prose, not on `slice`/`substring`
+    # as tokens. It used to be a whole-file substring search, and on
+    # 2026-08-22 that turned `main` red over `label.slice(0, sp)` in
+    # `buildPrioPicker` -- a priority chip splitting `🟠 High` into its
+    # glyph, which no reader ever loses a sentence to. A guard that fails
+    # on correct code teaches the next cycle to route around it, and
+    # routing around this one means truncating a card. So it names what it
+    # protects: any expression whose receiver reads like entry text.
+    cut = re.findall(
+        r"\b\w*(?:entry|body|brief|summary|prose|text|blocks|markdown)\w*"
+        r"\s*\.\s*(?:slice\(\s*0\s*,|substring\()",
+        code,
+        flags=re.IGNORECASE,
+    )
+    assert cut == [], f"entry prose is being cut client-side: {cut}"
 
 
 # --- The `Needs Edvard` box, and the emphasis that kept it on screen -------
