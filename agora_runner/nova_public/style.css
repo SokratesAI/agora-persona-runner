@@ -1892,14 +1892,19 @@ body.has-full-chart { overflow: hidden; }
 }
 .item-prio-note { font-size: 0.8rem; opacity: 0.8; }
 
-/* It held one glyph -- a ball, or a dash for unrated -- until Cycle 268,
- * and was therefore a fixed 44px square, which 999px from the rule above
- * renders as a circle. Edvard, 2026-08-19: *"Please do not use these
- * symbols '🟠' as i can't really see the difference as they are colors.
- * Please use the full word"*. So it now holds a word, and "Immediately"
- * does not fit in a circle: the fixed width becomes a minimum and the
- * padding comes back, making it a pill that grows with its text, which
- * is what the shared rule above already describes. Still 44px tall --
+/* Held one glyph -- a ball, or a dash for unrated -- until Cycle 268, when
+ * Edvard, 2026-08-19: *"Please do not use these symbols '🟠' as i can't
+ * really see the difference as they are colors. Please use the full
+ * word"* put a word in it, which needed `width: auto` below so
+ * "Immediately" could grow the fixed circle into a pill instead of
+ * clipping.
+ *
+ * Back to the glyph alone as of 2026-08-22 (app.js's `glyphOf`) -- the
+ * word was pushing the other capture buttons out of position, and unlike
+ * a board chip this trigger is not the rating's only on-screen form: it
+ * opens `.prio-menu`, which still spells every option out in full. `width:
+ * auto` / `min-width: 44px` still holds either way -- a lone glyph just
+ * settles back to the circle it drew before Cycle 268. Still 44px tall --
  * that is the iOS touch target and it was never about the glyph. */
 .capture-prio {
   min-width: 44px;
