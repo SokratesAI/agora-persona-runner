@@ -112,3 +112,35 @@ def test_check_catches_a_rewrite_that_lost_a_live_capture():
     mangled = after.replace("- 🟠 High: the search bar closes my keyboard\n", "")
     problems = check(BOARD, mangled, moved)
     assert any("expected" in p for p in problems)
+
+
+def test_trailing_blank_lines_are_not_eaten():
+    """Both real files end in ~100 blank lines. They are his, not mine."""
+    padded = BOARD + "\n" * 40
+    after, _ = rewrite(padded)
+    assert len(after) - len(after.rstrip("\n")) == 41  # 40 + the file's own last newline
+    plain, _ = rewrite(BOARD)
+    assert len(plain) - len(plain.rstrip("\n")) == 1
+
+
+def test_the_heading_guard_is_a_heading_not_a_substring():
+    prose = BOARD.replace(
+        "Every letter dismisses it.",
+        "Every letter dismisses it. See the processed captures section.",
+    )
+    after, _ = rewrite(prose)
+    assert after.count(PROCESSED_HEADING) == 1
+    head, _, archive = after.partition("\n" + PROCESSED_HEADING)
+    assert "DONE (Cycle 4)" in archive
+
+
+def test_a_line_the_reader_ignores_is_not_dragged_along():
+    """`_captures` only folds a non-blank line that is not `-`/`*`/`|`."""
+    odd = BOARD.replace(
+        "- DONE (Cycle 9): answered on the row\n",
+        "- DONE (Cycle 9): answered on the row\n* a starred line\n",
+    )
+    after, _ = rewrite(odd)
+    head, _, archive = after.partition("\n" + PROCESSED_HEADING)
+    assert "* a starred line" in head
+    assert "* a starred line" not in archive
