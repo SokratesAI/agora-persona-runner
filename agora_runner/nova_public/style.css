@@ -2013,6 +2013,18 @@ body.has-full-chart { overflow: hidden; }
 .goal-fill.off { background: var(--warn); }
 .goal-tick { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: var(--text); opacity: 0.75; }
 
+/* A goal's weekly readings (idea #38). The line is 240x34 in its own
+ * viewBox and stretched to whatever width the row has, so it stays legible
+ * on the 360px phone this page is actually read on. `vector-effect` keeps
+ * the stroke one pixel after that stretch — without it a wide row draws a
+ * fat line and a narrow one draws a hairline. */
+.goal-history { margin-top: 0.5rem; }
+.goal-spark { display: block; width: 100%; height: 34px; overflow: visible; }
+.goal-spark-line { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.goal-spark-dot { fill: var(--accent); opacity: 0.55; }
+.goal-spark-dot.last { opacity: 1; }
+.goal-history-text { margin: 0.25rem 0 0; font-size: 0.78rem; color: var(--dim); }
+
 /* `##` and `###` land on h3/h4 here, so the sizes are set explicitly
  * rather than inherited: the card's own title is the h2, and a browser
  * default would make a section heading larger than the document it is

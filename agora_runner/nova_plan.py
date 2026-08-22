@@ -45,6 +45,7 @@ other word in both documents is still prose nothing parses. See `_fenced`.
 import re
 
 from agora_runner.md_sections import outline
+from agora_runner.nova_goal_history import GoalHistoryError, goal_key, series
 from agora_runner.nova_journal import render_blocks
 
 ROADMAP_PATH = "projects/sokrates/projects/nova/roadmap.md"
@@ -362,7 +363,25 @@ def _mark_open(sections):
         section["open"] = not section["heading"] or i in newest
 
 
-def _document(key, label, text):
+def _attach_history(scoreboard, history):
+    """Hang each goal's past readings on its scoreboard row.
+
+    `history` is `nova_goal_history.series` output. A goal with no series
+    gets `[]` rather than a missing field, so the renderer has one branch
+    ("is this list empty") instead of two.
+
+    The current `now:` is deliberately *not* appended here. It is
+    whatever the last review wrote into the fence, and the ledger already
+    holds that same reading under the date it was taken -- appending it
+    again would draw a duplicated final point, and worse, would draw a
+    point at "today" for a number measured last Monday.
+    """
+    for goal in scoreboard:
+        goal["history"] = list((history or {}).get(goal_key(goal["name"]), []))
+    return scoreboard
+
+
+def _document(key, label, text, history=None):
     """One markdown document -> one card's worth of payload.
 
     A missing or empty document is `missing: True` with no sections
@@ -389,7 +408,7 @@ def _document(key, label, text):
     # be found twice, and after the emptiness check, so a missing document
     # is still one branch.
     blocks, text = _fenced(text, {"goal": _goal, "next": _next})
-    scoreboard, ranked = blocks["goal"], blocks["next"]
+    scoreboard, ranked = _attach_history(blocks["goal"], history), blocks["next"]
 
     title = label
     sections = []
@@ -419,17 +438,31 @@ def _document(key, label, text):
     }
 
 
-def plan_payload(documents):
+def plan_payload(documents, history=None):
     """`{key: markdown}` -> the `/plan` payload.
 
     Every document in `PLAN_DOCUMENTS` appears in the output whether or
     not the fetch found it, in the fixed order above. A page that renders
     only what it managed to read is a page that goes quietly from two
     cards to one, and the missing one is exactly the case worth seeing.
+
+    `history` is the raw `goal-history.json` text and defaults to none,
+    which is a scoreboard with no lines under it -- the state of this
+    page before the first snapshot, and the state of it if that one fetch
+    fails. A goal's *current* number never comes from the ledger, so the
+    scoreboard reads the same either way.
     """
+    try:
+        past = series(history) if history else {}
+    except (GoalHistoryError, ValueError):
+        # A ledger that will not parse costs the sparklines and nothing
+        # else. Taking the whole `/plan` page down -- the roadmap, the
+        # goals, every word of both -- over a chart decoration is the
+        # wrong trade, and the empty chart is visible on the page.
+        past = {}
     return {
         "documents": [
-            _document(key, label, (documents or {}).get(key, ""))
+            _document(key, label, (documents or {}).get(key, ""), past)
             for key, label, _path in PLAN_DOCUMENTS
         ]
     }
