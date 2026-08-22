@@ -678,6 +678,62 @@ def _clock_findings(body, clock):
     return findings
 
 
+# Claims about the whole of history, which a cycle can almost never have
+# checked. Edvard, comments board 2026-08-22 20:14, on a Cycle 327 title
+# reading "a Gemini key mounted on the runner that nothing has ever read":
+# *"as far as you know yes, but you do not know for sure that someone used
+# it earlier ... I know that i have used it before and built an entire
+# cascading fallback for it in agora when it got ratelimited. So stating
+# 'nothing has ever read' is false and you presumed too much."* He wrote it
+# again in `notes.md` two minutes later, which is how it reached this file.
+#
+# The gap it names is narrow and is not the one `prompt.md` already guards.
+# "Ground every claim in something you actually ran" protects against a
+# claim with no measurement under it; this protects against a real
+# measurement written up wider than it was taken. I had checked what reads
+# that key *now*, on one pod, and published a sentence about six months of
+# a system I did not build.
+_ABSOLUTE_HISTORY_RE = re.compile(
+    r"\b(?:nothing|nobody|no one|no \w+)\s+(?:has|have|had)\s+ever\b"
+    r"|\b(?:has|have|had)\s+never\b"
+    r"|\bnever\s+(?:been|once)\b"
+    r"|\bnot\s+once\b",
+    re.IGNORECASE,
+)
+
+# Enough words either side to see what the claim was about, since the
+# author has to judge whether they measured that scope.
+_ABSOLUTE_WINDOW = 60
+
+
+def absolute_claim_notes(body):
+    """Advisory lines for claims about all of history. Never fatal.
+
+    Deliberately not a finding. Run over the 368 entries in the journal
+    mirror on 2026-08-22, this function flags 77 of them -- 21% -- with 90
+    notes in all, so a typical entry draws none or one. Plenty of those 90
+    are honest ("this rating has never been re-derived", about a file the
+    cycle had just read in full). A refusal would make a cycle delete a
+    true sentence to satisfy a linter, which is a worse failure than the
+    one being fixed. So this prints, and the author decides.
+
+    Quoted spans are stripped first: Edvard's own words, and the previous
+    cycle's, are frequently quoted in an entry and are not mine to hedge.
+    """
+    stripped = _strip_quoted(body)
+    notes = []
+    for match in _ABSOLUTE_HISTORY_RE.finditer(stripped):
+        start = max(0, match.start() - _ABSOLUTE_WINDOW)
+        end = min(len(body), match.end() + _ABSOLUTE_WINDOW)
+        excerpt = " ".join(body[start:end].split())
+        notes.append(
+            f"scope: {excerpt!r} claims something about all of history. Did you "
+            "check all of it, or only the part you could see? If it is the "
+            "second, say what you checked."
+        )
+    return notes
+
+
 # `None` is a real answer from `read_turn_clock` -- it means "no ground
 # truth", which is the whole point of that check being skippable -- so it
 # cannot double as "the caller did not pass one". Using it for both made
@@ -791,6 +847,11 @@ def main(argv=None):
         print(f"lint_entry: cannot read {args.file}: {exc}", file=sys.stderr)
         return 2
     name = args.name or args.file.rsplit("/", 1)[-1]
+    # Run on the whole document rather than the parsed body: the sentence
+    # Edvard objected to was a *title*, and that is the part of an entry he
+    # reads on a card without opening it.
+    for note in absolute_claim_notes(content):
+        print(f"lint_entry: {note}", file=sys.stderr)
     findings = lint(name, content)
     if not findings:
         print(f"lint_entry: {name} renders as written.")

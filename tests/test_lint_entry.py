@@ -21,7 +21,7 @@ from datetime import datetime
 
 from agora_runner.config import OSLO
 from agora_runner.nova_journal import split_ask
-from tools.lint_entry import _raw_body, lint, main
+from tools.lint_entry import _raw_body, absolute_claim_notes, lint, main
 
 GOOD = """### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title
 
@@ -184,6 +184,87 @@ def test_main_uses_the_name_it_will_be_written_under(tmp_path):
 
 def test_main_exits_two_when_the_file_cannot_be_read(tmp_path):
     assert main([str(tmp_path / "nope.md")]) == 2
+
+
+class TestAbsoluteClaims:
+    """Claims about the whole of history, which the author usually cannot
+    have checked. Advisory on purpose -- 17% of live entries carry one and
+    most of those are honest, so a refusal would cost more than it saves."""
+
+    def test_it_catches_the_sentence_edvard_objected_to(self):
+        notes = absolute_claim_notes(
+            "a Gemini key mounted on the runner that nothing has ever read"
+        )
+        assert len(notes) == 1
+        assert "nothing has ever read" in notes[0]
+        assert notes[0].startswith("scope:")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "the checker has never fired",
+            "that column had never been read",
+            "not once did the board rank on it",
+            "no cycle has ever tried to remove it",
+            "nobody has ever checked whether that pays for itself",
+        ],
+    )
+    def test_it_catches_the_other_shapes_of_the_same_claim(self, text):
+        assert absolute_claim_notes(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "I checked the runner pod and nothing there reads it",
+            "no pod in `agents` currently mounts it",
+            "the deploy came up healthy",
+        ],
+    )
+    def test_a_claim_scoped_to_what_was_measured_passes(self, text):
+        assert absolute_claim_notes(text) == []
+
+    def test_edvards_own_words_are_not_hedged_back_at_him(self):
+        """Entries quote him constantly, and his sentences are not mine to
+        qualify. Same for a blockquote of a previous cycle."""
+        assert absolute_claim_notes('He wrote: "nothing has ever read it."') == []
+        assert absolute_claim_notes("> nothing has ever read it") == []
+        assert absolute_claim_notes("`has never` in a code span") == []
+
+    def test_it_reports_every_occurrence_not_just_the_first(self):
+        body = (
+            "The key has never been read.\n\nAnd the fallback was never once "
+            "exercised.\n"
+        )
+        assert len(absolute_claim_notes(body)) == 2
+
+    def test_main_prints_the_note_without_failing_the_entry(self, tmp_path, capsys):
+        """The whole point of the advisory channel: an entry that renders
+        correctly still exits 0, so the `&&` in `prompt.md` step 7 still
+        writes it. If this ever starts returning 1 the tool has quietly
+        become a censor."""
+        draft = tmp_path / "168-cycle-152.md"
+        draft.write_text(
+            GOOD.replace(
+                "Something real happened", "Nothing has ever happened"
+            ),
+            encoding="utf-8",
+        )
+        assert main([str(draft)]) == 0
+        err = capsys.readouterr().err
+        assert "scope:" in err
+        assert "Nothing has ever happened" in err
+
+    def test_the_title_is_checked_too(self, tmp_path, capsys):
+        """Edvard read the card title, not the entry -- `"I'm reacting to
+        your title"` -- so a check that only saw the parsed body would have
+        missed the sentence that caused this."""
+        draft = tmp_path / "168-cycle-152.md"
+        draft.write_text(
+            GOOD.replace("A Real Title", "The key nothing has ever read"),
+            encoding="utf-8",
+        )
+        assert main([str(draft)]) == 0
+        assert "nothing has ever read" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
