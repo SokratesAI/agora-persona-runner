@@ -591,7 +591,7 @@
    * particular is worse than no link. */
   function statusField(cycle) {
     if (cycle === null || cycle === undefined) return el("p", "status-sub");
-    var field = el("a", "status-sub is-link");
+    var field = el("a", "status-sub");
     field.href = "/cycle/" + cycle;
     field.addEventListener("click", function (ev) {
       var card = document.getElementById("cycle-" + cycle);
