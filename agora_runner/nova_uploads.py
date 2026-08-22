@@ -296,7 +296,17 @@ def store_upload(filename, content_type, data_b64):
 #: changed here: without it a capture of a PDF would file as its own bullet
 #: instead of folding onto the sentence above it — the bug Cycle 307 fixed
 #: for images, reintroduced for everything else.
-ATTACHMENT_LINE = re.compile(r"^!?\[[^\]]*\]\(/api/upload/[A-Za-z0-9._-]+\)$")
+#: The construct itself, once, with its three parts captured: the `!`
+#: that says picture rather than file, the alt text, and the path. Both
+#: Python readers are built from this string so a rename of the URL
+#: prefix or a widening of the filename charset cannot move one and leave
+#: the other behind. `nova_journal.render_inline` matches it inline and
+#: needs the groups; `ATTACHMENT_LINE` below anchors it and does not —
+#: that is the difference the docstring above calls two questions, and it
+#: is now the only difference between them.
+ATTACHMENT_PATTERN = r"(!?)\[([^\]]*)\]\((/api/upload/[A-Za-z0-9._-]+)\)"
+
+ATTACHMENT_LINE = re.compile("^" + ATTACHMENT_PATTERN + "$")
 
 
 def is_attachment_line(line):

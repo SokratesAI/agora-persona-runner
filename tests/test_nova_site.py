@@ -391,6 +391,56 @@ def test_asterisks_inside_backticks_stay_literal():
     ]
 
 
+def test_an_attachment_becomes_a_span_with_its_url_split_out():
+    """Edvard's uploaded picture, in a board write-up rather than a comment.
+
+    A board comment is appended to the row's own write-up, which reaches
+    the page as server-parsed spans -- so until this existed, the file he
+    had just attached rendered as the literal `![shot.png](/api/upload/…)`
+    text of the markdown line. `url` is a separate field because app.js
+    builds every node with `textContent`.
+    """
+    spans = render_inline("before ![shot.png](/api/upload/ab12.png) after")
+    assert [(s["kind"], s["text"]) for s in spans] == [
+        ("text", "before "),
+        ("attach", "shot.png"),
+        ("text", " after"),
+    ]
+    assert spans[1]["url"] == "/api/upload/ab12.png"
+    assert spans[1]["isImage"] is True
+
+
+def test_an_attached_file_is_marked_as_not_an_image():
+    """No bang means a PDF, and the page paints a paperclip, not a thumbnail."""
+    spans = render_inline("[notes.pdf](/api/upload/cd34.pdf)")
+    assert spans[0]["kind"] == "attach"
+    assert spans[0]["isImage"] is False
+
+
+def test_a_link_we_did_not_write_stays_text():
+    """The path must start `/api/upload/`, which is the whole safety rule.
+
+    A pasted `[x](javascript:…)` or a remote tracker URL is not a thing
+    this site generated, so it is shown as the characters it is rather
+    than becoming an element with an href.
+    """
+    for text in (
+        "[x](javascript:alert(1))",
+        "[x](https://tracker.example/pixel.gif)",
+        "![x](/api/uploads/ab12.png)",
+    ):
+        spans = render_inline(text)
+        assert all(s["kind"] == "text" for s in spans), text
+        assert "".join(s["text"] for s in spans) == text
+
+
+def test_bold_inside_a_filename_cannot_split_the_attachment():
+    """The construct is matched before `**`, so the whole line survives."""
+    spans = render_inline("![a**b**c.png](/api/upload/ab12.png)")
+    assert [s["kind"] for s in spans] == ["attach"]
+    assert spans[0]["text"] == "a**b**c.png"
+
+
 def test_markup_in_the_vault_stays_text():
     """The client builds nodes with textContent, so the contract this has
     to keep is that a span carries the raw characters and the renderer

@@ -206,20 +206,26 @@ def _app_js():
         return handle.read()
 
 
-def test_attach_button_is_wired_into_both_composers():
+def test_attach_button_is_wired_into_every_composer():
     """The guard for the gap that made every server-side test above moot.
 
     `buildAttach` returns a node. A node nobody appends is not a feature,
-    and no Python test can tell the difference. Edvard named the four
-    places he wants it -- *"next to a comment, issue, note or idea"* -- and
-    two composers cover all four: the comment drawer, and the capture box
-    whose three buttons are Issue, Idea and Note.
+    and no Python test can tell the difference. Edvard named four places
+    he wants it -- *"next to a comment, issue, note or idea"* -- and two
+    composers covered all four: the journal comment drawer, and the
+    capture box whose three buttons are Issue, Idea and Note.
+
+    The third is the board row's own comment box, added Cycle 320 on
+    *"I can't delete, edit or upload a file to a boarded issues."* It is
+    a genuinely different composer from the journal drawer -- a board
+    comment is appended to the row's write-up rather than stored in its
+    own file -- so it needed its own call rather than inheriting one.
     """
     source = _app_js()
     # The definition matches `buildAttach(` too, so it is subtracted rather
-    # than pattern-dodged -- this counts call sites, and there are two.
+    # than pattern-dodged -- this counts call sites, and there are three.
     calls = source.count("buildAttach(") - source.count("function buildAttach(")
-    assert calls == 2, f"expected both composers to build one, found {calls}"
+    assert calls == 3, f"expected every composer to build one, found {calls}"
 
     # Defined once, and the returned button actually reaches the DOM.
     assert source.count("function buildAttach(") == 1
@@ -231,6 +237,11 @@ def test_attach_button_is_wired_into_both_composers():
     # in some engines, which is the kind of bug that only shows on a phone.
     assert "appendChild(attach.input)" in source
     assert "appendChild(captureAttach.input)" in source
+
+    # The board row's composer builds its own, in the footer beside Send,
+    # and its hidden input goes into the same row. `foot` is that node.
+    assert "foot.appendChild(attach.button)" in source
+    assert "foot.appendChild(attach.input)" in source
 
 
 def test_an_attached_image_is_rendered_back_in_the_comment_thread():
