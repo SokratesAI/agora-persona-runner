@@ -1299,11 +1299,18 @@
     appendOutcome(meta, settled);
     if (meta.childNodes.length) card.appendChild(meta);
 
-    /* No heading title on a card that has a brief -- see `hasBrief`. A
-     * multi-part cycle's titles are unaffected: they are the subheadings
-     * inside the drawer, where they say which half you are in. */
+    /* The brief is drawn further down, but whether it exists decides
+     * whether the heading title is drawn at all -- see `hasBrief`. The
+     * `is-unsplit` fallback below counts: it fills the same slot, so a
+     * card that falls back to it would otherwise carry two labels again,
+     * which is the whole bug. A multi-part cycle's titles are unaffected:
+     * they are the subheadings inside the drawer, where they say which
+     * half you are in. */
+    var briefSpans = (digestLine && digestLine.briefSpans) || entry.briefSpans;
+    var unsplitSummary = (briefSpans && briefSpans.length)
+      ? "" : (digestLine ? digestLine.text : firstParagraph(entry.blocks));
     if (ordered.length === 1 && entry.cycle !== null && entry.cycle !== undefined
-        && cleanTitle(entry.title) && !hasBrief(digestLine, entry)) {
+        && cleanTitle(entry.title) && !hasBrief(digestLine, entry) && !unsplitSummary) {
       card.appendChild(el("p", "entry-title", cleanTitle(entry.title)));
     }
 
@@ -1410,12 +1417,11 @@
      * why he asked. The brief comes from the server already cut on a
      * sentence boundary (nova_journal.split_brief), and the remainder is
      * this first drawer rather than something thrown away. */
-    var briefSpans = (digestLine && digestLine.briefSpans) || entry.briefSpans;
     if (briefSpans && briefSpans.length) {
       var brief = el("p", "entry-brief");
       renderSpans(brief, briefSpans);
       card.appendChild(brief);
-    } else {
+    } else if (unsplitSummary) {
       /* A payload with no briefSpans, which is reachable rather than
        * theoretical: sw.js is network-first and caches /api responses, so
        * opening the app with the tailnet down after this deploy pairs the
@@ -1425,9 +1431,13 @@
        * it the fallback degrades to something worse than what it replaced --
        * a whole 2000-character digest line as an unclamped card title -- and
        * "degrades to exactly what it showed before" is the only thing that
-       * makes a fallback worth keeping. */
-      var summaryText = digestLine ? digestLine.text : firstParagraph(entry.blocks);
-      if (summaryText) card.appendChild(el("p", "entry-brief is-unsplit", summaryText));
+       * makes a fallback worth keeping.
+       *
+       * Both this and the title block above read `unsplitSummary`, computed
+       * once where the title decision is made -- two copies of the same
+       * expression is how the title came to be drawn beside a brief in the
+       * first place. */
+      card.appendChild(el("p", "entry-brief is-unsplit", unsplitSummary));
     }
 
     // Drawer one: the rest of the digest line. Absent for the 55 entries
@@ -1740,11 +1750,14 @@
    * then, two minutes later: "The one line summary can be cut."
    *
    * So the rule is the brief, from either source, not the digest line
-   * specifically. Measured on the live feed the same night: all 385
-   * entries carry `briefSpans`, so in practice the heading title no longer
-   * appears on a card at all. The branch stays rather than the call site
-   * being deleted because a card with no brief would otherwise be labelled
-   * by nothing, and `lint_entry`'s title check still guards that. */
+   * specifically. Measured on the live feed the same night: all 385 entries
+   * in `/api/journal` have a **non-empty** `briefSpans`, and so do all 269
+   * digest lines -- an entry whose body holds no plain paragraph would get
+   * an empty one, `nova_journal` sets the field either way. So on a fresh
+   * payload the heading title no longer appears on a card. The branch stays
+   * rather than the call site being deleted because a card with no brief
+   * would otherwise be labelled by nothing, and `lint_entry`'s title check
+   * still guards that. */
   function hasBrief(digestLine, entry) {
     if (digestLine && digestLine.briefSpans && digestLine.briefSpans.length) return true;
     return !!(entry && entry.briefSpans && entry.briefSpans.length);

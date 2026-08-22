@@ -492,6 +492,10 @@ describe("a feed card carries one title, not two", () => {
       "The brief the entry wrote for itself.");
   });
 
+  /* Nothing to label the card with: no digest line, no brief of its own,
+   * and no prose for the `is-unsplit` fallback to brief from either. That
+   * fallback fills the same slot, so it counts as a label -- a card that
+   * falls back to it and *also* draws the title is the bug again. */
   test("a card with no brief at all keeps its title, since nothing else labels it", async () => {
     const solo = soloCycle();
     const journal = JSON.parse(JSON.stringify(payload.journal));
@@ -499,11 +503,34 @@ describe("a feed card carries one title, not two", () => {
     const entry = journal.entries.find((e) => e.cycle === solo.cycle);
     entry.title = title;
     entry.briefSpans = [];
+    entry.blocks = [];
     const window = await loadSite("/", {
       journal: () => journal,
       digest: withoutDigestLine(solo.cycle),
     });
-    assert.equal(cardFor(window, solo.cycle).querySelector(".entry-title").textContent, title);
+    const card = cardFor(window, solo.cycle);
+    assert.equal(card.querySelector(".entry-title").textContent, title);
+    assert.equal(card.querySelector(".entry-brief"), null);
+  });
+
+  /* The stale-payload path: sw.js can pair this app.js with a payload that
+   * has no `briefSpans` at all, and the card then briefs from the digest
+   * line's raw text. That is still a label, so the title stays out. */
+  test("a card briefed by the is-unsplit fallback drops its title too", async () => {
+    const solo = soloCycle();
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const entry = journal.entries.find((e) => e.cycle === solo.cycle);
+    entry.title = "A heading beside a fallback brief saying the same thing";
+    entry.briefSpans = [];
+    const digest = JSON.parse(JSON.stringify(payload.digest));
+    const line = digest.lines.find((l) => l.cycle === solo.cycle);
+    delete line.briefSpans;
+    line.text = "The whole digest line, unsplit, because the payload is old.";
+    const window = await loadSite("/", { journal: () => journal, digest });
+    const card = cardFor(window, solo.cycle);
+    assert.equal(card.querySelector(".entry-title"), null);
+    assert.equal(card.querySelector(".entry-brief.is-unsplit").textContent,
+      "The whole digest line, unsplit, because the payload is old.");
   });
 });
 
@@ -1592,6 +1619,15 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     );
     assert.ok(solo, "the fixture must contain a solo cycle briefed from its own prose");
     solo.title = "A heading saying the same thing the entry's first sentence says";
+    // Written in, not read back out of the fixture: an assertion computed
+    // from `solo.briefSpans` compares the render to its own input, so a
+    // mutation moves both sides together. Two spans of different kinds
+    // because every brief in the fixture is a single plain-text span, and
+    // real ones carry `strong` and `code`.
+    solo.briefSpans = [
+      { kind: "text", text: "The brief the entry wrote for itself, in " },
+      { kind: "code", text: "app.js" },
+    ];
     const digest = JSON.parse(JSON.stringify(payload.digest));
     digest.lines = digest.lines.filter((l) => l.cycle !== solo.cycle);
     const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal, digest });
@@ -1599,10 +1635,8 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.equal(card.querySelector(".entry-title"), null);
     // Not vacuous: the brief the title was competing with is still drawn,
     // so this cannot pass by the card having lost both labels.
-    assert.equal(
-      card.querySelector(".entry-brief").textContent.trim(),
-      solo.briefSpans.map((s) => s.text).join("").trim()
-    );
+    assert.equal(card.querySelector(".entry-brief").textContent.trim(),
+      "The brief the entry wrote for itself, in app.js");
   });
 
   /* Edvard, issues #86: "Journal cards like cycle 209 seems to have two
