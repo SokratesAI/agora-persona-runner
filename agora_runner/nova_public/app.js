@@ -1299,14 +1299,11 @@
     appendOutcome(meta, settled);
     if (meta.childNodes.length) card.appendChild(meta);
 
-    /* A one-part cycle's title has nowhere else to go; a multi-part cycle's
-     * titles are the subheadings inside the drawer, where they say which
-     * half you are in. `cleanTitle` because eleven entries have a title that
-     * is only their own timestamp, which the stamp above already prints.
-     * `hasDigestBrief` because a card with a digest line already has a
-     * sentence doing this job -- see its own comment, and issues #86. */
+    /* No heading title on a card that has a brief -- see `hasBrief`. A
+     * multi-part cycle's titles are unaffected: they are the subheadings
+     * inside the drawer, where they say which half you are in. */
     if (ordered.length === 1 && entry.cycle !== null && entry.cycle !== undefined
-        && cleanTitle(entry.title) && !hasDigestBrief(digestLine)) {
+        && cleanTitle(entry.title) && !hasBrief(digestLine, entry)) {
       card.appendChild(el("p", "entry-title", cleanTitle(entry.title)));
     }
 
@@ -1732,11 +1729,25 @@
    * double journal entries to be one card with tabs, and now they are."
    * The digest line is the one he reads, so it is the one that stays.
    *
-   * The 55 archival entries with no digest line are untouched: their brief
-   * is their own first paragraph, which is prose rather than a second
-   * title, and dropping the heading there would leave the card unlabelled. */
-  function hasDigestBrief(digestLine) {
-    return !!(digestLine && digestLine.briefSpans && digestLine.briefSpans.length);
+   * The digest-line half of that shipped in #86. The entry half did not:
+   * when a card has no digest line its brief is the entry's own first
+   * paragraph, and that paragraph opens by restating the heading, so the
+   * card still showed two sentences saying one thing. Edvard, comments
+   * board 2026-08-22, on a screenshot of cycle 329: "I'm a bit confused by
+   * the Nova cycle ui. Sometimes there are two titles and they repeat
+   * eachoter with different words. See image. I like the one with the
+   * colored backline" -- the coloured backline is `.entry-brief` -- and
+   * then, two minutes later: "The one line summary can be cut."
+   *
+   * So the rule is the brief, from either source, not the digest line
+   * specifically. Measured on the live feed the same night: all 385
+   * entries carry `briefSpans`, so in practice the heading title no longer
+   * appears on a card at all. The branch stays rather than the call site
+   * being deleted because a card with no brief would otherwise be labelled
+   * by nothing, and `lint_entry`'s title check still guards that. */
+  function hasBrief(digestLine, entry) {
+    if (digestLine && digestLine.briefSpans && digestLine.briefSpans.length) return true;
+    return !!(entry && entry.briefSpans && entry.briefSpans.length);
   }
 
   function cleanTitle(title) {
@@ -1962,10 +1973,10 @@
      *
      * `cleanTitle` rather than the raw string: eleven entries have a title
      * that is only their own timestamp, and it renders as nothing rather
-     * than as a date printed twice. `hasDigestBrief` because a card with a
-     * digest line already has a sentence doing this job -- see its own
-     * comment, and issues #86. */
-    if (parts.length === 1 && cleanTitle(first.title) && !hasDigestBrief(digestLine)) {
+     * than as a date printed twice. `hasBrief` because a card that draws a
+     * brief already has a sentence doing this job -- see its own comment,
+     * issues #86, and Edvard's 2026-08-22 captures. */
+    if (parts.length === 1 && cleanTitle(first.title) && !hasBrief(digestLine, first)) {
       card.appendChild(el("p", "entry-title", cleanTitle(first.title)));
     }
 

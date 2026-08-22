@@ -470,11 +470,35 @@ describe("a feed card carries one title, not two", () => {
       lineBrief(payload.digest.lines.find((l) => l.cycle === solo.cycle)));
   });
 
-  test("a cycle with no digest line keeps it, since nothing else labels the card", async () => {
+  /* Edvard, comments board 2026-08-22: "Sometimes there are two titles and
+   * they repeat eachoter with different words ... I like the one with the
+   * colored backline", then "The one line summary can be cut." The card he
+   * photographed had no digest line, so #86's rule did not cover it and the
+   * heading title sat above the entry's own brief, saying the same thing. */
+  test("a cycle briefed from its own prose drops its heading title too", async () => {
+    const solo = soloCycle();
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const entry = journal.entries.find((e) => e.cycle === solo.cycle);
+    entry.title = "A heading repeating the entry's own opening sentence";
+    entry.briefSpans = [{ kind: "text", text: "The brief the entry wrote for itself." }];
+    const window = await loadSite("/", {
+      journal: () => journal,
+      digest: withoutDigestLine(solo.cycle),
+    });
+    const card = cardFor(window, solo.cycle);
+    assert.equal(card.querySelector(".entry-title"), null);
+    // Not vacuous: the label that replaced it is still drawn.
+    assert.equal(card.querySelector(".entry-brief").textContent,
+      "The brief the entry wrote for itself.");
+  });
+
+  test("a card with no brief at all keeps its title, since nothing else labels it", async () => {
     const solo = soloCycle();
     const journal = JSON.parse(JSON.stringify(payload.journal));
     const title = "The only sentence on this card that was written as a title";
-    journal.entries.find((e) => e.cycle === solo.cycle).title = title;
+    const entry = journal.entries.find((e) => e.cycle === solo.cycle);
+    entry.title = title;
+    entry.briefSpans = [];
     const window = await loadSite("/", {
       journal: () => journal,
       digest: withoutDigestLine(solo.cycle),
@@ -1532,21 +1556,53 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
   /* 26 single-entry cycles carry a real title. The first version of this
    * page rendered titles only as part subheadings, and a single part gets
    * none, so all 26 lost theirs -- invisible in the fixture, which is why
-   * this asserts on a literal rather than on "a title element exists". */
-  test("a one-part cycle's title is shown, since it has no subheading to live in", async () => {
+   * this asserts on a literal rather than on "a title element exists".
+   *
+   * This is now the only case that draws one: no digest line *and* no
+   * brief of the entry's own, so the title is the card's only label. */
+  test("a one-part cycle's title is shown when the card has no brief at all", async () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
-    // No digest line for this cycle: that is the case where the title is the
-    // only label the card has. The digest-line case is the test below, and
-    // this one asserted whichever solo cycle came first until #86 split them.
     const solo = journal.entries.find(
       (e) => e.cycle !== null
         && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
     );
     solo.title = "The heartbeat was never late; the clock on the card was invented";
+    solo.briefSpans = [];
     const digest = JSON.parse(JSON.stringify(payload.digest));
     digest.lines = digest.lines.filter((l) => l.cycle !== solo.cycle);
     const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal, digest });
     assert.equal(cards(window)[0].querySelector(".entry-title").textContent, solo.title);
+  });
+
+  /* Edvard, comments board 2026-08-22, on a screenshot of cycle 329's card:
+   * "Sometimes there are two titles and they repeat eachoter with different
+   * words. See image. I like the one with the colored backline", then "The
+   * one line summary can be cut."
+   *
+   * The card he photographed had no digest line, so #86's rule did not
+   * apply and the heading title was drawn above the entry's own brief --
+   * which opens by restating the heading. The coloured backline is
+   * `.entry-brief`, so that is the one that stays. */
+  test("a cycle briefed from its own prose shows that and not its heading title", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const solo = journal.entries.find(
+      (e) => e.cycle !== null
+        && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+        && (e.briefSpans || []).length
+    );
+    assert.ok(solo, "the fixture must contain a solo cycle briefed from its own prose");
+    solo.title = "A heading saying the same thing the entry's first sentence says";
+    const digest = JSON.parse(JSON.stringify(payload.digest));
+    digest.lines = digest.lines.filter((l) => l.cycle !== solo.cycle);
+    const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal, digest });
+    const card = cards(window)[0];
+    assert.equal(card.querySelector(".entry-title"), null);
+    // Not vacuous: the brief the title was competing with is still drawn,
+    // so this cannot pass by the card having lost both labels.
+    assert.equal(
+      card.querySelector(".entry-brief").textContent.trim(),
+      solo.briefSpans.map((s) => s.text).join("").trim()
+    );
   });
 
   /* Edvard, issues #86: "Journal cards like cycle 209 seems to have two
