@@ -44,6 +44,10 @@ I have measured, and a capture that arrives clipped is worse than no
 capture at all.
 """
 
+import re
+from datetime import datetime
+
+from agora_runner.config import OSLO
 from agora_runner.log import log
 from agora_runner.nova_boards import (
     BOARD_PATHS,
@@ -52,6 +56,7 @@ from agora_runner.nova_boards import (
     canonical_priority,
     append_detail_note,
     delete_row,
+    extract_row,
     set_row_priority,
     set_row_title,
 )
@@ -100,6 +105,21 @@ CAPTURE_TARGETS = {
 MAX_BODY_BYTES = 64 * 1024
 
 WRITE_ATTEMPTS = 3
+
+# Where a row Edvard deletes from the app goes so a cycle can still see it
+# (his capture, 2026-08-22). `resources/` because it is my bookkeeping --
+# he asked to be able to remove a row from his board, not to be given a
+# second page of removed rows to read.
+DELETED_ROWS_PATH = "projects/sokrates/projects/agora/nova/resources/deleted-rows.md"
+DELETED_ROWS_HEADER = """---
+type: log
+tags: [agora, nova, board, deleted]
+status: built
+contract: Written by agora_runner/nova_capture.py when Edvard deletes a boarded row from the Nova app. Newest last. Nothing reads this automatically -- it exists so a cycle that finds a number missing, or was mid-way through the work when he removed it, can see what the row said.
+---
+
+# Deleted board rows
+"""
 
 
 def _frontmatter_end(lines):
@@ -488,8 +508,68 @@ def remove_row(target, number):
     the same shape `/api/capture/delete` already has. It is not
     irreversible in the vault: CouchDB keeps the revision, and Obsidian
     LiveSync tombstones rather than removes.
+
+    **And a cycle can now see that it happened**, which is the second half
+    of his 2026-08-22 capture: *"Maybe the delete function should tell
+    your next cycle that i have deleted it just in case some work was
+    being done or just to keep it as a deleted issue for future
+    reference."* CouchDB keeping the revision was already true and is not
+    an answer -- nothing in a cycle's opening read fetches an old revision
+    of a 190KB file to diff it, so a row he removed mid-cycle was
+    indistinguishable from one that never existed.
+
+    So the deleted text is copied into `resources/deleted-rows.md` before
+    the row goes. It goes in `resources/` and not beside his boards
+    because it is bookkeeping for me, not a page he asked to read.
+
+    **A failed archive does not fail the delete.** He pressed a button
+    that says Delete and got a confirmation; refusing afterwards would
+    leave him unable to remove a row because a file he has never heard of
+    would not write. The archive is logged instead, and the audit trail in
+    `nova_site` records the deletion either way.
     """
-    return _amend_board(target, number, lambda md: delete_row(md, number), "deleted")
+    captured = {}
+
+    def mutate(markdown):
+        updated = delete_row(markdown, number)
+        if updated is not None:
+            captured["text"] = extract_row(markdown, number)
+        return updated
+
+    ok, message = _amend_board(target, number, mutate, "deleted")
+    if ok:
+        _archive_deleted_row(target, number, captured.get("text"))
+    return ok, message
+
+
+def _archive_deleted_row(target, number, text):
+    """Append one deleted row to `resources/deleted-rows.md`. Never raises."""
+    if not text:
+        log(f"nova-capture: nothing captured for deleted #{number} on {target}")
+        return
+    stamp = datetime.now(OSLO).strftime("%Y-%m-%d %H:%M")
+    # A write-up is markdown and routinely carries its own fenced blocks
+    # and `###` subheadings. Fencing it keeps those from becoming
+    # structure in *this* file; the fence has to out-run the longest run
+    # of backticks inside it or the block closes early and the rest of the
+    # row leaks out as headings.
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    entry = (
+        f"\n## {target} #{number} — deleted {stamp} Oslo\n\n"
+        f"{fence}\n{text}\n{fence}\n"
+    )
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(DELETED_ROWS_PATH)
+        if current is None:
+            current, rev = DELETED_ROWS_HEADER, None
+        result = vault_write_path(
+            DELETED_ROWS_PATH, current.rstrip("\n") + "\n" + entry, if_rev=rev)
+        if result == "written":
+            return
+        if "409" not in result:
+            break
+    log(f"nova-capture could not archive deleted #{number} on {target}: {result}")
 
 
 def comment_on_row(target, number, comment, dated, author="Edvard"):

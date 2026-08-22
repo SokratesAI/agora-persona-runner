@@ -6835,3 +6835,40 @@ describe("the device page", () => {
     assert.equal(send.disabled, false, "a failed send left the only button on the page dead");
   });
 });
+
+/* Edvard, capture 2026-08-22: "I can't delete, edit or upload a file to a
+ * boarded issues. I wanted to delete issue #4 but i'm not able to."
+ *
+ * #4 was an ordinary open row, so nothing had made it read-only -- the only
+ * way into the editor was a one-second hold with no label anywhere saying so.
+ * These pin the visible way in, which is the half of the repair that does not
+ * depend on guessing what his phone does with a hold. */
+describe("an opened board row offers a visible way into the editor", () => {
+  test("the button is there and opens the same editor the hold does", async () => {
+    const window = await loadSite("/issues#57");
+    const row = window.document.getElementById("item-57");
+    const button = row.querySelector(".item-actions button");
+    assert.ok(button, "an opened row has no visible edit control at all");
+    assert.equal(button.textContent, "Edit / Delete");
+    assert.equal(row.querySelector(".item-edit"), null, "the editor is open before it was asked for");
+    click(window, button);
+    const editor = row.querySelector(".item-edit");
+    assert.ok(editor, "the button did not open the editor");
+    assert.ok(editor.querySelector(".item-edit-input"), "no title box in the editor");
+    const labels = [...editor.querySelectorAll("button")].map((b) => b.textContent);
+    assert.deepEqual(labels, ["Save", "Cancel", "Delete"]);
+  });
+
+  test("a closed row shows no edit control", async () => {
+    const window = await loadSite("/issues");
+    assert.equal(window.document.querySelectorAll(".item-actions").length, 0);
+  });
+
+  test("pressing it twice does not stack two editors", async () => {
+    const window = await loadSite("/issues#57");
+    const row = window.document.getElementById("item-57");
+    click(window, row.querySelector(".item-actions button"));
+    click(window, row.querySelector(".item-actions button"));
+    assert.equal(row.querySelectorAll(".item-edit").length, 1);
+  });
+});

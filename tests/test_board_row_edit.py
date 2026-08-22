@@ -216,10 +216,64 @@ def test_delete_writes_once_and_sends_the_revision_it_read(monkeypatch):
         lambda path, body, if_rev=None: calls.append((path, body, if_rev)) or "written")
     ok, message = nova_capture.remove_row("ideas", 84)
     assert ok and "#84" in message
-    assert len(calls) == 1
-    assert calls[0][0] == "projects/sokrates/projects/nova/ideas.md"
-    assert calls[0][2] == "7-abc"
-    assert "Hold a card" not in calls[0][1]
+    board_writes = [c for c in calls if c[0] == "projects/sokrates/projects/nova/ideas.md"]
+    assert len(board_writes) == 1
+    assert board_writes[0][2] == "7-abc"
+    assert "Hold a card" not in board_writes[0][1]
+
+
+def test_a_deleted_row_is_archived_with_its_write_up(monkeypatch):
+    """Edvard, 2026-08-22: *"just to keep it as a deleted issue for future
+    reference."* The row text and the write-up both have to survive, or the
+    archive records that a number vanished rather than what it said."""
+    # Path-aware on purpose: the archive file does not exist yet, and a
+    # fixture that hands it a revision would hide the `if_rev=None` this
+    # asserts -- which is what "must not already exist" is expressed as.
+    monkeypatch.setattr(
+        nova_capture, "vault_read_path_rev",
+        lambda p: (None, None) if p == nova_capture.DELETED_ROWS_PATH else (BOARD, "7-abc"))
+    calls = []
+    monkeypatch.setattr(
+        nova_capture, "vault_write_path",
+        lambda path, body, if_rev=None: calls.append((path, body, if_rev)) or "written")
+    ok, _ = nova_capture.remove_row("ideas", 84)
+    assert ok
+    archive = [c for c in calls if c[0] == nova_capture.DELETED_ROWS_PATH]
+    assert len(archive) == 1
+    body = archive[0][1]
+    assert "## ideas #84 — deleted " in body
+    # The row line and its write-up -- the two spans `delete_row` drops.
+    assert "Hold a card" in body
+    assert "### #84 —" in body
+    # The file did not exist, so the write must claim that rather than
+    # sending a revision it never read.
+    assert archive[0][2] is None
+
+
+def test_a_failed_archive_does_not_fail_the_delete(monkeypatch):
+    """He pressed Delete and the row is gone; refusing afterwards would
+    say the delete failed when it did not."""
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
+
+    def write(path, body, if_rev=None):
+        if path == nova_capture.DELETED_ROWS_PATH:
+            return "500 boom"
+        return "written"
+
+    monkeypatch.setattr(nova_capture, "vault_write_path", write)
+    ok, message = nova_capture.remove_row("ideas", 84)
+    assert ok and "#84" in message
+
+
+def test_nothing_is_archived_when_no_row_was_deleted(monkeypatch):
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
+    calls = []
+    monkeypatch.setattr(
+        nova_capture, "vault_write_path",
+        lambda path, body, if_rev=None: calls.append(path) or "written")
+    ok, _ = nova_capture.remove_row("ideas", 999)
+    assert not ok
+    assert nova_capture.DELETED_ROWS_PATH not in calls
 
 
 def test_neither_writes_when_the_row_is_gone(monkeypatch):

@@ -906,6 +906,33 @@ def delete_row(markdown, number):
     return "\n".join(line for i, line in enumerate(lines) if i not in drop)
 
 
+def extract_row(markdown, number):
+    """The raw text `delete_row` is about to remove, or `None`.
+
+    Edvard, capture 2026-08-22: *"Maybe the delete function should tell
+    your next cycle that i have deleted it just in case some work was
+    being done or just to keep it as a deleted issue for future
+    reference."*
+
+    Deliberately the same two spans `delete_row` drops, read through the
+    same two helpers -- if the two ever disagree about what a row *is*,
+    the archive is a record of something other than what was deleted, and
+    a record you cannot trust is worse than none. Text rather than line
+    indices, because the caller writes it into a different file where the
+    indices mean nothing.
+    """
+    lines = (markdown or "").split("\n")
+    index, _ = _row_span(lines, number)
+    if index is None:
+        return None
+    parts = [lines[index]]
+    span = _detail_spans(markdown).get(number)
+    if span:
+        heading_line, _, end = span
+        parts.extend(lines[heading_line:end])
+    return "\n".join(parts).rstrip()
+
+
 def _sections(markdown):
     """`[(level, title, body)]` for every `#`/`##` heading, in order."""
     found = []
