@@ -4190,6 +4190,15 @@ describe("an ask nobody answered is named in the header", () => {
    * card was the right home for the ask; nothing was the home for "this one
    * is still waiting". */
   const pill = (window) => window.document.querySelector("#status .badge-ask");
+  /* The href moved off the badge and onto the field around it when the
+   * status fields became one horizontal, clickable list (Edvard's capture,
+   * 2026-08-22): the whole field is the link now, so the badge inside it
+   * had to stop being one -- an `<a>` inside an `<a>` is unnested by the
+   * parser. Same destination, bigger tap target. */
+  const askLink = (window) => {
+    const found = pill(window);
+    return found && found.closest("a.status-sub");
+  };
   const head = (window) => window.document.getElementById("status");
 
   const withAsks = (asks, extra) => {
@@ -4206,7 +4215,7 @@ describe("an ask nobody answered is named in the header", () => {
     });
     const found = pill(window);
     assert.ok(found, "expected a waiting-on-you pill");
-    assert.equal(found.getAttribute("href"), "/cycle/247");
+    assert.equal(askLink(window).getAttribute("href"), "/cycle/247");
     assert.match(window.document.getElementById("status").textContent, /cycle 247/);
   });
 
@@ -4221,7 +4230,7 @@ describe("an ask nobody answered is named in the header", () => {
       ]),
       comments: { byCycle: {}, needs: [] },
     });
-    assert.equal(pill(window).getAttribute("href"), "/cycle/247");
+    assert.equal(askLink(window).getAttribute("href"), "/cycle/247");
   });
 
   /* A comment on the card is the answer, so the pill has to move on to the
@@ -4238,7 +4247,7 @@ describe("an ask nobody answered is named in the header", () => {
         needs: [],
       },
     });
-    assert.equal(pill(window).getAttribute("href"), "/cycle/260");
+    assert.equal(askLink(window).getAttribute("href"), "/cycle/260");
   });
 
   test("nothing is said when every ask has an answer", async () => {
@@ -6927,5 +6936,91 @@ describe("an opened board row offers a visible way into the editor", () => {
     click(window, row.querySelector(".item-actions button"));
     click(window, row.querySelector(".item-actions button"));
     assert.equal(row.querySelectorAll(".item-edit").length, 1);
+  });
+});
+
+describe("the status fields are one horizontal list, and they link down to the card", () => {
+  /* Edvard, capture 2026-08-22: *"The status fields at the top, we are
+   * keeping them. Please have them shown horisontal listed, not vertical.
+   * Also clicking them navigates me down to the Journal it references."*
+   *
+   * Two asks and two halves here. The layout half cannot be asserted from
+   * jsdom -- it has no layout engine, so `getBoundingClientRect` is all
+   * zeroes and "are these side by side" is unanswerable. What *is*
+   * answerable, and is the thing that actually broke, is the DOM the CSS
+   * needs: every field in one `.status-subs` container rather than
+   * appended straight to the header as sibling `<p>`s. Assert that, and
+   * assert the stylesheet lays that container out as a wrapping row, which
+   * together are the whole mechanism.
+   *
+   * The click half is real behaviour and is tested as behaviour. */
+  const withStatus = (extra) => {
+    const copy = JSON.parse(JSON.stringify(payload.journal));
+    Object.assign(copy.status, { recentMissingCycles: [] }, extra || {});
+    return copy;
+  };
+  const fields = (window) =>
+    [...window.document.querySelectorAll("#status .status-subs > .status-sub")];
+
+  test("every status field sits in one row container, not loose in the header", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: false }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const rows = window.document.querySelectorAll("#status .status-subs");
+    assert.equal(rows.length, 1, "expected exactly one status field row");
+    assert.ok(fields(window).length >= 2,
+      "the control failed: this fixture renders fewer than two fields, so "
+      + "nothing here could tell a row from a column");
+    /* The failure this pins: a field appended to `#status` directly is
+     * outside the flex row and stacks under it however the CSS reads. */
+    assert.equal(
+      window.document.querySelectorAll("#status > .status-sub").length, 0,
+      "a status field is still a direct child of the header");
+  });
+
+  test("the stylesheet lays that container out across, and wraps it", async () => {
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const rule = css.slice(css.indexOf(".status-subs {"));
+    const block = rule.slice(0, rule.indexOf("}"));
+    assert.match(block, /display:\s*flex/);
+    assert.match(block, /flex-wrap:\s*wrap/);
+  });
+
+  test("the field naming the last outcome scrolls the feed to that cycle", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "merged", lastPr: "#289" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const badge = window.document.querySelector("#status .status-subs .badge-merged")
+      || [...window.document.querySelectorAll("#status .status-subs .status-sub")]
+        .find((f) => /merged/.test(f.textContent));
+    assert.ok(badge, "expected an outcome field in the header");
+    const field = badge.closest ? (badge.closest("a.status-sub") || badge) : badge;
+    assert.equal(field.tagName, "A", "the outcome field is not clickable");
+    assert.equal(field.getAttribute("href"), "/cycle/57");
+
+    /* The card is on this page, so the click must stay on this page and
+     * scroll rather than follow the href. Both halves are asserted: a
+     * `preventDefault` with no scroll would be a link that does nothing. */
+    const card = window.document.getElementById("cycle-57");
+    assert.ok(card, "the control failed: cycle 57 has no card in this feed, "
+      + "so the in-page branch could not have been taken either way");
+    let scrolled = false;
+    card.scrollIntoView = () => { scrolled = true; };
+    const ev = new window.MouseEvent("click", { bubbles: true, cancelable: true });
+    field.dispatchEvent(ev);
+    assert.ok(scrolled, "clicking the field did not scroll to the card");
+    assert.ok(ev.defaultPrevented, "the click also followed the permalink");
+  });
+
+  test("a field that references no cycle is not a link", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ running: true, stalled: false }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const running = fields(window).find((f) => /cycle running/.test(f.textContent));
+    assert.ok(running, "expected the running field");
+    assert.equal(running.tagName, "P");
   });
 });

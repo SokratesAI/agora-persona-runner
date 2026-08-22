@@ -123,6 +123,40 @@ pre code { background: none; padding: 0; }
 .status-sub { margin: 0.6rem 0 0; display: flex; gap: 0.5rem; align-items: center; }
 .status-pr { color: var(--dim); font-size: 0.85rem; }
 
+/* The status fields, side by side -- Edvard, capture 2026-08-22: "Please
+ * have them shown horisontal listed, not vertical."
+ *
+ * `flex-wrap` and not a single line: there can be four of these at once
+ * and each carries a badge plus up to two trailing labels, which is far
+ * more than 360px of phone. Wrapping puts two or three on a row and drops
+ * the rest to the next one, so it reads as a list across rather than a
+ * column, and nothing is ever pushed off the side.
+ *
+ * The row-gap is smaller than the column-gap on purpose. Once these wrap
+ * they are two rows of the same list, and an even gap in both directions
+ * makes a wrapped field look like a new paragraph.
+ *
+ * The container owns the spacing above the group, so the fields inside it
+ * give up their own top margin. `.status-sub` keeps that margin for the
+ * two places that still render one on its own (the unreachable header and
+ * the board pages' saved-copy line), where there is no container. */
+.status-subs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1rem;
+  margin-top: 0.6rem;
+}
+.status-subs .status-sub { margin: 0; }
+
+/* A field that names a cycle scrolls the feed to that cycle's card. It is
+ * a real `<a>` with a real href, so it inherits the page's text colour
+ * rather than the link blue -- the badge inside it is already the visual
+ * anchor, and colouring the whole field would make four of them shout. */
+a.status-sub { color: inherit; text-decoration: none; cursor: pointer; }
+a.status-sub:hover .badge, a.status-sub:focus-visible .badge { filter: brightness(1.15); }
+a.status-sub:hover .status-pr { color: var(--text); }
+
 /* Capture box (item 6) */
 .visually-hidden {
   position: absolute;
