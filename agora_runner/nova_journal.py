@@ -25,6 +25,7 @@ import re
 from datetime import datetime
 
 from agora_runner.config import OSLO
+from agora_runner.nova_uploads import ATTACHMENT_PATTERN
 
 JOURNAL_PATH = "projects/sokrates/projects/agora/nova/journal.md"
 # One document per entry, which is where entries live as of 2026-08-09.
@@ -1107,7 +1108,29 @@ def parse_digest(markdown):
     }
 
 
-_INLINE_RE = re.compile(r"`([^`]+)`|\*\*(.+?)\*\*", re.DOTALL)
+# An attachment this site wrote on Edvard's behalf, and nothing else.
+# Same two constructs as `nova_uploads.ATTACHMENT_LINE` and app.js's
+# `ATTACH_RE`: `![alt](/api/upload/<name>)` for a picture, the same
+# without the bang for any other file. The path is required to start
+# `/api/upload/` rather than being escaped later, so a pasted
+# `[x](javascript:…)` or a remote tracker URL never becomes an element --
+# it stays the text it is. This is deliberately not general markdown link
+# support; `render_inline`'s survey found zero links in the journal, and
+# what changed is that the app now generates one specific line.
+#
+# It goes **first** in the alternation, before code and bold, so a
+# filename containing `**` cannot split the construct in half.
+#
+# The construct is imported rather than written again: `nova_uploads` is
+# the module that *builds* the string, and it already carried an anchored
+# copy for `is_attachment_line`. Two hand-copied readers of one format is
+# the drift this loop keeps writing detectors for.
+_INLINE_RE = re.compile(
+    ATTACHMENT_PATTERN
+    + r"|`([^`]+)`"
+    r"|\*\*(.+?)\*\*",
+    re.DOTALL,
+)
 _FENCE_RE = re.compile(r"^[ \t]*```")
 _BULLET_RE = re.compile(r"^[ \t]*[-*][ \t]+(.*)$")
 # Every item on Edvard's boards opens with his own words as a blockquote,
@@ -1132,20 +1155,36 @@ _ORDERED_RE = re.compile(r"^[ \t]*\d{1,3}[.)][ \t]+(.*)$")
 def render_inline(text):
     """One paragraph -> a list of `{kind, text}` spans.
 
-    Code first in the alternation so a `**` inside backticks stays
-    literal. Surveyed against the live journal (2026-08-09): 591 inline
-    code spans, 85 bold, zero of anything else -- so this handles what
-    the file actually contains rather than markdown in general.
+    Code before bold in the alternation so a `**` inside backticks stays
+    literal, and an attachment before both. Surveyed against the live
+    journal (2026-08-09): 591 inline code spans, 85 bold, zero of
+    anything else -- so this handles what the file actually contains
+    rather than markdown in general.
+
+    The `attach` span carries its `url` as a separate field for the same
+    reason `parse_pr_refs` does: app.js builds every node with
+    `textContent`, so there is no path by which the vault's text can
+    become markup. `isImage` is the bang, and it decides thumbnail
+    against paperclip on the other side.
     """
     spans = []
     cursor = 0
     for match in _INLINE_RE.finditer(text):
         if match.start() > cursor:
             spans.append({"kind": "text", "text": text[cursor:match.start()]})
-        if match.group(1) is not None:
-            spans.append({"kind": "code", "text": match.group(1)})
+        if match.group(3) is not None:
+            spans.append(
+                {
+                    "kind": "attach",
+                    "text": match.group(2),
+                    "url": match.group(3),
+                    "isImage": bool(match.group(1)),
+                }
+            )
+        elif match.group(4) is not None:
+            spans.append({"kind": "code", "text": match.group(4)})
         else:
-            spans.append({"kind": "strong", "text": match.group(2)})
+            spans.append({"kind": "strong", "text": match.group(5)})
         cursor = match.end()
     if cursor < len(text):
         spans.append({"kind": "text", "text": text[cursor:]})

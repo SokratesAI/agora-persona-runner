@@ -5967,6 +5967,63 @@ describe("commenting on a boarded row", () => {
     assert.match(composer(window).querySelector(".item-comment-status").textContent, /Nothing/);
   });
 
+  /* The third verb in *"I can't delete, edit or upload a file to a boarded
+   * issues"* (Cycle 320). Cycle 318 did delete and edit and filed this. */
+  test("the composer carries an attach button and its hidden input", async () => {
+    const window = await loadSite("/issues#57");
+    const foot = composer(window).querySelector(".item-comment-foot");
+    const button = foot.querySelector(".attach-btn");
+    assert.ok(button, "no way to attach a file to a board comment");
+    assert.equal(button.getAttribute("aria-label"), "Attach a file");
+    // Detached inputs never fire `change` in some engines, which is the
+    // kind of bug that only shows up on his phone.
+    assert.ok(foot.querySelector("input[type=file]"), "the file input is not in the document");
+    // Before Comment, so the primary action keeps the right edge.
+    const order = [...foot.children].map((n) => n.className.split(" ")[0]);
+    assert.ok(
+      order.indexOf("attach-btn") < order.indexOf("item-comment-send"),
+      `attach should sit before Comment, got ${order.join(",")}`,
+    );
+  });
+
+  test("an attachment in the write-up renders as a picture, not as its markdown", async () => {
+    /* The half that makes the button worth having. A board comment is
+     * appended to the row's own write-up, which arrives as server-parsed
+     * spans -- so without an `attach` span the file he just sent renders
+     * as the literal `![shot.png](/api/upload/…)` text. */
+    const window = await loadSite("/issues#57", {
+      board: (url) => {
+        if (!url.includes("item=57")) return null;
+        return {
+          ...payload.boardItem,
+          item: {
+            ...payload.boardItem.item,
+            blocks: [
+              { type: "p", spans: [
+                { kind: "text", text: "here: " },
+                { kind: "attach", text: "shot.png", url: "/api/upload/ab12.png", isImage: true },
+              ] },
+              { type: "p", spans: [
+                { kind: "attach", text: "notes.pdf", url: "/api/upload/cd34.pdf", isImage: false },
+              ] },
+            ],
+          },
+        };
+      },
+    });
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    const img = body.querySelector("img.attach-img");
+    assert.ok(img, "the attached picture did not render as an image");
+    assert.equal(img.getAttribute("src"), "/api/upload/ab12.png");
+    assert.equal(img.getAttribute("alt"), "shot.png");
+    const file = body.querySelector("a.attach-file");
+    assert.ok(file, "the attached file did not render as a chip");
+    assert.match(file.textContent, /notes\.pdf/);
+    assert.equal(file.getAttribute("href"), "/api/upload/cd34.pdf");
+    // And nothing anywhere still shows the raw construct.
+    assert.ok(!body.textContent.includes("/api/upload/ab12.png"));
+  });
+
   test("a saved comment refetches the write-up rather than leaving the old one on screen", async () => {
     /* The failure this pins is the one that reads as success: the status
      * says saved, and the body above it is the copy from before the

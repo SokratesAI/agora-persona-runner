@@ -285,6 +285,39 @@
    * shown as the text it is instead of being turned into an element. */
   var ATTACH_RE = /(!?)\[([^\]]*)\]\((\/api\/upload\/[A-Za-z0-9._-]+)\)/g;
 
+  /* One attachment -> one node, used by both readers of that construct:
+   * `appendRichText`, which parses raw comment text here in the browser,
+   * and `renderSpans`, which is handed an `attach` span already parsed by
+   * `nova_journal.render_inline` on the server. Written once because the
+   * two paths must not disagree about what an attachment looks like --
+   * the same file appears in a journal comment and in a board write-up,
+   * and a thumbnail in one place and a bare URL in the other reads as a
+   * bug in whichever one he happens to look at second. */
+  function attachNode(url, alt, isImage) {
+    var link = el("a", "attach-link");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    if (isImage) {
+      var img = el("img", "attach-img");
+      img.src = url;
+      img.alt = alt || "attached image";
+      // Lazy, because a thread can hold many of these and they are the
+      // heaviest thing on the page by an order of magnitude.
+      img.loading = "lazy";
+      link.appendChild(img);
+      return link;
+    }
+    // A file rather than a picture. It gets its name and a paperclip
+    // instead of a thumbnail, because there is nothing to show and a
+    // bare URL would be the 32-hex hash, which tells him nothing about
+    // what he sent.
+    link.className = "attach-link attach-file";
+    link.textContent = "📎 " + (alt || "attached file");
+    link.setAttribute("download", alt || "");
+    return link;
+  }
+
   function appendRichText(container, paraClass, text) {
     String(text || "").split(/\n{2,}/).forEach(function (para) {
       if (!para.trim()) return;
@@ -295,28 +328,7 @@
       while ((match = ATTACH_RE.exec(para)) !== null) {
         var before = para.slice(last, match.index);
         if (before) node.appendChild(document.createTextNode(before));
-        var link = el("a", "attach-link");
-        link.href = match[3];
-        link.target = "_blank";
-        link.rel = "noopener";
-        if (match[1]) {
-          var img = el("img", "attach-img");
-          img.src = match[3];
-          img.alt = match[2] || "attached image";
-          // Lazy, because a thread can hold many of these and they are the
-          // heaviest thing on the page by an order of magnitude.
-          img.loading = "lazy";
-          link.appendChild(img);
-        } else {
-          // A file rather than a picture. It gets its name and a paperclip
-          // instead of a thumbnail, because there is nothing to show and a
-          // bare URL would be the 32-hex hash, which tells him nothing
-          // about what he sent.
-          link.className = "attach-link attach-file";
-          link.textContent = "📎 " + (match[2] || "attached file");
-          link.setAttribute("download", match[2] || "");
-        }
-        node.appendChild(link);
+        node.appendChild(attachNode(match[3], match[2], !!match[1]));
         last = match.index + match[0].length;
       }
       var rest = para.slice(last);
@@ -402,7 +414,13 @@
     (spans || []).forEach(function (span) {
       if (span.kind === "code") parent.appendChild(el("code", null, span.text));
       else if (span.kind === "strong") parent.appendChild(el("strong", null, span.text));
-      else if (span.kind === "link") {
+      else if (span.kind === "attach") {
+        // A file this site uploaded on his behalf. `render_inline` has
+        // already checked the path starts `/api/upload/`, which is the
+        // whole safety rule -- the href is never parsed out of the text
+        // here, same as `link` below.
+        parent.appendChild(attachNode(span.url, span.text, span.isImage));
+      } else if (span.kind === "link") {
         // The href is a separate field from the server, never parsed out of
         // the text here -- same reason nothing in this file touches
         // innerHTML. New tab because leaving the PWA for GitHub and having
@@ -3173,6 +3191,40 @@
       wrap.appendChild(box);
       var foot = el("div", "item-comment-foot");
       foot.appendChild(status);
+      /* Edvard, issues.md: *"I can't delete, edit or upload a file to a
+       * boarded issues."* Cycle 318 did the delete and the edit; this is
+       * the third verb, and it is the same button the journal drawer and
+       * the capture box already carry.
+       *
+       * It writes markdown into the box rather than into the request, so
+       * he can see what he is about to send and delete it if he changed
+       * his mind -- and so the one thing that knows how to upload stays
+       * one function. `send` is disabled while the POST is in flight for
+       * the reason `buildAttach`'s `busy` gives: `submit` reads
+       * `box.value` synchronously, so a Comment tapped mid-upload files
+       * the text without the picture and the picture attaches to nothing.
+       *
+       * No draft store here, unlike the journal drawer. This composer has
+       * none -- `fill()` rebuilds the panel on every poll and always has
+       * -- so an attach-then-wait loses the line exactly as a
+       * type-then-wait already loses the sentence. Giving the picture a
+       * safety net the typing does not have would be the more confusing
+       * of the two. Filed rather than smuggled in here. */
+      var attach = buildAttach({
+        onBusy: function (isBusy) { busy(isBusy); },
+        onStatus: function (text, isError) {
+          status.textContent = text;
+          status.className = isError
+            ? "item-comment-status is-error"
+            : "item-comment-status";
+        },
+        onInsert: function (markdown) {
+          box.value =
+            (box.value ? box.value.replace(/\s*$/, "") + "\n\n" : "") + markdown;
+        },
+      });
+      foot.appendChild(attach.input);
+      foot.appendChild(attach.button);
       foot.appendChild(send);
       wrap.appendChild(foot);
       return wrap;
