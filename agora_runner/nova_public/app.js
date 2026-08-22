@@ -564,6 +564,44 @@
     return label;
   }
 
+  /* One status field, and where it points.
+   *
+   * Edvard, capture 2026-08-22: *"The status fields at the top, we are
+   * keeping them. Please have them shown horisontal listed, not vertical.
+   * Also clicking them navigates me down to the Journal it references."*
+   *
+   * Two asks, and the second one is the reason this is a function rather
+   * than a CSS change. Each field was a `<p class="status-sub">` appended
+   * straight to the header, so they stacked and none of them was a target
+   * for a click. They now go into one wrapping flex row (`.status-subs`),
+   * and a field that names a cycle is an `<a>` to that cycle's card.
+   *
+   * `#cycle-N` and not `/cycle/N`: the card is already on this page, in
+   * the feed below, with its own id (`card.id = "cycle-" + entry.cycle`),
+   * so the anchor scrolls him down to the entry the field is talking
+   * about — which is what he asked for, in his words, "navigates me down
+   * to". The header renders on pages that carry no feed as well, so the
+   * click falls back to the `/cycle/N` permalink when the card is not in
+   * the document; a dead in-page anchor that silently does nothing is the
+   * failure worth spending four lines on.
+   *
+   * `cycle` is null for the fields that reference nothing — "can't reach
+   * Nova", "can't read the journal", and "cycle running", whose entry does
+   * not exist yet. Those stay plain, because a link that goes nowhere in
+   * particular is worse than no link. */
+  function statusField(cycle) {
+    if (cycle === null || cycle === undefined) return el("p", "status-sub");
+    var field = el("a", "status-sub is-link");
+    field.href = "/cycle/" + cycle;
+    field.addEventListener("click", function (ev) {
+      var card = document.getElementById("cycle-" + cycle);
+      if (!card || !card.scrollIntoView) return;   // no feed here: follow the permalink
+      ev.preventDefault();
+      card.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return field;
+  }
+
   function renderStatus(status, commentsByCycle) {
     lastStatus = status;
     if (commentsByCycle) {
@@ -572,6 +610,9 @@
     }
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    /* Appended at the end, and only if anything went into it — an empty
+     * flex row still eats its own top margin. */
+    var subs = el("div", "status-subs");
 
     /* Replayed out of the service worker's cache: the content is worth
      * showing and its currency is not something this page can vouch for.
@@ -587,10 +628,10 @@
       statusParts(status).join(" · ") + (replayed ? " — as of the last load" : "")));
 
     if (replayed) {
-      var saved = el("p", "status-sub");
+      var saved = statusField(null);
       saved.appendChild(el("span", "badge badge-error", "can't reach Nova"));
       saved.appendChild(el("span", "status-pr", "showing a saved copy"));
-      statusEl.appendChild(saved);
+      subs.appendChild(saved);
     }
 
     /* An ask with no answer, pointing at the card it lives on.
@@ -606,25 +647,31 @@
     if (!replayed && haveComments) {
       var open = oldestOpenAsk(status, lastCommentsByCycle);
       if (open) {
-        var waiting = el("p", "status-sub");
-        var pill = el("a", "badge badge-ask", "waiting on you");
-        pill.href = "/cycle/" + open.cycle;
-        waiting.appendChild(pill);
+        /* The pill used to be the only link in here and it was an `<a>`
+         * inside a `<p>`; now the whole field is the link, so the pill
+         * goes back to being a `<span>` — an `<a>` nested in an `<a>` is
+         * not valid HTML and the parser unnests it, which would leave the
+         * badge outside the field it belongs to. */
+        var waiting = statusField(open.cycle);
+        waiting.appendChild(el("span", "badge badge-ask", "waiting on you"));
         waiting.appendChild(el("span", "status-pr", "cycle " + open.cycle));
         var wait = askWaitLabel(open);
         if (wait) waiting.appendChild(el("span", "status-pr", wait));
-        statusEl.appendChild(waiting);
+        subs.appendChild(waiting);
       }
     }
 
     if (status.lastOutcome) {
-      var line = el("p", "status-sub");
+      /* The outcome is the newest written entry's outcome, so the cycle it
+       * references is `status.cycle` — the same number the line above it
+       * prints. */
+      var line = statusField(status.cycle);
       line.appendChild(el("span", outcomeClass(status.lastOutcome), status.lastOutcome));
       if (status.lastPr) line.appendChild(el("span", "status-pr", status.lastPr));
       if (status.lastOutcomeDetail) {
         line.appendChild(el("span", "status-pr", status.lastOutcomeDetail));
       }
-      statusEl.appendChild(line);
+      subs.appendChild(line);
     }
 
     /* The other half of #72: "Nova is 1 behind agora." The header names the
@@ -652,10 +699,10 @@
      * is not: "a cycle is running" is a claim about right now, and a saved
      * copy cannot make it. */
     if (status.running && !status.stalled && !replayed) {
-      var live = el("p", "status-sub");
+      var live = statusField(null);
       live.appendChild(el("span", "badge badge-live", "cycle running"));
       live.appendChild(el("span", "status-pr", "its entry arrives when it finishes"));
-      statusEl.appendChild(live);
+      subs.appendChild(live);
     }
 
     /* The stall badge ("no entry for N hours") and the gap badge ("cycle
@@ -693,12 +740,13 @@
      * The line above it is real and worth keeping -- it just stopped being
      * current at some point the page cannot pin down. */
     if (status.recordStale) {
-      var frozen = el("p", "status-sub");
+      var frozen = statusField(null);
       frozen.appendChild(el("span", "badge badge-error", "can't read the journal"));
       frozen.appendChild(el("span", "status-pr", "showing the last thing Nova could see"));
-      statusEl.appendChild(frozen);
+      subs.appendChild(frozen);
     }
 
+    if (subs.childNodes.length) statusEl.appendChild(subs);
   }
 
   /* Edvard, comments board 2026-08-14: "Or a display error if the fetch
