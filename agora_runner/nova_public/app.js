@@ -2531,17 +2531,26 @@
    * was never saved. */
   function buildPrioPicker(opts) {
     var current = opts.current || "";
-    /* The word, or a dash when nothing is rated yet. This returned the
-     * rating's coloured ball until Cycle 268 -- Edvard, 2026-08-19:
-     * *"Please do not use these symbols '🟠' as i can't really see the
-     * difference as they are colors. Please use the full word"*. The
-     * capture box's closed trigger was the worst case of that, because a
-     * bare bullet has no column spelling the word out beside it, so the
-     * colour was carrying the whole meaning on its own. The glyph came
-     * back beside the word in Cycle 274 -- Edvard had asked for the word
-     * to be present, not for the colour to go -- so this trigger now
-     * reads `🟠 High` rather than either half alone. */
-    function label_(label) { return label || "–"; }
+    /* Board-row chips (`chipStyle: true`) still read `🟠 High` -- collapsed,
+     * a chip is the rating's only on-screen representation, which is why
+     * Edvard asked for the word there (2026-08-19: *"Please do not use
+     * these symbols '🟠' as i can't really see the difference as they are
+     * colors. Please use the full word"*), word restored beside the glyph
+     * in Cycle 268/274.
+     *
+     * The capture box's closed trigger (`chipStyle` unset) does not carry
+     * that same load: tapping it opens `.prio-menu`, which already spells
+     * out every option in full, so the trigger only has to preview the
+     * pick. Edvard, 2026-08-22: the word made the closed button wide
+     * enough to push the row's other buttons out of position, and "the
+     * button should just show the color" -- the dropdown is where the
+     * word has to be. `glyphOf` gives that trigger just the leading glyph
+     * (or a dash, unrated), and `keyOf`'s chip-only coloring is untouched. */
+    function glyphOf(label) {
+      if (!label) return "–";
+      var sp = label.indexOf(" ");
+      return sp === -1 ? label : label.slice(0, sp);
+    }
     function keyOf(label) {
       var i = PRIORITIES.indexOf(label);
       return i === -1 ? "" : PRIORITY_KEYS[i];
@@ -2560,7 +2569,7 @@
         trigger.textContent = label || "Unrated";
       } else {
         trigger.className = opts.triggerClass;
-        trigger.textContent = label_(label);
+        trigger.textContent = glyphOf(label);
       }
     }
     render(current);
