@@ -1232,6 +1232,82 @@ def test_the_payload_carries_the_emoji_the_client_reads():
     assert all(entry.get("emoji") for entry in payload["entries"])
 
 
+# The marker that lets one line out of the ban below.
+NOT_PROSE = "not-prose"
+
+
+def truncations_in(source):
+    """Lines of JavaScript that cut a string and did not say why.
+
+    The rule this serves is that a journal card's prose is hidden by CSS
+    and never cut client-side -- a server-side or client-side truncation
+    puts the text out of reach of find-in-page, and cutting it mid-sentence
+    is what Edvard reported on 2026-08-09.
+
+    It stays a blunt, whole-file ban on `slice(0,` and `substring(` on
+    purpose. Cycle 323 first tried narrowing it to receivers that *read*
+    like entry text, and the reviewer took it apart in four lines: a
+    truncation survives that check by being written as
+    `entry.body.trim().slice(0, 500)`, or behind a ternary, or assigned to
+    a local called `lead` first, or wrapped in a two-line `clamp(s)`
+    helper. Every one of those cuts the prose and none of them is a bare
+    keyword-named receiver. A guard that catches only the laziest spelling
+    of a bug is worse than none, because it reads as cover.
+
+    So completeness is kept and the false positive gets an explicit,
+    visible escape hatch instead: a line may carry the token if it also
+    carries a `not-prose` comment. That is a sentence somebody has to
+    write on purpose and a reviewer sees in the diff, which is what makes
+    it different from widening the pattern until the red goes away. The
+    one use today is `buildPrioPicker`'s glyph split, which turned `main`
+    red on 2026-08-22 over `label.slice(0, sp)` -- a priority chip cutting
+    `🟠 High` down to `🟠`, no reader's sentence involved.
+    """
+    # Comments become blank lines rather than vanishing, so a line index
+    # here is the same line index in the file the caller is reading, and
+    # the marker itself is never mistaken for code.
+    stripped = re.sub(
+        r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), source, flags=re.DOTALL
+    )
+    found = []
+    for number, (code_line, raw) in enumerate(
+        zip(stripped.split("\n"), source.split("\n")), start=1
+    ):
+        if "slice(0," not in code_line.replace(" ", "") and "substring(" not in code_line:
+            continue
+        if NOT_PROSE in raw:
+            continue
+        found.append(f"{number}: {raw.strip()}")
+    return found
+
+
+def test_the_truncation_guard_can_actually_fail():
+    """The guard above is a regex over a file that happens to contain no
+    matches, so nothing in `test_a_collapsed_card_hides_the_body_without_
+    dropping_it` would notice if the pattern itself were wrong -- it would
+    pass green forever. The reviewer raised that on runner#293 and it is
+    the same shape as the `lint_entry | tail` failure: a guard reporting
+    itself working while guarding nothing.
+
+    Each of these is a real way to cut a card's prose, and four of the
+    five defeated the narrower version this replaced.
+    """
+    assert truncations_in("var x = entry.body.slice(0, 200);")
+    assert truncations_in("var x = entry.body.trim().slice(0, 500);")
+    assert truncations_in("var x = (d ? d.text : firstParagraph(e.blocks)).slice(0, 200);")
+    assert truncations_in("var lead = firstParagraph(entry.blocks); var y = lead.slice(0, 240);")
+    assert truncations_in("function clamp(s) { return s.length > n ? s.slice(0, n) : s; }")
+    assert truncations_in("var x = brief.substring(0, 80);")
+    # Not a truncation, and not a hole in the pattern: the exemption is a
+    # comment on the line, which a reviewer reads.
+    assert truncations_in("return label.slice(0, sp); // not-prose: a priority glyph") == []
+    assert truncations_in("var x = list.map(f);") == []
+    # A commented-out truncation is not a truncation, and a marker inside a
+    # block comment does not license the line after it.
+    assert truncations_in("/* entry.body.slice(0, 5) */") == []
+    assert truncations_in("/* not-prose */\nvar x = entry.body.slice(0, 5);")
+
+
 def test_a_collapsed_card_hides_the_body_without_dropping_it():
     """Edvard asked for cards that collapse to 2-3 lines, then for a drawer
     within a drawer. Every level is hidden by a class and none of them is cut
@@ -1260,22 +1336,10 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
         os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "app.js"),
         encoding="utf-8",
     ).read()
-    code = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
-    # The ban is on cutting an *entry's* prose, not on `slice`/`substring`
-    # as tokens. It used to be a whole-file substring search, and on
-    # 2026-08-22 that turned `main` red over `label.slice(0, sp)` in
-    # `buildPrioPicker` -- a priority chip splitting `🟠 High` into its
-    # glyph, which no reader ever loses a sentence to. A guard that fails
-    # on correct code teaches the next cycle to route around it, and
-    # routing around this one means truncating a card. So it names what it
-    # protects: any expression whose receiver reads like entry text.
-    cut = re.findall(
-        r"\b\w*(?:entry|body|brief|summary|prose|text|blocks|markdown)\w*"
-        r"\s*\.\s*(?:slice\(\s*0\s*,|substring\()",
-        code,
-        flags=re.IGNORECASE,
+    assert truncations_in(source) == [], (
+        "app.js truncates a string; if it is not entry prose, say so with "
+        f"a `{NOT_PROSE}` comment on the line: {truncations_in(source)}"
     )
-    assert cut == [], f"entry prose is being cut client-side: {cut}"
 
 
 # --- The `Needs Edvard` box, and the emphasis that kept it on screen -------
