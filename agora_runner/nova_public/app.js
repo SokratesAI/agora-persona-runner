@@ -4920,6 +4920,87 @@
    * are a second encoding of a verdict the word "On target" already gives,
    * because a bar Edvard has to decode a colour to read is the same failure
    * as the bare priority symbols he asked me to stop using. */
+  /* A goal's past readings, as a line and as words.
+   *
+   * Idea #38 asked to "come back to the goals and see how much work has been
+   * done towards them" and for "some history in some charts". Until now the
+   * only number on this page was the current one — the weekly review wrote
+   * `now:` over last week's on the way past, so nothing here could show a
+   * direction. `goal-history.json` keeps the earlier readings and this draws
+   * them.
+   *
+   * Two points is a line and one point is a dot, and both are drawn: a goal
+   * measured once is a true state of the slate, and hiding its row until it
+   * has "enough" history would make the chart appear a week after the goal.
+   *
+   * The dates and values are also printed as text under the line, for the
+   * same reason the bar above prints its numbers — a shape Edvard has to
+   * squint at is not something I have told him. The line is the summary; the
+   * text is the record. */
+  var SPARK_W = 240;
+  var SPARK_H = 34;
+  var SPARK_PAD = 3;
+
+  function svgEl(tag, className) {
+    var node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (className) node.setAttribute("class", className);
+    return node;
+  }
+
+  function sparkPoints(history) {
+    var values = history.map(function (point) { return point.value; });
+    var lo = Math.min.apply(null, values);
+    var hi = Math.max.apply(null, values);
+    var span = hi - lo;
+    var inner = SPARK_H - SPARK_PAD * 2;
+    return history.map(function (point, i) {
+      // One point has no width to spread over and a flat series has no
+      // height; both sit on the middle line rather than dividing by zero.
+      var x = history.length === 1
+        ? SPARK_W / 2
+        : SPARK_PAD + (i / (history.length - 1)) * (SPARK_W - SPARK_PAD * 2);
+      var y = span === 0
+        ? SPARK_H / 2
+        : SPARK_H - SPARK_PAD - ((point.value - lo) / span) * inner;
+      return { x: x, y: y, point: point };
+    });
+  }
+
+  function goalSparkline(goal) {
+    var history = goal.history || [];
+    if (!history.length) return null;
+
+    var box = el("div", "goal-history");
+    var chart = svgEl("svg", "goal-spark");
+    chart.setAttribute("viewBox", "0 0 " + SPARK_W + " " + SPARK_H);
+    chart.setAttribute("preserveAspectRatio", "none");
+    // The line already has a text twin below it, so it is decoration to a
+    // screen reader rather than content it should try to describe.
+    chart.setAttribute("aria-hidden", "true");
+
+    var marks = sparkPoints(history);
+    if (marks.length > 1) {
+      var line = svgEl("polyline", "goal-spark-line");
+      line.setAttribute("points", marks.map(function (m) { return m.x + "," + m.y; }).join(" "));
+      chart.appendChild(line);
+    }
+    marks.forEach(function (m, i) {
+      var dot = svgEl("circle", "goal-spark-dot" + (i === marks.length - 1 ? " last" : ""));
+      dot.setAttribute("cx", String(m.x));
+      dot.setAttribute("cy", String(m.y));
+      dot.setAttribute("r", i === marks.length - 1 ? "3" : "2");
+      chart.appendChild(dot);
+    });
+    box.appendChild(chart);
+
+    var unit = goal.unit ? " " + goal.unit : "";
+    var words = history.map(function (point) {
+      return point.date.slice(5) + " " + point.value + unit;
+    }).join("  →  ");
+    box.appendChild(el("p", "goal-history-text", words));
+    return box;
+  }
+
   function scoreboardRow(goal) {
     var row = el("li", "goal-row");
     var head = el("div", "goal-head");
@@ -4957,6 +5038,9 @@
       track.appendChild(tick);
       row.appendChild(track);
     }
+
+    var spark = goalSparkline(goal);
+    if (spark) row.appendChild(spark);
     return row;
   }
 

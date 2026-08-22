@@ -168,6 +168,7 @@ from agora_runner.nova_sources import (
     digest_markdown,
     journal_markdown,
     plan_markdown,
+    goal_history_json,
     retro_ledger_json,
 )
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
@@ -574,7 +575,7 @@ def plans_payload():
     here cold. It is reached from the nav, by which time the process has
     long since served the journal.
     """
-    return shape_plan(plan_markdown())
+    return shape_plan(plan_markdown(), goal_history_json())
 
 
 def board_page(payload, limit=None, item=None, search=None):

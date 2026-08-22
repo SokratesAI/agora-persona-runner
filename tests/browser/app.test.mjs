@@ -6282,6 +6282,67 @@ describe("the plan page", () => {
     assert.match(window.document.querySelector(".goal-row").textContent, /no target set/);
   });
 
+  /* The weekly history line (idea #38): "once a week come back to the goals
+   * and see how much work has been done towards them ... show some history
+   * in some charts". Until this, `now:` was overwritten every Monday, so the
+   * page could never show a direction. */
+
+  test("a goal's past readings draw a line and are also printed as words", async () => {
+    const withHistory = { ...G1, history: [
+      { date: "2026-08-16", cycle: 229, value: 2.8 },
+      { date: "2026-08-17", cycle: 257, value: 2.5 },
+    ] };
+    const window = await loadSite("/plan", { plan: scored([withHistory]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.equal(row.querySelectorAll(".goal-spark-line").length, 1);
+    assert.equal(row.querySelectorAll(".goal-spark-dot").length, 2);
+    // The shape is the summary; the words are the record. A reader who has
+    // to squint at a 34px line has not been told anything.
+    assert.match(row.querySelector(".goal-history-text").textContent,
+      /08-16 2\.8 PRs per closed row.*08-17 2\.5 PRs per closed row/);
+  });
+
+  test("the line spans the full range, so a small real move is visible", async () => {
+    const withHistory = { ...G1, history: [
+      { date: "2026-08-16", cycle: 229, value: 2.8 },
+      { date: "2026-08-17", cycle: 257, value: 2.5 },
+    ] };
+    const window = await loadSite("/plan", { plan: scored([withHistory]) });
+    const points = window.document.querySelector(".goal-spark-line").getAttribute("points");
+    const ys = points.split(" ").map((pair) => Number(pair.split(",")[1]));
+    // 2.8 is the high value so it sits at the top of the box, 2.5 at the
+    // bottom. Anchoring the scale at zero instead would draw both of these
+    // as the same flat line, which is the chart lying by omission.
+    assert.equal(ys[0], 3);
+    assert.equal(ys[1], 31);
+  });
+
+  test("one reading is a dot, not a line, and not a hidden row", async () => {
+    const once = { ...G1, history: [{ date: "2026-08-17", cycle: 257, value: 2.5 }] };
+    const window = await loadSite("/plan", { plan: scored([once]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.equal(row.querySelector(".goal-spark-line"), null);
+    assert.equal(row.querySelectorAll(".goal-spark-dot").length, 1);
+    assert.match(row.querySelector(".goal-history-text").textContent, /08-17 2\.5/);
+  });
+
+  test("a flat series sits on the middle line rather than dividing by zero", async () => {
+    const flat = { ...G1, history: [
+      { date: "2026-08-16", cycle: 229, value: 4 },
+      { date: "2026-08-17", cycle: 257, value: 4 },
+    ] };
+    const window = await loadSite("/plan", { plan: scored([flat]) });
+    const points = window.document.querySelector(".goal-spark-line").getAttribute("points");
+    assert.ok(points.split(" ").every((pair) => Number(pair.split(",")[1]) === 17), points);
+  });
+
+  test("a goal with no history yet keeps its row and grows no empty chart", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, history: [] }]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.textContent, /2\.8 PRs per closed row/);
+    assert.equal(row.querySelector(".goal-history"), null);
+  });
+
   test("a document with no scoreboard renders exactly as it did before", async () => {
     const window = await loadSite("/plan", { plan: twoDocuments });
     assert.equal(window.document.querySelector(".goal-board"), null);

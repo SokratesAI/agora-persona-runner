@@ -17,6 +17,7 @@ from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_costs import COST_LEDGER_PATH
 from agora_runner.nova_plan import PLAN_DOCUMENTS
+from agora_runner.nova_goal_history import GOAL_HISTORY_PATH
 from agora_runner.nova_retro import RETRO_LEDGER_PATH
 from agora_runner.nova_journal import (
     DIGEST_ARCHIVE_PATH,
@@ -260,6 +261,21 @@ def notes_markdown():
     vault is legitimately in.
     """
     return vault_read_path(CAPTURE_TARGETS["notes"]) or ""
+
+
+def goal_history_json():
+    """The weekly goal snapshots, raw (`goal-history.json`).
+
+    Written by `tools/append_goal_snapshot.py` at the weekly review and
+    read only here. Shaping is `nova_goal_history.series`, which does no
+    I/O -- the same split every other read on this page follows.
+
+    `""` before the first snapshot, which the shaping turns into a
+    scoreboard with no lines under it rather than a 502. That is the
+    right failure: the numbers Edvard actually reads are in `goals.md`
+    and do not come from this file at all.
+    """
+    return vault_read_path(GOAL_HISTORY_PATH) or ""
 
 
 def plan_markdown():
