@@ -2822,7 +2822,7 @@
     function glyphOf(label) {
       if (!label) return "–";
       var sp = label.indexOf(" ");
-      return sp === -1 ? label : label.slice(0, sp);
+      return sp === -1 ? label : label.slice(0, sp); // not-prose: a priority glyph, never a card's text
     }
     function keyOf(label) {
       var i = PRIORITIES.indexOf(label);

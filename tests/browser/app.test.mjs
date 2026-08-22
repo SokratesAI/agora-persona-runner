@@ -5221,7 +5221,7 @@ describe("rating a capture that is not boarded yet", () => {
  * structural test above kept passing throughout -- none of them opened
  * the thing and looked at what was left on screen after a pick. */
 describe("the priority picker (buildPrioPicker)", () => {
-  test("the composer's picker opens with glyph and word, and closes to the picked label", async () => {
+  test("the composer's picker opens with glyph and word, and closes to the glyph alone", async () => {
     const window = await loadSite("/issues");
     const trigger = window.document.getElementById("capture-prio");
     assert.equal(trigger.textContent, "–", "the closed trigger should start on the dash");
@@ -5236,7 +5236,13 @@ describe("the priority picker (buildPrioPicker)", () => {
     );
     const high = [...menu.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
     click(window, high);
-    assert.equal(trigger.textContent, "🟠 High", "the closed trigger should be back to the picked label");
+    // Glyph only, no word. Edvard, 2026-08-22: the word made the closed
+    // button wide enough to shove the row's other buttons out of place, and
+    // "the button should just show the color". The word is not lost -- the
+    // menu two assertions up spells out all five, and a board row's chip
+    // still carries `🟠 High` in full. This assertion was left on the old
+    // behaviour when that shipped, which is half of why `main` went red.
+    assert.equal(trigger.textContent, "🟠", "the closed trigger should be the picked glyph alone");
     assert.equal(menu.hidden, true, "the menu did not close after a pick");
   });
 
