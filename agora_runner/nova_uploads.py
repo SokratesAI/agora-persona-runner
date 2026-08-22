@@ -281,31 +281,33 @@ def store_upload(filename, content_type, data_b64):
     return name, f"/api/upload/{name}", len(raw), content_type
 
 
-#: A whole line that is nothing but an attachment link this site wrote on
-#: Edvard's behalf — `![alt](/api/upload/<name>)` for an image and
-#: `[alt](/api/upload/<name>)` for any other file, the two constructs
-#: `buildAttach`'s `onInsert` inserts into a text box in `app.js`. It lives
-#: here rather than in the caller because this module is the one that
-#: *builds* that string (`store_upload` returns the URL half), so the
-#: pattern and the thing it has to match cannot drift apart in a rename.
-#: `app.js` carries its own copy (`ATTACH_RE`) and cannot share this one;
-#: that one is anchored nowhere and matches inline, this one is anchored
-#: and matches a line, so they are deliberately different questions.
+#: An attachment link this site wrote on Edvard's behalf —
+#: `![alt](/api/upload/<name>)` for an image and `[alt](/api/upload/<name>)`
+#: for any other file, the two constructs `buildAttach`'s `onInsert`
+#: inserts into a text box in `app.js`. It lives here rather than in the
+#: caller because this module is the one that *builds* that string
+#: (`store_upload` returns the URL half), so the pattern and the thing it
+#: has to match cannot drift apart in a rename.
+#:
+#: Three parts captured: the `!` that says picture rather than file, the
+#: alt text, and the path. Both Python readers are built from this one
+#: string — `nova_journal.render_inline` matches it inline and needs the
+#: groups, `ATTACHMENT_LINE` below anchors it and does not. That anchoring
+#: is now the only difference between them, so a rename of the URL prefix
+#: or a widening of the filename charset cannot move one and leave the
+#: other behind.
+#:
+#: `app.js` carries its own copy (`ATTACH_RE`) and cannot share this one,
+#: because it is JavaScript. A test that reads this string out of the
+#: source and compares the two is filed in `nova/resources/ideas.md`.
 #:
 #: The `!` is optional, and that is the whole of what file attachments
 #: changed here: without it a capture of a PDF would file as its own bullet
 #: instead of folding onto the sentence above it — the bug Cycle 307 fixed
 #: for images, reintroduced for everything else.
-#: The construct itself, once, with its three parts captured: the `!`
-#: that says picture rather than file, the alt text, and the path. Both
-#: Python readers are built from this string so a rename of the URL
-#: prefix or a widening of the filename charset cannot move one and leave
-#: the other behind. `nova_journal.render_inline` matches it inline and
-#: needs the groups; `ATTACHMENT_LINE` below anchors it and does not —
-#: that is the difference the docstring above calls two questions, and it
-#: is now the only difference between them.
 ATTACHMENT_PATTERN = r"(!?)\[([^\]]*)\]\((/api/upload/[A-Za-z0-9._-]+)\)"
 
+#: A whole line that is nothing but one of those, and nothing else.
 ATTACHMENT_LINE = re.compile("^" + ATTACHMENT_PATTERN + "$")
 
 
