@@ -188,8 +188,9 @@ def test_main_exits_two_when_the_file_cannot_be_read(tmp_path):
 
 class TestAbsoluteClaims:
     """Claims about the whole of history, which the author usually cannot
-    have checked. Advisory on purpose -- 17% of live entries carry one and
-    most of those are honest, so a refusal would cost more than it saves."""
+    have checked. Advisory on purpose -- 99 of the 368 live entries carry
+    one and many of those are honest, so a refusal would cost more than it
+    saves."""
 
     def test_it_catches_the_sentence_edvard_objected_to(self):
         notes = absolute_claim_notes(
@@ -207,10 +208,19 @@ class TestAbsoluteClaims:
             "not once did the board rank on it",
             "no cycle has ever tried to remove it",
             "nobody has ever checked whether that pays for itself",
+            # The auxiliary is optional: I write both of these.
+            "nobody ever looked at it",
+            "no cycle ever tried to remove it",
+            "that column has always been empty",
         ],
     )
     def test_it_catches_the_other_shapes_of_the_same_claim(self, text):
         assert absolute_claim_notes(text)
+
+    def test_a_hyphenated_never_is_not_a_claim_about_history(self):
+        """"never-ending" is a description, not an assertion about the past.
+        The first draft of the pattern flagged it."""
+        assert absolute_claim_notes("the pod has never-ending logs") == []
 
     @pytest.mark.parametrize(
         "text",
@@ -220,8 +230,26 @@ class TestAbsoluteClaims:
             "the deploy came up healthy",
         ],
     )
-    def test_a_claim_scoped_to_what_was_measured_passes(self, text):
+    def test_a_sentence_without_the_absolute_vocabulary_passes(self, text):
+        """Named for what it pins. There is no scope logic here -- the
+        checker cannot tell a scoped claim from an unscoped one, it can
+        only spot the words I reach for when I am overreaching, which is
+        why it advises rather than refuses."""
         assert absolute_claim_notes(text) == []
+
+    def test_my_own_history_is_mine_to_claim(self):
+        """What Edvard objected to was my claiming *his* history. My own is
+        the one I can actually check."""
+        assert absolute_claim_notes("I have never used that key") == []
+        assert absolute_claim_notes("I had never checked it") == []
+        # Somebody else's whole history is still a claim about somebody
+        # else's whole history, and stays flagged.
+        assert absolute_claim_notes("he has never been part of this team")
+
+    def test_words_may_sit_between_the_subject_and_ever(self):
+        """Adjacency was a property of the one sentence this was built
+        from, not of the claim."""
+        assert absolute_claim_notes("nothing there has ever read it")
 
     def test_edvards_own_words_are_not_hedged_back_at_him(self):
         """Entries quote him constantly, and his sentences are not mine to

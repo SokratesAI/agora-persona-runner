@@ -693,13 +693,37 @@ def _clock_findings(body, clock):
 # measurement written up wider than it was taken. I had checked what reads
 # that key *now*, on one pod, and published a sentence about six months of
 # a system I did not build.
+#
+# The auxiliary is optional in the first alternative because "nobody ever
+# looked at it" is the same claim as "nobody has ever looked at it" and I
+# write both, and up to two words may sit between the subject and `ever`
+# so that "nothing there has ever read it" is caught -- adjacency was a
+# property of the one sentence this was built from, not of the claim.
+# `never(?![-\w])` is there because "the pod has never-ending logs" is not
+# a claim about history and the first draft flagged it.
+#
+# **Known misses, judged and left.** The present-tense form of the same
+# claim -- "nothing reads that key" -- is not caught, and cannot be
+# without flagging every honest "nothing in `agents` mounts it", which is
+# the sentence this rule is trying to get me to write instead. Nor is a
+# bare "never" with no auxiliary ("the board never ranks on it"), because
+# the vocabulary is too common to separate from ordinary prose. This
+# catches the shape I actually reached for; it is a prompt, not a proof.
 _ABSOLUTE_HISTORY_RE = re.compile(
-    r"\b(?:nothing|nobody|no one|no \w+)\s+(?:has|have|had)\s+ever\b"
-    r"|\b(?:has|have|had)\s+never\b"
+    r"\b(?:nothing|nobody|no one|no \w+)\b(?:\s+\w+){0,2}\s+"
+    r"(?:(?:has|have|had)\s+)?ever\b"
+    r"|\b(?:has|have|had)\s+never(?![-\w])"
+    r"|\b(?:has|have|had)\s+always\s+been\b"
     r"|\bnever\s+(?:been|once)\b"
     r"|\bnot\s+once\b",
     re.IGNORECASE,
 )
+
+# My own experience is the one history I can actually check, so "I have
+# never used that key" is a scoped claim, not an overreach -- 5 of the 90
+# spans in the first corpus run were this shape. Edvard's complaint was
+# precisely that I claimed *his* history; claiming mine is fine.
+_FIRST_PERSON_RE = re.compile(r"\b(?:I|I've|I'd)\b\s+(?:\w+\s+){0,1}$", re.IGNORECASE)
 
 # Enough words either side to see what the claim was about, since the
 # author has to judge whether they measured that scope.
@@ -710,12 +734,12 @@ def absolute_claim_notes(body):
     """Advisory lines for claims about all of history. Never fatal.
 
     Deliberately not a finding. Run over the 368 entries in the journal
-    mirror on 2026-08-22, this function flags 77 of them -- 21% -- with 90
-    notes in all, so a typical entry draws none or one. Plenty of those 90
-    are honest ("this rating has never been re-derived", about a file the
-    cycle had just read in full). A refusal would make a cycle delete a
-    true sentence to satisfy a linter, which is a worse failure than the
-    one being fixed. So this prints, and the author decides.
+    mirror on 2026-08-22, this function flags 99 of them -- 27% -- with 119
+    notes in all; 350 of the 368 draw none or one. Plenty of those 119 are
+    honest ("this rating has never been re-derived", about a file the cycle
+    had just read in full). A refusal would make a cycle delete a true
+    sentence to satisfy a linter, which is a worse failure than the one
+    being fixed. So this prints, and the author decides.
 
     Quoted spans are stripped first: Edvard's own words, and the previous
     cycle's, are frequently quoted in an entry and are not mine to hedge.
@@ -723,6 +747,8 @@ def absolute_claim_notes(body):
     stripped = _strip_quoted(body)
     notes = []
     for match in _ABSOLUTE_HISTORY_RE.finditer(stripped):
+        if _FIRST_PERSON_RE.search(stripped[max(0, match.start() - 24):match.start()]):
+            continue
         start = max(0, match.start() - _ABSOLUTE_WINDOW)
         end = min(len(body), match.end() + _ABSOLUTE_WINDOW)
         excerpt = " ".join(body[start:end].split())
