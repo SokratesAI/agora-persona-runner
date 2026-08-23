@@ -36,6 +36,14 @@ Age is the tiebreak on purpose: two High rows are not equally urgent when one ha
 since 08-04, and "it has been waiting longest" is the only signal left
 once the rating is spent.
 
+**Every named line now carries a `[claim: <slug>]`, and a row a live cycle
+already holds sinks to the bottom marked 🔒.** Edvard is moving the
+heartbeat from 72 minutes to 18, which he says plainly will run cycles in
+parallel and that this is wanted. One top row handed to three simultaneous
+cycles is three cycles doing it. The ledger and its compare-and-swap are
+`agora_runner.nova_claims`, which already existed for handoff slugs; the
+board is the list a cycle reads *first*, and it had no slugs at all.
+
 Vault I/O is inside rather than outside, unlike every other tool here,
 and that is the point of the tool: an opening read that takes three
 commands is one a cycle will skip. `--issues`/`--ideas` take local files
@@ -47,6 +55,8 @@ import argparse
 import re
 import subprocess
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
@@ -59,8 +69,18 @@ from agora_runner.nova_boards import (
     unanswered_comments,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
+from agora_runner.nova_claims import (
+    CLAIMS_PATH, ClaimError, held_by, load as load_claims, slug_for_capture,
+    slug_for_row,
+)
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
+
+# Claim staleness is measured in wall-clock minutes against the `at` stamps
+# `tools/claim.py` writes, and those are Oslo (rule 7). Comparing them to a
+# naive `now` would raise rather than mislead, which is the safe direction,
+# but there is no reason to be within one timezone of correct here.
+OSLO = ZoneInfo("Europe/Oslo")
 
 # Taken from `BOARD_PATHS` rather than typed again. Both of these moved on
 # 2026-08-12, from `projects/sokrates/projects/agora/` into Edvard's own
@@ -132,6 +152,30 @@ def _fetch(path):
     return done.stdout
 
 
+def fetch_claims(path=CLAIMS_PATH):
+    """`(ledger_text, readable)` for the claim ledger.
+
+    `_fetch` collapses "the file is not there" and "the read failed" into
+    one `None`, and for a board that is right -- neither can be ranked. For
+    the ledger the two are opposite answers. **Absent is the normal state**:
+    nobody has claimed anything since the last prune, and the correct
+    reading is an empty ledger. **Unreadable means the 🔒 marks are missing
+    rather than absent**, and a cycle that reads a clean board while another
+    cycle holds every row on it is the exact duplication this is here to
+    stop. So they are separated, and only the second one is said out loud.
+    """
+    try:
+        done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return "", False
+    if done.returncode != 0:
+        return "", False
+    if done.stdout.lstrip().startswith("[not found:"):
+        return "", True
+    return done.stdout, True
+
+
 def unread_notes(markdown):
     """`notes.md` -> the notes Edvard has left that no cycle has moved.
 
@@ -145,7 +189,8 @@ def unread_notes(markdown):
     captures rather than ranked, because `rank` sorts on a `Priority` cell
     that a note does not have and never will.
     """
-    return [{"board": "note", "priority": "", "text": text}
+    return [{"board": "note", "priority": "", "text": text,
+             "slug": slug_for_capture(text)}
             for text in parse_board(markdown or "")["captures"]]
 
 
@@ -184,7 +229,11 @@ def unboarded_captures(markdown, board):
         if done:
             continue
         priority, text = split_capture_priority(rest)
-        captures.append({"board": board, "priority": priority, "text": text})
+        captures.append({"board": board, "priority": priority, "text": text,
+                         # Hashed off the bullet Edvard typed, not off the
+                         # rating or the DONE marker a cycle may prepend
+                         # later -- so the slug survives him re-rating it.
+                         "slug": slug_for_capture(text)})
     return captures
 
 
@@ -208,8 +257,52 @@ def open_rows(markdown, board):
             # same markdown the rows come from, so a row and its thread can
             # never be sourced from two different reads of the file.
             "waiting": item["number"] in waiting,
+            "slug": slug_for_row(board, item["number"]),
         })
     return rows
+
+
+def row_slug(item):
+    """The claim slug for a row or capture, derived if it is not carried.
+
+    `open_rows` and `unboarded_captures` both stamp `slug` as they build,
+    and this returns that. The fallback is for a row assembled anywhere
+    else -- the tests build them by hand, and `closed_rows_waiting` builds
+    a shape with no rating -- because a slug that is *derived* from the
+    board and the number is the same slug either way, and a line printing
+    no claim name at all is the one outcome that would quietly leave a row
+    unclaimable.
+    """
+    carried = item.get("slug")
+    if carried:
+        return carried
+    if "number" in item:
+        return slug_for_row(item["board"], item["number"])
+    return slug_for_capture(item.get("text", ""))
+
+
+def apply_claims(items, live, my_cycle=None):
+    """Stamp `heldBy` on anything another live cycle has already claimed.
+
+    Edvard, `issues.md` 2026-08-23, on moving the heartbeat from 72 minutes
+    to 18: *"The average cycle is 18min, so we are guaranteed to have some
+    paralell cycles run, and i want that."* At 72 minutes this tool could
+    name one top row and be sure only one cycle was reading it. At 18 it
+    hands the identical row to three cycles at once, and each of them takes
+    it, because taking it is what the line says to do.
+
+    `nova_claims` already had the atomic half -- a ledger in the vault with
+    CouchDB compare-and-swap under it -- and it only ever covered handoff
+    slugs, which is the list a cycle reads *second*. The board is the list
+    it reads first.
+
+    Own claims are not held: a cycle that claims a row and then re-runs this
+    tool must not be told its own row is taken.
+    """
+    for item in items:
+        holder = live.get(row_slug(item))
+        item["heldBy"] = None if holder is None or holder == my_cycle else holder
+    return items
 
 
 def closed_rows_waiting(markdown, board):
@@ -295,6 +388,14 @@ def rank(rows):
     blocked row, that is very likely the thing that unblocks it.
     """
     return sorted(rows, key=lambda r: (
+        # **A row another live cycle is holding sinks below everything**,
+        # under the unanswered comment as well. Every other key here orders
+        # rows by how much they deserve a cycle's hour; this one says the
+        # hour is already being spent, which is not a ranking question. It
+        # sinks rather than hides for the same reason a blocked row does --
+        # `render` names it, and a cycle that cannot see the row cannot
+        # notice the claim is wrong.
+        1 if r.get("heldBy") else 0,
         0 if r.get("waiting") else 1,
         1 if r.get("statusKey") == _BLOCKED else 0,
         _RANK.get(r["priorityKey"], len(_RANK)),
@@ -312,22 +413,49 @@ def _line(row):
     waiting = "💬 UNANSWERED  " if row.get("waiting") else ""
     if row.get("statusKey") == _BLOCKED:
         waiting += "⏸ ON EDVARD  "
+    if row.get("heldBy"):
+        waiting = f"🔒 HELD by cycle {row['heldBy']}  " + waiting
     return (f"{row['board']} #{row['number']}  {waiting}{rating}  {row['status']}"
-            f"  (updated {row['updated']})  {row['title']}")
+            f"  (updated {row['updated']})  {row['title']}"
+            f"  [claim: {row_slug(row)}]")
 
 
 def _capture_line(capture):
     # A note carries no rating cell, so printing "(unrated)" beside one
     # would invite a cycle to go and rate something that has nowhere to
     # put a rating.
+    held = f"🔒 HELD by cycle {capture['heldBy']}  " if capture.get("heldBy") else ""
+    claim = f"  [claim: {row_slug(capture)}]"
     if capture["board"] == "note":
-        return f"notes.md  {capture['text']}"
+        return f"notes.md  {held}{capture['text']}{claim}"
     rating = capture["priority"] or "(unrated)"
     text = capture["text"]
-    return f"{capture['board']}s.md  {rating}  {text}"
+    return f"{capture['board']}s.md  {held}{rating}  {text}{claim}"
 
 
-def render(rows, runners_up=3, captures=(), closed_waiting=()):
+def _claim_footer(rows, captures, claims_readable):
+    """What to type to take what this tool just named, and who has what.
+
+    The instruction is printed unconditionally rather than only when
+    something is held, because the whole mechanism fails open: a cycle that
+    only claims when it sees somebody else's claim never claims first, and
+    every cycle is somebody's first.
+    """
+    out = []
+    if not claims_readable:
+        out.append("  ⚠ CLAIMS LEDGER UNREADABLE — the 🔒 marks are missing, not "
+                   "absent. Another cycle may be on any row above.")
+    held = [i for i in list(captures) + list(rows) if i.get("heldBy")]
+    if held:
+        out.append(f"  {len(held)} item(s) held by a live cycle right now: "
+                   + ", ".join(f"{i['slug']} (cycle {i['heldBy']})" for i in held))
+    out.append("  Claim before you work — cycles overlap now: "
+               "python3 -m tools.claim take --ledger claims.json "
+               "--item <claim slug> --cycle <N>  (see prompt.md step 2)")
+    return out
+
+
+def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -339,6 +467,10 @@ def render(rows, runners_up=3, captures=(), closed_waiting=()):
     """
     out = []
     if captures:
+        # Held captures sink within the section for the same reason held rows
+        # sink within the ranking. The section is otherwise unsorted, so this
+        # is the only ordering it has ever had.
+        captures = sorted(captures, key=lambda c: 1 if c.get("heldBy") else 0)
         out.append(f"UNPROCESSED CAPTURES FROM EDVARD ({len(captures)}) — "
                    "these outrank every row below. Take one, or say why not:")
         out.extend("  -> " + _capture_line(c) for c in captures)
@@ -389,6 +521,7 @@ def render(rows, runners_up=3, captures=(), closed_waiting=()):
                    + ", ".join(f"{r['board']} #{r['number']}" for r in blocked))
         out.append("  Nothing for a cycle to build on these. If one is "
                    "actually actionable now, set its status back.")
+    out.extend(_claim_footer(ranked, captures, claims_readable))
     return "\n".join(out)
 
 
@@ -401,8 +534,26 @@ def main(argv=None):
     # where `vault_tool.py` exists, and exits 1 anywhere else -- a test that
     # passes for a reason that has nothing to do with what it asserts.
     ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
+    ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
+    ap.add_argument("--cycle", type=int,
+                    help="your own cycle number, so your own claims are not "
+                         "reported back to you as somebody else's")
     ap.add_argument("--runners-up", type=int, default=3)
     args = ap.parse_args(argv)
+
+    if args.claims:
+        with open(args.claims, encoding="utf-8") as fh:
+            claims_text, claims_readable = fh.read(), True
+    else:
+        claims_text, claims_readable = fetch_claims()
+    try:
+        live = held_by(load_claims(claims_text), datetime.now(OSLO))
+    except ClaimError as exc:
+        # A ledger that will not parse is unreadable, not empty. Saying so
+        # and carrying on beats refusing to print the board at all: the
+        # ranking is still correct, it is only the 🔒 marks that are gone.
+        print(f"claims ledger will not parse: {exc}", file=sys.stderr)
+        live, claims_readable = {}, False
 
     rows = []
     captures = []
@@ -434,8 +585,11 @@ def main(argv=None):
     else:
         captures.extend(unread_notes(notes_md))
 
+    apply_claims(rows, live, args.cycle)
+    apply_claims(captures, live, args.cycle)
+
     print(render(rows, runners_up=args.runners_up, captures=captures,
-                 closed_waiting=closed_waiting))
+                 closed_waiting=closed_waiting, claims_readable=claims_readable))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")

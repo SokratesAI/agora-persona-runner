@@ -654,3 +654,115 @@ def test_a_row_in_the_done_table_is_waiting_too():
     got = top_board_rows.closed_rows_waiting(text, "idea")
     assert [(r["number"], r["status"]) for r in got] == [(63, DONE_STATUS)]
     assert f"idea #63 ({DONE_STATUS})" in top_board_rows.render([], closed_waiting=got)
+
+
+# --- Claims: parallel cycles must not both take the same row -------------
+#
+# Edvard, `issues.md` 2026-08-23, on going from a 72-minute heartbeat to an
+# 18-minute one: *"The average cycle is 18min, so we are guaranteed to have
+# some paralell cycles run, and i want that."* Everything above this line
+# assumes one reader at a time.
+
+import json
+from datetime import datetime, timedelta
+
+
+def claims(*rows):
+    """A ledger holding one open claim per (item, cycle) pair, stamped now."""
+    now = datetime.now(top_board_rows.OSLO)
+    return json.dumps({"claims": [
+        {"item": item, "cycle": cycle, "state": "open",
+         "at": (now - timedelta(minutes=age)).isoformat()}
+        for item, cycle, age in rows]})
+
+
+def _rendered(issues_md, ideas_md, ledger, cycle=None, tmp_path=None):
+    """Run `main` end to end on local files and return what it printed."""
+    paths = {}
+    for name, text in (("issues.md", issues_md), ("ideas.md", ideas_md),
+                       ("notes.md", "- \n\n## Read\n"), ("claims.json", ledger)):
+        paths[name] = tmp_path / name
+        paths[name].write_text(text, encoding="utf-8")
+    argv = ["--issues", str(paths["issues.md"]), "--ideas", str(paths["ideas.md"]),
+            "--notes", str(paths["notes.md"]), "--claims", str(paths["claims.json"])]
+    if cycle is not None:
+        argv += ["--cycle", str(cycle)]
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert top_board_rows.main(argv) == 0
+    return buf.getvalue()
+
+
+def test_row_held_by_another_live_cycle_sinks_below_a_lower_rated_free_one(tmp_path):
+    issues = board((10, "held immediate", BACKLOG, "2026-08-01", IMMEDIATE),
+                   (11, "free low", BACKLOG, "2026-08-02", LOW))
+    out = _rendered(issues, board(), claims(("issue-10", 341, 2)), cycle=342,
+                    tmp_path=tmp_path)
+    top = [line for line in out.splitlines() if line.startswith("  -> ")][0]
+    assert "#11" in top and "#10" not in top
+    assert "🔒 HELD by cycle 341" in out
+    assert "issue-10 (cycle 341)" in out
+
+
+def test_my_own_claim_is_not_reported_back_to_me_as_taken(tmp_path):
+    issues = board((10, "mine already", BACKLOG, "2026-08-01", IMMEDIATE),
+                   (11, "free low", BACKLOG, "2026-08-02", LOW))
+    out = _rendered(issues, board(), claims(("issue-10", 342, 2)), cycle=342,
+                    tmp_path=tmp_path)
+    top = [line for line in out.splitlines() if line.startswith("  -> ")][0]
+    assert "#10" in top
+    assert "🔒" not in out
+
+
+def test_a_claim_older_than_the_turn_cap_does_not_fence_the_row_off(tmp_path):
+    # A cycle that was killed mid-turn must not hold a row forever: an
+    # unclaimable row looks exactly like one somebody is handling.
+    issues = board((10, "stale claim", BACKLOG, "2026-08-01", IMMEDIATE),
+                   (11, "free low", BACKLOG, "2026-08-02", LOW))
+    out = _rendered(issues, board(), claims(("issue-10", 300, 90)), cycle=342,
+                    tmp_path=tmp_path)
+    top = [line for line in out.splitlines() if line.startswith("  -> ")][0]
+    assert "#10" in top
+    assert "🔒" not in out
+
+
+def test_the_two_boards_are_numbered_separately_so_the_slug_says_which(tmp_path):
+    issues = board((7, "issue seven", BACKLOG, "2026-08-01", HIGH))
+    ideas = board((7, "idea seven", BACKLOG, "2026-08-02", HIGH))
+    out = _rendered(issues, ideas, claims(("idea-7", 341, 2)), cycle=342,
+                    tmp_path=tmp_path)
+    top = [line for line in out.splitlines() if line.startswith("  -> ")][0]
+    assert "issue #7" in top and "🔒" not in top
+    assert "🔒 HELD by cycle 341" in out
+
+
+def test_a_held_capture_sinks_below_a_free_one_and_keeps_its_slug(tmp_path):
+    from agora_runner.nova_claims import slug_for_capture
+    held_text = "the capture another cycle already took"
+    issues = "- " + held_text + "\n- a capture nobody has taken\n\n" + board()
+    out = _rendered(issues, board(),
+                    claims((slug_for_capture(held_text), 341, 2)), cycle=342,
+                    tmp_path=tmp_path)
+    capture_lines = [line for line in out.splitlines()
+                     if line.startswith("  -> issues.md")]
+    assert "nobody has taken" in capture_lines[0]
+    assert "🔒 HELD by cycle 341" in capture_lines[1]
+    assert f"[claim: {slug_for_capture(held_text)}]" in capture_lines[1]
+
+
+def test_an_unreadable_ledger_says_so_rather_than_printing_a_clean_board(tmp_path):
+    issues = board((10, "a row", BACKLOG, "2026-08-01", HIGH))
+    out = _rendered(issues, board(), "{not json at all", cycle=342,
+                    tmp_path=tmp_path)
+    assert "CLAIMS LEDGER UNREADABLE" in out
+
+
+def test_the_claim_instruction_is_printed_even_when_nothing_is_held(tmp_path):
+    # The mechanism fails open: a cycle that only claims once it sees
+    # somebody else's claim never claims first, and every cycle is
+    # somebody's first.
+    out = _rendered(board((10, "a row", BACKLOG, "2026-08-01", HIGH)), board(),
+                    claims(), cycle=342, tmp_path=tmp_path)
+    assert "Claim before you work" in out
+    assert "[claim: issue-10]" in out
