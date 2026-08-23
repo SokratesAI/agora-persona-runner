@@ -37,8 +37,8 @@ since 08-04, and "it has been waiting longest" is the only signal left
 once the rating is spent.
 
 **Every named line now carries a `[claim: <slug>]`, and a row a live cycle
-already holds sinks to the bottom marked 🔒.** Edvard is moving the
-heartbeat from 72 minutes to 18, which he says plainly will run cycles in
+already holds sinks to the bottom marked 🔒.** Edvard is considering moving
+the heartbeat from 72 minutes to 18 (`comments.md`, 2026-08-23 13:31), which he says plainly will run cycles in
 parallel and that this is wanted. One top row handed to three simultaneous
 cycles is three cycles doing it. The ledger and its compare-and-swap are
 `agora_runner.nova_claims`, which already existed for handoff slugs; the
@@ -284,9 +284,12 @@ def row_slug(item):
 def apply_claims(items, live, my_cycle=None):
     """Stamp `heldBy` on anything another live cycle has already claimed.
 
-    Edvard, `issues.md` 2026-08-23, on moving the heartbeat from 72 minutes
-    to 18: *"The average cycle is 18min, so we are guaranteed to have some
-    paralell cycles run, and i want that."* At 72 minutes this tool could
+    Edvard, `comments.md` 2026-08-23 13:31, on moving the heartbeat from 72
+    minutes to 18: *"The average cycle is 18min, so we are guaranteed to have
+    some paralell cycles run, and i want that."* (He wrote it on the comments
+    board, not on `issues.md` -- the bullet on his board is my paraphrase of
+    it, and citing the paraphrase as his words is the thing `personality.md`
+    keeps telling me not to do.) At 72 minutes this tool could
     name one top row and be sure only one cycle was reading it. At 18 it
     hands the identical row to three cycles at once, and each of them takes
     it, because taking it is what the line says to do.
@@ -447,8 +450,12 @@ def _claim_footer(rows, captures, claims_readable):
                    "absent. Another cycle may be on any row above.")
     held = [i for i in list(captures) + list(rows) if i.get("heldBy")]
     if held:
+        # `row_slug`, not `i['slug']` -- the whole point of that helper is that
+        # a line printing no claim name is the one outcome that leaves a row
+        # unclaimable, and reading the key directly here quietly opted out of
+        # its own guarantee. Reviewer finding, PR #301.
         out.append(f"  {len(held)} item(s) held by a live cycle right now: "
-                   + ", ".join(f"{i['slug']} (cycle {i['heldBy']})" for i in held))
+                   + ", ".join(f"{row_slug(i)} (cycle {i['heldBy']})" for i in held))
     out.append("  Claim before you work — cycles overlap now: "
                "python3 -m tools.claim take --ledger claims.json "
                "--item <claim slug> --cycle <N>  (see prompt.md step 2)")

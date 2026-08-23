@@ -348,3 +348,78 @@ def test_a_usage_error_exits_one_not_two(tmp_path, capsys):
         with pytest.raises(SystemExit) as exit_info:
             claim_cli.main(argv)
         assert exit_info.value.code == 1, argv
+
+
+# --- Slugs and liveness, for the claim-aware board read -------------------
+#
+# `top_board_rows` exercises these through `main()`, which cannot see a bug
+# *inside* the slug functions: it hashes the capture with the same function
+# the code under test uses, so both sides move together. Reviewer finding,
+# PR #301. These assert against literals instead.
+
+from datetime import timezone
+
+from agora_runner.nova_claims import (
+    CLAIMS_PATH, SLUG_RE, held_by, slug_for_capture, slug_for_row,
+)
+
+
+def test_a_row_slug_names_its_board_because_the_two_are_numbered_separately():
+    assert slug_for_row("issue", 7) == "issue-7"
+    assert slug_for_row("idea", 7) == "idea-7"
+    # Live on both boards right now: issue #94 and idea #94 are both open.
+    assert slug_for_row("issue", 94) != slug_for_row("idea", 94)
+
+
+def test_a_row_slug_is_a_legal_claim_slug_at_one_digit_and_at_four():
+    for board in ("issue", "idea"):
+        for number in (1, 7, 92, 100, 9999):
+            assert SLUG_RE.match(slug_for_row(board, number)), (board, number)
+
+
+def test_a_capture_slug_ignores_how_the_bullet_was_wrapped():
+    """The same bullet read twice can come back wrapped differently.
+
+    That is the claim `slug_for_capture`'s docstring makes, and until this
+    test nothing checked it -- two cycles reading one capture through two
+    different line widths would have computed two slugs and both claimed it.
+    """
+    one_line = "Considering scaling to Claude 20x: parallel cycles will run."
+    wrapped = "Considering scaling to Claude 20x:\n  parallel cycles will run."
+    padded = "   Considering scaling to Claude   20x: parallel cycles will run.  "
+    assert slug_for_capture(one_line) == slug_for_capture(wrapped)
+    assert slug_for_capture(one_line) == slug_for_capture(padded)
+
+
+def test_two_different_captures_do_not_share_a_slug():
+    assert slug_for_capture("reopen idea 63") != slug_for_capture("reopen idea 64")
+
+
+def test_a_capture_slug_is_a_legal_claim_slug_for_an_empty_bullet_too():
+    # `unboarded_captures` filters the trailing empty bullet out, but the
+    # function must not be the thing that decides that -- an unclaimable
+    # slug would raise inside `take` rather than refuse.
+    for text in ("", "   ", "a", "\u00e5 \u00f8 \u00e6 emoji \U0001f534", "x" * 4000):
+        assert SLUG_RE.match(slug_for_capture(text)), repr(text[:20])
+
+
+def test_held_by_reports_the_holder_and_forgets_the_stale_and_the_finished():
+    now = datetime(2026, 8, 23, 14, 0, tzinfo=timezone.utc)
+    ledger = {"claims": [
+        {"item": "issue-7", "cycle": 341, "state": "open",
+         "at": (now - timedelta(minutes=2)).isoformat()},
+        {"item": "idea-92", "cycle": 300, "state": "open",
+         "at": (now - timedelta(minutes=90)).isoformat()},
+        {"item": "issue-96", "cycle": 200, "state": "done",
+         "at": (now - timedelta(minutes=2)).isoformat()},
+    ]}
+    assert held_by(ledger, now) == {"issue-7": 341}
+
+
+def test_the_ledger_path_is_the_one_the_cli_docstring_tells_a_cycle_to_use():
+    # The path was hand-typed in `tools/claim.py`'s docstring and nowhere
+    # else until a second reader appeared. If the two ever disagree, one of
+    # them is reading an empty ledger and neither says so.
+    import pathlib
+    cli = (pathlib.Path(__file__).resolve().parents[1] / "tools" / "claim.py")
+    assert CLAIMS_PATH in cli.read_text(encoding="utf-8")

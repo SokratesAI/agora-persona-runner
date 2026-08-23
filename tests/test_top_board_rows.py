@@ -658,9 +658,9 @@ def test_a_row_in_the_done_table_is_waiting_too():
 
 # --- Claims: parallel cycles must not both take the same row -------------
 #
-# Edvard, `issues.md` 2026-08-23, on going from a 72-minute heartbeat to an
-# 18-minute one: *"The average cycle is 18min, so we are guaranteed to have
-# some paralell cycles run, and i want that."* Everything above this line
+# Edvard, `comments.md` 2026-08-23 13:31, on going from a 72-minute heartbeat
+# to an 18-minute one: *"The average cycle is 18min, so we are guaranteed to
+# have some paralell cycles run, and i want that."* Everything above this line
 # assumes one reader at a time.
 
 import json
@@ -766,3 +766,43 @@ def test_the_claim_instruction_is_printed_even_when_nothing_is_held(tmp_path):
                     claims(), cycle=342, tmp_path=tmp_path)
     assert "Claim before you work" in out
     assert "[claim: issue-10]" in out
+
+
+def test_an_absent_ledger_is_an_empty_one_and_a_failed_read_is_not(monkeypatch):
+    """The two answers `_fetch` deliberately collapses, kept apart here.
+
+    For a board, "not there" and "the read failed" are the same answer --
+    neither can be ranked. For the ledger they are opposite: absent is the
+    normal state and means nobody holds anything, while a failed read means
+    the 🔒 marks are missing rather than absent, and a cycle that reads a
+    clean board while another cycle holds every row on it is the exact
+    duplication this is here to stop. Reviewer finding, PR #301: the
+    distinction this function exists for had no test.
+    """
+    class Done:
+        returncode = 0
+        stdout = "[not found: projects/.../claims.json]\n"
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
+    assert top_board_rows.fetch_claims() == ("", True)
+
+    Done.returncode = 1
+    assert top_board_rows.fetch_claims() == ("", False)
+
+    def boom(*a, **k):
+        raise OSError("no vault client on this pod")
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", boom)
+    assert top_board_rows.fetch_claims() == ("", False)
+
+
+def test_a_real_ledger_body_reads_as_success(monkeypatch):
+    body = '{"claims": [{"item": "issue-7", "cycle": 341, "state": "open",\n' \
+           ' "at": "2026-08-23T14:00:00+02:00"}]}\n'
+
+    class Done:
+        returncode = 0
+        stdout = body
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
+    assert top_board_rows.fetch_claims() == (body, True)
