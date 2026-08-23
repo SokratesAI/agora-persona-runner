@@ -3679,6 +3679,50 @@ def test_one_slot_cannot_spawn_twice_before_its_claim_lands(runner):
     assert len(created) == 2
 
 
+def test_a_run_that_dies_without_claiming_does_not_wedge_the_heartbeat(runner):
+    """The regression the spawn-mark introduced, found in review of #308.
+
+    `_heartbeat_spawn_marks` is only ever REPLACED by a different
+    `lastRunAt`. So a run that dies without moving it -- claim PATCH
+    fails in an Agora blip, then the thread dies before the final PATCH,
+    which is the case `run_heartbeat` explicitly calls "not fatal" --
+    left a mark that matched every later tick forever, and the heartbeat
+    never ran again. The old one-at-a-time guard could not do this: a
+    dead thread always meant "spawn on the next tick".
+    """
+    heartbeat = _plain_hb(lastRunAt="2026-08-23T19:00:00+00:00")
+    threads = {}
+    marks = {}
+    created = []
+    liveness = {"alive": True}
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        t.is_alive = lambda: liveness["alive"]
+        created.append(t)
+        return t
+
+    def tick():
+        with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+             patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+             patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+             patch.object(runner.heartbeats, "agora_internal",
+                          return_value=(200, {"heartbeats": [heartbeat]})), \
+             patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+             patch.object(runner.heartbeats, "schedule_due", return_value=True):
+            runner.run_due_heartbeats()
+
+    tick()
+    assert len(created) == 1
+
+    # The run dies. `lastRunAt` never moved, because both PATCHes failed.
+    liveness["alive"] = False
+    tick()
+    tick()
+
+    assert len(created) == 3, "a dead unclaimed run wedged the heartbeat for good"
+
+
 def test_force_run_is_exempt_from_the_spawn_mark(runner):
     """Edvard pressing "run now" is a new request, not one slot read
     twice -- and under the old guard it silently no-opped whenever a
@@ -3752,23 +3796,26 @@ def test_default_concurrency_is_one_unless_the_bridge_lane_is_open(monkeypatch):
     import importlib
     import agora_runner.config as config_module
 
-    monkeypatch.delenv("HEARTBEAT_MAX_CONCURRENT", raising=False)
-    monkeypatch.delenv("CLAUDE_CLI_CONCURRENT", raising=False)
-    assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 1
+    try:
+        monkeypatch.delenv("HEARTBEAT_MAX_CONCURRENT", raising=False)
+        monkeypatch.delenv("CLAUDE_CLI_CONCURRENT", raising=False)
+        assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 1
 
-    monkeypatch.setenv("CLAUDE_CLI_CONCURRENT", "1")
-    assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 3
+        monkeypatch.setenv("CLAUDE_CLI_CONCURRENT", "1")
+        assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 3
 
-    monkeypatch.setenv("HEARTBEAT_MAX_CONCURRENT", "5")
-    assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 5
+        monkeypatch.setenv("HEARTBEAT_MAX_CONCURRENT", "5")
+        assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 5
 
-    # A typo must not silently stop the heartbeat loop.
-    monkeypatch.setenv("HEARTBEAT_MAX_CONCURRENT", "three")
-    assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 3
-
-    monkeypatch.delenv("HEARTBEAT_MAX_CONCURRENT", raising=False)
-    monkeypatch.delenv("CLAUDE_CLI_CONCURRENT", raising=False)
-    importlib.reload(config_module)
+        # A typo must not silently stop the heartbeat loop.
+        monkeypatch.setenv("HEARTBEAT_MAX_CONCURRENT", "three")
+        assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 3
+    finally:
+        # A failed assertion above must not leave `agora_runner.config`
+        # reloaded from this test's env for the rest of the session.
+        monkeypatch.delenv("HEARTBEAT_MAX_CONCURRENT", raising=False)
+        monkeypatch.delenv("CLAUDE_CLI_CONCURRENT", raising=False)
+        importlib.reload(config_module)
 
 
 def test_run_due_heartbeats_spawns_thread_for_plain_heartbeat_too(runner):
