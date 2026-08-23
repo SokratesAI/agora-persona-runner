@@ -164,6 +164,62 @@ def test_scratch_paths_are_private_to_the_process():
     assert _private("/tmp", "claims.rev") != _private("/tmp", "entry.rev")
 
 
+class FakeVault:
+    """Enough of `Vault` to drive `release_seq`, holding one ledger in memory."""
+
+    def __init__(self, lose_first=0):
+        self.text = dumps(load(""))
+        self.lose_first = lose_first
+        self.puts = 0
+
+    def get(self, path, rev_file):
+        return self.text
+
+    def put(self, path, local, rev_file):
+        self.puts += 1
+        if self.lose_first > 0:
+            self.lose_first -= 1
+            return 3
+        self.text = open(local, encoding="utf-8").read()
+        return 0
+
+
+def _claims(vault):
+    return load(vault.text)["claims"]
+
+
+def test_a_written_entry_releases_its_number(tmp_path):
+    """`prune` only collects rows in the `done` state.
+
+    A claim left open is a permanent row in the one document every claim
+    in this loop reads and rewrites -- about 80 a day at an 18-minute
+    heartbeat. My first version never released, and a reviewer found it.
+    """
+    from tools.put_entry import GRANTED, release_seq, vault_claim_once
+
+    vault = FakeVault()
+    work = str(tmp_path)
+    assert vault_claim_once(vault, work)(seq_slug(400), 343) == GRANTED
+    assert [row["state"] for row in _claims(vault)] == ["open"]
+
+    assert release_seq(vault, work, 400, 343) == GRANTED
+    rows = _claims(vault)
+    assert [row["state"] for row in rows] == ["done"]
+    assert rows[0]["item"] == "journal-seq-400"
+
+
+def test_a_lost_release_is_retried_rather_than_swallowed(tmp_path):
+    """The entry is already written, so nothing later notices a dropped release."""
+    from tools.put_entry import GRANTED, release_seq, vault_claim_once
+
+    vault = FakeVault()
+    work = str(tmp_path)
+    vault_claim_once(vault, work)(seq_slug(400), 343)
+    vault.lose_first = 2
+    assert release_seq(vault, work, 400, 343) == GRANTED
+    assert [row["state"] for row in _claims(vault)] == ["done"]
+
+
 def test_the_refusal_is_not_vacuous():
     """Guard against a test that would pass with the bug still present.
 
