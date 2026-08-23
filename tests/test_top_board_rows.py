@@ -546,8 +546,9 @@ def test_a_comment_on_a_done_row_is_not_lost_with_the_row():
                  (63, "a finished row", DONE_STATUS, "08-22", HIGH)) + details(
         (63, "a finished row", "Problem.\n\n"
                                "**Edvard, 08-22:** this Done looks premature?"))
-    assert top_board_rows.open_rows(text, "idea") == [
-        r for r in top_board_rows.open_rows(text, "idea") if r["number"] == 10]
+    # Against a literal, not against another call to `open_rows` -- a
+    # mutation moves both sides of that equally (rubric item 13).
+    assert [r["number"] for r in top_board_rows.open_rows(text, "idea")] == [10]
     got = top_board_rows.closed_rows_waiting(text, "idea")
     assert [(r["board"], r["number"]) for r in got] == [("idea", 63)]
 
