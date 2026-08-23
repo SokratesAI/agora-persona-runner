@@ -2165,6 +2165,95 @@ describe("commenting on a cycle", () => {
     assert.equal(replies[0].nextElementSibling, replies[1]);
   });
 
+  test("a reply written after his next comment is painted after it, not beside its question", async () => {
+    /* Edvard, issues.md 2026-08-23: *"Comment thread ordering bug: a Nova
+     * cycle reply posted at 14:01 rendered between two of my comments
+     * timestamped 13:31 and 13:40 instead of after both — thread isn't
+     * sorting strictly by time."*
+     *
+     * This is his case exactly. The reply is stored inside the comment it
+     * answers, so painting in storage order put 14:01 at 13:31's position. */
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["55"] = [
+      {
+        cycle: 55, stamp: "2026-08-23 13:31", text: "First question.",
+        reply: "", replyStamp: "",
+        replies: [{ author: "cycle", stamp: "2026-08-23 14:01", text: "Answered an hour later." }],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+      {
+        cycle: 55, stamp: "2026-08-23 13:40", text: "Second question, nine minutes later.",
+        reply: "", replyStamp: "", replies: [],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+    ];
+    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    assert.deepEqual(
+      [...card.querySelectorAll(".comment .comment-stamp")].map((s) => s.textContent),
+      ["2026-08-23 13:31", "2026-08-23 13:40", "2026-08-23 14:01"],
+    );
+  });
+
+  test("a reply carrying no stamp stays under its question rather than jumping to the top", async () => {
+    /* `replyStamp` comes off a `#### Nova · <stamp>` heading and the payload
+     * can carry it empty. Sorting that on `""` would put the answer above
+     * every comment in the thread, which is the same bug pointing the other
+     * way, so a stampless reply inherits the stamp of what it answers. */
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["55"] = [
+      {
+        cycle: 55, stamp: "2026-08-23 13:31", text: "Earlier question.",
+        reply: "", replyStamp: "", replies: [],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+      {
+        cycle: 55, stamp: "2026-08-23 13:40", text: "Later question.",
+        reply: "", replyStamp: "",
+        replies: [{ author: "cycle", stamp: "", text: "An answer with no time on it." }],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+    ];
+    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    assert.deepEqual(
+      [...card.querySelectorAll(".comment .comment-body")].map((b) => b.textContent),
+      ["Earlier question.", "Later question.", "An answer with no time on it."],
+    );
+  });
+
+  test("a status line stays under the comment it is about, wherever that sits", async () => {
+    /* The waiting lines carry no time of their own, so they take their
+     * comment's stamp. Without that they would sort to `""` and land at the
+     * top of the thread, attached to nothing -- which is worse than the bug
+     * above, because the line only says *which* comment by sitting under it. */
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["55"] = [
+      {
+        cycle: 55, stamp: "2026-08-23 13:31", text: "Old, already answered.",
+        reply: "", replyStamp: "",
+        replies: [{ author: "cycle", stamp: "2026-08-23 13:35", text: "Done." }],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+      {
+        cycle: 55, stamp: "2026-08-23 13:40", text: "Newer, still waiting.",
+        reply: "", replyStamp: "", replies: [],
+        acknowledged: false, replyPending: true, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+    ];
+    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    const waiting = card.querySelector(".comment-waiting");
+    assert.ok(waiting, "the pending line is rendered");
+    assert.equal(
+      waiting.previousElementSibling.querySelector(".comment-body").textContent,
+      "Newer, still waiting.",
+    );
+  });
+
   test("an old cached app.js payload with only `reply` still paints one bubble", async () => {
     // `replies` is new. A browser holding yesterday's app.js against today's
     // server is not a case worth breaking, and the fallback is two lines.
