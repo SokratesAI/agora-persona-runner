@@ -144,3 +144,55 @@ def test_a_line_the_reader_ignores_is_not_dragged_along():
     head, _, archive = after.partition("\n" + PROCESSED_HEADING)
     assert "* a starred line" in head
     assert "* a starred line" not in archive
+
+
+# --- A marker that names where the work landed (runner#298) ---
+#
+# Reviewer finding on #298: widening `_CAPTURE_DONE_RE` to tolerate anything
+# after the cycle number inside the bracket changes what this tool *writes*
+# into Edvard's own board files, and every fixture above still used the plain
+# `DONE (Cycle N):` shape. The read path was covered; this write path was not.
+
+NAMED_PR = """---
+type: board
+---
+
+- DONE (Cycle 337, platform-config#516): the cascading model fallback
+- 🟠 High: the search bar closes my keyboard
+-
+
+## Board
+
+| # | Item | Status | Updated | Priority |
+|---|------|--------|---------|---|
+| #2 | The search bar closes my keyboard | ⚪ Backlog | 08-20 | 🟠 High |
+
+# Details
+
+### #2 — The search bar closes my keyboard
+Every letter dismisses it.
+"""
+
+
+def test_a_marker_naming_its_pr_is_rolled_out_of_his_file():
+    """Cycle 337 wrote exactly this and it stayed stuck above his cursor."""
+    after, moved = rewrite(NAMED_PR)
+    assert moved == 1
+    assert parse_board(after)["captures"] == [
+        "🟠 High: the search bar closes my keyboard"
+    ]
+    head, _, archive = after.partition(PROCESSED_HEADING)
+    assert "DONE (Cycle 337, platform-config#516): the cascading model fallback" in archive
+    assert "platform-config#516" not in head
+
+
+def test_a_bracket_with_no_cycle_number_is_left_where_he_typed_it():
+    """The control. `[^)]*` must not have widened this into a marker -- rolling
+    one of his live captures into an archive he does not read is the one
+    failure this tool must never have."""
+    text = NAMED_PR.replace("DONE (Cycle 337, platform-config#516):",
+                            "DONE (nearly, I think):")
+    after, moved = rewrite(text)
+    assert moved == 0
+    assert "DONE (nearly, I think): the cascading model fallback" in \
+        parse_board(after)["captures"]

@@ -642,3 +642,15 @@ def test_a_bracket_with_no_cycle_number_is_still_prose():
     from agora_runner.nova_boards import split_capture_done
     assert split_capture_done("DONE (nearly, I think): not a marker") \
         == ("", "DONE (nearly, I think): not a marker")
+
+
+def test_a_row_in_the_done_table_is_waiting_too():
+    """Reviewer finding on #298: every closed-row fixture above leaves the
+    status in `## Board`, and a row moved into the `## Done` table is the
+    other real shape. `parse_board` synthesises the status for those, so the
+    rendered line must still name one rather than print an empty bracket."""
+    text = board(done=[(63, "a finished row", "08-22", "runner#1")]) + details(
+        (63, "a finished row", "Problem.\n\n**Edvard, 08-22:** premature?"))
+    got = top_board_rows.closed_rows_waiting(text, "idea")
+    assert [(r["number"], r["status"]) for r in got] == [(63, DONE_STATUS)]
+    assert f"idea #63 ({DONE_STATUS})" in top_board_rows.render([], closed_waiting=got)
