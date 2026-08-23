@@ -144,6 +144,26 @@ def test_it_gives_up_rather_than_looping_forever():
     assert len(trail) == 3
 
 
+def test_scratch_paths_are_private_to_the_process():
+    """Two overlapping cycles can share one bridge pod, and therefore `/tmp`.
+
+    A fixed scratch name would have both of them writing one revision
+    file, so the second read hands the first cycle somebody else's
+    revision to compare-and-swap against -- the guard reports success
+    while guarding the wrong document. `prompt.md`'s claim block uses
+    `$$` for this; here it is the pid.
+    """
+    import os
+
+    from tools.put_entry import _private
+
+    path = _private("/tmp", "claims.rev")
+    assert str(os.getpid()) in path
+    assert path.startswith("/tmp/put_entry.")
+    assert path.endswith(".claims.rev")
+    assert _private("/tmp", "claims.rev") != _private("/tmp", "entry.rev")
+
+
 def test_the_refusal_is_not_vacuous():
     """Guard against a test that would pass with the bug still present.
 

@@ -161,6 +161,21 @@ def reserve_seq(cycle, existing, claim_once, start=None, attempts=DEFAULT_ATTEMP
     return None, trail
 
 
+def _private(workdir, name):
+    """A scratch path this process alone owns.
+
+    Two overlapping cycles can run in the same bridge pod, so they share
+    `/tmp`. A fixed `put_entry.claims.rev` would have both of them writing
+    one revision file, and the second read would hand the first one
+    somebody else's revision to compare-and-swap against -- a guard
+    reporting success while guarding the wrong document. `prompt.md`'s own
+    claim block uses `$$` for exactly this and says why; this is the same
+    thing in Python.
+    """
+    import os
+    return f"{workdir}/put_entry.{os.getpid()}.{name}"
+
+
 def _run(args, **kwargs):
     return subprocess.run(args, capture_output=True, text=True, timeout=180, **kwargs)
 
@@ -207,8 +222,8 @@ def vault_claim_once(vault, workdir, cycle_note=None):
     """A `claim_once` backed by the real ledger, as one get/modify/put pass."""
 
     def claim_once(slug, cycle):
-        rev = f"{workdir}/put_entry.claims.rev"
-        local = f"{workdir}/put_entry.claims.json"
+        rev = _private(workdir, "claims.rev")
+        local = _private(workdir, "claims.json")
         text = vault.get(CLAIMS_PATH, rev) or ""
         ledger = load(text)
         granted, message = take(ledger, slug, cycle, datetime.now(OSLO),
@@ -266,12 +281,17 @@ def main(argv=None):
 
     name = entry_name(seq, args.cycle)
     if not lint(args.draft, name, repo_root):
+        # The claim is deliberately left standing. `nova_claims.take`
+        # grants a cycle its own open claim again, so fixing the entry and
+        # re-running lands on the same number -- whereas releasing it marks
+        # the slug *done*, and a done slug is refused even to the cycle
+        # that owns it. Releasing here would make the retry bump.
         print("put_entry: lint refused the entry -- nothing was written",
               file=sys.stderr)
         return 1
 
     path = JOURNAL_DIR + name
-    rev = f"{args.workdir}/put_entry.entry.rev"
+    rev = _private(args.workdir, "entry.rev")
     try:
         if vault.get(path, rev) is not None:
             print(f"put_entry: {path} already exists -- refusing to overwrite",
