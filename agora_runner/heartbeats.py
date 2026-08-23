@@ -626,18 +626,29 @@ _heartbeat_spawn_marks = {}
 # Counted rather than logged per tick because the poll loop ticks every
 # POLL_INTERVAL_SECONDS (5s), so one 45-minute cycle holding the last
 # slot would print ~540 identical lines and bury the signal in itself.
-# The first drop after a spawn is the one that carries information; the
-# total is printed on the next spawn.
 _heartbeat_dropped_ticks = {}
 
 
 def _drop_tick(hb_id, name, reason):
-    """Record a due tick that did not spawn a run, and say so once."""
+    """Record a due tick that did not spawn a run, and say so on a doubling.
+
+    Logged at the 1st, 2nd, 4th, 8th ... drop rather than only the first.
+    "Reported on the next start" is a promise only if a next start
+    happens, and the case where it does not is exactly the one this whole
+    change exists for: a run thread that hangs has no timeout, on purpose
+    (see `join_running_heartbeats`), and a claim PATCH that never lands
+    leaves the spawn mark unchanged. Either wedges the heartbeat, every
+    later tick is declined, and under a log-once rule the operator gets
+    one line and then permanent silence during an ongoing outage.
+
+    Doubling keeps a wedged heartbeat talking for as long as it is wedged
+    -- about ten lines per 45-minute cycle instead of 540 -- and it needs
+    no interval invented for it.
+    """
     n = _heartbeat_dropped_ticks.get(hb_id, 0) + 1
     _heartbeat_dropped_ticks[hb_id] = n
-    if n == 1:
-        log(f"heartbeat {name}: due tick dropped ({reason}) -- "
-            "further drops are counted and reported on the next start")
+    if n & (n - 1) == 0:  # 1, 2, 4, 8, ... — never silent, never a flood
+        log(f"heartbeat {name}: {n} due tick(s) dropped since the last start ({reason})")
     else:
         debug_log(f"heartbeat {name}: due tick dropped ({reason}), {n} since last start")
 

@@ -3769,7 +3769,7 @@ def test_a_started_run_says_so_where_debug_logging_is_off(runner):
     assert "1 now in flight (limit 3)" in starts[0]
 
 
-def test_a_dropped_tick_is_reported_once_not_once_every_five_seconds(runner):
+def test_dropped_ticks_are_reported_logarithmically_not_every_five_seconds(runner):
     """The poll loop ticks every POLL_INTERVAL_SECONDS (5s by default), so
     a 45-minute cycle holding the last slot is ~540 ticks. Logging each
     one buries the signal in itself; logging none of them is what this
@@ -3779,13 +3779,36 @@ def test_a_dropped_tick_is_reported_once_not_once_every_five_seconds(runner):
     spawned = []
 
     printed = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
-                               drops, spawned=spawned, ticks=4)
+                               drops, spawned=spawned, ticks=540)
 
     assert spawned == []
-    dropped = [line for line in printed if "due tick dropped" in line]
-    assert len(dropped) == 1, printed
+    dropped = [line for line in printed if "due tick(s) dropped" in line]
+    assert len(dropped) == 10, printed[:12]   # 1,2,4,...,512
+    assert "1 due tick(s) dropped" in dropped[0]
     assert "3 run(s) in flight, limit 3" in dropped[0]
-    assert drops["hb1"] == 4, "the silent drops still have to be counted"
+    assert drops["hb1"] == 540, "the silent drops still have to be counted"
+
+
+def test_a_wedged_heartbeat_keeps_saying_so_and_never_goes_quiet(runner):
+    """A run thread that hangs has no timeout, on purpose, so "the total is
+    reported on the next start" is a promise that can never come due. Under
+    a log-once rule that is one line and then permanent silence through an
+    ongoing outage — which is the original bug, back again, in the exact
+    case this change was written for."""
+    threads = {"hb1": [_AliveStub(), _AliveStub(), _AliveStub()]}
+    drops = {}
+
+    first = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
+                             drops, ticks=64)
+    later = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
+                             drops, ticks=960)   # ~80 more minutes wedged
+
+    assert [ln for ln in later if "due tick(s) dropped" in ln], (
+        "a heartbeat still wedged an hour later printed nothing at all")
+    assert "1024 due tick(s) dropped since the last start" in later[-1], later[-3:]
+    # Rarer as it goes on, and that is the design: 7 lines over the first
+    # 64 declined ticks, 4 over the next 960. It thins out; it never stops.
+    assert len(later) < len(first) < 20, "and it must not become a flood either"
 
 
 def test_the_next_start_reports_how_many_ticks_were_dropped(runner):
