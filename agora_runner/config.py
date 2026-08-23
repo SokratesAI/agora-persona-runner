@@ -47,6 +47,35 @@ CLAUDE_BRIDGE_TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 # for that overlap rather than a queue. One env var so the flip is a
 # config change and the rollback is the same change back.
 CLAUDE_CLI_CONCURRENT = os.environ.get("CLAUDE_CLI_CONCURRENT", "").lower() in ("1", "true", "yes")
+
+
+def _max_concurrent_runs():
+    """How many runs of ONE heartbeat may be in flight at the same time.
+
+    The switch above only opens the bridge's lock. One layer above it,
+    `run_due_heartbeats` refuses to spawn a second run of a heartbeat
+    whose previous run is still going -- so with the bridge lock open and
+    this at 1, an 18-minute schedule against a 45-minute cycle drops two
+    ticks out of every three and Nova still runs about hourly. Both have
+    to move for cycles to actually overlap.
+
+    3 is the ceiling of 45/18: the turn cap is 45 minutes and the cadence
+    Edvard is switching to is 18, so at most three cycles can genuinely
+    be in flight at once. It is a bound on a runaway (a hung run's thread
+    never dies, and every later tick would stack another on top of it),
+    not a throttle -- at the intended cadence it is never reached.
+    Explicit `HEARTBEAT_MAX_CONCURRENT` wins over both defaults.
+    """
+    raw = os.environ.get("HEARTBEAT_MAX_CONCURRENT", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass  # a typo must not silently disable the heartbeat loop
+    return 3 if CLAUDE_CLI_CONCURRENT else 1
+
+
+HEARTBEAT_MAX_CONCURRENT = _max_concurrent_runs()
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
 # Nova's read-only site (nova_site.py). Deliberately a different port from
 # RUNNER_PORT rather than another path on it: this one is reachable from

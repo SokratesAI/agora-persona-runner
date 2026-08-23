@@ -3559,12 +3559,216 @@ def test_run_due_heartbeats_skips_already_running_workflow(runner):
         def is_alive(self):
             return True
 
-    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": _AliveThread()}), \
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveThread()]}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor:
         runner.run_due_heartbeats()
 
     mock_thread_ctor.assert_not_called()
+
+
+def _plain_hb(**over):
+    hb = {
+        "id": "hb1", "name": "Nova", "enabled": True, "forceRun": False,
+        "schedule": "every@18m", "createdAt": "2026-01-01T00:00:00+00:00",
+        "lastRunAt": "2026-08-23T19:00:00+00:00", "conversationId": "c1",
+        "personaId": "p1",
+    }
+    hb.update(over)
+    return hb
+
+
+class _AliveStub:
+    def is_alive(self):
+        return True
+
+
+class _DeadStub:
+    def is_alive(self):
+        return False
+
+
+def test_a_second_nova_cycle_spawns_while_the_first_is_still_running(runner):
+    """The thing Edvard's 18-minute cadence actually needs.
+
+    Opening the bridge's invocation lock (CLAUDE_CLI_CONCURRENT) does
+    nothing on its own: this guard sits a layer above it and used to drop
+    the tick before the bridge was ever called, so a 45-minute cycle ate
+    two of every three 18-minute slots.
+    """
+    heartbeat = _plain_hb(lastRunAt="2026-08-23T19:00:00+00:00")
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveStub()]}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", {"hb1": "older"}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1
+    assert created[0].started is True
+
+
+def test_a_fourth_concurrent_run_is_refused(runner):
+    """3 is a bound on a runaway -- a hung run's thread never dies, and
+    every later tick would stack another on it."""
+    heartbeat = _plain_hb()
+    running = [_AliveStub(), _AliveStub(), _AliveStub()]
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": running}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", {"hb1": "older"}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread") as mock_thread_ctor, \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    mock_thread_ctor.assert_not_called()
+
+
+def test_one_slot_cannot_spawn_twice_before_its_claim_lands(runner):
+    """`run_heartbeat` PATCHes `lastRunAt` from inside its own thread, so
+    for a moment after `thread.start()` a tick still reads the OLD
+    `lastRunAt` and finds the SAME slot due. At a limit of 1 the thread
+    guard covered that; at 3 a burst of ticks inside the window would
+    spawn three runs for one slot."""
+    heartbeat = _plain_hb(lastRunAt="2026-08-23T19:00:00+00:00")
+    marks = {}
+    threads = {}
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        t.is_alive = lambda: True
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()   # spawns for this slot
+        runner.run_due_heartbeats()   # same lastRunAt: claim has not landed
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1
+
+    # ...and the moment the claim does land, the next slot spawns.
+    heartbeat["lastRunAt"] = "2026-08-23T19:18:00+00:00"
+    with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 2
+
+
+def test_force_run_is_exempt_from_the_spawn_mark(runner):
+    """Edvard pressing "run now" is a new request, not one slot read
+    twice -- and under the old guard it silently no-opped whenever a
+    cycle was already in flight."""
+    heartbeat = _plain_hb(forceRun=True, lastRunAt="2026-08-23T19:00:00+00:00")
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveStub()]}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks",
+                      {"hb1": "2026-08-23T19:00:00+00:00"}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1
+
+
+def test_a_workflow_heartbeat_never_overlaps_itself(runner):
+    """v1's duplicate PRs came from a workflow step re-entering itself.
+    The switch Edvard asked for is about Nova's own cycle."""
+    heartbeat = _plain_hb(workflowId="wf1")
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveStub()]}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", {"hb1": "older"}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread") as mock_thread_ctor, \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    mock_thread_ctor.assert_not_called()
+
+
+def test_finished_runs_are_pruned_from_the_registry(runner):
+    """Without pruning, the list is "runs ever started" and the limit
+    would permanently wedge the heartbeat after three cycles."""
+    heartbeat = _plain_hb()
+    threads = {"hb1": [_DeadStub(), _DeadStub(), _DeadStub()]}
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", {}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1
+    assert threads["hb1"] == [created[0]]
+
+
+def test_default_concurrency_is_one_unless_the_bridge_lane_is_open(monkeypatch):
+    """The default has to preserve today's behaviour exactly: with the
+    bridge lock shut, a second cycle would only queue behind the first
+    and burn its own 45-minute cap waiting."""
+    import importlib
+    import agora_runner.config as config_module
+
+    monkeypatch.delenv("HEARTBEAT_MAX_CONCURRENT", raising=False)
+    monkeypatch.delenv("CLAUDE_CLI_CONCURRENT", raising=False)
+    assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 1
+
+    monkeypatch.setenv("CLAUDE_CLI_CONCURRENT", "1")
+    assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 3
+
+    monkeypatch.setenv("HEARTBEAT_MAX_CONCURRENT", "5")
+    assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 5
+
+    # A typo must not silently stop the heartbeat loop.
+    monkeypatch.setenv("HEARTBEAT_MAX_CONCURRENT", "three")
+    assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 3
+
+    monkeypatch.delenv("HEARTBEAT_MAX_CONCURRENT", raising=False)
+    monkeypatch.delenv("CLAUDE_CLI_CONCURRENT", raising=False)
+    importlib.reload(config_module)
 
 
 def test_run_due_heartbeats_spawns_thread_for_plain_heartbeat_too(runner):
@@ -3616,7 +3820,7 @@ def test_run_due_heartbeats_skips_a_plain_heartbeat_already_running(runner):
         def is_alive(self):
             return True
 
-    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb2": _AliveThread()}), \
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb2": [_AliveThread()]}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor, \
          patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb:
@@ -3775,7 +3979,7 @@ def _run_in_flight_for(runner, heartbeat_id):
         def is_alive(self):
             return True
 
-    threads[heartbeat_id] = _Alive()
+    threads[heartbeat_id] = [_Alive()]
     try:
         yield
     finally:
@@ -5466,7 +5670,7 @@ def test_main_waits_for_an_in_flight_heartbeat_thread_before_exiting(drainable_m
             thread.start()  # a heartbeat run is now in flight
             os.kill(os.getpid(), signal.SIGTERM)  # the pod is rolled mid-cycle
 
-    with patch.object(hb_module, "_heartbeat_threads", {"hb1": thread}), \
+    with patch.object(hb_module, "_heartbeat_threads", {"hb1": [thread]}), \
          patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
          patch.object(drainable_main, "start_invoke_server", lambda: None), \
          patch.object(drainable_main, "log", lambda *a, **k: None), \
@@ -7372,7 +7576,7 @@ def test_a_running_cycle_keeps_its_own_conversation_out_of_the_live_set(runner):
              patch.object(runner.poll, "run_due_heartbeats"):
             runner.poll_once()
 
-    runner.heartbeats._heartbeat_threads["hb1"] = _StillRunning()
+    runner.heartbeats._heartbeat_threads["hb1"] = [_StillRunning()]
     try:
         acked, polled = [], []
         _poll(acked, polled)
