@@ -267,9 +267,21 @@ def slug_for_comment(board, number, text):
     question Edvard asked on `issue #7` would be permanently unclaimable
     because the first one was answered.
 
-    Truncated to 8 hex characters for the same reason `slug_for_capture`
-    stops at 12 -- this is a name two cycles have to agree on inside one
-    45-minute window, printed on a line a cycle has to retype.
+    **That is a guarantee about distinct questions, not about all second
+    questions**, and the gap is worth naming rather than rounding off. The
+    body this hashes starts at the `**Edvard, MM-DD:**` marker, so the same
+    sentence on a different day is a different slug -- but the same sentence
+    on the *same* day, asked again after a reply that did not satisfy him,
+    hashes the same and is refused until `prune` drops the finished claim
+    after `DONE_KEEP_HOURS`. Reviewer finding on runner#304, recorded rather
+    than coded: the fix is a timestamp finer than the day, and the day is
+    the finest thing `append_detail_note` writes.
+
+    Truncated to 8 hex characters rather than `slug_for_capture`'s 12 for
+    the same *reason* it truncates at all -- this is a name two cycles have
+    to agree on inside one 45-minute window, printed on a line a cycle has
+    to retype. Shorter than a capture's because `board` and `number` are
+    already in the name and a capture has nothing but its text.
     """
     normalised = " ".join((text or "").split())
     digest = hashlib.sha1(normalised.encode("utf-8")).hexdigest()[:8]
