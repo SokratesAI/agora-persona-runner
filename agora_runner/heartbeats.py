@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from agora_runner.config import (
     FETCH_LIMIT,
+    HEARTBEAT_MAX_CONCURRENT,
     HEARTBEAT_NO_REPORT_SENTINEL,
     NO_CAPS,
     NOVA_PERSONA_ID,
@@ -586,7 +587,38 @@ def run_heartbeat(heartbeat):
 # schedule four times since and it is every@60m@19:00 as of 2026-08-14.
 # Nothing here reads the cadence — `schedule_minutes` is the one place
 # that does — so this is a note, not a constant going stale.
+#
+# 2026-08-23: the value is a LIST of threads, not one thread. It held one
+# because the guard below allowed one, and that guard is what actually
+# decided whether cycles overlap — the bridge's invocation lock is a
+# second gate underneath it, and opening only the bridge changes nothing.
+# Dead threads are pruned on every tick, so the list is "runs in flight".
 _heartbeat_threads = {}
+
+# The `lastRunAt` each heartbeat was last spawned against, and it only
+# matters once more than one run is allowed. `run_heartbeat` claims the
+# run by PATCHing `lastRunAt` from inside its own thread, so between
+# `thread.start()` and that PATCH landing, a poll tick re-reads the OLD
+# `lastRunAt` and computes the SAME slot as still due. With a limit of 1
+# the thread guard covers that window; with a limit of 3 a burst of ticks
+# inside it would spawn three runs for one slot. Remembering the exact
+# value we spawned against closes it without inventing a delay: the mark
+# changes the moment the claim lands, and never otherwise.
+_heartbeat_spawn_marks = {}
+
+
+def _concurrency_limit(heartbeat):
+    """How many runs of this heartbeat may overlap.
+
+    Workflow-mode heartbeats stay at 1 whatever the config says. A
+    workflow step re-entering itself is the failure that killed the v1
+    loop (duplicate PRs, burned usage limits, half-finished cycles); the
+    switch Edvard asked for is about Nova's own cycle, and widening it to
+    a path with that history is not what he asked for.
+    """
+    if heartbeat.get("workflowId"):
+        return 1
+    return HEARTBEAT_MAX_CONCURRENT
 
 
 def join_running_heartbeats():
@@ -607,10 +639,11 @@ def join_running_heartbeats():
     shorter bound invented in this file could only ever kill a cycle
     the platform was still willing to wait for. The synchronous drain
     this replaces had no timeout either, for the same reason."""
-    for hb_id, thread in list(_heartbeat_threads.items()):
-        if thread.is_alive():
-            log(f"draining: waiting for heartbeat {hb_id} to finish")
-            thread.join()
+    for hb_id, threads in list(_heartbeat_threads.items()):
+        for thread in list(threads):
+            if thread.is_alive():
+                log(f"draining: waiting for heartbeat {hb_id} to finish")
+                thread.join()
 
 
 def workflow_bound_conversation_ids(heartbeats_list):
@@ -687,8 +720,7 @@ def _run_in_flight(heartbeat_id):
     """
     if not heartbeat_id:
         return False
-    thread = _heartbeat_threads.get(heartbeat_id)
-    return thread is not None and thread.is_alive()
+    return any(t.is_alive() for t in _heartbeat_threads.get(heartbeat_id, []))
 
 
 def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
@@ -789,22 +821,42 @@ def run_due_heartbeats(heartbeats_list=None):
             if not due:
                 continue
             # Runs off the main thread — see _heartbeat_threads' comment
-            # above. In-flight guard: skip re-spawning if a prior run of
-            # the SAME heartbeat hasn't finished yet. A run can
-            # legitimately outlive its own schedule interval (a 5-minute
-            # "every@1m" workflow; a Nova cycle that overruns its 72
-            # minutes), and without this the claim PATCH is no defence —
-            # it moves lastRunAt to the run's START, so an anchored
-            # schedule's next slot reads as due while the run is still
-            # going and would spawn a second one on top of it.
+            # above. In-flight guard: a run can legitimately outlive its
+            # own schedule interval (a 5-minute "every@1m" workflow; a
+            # Nova cycle that overruns), and the claim PATCH is no
+            # defence on its own — it moves lastRunAt to the run's START,
+            # so an anchored schedule's next slot reads as due while the
+            # run is still going.
+            #
+            # 2026-08-23: that used to mean "at most one", full stop, and
+            # this was therefore the real reason cycles never overlapped
+            # — a tick dropped here never reaches the bridge at all, so
+            # opening the bridge's invocation lock on its own changes
+            # nothing. It is a limit now rather than a ban; see
+            # _concurrency_limit and config._max_concurrent_runs.
             hb_id = heartbeat["id"]
-            existing = _heartbeat_threads.get(hb_id)
-            if existing is not None and existing.is_alive():
-                debug_log(f"heartbeat {hb_id} still running, skipping this tick")
+            alive = [t for t in _heartbeat_threads.get(hb_id, []) if t.is_alive()]
+            _heartbeat_threads[hb_id] = alive
+            limit = _concurrency_limit(heartbeat)
+            if len(alive) >= limit:
+                debug_log(f"heartbeat {hb_id} has {len(alive)} run(s) in flight "
+                          f"(limit {limit}), skipping this tick")
                 continue
+            if limit > 1 and not heartbeat.get("forceRun"):
+                # See _heartbeat_spawn_marks: only reachable with a limit
+                # above 1, and only inside the window where this slot's
+                # own claim PATCH has not landed yet. forceRun is exempt
+                # because it is Edvard pressing "run now" — that is a new
+                # request, not the same slot read twice.
+                mark = heartbeat.get("lastRunAt")
+                if _heartbeat_spawn_marks.get(hb_id) == mark:
+                    debug_log(f"heartbeat {hb_id}: claim for lastRunAt={mark} not "
+                              "visible yet, skipping this tick")
+                    continue
+                _heartbeat_spawn_marks[hb_id] = mark
             target = run_workflow_heartbeat if heartbeat.get("workflowId") else run_heartbeat
             thread = threading.Thread(target=target, args=(heartbeat,), daemon=True)
-            _heartbeat_threads[hb_id] = thread
+            alive.append(thread)
             thread.start()
         except Exception as e:
             log(f"heartbeat {heartbeat.get('name')} scheduling error: {e}")
