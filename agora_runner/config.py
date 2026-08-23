@@ -37,6 +37,16 @@ CLAUDE_BRIDGE_URL = os.environ.get(
     "CLAUDE_BRIDGE_URL", "http://agora-claude-bridge.agents.svc.cluster.local:8090"
 )
 CLAUDE_BRIDGE_TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
+# Let a claude-cli turn run alongside one already in flight, instead of
+# blocking on the bridge's process-wide invocation lock. Off by default:
+# with it off, a heartbeat that arrives while another is running waits its
+# turn, which is exactly what happens today and is safe. With it on, both
+# run, and each gets its own git worktree (bridge `_provision_workspace`).
+# This is the switch for Edvard's 18-minute cadence -- at 18 minutes an
+# average 18-minute cycle overlaps the next one by design, and he asked
+# for that overlap rather than a queue. One env var so the flip is a
+# config change and the rollback is the same change back.
+CLAUDE_CLI_CONCURRENT = os.environ.get("CLAUDE_CLI_CONCURRENT", "").lower() in ("1", "true", "yes")
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
 # Nova's read-only site (nova_site.py). Deliberately a different port from
 # RUNNER_PORT rather than another path on it: this one is reachable from
