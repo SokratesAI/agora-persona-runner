@@ -4,13 +4,15 @@ The property that matters most is not what the tool flags -- it is that
 `--proposal` cannot lose a sentence. Idea #83's own note names that as
 the design risk ("can quietly delete a fact I needed, and I would not
 know, because the evidence would be gone"), so the round-trip tests
-below assert the bullet set is preserved exactly, not merely that the
-counts line up.
+below compare every bullet as a multiset. The first version compared
+sets; the reviewer on runner#296 built the input that beats that -- two
+identical bullets in, one deleted out, no complaint -- and a tool whose
+job is finding duplicates cannot verify itself with a comparison that
+collapses them.
 """
 
 import os
 
-import pytest
 
 from tools import dream_pass
 
@@ -215,7 +217,91 @@ def test_main_reports_and_writes_a_proposal(tmp_path, capsys):
     assert "## Retired" in out.read_text()
 
 
-@pytest.mark.parametrize("threshold", [0.0, 1.0])
-def test_duplicate_threshold_extremes_do_not_crash(threshold):
-    bullets = dream_pass.parse(doc("- one note", "- another note"))
-    dream_pass.duplicates(bullets, threshold)
+def test_duplicate_threshold_extremes_behave_as_stated():
+    """0.0 joins everything and 1.0 joins only identical word sets.
+
+    The first version of this only asserted `duplicates()` did not
+    raise, which the reviewer correctly called a test that pins
+    nothing: clustering could break at both extremes and it would pass.
+    """
+    bullets = dream_pass.parse(doc("- one note", "- another entirely",
+                                   "- one note"))
+    everything = dream_pass.duplicates(bullets, 0.0)
+    assert len(everything) == 1 and len(everything[0]) == 3
+    identical = dream_pass.duplicates(bullets, 1.0)
+    assert len(identical) == 1
+    assert {b.index for b in identical[0]} == {0, 2}
+
+
+def test_check_notices_a_deleted_copy_of_a_duplicated_bullet():
+    """The reviewer's input, and the reason `check` counts rather than sets.
+
+    Two byte-identical bullets go in, one comes out deleted, and a
+    set-based comparison calls that fine because the text still exists
+    somewhere. A tool built to find duplicates cannot verify itself
+    with a comparison that collapses them.
+    """
+    before = doc(
+        "- DONE (Cycle 9): fixed — the thing",
+        "- DONE (Cycle 9): fixed — the thing",
+        "- 2026-08-02 (Cycle 6) — a live note",
+    )
+    after, moved = dream_pass.propose(before)
+    assert len(moved) == 2
+    assert dream_pass.check(before, after, moved) is None
+
+    mangled = after.replace("- DONE (Cycle 9): fixed — the thing\n", "", 1)
+    assert "vanished" in dream_pass.check(before, mangled, moved)
+
+
+def test_done_needs_the_cycle_number_not_just_the_word():
+    bullets = dream_pass.parse(doc(
+        "- DONE (Cycle 9): fixed — a real marker",
+        "- DONE (Cycle 221, runner#212): built — the other shape in the file",
+        "- DONE deal, moving on to the next thing",
+    ))
+    assert [b.done for b in bullets] == [True, True, False]
+
+
+def test_propose_appends_under_a_retired_section_that_already_has_rows():
+    before = doc(
+        "- DONE (Cycle 9): the new one",
+        "- 2026-08-02 (Cycle 6) — a live note",
+    ) + "\n## Retired\n\n- DONE (Cycle 1): an older one\n"
+    after, moved = dream_pass.propose(before)
+    assert len(moved) == 1
+    assert dream_pass.check(before, after, moved) is None
+    retired = after.split("## Retired", 1)[1]
+    assert "an older one" in retired and "the new one" in retired
+    assert after.count("## Retired") == 1
+    # And it still settles: a second run has nothing left above the cutoff.
+    assert dream_pass.propose(after) == (after, [])
+
+
+def test_propose_moves_a_done_bullets_continuation_lines_with_it():
+    before = doc(
+        "- DONE (Cycle 9): fixed — the thing",
+        "  and here is the second line of that same bullet",
+        "- 2026-08-02 (Cycle 6) — a live note",
+    )
+    after, moved = dream_pass.propose(before)
+    assert dream_pass.check(before, after, moved) is None
+    live, retired = after.split("## Retired", 1)
+    assert "second line of that same bullet" in retired
+    assert "second line of that same bullet" not in live
+
+
+def test_main_exits_cleanly_when_the_proposal_path_is_unwritable(tmp_path, capsys):
+    src = tmp_path / "issues.md"
+    src.write_text(doc("- DONE (Cycle 9): fixed — a thing"))
+    rc = dream_pass.main(["--file", str(src),
+                          "--proposal", str(tmp_path / "nope" / "out.md")])
+    assert rc == 1
+    assert "cannot write" in capsys.readouterr().err
+
+
+def test_main_exits_cleanly_on_a_file_that_is_not_utf8(tmp_path, capsys):
+    src = tmp_path / "issues.md"
+    src.write_bytes(b"- a note \xff\xfe and then some\n")
+    assert dream_pass.main(["--file", str(src)]) == 1
+    assert "cannot read" in capsys.readouterr().err

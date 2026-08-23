@@ -19,7 +19,7 @@ candidate rewrite to a *second* path so a cycle can `diff` the two and
 decide; the original is untouched either way.
 
 Why the target is worth a tool. `nova/resources/issues.md` was 244,329
-bytes over 887 lines on 2026-08-23, 538 bullets, and it is read at the
+bytes over 887 lines on 2026-08-23, 536 bullets, and it is read at the
 start of every cycle -- so the cost of the mess is charged 36 times a
 day. `tools.roll_done_captures` already rolls finished bullets off
 *Edvard's* two board files; nothing has ever touched mine.
@@ -73,11 +73,17 @@ import argparse
 import os
 import re
 import sys
+from collections import Counter
 
 # A bullet is a top-level `- ` line plus any indented continuation lines
 # under it. Nothing else in these files starts a list.
 _BULLET = re.compile(r"^- (?!\s*$)")
-_DONE = re.compile(r"^- DONE\b")
+# The docstring promises `DONE (Cycle N):` and the first version matched
+# `^- DONE\b`, so `- DONE deal, moving on` counted as a retired bullet and
+# `--proposal` would have moved it. All 14 markers in the live file carry
+# the cycle number -- two of them as `DONE (Cycle 221, runner#212):` -- so
+# the tighter pattern loses none of them. Reviewer, runner#296.
+_DONE = re.compile(r"^- DONE \(Cycle \d+")
 _CYCLE = re.compile(r"Cycle (\d+)")
 _DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
@@ -124,6 +130,12 @@ class Bullet:
 
     @property
     def cycle(self):
+        """The first cycle number on the head line, which is not always the
+        cycle that *wrote* the note: a retired bullet reads
+        `DONE (Cycle 332): ... (Cycle 331) — ...`, so this returns the cycle
+        that closed it. `report` only uses it for a min/max range, where
+        either reading is fine; anything else should say which it wants.
+        """
         m = _CYCLE.search(self.head)
         return int(m.group(1)) if m else None
 
@@ -288,21 +300,30 @@ def check(before, after, moved):
 
     The failure mode of rewriting a file this big is silent -- a bullet
     stops appearing and no cycle notices for weeks -- so the proposal is
-    verified the same way `roll_done_captures` verifies its own: parse
-    both versions and compare the bullets as sets, not as counts.
+    verified by parsing both versions and comparing every bullet.
+
+    **As a multiset, not as a set**, and the reviewer on runner#296 is
+    why. The first version compared sets and its docstring called that
+    the careful choice; it is strictly weaker, and the reviewer built
+    the input that breaks it: two byte-identical bullets in, one deleted
+    out, `check` returns `None`. A tool whose whole job is finding
+    duplicates cannot verify itself with a comparison that collapses
+    them. The `moved` loop below counts occurrences under `## Retired`
+    for the same reason.
     """
-    b_before = {b.text for b in parse(before)}
-    b_after = {b.text for b in parse(after)}
+    b_before = Counter(b.text for b in parse(before))
+    b_after = Counter(b.text for b in parse(after))
     lost = b_before - b_after
     if lost:
-        return "%d bullet(s) vanished from the proposal" % len(lost)
+        return "%d bullet(s) vanished from the proposal" % sum(lost.values())
     gained = b_after - b_before
     if gained:
-        return "%d bullet(s) appeared that were not in the original" % len(gained)
-    moved_text = {b.text for b in moved}
+        return ("%d bullet(s) appeared that were not in the original"
+                % sum(gained.values()))
     after_retired = after.split(_RETIRED, 1)[-1] if _RETIRED in after else ""
-    for text in moved_text:
-        if text not in after_retired:
+    retired = Counter(b.text for b in parse(after_retired))
+    for text, count in Counter(b.text for b in moved).items():
+        if retired[text] < count:
             return "a DONE bullet was not moved under %s" % _RETIRED
     return None
 
@@ -362,7 +383,10 @@ def main(argv=None):
     try:
         with open(args.file, encoding="utf-8") as fh:
             markdown = fh.read()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError is a ValueError, not an OSError, so the first
+        # version tracebacked on exactly the "unreadable file" this line
+        # claims to handle. Reviewer, runner#296.
         print("cannot read %s: %s" % (args.file, exc), file=sys.stderr)
         return 1
 
@@ -380,8 +404,12 @@ def main(argv=None):
         if problem:
             print("proposal refused: %s" % problem, file=sys.stderr)
             return 1
-        with open(args.proposal, "w", encoding="utf-8") as fh:
-            fh.write(after)
+        try:
+            with open(args.proposal, "w", encoding="utf-8") as fh:
+                fh.write(after)
+        except OSError as exc:
+            print("cannot write %s: %s" % (args.proposal, exc), file=sys.stderr)
+            return 1
         print("")
         print("proposal written to %s (%d bullet(s) moved) — diff it, do not trust it"
               % (args.proposal, len(moved)))
