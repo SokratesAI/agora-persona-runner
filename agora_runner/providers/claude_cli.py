@@ -67,7 +67,8 @@ list and hands the CLI a real user message over --input-format stream-json
 import base64
 import json
 
-from agora_runner.config import CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN, RUNNER_SELF_URL
+from agora_runner.config import (CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN,
+                                 CLAUDE_CLI_CONCURRENT, RUNNER_SELF_URL)
 from agora_runner.log import log
 from agora_runner.http_util import http_json, fetch_attachment_bytes
 from agora_runner.tool_activity import grant as grant_tool_activity, revoke as revoke_tool_activity
@@ -137,6 +138,11 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         "model": model_id,
         "restricted": bool(persona.get("claudeCliRestricted")),
         "stateless": bool(persona.get("claudeCliStateless")),
+        # Off unless CLAUDE_CLI_CONCURRENT is set on this deployment. See
+        # config.py: this is the 18-minute-cadence switch, and until it is
+        # on, a second heartbeat blocks on the bridge's lock rather than
+        # overlapping the first.
+        "allow_concurrent": CLAUDE_CLI_CONCURRENT,
     }
     if attachments:
         body["attachments"] = attachments
