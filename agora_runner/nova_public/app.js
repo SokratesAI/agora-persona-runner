@@ -661,16 +661,26 @@
       }
     }
 
-    if (status.lastOutcome) {
-      /* The outcome is the newest written entry's outcome, so the cycle it
-       * references is `status.cycle` — the same number the line above it
-       * prints. */
+    /* The newest written entry's PR, so the cycle it references is
+     * `status.cycle` — the same number the line above it prints.
+     *
+     * This field used to lead with the outcome pill. Edvard, `issues.md`
+     * 2026-08-23: "Drop the Outcome pill from the top-of-page header too,
+     * not just the card view — it's the same ugly all-caps duplicate of the
+     * blue summary line, shown twice on the same screen." Both copies were
+     * on the feed at once: this field, and the newest card directly under
+     * it. So the pill and its qualifier are gone from here as well, and
+     * what the field is for — jump to what the last cycle shipped — is the
+     * PR reference, which is why that is what survives.
+     *
+     * `isRealPr` because the footer is mandatory: a cycle with nothing to
+     * show still writes `PR: none`, and a header field reading "none" is
+     * the noise this ask is about wearing a shorter word. It is the same
+     * predicate `settledPart` uses, so the header and the card agree about
+     * what counts as a PR. */
+    if (isRealPr(status.lastPr)) {
       var line = statusField(status.cycle);
-      line.appendChild(el("span", outcomeClass(status.lastOutcome), status.lastOutcome));
-      if (status.lastPr) line.appendChild(el("span", "status-pr", status.lastPr));
-      if (status.lastOutcomeDetail) {
-        line.appendChild(el("span", "status-pr", status.lastOutcomeDetail));
-      }
+      line.appendChild(el("span", "status-pr", status.lastPr));
       subs.appendChild(line);
     }
 
@@ -1288,15 +1298,17 @@
     card.appendChild(head);
 
     /* The stamp is the earliest part's, because that is when the cycle
-     * began; the outcome is the settled one. `appendOutcome` carries the
-     * pill, the linkified PR references and the qualifier five entries
-     * have ("stuck — CI outage, merged nothing"), and is the same call the
-     * page makes, so the two cannot say different things about one cycle. */
+     * began; the PR and the board item are the settled part's.
+     * `appendOutcome` is the same call the page makes, so the two cannot
+     * say different things about one cycle -- with `withOutcome: false`,
+     * because the pill and its qualifier are cut from the feed card. See
+     * that function for Edvard's ask. Everything that decides *which* part
+     * these come from is unchanged and still tested through the PR badge. */
     var meta = el("div", "entry-meta");
     var stamp = [entry.date, entry.time].filter(Boolean).join(" ");
     if (stamp) meta.appendChild(el("time", "stamp", stamp));
     appendRuntime(meta, entry);
-    appendOutcome(meta, settled);
+    appendOutcome(meta, settled, { withOutcome: false });
     if (meta.childNodes.length) card.appendChild(meta);
 
     /* The brief is drawn further down, but whether it exists decides
@@ -1705,9 +1717,36 @@
     row.appendChild(el("span", "runtime", text));
   }
 
-  function appendOutcome(row, entry) {
-    if (entry.outcome) row.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
-    if (entry.pr) {
+  /* `opts.withOutcome === false` draws the row without the outcome pill and
+   * its qualifier. Edvard, comments board 2026-08-23, on cycle 340's card:
+   * "What is this new grey title? ... This is ugly and seems like information
+   * i do not need or want" -- and, to the proposal to drop the pill from the
+   * card, "Sure. Cut it".
+   *
+   * The pill looked fine for months because almost every outcome is one of
+   * four short words, and `merged` in green beside a PR link reads as a
+   * badge. Nothing enforces that: the footer's Outcome field is free text,
+   * cycle 340 wrote a whole clause into it, and the card rendered 84
+   * characters of uppercased grey where a word goes. So the pill was always
+   * one long outcome away from being a second title, which is exactly what
+   * he saw.
+   *
+   * It stays on `/cycle/<n>` and on a disagreeing part's own row inside the
+   * drawer: those are places you have opened on purpose, where the cycle's
+   * settled word is the thing you came for. The feed is the place that has
+   * to stay scannable. */
+  function appendOutcome(row, entry, opts) {
+    var withOutcome = !opts || opts.withOutcome !== false;
+    if (withOutcome && entry.outcome) {
+      row.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
+    }
+    /* With the pill suppressed, `isRealPr` gates the PR too. "none" is only
+     * ever readable as the object of the footer's sentence -- `PR: none |
+     * Outcome: no-op` -- and once the outcome half is gone it answers a
+     * question nothing on the card asked. Cycle 340's card, the one Edvard
+     * complained about, is exactly this case. Where the pill is drawn, so
+     * is the `none`: there it still says something. */
+    if (entry.pr && (withOutcome || isRealPr(entry.pr))) {
       var pr = el("span", "pr");
       // prSpans carries the same text with each reference linkified; the
       // plain string is the fallback for a payload from an older build.
@@ -1724,7 +1763,11 @@
       else board.textContent = entry.board;
       row.appendChild(board);
     }
-    if (entry.outcomeDetail) row.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
+    // The qualifier goes with the pill it qualifies -- "stuck — CI outage,
+    // merged nothing" on its own, with no "stuck" beside it, is a fragment.
+    if (withOutcome && entry.outcomeDetail) {
+      row.appendChild(el("span", "outcome-detail", entry.outcomeDetail));
+    }
     return row;
   }
 

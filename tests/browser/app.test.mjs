@@ -629,7 +629,7 @@ describe("two entries for one cycle are one card", () => {
    * that may not agree. The fixture's only two-entry cycle carries identical
    * fields on both entries, so a mutation from `settled` back to the earliest
    * part passes every other test in this file. */
-  test("the card takes its outcome from the last part that has one", async () => {
+  test("the card takes its PR from the last part that has one", async () => {
     // Cycle 102 on the live pod: the base entry carries no PR and no outcome,
     // the addendum carries `#86 / merged`. Reading the earliest part shows a
     // cycle that merged a PR as having done nothing.
@@ -643,8 +643,11 @@ describe("two entries for one cycle are one card", () => {
     parts[0].outcome = "merged";
     const w = await loadSite("/", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta");
+    // The PR, not the outcome: the card stopped drawing the outcome pill
+    // (see "the feed card carries no outcome pill" below), so the PR badge
+    // is what pins `settledPart` here now. It is the same field read off the
+    // same part, so a mutation back to the earliest part still fails.
     assert.match(meta.textContent, /#86/);
-    assert.match(meta.textContent, /merged/);
     // The stamp still belongs to the earliest part: that is when it began.
     assert.match(meta.textContent, new RegExp(parts[1].time));
   });
@@ -712,12 +715,17 @@ describe("two entries for one cycle are one card", () => {
     const w = await loadSite("/", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(meta.textContent, /#89/);
-    assert.match(meta.textContent, /merged/);
-    assert.ok(!/no-op/.test(meta.textContent), meta.textContent);
-    // The page reads off the same function, so it must agree.
+    // The addendum's `none` is the thing that must not win. The card no
+    // longer prints the outcome word, so this is the assertion carrying the
+    // claim -- reading the earliest part would print `none` here.
+    assert.ok(!/none/.test(meta.textContent), meta.textContent);
+    // The page reads off the same function, so it must agree -- and it does
+    // still print the outcome, which is where `merged` is checked.
     const page = await loadSite("/cycle/57", { journal: () => journal });
     const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(pageMeta.textContent, /#89/);
+    assert.match(pageMeta.textContent, /merged/);
+    assert.ok(!/no-op/.test(pageMeta.textContent), pageMeta.textContent);
   });
 
   test("a qualified `none` is still a none", async () => {
@@ -734,7 +742,7 @@ describe("two entries for one cycle are one card", () => {
     const w = await loadSite("/", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(meta.textContent, /#32/);
-    assert.match(meta.textContent, /shipped/);
+    assert.ok(!/status note/.test(meta.textContent), meta.textContent);
   });
 
   test("a part of the card that reached a different answer keeps its own row", async () => {
@@ -744,12 +752,101 @@ describe("two entries for one cycle are one card", () => {
     parts[1].pr = "none (status note)";
     parts[1].prSpans = [{ kind: "text", text: "none (status note)" }];
     parts[0].outcome = "merged";
+    parts[0].pr = "#91";
+    parts[0].prSpans = [{ kind: "text", text: "#91" }];
     const w = await loadSite("/", { journal: () => journal });
     const card = cards(w)[0];
-    assert.match(card.querySelector(".entry-meta").textContent, /merged/);
+    assert.match(card.querySelector(".entry-meta").textContent, /#91/);
     const own = card.querySelector(".entry-meta-part");
     assert.ok(own, "the disagreeing part must keep a row of its own");
+    // Inside the drawer the outcome survives, which is the whole reason the
+    // row exists -- the part's answer differs and nothing else says so.
     assert.match(own.textContent, /no-op/);
+  });
+
+  /* Edvard, comments board 2026-08-23, on cycle 340's card: "What is this new
+   * grey title? ... This is ugly and seems like information i do not need or
+   * want", then "Sure. Cut it" to dropping the pill from the card. His card
+   * had a free-text Outcome 84 characters long, uppercased by the stylesheet,
+   * sitting where a one-word badge goes.
+   *
+   * Each half is a control for the other: the same fixture, the same
+   * selector, present on `/cycle/<n>` and absent on the feed. Without the
+   * page half this passes for a misspelled selector, which is how Cycle 202
+   * shipped an assertion against markup that never rendered. */
+  test("the feed card carries no outcome pill, and /cycle/<n> still does", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    parts.forEach((e) => {
+      e.outcome = "prompt.md wired to tools.backlog_brief; capture inbox cleared";
+      e.outcomeDetail = "";
+    });
+
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.ok(!/backlog_brief/.test(meta.textContent), meta.textContent);
+    assert.equal(meta.querySelector(".badge"), null);
+
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(pageMeta.textContent, /backlog_brief/);
+    assert.ok(pageMeta.querySelector(".badge"), "the page keeps the pill");
+  });
+
+  /* Cycle 340's own card is `PR: none | Outcome: <a whole clause>`. Cutting
+   * the pill and keeping the `none` leaves the card saying one dim word that
+   * answers a question nothing else on it asks. On the page, where the pill
+   * survives, `none` is still the object of a sentence -- so this is the
+   * feed's rule, not a rule about the string. */
+  test("a card whose cycle shipped no PR says nothing, but the page still says none", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "none";
+      e.prSpans = [{ kind: "text", text: "none" }];
+      e.outcome = "no-op";
+      e.outcomeDetail = "";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta.querySelector(".pr"), null);
+
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(pageMeta.textContent, /none/);
+    assert.ok(pageMeta.querySelector(".pr"), "the page keeps the badge");
+  });
+
+  /* The control for the rule above: a real reference is still drawn on the
+   * card. Without this, deleting the PR badge from the feed entirely would
+   * satisfy the test above. */
+  test("a card whose cycle shipped a real PR still names it", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "runner#300";
+      e.prSpans = [{ kind: "text", text: "runner#300" }];
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(meta.textContent, /runner#300/);
+  });
+
+  /* The qualifier is not a separate opinion, it is the tail of the pill's
+   * sentence -- five entries read "stuck — CI outage, merged nothing". Cutting
+   * the pill and leaving that behind puts a bare subordinate clause on the
+   * card, which is the same complaint with fewer words. */
+  test("the qualifier goes with the pill it qualifies", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.outcome = "stuck";
+      e.outcomeDetail = "CI outage, merged nothing";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta.querySelector(".outcome-detail"), null);
+
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.ok(pageMeta.querySelector(".outcome-detail"), "the page keeps it");
   });
 });
 
@@ -784,9 +881,22 @@ describe("PR references are links", () => {
     );
   });
 
-  test("a footer with no reference in it makes no link", () => {
-    const card = cards(window).find((c) => c.querySelector(".pr").textContent === "none");
-    assert.equal(card.querySelectorAll(".pr a").length, 0);
+  /* This used to read off a feed card. The feed no longer draws the badge
+   * for a `none` at all -- see "a card whose cycle shipped no PR says
+   * nothing" -- so the claim moves to `/cycle/<n>`, which still draws it.
+   * The claim itself is unchanged: a footer that names no reference must
+   * not linkify the word standing in for one. */
+  test("a footer with no reference in it makes no link", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "none";
+      e.prSpans = [{ kind: "text", text: "none" }];
+    });
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pr = page.document.querySelector(".entry-meta .pr");
+    assert.ok(pr, "the page draws the badge, so there is something to check");
+    assert.equal(pr.textContent, "none");
+    assert.equal(pr.querySelectorAll("a").length, 0);
   });
 
   test("links open away from the PWA without handing it the opener", () => {
@@ -7083,15 +7193,17 @@ describe("the status fields are one horizontal list, and they link down to the c
     assert.match(block, /flex-wrap:\s*wrap/);
   });
 
-  test("the field naming the last outcome scrolls the feed to that cycle", async () => {
+  test("the field naming the last PR scrolls the feed to that cycle", async () => {
     const window = await loadSite("/", {
       journal: () => withStatus({ cycle: 57, lastOutcome: "merged", lastPr: "#289" }),
       comments: { byCycle: {}, needs: [] },
     });
-    const badge = window.document.querySelector("#status .status-subs .badge-merged")
-      || [...window.document.querySelectorAll("#status .status-subs .status-sub")]
-        .find((f) => /merged/.test(f.textContent));
-    assert.ok(badge, "expected an outcome field in the header");
+    // The PR, not the outcome: the header stopped drawing the outcome pill
+    // (see "the header carries no outcome pill" below). The field itself is
+    // unchanged -- same link, same scroll -- so this still pins that.
+    const badge = [...window.document.querySelectorAll("#status .status-subs .status-sub")]
+      .find((f) => /#289/.test(f.textContent));
+    assert.ok(badge, "expected a PR field in the header");
     const field = badge.closest ? (badge.closest("a.status-sub") || badge) : badge;
     assert.equal(field.tagName, "A", "the outcome field is not clickable");
     assert.equal(field.getAttribute("href"), "/cycle/57");
@@ -7118,5 +7230,50 @@ describe("the status fields are one horizontal list, and they link down to the c
     const running = fields(window).find((f) => /cycle running/.test(f.textContent));
     assert.ok(running, "expected the running field");
     assert.equal(running.tagName, "P");
+  });
+
+  /* Edvard, `issues.md` 2026-08-23: "Drop the Outcome pill from the
+   * top-of-page header too, not just the card view — it's the same ugly
+   * all-caps duplicate of the blue summary line, shown twice on the same
+   * screen." Both copies were on the feed at once, which is what "twice on
+   * the same screen" names: this header field, and the newest card below it.
+   *
+   * The control against a selector that matches nothing is the PR: the same
+   * field, same fixture, one child present and the other absent. */
+  test("the header carries no outcome pill, and still names the PR", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({
+        cycle: 57,
+        lastOutcome: "prompt.md wired to tools.backlog_brief; inbox cleared",
+        lastOutcomeDetail: "CI outage, merged nothing",
+        lastPr: "#289",
+      }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const subs = window.document.querySelector("#status .status-subs");
+    assert.ok(!/backlog_brief/.test(subs.textContent), subs.textContent);
+    assert.ok(!/merged nothing/.test(subs.textContent), subs.textContent);
+    assert.match(subs.textContent, /#289/);
+  });
+
+  /* The footer is mandatory, so a cycle with nothing to show still writes
+   * `PR: none` -- and cycle 340, the one he complained about, is exactly
+   * that. With the pill gone the field would have been the word "none" on
+   * its own, linking to a cycle, which is the same noise in fewer letters. */
+  test("a last cycle with no PR gets no header field at all", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "no-op", lastPr: "none" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    // Null rather than empty: the container is only drawn when it has a
+    // field to hold, so dropping the last one drops the row with it.
+    const subs = window.document.querySelector("#status .status-subs");
+    assert.ok(!subs || !/none/.test(subs.textContent), subs && subs.textContent);
+    // The control: the same fixture with a real reference does draw one.
+    const w2 = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "no-op", lastPr: "runner#289" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.match(w2.document.querySelector("#status .status-subs").textContent, /runner#289/);
   });
 });
