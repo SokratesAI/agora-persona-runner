@@ -49,6 +49,11 @@ mind before trusting the verifier with a new kind of damage.
 import argparse
 import sys
 
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from agora_runner.md_sections import find_heading, section_bounds
 from agora_runner.nova_comments import (
     ACKNOWLEDGED_HEADING,
