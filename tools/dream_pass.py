@@ -45,6 +45,15 @@ Three signals, and the split between them is the point:
     judgement about which sentence to keep, which is exactly what the
     design risk above says a tool must not make on its own.
 
+**Accepting a proposal changes what the Nova site lists**, which is
+worth knowing before you write one back to the vault. `nova_boards.
+parse_notes` read 530 notes out of `resources/issues.md` before the
+first accepted proposal and 516 after -- the difference is exactly the
+14 `DONE` bullets, and nothing else moved. That is the intended effect
+(`identity.md` rule 8: finished items move to a processed section) and
+the text is still in the file, but it is a visible change rather than a
+tidy-up nobody sees.
+
 A vault path (`projects/...`, `nova/...`) is never checked for
 existence: those live in CouchDB, not in a git checkout, so "not on
 disk" would mean nothing about them and flagging one would be a
