@@ -603,7 +603,12 @@ _heartbeat_threads = {}
 # the thread guard covers that window; with a limit of 3 a burst of ticks
 # inside it would spawn three runs for one slot. Remembering the exact
 # value we spawned against closes it without inventing a delay: the mark
-# changes the moment the claim lands, and never otherwise.
+# changes the moment the claim lands.
+#
+# It is also DROPPED on any tick where nothing is in flight, and that half
+# is not decoration -- without it a run that dies without ever moving
+# `lastRunAt` leaves a mark that matches every later tick forever, and the
+# heartbeat never runs again. See the comment at the drop site.
 _heartbeat_spawn_marks = {}
 
 
@@ -842,6 +847,23 @@ def run_due_heartbeats(heartbeats_list=None):
                 debug_log(f"heartbeat {hb_id} has {len(alive)} run(s) in flight "
                           f"(limit {limit}), skipping this tick")
                 continue
+            if not alive:
+                # Nothing is running, so nothing can be mid-claim, so the
+                # mark below has no window left to guard. Dropping it here
+                # is what stops it wedging the heartbeat for good: the mark
+                # is only ever REPLACED by a different `lastRunAt`, so a run
+                # that dies without moving `lastRunAt` — claim PATCH fails
+                # in an Agora blip, then the thread dies before the final
+                # PATCH — would otherwise match every later tick forever
+                # and this heartbeat would never run again. The old
+                # one-at-a-time guard could not do that: a dead thread
+                # always meant "spawn on the next tick". Recovering the
+                # same way costs at most a duplicate run of one slot,
+                # which is what an unclaimed run already risks (see
+                # `run_heartbeat`'s claim-failure log) and is the safe
+                # direction — a duplicated cycle is visible, a heartbeat
+                # that silently stops is not.
+                _heartbeat_spawn_marks.pop(hb_id, None)
             if limit > 1 and not heartbeat.get("forceRun"):
                 # See _heartbeat_spawn_marks: only reachable with a limit
                 # above 1, and only inside the window where this slot's
