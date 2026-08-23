@@ -37,9 +37,16 @@ therefore not a name. `prompt.md` step 7 is what puts the slug in the
 handoff; this module only ever compares the strings it is given.
 """
 
+import hashlib
 import json
 import re
 from datetime import datetime
+
+#: Where the ledger lives. It was hand-typed in `tools/claim.py`'s docstring
+#: and nowhere else, which was fine while one module read it; Cycle 342 added
+#: a second reader, and two hand-typed copies of a vault path is the shape
+#: `prompt.md` step 2 says to delete rather than guard.
+CLAIMS_PATH = "projects/sokrates/projects/agora/nova/resources/claims.json"
 
 #: A claim goes stale after this long, and a later cycle may take it over.
 #: 45 minutes because that is the hard turn cap -- measured Cycle 82, and a
@@ -210,6 +217,53 @@ def release(ledger, item, cycle, now, outcome=None):
         existing["outcome"] = outcome
     prune(ledger, now)
     return True, f"{item} released by cycle {cycle}"
+
+
+def slug_for_row(board, number):
+    """The claim slug for a row on one of Edvard's two boards.
+
+    A handoff item's slug is written by hand by the cycle that wrote the
+    handoff. A board row cannot work that way: two overlapping cycles both
+    read the row out of the vault and neither wrote it, so the only slug
+    they can agree on is one derived from the row itself. `board` is
+    `"issue"` or `"idea"`, exactly the strings `top_board_rows` already
+    tags its rows with, and the two boards are separately numbered -- so
+    the board has to be in the slug or `issue #7` and `idea #7` are one
+    claim.
+    """
+    return f"{board}-{int(number)}"
+
+
+def slug_for_capture(text):
+    """The claim slug for one of Edvard's unboarded captures.
+
+    A capture has no number -- it is a bare bullet he typed -- so the text
+    is the only identity it has. Whitespace is normalised first because the
+    same bullet read twice can come back wrapped differently, and a slug
+    that changes with the wrapping would let both cycles claim it.
+
+    Truncated to 12 hex characters rather than the full digest: this is a
+    name two cycles have to agree on within one 45-minute window, not a
+    defence against anyone constructing a collision, and a cycle that has
+    to read the slug off a terminal line is better served by a short one.
+    """
+    normalised = " ".join((text or "").split())
+    return "capture-" + hashlib.sha1(normalised.encode("utf-8")).hexdigest()[:12]
+
+
+def held_by(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
+    """`{item: cycle}` for every claim a cycle could still be working on.
+
+    Open and not yet stale. A `done` claim is deliberately not in here:
+    "somebody finished this" and "somebody is doing this right now" are
+    different answers, and only the second one is a reason to look at a
+    different row this minute.
+    """
+    live = {}
+    for row in ledger["claims"]:
+        if row.get("state") == OPEN and not is_stale(row, now, ttl_minutes):
+            live.setdefault(row["item"], row["cycle"])
+    return live
 
 
 def summarise(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
