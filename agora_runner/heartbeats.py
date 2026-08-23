@@ -611,6 +611,36 @@ _heartbeat_threads = {}
 # heartbeat never runs again. See the comment at the drop site.
 _heartbeat_spawn_marks = {}
 
+# Ticks this heartbeat was due for and did not run, since its last spawn.
+#
+# Every reason `run_due_heartbeats` declines a due tick used to be a
+# `debug_log`, and `DEBUG_LOGGING` is unset on the runner deployment
+# (checked 2026-08-23: no such env var on `deploy/agora-persona-runner`,
+# and zero `[debug]` lines in its last 400). So a dropped tick printed
+# nothing, and a run that never started prints nothing either -- the
+# `heartbeat <name>: <result>` line only exists once a run finishes.
+# There was no way to tell "not due" from "due and declined", which at an
+# 18-minute cadence means the first symptom of a scheduling bug is a
+# missing cycle with no evidence anywhere.
+#
+# Counted rather than logged per tick because the poll loop ticks every
+# POLL_INTERVAL_SECONDS (5s), so one 45-minute cycle holding the last
+# slot would print ~540 identical lines and bury the signal in itself.
+# The first drop after a spawn is the one that carries information; the
+# total is printed on the next spawn.
+_heartbeat_dropped_ticks = {}
+
+
+def _drop_tick(hb_id, name, reason):
+    """Record a due tick that did not spawn a run, and say so once."""
+    n = _heartbeat_dropped_ticks.get(hb_id, 0) + 1
+    _heartbeat_dropped_ticks[hb_id] = n
+    if n == 1:
+        log(f"heartbeat {name}: due tick dropped ({reason}) -- "
+            "further drops are counted and reported on the next start")
+    else:
+        debug_log(f"heartbeat {name}: due tick dropped ({reason}), {n} since last start")
+
 
 def _concurrency_limit(heartbeat):
     """How many runs of this heartbeat may overlap.
@@ -843,9 +873,10 @@ def run_due_heartbeats(heartbeats_list=None):
             alive = [t for t in _heartbeat_threads.get(hb_id, []) if t.is_alive()]
             _heartbeat_threads[hb_id] = alive
             limit = _concurrency_limit(heartbeat)
+            name = heartbeat.get("name", hb_id)
             if len(alive) >= limit:
-                debug_log(f"heartbeat {hb_id} has {len(alive)} run(s) in flight "
-                          f"(limit {limit}), skipping this tick")
+                _drop_tick(hb_id, name,
+                           f"{len(alive)} run(s) in flight, limit {limit}")
                 continue
             if not alive:
                 # Nothing is running, so nothing can be mid-claim, so the
@@ -872,13 +903,22 @@ def run_due_heartbeats(heartbeats_list=None):
                 # request, not the same slot read twice.
                 mark = heartbeat.get("lastRunAt")
                 if _heartbeat_spawn_marks.get(hb_id) == mark:
-                    debug_log(f"heartbeat {hb_id}: claim for lastRunAt={mark} not "
-                              "visible yet, skipping this tick")
+                    _drop_tick(hb_id, name,
+                               f"claim for lastRunAt={mark} not visible yet")
                     continue
                 _heartbeat_spawn_marks[hb_id] = mark
             target = run_workflow_heartbeat if heartbeat.get("workflowId") else run_heartbeat
             thread = threading.Thread(target=target, args=(heartbeat,), daemon=True)
             alive.append(thread)
             thread.start()
+            # The only line that says a run STARTED. Everything else this
+            # module prints comes from a run that already finished, so
+            # without this a cycle that never began looks exactly like a
+            # cycle that was never due.
+            dropped = _heartbeat_dropped_ticks.pop(hb_id, 0)
+            log(f"heartbeat {name}: starting run, {len(alive)} now in flight "
+                f"(limit {limit})"
+                + (f", {dropped} due tick(s) dropped since the last start"
+                   if dropped else ""))
         except Exception as e:
             log(f"heartbeat {heartbeat.get('name')} scheduling error: {e}")
