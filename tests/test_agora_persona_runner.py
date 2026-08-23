@@ -3723,6 +3723,114 @@ def test_a_run_that_dies_without_claiming_does_not_wedge_the_heartbeat(runner):
     assert len(created) == 3, "a dead unclaimed run wedged the heartbeat for good"
 
 
+def _scheduler_lines(runner, heartbeat, threads, marks, drops, limit=3,
+                     spawned=None, ticks=1):
+    """Run `run_due_heartbeats` `ticks` times and return what log() printed.
+
+    Every scheduling decision used to go through debug_log(), which is
+    off on the runner deployment, so these lines are the whole of what an
+    operator can see. `spawned` collects each thread constructed.
+    """
+    printed = []
+
+    def ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        if spawned is not None:
+            spawned.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "_heartbeat_dropped_ticks", drops), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", limit), \
+         patch.object(runner.heartbeats, "log", side_effect=printed.append), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        for _ in range(ticks):
+            runner.run_due_heartbeats()
+    return printed
+
+
+def test_a_started_run_says_so_where_debug_logging_is_off(runner):
+    """Nothing in this module announced that a run had STARTED.
+
+    `heartbeat <name>: <result>` is printed by a run that finished, so a
+    cycle that never began and a cycle that was never due looked
+    identical in the log. At 18 minutes that makes the first symptom of a
+    scheduling bug a missing cycle with no evidence at all.
+    """
+    printed = _scheduler_lines(runner, _plain_hb(), {}, {}, {})
+
+    starts = [line for line in printed if "starting run" in line]
+    assert len(starts) == 1, printed
+    assert "Nova" in starts[0]
+    assert "1 now in flight (limit 3)" in starts[0]
+
+
+def test_dropped_ticks_are_reported_logarithmically_not_every_five_seconds(runner):
+    """The poll loop ticks every POLL_INTERVAL_SECONDS (5s by default), so
+    a 45-minute cycle holding the last slot is ~540 ticks. Logging each
+    one buries the signal in itself; logging none of them is what this
+    change is fixing."""
+    threads = {"hb1": [_AliveStub(), _AliveStub(), _AliveStub()]}
+    drops = {}
+    spawned = []
+
+    printed = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
+                               drops, spawned=spawned, ticks=540)
+
+    assert spawned == []
+    dropped = [line for line in printed if "due tick(s) dropped" in line]
+    assert len(dropped) == 10, printed[:12]   # 1,2,4,...,512
+    assert "1 due tick(s) dropped" in dropped[0]
+    assert "3 run(s) in flight, limit 3" in dropped[0]
+    assert drops["hb1"] == 540, "the silent drops still have to be counted"
+
+
+def test_a_wedged_heartbeat_keeps_saying_so_and_never_goes_quiet(runner):
+    """A run thread that hangs has no timeout, on purpose, so "the total is
+    reported on the next start" is a promise that can never come due. Under
+    a log-once rule that is one line and then permanent silence through an
+    ongoing outage — which is the original bug, back again, in the exact
+    case this change was written for."""
+    threads = {"hb1": [_AliveStub(), _AliveStub(), _AliveStub()]}
+    drops = {}
+
+    first = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
+                             drops, ticks=64)
+    later = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
+                             drops, ticks=960)   # ~80 more minutes wedged
+
+    assert [ln for ln in later if "due tick(s) dropped" in ln], (
+        "a heartbeat still wedged an hour later printed nothing at all")
+    assert "1024 due tick(s) dropped since the last start" in later[-1], later[-3:]
+    # Rarer as it goes on, and that is the design: 7 lines over the first
+    # 64 declined ticks, 4 over the next 960. It thins out; it never stops.
+    assert len(later) < len(first) < 20, "and it must not become a flood either"
+
+
+def test_the_next_start_reports_how_many_ticks_were_dropped(runner):
+    """The count is the half that makes the single line above enough:
+    without it the log says the schedule started slipping and never says
+    by how much."""
+    heartbeat = _plain_hb()
+    threads = {"hb1": [_AliveStub()]}
+    drops = {}
+
+    _scheduler_lines(runner, heartbeat, threads, {}, drops, limit=1, ticks=3)
+    assert drops["hb1"] == 3
+
+    threads["hb1"] = [_DeadStub()]
+    printed = _scheduler_lines(runner, heartbeat, threads, {}, drops, limit=1)
+
+    starts = [line for line in printed if "starting run" in line]
+    assert len(starts) == 1, printed
+    assert "3 due tick(s) dropped since the last start" in starts[0]
+    assert "hb1" not in drops, "the counter has to reset, or it only ever grows"
+
+
 def test_force_run_is_exempt_from_the_spawn_mark(runner):
     """Edvard pressing "run now" is a new request, not one slot read
     twice -- and under the old guard it silently no-opped whenever a
