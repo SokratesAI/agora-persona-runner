@@ -67,7 +67,19 @@ _ROW_NUMBER_RE = re.compile(r"#(\d+)")
 # The shape `prompt.md` step 6 asks a cycle to write when its work closed
 # one of Edvard's captures; see `split_capture_done`. The colon is
 # required so a bullet that merely opens with the word cannot match.
-_CAPTURE_DONE_RE = re.compile(r"^DONE\s*\(\s*(Cycle\s*\d+)\s*\)\s*:", re.IGNORECASE)
+#
+# **Anything else inside the parentheses is allowed, and that is a fix.**
+# This required the bracket to hold `Cycle N` and nothing else. Cycle 337
+# closed a capture and wrote `DONE (Cycle 337, platform-config#516):`,
+# naming the PR where the reader would look for it -- the obvious thing to
+# write, and nothing in `prompt.md` forbids it. It matched nothing, so at
+# 09:05 on 2026-08-23 `tools/top_board_rows.py` printed that finished
+# capture under *"these outrank every row below. Take one"*, and
+# `roll_done_captures` would never have moved it out of Edvard's file.
+# That is the precise failure `split_capture_done` was written to prevent,
+# walking back in through a comma. The cycle number is still the only
+# thing captured, so every caller reads what it always read.
+_CAPTURE_DONE_RE = re.compile(r"^DONE\s*\(\s*(Cycle\s*\d+)[^)]*\)\s*:", re.IGNORECASE)
 # A detail heading inside `# Details`, in either shape the live files use:
 # `## 57 — More pages in the Nova app` and `### #84 — Edit and delete a
 # boarded idea or issue by holding the card`.

@@ -212,6 +212,42 @@ def open_rows(markdown, board):
     return rows
 
 
+def closed_rows_waiting(markdown, board):
+    """Closed rows whose write-up still ends on one of his comments.
+
+    `open_rows` computes `waiting` for every row and then throws away
+    every closed one, so a question asked on a row already marked ✅ Done
+    was read out of the file and discarded in the same function. Sokrates
+    reported the consequence rather than the cause, `issues.md`
+    2026-08-23: a comment left on `ideas #63` on 08-22 flagging that the
+    row's Done status looked premature sat through **nine cycles**
+    (328-336) with no reply and no change, because *"step 1's read
+    genuinely skips comment threads on Done items"*.
+
+    A comment is not a status. Closing a row says the work is finished;
+    it says nothing about whether he has been answered, and the case
+    where the two disagree is the one that matters most -- a comment on a
+    Done row is very often *"this is not actually done"*, which is
+    exactly what #63's said.
+
+    These are returned separately and never ranked. `rank` names the row
+    a cycle should take, and a closed row is not work at any rating; the
+    thing owed here is a reply, which `render` asks for by name. Folding
+    them into `rows` would have put a Done row at the top of the pick
+    list, which is the opposite failure and just as wrong.
+    """
+    waiting = set(unanswered_comments(markdown or ""))
+    return [{
+        "board": board,
+        "number": item["number"],
+        "title": item["title"],
+        "status": item["status"],
+        "updated": item["updated"],
+    } for item in parse_board(markdown or "")["items"]
+        if (item["done"] or item["statusKey"] in _CLOSED)
+        and item["number"] in waiting]
+
+
 _DATE_RE = re.compile(r"(\d{2})-(\d{2})\s*$")
 
 
@@ -291,7 +327,7 @@ def _capture_line(capture):
     return f"{capture['board']}s.md  {rating}  {text}"
 
 
-def render(rows, runners_up=3, captures=()):
+def render(rows, runners_up=3, captures=(), closed_waiting=()):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -310,24 +346,37 @@ def render(rows, runners_up=3, captures=()):
     ranked = rank(rows)
     if not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
-        return "\n".join(out)
-    header = ("TOP OF EDVARD'S BOARD — below the captures above:" if captures else
-              "TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:")
-    out.append(header)
-    out.append("  -> " + _line(ranked[0]))
-    rest = ranked[1:1 + runners_up]
-    if rest:
-        out.append("  next:")
-        out.extend("     " + _line(r) for r in rest)
+    else:
+        header = ("TOP OF EDVARD'S BOARD — below the captures above:" if captures else
+                  "TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:")
+        out.append(header)
+        out.append("  -> " + _line(ranked[0]))
+        rest = ranked[1:1 + runners_up]
+        if rest:
+            out.append("  next:")
+            out.extend("     " + _line(r) for r in rest)
     # Every waiting row, not just the ones that fit in the runners-up window.
     # Answering him is cheap and the list is short; a row that is waiting and
     # ranked fifth is exactly the one that goes unanswered for three days.
+    #
+    # Closed rows join this list rather than getting one of their own,
+    # because what is owed is identical -- a reply -- and the failure being
+    # fixed is a second place a cycle has to remember to look. They carry
+    # their status so nobody reads one as a pick; `closed_rows_waiting`
+    # keeps them out of the ranking, which is where that distinction is
+    # enforced rather than described.
     waiting = [r for r in ranked if r.get("waiting")]
-    if waiting:
-        out.append(f"  {len(waiting)} row(s) waiting on a reply from you: "
-                   + ", ".join(f"{r['board']} #{r['number']}" for r in waiting))
+    named = [f"{r['board']} #{r['number']}" for r in waiting]
+    named += [f"{r['board']} #{r['number']} ({r['status']})" for r in closed_waiting]
+    if named:
+        out.append(f"  {len(named)} row(s) waiting on a reply from you: "
+                   + ", ".join(named))
         out.append("  Reply on the row (POST /api/board/comment, author Nova) "
                    "even if you do not take it as this cycle's work.")
+    if closed_waiting:
+        out.append("  The closed ones still need one. A comment on a finished "
+                   "row is often 'this is not actually done' — read it before "
+                   "you assume the status settles it.")
     # Named, not hidden. The whole reason this status exists is that a row
     # only Edvard can finish was being skipped in silence; sinking it in the
     # ranking without saying so would automate the silence instead of the
@@ -357,6 +406,7 @@ def main(argv=None):
 
     rows = []
     captures = []
+    closed_waiting = []
     missing = []
     for board, local, path in (("issue", args.issues, ISSUES_PATH),
                                ("idea", args.ideas, IDEAS_PATH)):
@@ -373,6 +423,7 @@ def main(argv=None):
             continue
         rows.extend(open_rows(text, board))
         captures.extend(unboarded_captures(text, board))
+        closed_waiting.extend(closed_rows_waiting(text, board))
 
     notes_md = open(args.notes, encoding="utf-8").read() if args.notes \
         else _fetch(NOTES_PATH)
@@ -383,7 +434,8 @@ def main(argv=None):
     else:
         captures.extend(unread_notes(notes_md))
 
-    print(render(rows, runners_up=args.runners_up, captures=captures))
+    print(render(rows, runners_up=args.runners_up, captures=captures,
+                 closed_waiting=closed_waiting))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")

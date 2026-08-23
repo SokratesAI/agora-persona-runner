@@ -528,3 +528,129 @@ def test_render_names_the_blocked_rows_rather_than_hiding_them():
     out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
     assert "issue #99" in out.splitlines()[1]
     assert "blocked on Edvard: issue #94" in out
+
+
+# --- A comment on a row already closed, which the read discarded ---
+#
+# `open_rows` computed `waiting` for every row in the file and then
+# dropped every closed one, so a question asked on a ✅ Done row was read
+# and thrown away in the same function. Sokrates filed it on `issues.md`
+# 2026-08-23 after a comment on `ideas #63` sat through nine cycles
+# (328-336) with no reply and no change.
+
+DONE_STATUS = STATUS_LABELS["done"]
+
+
+def test_a_comment_on_a_done_row_is_not_lost_with_the_row():
+    text = board((10, "an open row", BACKLOG, "08-01", HIGH),
+                 (63, "a finished row", DONE_STATUS, "08-22", HIGH)) + details(
+        (63, "a finished row", "Problem.\n\n"
+                               "**Edvard, 08-22:** this Done looks premature?"))
+    # Against a literal, not against another call to `open_rows` -- a
+    # mutation moves both sides of that equally (rubric item 13).
+    assert [r["number"] for r in top_board_rows.open_rows(text, "idea")] == [10]
+    got = top_board_rows.closed_rows_waiting(text, "idea")
+    assert [(r["board"], r["number"]) for r in got] == [("idea", 63)]
+
+
+def test_a_done_row_i_already_answered_is_not_waiting():
+    """The control. Without it the function above could return every closed
+    row and this file would still be green."""
+    text = board((63, "a finished row", DONE_STATUS, "08-22", HIGH)) + details(
+        (63, "a finished row", "Problem.\n\n**Edvard, 08-22:** premature?\n\n"
+                               "**Nova, 08-23 (Cycle 338):** answered."))
+    assert top_board_rows.closed_rows_waiting(text, "idea") == []
+
+
+def test_a_closed_waiting_row_is_named_but_never_ranked_as_a_pick():
+    """It is a reply that is owed, not work. Putting it in the ranking would
+    be the opposite failure -- a Done row named as this cycle's pick."""
+    rows = [{"board": "issue", "number": 7, "title": "real work", "status": BACKLOG,
+             "priority": HIGH, "priorityKey": "high", "updated": "08-01",
+             "waiting": False}]
+    closed = [{"board": "idea", "number": 63, "title": "a finished row",
+               "status": DONE_STATUS, "updated": "08-22"}]
+    out = top_board_rows.render(rows, closed_waiting=closed)
+    assert "issue #7" in out.split("waiting on a reply from you:")[0]
+    assert f"1 row(s) waiting on a reply from you: idea #63 ({DONE_STATUS})" in out
+    assert "-> idea #63" not in out
+    assert "this is not actually done" in out
+
+
+def test_open_and_closed_waiting_rows_share_one_list():
+    """One place to look. A second section is a second thing to remember."""
+    rows = [{"board": "issue", "number": 7, "title": "asked on an open row",
+             "status": BACKLOG, "priority": LOW, "priorityKey": "low",
+             "updated": "08-01", "waiting": True}]
+    closed = [{"board": "idea", "number": 63, "title": "a finished row",
+               "status": DONE_STATUS, "updated": "08-22"}]
+    out = top_board_rows.render(rows, closed_waiting=closed)
+    assert (f"2 row(s) waiting on a reply from you: issue #7, idea #63 "
+            f"({DONE_STATUS})") in out
+
+
+def test_a_closed_waiting_row_survives_both_boards_being_otherwise_empty():
+    """The early return for "no open rows" used to end the whole render."""
+    closed = [{"board": "idea", "number": 63, "title": "a finished row",
+               "status": DONE_STATUS, "updated": "08-22"}]
+    out = top_board_rows.render([], closed_waiting=closed)
+    assert "no open rows on either board" in out
+    assert "idea #63" in out
+
+
+def test_main_surfaces_a_comment_on_a_closed_row(tmp_path, capsys):
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    issues.write_text(board((7, "real work", BACKLOG, "08-01", HIGH)),
+                      encoding="utf-8")
+    ideas.write_text(board((63, "a finished row", DONE_STATUS, "08-22", HIGH))
+                     + details((63, "a finished row",
+                                "Problem.\n\n**Edvard, 08-22:** premature?")),
+                     encoding="utf-8")
+    notes.write_text("## Read\n", encoding="utf-8")
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert f"idea #63 ({DONE_STATUS})" in out
+
+
+# --- The DONE marker, which stopped matching the moment a cycle named a PR ---
+
+def test_a_done_marker_may_name_where_the_work_landed():
+    """Cycle 337 wrote `DONE (Cycle 337, platform-config#516):` and this tool
+    printed the finished capture under "take one of these" at 09:05 on
+    2026-08-23. Measured, not hypothetical."""
+    text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
+                         "DONE (Cycle 337, platform-config#516): the old ask",
+                         "the thing I typed on my phone")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == ["the thing I typed on my phone"]
+
+
+def test_the_cycle_number_is_still_the_only_thing_a_done_marker_yields():
+    """Every caller reads group 1; widening the bracket must not widen that."""
+    from agora_runner.nova_boards import split_capture_done
+    assert split_capture_done("DONE (Cycle 337, platform-config#516): the ask") \
+        == ("Cycle 337", "the ask")
+
+
+def test_a_bracket_with_no_cycle_number_is_still_prose():
+    """The control for the widened bracket: `[^)]*` must not swallow the
+    requirement that a real cycle number is there."""
+    from agora_runner.nova_boards import split_capture_done
+    assert split_capture_done("DONE (nearly, I think): not a marker") \
+        == ("", "DONE (nearly, I think): not a marker")
+
+
+def test_a_row_in_the_done_table_is_waiting_too():
+    """Reviewer finding on #298: every closed-row fixture above leaves the
+    status in `## Board`, and a row moved into the `## Done` table is the
+    other real shape. `parse_board` synthesises the status for those, so the
+    rendered line must still name one rather than print an empty bracket."""
+    text = board(done=[(63, "a finished row", "08-22", "runner#1")]) + details(
+        (63, "a finished row", "Problem.\n\n**Edvard, 08-22:** premature?"))
+    got = top_board_rows.closed_rows_waiting(text, "idea")
+    assert [(r["number"], r["status"]) for r in got] == [(63, DONE_STATUS)]
+    assert f"idea #63 ({DONE_STATUS})" in top_board_rows.render([], closed_waiting=got)
