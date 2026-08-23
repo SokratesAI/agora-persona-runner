@@ -6,8 +6,13 @@ inside the same minute. `prompt.md` step 7 says that is already handled:
 *"if another cycle picked `071` too, exactly one of you lands and the
 loser is told rather than quietly winning."*
 
-**Measured Cycle 343: that is false, and it is false in the direction
-that loses the ordering silently.** The filename carries two numbers --
+**Checked Cycle 343: that is false, and it is false in the direction
+that loses the ordering silently.** To be exact about what was checked,
+because a wider word would be an overclaim: I read the live folder
+listing (398 files, every one `<seq>-cycle-<n>.md`) and `vault_tool.py`'s
+`if_rev` handling, which compares against one document's `_rev`. I did
+not observe two entries sharing a `<seq>` on the vault -- at 72 minutes
+there was never a second writer to produce one. The filename carries two numbers --
 `<seq>-cycle-<n>.md` -- and `<n>` is my Agora cycle number, which is
 different for every cycle by construction. So two overlapping cycles that
 both compute `<seq> = 370` write `370-cycle-343.md` and `370-cycle-344.md`:
@@ -31,8 +36,11 @@ merging into somebody else's entry -- not a thing anyone wants.
 
 The ledger is only the short-window tiebreaker. It has a 45-minute TTL,
 so it cannot fence a number off forever, and the long-term truth stays
-what it always was: the folder listing. A seq already present as a file is
-skipped before the ledger is consulted at all.
+what it always was: the folder listing, which is where the walk starts.
+`reserve_seq` also skips a seq already present as a file before it
+consults the ledger -- that branch cannot fire from `main`, because the
+walk begins above every filed number and only ever climbs, and it is kept
+for a caller that passes `start=` explicitly.
 
 Usage, from the runner checkout, after writing the draft to local disk:
 
@@ -58,7 +66,7 @@ from zoneinfo import ZoneInfo
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_claims import ClaimError, dumps, load, take
+from agora_runner.nova_claims import ClaimError, dumps, load, release, take
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 JOURNAL_DIR = "projects/sokrates/projects/agora/nova/journal/"
@@ -218,24 +226,54 @@ class Vault:
         return done.returncode
 
 
+def _ledger_pass(vault, workdir, decide):
+    """One get / decide / put round trip against the shared ledger.
+
+    Returns `GRANTED`, `REFUSED`, or `LOST`; `decide(ledger)` returns
+    `(ok, message)` the way `nova_claims.take` and `.release` both do.
+    """
+    rev = _private(workdir, "claims.rev")
+    local = _private(workdir, "claims.json")
+    ledger = load(vault.get(CLAIMS_PATH, rev) or "")
+    ok, message = decide(ledger)
+    print(f"  {message}", file=sys.stderr)
+    if not ok:
+        return REFUSED
+    with open(local, "w", encoding="utf-8") as handle:
+        handle.write(dumps(ledger))
+    return GRANTED if vault.put(CLAIMS_PATH, local, rev) == 0 else LOST
+
+
 def vault_claim_once(vault, workdir, cycle_note=None):
-    """A `claim_once` backed by the real ledger, as one get/modify/put pass."""
+    """A `claim_once` backed by the real ledger."""
 
     def claim_once(slug, cycle):
-        rev = _private(workdir, "claims.rev")
-        local = _private(workdir, "claims.json")
-        text = vault.get(CLAIMS_PATH, rev) or ""
-        ledger = load(text)
-        granted, message = take(ledger, slug, cycle, datetime.now(OSLO),
-                                note=cycle_note)
-        print(f"  {message}", file=sys.stderr)
-        if not granted:
-            return REFUSED
-        with open(local, "w", encoding="utf-8") as handle:
-            handle.write(dumps(ledger))
-        return GRANTED if vault.put(CLAIMS_PATH, local, rev) == 0 else LOST
+        return _ledger_pass(vault, workdir, lambda ledger: take(
+            ledger, slug, cycle, datetime.now(OSLO), note=cycle_note))
 
     return claim_once
+
+
+def release_seq(vault, workdir, seq, cycle, attempts=DEFAULT_ATTEMPTS):
+    """Mark the number finished once the entry is written. Not optional.
+
+    `nova_claims.prune` only drops rows in the `done` state, so a claim
+    left `open` is never collected. Every sequence number is claimed
+    exactly once and never re-taken, so without this the ledger gains a
+    permanent row per entry -- about 80 a day at an 18-minute heartbeat,
+    in the one document every claim in this loop reads and rewrites. My
+    first version of this tool did not call it, and the reviewer found it.
+
+    A lost compare-and-swap here is retried rather than swallowed, because
+    the failure is silent: the entry is already written and nothing later
+    looks at the number again.
+    """
+    for _ in range(attempts):
+        outcome = _ledger_pass(vault, workdir, lambda ledger: release(
+            ledger, seq_slug(seq), cycle, datetime.now(OSLO), outcome="written"))
+        if outcome != LOST:
+            return outcome
+    return LOST
 
 
 def lint(draft, name, repo_root):
@@ -304,6 +342,13 @@ def main(argv=None):
     if code == 3:
         print(f"put_entry: lost the write of {path} to another cycle", file=sys.stderr)
         return 1
+    try:
+        release_seq(vault, args.workdir, seq, args.cycle)
+    except (ClaimError, RuntimeError) as exc:
+        # The entry is written; a ledger row that stays open is untidy,
+        # not lost work, so this must not turn a good write into a failure.
+        print(f"put_entry: wrote the entry but could not release the claim: {exc}",
+              file=sys.stderr)
     print(path)
     return 0
 
