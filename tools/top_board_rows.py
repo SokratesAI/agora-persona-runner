@@ -44,6 +44,16 @@ cycles is three cycles doing it. The ledger and its compare-and-swap are
 `agora_runner.nova_claims`, which already existed for handoff slugs; the
 board is the list a cycle reads *first*, and it had no slugs at all.
 
+**A waiting row carries a second slug, `[reply-claim: ...]`, and it is not
+the row's.** This tool tells a cycle to answer him *"even if you do not
+take it as this cycle's work"* (`prompt.md` step 1a), so replying and
+taking the row are different acts and one claim cannot stand for both.
+The reply slug is named after the text of his comment rather than the row
+number, because `take` refuses a slug that has ever been released as done
+-- a row-derived name would make the second question he ever asks on a
+row permanently unclaimable. Cycle 343 left this as the last open
+collision surface of the three; the other two are closed.
+
 Vault I/O is inside rather than outside, unlike every other tool here,
 and that is the point of the tool: an opening read that takes three
 commands is one a cycle will skip. `--issues`/`--ideas` take local files
@@ -66,12 +76,12 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner.nova_boards import (
     BLOCKED_STATUS, BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board,
     split_capture_done, split_capture_priority, status_key,
-    unanswered_comments,
+    unanswered_comment_bodies,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_claims import (
     CLAIMS_PATH, ClaimError, held_by, load as load_claims, slug_for_capture,
-    slug_for_row,
+    slug_for_comment, slug_for_row,
 )
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -240,7 +250,7 @@ def unboarded_captures(markdown, board):
 def open_rows(markdown, board):
     """Open rows of one board file, each tagged with which board it is on."""
     rows = []
-    waiting = set(unanswered_comments(markdown or ""))
+    waiting = unanswered_comment_bodies(markdown or "")
     for item in parse_board(markdown or "")["items"]:
         if item["done"] or item["statusKey"] in _CLOSED:
             continue
@@ -258,8 +268,38 @@ def open_rows(markdown, board):
             # never be sourced from two different reads of the file.
             "waiting": item["number"] in waiting,
             "slug": slug_for_row(board, item["number"]),
+            # Named after his comment, not after the row -- see
+            # `slug_for_comment`. `None` on a row nobody is waiting on, so
+            # `reply_slug` never invents a claim for a thread that does
+            # not exist.
+            "replySlug": _reply_slug(board, item["number"], waiting),
         })
     return rows
+
+
+def _reply_slug(board, number, bodies):
+    """The reply slug for `number`, or `None` if that row is not waiting."""
+    text = bodies.get(number)
+    return None if text is None else slug_for_comment(board, number, text)
+
+
+def _reply_claim(row):
+    """`  [reply-claim: <slug>]`, or nothing if this row cannot name one.
+
+    `row_slug` derives a missing row slug from the board and the number,
+    because it can. This cannot: a reply slug is named after the text of
+    the comment, so a row assembled without the markdown it came from has
+    no way back to it, and inventing one from the number alone would hand
+    two cycles the same name for two different comments -- the exact
+    failure the hash is there to prevent.
+
+    Printing nothing is therefore the honest answer, and the guarantee is
+    kept where it can be: `open_rows` and `closed_rows_waiting` stamp
+    `replySlug` on every waiting row they build, which is pinned by a
+    test. Only a row built by hand reaches this fallback.
+    """
+    slug = row.get("replySlug")
+    return f"  [reply-claim: {slug}]" if slug else ""
 
 
 def row_slug(item):
@@ -301,10 +341,20 @@ def apply_claims(items, live, my_cycle=None):
 
     Own claims are not held: a cycle that claims a row and then re-runs this
     tool must not be told its own row is taken.
+
+    **`replyHeldBy` is a separate answer to a separate question.** Replying
+    to a comment is work this tool tells a cycle to do *whether or not* it
+    takes the row, so "somebody is on this row" and "somebody is answering
+    this comment" can each be true without the other. Two cycles that both
+    read `💬 UNANSWERED` before either replies both reply, and the row
+    claim never came into it -- that was the hole this covers.
     """
     for item in items:
         holder = live.get(row_slug(item))
         item["heldBy"] = None if holder is None or holder == my_cycle else holder
+        reply = item.get("replySlug")
+        holder = live.get(reply) if reply else None
+        item["replyHeldBy"] = None if holder is None or holder == my_cycle else holder
     return items
 
 
@@ -332,13 +382,15 @@ def closed_rows_waiting(markdown, board):
     them into `rows` would have put a Done row at the top of the pick
     list, which is the opposite failure and just as wrong.
     """
-    waiting = set(unanswered_comments(markdown or ""))
+    waiting = unanswered_comment_bodies(markdown or "")
     return [{
         "board": board,
         "number": item["number"],
         "title": item["title"],
         "status": item["status"],
         "updated": item["updated"],
+        "waiting": True,
+        "replySlug": _reply_slug(board, item["number"], waiting),
     } for item in parse_board(markdown or "")["items"]
         if (item["done"] or item["statusKey"] in _CLOSED)
         and item["number"] in waiting]
@@ -399,7 +451,14 @@ def rank(rows):
         # `render` names it, and a cycle that cannot see the row cannot
         # notice the claim is wrong.
         1 if r.get("heldBy") else 0,
-        0 if r.get("waiting") else 1,
+        # **A comment another cycle is already answering stops raising the
+        # row.** The raise exists to make sure somebody replies, so once
+        # somebody is, it has done its job -- and leaving it in place points
+        # the next two cycles at the same comment, which is the duplicate
+        # this claim was added to prevent. The row still ranks on its own
+        # rating; it just stops jumping the queue on a question that is
+        # being handled.
+        0 if r.get("waiting") and not r.get("replyHeldBy") else 1,
         1 if r.get("statusKey") == _BLOCKED else 0,
         _RANK.get(r["priorityKey"], len(_RANK)),
         age_key(r["updated"]),
@@ -413,14 +472,24 @@ def _line(row):
     # Ahead of the rating, because it is ahead of it in the sort. A marker
     # that explains the order is worth more than one appended as a footnote
     # to a line whose position it already decided.
-    waiting = "💬 UNANSWERED  " if row.get("waiting") else ""
+    if row.get("waiting"):
+        waiting = (f"🔒 REPLY HELD by cycle {row['replyHeldBy']}  "
+                   if row.get("replyHeldBy") else "💬 UNANSWERED  ")
+    else:
+        waiting = ""
     if row.get("statusKey") == _BLOCKED:
         waiting += "⏸ ON EDVARD  "
     if row.get("heldBy"):
         waiting = f"🔒 HELD by cycle {row['heldBy']}  " + waiting
+    # The reply slug is printed only while the reply is actually owed, and
+    # it is printed next to the row slug rather than instead of it: they
+    # buy different things, and a cycle that wants to answer him without
+    # taking the row needs to be able to see which is which.
+    reply = (_reply_claim(row)
+             if row.get("waiting") and not row.get("replyHeldBy") else "")
     return (f"{row['board']} #{row['number']}  {waiting}{rating}  {row['status']}"
             f"  (updated {row['updated']})  {row['title']}"
-            f"  [claim: {row_slug(row)}]")
+            f"  [claim: {row_slug(row)}]{reply}")
 
 
 def _capture_line(capture):
@@ -504,15 +573,33 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     # their status so nobody reads one as a pick; `closed_rows_waiting`
     # keeps them out of the ranking, which is where that distinction is
     # enforced rather than described.
-    waiting = [r for r in ranked if r.get("waiting")]
-    named = [f"{r['board']} #{r['number']}" for r in waiting]
-    named += [f"{r['board']} #{r['number']} ({r['status']})" for r in closed_waiting]
+    #
+    # A comment another cycle has claimed the reply to is dropped from the
+    # list rather than listed with a mark. Everywhere else in this tool a
+    # held item is named and sunk, because a row is a *pick* and a cycle
+    # that cannot see it cannot notice the claim is wrong. This is not a
+    # pick: the line is an instruction to go and type a reply, and printing
+    # that instruction next to "somebody else is typing it" is how two
+    # replies land. The `🔒 REPLY HELD` mark on the ranked line above is
+    # where it stays visible.
+    waiting = [r for r in ranked if r.get("waiting") and not r.get("replyHeldBy")]
+    held_replies = [r for r in list(ranked) + list(closed_waiting)
+                    if r.get("waiting") and r.get("replyHeldBy")]
+    named = [f"{r['board']} #{r['number']}{_reply_claim(r)}" for r in waiting]
+    named += [f"{r['board']} #{r['number']} ({r['status']}){_reply_claim(r)}"
+              for r in closed_waiting if not r.get("replyHeldBy")]
     if named:
         out.append(f"  {len(named)} row(s) waiting on a reply from you: "
                    + ", ".join(named))
         out.append("  Reply on the row (POST /api/board/comment, author Nova) "
-                   "even if you do not take it as this cycle's work.")
-    if closed_waiting:
+                   "even if you do not take it as this cycle's work — but claim "
+                   "the reply-claim slug first, or two cycles answer him twice.")
+    if held_replies:
+        out.append(f"  {len(held_replies)} reply(ies) already being written by a "
+                   "live cycle: "
+                   + ", ".join(f"{r['board']} #{r['number']} (cycle {r['replyHeldBy']})"
+                               for r in held_replies))
+    if any(not r.get("replyHeldBy") for r in closed_waiting):
         out.append("  The closed ones still need one. A comment on a finished "
                    "row is often 'this is not actually done' — read it before "
                    "you assume the status settles it.")
@@ -594,6 +681,11 @@ def main(argv=None):
 
     apply_claims(rows, live, args.cycle)
     apply_claims(captures, live, args.cycle)
+    # Closed rows are never ranked, so they miss the two calls above -- and a
+    # reply owed on a Done row is exactly the one `closed_rows_waiting` was
+    # built for (idea #63 sat nine cycles). Left out, it is the one comment
+    # two cycles could still both answer.
+    apply_claims(closed_waiting, live, args.cycle)
 
     print(render(rows, runners_up=args.runners_up, captures=captures,
                  closed_waiting=closed_waiting, claims_readable=claims_readable))
