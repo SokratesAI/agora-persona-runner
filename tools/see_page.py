@@ -95,6 +95,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from agora_runner.nova_site import PAGE_ROUTES
 
 DEFAULT_ROOT = Path("/data/workspace/nova-browser")

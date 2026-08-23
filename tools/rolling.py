@@ -14,6 +14,11 @@ Nothing about the engine changed. This module stays so that
 meaning what they meant, for the four CLI tools and the tests that say it.
 """
 
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from agora_runner.rolling import *  # noqa: F401,F403
 from agora_runner.rolling import (  # noqa: F401
     RollError,

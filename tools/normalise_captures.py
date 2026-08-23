@@ -57,6 +57,11 @@ output would *not* leave it alone. See the guard there.
 import argparse
 import sys
 
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from agora_runner.md_sections import split_at_heading
 from tools.rolling import RollError, join_bullets, split_bullets
 from tools.roll_captures import MARKER, _CYCLE_RE, check_newest_first
