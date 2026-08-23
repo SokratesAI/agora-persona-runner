@@ -741,14 +741,36 @@ def unanswered_comments(markdown):
     hand-edits through the same call, and it is filed rather than guessed
     at here.
     """
-    waiting = []
+    return sorted(unanswered_comment_bodies(markdown), reverse=True)
+
+
+def unanswered_comment_bodies(markdown):
+    """`{number: his last unanswered comment, verbatim}` for every waiting row.
+
+    Same rule as `unanswered_comments` -- this is where it is actually
+    decided, and that function is now the numbers-only view of it.
+
+    The text is what a *reply claim* is named after. A row slug cannot do
+    that job: `issue-7` is claimed once and, once released, is finished
+    for good, so the second question Edvard ever asks on a row could never
+    be claimed by anybody. A comment is the unit of work here, not the
+    row, so the identity has to come from the comment.
+
+    The body runs from the `**Edvard, MM-DD:**` marker to the end of the
+    write-up rather than to the end of its first line. Two comments he
+    leaves on one row on one day are distinguished by their text and
+    nothing else, and a long comment's first line is very often just the
+    opening clause -- which is exactly when two of them look identical.
+    """
+    bodies = {}
     lines = (markdown or "").split("\n")
     for number, span in _detail_spans(markdown or "").items():
         _, body_start, end = span
-        found = _COMMENT_NOTE_RE.findall("\n".join(lines[body_start:end]))
-        if found and found[-1] == "Edvard":
-            waiting.append(number)
-    return sorted(waiting, reverse=True)
+        block = "\n".join(lines[body_start:end])
+        found = list(_COMMENT_NOTE_RE.finditer(block))
+        if found and found[-1].group(1) == "Edvard":
+            bodies[number] = block[found[-1].start():].strip()
+    return bodies
 
 
 def _detail_spans(markdown):

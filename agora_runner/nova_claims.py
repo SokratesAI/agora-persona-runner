@@ -251,6 +251,31 @@ def slug_for_capture(text):
     return "capture-" + hashlib.sha1(normalised.encode("utf-8")).hexdigest()[:12]
 
 
+def slug_for_comment(board, number, text):
+    """The claim slug for replying to one comment of his on one row.
+
+    Replying is not the same job as taking the row, and `prompt.md` says
+    so: *"Reply on the row ... even if you do not take it as this cycle's
+    work."* So the two cannot share a slug -- a cycle that claims
+    `issue-7` to reply would fence off the row itself, and a cycle that
+    takes the row would silently also claim the reply.
+
+    The row number is in the name so it can be read off a terminal line,
+    and the hash is what makes it a *comment* claim rather than a row one.
+    `take` refuses a slug that has ever been released as done, which is
+    right for a row and fatal for a thread: without the hash, the second
+    question Edvard asked on `issue #7` would be permanently unclaimable
+    because the first one was answered.
+
+    Truncated to 8 hex characters for the same reason `slug_for_capture`
+    stops at 12 -- this is a name two cycles have to agree on inside one
+    45-minute window, printed on a line a cycle has to retype.
+    """
+    normalised = " ".join((text or "").split())
+    digest = hashlib.sha1(normalised.encode("utf-8")).hexdigest()[:8]
+    return f"reply-{board}-{int(number)}-{digest}"
+
+
 def held_by(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
     """`{item: cycle}` for every claim a cycle could still be working on.
 

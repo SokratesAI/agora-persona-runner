@@ -564,3 +564,42 @@ def test_unanswered_comments_ignores_bold_prose_that_looks_like_a_note():
     """
     assert _uc("**Edvard, in his own words:** this is the problem.") == []
     assert _uc("**Nova, on reflection:** still prose.") == []
+
+
+# --- unanswered_comment_bodies: the text a reply claim is named after -------
+
+def _ucb(body):
+    from agora_runner.nova_boards import unanswered_comment_bodies
+    return unanswered_comment_bodies(_UC_BOARD.format(body=body))
+
+
+def test_the_body_starts_at_his_marker_and_not_at_the_write_up():
+    """The write-up is his statement of the problem and never changes.
+    Naming a claim after it would give every comment on the row one name."""
+    got = _ucb("Problem, stated at length.\n\n**Edvard, 08-15:** what about this?")
+    assert got == {4: "**Edvard, 08-15:** what about this?"}
+
+
+def test_the_body_runs_past_the_first_line_of_his_comment():
+    """Two comments on one row on one day are told apart by their text, and
+    a long comment's opening clause is exactly where they look alike."""
+    got = _ucb("**Edvard, 08-15:** I have been thinking about this,\nand the "
+               "second half is where they differ.")
+    assert got[4].endswith("where they differ.")
+
+
+def test_only_the_last_note_is_the_one_owed_a_reply():
+    got = _ucb("**Edvard, 08-15:** first\n\n**Nova, 08-15 (Cycle 1):** answered\n\n"
+               "**Edvard, 08-16:** and now this")
+    assert got == {4: "**Edvard, 08-16:** and now this"}
+
+
+def test_an_answered_row_has_no_body_and_no_claim():
+    assert _ucb("**Edvard, 08-15:** q\n\n**Nova, 08-15 (Cycle 1):** a") == {}
+
+
+def test_unanswered_comments_is_the_numbers_of_the_same_answer():
+    from agora_runner.nova_boards import unanswered_comments
+    body = "**Edvard, 08-15:** q"
+    assert unanswered_comments(_UC_BOARD.format(body=body)) == \
+        sorted(_ucb(body), reverse=True)

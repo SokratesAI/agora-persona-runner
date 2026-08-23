@@ -27,6 +27,7 @@ from agora_runner.nova_claims import (
     load,
     prune,
     release,
+    slug_for_comment,
     summarise,
     take,
 )
@@ -423,3 +424,29 @@ def test_the_ledger_path_is_the_one_the_cli_docstring_tells_a_cycle_to_use():
     import pathlib
     cli = (pathlib.Path(__file__).resolve().parents[1] / "tools" / "claim.py")
     assert CLAIMS_PATH in cli.read_text(encoding="utf-8")
+
+
+def test_a_comment_slug_is_named_for_the_row_and_the_text():
+    slug = slug_for_comment("issue", 7, "is this really done?")
+    assert slug.startswith("reply-issue-7-")
+    assert len(slug.split("-")[-1]) == 8
+
+
+def test_two_comments_on_one_row_are_two_claims():
+    """A row slug is claimed once and finished forever, so a reply slug
+    derived from the row alone would lock every later question out."""
+    a = slug_for_comment("issue", 7, "first question")
+    b = slug_for_comment("issue", 7, "second question")
+    assert a != b
+
+
+def test_the_same_comment_read_twice_is_one_claim():
+    """Two cycles have to agree on the name, and the same block can come
+    back wrapped differently -- same reason `slug_for_capture` normalises."""
+    assert slug_for_comment("issue", 7, "one   two\nthree") == \
+        slug_for_comment("issue", 7, "one two three")
+
+
+def test_the_two_boards_do_not_share_a_comment_claim():
+    assert slug_for_comment("issue", 7, "q") != \
+        slug_for_comment("idea", 7, "q")

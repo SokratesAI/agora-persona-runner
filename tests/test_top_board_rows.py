@@ -806,3 +806,139 @@ def test_a_real_ledger_body_reads_as_success(monkeypatch):
 
     monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
     assert top_board_rows.fetch_claims() == (body, True)
+
+
+# --- Replying to a comment is its own claim -------------------------------
+#
+# Cycle 343 left this open as the last collision surface but one: two
+# cycles both read `💬 UNANSWERED` before either replies, and both reply.
+# The row claim never covered it, because `prompt.md` tells a cycle to
+# reply "even if you do not take it as this cycle's work".
+
+def _waiting_board(comment="**Edvard, 08-23:** is this really done?"):
+    return board((7, "a row", BACKLOG, "2026-08-01", HIGH)) + details(
+        (7, "a row", "Problem.\n\n" + comment))
+
+
+def test_a_waiting_row_always_carries_a_reply_slug():
+    """The guarantee `_reply_claim`'s fallback relies on.
+
+    It prints nothing when a row has no `replySlug`, which is honest for a
+    row built by hand and would be silent data loss if a real waiting row
+    could reach it. This is where that cannot happen.
+    """
+    row = top_board_rows.open_rows(_waiting_board(), "issue")[0]
+    assert row["waiting"] is True
+    assert row["replySlug"].startswith("reply-issue-7-")
+
+
+def test_an_unwaiting_row_has_no_reply_slug_to_claim():
+    text = board((7, "a row", BACKLOG, "2026-08-01", HIGH)) + details(
+        (7, "a row", "Problem.\n\n**Nova, 08-23 (Cycle 1):** answered"))
+    assert top_board_rows.open_rows(text, "issue")[0]["replySlug"] is None
+
+
+def test_the_reply_slug_is_not_the_row_slug():
+    """Claiming the row must not fence off the reply, or the other way.
+
+    `prompt.md`: reply "even if you do not take it as this cycle's work".
+    One slug for both would make those the same act.
+    """
+    row = top_board_rows.open_rows(_waiting_board(), "issue")[0]
+    assert row["replySlug"] != row["slug"] == "issue-7"
+
+
+def test_a_second_comment_on_the_same_row_is_a_different_claim():
+    """`take` refuses a slug that was ever released as done.
+
+    So a reply slug derived from the row alone would make the second
+    question Edvard ever asks on a row permanently unclaimable.
+    """
+    first = top_board_rows.open_rows(_waiting_board(), "issue")[0]["replySlug"]
+    second = top_board_rows.open_rows(
+        _waiting_board("**Edvard, 08-23:** and one more thing"), "issue")[0]["replySlug"]
+    assert first != second
+
+
+def test_a_held_reply_stops_the_row_jumping_the_queue():
+    """The raise exists to get him answered. Once somebody is answering, it
+    is only pointing the next cycle at a duplicate."""
+    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    rows.append({"board": "issue", "number": 3, "title": "immediate", "status": BACKLOG,
+                 "updated": "2026-08-02", "priority": IMMEDIATE,
+                 "priorityKey": "immediate", "statusKey": "backlog", "waiting": False})
+    slug = rows[0]["replySlug"]
+    assert top_board_rows.rank(rows)[0]["number"] == 7
+    top_board_rows.apply_claims(rows, {slug: 99}, my_cycle=1)
+    assert top_board_rows.rank(rows)[0]["number"] == 3
+
+
+def test_my_own_reply_claim_is_not_somebody_elses():
+    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    top_board_rows.apply_claims(rows, {rows[0]["replySlug"]: 344}, my_cycle=344)
+    assert rows[0]["replyHeldBy"] is None
+
+
+def test_render_prints_the_reply_slug_next_to_the_row_slug():
+    rows = top_board_rows.apply_claims(
+        top_board_rows.open_rows(_waiting_board(), "issue"), {})
+    out = top_board_rows.render(rows)
+    assert "💬 UNANSWERED" in out
+    assert f"[claim: issue-7]  [reply-claim: {rows[0]['replySlug']}]" in out
+    assert "claim the reply-claim slug first" in out
+
+
+def test_a_held_reply_is_marked_and_dropped_from_the_go_and_reply_list():
+    """The mark stays on the ranked line; the instruction to go and type a
+    reply does not, because that is the line that produces the second one."""
+    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    top_board_rows.apply_claims(rows, {rows[0]["replySlug"]: 99}, my_cycle=344)
+    out = top_board_rows.render(rows)
+    assert "🔒 REPLY HELD by cycle 99" in out
+    assert "waiting on a reply from you" not in out
+    assert "1 reply(ies) already being written by a live cycle: issue #7 (cycle 99)" in out
+    assert "reply-claim:" not in out
+
+
+def test_a_closed_row_owed_a_reply_is_claimable_too():
+    """`closed_rows_waiting` is the one path `apply_claims` did not cover,
+    and a comment on a Done row is where idea #63 sat for nine cycles."""
+    text = board(done=((63, "premature", "2026-08-22", "runner#1"),)) + details(
+        (63, "premature", "**Edvard, 08-22:** this is not actually done"))
+    closed = top_board_rows.closed_rows_waiting(text, "idea")
+    assert closed[0]["replySlug"].startswith("reply-idea-63-")
+    top_board_rows.apply_claims(closed, {closed[0]["replySlug"]: 99}, my_cycle=344)
+    out = top_board_rows.render([], closed_waiting=closed)
+    assert "idea #63 (cycle 99)" in out
+    assert "waiting on a reply from you" not in out
+    assert "The closed ones still need one" not in out
+
+
+def test_main_applies_claims_to_the_closed_rows_too(tmp_path, capsys):
+    """The one call a unit test on `apply_claims` cannot pin.
+
+    `closed_rows_waiting` never enters the ranking, so it misses both of
+    `main`'s `apply_claims` calls unless it gets its own — and a comment
+    on a Done row is exactly the one idea #63 sat under for nine cycles.
+    Driven through `main` on purpose: the direct test above passes whether
+    or not `main` ever makes the call.
+    """
+    issues = tmp_path / "issues.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board(done=((63, "premature", "2026-08-22", "runner#1"),))
+                     + details((63, "premature",
+                                "**Edvard, 08-22:** this is not actually done")))
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    slug = top_board_rows.closed_rows_waiting(ideas.read_text(), "idea")[0]["replySlug"]
+    claims = tmp_path / "claims.json"
+    claims.write_text('{"claims": [{"item": "%s", "cycle": 99, "state": "open",'
+                      ' "at": "%s"}]}' % (slug, datetime.now(top_board_rows.OSLO).isoformat()))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "344"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "idea #63 (cycle 99)" in out
+    assert "waiting on a reply from you" not in out
