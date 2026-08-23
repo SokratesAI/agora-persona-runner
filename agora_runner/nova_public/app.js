@@ -1740,7 +1740,13 @@
     if (withOutcome && entry.outcome) {
       row.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
     }
-    if (entry.pr) {
+    /* With the pill suppressed, `isRealPr` gates the PR too. "none" is only
+     * ever readable as the object of the footer's sentence -- `PR: none |
+     * Outcome: no-op` -- and once the outcome half is gone it answers a
+     * question nothing on the card asked. Cycle 340's card, the one Edvard
+     * complained about, is exactly this case. Where the pill is drawn, so
+     * is the `none`: there it still says something. */
+    if (entry.pr && (withOutcome || isRealPr(entry.pr))) {
       var pr = el("span", "pr");
       // prSpans carries the same text with each reference linkified; the
       // plain string is the fallback for a payload from an older build.

@@ -629,7 +629,7 @@ describe("two entries for one cycle are one card", () => {
    * that may not agree. The fixture's only two-entry cycle carries identical
    * fields on both entries, so a mutation from `settled` back to the earliest
    * part passes every other test in this file. */
-  test("the card takes its outcome from the last part that has one", async () => {
+  test("the card takes its PR from the last part that has one", async () => {
     // Cycle 102 on the live pod: the base entry carries no PR and no outcome,
     // the addendum carries `#86 / merged`. Reading the earliest part shows a
     // cycle that merged a PR as having done nothing.
@@ -793,6 +793,43 @@ describe("two entries for one cycle are one card", () => {
     assert.ok(pageMeta.querySelector(".badge"), "the page keeps the pill");
   });
 
+  /* Cycle 340's own card is `PR: none | Outcome: <a whole clause>`. Cutting
+   * the pill and keeping the `none` leaves the card saying one dim word that
+   * answers a question nothing else on it asks. On the page, where the pill
+   * survives, `none` is still the object of a sentence -- so this is the
+   * feed's rule, not a rule about the string. */
+  test("a card whose cycle shipped no PR says nothing, but the page still says none", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "none";
+      e.prSpans = [{ kind: "text", text: "none" }];
+      e.outcome = "no-op";
+      e.outcomeDetail = "";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta.querySelector(".pr"), null);
+
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(pageMeta.textContent, /none/);
+    assert.ok(pageMeta.querySelector(".pr"), "the page keeps the badge");
+  });
+
+  /* The control for the rule above: a real reference is still drawn on the
+   * card. Without this, deleting the PR badge from the feed entirely would
+   * satisfy the test above. */
+  test("a card whose cycle shipped a real PR still names it", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "runner#300";
+      e.prSpans = [{ kind: "text", text: "runner#300" }];
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(meta.textContent, /runner#300/);
+  });
+
   /* The qualifier is not a separate opinion, it is the tail of the pill's
    * sentence -- five entries read "stuck — CI outage, merged nothing". Cutting
    * the pill and leaving that behind puts a bare subordinate clause on the
@@ -844,9 +881,22 @@ describe("PR references are links", () => {
     );
   });
 
-  test("a footer with no reference in it makes no link", () => {
-    const card = cards(window).find((c) => c.querySelector(".pr").textContent === "none");
-    assert.equal(card.querySelectorAll(".pr a").length, 0);
+  /* This used to read off a feed card. The feed no longer draws the badge
+   * for a `none` at all -- see "a card whose cycle shipped no PR says
+   * nothing" -- so the claim moves to `/cycle/<n>`, which still draws it.
+   * The claim itself is unchanged: a footer that names no reference must
+   * not linkify the word standing in for one. */
+  test("a footer with no reference in it makes no link", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "none";
+      e.prSpans = [{ kind: "text", text: "none" }];
+    });
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pr = page.document.querySelector(".entry-meta .pr");
+    assert.ok(pr, "the page draws the badge, so there is something to check");
+    assert.equal(pr.textContent, "none");
+    assert.equal(pr.querySelectorAll("a").length, 0);
   });
 
   test("links open away from the PWA without handing it the opener", () => {
