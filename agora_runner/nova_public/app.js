@@ -1002,6 +1002,31 @@
       lastItems = items;
       list.textContent = "";
       items = shown(items);
+
+      /* One flat list in the order things were actually said.
+       *
+       * Edvard, issues.md 2026-08-23: *"a Nova cycle reply posted at 14:01
+       * rendered between two of my comments timestamped 13:31 and 13:40
+       * instead of after both — thread isn't sorting strictly by time."*
+       *
+       * He is describing this loop, which used to append each comment and
+       * then its own replies immediately after it. A reply is stored inside
+       * the comment it answers (`comments.md` nests it under the `###`
+       * heading), so painting in storage order pins every answer to the
+       * position of the question, however much later it was written. The
+       * server already sorts his comments oldest-first; the replies were the
+       * part that never entered that ordering.
+       *
+       * So the nodes are collected with the stamp they carry and sorted once
+       * at the end. `order` is the tiebreak, which keeps this stable without
+       * relying on the engine's sort being stable: a reply that carries no
+       * stamp of its own inherits its comment's, so it stays directly under
+       * the question rather than jumping to the top of the thread on `""`. */
+      var thread = [];
+      function place(stamp, node) {
+        thread.push({ stamp: stamp || "", order: thread.length, node: node });
+      }
+
       (items || []).forEach(function (comment) {
         var item = el("div", comment.acknowledged ? "comment is-acknowledged" : "comment");
         var head = el("p", "comment-meta");
@@ -1047,7 +1072,7 @@
           // Same treatment as his own comment above: a reply that quotes
           // the image he attached should show it, not the raw line.
           appendRichText(reply, "comment-body", answer.text);
-          after.push(reply);
+          after.push({ stamp: answer.stamp || comment.stamp, node: reply });
         });
         if (after.length) {
           // Answered. The waiting lines below are the unanswered states.
@@ -1060,20 +1085,31 @@
            * fact the server has -- how long it has been -- and name no
            * cause; the elapsed time is also what tells him apart a slow
            * answer from a stuck one, which the fixed sentence never could. */
-          after.push(el("p", "comment-waiting",
+          /* The three waiting lines below carry the comment's own stamp
+           * rather than a time of their own, so they stay pinned directly
+           * under the question they are about. They are not a turn of the
+           * conversation -- they are a status on one comment, and adjacency
+           * is the only thing that says which. */
+          after.push({ stamp: comment.stamp, node: el("p", "comment-waiting",
             "Still working on this — " + waitedFor(comment.replyWaitingSeconds) +
-            " so far. The answer appears here on its own."));
+            " so far. The answer appears here on its own.") });
         } else if (comment.replyPending) {
-          after.push(el("p", "comment-waiting", "Nova is replying…"));
+          after.push({ stamp: comment.stamp, node: el("p", "comment-waiting", "Nova is replying…") });
         } else if (comment.replyFailed) {
           /* The line used to just vanish, which reads exactly like an
            * answer that never came. A comment that got no reply is still in
            * `## New`, so the next cycle does read it. */
-          after.push(el("p", "comment-waiting", "Couldn't answer this one — the next cycle will read it."));
+          after.push({ stamp: comment.stamp, node: el("p", "comment-waiting", "Couldn't answer this one — the next cycle will read it.") });
         }
-        list.appendChild(item);
-        after.forEach(function (node) { list.appendChild(node); });
+        place(comment.stamp, item);
+        after.forEach(function (entry) { place(entry.stamp, entry.node); });
       });
+
+      thread.sort(function (a, b) {
+        if (a.stamp === b.stamp) return a.order - b.order;
+        return a.stamp < b.stamp ? -1 : 1;
+      });
+      thread.forEach(function (entry) { list.appendChild(entry.node); });
       // Both of these read the whole thread, not the shown slice. The
       // count on the 💬 toggle is how many comments a cycle has, which the
       // fold does not change; and a reply still being written on a folded
