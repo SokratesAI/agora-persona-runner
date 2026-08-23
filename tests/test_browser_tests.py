@@ -7,7 +7,7 @@ happened when the shared `node_modules` was linked one directory too high.
 
 from pathlib import Path
 
-from tools.browser_tests import has_jsdom, main_worktree, plan
+from tools.browser_tests import has_jsdom, main_worktree, plan, provision
 
 
 def _modules_with_jsdom(root: Path) -> Path:
@@ -63,7 +63,7 @@ def test_shared_modules_without_jsdom_is_not_worth_linking(tmp_path):
     assert plan(browser, shared) == ("install", str(browser))
 
 
-def test_a_half_finished_install_is_reinstalled_not_linked_over(tmp_path):
+def test_a_half_finished_install_is_planned_for_reinstall_not_a_link(tmp_path):
     """Linking would mean deleting a real directory somebody else's cycle owns."""
     browser = tmp_path / "tests" / "browser"
     (browser / "node_modules" / "chalk").mkdir(parents=True)
@@ -74,7 +74,7 @@ def test_a_half_finished_install_is_reinstalled_not_linked_over(tmp_path):
     assert plan(browser, shared) == ("install", str(browser))
 
 
-def test_a_dangling_symlink_is_replaced_by_a_good_link(tmp_path):
+def test_a_dangling_symlink_is_planned_as_a_link(tmp_path):
     """A previous cycle's worktree is gone; its symlink survives in ours."""
     browser = tmp_path / "tests" / "browser"
     browser.mkdir(parents=True)
@@ -92,3 +92,60 @@ def test_has_jsdom_wants_a_directory_not_a_name(tmp_path):
     assert not has_jsdom(mods)
     (mods / "jsdom").mkdir()
     assert has_jsdom(mods)
+
+
+# `plan` decides and `provision` acts, and the reviewer's finding on Cycle 351
+# was that every test above stopped at the decision while carrying a name that
+# promised the act. These four run `provision` itself. `npm ci` is deliberately
+# not among them -- it wants the network and two seconds, and what it does is
+# npm's business, not this module's.
+
+
+def test_provision_creates_the_link_it_planned(tmp_path):
+    browser = tmp_path / "tests" / "browser"
+    browser.mkdir(parents=True)
+    shared = _modules_with_jsdom(tmp_path / "shared")
+
+    provision(browser, "link", str(shared))
+
+    mine = browser / "node_modules"
+    assert mine.is_symlink()
+    assert has_jsdom(mine)
+
+
+def test_provision_replaces_a_dangling_link_rather_than_erroring(tmp_path):
+    browser = tmp_path / "tests" / "browser"
+    browser.mkdir(parents=True)
+    (browser / "node_modules").symlink_to(tmp_path / "gone" / "node_modules")
+    shared = _modules_with_jsdom(tmp_path / "shared")
+
+    provision(browser, "link", str(shared))
+
+    assert has_jsdom(browser / "node_modules")
+
+
+def test_provision_replaces_a_link_that_points_at_the_wrong_place(tmp_path):
+    """The shared checkout moved; a stale link to the old one still resolves."""
+    browser = tmp_path / "tests" / "browser"
+    browser.mkdir(parents=True)
+    stale = tmp_path / "stale" / "node_modules"
+    (stale / "express").mkdir(parents=True)
+    (browser / "node_modules").symlink_to(stale)
+    shared = _modules_with_jsdom(tmp_path / "shared")
+
+    provision(browser, "link", str(shared))
+
+    assert has_jsdom(browser / "node_modules")
+
+
+def test_provision_does_nothing_at_all_when_the_plan_is_present(tmp_path):
+    """`present` must not touch the directory -- another cycle may be reading it."""
+    browser = tmp_path / "tests" / "browser"
+    browser.mkdir(parents=True)
+    mine = _modules_with_jsdom(browser)
+    (mine / "sentinel").mkdir()
+
+    provision(browser, "present", str(mine))
+
+    assert (mine / "sentinel").is_dir()
+    assert not mine.is_symlink()

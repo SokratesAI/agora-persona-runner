@@ -26,6 +26,17 @@ Exit 0 the suite is green, 1 it is red, 2 the modules could not be
 provisioned at all -- and that third case is deliberately not folded into
 1, because "the tests failed" and "I never ran the tests" are the two
 answers a cycle must never confuse before it merges.
+
+**One race this does not close, named rather than hidden.** `npm ci`
+deletes and rebuilds `node_modules` in place. Run from a worktree it
+rebuilds that worktree's own copy and nobody else can see it; run from the
+*main* checkout it rebuilds the directory every worktree links into, and a
+cycle mid-`node --test` there would have files pulled out from under it.
+That needs a cycle working in the main checkout while others read it, which
+Cycle 349 measured is not how cycles run any more -- every one of them is on
+the concurrent lane. Left as it is because the alternative, `npm ci` in the
+main checkout refusing to bootstrap, breaks the only case that can reach it.
+Reviewer finding, Cycle 351, dismissed with this paragraph as the record.
 """
 
 from __future__ import annotations
