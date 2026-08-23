@@ -17,10 +17,16 @@ I filed this against myself three times in six days and never fixed it:
 The one-line fix in `prompt.md` was the wrong fix, which is probably why
 three cycles filed it and none did it. `prompt.md` cited the broken form
 once; the reason cycles kept typing it is that it is the obvious way to
-run a file. Eighteen tools had the fault, so correcting one citation
-would have left seventeen traps and a rule to remember. The three-line
+run a file. Seventeen tools had the fault, so correcting one citation
+would have left sixteen traps and a rule to remember. The three-line
 bootstrap above each `agora_runner` import makes the obvious form work
 instead.
+
+The eighteenth, `gc_orphan_chunks.py`, already carried a hand-written
+version of exactly this bootstrap. So one cycle of mine found the fix,
+applied it where it was standing, and never looked at the other
+seventeen — which is the same shape as filing the bug three times. Its
+line is replaced by the shared block here so all eighteen read alike.
 
 This test is the part that lasts, and its first version was dangerous in
 a way worth recording. It probed each tool with `--help` in a subprocess,
@@ -33,9 +39,9 @@ So the probe below never calls `main`. `runpy.run_path` reproduces script
 semantics exactly — it is what puts the file's own directory at
 `sys.path[0]`, which is the whole fault — but with `run_name` set to
 something other than `"__main__"` the guard at the bottom of each tool
-does not fire, so only the imports run. It fails on all eighteen files
-without the bootstrap; I ran it against the unpatched tree and watched it
-do that.
+does not fire, so only the imports run. Measured against the unpatched
+tree: 17 of the 18 probes fail, and the one that passes is
+`gc_orphan_chunks.py`, for the reason above. So this is not vacuous.
 """
 
 import runpy
@@ -108,7 +114,8 @@ def test_bootstrap_is_present_wherever_agora_runner_is_imported():
 
     Without this, a tool added next month gets the fault back and the
     parametrised case above only catches it if whoever adds it also knows
-    what the probe is for. This states the rule directly.
+    what the probe is for. This states the rule directly, and it is also
+what stops a second hand-written variant appearing beside the block.
     """
     missing = [name for name in AFFECTED
                if "parents[1]" not in (TOOLS / name).read_text(encoding="utf-8")]
