@@ -2011,6 +2011,20 @@ _LANDED = "    the sweep asks GitHub whether a pull request covers it\n"
 _OUTSTANDING = "    nothing anywhere has ever seen this particular sentence\n"
 
 
+def _head_sha(root, clone, branch):
+    """What this clone thinks `origin/<branch>` is, or "" if it has no such ref.
+
+    Stands in for the sha `survey_remote_branches` reads off GitHub. In every
+    test below the two agree, because `git push` moves the remote-tracking ref
+    -- which is exactly the normal case the stale-ref guard has to leave alone.
+    """
+    done = subprocess.run(
+        ["git", "-C", str(pathlib.Path(root) / clone), "rev-parse", "--verify",
+         "--quiet", "origin/%s^{commit}" % branch],
+        capture_output=True, text=True, check=False)
+    return done.stdout.strip()
+
+
 @pytest.fixture
 def content_repo(tmp_path):
     """A clone plus an origin, where one branch's content squash-merged.
@@ -2065,7 +2079,8 @@ def test_content_that_squash_merged_reads_as_landed(content_repo):
     root, clone = content_repo
 
     assert tidy_workspace._content_landed(str(root), clone, "main",
-                                          "nova/landed") == (1, 1)
+                                          "nova/landed",
+                                          _head_sha(root, clone, "nova/landed")) == (1, 1)
 
 
 def test_content_nobody_merged_reads_as_outstanding(content_repo):
@@ -2074,7 +2089,8 @@ def test_content_nobody_merged_reads_as_outstanding(content_repo):
     root, clone = content_repo
 
     assert tidy_workspace._content_landed(str(root), clone, "main",
-                                          "nova/outstanding") == (0, 1)
+                                          "nova/outstanding",
+                                          _head_sha(root, clone, "nova/outstanding")) == (0, 1)
 
 
 def test_boilerplate_short_lines_are_not_evidence_of_anything(content_repo):
@@ -2103,7 +2119,8 @@ def test_boilerplate_short_lines_are_not_evidence_of_anything(content_repo):
     # One added line long enough to count, and it has not landed. The short
     # `return 1` is on the base and is still not counted, so the total is 1.
     assert tidy_workspace._content_landed(str(root), clone, "main",
-                                          "nova/boilerplate") == (0, 1)
+                                          "nova/boilerplate",
+                                          _head_sha(root, clone, "nova/boilerplate")) == (0, 1)
 
 
 def test_a_file_the_base_does_not_have_is_outstanding_not_a_failure(
@@ -2118,7 +2135,8 @@ def test_a_file_the_base_does_not_have_is_outstanding_not_a_failure(
     _git(repo, "push", "-q", "origin", "nova/brand-new")
 
     assert tidy_workspace._content_landed(str(root), clone, "main",
-                                          "nova/brand-new") == (0, 1)
+                                          "nova/brand-new",
+                                          _head_sha(root, clone, "nova/brand-new")) == (0, 1)
 
 
 def test_a_branch_with_no_remote_ref_says_it_could_not_tell(content_repo):
@@ -2127,9 +2145,11 @@ def test_a_branch_with_no_remote_ref_says_it_could_not_tell(content_repo):
     root, clone = content_repo
 
     assert tidy_workspace._content_landed(str(root), clone, "main",
-                                          "nova/never-pushed") is None
+                                          "nova/never-pushed",
+                                          _head_sha(root, clone, "nova/never-pushed")) is None
     assert tidy_workspace._content_landed(str(root), clone, "no-such-base",
-                                          "nova/landed") is None
+                                          "nova/landed",
+                                          _head_sha(root, clone, "nova/landed")) is None
 
 
 def test_the_remote_sweep_carries_the_ratio_when_it_has_a_checkout(
@@ -2137,8 +2157,10 @@ def test_the_remote_sweep_carries_the_ratio_when_it_has_a_checkout(
     """The wiring. `survey_remote_branches` gets repo *names*; only a local
     checkout can answer a content question, so it has to be handed one."""
     root, clone = content_repo
+    # The sha GitHub reports has to be the one this clone holds, or the
+    # stale-ref guard refuses to measure -- which is the next test.
     monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
-        branches=[("nova/landed", "bbb")],
+        branches=[("nova/landed", _head_sha(root, clone, "nova/landed"))],
         compares={"nova/landed": _compare(1, ["tool.py"])}))
 
     without = tidy_workspace.survey_remote_branches(["o/r"])
@@ -2161,13 +2183,166 @@ def test_the_ratio_is_printed_next_to_the_commit_count(monkeypatch, capsys,
     monkeypatch.setattr(tidy_workspace, "_origin_clones",
                         lambda roots: ({"o/r": (str(root), clone)}, []))
     monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
-        branches=[("nova/landed", "bbb")],
+        branches=[("nova/landed", _head_sha(root, clone, "nova/landed"))],
         compares={"nova/landed": _compare(1, ["tool.py"])}))
 
     tidy_workspace._sweep_remote(["/nowhere"])
 
     assert "content: 1 of 1 added line(s) are already on main -- all of it" \
         in capsys.readouterr().out
+
+
+def test_a_stale_local_ref_is_refused_rather_than_measured(content_repo):
+    """The failure this guard exists for, in the direction that costs.
+
+    `_sweep_remote` never fetches, so `origin/<branch>` in a checkout is only
+    where that clone last heard the branch was. Force-push new work on top of a
+    version that landed and the stale ref measures the *landed* version: every
+    line matches, and the sweep prints `-- all of it`, which reads as "this
+    branch is litter" over work nobody has taken. GitHub's sha is what the
+    branch is now, and disagreeing with it means the question was asked of the
+    wrong commit."""
+    root, clone = content_repo
+    stale = _head_sha(root, clone, "nova/landed")
+
+    # Measured off the stale ref, this branch is 100% landed.
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/landed", stale) == (1, 1)
+    # Told the branch has moved since, it declines instead of repeating it.
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/landed", "f" * 40) is None
+    # And an absent sha is the same answer, not a waived check.
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/landed", None) is None
+
+
+def test_the_sweep_drops_the_content_line_when_github_says_the_branch_moved(
+        monkeypatch, capsys, content_repo):
+    """The wiring for the guard above. A wrong number here is worse than no
+    number, so the line simply does not print."""
+    root, clone = content_repo
+    monkeypatch.setattr(tidy_workspace, "origin_repos",
+                        lambda roots: (["o/r"], []))
+    monkeypatch.setattr(tidy_workspace, "_origin_clones",
+                        lambda roots: ({"o/r": (str(root), clone)}, []))
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/landed", "f" * 40)],
+        compares={"nova/landed": _compare(1, ["tool.py"])}))
+
+    tidy_workspace._sweep_remote(["/nowhere"])
+
+    out = capsys.readouterr().out
+    assert "nova/landed" in out          # the branch is still reported
+    assert "added line(s) are already on main" not in out
+
+
+def test_a_git_that_failed_is_not_read_as_nothing_landed(monkeypatch,
+                                                         content_repo):
+    """`git show` on a missing path and `git show` killed by the timeout were
+    the same observation -- non-zero, empty stdout -- and the old code counted
+    both as "the base has none of these lines". One is true and the other
+    invents a measurement, in the direction that makes landed work look
+    abandoned. A failed lookup is None now."""
+    root, clone = content_repo
+    real = tidy_workspace.subprocess.run
+
+    def flaky(argv, *a, **kw):
+        if "cat-file" in argv:
+            return subprocess.CompletedProcess(argv, 1, b"", b"fatal: killed")
+        return real(argv, *a, **kw)
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", flaky)
+
+    assert tidy_workspace._content_landed(
+        str(root), clone, "main", "nova/landed",
+        _head_sha(root, clone, "nova/landed")) is None
+
+
+def test_the_base_is_read_in_one_process_not_one_per_file(monkeypatch,
+                                                          content_repo):
+    """23 spawns for one 20-file branch, at the front of every cycle, on a
+    sweep that runs before anything else this loop does."""
+    root, clone = content_repo
+    repo = pathlib.Path(root) / clone
+    _git(repo, "checkout", "-q", "-b", "nova/many-files", "main")
+    for n in range(6):
+        _commit(repo, "file%d.py" % n,
+                "a sentence long enough to be matchable %d\n" % n)
+    _git(repo, "push", "-q", "origin", "nova/many-files")
+    real = tidy_workspace.subprocess.run
+    spawns = []
+
+    def counted(argv, *a, **kw):
+        if "cat-file" in argv:
+            spawns.append(argv)
+        return real(argv, *a, **kw)
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", counted)
+
+    # Six files the base has not got, so none of it has landed -- the answer
+    # the per-file loop gave, from one process instead of six.
+    assert tidy_workspace._content_landed(
+        str(root), clone, "main", "nova/many-files",
+        _head_sha(root, clone, "nova/many-files")) == (0, 6)
+    assert len(spawns) == 1
+
+
+def test_a_stream_that_is_not_a_row_of_blobs_is_refused(content_repo):
+    """The three parse branches nothing else here reaches.
+
+    Reviewer finding on #345: I hand-checked these and shipped no test for
+    them, which is the state where the *next* edit to the offset arithmetic is
+    the one nobody catches. All three are the same rule -- a response this
+    cannot fully account for is None for the whole batch, never a partial
+    count, because a partial count is a number a reader would act on."""
+    root, clone = content_repo
+
+    # A path that is a directory on the base: a well-formed `<oid> tree <size>`
+    # header, which is exactly the shape that would slip past a check that only
+    # looked at the size field.
+    subprocess.run(["git", "-C", str(pathlib.Path(root) / clone), "cat-file",
+                    "--batch", "-z"], input=b"origin/main:\0",
+                   capture_output=True, check=False)
+    assert tidy_workspace._base_blobs(str(root), clone, "origin/main",
+                                      [""]) is None
+    # A path git cannot resolve at all is `missing`, and that is an answer.
+    assert tidy_workspace._base_blobs(str(root), clone, "origin/main",
+                                      ["no/such/file.py"]) == {
+                                          "no/such/file.py": set()}
+    # A header promising more bytes than the stream carries. My first draft of
+    # this asserted that asking for one path twice would truncate, and it does
+    # not -- two requests get two responses and the dict collapses them. The
+    # code was right and my test was wrong, so this is the real shape: a
+    # process that exited 0 having written half an answer.
+    def half_an_answer(argv, *a, **kw):
+        return subprocess.CompletedProcess(
+            argv, 0, b"a" * 40 + b" blob 9999\nnot nine thousand bytes\n", b"")
+
+    real = tidy_workspace.subprocess.run
+    tidy_workspace.subprocess.run = half_an_answer
+    try:
+        assert tidy_workspace._base_blobs(str(root), clone, "origin/main",
+                                          ["tool.py"]) is None
+    finally:
+        tidy_workspace.subprocess.run = real
+
+
+def test_a_base_file_that_is_not_utf8_does_not_take_down_the_sweep(
+        content_repo):
+    """A branch touching a PNG would otherwise raise `UnicodeDecodeError` out
+    of a function whose whole contract is to return None when it cannot tell."""
+    root, clone = content_repo
+    repo = pathlib.Path(root) / clone
+    _git(repo, "checkout", "-q", "main")
+    (repo / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe" * 8)
+    _git(repo, "add", "logo.png")
+    _git(repo, "commit", "-qm", "a file that is not text")
+    _git(repo, "push", "-q", "origin", "main")
+
+    out = tidy_workspace._base_blobs(str(root), clone, "origin/main",
+                                     ["logo.png"])
+
+    assert out is not None and "logo.png" in out
 
 
 def test_origin_clones_keeps_the_checkout_origin_repos_throws_away(tmp_path):
@@ -2221,7 +2396,8 @@ def test_a_diff_that_fails_is_not_a_branch_with_nothing_landed(monkeypatch,
     monkeypatch.setattr(tidy_workspace, "_git", flaky)
 
     assert tidy_workspace._content_landed(str(root), clone, "main",
-                                          "nova/landed") is None
+                                          "nova/landed",
+                                          _head_sha(root, clone, "nova/landed")) is None
 
 
 def test_an_added_line_that_looks_like_a_diff_header_is_not_one(content_repo):
@@ -2243,4 +2419,5 @@ def test_an_added_line_that_looks_like_a_diff_header_is_not_one(content_repo):
 
     # Both lines are the branch's own content and neither is on main.
     assert tidy_workspace._content_landed(str(root), clone, "main",
-                                          "nova/diff-in-a-fixture") == (0, 2)
+                                          "nova/diff-in-a-fixture",
+                                          _head_sha(root, clone, "nova/diff-in-a-fixture")) == (0, 2)

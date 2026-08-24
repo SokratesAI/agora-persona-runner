@@ -821,9 +821,10 @@ def _origin_clones(roots):
     which is right for the linked worktrees a concurrent cycle gets -- they
     share one object store -- and only approximately right for two independent
     clones, which have their own remote-tracking refs and can disagree about
-    where a branch is. Known limit, reviewer finding on #343: the winner is
-    not checked against the sha GitHub reported, so a branch force-pushed
-    after an earlier version landed can be measured off a stale local ref.
+    where a branch is. That disagreement used to be silent, reviewer finding
+    on #343; `_content_landed` now refuses to measure a ref whose oid is not
+    the sha GitHub reported, so picking the wrong clone costs the content line
+    rather than producing a wrong one.
     """
     placed = {}
     unplaceable = []
@@ -850,7 +851,83 @@ def _origin_clones(roots):
 _MIN_MATCHABLE = 12
 
 
-def _content_landed(root, clone, base, branch):
+def _base_blobs(root, clone, base_ref, paths):
+    """`{path: {line}}` for each of `paths` on `base_ref`, or None if git failed.
+
+    One `git cat-file --batch` for the whole list, where this used to run one
+    `git show` per path. Two reviewer findings on #343 close together here, and
+    the second is why this is not simply the old loop with a returncode check.
+
+    **The spawns.** One process per changed file is 23 of them for a single
+    20-file branch, and this sweep runs at the front of every cycle before
+    anything else this loop does. `--batch` asks for all of them down one pipe.
+
+    **A missing path and a failed git were the same answer.** `git show` on a
+    path the base has not got exits non-zero with empty stdout -- and so does a
+    git killed by `GIT_TIMEOUT_SECONDS`, and so does one that lost an index
+    lock. The old code read all three as "the base has none of these lines",
+    which counts every line of that file as outstanding: honest for the first
+    and an invention for the other two, in the direction that makes landed work
+    look abandoned. `--batch` separates them at the protocol level. A path that
+    is genuinely not there is answered `<request> missing` by a process that
+    still exits 0; a git that actually failed fails as a whole, and this
+    returns None so `_content_landed` prints nothing rather than a number it
+    did not measure.
+
+    Input is NUL-delimited (`-z`). That is belt and braces rather than a live
+    defence, and the honest version is worth writing down: `git diff` C-escapes
+    control characters in a path whatever `core.quotePath` is set to, so the
+    caller's parse can never hand this a raw newline in the first place. `-z`
+    means nobody has to re-derive that to read this function. Reviewer finding
+    on #345, which is the sort this file should record rather than quietly
+    correct -- a comment that names a threat is a claim like any other.
+
+    Output is bytes, decoded with `replace`, because a file on
+    the base need not be UTF-8 and a `UnicodeDecodeError` here would take down
+    the whole sweep over somebody's PNG. Anything unparseable in the stream is
+    also None -- guessing at a half-read response is the one thing this must
+    not do.
+    """
+    ordered = sorted(paths)
+    request = b"".join(("%s:%s" % (base_ref, path)).encode("utf-8") + b"\0"
+                       for path in ordered)
+    try:
+        done = subprocess.run(
+            ["git", "-C", os.path.join(root, clone), "cat-file", "--batch", "-z"],
+            input=request, capture_output=True, check=False,
+            timeout=GIT_TIMEOUT_SECONDS)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print("%s: git cat-file did not complete (%s)" % (clone, e))
+        return None
+    if done.returncode != 0:
+        return None
+    out = {}
+    body, pos = done.stdout, 0
+    for path in ordered:
+        end = body.find(b"\n", pos)
+        if end < 0:
+            return None
+        header, pos = body[pos:end], end + 1
+        # `<request> missing` for a path the base has not got. A real header
+        # ends in the blob's size, so the two can never be confused; anything
+        # else -- `ambiguous`, a truncated stream -- falls through to None.
+        if header.endswith(b" missing"):
+            out[path] = set()
+            continue
+        parts = header.rsplit(b" ", 2)
+        if len(parts) != 3 or parts[1] != b"blob" or not parts[2].isdigit():
+            return None
+        size = int(parts[2])
+        content = body[pos:pos + size]
+        if len(content) != size:
+            return None
+        pos += size + 1  # the newline git writes after each blob
+        out[path] = {existing.strip() for existing
+                     in content.decode("utf-8", "replace").split("\n")}
+    return out
+
+
+def _content_landed(root, clone, base, branch, sha):
     """`(landed, total)` added lines of `branch` already on `base`, or None.
 
     **Every other question this sweep asks GitHub is about PR metadata, and the
@@ -883,8 +960,22 @@ def _content_landed(root, clone, base, branch):
     nothing in this file acts on it.
     """
     ref = "origin/" + branch
-    if _git(root, clone, "rev-parse", "--verify", "--quiet",
-            ref + "^{commit}").returncode != 0:
+    head = _git(root, clone, "rev-parse", "--verify", "--quiet",
+                ref + "^{commit}")
+    if head.returncode != 0:
+        return None
+    # **The local ref is not the branch; it is where this clone last heard the
+    # branch was.** `_sweep_remote` never fetches, so `origin/<branch>` here can
+    # be any age, and the two ways it goes wrong are not symmetric. A ref older
+    # than a force-push measures the *previous* version of the branch -- and if
+    # that version is what landed, every line matches and the sweep prints
+    # `-- all of it`, i.e. "this branch is litter", over unmerged work. That is
+    # the reading that ends with somebody deleting it. `sha` is what GitHub
+    # said the branch is at this minute, so a mismatch means the question was
+    # asked of the wrong commit and the only honest answer is None. Reviewer
+    # finding on #343; it is a required argument rather than an optional check
+    # because there is no caller that does not have the sha.
+    if head.stdout.strip() != (sha or "").strip():
         return None
     base_ref = "origin/" + base
     if _git(root, clone, "rev-parse", "--verify", "--quiet",
@@ -929,16 +1020,16 @@ def _content_landed(root, clone, base, branch):
     total = sum(len(lines) for lines in added.values())
     if not total:
         return None
+    # A path the base has not got -- a file this branch adds -- comes back as
+    # an empty set, which matches none of its lines, so every one of them
+    # counts as outstanding. That is the truth, and it is now told apart from
+    # a git that failed, which is None for the whole call. See `_base_blobs`.
+    base_lines = _base_blobs(root, clone, base_ref, added)
+    if base_lines is None:
+        return None
     landed = 0
     for path, lines in added.items():
-        # A path the base has not got -- a file this branch adds -- exits
-        # non-zero here with nothing on stdout, and needs no guard of its own:
-        # an empty `have` matches none of its lines, so every one of them
-        # counts as outstanding, which is the truth. A guard was written and
-        # then removed, because deleting it left all 124 tests green -- this
-        # file's own rule about a check whose result is guaranteed in advance.
-        shown = _git(root, clone, "show", "%s:%s" % (base_ref, path))
-        have = {existing.strip() for existing in shown.stdout.split("\n")}
+        have = base_lines.get(path, set())
         landed += sum(1 for text in lines if text in have)
     return landed, total
 
@@ -1066,7 +1157,7 @@ def survey_remote_branches(repos, prefixes=_MINE, locations=None):
                 # rewrite -- lands here, and it is litter rather than work.
                 continue
             here = (locations or {}).get(repo)
-            landed = (_content_landed(here[0], here[1], entry["base"], name)
+            landed = (_content_landed(here[0], here[1], entry["base"], name, sha)
                       if here else None)
             entry["outstanding"].append(
                 {"branch": name, "sha": sha, "compared": True,
