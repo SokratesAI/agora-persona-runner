@@ -244,7 +244,7 @@ def test_the_archive_is_readable_by_the_page_that_renders_it():
 
     `nova_boards.parse_notes` returns notes only from a section titled
     `entries` and `[]` from anything else, so an archive of frontmatter
-    then bullets renders as an empty half of a board Edvard opens. Cycle
+    then bullets renders as an empty half of a board the owner opens. Cycle
     114 shipped exactly that: it rolled both live files, then watched
     `/api/board` report 60 notes where the unrolled file had reported
     328. Every guard in this module passed, because all of them ask

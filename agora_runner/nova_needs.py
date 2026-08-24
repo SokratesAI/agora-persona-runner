@@ -1,6 +1,6 @@
-"""The **Needs Edvard** block: what an item is, and how one leaves.
+"""The **Needs the owner** block: what an item is, and how one leaves.
 
-**The block itself is retired.** Edvard asked for it gone on 2026-08-16;
+**The block itself is retired.** The owner asked for it gone on 2026-08-16;
 #229 deleted it from the page and #236 the server half that fed it, so an
 ask now lives on the journal card that raised it. What survives here is
 the *archive*: `needs-edvard-archive.md` holds every ask this loop ever
@@ -53,7 +53,7 @@ ARCHIVE_FRONTMATTER = (
 )
 
 # What the live section says when it holds nothing. The exact text matters:
-# `is_empty_needs` is what hides the box on Edvard's page, and it accepts
+# `is_empty_needs` is what hides the box on the owner's page, and it accepts
 # only "nothing" or "none" once emphasis and a trailing full stop are
 # stripped. `**Nothing blocking.**` -- which the live file used to carry --
 # does *not* pass it, so writing that would leave him an empty box claiming
@@ -100,7 +100,7 @@ SPEC = RollSpec(
 
 
 def live_items(live):
-    """The items currently waiting on Edvard, in file order.
+    """The items currently waiting on the owner, in file order.
 
     Takes the whole digest and finds the section; `needs_items` takes the
     section body. Since #236 this is the only splitter -- the site's payload
@@ -136,7 +136,7 @@ def select_answered(items, phrases):
     Refuses on nothing matched and on more than one matched. Both are the
     same failure -- the caller named something the file does not uniquely
     hold -- and the cost of guessing is either dropping a live ask off the
-    one channel Edvard has, or leaving an answered one in it. Neither is
+    one channel the owner has, or leaving an answered one in it. Neither is
     worth saving the caller a retype.
 
     This is also what makes the button on his page safe. The client sends

@@ -1,6 +1,6 @@
 """Take a handoff item before you work on it, so an overlapping cycle can't.
 
-Edvard, `issues.md` #74 — two cycles that overlap both read the same
+The owner, `issues.md` #74 — two cycles that overlap both read the same
 **Next cycle** list and both do the same item. The decision lives in
 `agora_runner.nova_claims`; this is the CLI, and the atomicity is
 CouchDB's, which is why the `get`/`put` pair below is not optional.
@@ -24,7 +24,7 @@ type**:
 gives it back -- the next cycle sees your `--outcome` beside a take command
 that still works. Neither is a default, because for eleven days the default
 was `--done` and three cycles used it for work that was still open (Cycle
-343 on Edvard's 20x capture, Cycle 347 on idea #63, Cycle 281 on a board
+343 on the owner's 20x capture, Cycle 347 on idea #63, Cycle 281 on a board
 bullet). The choice is the one thing this command knows that the ledger
 cannot infer, so it is the one thing it refuses to guess.
 

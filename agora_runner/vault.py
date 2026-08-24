@@ -37,7 +37,7 @@ def couch_req(method, path, body=None, timeout=60):
 HEALTH_TIMEOUT_SECONDS = 5
 
 
-# Nova's files live in their own CouchDB database rather than in Edvard's
+# Nova's files live in their own CouchDB database rather than in the owner's
 # vault (his ask, 2026-08-11: "You have outgrown a poc project that is
 # allowed to use my Vault as a database. Move out and get your own space").
 # The document id in a LiveSync vault IS the lowercased file path, so which
@@ -52,7 +52,7 @@ HEALTH_TIMEOUT_SECONDS = 5
 # Folders match by prefix; single files must match exactly. Keeping them in
 # one tuple and testing everything with startswith routed
 # `journal-digest.md.bak` — and any other file merely *beginning* with that
-# name — into Nova's database, which is a file Edvard owns being answered
+# name — into Nova's database, which is a file the owner owns being answered
 # by the wrong store.
 NOVA_DB_FOLDERS = (
     "projects/sokrates/projects/agora/nova/",
@@ -95,7 +95,7 @@ def dbs_for_prefix(prefix):
     wholly inside Nova's folder needs only Nova's database; a prefix that
     is an *ancestor* of it (`""`, or `projects/`) straddles both and has
     to query both or a whole-vault listing quietly loses 162 files; and
-    anything else is Edvard's alone.
+    anything else is the owner's alone.
     """
     if not COUCHDB_NOVA_DB:
         return [COUCHDB_DB]
@@ -104,7 +104,7 @@ def dbs_for_prefix(prefix):
         return [COUCHDB_NOVA_DB]
     # Deliberately not `lowered in NOVA_DB_FILES -> [nova]`: as a *prefix*,
     # a single file's path also matches its own neighbours (a `.bak` beside
-    # it), and those live in Edvard's database. Querying both is the
+    # it), and those live in the owner's database. Querying both is the
     # conservative answer and costs one extra request on a listing nobody
     # actually makes.
     if any(t.startswith(lowered) for t in NOVA_DB_TARGETS):
@@ -119,7 +119,7 @@ def couch_get_doc(doc_id, db=None):
 # Paths whose routing this process reports on demand. Five distinct
 # behaviours of `db_for`, two of which are regressions rather than
 # examples: a `.bak` beside the digest must NOT follow it into Nova's
-# database (caught in the review of #103), and the Nova folder Edvard
+# database (caught in the review of #103), and the Nova folder the owner
 # asked to keep in his own vault must stay there (Cycle 121 found that
 # anything under `agora/nova/` would have been routed away from him).
 # The other three are the folder rule, the exact-file rule and a file of
@@ -278,7 +278,7 @@ def _vault_file_docs(prefix=""):
     — it keeps the doc and sets `deleted: true`, which is how peers learn
     to remove their local copy. So a deleted note stays in `_all_docs`
     forever, and any tool that reads ids without reading the flag serves
-    files Edvard has thrown away. On 2026-08-07 that was 309 of 897
+    files the owner has thrown away. On 2026-08-07 that was 309 of 897
     documents, a third of the vault, including a `kanban.md` last touched
     2026-07-29 that Nova's own prompt still told every cycle to read as
     "the real backlog".
@@ -367,7 +367,7 @@ class VaultIncompleteDocument(RuntimeError):
     Measured, 2026-08-10: `projects/sokrates/projects/agora/ideas.md` was
     re-chunked by a LiveSync client into 184 chunks, 6 of which never
     reached CouchDB. Every reader silently served the other 178 — 1238
-    characters gone, including Edvard's `## Board` heading, its table
+    characters gone, including the owner's `## Board` heading, its table
     header, and rows #57 to #50. Nothing reported an error, and one of
     the casualties was the tail of the capture sentence he had just
     typed. A scan of all 686 file docs found exactly that one damaged,
@@ -493,7 +493,7 @@ def _size_checked(content, doc, path=None):
     A LiveSync file doc records `size`, the byte length of the text it
     stands for, and every writer sets it — this module at `_vault_put_raw`,
     the bridge's client, and Obsidian itself. Measured 2026-08-15 across 37
-    documents spanning Edvard's phone-written captures, this loop's journal
+    documents spanning the owner's phone-written captures, this loop's journal
     entries, the JSON ledgers and the 291KB frozen archive: `size` equalled
     `len(content.encode())` exactly, 37 times out of 37, with no document
     missing the field. So it is a length checksum the vault has been
@@ -504,7 +504,7 @@ def _size_checked(content, doc, path=None):
     that assembles to the wrong length for any other reason, and the case
     that matters is the shortest one: `children` empty and `data` empty
     returns `""` through the fallback below, with no chunk missing and
-    nothing to raise about. Cycle 211 read Edvard's 123KB `issues.md` that
+    nothing to raise about. Cycle 211 read the owner's 123KB `issues.md` that
     way — empty body, exit 0 — and wrote the empty result back over the
     live document, which was still intact underneath. The read was the
     blind half. `_collapse_refusal` refuses the write half.
@@ -577,7 +577,7 @@ COLLAPSE_RATIO = 0.25
 def _collapse_refusal(path, existing, new_bytes, allow_shrink):
     """`None` if the write may proceed, else the FAILED string to return.
 
-    The revision guard does not cover this. The write that lost Edvard's
+    The revision guard does not cover this. The write that lost the owner's
     `issues.md` on 2026-08-15 carried the correct `_rev` and was, as far as
     CouchDB could tell, an ordinary edit by the only writer in the room."""
     if allow_shrink or existing is None:
@@ -702,7 +702,7 @@ def vault_list_ids(prefix=""):
 # boundary chosen by the content of the line it follows re-syncs within a
 # chunk or two of the edit, so an append rewrites the tail and nothing
 # else. Measured 2026-08-11 (Cycle 116, research/vault-storage-format.md):
-# one-blob writes left 38.8MB of dead copies in Edvard's database against
+# one-blob writes left 38.8MB of dead copies in the owner's database against
 # 1.4MB of live content -- 27.6x -- because every write stored the whole
 # file again under a new content hash and deleted nothing.
 #
@@ -883,7 +883,7 @@ def vault_write_path(path, content, if_rev=_ANY_REV, allow_shrink=False):
     2026-08-15: a write that would replace a document with a small fraction
     of its size is refused unless `allow_shrink` says the truncation is
     intended — see `_collapse_refusal`. `if_rev` does not cover it: the
-    write that lost Edvard's `issues.md` carried the correct revision.
+    write that lost the owner's `issues.md` carried the correct revision.
 
     2026-08-12: `if_rev` makes the write conditional. Pass the `rev` from
     `vault_read_path_rev` and CouchDB rejects the PUT with 409 if anything
@@ -894,7 +894,7 @@ def vault_write_path(path, content, if_rev=_ANY_REV, allow_shrink=False):
 
     2026-08-06: this used to snapshot the previous content into
     `agora/backups/<timestamp> <basename>` in the vault before every
-    overwrite. Edvard asked for that to stop -- it doubled the document
+    overwrite. The owner asked for that to stop -- it doubled the document
     count of every edit and left 272 stray files behind, and the folder
     has been deleted. Recovery comes from the daily snapshot of the
     whole vault into the `SokratesAI/vault` GitHub repo (see
@@ -909,8 +909,8 @@ def vault_write_path(path, content, if_rev=_ANY_REV, allow_shrink=False):
     `_id`, so a write with different casing than a file's established
     name silently flipped that one document's display casing (same doc,
     no new copy -- but broke the phone's rendering, which looked to
-    Edvard like duplicated folders). Enforcing lowercase everywhere
-    (Edvard's call, 2026-07-24) makes `_id` and `path` structurally
+    the owner like duplicated folders). Enforcing lowercase everywhere
+    (the owner's call, 2026-07-24) makes `_id` and `path` structurally
     identical by construction, closing this bug class for good."""
     # The pre-write lookup that used to sit here is gone rather than fixed.
     # It asked `_vault_put_raw`'s own question one frame early and then handed
@@ -949,7 +949,7 @@ def vault_append_path(path, content, after_marker=""):
     That marker-not-found case used to append at the end instead, which
     is how the identical bug in the bridge's own vault tool buried three
     of Nova's journal entries at the bottom of a file whose header
-    promises newest-first (SokratesAI/agora-claude-bridge#10). Edvard
+    promises newest-first (SokratesAI/agora-claude-bridge#10). The owner
     read it as the loop having stopped writing entirely. Asking for a
     position and silently getting the opposite end of the file is the
     same class of mistake as appending to a file that doesn't exist,
@@ -1193,7 +1193,7 @@ def vault_bulk_fetch(prefix="", with_mtimes=False):
     filedocs = _vault_file_docs(prefix)
     unreadable = list(filedocs.unreadable)
     # Grouped by the database of the file doc that points at them. A flat
-    # set across both would send Nova's chunk ids to Edvard's database,
+    # set across both would send Nova's chunk ids to the owner's database,
     # find nothing, and surface as every Nova file coming back empty.
     chunk_ids_by_db = {}
     for doc_id, doc in filedocs.items():
@@ -1302,7 +1302,7 @@ def parse_frontmatter(content):
 
 # Root capture files (CLAUDE.md: "headers + capture zones only, no
 # instructional prose") are exempt from vault_validate_frontmatter_schema
-# -- they're Edvard's own quick-capture files, not agent-owned content.
+# -- they're the owner's own quick-capture files, not agent-owned content.
 FRONTMATTER_EXEMPT_BASENAMES = {"inbox.md", "ideas.md", "todos.md", "heartbeat tasks.md"}
 
 

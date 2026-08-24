@@ -1,4 +1,4 @@
-"""The display half of Edvard's #72 -- a dead cycle you can see on screen.
+"""The display half of the owner's #72 -- a dead cycle you can see on screen.
 
 > Mismatch between Nova and agora cycles. Nova is 1 behind agora. Agora
 > failed a cycle Journal and you did not catch it. You do not have good
@@ -6,7 +6,7 @@
 > cycle in the past failed or is missing.
 
 `cycle_health` answers this for Nova (it now runs at heartbeat dispatch,
-Cycle 148). Nothing answered it for Edvard, who found cycles 127 and 128
+Cycle 148). Nothing answered it for the owner, who found cycles 127 and 128
 himself by noticing the feed jump from 126 to 129.
 
 The two halves are tested apart because they fail apart: the holes are
@@ -68,7 +68,7 @@ def test_a_journal_with_no_holes_reports_none():
 
 
 def test_an_entry_with_no_cycle_number_is_not_a_hole():
-    """Edvard's own notes carry no `Cycle N`, so they cannot be missing.
+    """The owner's own notes carry no `Cycle N`, so they cannot be missing.
 
     They are real entries and they sit in the feed between numbered ones.
     Counting them into the range would invent a gap out of a note.
@@ -128,7 +128,7 @@ def test_the_page_and_the_self_check_cannot_disagree_about_a_hole():
     """One definition of "missing", read by both callers.
 
     The point of `gaps_between` existing: `cycle_health` answers this for
-    Nova and `build_status` answers it for Edvard, and a second
+    Nova and `build_status` answers it for the owner, and a second
     implementation is the hand-synced pair this repo keeps finding
     drifted. If these two ever disagree, one of the two readers is lying
     to somebody.
@@ -317,7 +317,7 @@ def test_a_stall_changes_the_etag_so_an_open_tab_can_be_told():
     the failure. So the base etag is identical across a stall, and a page
     polling with `If-None-Match` is answered 304 for as long as it lasts.
     The warning would appear only in a tab opened after the loop died, and
-    never in the one already open on Edvard's phone, which is the whole
+    never in the one already open on the owner's phone, which is the whole
     case it exists for.
 
     Same payload, same window, only the clock moved across the threshold.
@@ -374,7 +374,7 @@ def test_build_status_never_reads_the_clock():
 #
 # Cycle 180 fixed this for the copy that talks to Nova (#166) by handing
 # `cycle_health` the schedule off the heartbeat being dispatched, and left
-# the copy that talks to Edvard reading `HEARTBEAT_MINUTES`. This process
+# the copy that talks to the owner reading `HEARTBEAT_MINUTES`. This process
 # has no heartbeat in hand -- it is a different pod from the poll loop --
 # so it has to ask Agora, and these pin what it does with the answer.
 
@@ -408,8 +408,8 @@ def _with_agora(monkeypatch, fake):
 
 def test_the_silence_is_measured_in_the_live_cadence_not_the_constant():
     """The bug. Ninety minutes of quiet is one interval at the hourly
-    cadence and two at the forty-minute one Edvard ran on 2026-08-13, and
-    the badge Edvard reads was answering with the first regardless.
+    cadence and two at the forty-minute one the owner ran on 2026-08-13, and
+    the badge the owner reads was answering with the first regardless.
 
     Ninety and forty are chosen so the two answers differ: at any offset
     under one interval both cadences say zero and the test pins nothing.
@@ -426,7 +426,7 @@ def test_the_silence_is_measured_in_the_live_cadence_not_the_constant():
 def test_a_faster_cadence_calls_a_dead_cycle_sooner():
     """Not the same assertion as the one above: `silentIntervals` moving
     is only interesting if it drags the badge across the threshold, which
-    is the thing on Edvard's screen. Two hours of quiet is healthy at the
+    is the thing on the owner's screen. Two hours of quiet is healthy at the
     hourly cadence and a stall at forty minutes.
 
     Ninety minutes is the only window where the two disagree given a grace
@@ -638,7 +638,7 @@ def test_the_badge_the_page_draws_moves_with_the_live_cadence(monkeypatch):
 
 # --- the holes worth a badge, which is the recent ones ---------------------
 #
-# Edvard, comments board 2026-08-14, on the header's stall badge: *"Should
+# The owner, comments board 2026-08-14, on the header's stall badge: *"Should
 # be displayed if the return fetch came in with missing journals."* The
 # header only ever spoke about the clock. These pin the evidence half.
 
@@ -702,7 +702,7 @@ def test_recent_gaps_reads_a_generator_without_consuming_it_for_the_other():
 
 
 def test_a_payload_the_site_cannot_refresh_is_not_reported_as_a_stall():
-    """The flash in Edvard's #81, and the first mechanism actually caught.
+    """The flash in the owner's #81, and the first mechanism actually caught.
 
     `_with_silence` subtracts a cached `lastWrittenAt` from a live `now`,
     so every second a rebuild fails to land is counted as a second of the
@@ -754,7 +754,7 @@ def test_going_stale_changes_the_etag_so_an_open_tab_is_told():
     not line up with an interval boundary. Keyed on `silentIntervals`
     alone a polling tab is answered 304 for up to a full hour after the
     site stopped being able to see the journal — and goes on showing the
-    stall this flag exists to retract, which is precisely the phone Edvard
+    stall this flag exists to retract, which is precisely the phone the owner
     is holding.
     """
     from agora_runner.nova_site import journal_descriptor, page_etag
@@ -818,7 +818,7 @@ def _silence(now_offset, last_run_at, last_result, minutes=60):
 
 
 def test_a_cycle_in_flight_is_reported_running():
-    """The window Edvard was reading as a failure. Cycle 130 was claimed
+    """The window the owner was reading as a failure. Cycle 130 was claimed
     twenty minutes ago, 129 wrote the newest entry, and the header can
     only name 129 -- which is correct and now says why."""
     status = _silence(timedelta(minutes=20),
@@ -850,7 +850,7 @@ def test_a_run_older_than_the_newest_entry_is_not_running():
 def test_a_killed_cycle_stuck_on_running_reads_as_stalled_not_running():
     """The one case the badge would be lying about. A cycle that is killed
     never writes its closing PATCH, so `lastResult` stays "running"
-    forever -- the record alone would reassure Edvard indefinitely about a
+    forever -- the record alone would reassure the owner indefinitely about a
     loop that stopped hours ago. Past the grace window the stall wins and
     the claim is dropped."""
     status = _silence(timedelta(hours=4),
@@ -903,7 +903,7 @@ def test_the_running_badge_reaches_a_phone_that_is_already_polling():
     byte-identical across the moment the badge turns on -- a client
     polling with `If-None-Match` would be answered 304 for the whole
     cycle and the badge would render only in a tab opened after it began.
-    Edvard's phone is the tab that is already open."""
+    The owner's phone is the tab that is already open."""
     from agora_runner.nova_site import journal_descriptor, page_etag
 
     payload = {"entries": [dict(e) for e in _entries(129, 128)]}

@@ -84,7 +84,7 @@ from agora_runner.nova_journal import (
 
 # `<seq>-cycle-<n>.md`, and the `-addendum` suffixes twelve live files
 # carry. Entry 004 has no cycle token at all and never will -- it is
-# Edvard's own first message -- so a filename that does not match is not
+# The owner's own first message -- so a filename that does not match is not
 # a finding, it just means there is no second statement of the cycle
 # number to check the heading against.
 _FILENAME_CYCLE_RE = re.compile(r"\A\d+-cycle-(\d+)(?:-|\.)")
@@ -152,7 +152,7 @@ def _footer_finding(body):
     misses, so by the time it returns, a repaired entry and a correct one
     are indistinguishable. The first version of this check did exactly
     that and reported nothing on all three of the live entries whose
-    missing PR badge Edvard could see -- a negative result that was
+    missing PR badge the owner could see -- a negative result that was
     guaranteed in advance.
     """
     if _FOOTER_RE.search(body):
@@ -173,7 +173,7 @@ def _footer_finding(body):
     )
 
 
-# A paragraph that opens `**Needs Edvard**` with no colon, and then says
+# A paragraph that opens `**Needs the owner**` with no colon, and then says
 # something. Cycle 262 made `_ASK_RE` require the colon (runner#242), which
 # fixed a real defect -- two 2026-08-11 entries name the old digest section
 # in ordinary prose and were parsing as open asks, so the header's "waiting
@@ -184,20 +184,20 @@ def _footer_finding(body):
 #
 # **The paragraph anchor is what keeps the prose out, and it is measured
 # rather than reasoned.** Anchoring on the line instead fires on
-# `012-cycle-12.md`, which wraps a sentence so that `**Needs Edvard** and
+# `012-cycle-12.md`, which wraps a sentence so that `**Needs the owner** and
 # **Next cycle** in there with it` starts a line mid-paragraph -- the
 # entries are hard-wrapped, so a line start is not a paragraph start. With
 # the blank-line anchor this matches **0 of the 326 live entries** and
 # still fires on the bare label written as an ask.
 #
 # `ASK_LABEL` is imported rather than respelled here so that the two
-# spellings -- the current `Needs input` and the archive's `Needs Edvard`
+# spellings -- the current `Needs input` and the archive's `Needs the owner`
 # -- can never drift apart between the parser and its own linter.
 _BARE_ASK_RE = re.compile(r"(?:\A|\n[ \t]*\n)\*\*" + ASK_LABEL + r"\*\*[ \t]+\S")
 
 
 def _ask_finding(body):
-    """A `Needs Edvard` ask the site would drop for want of a colon.
+    """A `Needs the owner` ask the site would drop for want of a colon.
 
     Runs the real parser rather than restating it, the same way
     `_board_finding` runs `parse_board_refs`: the finding is "`split_ask`
@@ -224,7 +224,7 @@ def _ask_finding(body):
 #
 # **A `?` inside a quotation is not this sentence asking anything**, and
 # that is the failure that matters, because every ask ever written quotes
-# Edvard or quotes an earlier entry. Reviewer's case on #254, run rather
+# The owner or quotes an earlier entry. Reviewer's case on #254, run rather
 # than argued: *The card that said "should I proceed?" was from last week
 # and is now stale. Should I proceed now, yes or no?* opens with a
 # statement, is exactly the wall-of-text shape this check exists to
@@ -279,9 +279,9 @@ def _first_sentence_end(ask):
 
 
 def _ask_question_finding(body):
-    """A `Needs Edvard` ask whose first sentence is not the question.
+    """A `Needs the owner` ask whose first sentence is not the question.
 
-    Edvard, unboarded capture 2026-08-20: *"The 'needs Edvard' blocks needs
+    The owner, unboarded capture 2026-08-20: *"The 'needs the owner' blocks needs
     to present the issue in the first line to me as a question. Take the
     block in cycle 273, its a wall of text and a question hidden in it at
     the very bottom ... is it a simple yes and no question? Or something
@@ -329,7 +329,7 @@ def _board_finding(body):
     field that is present and unlinkable is the one shape worth refusing:
     `parse_board_refs` leaves anything it cannot place as plain text, on
     purpose, so `Board: #68` renders as the literal characters `#68` and
-    looks exactly like a working reference until Edvard taps it. The
+    looks exactly like a working reference until the owner taps it. The
     entry is written once and never edited, so this is the last moment
     that is cheap to fix.
     """
@@ -398,7 +398,7 @@ def _title_finding(entry, path, normalised):
     worse than no checker at all. That is a
     graceful render rather than a broken one, which is exactly why it has
     gone unnoticed: the card looks fine and simply says nothing about
-    what the hour did. Edvard reads the journal as a list of these cards.
+    what the hour did. The owner reads the journal as a list of these cards.
 
     Measured by running this check over all 366 live entries on
     2026-08-22: **174 render with no title.** The live feed's own `title`
@@ -421,7 +421,7 @@ def _title_finding(entry, path, normalised):
     Skipped for a `report`, whose title *is* its declaration and cannot be
     empty by construction (`kind` is only `report` when
     `_REPORT_TITLE_RE` matched the title), and for an entry with no cycle
-    number, which is Edvard's own message rather than a cycle's.
+    number, which is the owner's own message rather than a cycle's.
 
     Also skipped when the heading was *synthesised* -- when the document
     wrote no heading at all, `normalise_entry` builds one out of the
@@ -634,7 +634,7 @@ def _clock_findings(body, clock):
 
     Cycle 246 wrote "four minutes left" into a reply and "spent half an
     hour perfecting" a fix into its entry, inside a cycle whose measured
-    runtime was 673 seconds. Edvard asked twice how that could be true
+    runtime was 673 seconds. The owner asked twice how that could be true
     and it is not: both numbers were written as confident prose and
     neither was read off anything. The retro had already prescribed
     "read the clock as a real tool call" two days earlier and issue #72
@@ -684,7 +684,7 @@ def _clock_findings(body, clock):
 
 
 # Claims about the whole of history, which a cycle can almost never have
-# checked. Edvard, comments board 2026-08-22 20:14, on a Cycle 327 title
+# checked. The owner, comments board 2026-08-22 20:14, on a Cycle 327 title
 # reading "a Gemini key mounted on the runner that nothing has ever read":
 # *"as far as you know yes, but you do not know for sure that someone used
 # it earlier ... I know that i have used it before and built an entire
@@ -726,7 +726,7 @@ _ABSOLUTE_HISTORY_RE = re.compile(
 
 # My own experience is the one history I can actually check, so "I have
 # never used that key" is a scoped claim, not an overreach -- 5 of the 90
-# spans in the first corpus run were this shape. Edvard's complaint was
+# spans in the first corpus run were this shape. The owner's complaint was
 # precisely that I claimed *his* history; claiming mine is fine.
 _FIRST_PERSON_RE = re.compile(r"\b(?:I|I've|I'd)\b\s+(?:\w+\s+){0,1}$", re.IGNORECASE)
 
@@ -746,7 +746,7 @@ def absolute_claim_notes(body):
     sentence to satisfy a linter, which is a worse failure than the one
     being fixed. So this prints, and the author decides.
 
-    Quoted spans are stripped first: Edvard's own words, and the previous
+    Quoted spans are stripped first: The owner's own words, and the previous
     cycle's, are frequently quoted in an entry and are not mine to hedge.
     """
     stripped = _strip_quoted(body)
@@ -879,7 +879,7 @@ def main(argv=None):
         return 2
     name = args.name or args.file.rsplit("/", 1)[-1]
     # Run on the whole document rather than the parsed body: the sentence
-    # Edvard objected to was a *title*, and that is the part of an entry he
+    # The owner objected to was a *title*, and that is the part of an entry he
     # reads on a card without opening it.
     for note in absolute_claim_notes(content):
         print(f"lint_entry: {note}", file=sys.stderr)

@@ -1,4 +1,4 @@
-"""The self-check Edvard asked for after spotting Cycle 134's missing hour."""
+"""The self-check the owner asked for after spotting Cycle 134's missing hour."""
 
 from datetime import datetime, timedelta
 

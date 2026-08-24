@@ -10,7 +10,7 @@ Their safety is not the tailnet alone -- it is that both endpoints are too
 narrow to misuse:
 
 - The tailnet is the *authentication* boundary. Reaching this port at all
-  means being on Edvard's tailnet, which in practice means his own
+  means being on the owner's tailnet, which in practice means his own
   devices. A shared token would have to live in the served JavaScript or
   be typed on a phone, so it would add real friction and no real secrecy.
 - The endpoint's shape is the *authorization* boundary, and it is what is
@@ -18,7 +18,7 @@ narrow to misuse:
   paths (nova_capture.CAPTURE_TARGETS); `/api/comment` does not even take
   one, writing only to nova_comments.COMMENTS_PATH. No path, no marker and
   no position ever comes from the client in either. The worst a request
-  can do is add a bullet or a comment to a file Edvard reads and can
+  can do is add a bullet or a comment to a file the owner reads and can
   delete, and the vault's daily git snapshot holds the prior version
   regardless.
 - `Content-Type: application/json` is required, which is a CSRF defence
@@ -71,7 +71,7 @@ assembles from CouchDB in 285ms, which is cheaper than the staleness a
 cache would buy". Measured against the live pod on 2026-08-10, with 95
 entries rather than 70: `/api/journal` takes 3.0-3.5s -- 1.9s of vault
 bulk fetch, 1.5s of parsing -- and it was recomputed identically on
-every load. Edvard reported it as the app taking a long time to load.
+every load. The owner reported it as the app taking a long time to load.
 See `cached_payload`.
 
 **Responses are gzipped when the client asks.** Measured against the
@@ -80,7 +80,7 @@ none of it was compressed -- `/api/journal` alone was 453,239 -- while
 every browser that fetched it was already sending
 `Accept-Encoding: gzip, deflate, br, zstd` and getting nothing back.
 Compressed, the same load is 154,726 bytes. This is the largest payload
-anywhere in this system and it is the page Edvard reads on a phone.
+anywhere in this system and it is the page the owner reads on a phone.
 
 Only gzip: the runtime has no brotli or zstd binding (checked), and the
 stdlib gives gzip and raw deflate. That is a smaller ceiling than the
@@ -375,7 +375,7 @@ def comments_payload():
     Keyed by cycle number as a string because that is what JSON object keys
     are; the client looks up `byCycle[String(entry.cycle)]`. The comment
     text is sent as plain text rather than rendered blocks -- unlike the
-    journal, this is Edvard's own prose and nothing here interprets it as
+    journal, this is the owner's own prose and nothing here interprets it as
     markdown, so there is no markup for the client to be unable to build.
     """
     markdown = comments_markdown()
@@ -395,7 +395,7 @@ def comments_payload():
             # Two different waits, and the card must not call the second one
             # the first: under the threshold a reply is genuinely being
             # written, over it something is holding it up. Saying "Nova is
-            # replying…" for forty minutes is what Edvard reported as the
+            # replying…" for forty minutes is what the owner reported as the
             # conversation not working at all.
             #
             # What this cannot see is *why* it is held up, and the card used
@@ -424,7 +424,7 @@ def comments_payload():
             comment["replyFailed"] = asked_at is None and key in gave_up
     return {
         "byCycle": {str(cycle): items for cycle, items in grouped.items()},
-        # Replies to the digest's Needs Edvard block, which belong to no
+        # Replies to the digest's Needs the owner block, which belong to no
         # cycle and so cannot ride in `byCycle`.
         "needs": needs_comments(markdown),
     }
@@ -501,7 +501,7 @@ def board_payload(name):
         "items": board["items"],
         "details": details,
         # One lowercased blob per row: its title plus its whole write-up,
-        # in raw markdown. Edvard, ideas.md #71: "Ability to search
+        # in raw markdown. The owner, ideas.md #71: "Ability to search
         # through issues or ideas" -- and the first of the six kinds I
         # wrote back to him was free text over the *detail*, not just the
         # title, because a row title is four words and everything you
@@ -598,7 +598,7 @@ def board_page(payload, limit=None, item=None, search=None):
     sizes for a structural reason: a row is a title, a note is a
     paragraph. 294 notes in `nova/resources/issues.md` is 147KB and it
     grows by two or three every cycle; the rows are bounded by how many
-    things Edvard has ever filed.
+    things the owner has ever filed.
     """
     if item is not None:
         blocks = (payload.get("details") or {}).get(str(item))
@@ -614,7 +614,7 @@ def board_page(payload, limit=None, item=None, search=None):
         needle = search.strip().lower()
         blobs = payload.get("searchText") or {}
         # An empty query matches nothing rather than everything. The page
-        # only asks when Edvard has typed something, so "" here is a bug
+        # only asks when the owner has typed something, so "" here is a bug
         # somewhere above, and answering it with all 71 rows would look
         # exactly like a working search.
         matches = (
@@ -637,7 +637,7 @@ def board_page(payload, limit=None, item=None, search=None):
 
 
 # How long a served payload may be before the next request kicks a
-# refresh behind itself. Not a staleness budget for Edvard -- the client
+# refresh behind itself. Not a staleness budget for the owner -- the client
 # polls, so what he sees is bounded by the poll interval plus one rebuild
 # -- it is how often an *active* reader makes the site rebuild. At 15s a
 # session polling every 30s rebuilds once per poll and never waits for one.
@@ -709,7 +709,7 @@ def cached_entry(name, build):
     `/api/journal` costs 3.0-3.5s every time it is asked (measured against
     the live pod, 2026-08-10: 1.9s of vault bulk fetch, 1.5s of parsing,
     95 entries) and it was recomputed identically on every load. That is
-    what Edvard reported as "Nova takes a long time to load when i
+    what the owner reported as "Nova takes a long time to load when i
     refresh it".
 
     Stale-while-revalidate rather than a TTL, because a TTL only moves
@@ -771,7 +771,7 @@ def warm_cache():
     often this process is new. Every cycle that merges into
     `agora-persona-runner` rolls the nova-site pod, which is most hours of
     most days -- so the visitor who pays the cold build is not an unlucky
-    first-ever reader, it is Edvard, on his phone, on the next visit after
+    first-ever reader, it is the owner, on his phone, on the next visit after
     almost any cycle. That is issues.md #71, "The Nova app takes 6-7
     seconds to load", still standing after the cache landed.
 
@@ -828,7 +828,7 @@ def _build_lock(name):
 def invalidate(name):
     """Drop one cached payload so the next request rebuilds it cold.
 
-    Edvard, `issues.md` 2026-08-12: *"When i create a new issues, the
+    The owner, `issues.md` 2026-08-12: *"When i create a new issues, the
     'not boarded yet' block for issues is not refreshed automatically.
     This is probably a problem for ideas aswell."* It is, and it is
     deterministic rather than flaky, which is why waiting and retrying
@@ -959,7 +959,7 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None, record_age
 
 
 # How long a fetched cadence is served before a background refresh is
-# started. Edvard changes the cadence by hand in Agora, not by deploying,
+# started. The owner changes the cadence by hand in Agora, not by deploying,
 # so this process cannot wait for a restart to notice -- but the value it
 # is tracking changes a few times a week at most, so anything shorter than
 # minutes would be a poll loop against Agora dressed up as a cache.
@@ -1003,7 +1003,7 @@ def cadence_minutes():
 
     Serving the fallback cold is not a compromise, it is the status quo --
     `HEARTBEAT_MINUTES` is what this measured in unconditionally until
-    now, and it has been wrong twice, because the cadence is Edvard's to
+    now, and it has been wrong twice, because the cadence is the owner's to
     change and he has changed it four times since 2026-08-08. The lookup
     itself is `cycle_health.nova_cadence_minutes`, shared with the copy
     that talks to Nova; what belongs here is only the caching, because
@@ -1075,7 +1075,7 @@ def reset_cadence():
 def _running_now(written, last_run_at, last_result, stalled):
     """Is a cycle in flight right now -- measured, not inferred from the clock.
 
-    The half of #72 that had no answer for 130 cycles. Edvard: *"Nova is 1
+    The half of #72 that had no answer for 130 cycles. The owner: *"Nova is 1
     behind agora."* A cycle writes its entry at the end of its hour, so
     for the first 20-45 minutes of every hour the newest entry names N-1
     while agora is running N, and that looks on screen exactly like N
@@ -1141,7 +1141,7 @@ def _with_silence(status, now=None, minutes=None, record_age=None, heartbeat=Non
     this hour has an entry yet. A cycle writes its entry at the *end* of
     its hour, so between waking and finishing there is a real 20-30
     minute window where agora has started cycle N and this page can only
-    see N-1 -- Edvard's #72 is exactly that ambiguity, and a check that
+    see N-1 -- the owner's #72 is exactly that ambiguity, and a check that
     cannot tell a running cycle from a dead one would raise a false alarm
     every single hour. `silentIntervals` is reported whether or not it
     crossed the threshold, so the two questions stay separable.
@@ -1301,7 +1301,7 @@ def journal_descriptor(page, limit, offset, cycle):
     is byte-identical across a stall, and a client polling with
     `If-None-Match` would be answered 304 for as long as the stall lasted:
     the warning would render only in a tab opened *after* the loop died,
-    and never in the one already sitting open on Edvard's phone, which is
+    and never in the one already sitting open on the owner's phone, which is
     the case the feature exists for. Folding the interval count in means
     the etag turns over at each hour boundary, which is exactly when the
     answer changes and no more often.
@@ -1310,7 +1310,7 @@ def journal_descriptor(page, limit, offset, cycle):
     twice an hour -- on when a cycle is claimed, off when it writes its
     entry -- and neither edge lines up with an interval boundary. Left
     out, the badge would render only in a tab opened mid-cycle, and
-    Edvard's phone, which is already polling, is the one place it would
+    the owner's phone, which is already polling, is the one place it would
     never appear. That phone is the whole reason #72 was filed.
 
     And `recordStale` on top of that, for a sharper version of the same
@@ -1505,7 +1505,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         19,637 bytes, against 13,429 for the board payload those two
         pages exist to render. 87KB of the ~110KB a board page costs was
         bytes the phone already had, re-fetched because the server never
-        said which build they came from. That is Edvard's capture --
+        said which build they came from. That is the owner's capture --
         "Issues and ideas takes a while to load" -- and it is why the fix
         is not lazy-loading the rows: the rows were never the weight.
 
@@ -1540,7 +1540,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # freshness rule, and a browser then invents one -- heuristic
         # freshness off `Last-Modified`, which we do not send either, so
         # the behaviour is up to the implementation and one of the
-        # permitted answers is serving a build Edvard has already
+        # permitted answers is serving a build the owner has already
         # replaced without asking. That is precisely the trap the service
         # worker's own comment refuses. `no-cache` buys the saving and
         # keeps the guarantee: one conditional request, always the
@@ -1578,7 +1578,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             if path == "/api/notes":
                 # Cached like the boards and for the same reason: the
                 # vault read is the slow part and the file changes when
-                # Edvard types a note or a cycle answers one, not
+                # The owner types a note or a cycle answers one, not
                 # between two taps. It is also the smallest payload on
                 # the site -- 11KB of markdown -- so nothing here wants
                 # a window.
@@ -1606,7 +1606,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # Never cached, for `/api/comments`' reason and one more:
                 # this endpoint is polled *because* it is expected to
                 # change, and a CACHE_FRESH_SECONDS window would show
-                # Edvard a thread that stays "waiting" after the answer
+                # The owner a thread that stays "waiting" after the answer
                 # has already landed.
                 self._send_json(200, ask_thread())
                 return
@@ -1659,7 +1659,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             cache_control="public, max-age=31536000, immutable")
 
     def _post_upload(self):
-        """`/api/upload` -- Edvard attaching a screenshot to what he types.
+        """`/api/upload` -- the owner attaching a screenshot to what he types.
 
         It reads its own body rather than going through `_read_json_body`,
         for the one reason that matters: that reader caps at
@@ -1801,7 +1801,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
 
         if ok:
-            # Exactly as for a new capture: the board Edvard is looking at
+            # Exactly as for a new capture: the board the owner is looking at
             # has gone stale and `app.js` reloads on the next tick.
             invalidate("board:" + target)
 
@@ -1822,7 +1822,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
     def _post_priority(self, payload):
-        """`POST /api/board/priority` -- Edvard re-rating a row I rated.
+        """`POST /api/board/priority` -- the owner re-rating a row I rated.
 
         His capture, 2026-08-14: *"i want that aswell ... when they are
         boarded its possible for me to change the priority."* Every rating
@@ -1859,7 +1859,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
 
         if ok:
-            # The board Edvard is looking at now shows the old rating, and
+            # The board the owner is looking at now shows the old rating, and
             # `app.js` reloads on the next tick -- exactly the staleness
             # the capture box invalidates for.
             invalidate("board:" + target)
@@ -1939,7 +1939,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
         # `MM-DD` in Oslo, because `append_detail_note` takes the date from
         # its caller rather than a clock -- a module that reaches for one
-        # reaches for it in UTC, and this line lands in a file Edvard reads.
+        # reaches for it in UTC, and this line lands in a file the owner reads.
         dated = datetime.now(OSLO).strftime("%m-%d")
         try:
             ok, message = comment_on_row(target, number, text.strip(), dated, author)
@@ -1964,7 +1964,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
 
     def _post_ask(self, payload):
-        """`/api/ask` -- Edvard's question goes into the questions
+        """`/api/ask` -- the owner's question goes into the questions
         conversation and the Sonnet persona answers it on the next poll
         tick. See `nova_ask` for why that is the whole mechanism.
 
@@ -2069,10 +2069,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
     def _post_comment(self, payload):
-        """`/api/comment` -- Edvard replying to one cycle (ideas.md #44).
+        """`/api/comment` -- the owner replying to one cycle (ideas.md #44).
 
         `{"target": "needs"}` instead of a `cycle` answers the digest's
-        Needs Edvard block (2026-08-10) -- see `nova_comments`.
+        Needs the owner block (2026-08-10) -- see `nova_comments`.
 
         The same two boundaries as the capture box, and the same reason
         they hold: the tailnet authenticates, and the endpoint's shape
@@ -2081,7 +2081,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         nothing a client sends addresses a document -- the path is the
         module-level COMMENTS_PATH constant and there is no target to
         choose. The worst a request can do is add a comment to a file Nova
-        reads and Edvard can delete.
+        reads and the owner can delete.
         """
         cycle = payload.get("cycle")
         target = payload.get("target")
@@ -2120,7 +2120,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # can land in the next minute.
         stamp = format_stamp()
         if self._store_comment(lambda: add_comment(cycle, text, stamp), text, f"cycle {cycle}"):
-            # Only cycle comments get a reply. A `Needs Edvard` answer is a
+            # Only cycle comments get a reply. A `Needs the owner` answer is a
             # decision for a cycle to act on, not a conversation -- replying
             # to it would put a paragraph where a piece of work belongs.
             enqueue_reply(cycle, stamp)
@@ -2256,7 +2256,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
 
         if ok:
-            # The board page Edvard is looking at has just gone stale, and
+            # The board page the owner is looking at has just gone stale, and
             # `app.js` reloads it on the very next tick. Without this the
             # reload is served the pre-capture payload -- see `invalidate`.
             # `board:notes` never exists -- notes are not a board -- and

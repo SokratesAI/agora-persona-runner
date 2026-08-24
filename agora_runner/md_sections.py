@@ -11,7 +11,7 @@ is a sentence about the heading, 320 characters into the frontmatter.
 Measured, rather than reasoned about: `comments.md` revision 19 in
 Nova's CouchDB (written 2026-08-13 07:06:25 Oslo, repaired by hand as
 revision 20) is revision 18 with 740 characters spliced in at exactly
-that offset. Edvard's newest comment, moved "into `## Acknowledged`" by
+that offset. The owner's newest comment, moved "into `## Acknowledged`" by
 a cycle's throwaway script, landed inside the frontmatter -- where the
 app's parser cannot see it and neither can the next cycle reading
 `## New`. It was found by accident.
@@ -51,7 +51,7 @@ def _normalise(line):
     """A heading line reduced to what markdown actually renders.
 
     Runs of whitespace collapse, because `##  Digest` and `## Digest` are
-    the same heading to every renderer and to Edvard, and differ to
+    the same heading to every renderer and to the owner, and differ to
     `str.find`. This docstring used to promise whitespace tolerance while
     only stripping the ends -- a hand-edit in Obsidian that widened the
     gap after the hashes made `roll_digest` refuse to run on a file that

@@ -35,7 +35,7 @@ def run_workflow_steps(steps, conversation_id, detail, participants,
     Re-fetches the conversation's messages fresh at the top of every
     round (2026-07-30) rather than working from a static snapshot taken
     once at the start of the run — a heartbeat is bound to a real
-    conversation specifically so Edvard can steer a run that's going off
+    conversation specifically so the owner can steer a run that's going off
     the rails by just typing into it; a snapshot silently defeated that
     for any round after the first. Best-effort only: a run never waits
     for input, it just picks up whatever's there by the time the next

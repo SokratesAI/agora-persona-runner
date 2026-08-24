@@ -1,7 +1,7 @@
 """`tools/roll_needs_edvard.py` -- moving answered asks out of the live block.
 
-Edvard, issue #89: *"I have absolutely no idea what the current 'needs
-Edvard' asks of me."* The failure these tests pin is not "the block is
+The owner, issue #89: *"I have absolutely no idea what the current 'needs
+the owner' asks of me."* The failure these tests pin is not "the block is
 long" -- it is that a cycle unsure whether an item was answered had
 nowhere to put it, so leaving it was free and removing it was a decision.
 """
@@ -278,7 +278,7 @@ def test_plan_refuses_keep_zero_with_no_select():
 
 
 def test_dates_come_from_oslo_not_the_system_clock(tmp_path, monkeypatch):
-    """The pod runs UTC; Edvard reads Oslo. At 22:30 UTC they disagree.
+    """The pod runs UTC; The owner reads Oslo. At 22:30 UTC they disagree.
 
     This must go through `main`, not through `stamp_answer` with a date the
     test computed itself -- the first version of this test did the latter,
@@ -325,7 +325,7 @@ def test_dates_come_from_oslo_not_the_system_clock(tmp_path, monkeypatch):
     ),
 ])
 def test_the_cli_splits_the_block_on_real_headings_not_fenced_ones(digest):
-    """A fenced `## Needs Edvard` must not end the section early.
+    """A fenced `## Needs the owner` must not end the section early.
 
     This used to assert that `parse_digest` and `live_items` split the
     block identically -- the page's Done button named an item by text and
@@ -372,7 +372,7 @@ def test_dismissing_by_text_archives_that_item_and_leaves_the_others():
 def test_a_stale_page_cannot_clear_the_wrong_ask():
     """The whole reason the client sends text rather than an index.
 
-    A cycle rewrites this block every forty minutes. If Edvard's page was
+    A cycle rewrites this block every forty minutes. If the owner's page was
     rendered before that rewrite, the item at position 1 is a different ask
     by the time he taps Done -- so a dismissal naming an ask the file no
     longer holds has to fail, not fall through to whatever is there now.

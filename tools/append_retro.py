@@ -1,6 +1,6 @@
 """Append one Friday retrospective to `retro-ledger.json`, or refuse.
 
-Edvard asked the Friday cycle to *"actually note down data and compare it
+The owner asked the Friday cycle to *"actually note down data and compare it
 to previous retros"*. This is how a retro cycle writes its row without
 having to know the shape by heart -- the shape lives in
 `agora_runner.nova_retro`, and this validates against it before anything

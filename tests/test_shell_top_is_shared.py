@@ -1,6 +1,6 @@
 """The three things at the top of the shell read one number, not three.
 
-Edvard, `issues.md` 2026-08-21, 🔴 Immediately: *"I can't see the
+The owner, `issues.md` 2026-08-21, 🔴 Immediately: *"I can't see the
 hamburger sodemenu button anymore."*
 
 `index.html` sets `viewport-fit=cover` and the manifest sets

@@ -1,6 +1,6 @@
 """Ask the live Nova site whether the page a cycle just shipped is there.
 
-This loop ships changes to the app Edvard reads and has never once looked
+This loop ships changes to the app the owner reads and has never once looked
 at the result. Cycle 179 built the `/retro` page and wrote "only you can
 see it"; Cycle 184 tried to reach the pod, got nothing, and filed *"no
 cycle can reach nova-site"* as a fact. That fact was false. The service
@@ -54,8 +54,8 @@ ABSENT_PATH = "/__site_check_absent__"
 # valid JSON hides that completely.
 API_KEYS = {
     "/api/journal": ("entries", "status"),
-    # `needsEdvard` was here until #236. It stopped being served when the
-    # Needs Edvard block's server half was deleted, and a key listed here
+    # `needsthe owner` was here until #236. It stopped being served when the
+    # Needs the owner block's server half was deleted, and a key listed here
     # that the payload no longer carries is a permanent false alarm on a
     # healthy site -- the exact failure this module exists to catch, aimed
     # at itself. `test_the_digest_keys_are_ones_the_payload_still_carries`

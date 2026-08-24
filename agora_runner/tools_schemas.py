@@ -387,7 +387,7 @@ def client_tool_schemas(caps, active_step=None):
                     # `["issues", "ideas"]` and went stale the hour a third
                     # target shipped: the site's button worked and this
                     # path -- the one a journal-comment reply uses -- could
-                    # still only offer Edvard's two old files, which is the
+                    # still only offer the owner's two old files, which is the
                     # exact confusion he asked three times to be rid of.
                     "target": {"type": "string", "enum": sorted(CAPTURE_TARGETS)},
                     "text": {"type": "string"},

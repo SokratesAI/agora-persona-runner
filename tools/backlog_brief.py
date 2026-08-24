@@ -1,6 +1,6 @@
 """My own two capture files, as a brief small enough to read every cycle.
 
-Edvard, capture on `ideas.md` 2026-08-23: *"Cut per-cycle token cost of
+The owner, capture on `ideas.md` 2026-08-23: *"Cut per-cycle token cost of
 loading resources/issues.md and other stable/large files in full every
 cycle — the dreaming-pass cleanup helps but doesn't address the read cost
 itself."*

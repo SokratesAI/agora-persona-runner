@@ -25,9 +25,9 @@ from agora_runner.conversation_rotation import cycle_tag, rotate_cycle_conversat
 from agora_runner.deferred import ANSWERED_LIVE_CAPABILITY
 
 # How many previous cycle-conversations the pending-message lookback may
-# walk back through, and how much of Edvard's text it may carry into one
+# walk back through, and how much of the owner's text it may carry into one
 # trigger. Retention (conversation_rotation.DEFAULT_RETENTION) is 5, so 5
-# is "everything still un-archived"; the char cap is Edvard's own
+# is "everything still un-archived"; the char cap is the owner's own
 # constraint -- a long-lived channel he can write into freely must not
 # quietly turn into megabytes of prompt every cycle.
 CYCLE_LOOKBACK = 5
@@ -45,7 +45,7 @@ def _elapsed(seconds):
 
 
 def _unread_from_edvard(detail, since=None):
-    """Everything Edvard wrote in one conversation that no run has read
+    """Everything the owner wrote in one conversation that no run has read
     yet, oldest first and joined, or None.
 
     This replaced a rule that only carried his words when the thread
@@ -110,7 +110,7 @@ def _unread_from_edvard(detail, since=None):
 
 
 def pending_across_cycles(heartbeat, previous_detail, current_id=None, since=None):
-    """Edvard's unanswered messages, walking back from the conversation
+    """The owner's unanswered messages, walking back from the conversation
     we just rotated away from through older cycle-conversations. Returns
     [(source_label, text)], oldest first.
 
@@ -118,7 +118,7 @@ def pending_across_cycles(heartbeat, previous_detail, current_id=None, since=Non
     conversation. But a cycle that dies before replying (which has now
     happened twice in one day -- merging into this repo rolls the pod
     running the cycle) leaves an EMPTY conversation behind, so one step
-    back lands on nothing and anything Edvard typed two cycles ago is
+    back lands on nothing and anything the owner typed two cycles ago is
     dropped silently and permanently. That is his own top complaint
     ("even if i write something in an older conversation, it is never
     read"), and the whole reason he currently has to talk to this loop
@@ -128,7 +128,7 @@ def pending_across_cycles(heartbeat, previous_detail, current_id=None, since=Non
     persona had replied, using that reply as the boundary of "already
     seen". That boundary was in the wrong place. A healthy loop replies
     in every cycle conversation, so the walk stopped after one step
-    essentially always, and anything Edvard wrote in an older thread was
+    essentially always, and anything the owner wrote in an older thread was
     never reached. The system covered for it by letting ordinary
     turn-taking answer those threads instead (see
     cycle_bound_conversation_ids) -- which meant one sentence typed into
@@ -219,7 +219,7 @@ def _parse_run_at(stamp):
 def nova_health_note(persona, previous_run_at, schedule=None):
     """The journal self-check, as a line for Nova's own heartbeat, or `""`.
 
-    Edvard, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not
+    The owner, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not
     already have a self check that your previous cycles worked correctly,
     you should make yourself do this and self repair automatically."*
     `cycle_health` answered the first half the same day and then sat there
@@ -326,7 +326,7 @@ def nova_health_note(persona, previous_run_at, schedule=None):
 def run_heartbeat(heartbeat):
     # Read BEFORE the claim PATCH below overwrites it: this is the
     # previous run's timestamp, and it is the boundary
-    # pending_across_cycles uses to tell "Edvard wrote this since I last
+    # pending_across_cycles uses to tell "the owner wrote this since I last
     # ran" from "already offered to an earlier run". Taken from the local
     # snapshot on purpose — the server-side value is gone one line later.
     previous_run_at = heartbeat.get("lastRunAt")
@@ -378,7 +378,7 @@ def run_heartbeat(heartbeat):
     if rotated:
         _status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
 
-    # 2026-08-05, Edvard: "The times when you start will not always be exactly
+    # 2026-08-05, the owner: "The times when you start will not always be exactly
     # 6 hours as I often manually trigger you to start when i see that we have
     # a lot of token quota left. Maybe a good idea to you is to add to the
     # agora manual trigger to let you know that you where triggered manually."
@@ -428,7 +428,7 @@ def run_heartbeat(heartbeat):
     #
     # 2026-08-02: claude-cli personas only ever see this LAST history entry
     # (bridge/cli.py's generate_reply forwards history[-1], not the full
-    # thread) -- so if Edvard's real last message was just sitting in
+    # thread) -- so if the owner's real last message was just sitting in
     # `history` unaddressed, a claude-cli persona would never actually see
     # it, only this synthetic trigger. Folding his real content into the
     # trigger when it's genuinely his turn (last message role is "user")
@@ -438,7 +438,7 @@ def run_heartbeat(heartbeat):
     # 2026-08-02, later: rotation (above) replaces `detail` with a
     # brand-new EMPTY conversation, so on a rotating heartbeat `history`
     # is always empty and the fold-in below could never fire -- the two
-    # halves of the fix cancelled each other out. Anything Edvard typed
+    # halves of the fix cancelled each other out. Anything the owner typed
     # between cycles lived only in the conversation we just rotated away
     # from, and was dropped silently, forever. So when we rotated, fall
     # back to the pre-rotation thread for his pending message.
@@ -467,7 +467,7 @@ def run_heartbeat(heartbeat):
                     f"answered yet, oldest first:\n{lines}")
     history.append({"role": "user", "content": trigger})
 
-    # 2026-08-03 (Edvard's ask): the "Ran heartbeat" chip is meant to show
+    # 2026-08-03 (the owner's ask): the "Ran heartbeat" chip is meant to show
     # that something is *processing*, but it was posted after notify() at
     # the very end of the run -- so it rendered BELOW the reply and only
     # appeared once there was nothing left to wait for. On a claude-cli
@@ -485,7 +485,7 @@ def run_heartbeat(heartbeat):
     # Those heartbeats keep the old end-of-run chip, unchanged.
     may_go_silent = HEARTBEAT_NO_REPORT_SENTINEL in system
     # The opening chip says which of the two started this run, so the thread
-    # itself records what Edvard did rather than only what the clock did.
+    # itself records what the owner did rather than only what the clock did.
     started_chip = f"{heartbeat['name']} ({'manual trigger' if manual else heartbeat['schedule']})"
     if not may_go_silent:
         audit(persona["name"], conversation_id, "heartbeat", started_chip)
@@ -501,7 +501,7 @@ def run_heartbeat(heartbeat):
         # 2026-07-25: deliberately NOT streamed (no on_text) -- unlike a
         # live chat turn, a monitoring heartbeat's prompt may ask for a
         # silent HEARTBEAT_NO_REPORT_SENTINEL reply when there's nothing
-        # worth Edvard's attention, and that decision can only be made
+        # worth the owner's attention, and that decision can only be made
         # once the full reply is in hand, before anything is posted.
         # 2026-08-21 (idea #95 slice 1): the model comes off the bound
         # conversation, not the persona. This path is how Nova's own cycles
@@ -517,7 +517,7 @@ def run_heartbeat(heartbeat):
             result = "checked, nothing to report (not posted to chat)"
             silent = True
         else:
-            # 2026-08-14, Edvard: "Did you fix the notification for agora
+            # 2026-08-14, the owner: "Did you fix the notification for agora
             # heartbeats? So i can turn them off?" -- pushNotifications:false
             # on the heartbeat posts the reply without the phone buzz. The
             # message still lands in the conversation, same as quiet hours:
@@ -537,9 +537,9 @@ def run_heartbeat(heartbeat):
     except Exception as e:
         result = f"failed: {e}"[:200]
         log(f"heartbeat {heartbeat['name']} failed: {e}")
-        # Sokrates' proposal on Edvard's `issues.md`, 2026-08-24: a run that
+        # Sokrates' proposal on the owner's `issues.md`, 2026-08-24: a run that
         # dies leaves `lastResult` on the heartbeat and a line in a log
-        # nobody opens, and the feed -- the one place Edvard actually looks
+        # nobody opens, and the feed -- the one place the owner actually looks
         # -- shows nothing at all. One marker, so the hole is visible where
         # the entries are. `cycle_stub` says what it can and cannot cover
         # and why it must not count as the loop writing.
@@ -564,7 +564,7 @@ def run_heartbeat(heartbeat):
         except Exception as marker_error:  # noqa: BLE001 -- see above
             log(f"heartbeat {heartbeat['name']}: silence marker failed: {marker_error!r}")
 
-    # 2026-08-05, Edvard: "it is hard for me to know when you are done. I just
+    # 2026-08-05, the owner: "it is hard for me to know when you are done. I just
     # assume you are done when you post the final response and the Journal."
     # He was assuming correctly and had no way to confirm it. A cycle runs up
     # to ~45 minutes, and until now the thread's last entry during all of it
@@ -601,7 +601,7 @@ def run_heartbeat(heartbeat):
 # ordinary heartbeat that runs the Claude CLI, and seven measured runs
 # took 9m29s–21m44s (mean ~15m) each, all of it on the main thread with
 # every other conversation frozen behind it. At the 6-hourly schedule
-# that was ~4% of the day and nobody noticed. Edvard moved to a plan
+# that was ~4% of the day and nobody noticed. The owner moved to a plan
 # with 5x the limits and asked for the cycle rate to match, so the
 # schedule went to every@72m@22:00 — 20 runs a day, which is ~21% of
 # the day blocked, and up to 22 minutes of silence for anyone chatting
@@ -609,7 +609,7 @@ def run_heartbeat(heartbeat):
 # now applied to both paths.
 #
 # Those numbers are the 2026-08-09 cadence, kept because they are what
-# motivated the fix. They are not today's: Edvard has changed the
+# motivated the fix. They are not today's: The owner has changed the
 # schedule four times since and it is every@60m@19:00 as of 2026-08-14.
 # Nothing here reads the cadence — `schedule_minutes` is the one place
 # that does — so this is a note, not a constant going stale.
@@ -685,7 +685,7 @@ def _concurrency_limit(heartbeat):
     Workflow-mode heartbeats stay at 1 whatever the config says. A
     workflow step re-entering itself is the failure that killed the v1
     loop (duplicate PRs, burned usage limits, half-finished cycles); the
-    switch Edvard asked for is about Nova's own cycle, and widening it to
+    switch the owner asked for is about Nova's own cycle, and widening it to
     a path with that history is not what he asked for.
     """
     if heartbeat.get("workflowId"):
@@ -727,7 +727,7 @@ def workflow_bound_conversation_ids(heartbeats_list):
     a workflow persona's reply naturally included "@OtherPersona", the
     ordinary poll loop picked that up as a real mention and tried to
     continue the exchange via speak(), but a workflow-only conversation
-    may never have a real Edvard message to anchor on (unlike one Edvard
+    may never have a real the owner message to anchor on (unlike one the owner
     started himself) -- merge_history pops every leading non-user turn,
     so the history came back empty, speak() raised, and three such
     crashes auto-paused the conversation via what is now FAILURE_BACKOFF_CAP. The
@@ -743,7 +743,7 @@ def in_flight_cycle_conversation_ids(heartbeats_list):
     """The transcript each *currently executing* rotating run is writing
     into. This is now the entire deferred set.
 
-    Edvard, 2026-08-20, on getting the Noted chip after writing in the
+    The owner, 2026-08-20, on getting the Noted chip after writing in the
     conversation of a cycle that had already retired: "What? I thought i
     could have a conversation with you again? Did cycle 267 in Nova lie?
     ... you should actually answer my responds and do actual work
@@ -761,7 +761,7 @@ def in_flight_cycle_conversation_ids(heartbeats_list):
     real cycle's own turn in the middle -- can therefore only exist for
     the one transcript this returns. Runs have had their own thread since
     2026-08-08, so `poll_once` keeps ticking every five seconds while a
-    cycle executes; without this check, Edvard typing into the transcript
+    cycle executes; without this check, the owner typing into the transcript
     of a cycle that is still working would have ordinary turn-taking call
     the bridge on the same `conversation_id` the run is already resumed
     on. `_run_in_flight` reuses `run_due_heartbeats`' own thread registry
@@ -802,7 +802,7 @@ def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
     for all of these (2026-08-03), for a different reason than the
     workflow case above.
 
-    Edvard's own report: "I just replied in the Agora conversation 5...
+    The owner's own report: "I just replied in the Agora conversation 5...
     that triggered a normal conversation run... that makes me not going
     to write messages again in the conversation." Typing one sentence
     into the live Evolve transcript fired an immediate, full,
@@ -821,7 +821,7 @@ def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
     being heartbeat-bound. Rotation is the explicit signal that a
     conversation is a per-cycle machine transcript rather than a
     durable channel; a non-rotating heartbeat's conversation (K3s
-    Sentinel) is one Edvard may legitimately chat in and expect an
+    Sentinel) is one the owner may legitimately chat in and expect an
     ordinary answer from, and silencing that was not asked for.
 
     Older cycle-conversations used to keep ordinary turn-taking on
@@ -845,7 +845,7 @@ def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
 
     2026-08-19, then again 2026-08-20: poll_once no longer skips ALL of
     these, and now skips almost none of them. It defers only
-    in_flight_cycle_conversation_ids() -- see that function for Edvard's
+    in_flight_cycle_conversation_ids() -- see that function for the owner's
     ask. This function is unchanged and still returns the full set,
     because the invariant above is about the set the *walk* must reach,
     and the walk must still reach every one of them: a message typed into
@@ -936,7 +936,7 @@ def run_due_heartbeats(heartbeats_list=None):
                 # See _heartbeat_spawn_marks: only reachable with a limit
                 # above 1, and only inside the window where this slot's
                 # own claim PATCH has not landed yet. forceRun is exempt
-                # because it is Edvard pressing "run now" — that is a new
+                # because it is the owner pressing "run now" — that is a new
                 # request, not the same slot read twice.
                 mark = heartbeat.get("lastRunAt")
                 if _heartbeat_spawn_marks.get(hb_id) == mark:

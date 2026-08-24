@@ -21,7 +21,7 @@ touches the file:
 
 **Rows are keyed by the goal's short id, not by its name.** A goal is
 written ``name: G1 -- Working on what you asked for``, and the half after
-the dash is a sentence Edvard is explicitly invited to rewrite -- the
+the dash is a sentence the owner is explicitly invited to rewrite -- the
 whole slate is a proposal until he edits it. Keying the series on the
 full name would break every earlier point the first time he did, and it
 would break it silently: the chart would simply start again from one
@@ -74,7 +74,7 @@ def _row(raw, index):
 
     Every failure below is a row that would render as a chart rather than
     as an error, which is why they refuse rather than skip: a point at
-    the wrong date, or a value that is a string, draws a line Edvard
+    the wrong date, or a value that is a string, draws a line the owner
     would read as a measurement.
     """
     if not isinstance(raw, dict):

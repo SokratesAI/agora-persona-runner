@@ -2,7 +2,7 @@
 
 The property under test is never "the output looks right". It is that a
 line which went in comes out exactly once, on one side or the other, and
-that the two sections Edvard actually reads survive the move.
+that the two sections the owner actually reads survive the move.
 """
 
 import pytest
@@ -106,7 +106,7 @@ def test_two_cards_written_without_a_blank_line_between_them_still_roll():
     # it -- it has since Cycle 65 lost its card to exactly that -- and this
     # script used to end one only at a blank line. So a digest whose cards
     # are merged reads as fewer entries than the site shows, drops under the
-    # keep, and rolls nothing: no error, no output, the file Edvard reads
+    # keep, and rolls nothing: no error, no output, the file the owner reads
     # growing forever.
     merged = LIVE.replace(
         "— Fourth.\n\n**Cycle 3**",
@@ -184,7 +184,7 @@ def test_a_first_roll_with_no_archive_yet_builds_one_the_site_can_read():
 # The two vault writes are not atomic and the archive goes first, so a
 # cycle killed between them leaves the same lines in both files. Reviewer
 # finding on runner#93: nothing detected that, and the next run rolled
-# them again, so a cycle rendered twice on Edvard's phone forever.
+# them again, so a cycle rendered twice on the owner's phone forever.
 
 
 def _crashed_between_the_two_writes(keep=2):

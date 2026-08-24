@@ -17,7 +17,7 @@
   var menuBtn = document.getElementById("menu-btn");
   var scrim = document.getElementById("scrim");
 
-  /* The sidebar (Edvard, issues.md 2026-08-11: "Move the Journal, issues
+  /* The sidebar (the owner, issues.md 2026-08-11: "Move the Journal, issues
    * & ideas tabs buttons to a sidebar that opens from a hamburger button
    * ... Add slide animations").
    *
@@ -45,7 +45,7 @@
 
   /* Which page the URL asks for. Three views over four URLs:
    * `/` and `/cycle/49` are the journal, `/issues` and `/ideas` are the
-   * two board pages Edvard asked for in issues.md #57.
+   * two board pages the owner asked for in issues.md #57.
    *
    * The server serves the same shell for all of them (nova_site's GET
    * handler) and this decides what to fetch, so a board page survives a
@@ -122,7 +122,7 @@
 
   /* Which cards were open, so that rebuilding the feed puts them back.
    *
-   * Edvard, issues.md 2026-08-11: "The Nova site closes all drawers on what
+   * The owner, issues.md 2026-08-11: "The Nova site closes all drawers on what
    * seems like every 30 sec or so. Is this a refresh bug?"
    *
    * A card's open/closed state lived only in the DOM, so every path that
@@ -135,7 +135,7 @@
    * Keyed by cycle number rather than by position, because a new entry
    * arriving at the top is exactly when this matters -- keyed by index, the
    * card he had open would hand its state to the one that pushed it down.
-   * An entry with no cycle number gets no memory: there is one (Edvard's
+   * An entry with no cycle number gets no memory: there is one (the owner's
    * first message), nothing else can address it either, and inventing a key
    * from its title would make two untitled notes share one.
    */
@@ -143,7 +143,7 @@
 
   function foldFor(cycle) {
     /* `part` joins the three booleans because a poll rebuilds the feed from
-     * scratch: without it, Edvard taps to the addendum, a routine poll lands,
+     * scratch: without it, the owner taps to the addendum, a routine poll lands,
      * and the tab silently reverts to the first part under him while the card
      * and drawer correctly stay open. Found by the reviewer, not by me. */
     if (cycle === null || cycle === undefined) {
@@ -163,7 +163,7 @@
 
   /* An attach button for any composer on this site.
    *
-   * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"* He
+   * The owner, comments board 2026-08-21: *"How do i send a screenshot?"* He
    * could see a layout bug on his Galaxy S25 that no renderer in this loop
    * can reproduce, and the only channel between us was text. Cycle 299 had
    * to answer "you can't" and ask him to describe the pixels instead.
@@ -183,7 +183,7 @@
     input.type = "file";
     // No `accept` at all. It was `image/*`, and on Android that is not a
     // filter over a file browser -- it is what makes the picker open
-    // Google Photos with no way out. Edvard, 2026-08-21: "It seems i only
+    // Google Photos with no way out. The owner, 2026-08-21: "It seems i only
     // can upload images. Or atleas the ui forces only my Google photos to
     // open and i have no option to upload files." The server resolves and
     // bounds the type, and answers with a sentence he can read, so an
@@ -276,7 +276,7 @@
    * <name>)`, which are the two lines `buildAttach` writes, an image and
    * any other file -- and everything else stays the plain text it
    * has always been. The comment painter's own note says "nothing here
-   * interprets it as markdown", and that stays true of everything Edvard
+   * interprets it as markdown", and that stays true of everything the owner
    * types himself; what changed is that this site now generates one
    * specific line on his behalf and has to be able to read it back.
    *
@@ -339,7 +339,7 @@
 
   /* Make a pager fire when it is scrolled to, instead of when it is tapped.
    *
-   * Edvard, issues.md #71: "Make it more lazy load when i scroll down
+   * The owner, issues.md #71: "Make it more lazy load when i scroll down
    * instead of a button i press."
    *
    * The button stays. It is not a fallback nobody reaches -- it is the
@@ -376,7 +376,7 @@
    * load growing: it is bounded, because each widening adds twenty more
    * cards and the viewport does not grow with them, so it stops as soon as
    * the content is taller than the screen plus the margin. Twenty collapsed
-   * cards is already ~1400px against a phone's ~850px, so Edvard's own
+   * cards is already ~1400px against a phone's ~850px, so the owner's own
    * first load does not trigger it at all -- but a desktop's does, and it
    * is the path no test had until the reviewer pointed at it.
    *
@@ -495,7 +495,7 @@
   }
 
   /* The outcomes that are safe to draw as a badge, as a closed list rather
-   * than a length guess. Edvard, `issues.md` 2026-08-24, after a run of
+   * than a length guess. The owner, `issues.md` 2026-08-24, after a run of
    * cycles died without writing anything: "Earlier we did have some mention
    * about this in Nova but i said to take the statuses away. But now, i miss
    * the status fields. Please bring them back."
@@ -561,7 +561,7 @@
    * what he has done, made from a payload that never came. */
   var haveComments = false;
 
-  /* The oldest ask Edvard has not replied to, or null.
+  /* The oldest ask the owner has not replied to, or null.
    *
    * `status.asks` is every card that raised one, newest first and with no
    * opinion about which are still open (see `open_asks`); a card is
@@ -605,7 +605,7 @@
 
   /* One status field, and where it points.
    *
-   * Edvard, capture 2026-08-22: *"The status fields at the top, we are
+   * The owner, capture 2026-08-22: *"The status fields at the top, we are
    * keeping them. Please have them shown horisontal listed, not vertical.
    * Also clicking them navigates me down to the Journal it references."*
    *
@@ -703,7 +703,7 @@
     /* The newest written entry's PR, so the cycle it references is
      * `status.cycle` — the same number the line above it prints.
      *
-     * This field used to lead with the outcome pill. Edvard, `issues.md`
+     * This field used to lead with the outcome pill. The owner, `issues.md`
      * 2026-08-23: "Drop the Outcome pill from the top-of-page header too,
      * not just the card view — it's the same ugly all-caps duplicate of the
      * blue summary line, shown twice on the same screen." Both copies were
@@ -721,7 +721,7 @@
      * The paragraph above describes #300 and is kept as the reason the
      * *qualifier* is still gone; its sentence about the pill itself was
      * overtaken on 2026-08-24 and the block below is what holds now. */
-    /* ...and it is back, narrowed. Edvard, `issues.md` 2026-08-24: "i miss
+    /* ...and it is back, narrowed. The owner, `issues.md` 2026-08-24: "i miss
      * the status fields. Please bring them back." Same rule as the card:
      * `shortOutcome` only, so the field can hold a badge and can never hold
      * the clause that got it cut. The field draws when either half has
@@ -771,7 +771,7 @@
     }
 
     /* The stall badge ("no entry for N hours") and the gap badge ("cycle
-     * 265 wrote no entry") both used to render here, and Edvard asked for
+     * 265 wrote no entry") both used to render here, and the owner asked for
      * both to go, capture 2026-08-20: *"I do not like he statuses on the
      * top of Nova. The message 'cycle 265 wrote no entry' just stands
      * there forever. Please remove all those statuses as i do not want
@@ -814,7 +814,7 @@
     if (subs.childNodes.length) statusEl.appendChild(subs);
   }
 
-  /* Edvard, comments board 2026-08-14: "Or a display error if the fetch
+  /* the owner, comments board 2026-08-14: "Or a display error if the fetch
    * failed, also".
    *
    * The header's whole job is to say whether the loop is alive, and it was
@@ -889,7 +889,7 @@
    * would need innerHTML or createElementNS, and the first is banned here
    * for a good reason and the second buys nothing at this size. */
   /* `target` is what the drawer is attached to, so the same drawer serves
-   * both a journal card and the Needs Edvard block:
+   * both a journal card and the Needs the owner block:
    *   body(text)  -> the /api/comment payload naming that target
    *   pick(data)  -> that target's comments out of /api/comments
    *   placeholder, ariaLabel -> the words for it
@@ -901,13 +901,13 @@
 
   /* There used to be an `expanded` map here, holding whether a folded thread
    * had been opened. It is gone with the "Show earlier replies" control it
-   * served -- Edvard, 2026-08-16 20:04: *"I see that a solution to the
+   * served -- the owner, 2026-08-16 20:04: *"I see that a solution to the
    * comments has been to introduce a 'show/hide' comments bar, but that was
    * a failure. Remove it and try something else."* See `renderComments`. */
 
   /* "40 seconds" / "3 minutes" / "1 hour 5 minutes" -- how long a reply has
    * been in flight. Deliberately coarse above a minute: the point is to let
-   * Edvard tell a slow answer from a stuck one, and a ticking second count
+   * the owner tell a slow answer from a stuck one, and a ticking second count
    * reads as a stopwatch on something he cannot hurry. Anything missing or
    * nonsensical falls back to "a moment", because a wait line that renders
    * "NaN minutes" is worse than the fixed sentence it replaced. */
@@ -933,7 +933,7 @@
   function renderComments(container, target, comments) {
     var drawer = el("div", "comment-drawer");
 
-    /* Edvard, comments board 2026-08-16, three times inside fifteen
+    /* the owner, comments board 2026-08-16, three times inside fifteen
      * minutes: *"it creates a very long list of previous conversations.
      * Something must be done with this, immediately!"*, *"I still see it
      * with a long conversation of previous messages that is not relevant
@@ -941,7 +941,7 @@
      * scroll past every single time i want to read your newest journals,
      * which is 6-8 times a day."*
      *
-     * He is describing the Needs Edvard block, and the cause is that its
+     * He is describing the Needs the owner block, and the cause is that its
      * drawer was the one drawer that was never folded (that block is gone) --
      * so every reply he has ever made to it, since 2026-08-10, is painted
      * open at the top of the page, above the newest journal card. A cycle
@@ -953,7 +953,7 @@
      * the same day, 20:04 -- *"I see that a solution to the comments has
      * been to introduce a 'show/hide' comments bar, but that was a failure.
      * Remove it and try something else."* -- and 20:03, on the block as a
-     * whole: *"I think the architecture around the 'needs Edvard' block
+     * whole: *"I think the architecture around the 'needs the owner' block
      * needs to be rethinked as it seems poorly designed."*
      *
      * He is right and the fold was me refusing to answer the question. He
@@ -1060,7 +1060,7 @@
 
       /* One flat list in the order things were actually said.
        *
-       * Edvard, issues.md 2026-08-23: *"a Nova cycle reply posted at 14:01
+       * The owner, issues.md 2026-08-23: *"a Nova cycle reply posted at 14:01
        * rendered between two of my comments timestamped 13:31 and 13:40
        * instead of after both — thread isn't sorting strictly by time."*
        *
@@ -1088,7 +1088,7 @@
         head.appendChild(el("span", "comment-stamp", comment.stamp || ""));
         if (comment.acknowledged) head.appendChild(el("span", "comment-ack", "read"));
         item.appendChild(head);
-        // The text is Edvard's own prose and the server sends it as plain
+        // The text is the owner's own prose and the server sends it as plain
         // text, so each blank-line-separated paragraph becomes its own <p>.
         // Nothing here interprets it as markdown *except* the one attach
         // line this site writes for him -- see `appendRichText`.
@@ -1099,7 +1099,7 @@
          * would read as broken.
          *
          * It is a sibling of the comment it answers, not a child of it:
-         * Edvard, issues.md 2026-08-10, "they should be below each other
+         * The owner, issues.md 2026-08-10, "they should be below each other
          * on the same indentation. So the comments alternates between blue
          * and green downwards." Which comment a reply belongs to is now
          * carried by the order alone, and the order is the conversation. */
@@ -1283,7 +1283,7 @@
     /* Deliberately no Enter-to-send here, unlike the capture box.
      *
      * The two boxes look alike and are not: a capture is one line per item,
-     * so Enter meaning "file it" costs nothing. Edvard asked for this one
+     * so Enter meaning "file it" costs nothing. The owner asked for this one
      * to be "a multiline text input", and his own example runs to two
      * sentences -- so Enter has to be a newline, or every paragraph break
      * in the thing he asked to be able to write would need a modifier he
@@ -1306,7 +1306,7 @@
 
   /* One card per cycle, however many entries that cycle wrote.
    *
-   * Edvard, on the comments board at cycle 81: "i do not like the double
+   * The owner, on the comments board at cycle 81: "i do not like the double
    * entry Journal cards. If a double entry is necessary like for cycle 81,
    * have it be combined into one card that has tabs or something similar.
    * Its confusing that its two separate cards."
@@ -1332,7 +1332,7 @@
     var settled = settledPart(ordered);
 
     var card = el("article", "entry");
-    /* Edvard, comments board at cycle 156, asking for an eight-cycle report
+    /* the owner, comments board at cycle 156, asking for an eight-cycle report
      * card: "They should appear like a journal card, but stand out in both
      * color and form to show that they are just summaries." The server
      * decides which entries those are (`nova_journal.parse_heading`); this
@@ -1368,7 +1368,7 @@
       : entry.title || "Note"));
     toggle.appendChild(heading);
 
-    /* No chevron. Edvard, issues.md #59: "Remove the arrow that shows if
+    /* No chevron. The owner, issues.md #59: "Remove the arrow that shows if
      * the dropdown is open/closed." The card already answers that twice
      * over -- collapsed shows a one-line brief and a "Read the full
      * journal" button, expanded shows the prose and "Close the full
@@ -1393,7 +1393,7 @@
      * `appendOutcome` is the same call the page makes, so the two cannot
      * say different things about one cycle -- with `withOutcome: false`,
      * because the pill and its qualifier are cut from the feed card. See
-     * that function for Edvard's ask. Everything that decides *which* part
+     * that function for the owner's ask. Everything that decides *which* part
      * these come from is unchanged and still tested through the PR badge. */
     var meta = el("div", "entry-meta");
     var stamp = [entry.date, entry.time].filter(Boolean).join(" ");
@@ -1417,7 +1417,7 @@
       card.appendChild(el("p", "entry-title", cleanTitle(entry.title)));
     }
 
-    /* Edvard, comments board 2026-08-16: "remove the 'needs Edvard' block
+    /* the owner, comments board 2026-08-16: "remove the 'needs the owner' block
      * entirely. If you need something from me, it should be added in the
      * Journal card somehow and i'll answer in the comment of a journal card.
      * [...] add a new yellow block below the title or somehow higlight your
@@ -1446,9 +1446,9 @@
     var askToggle = null;
     var setAskOpen = null;
     if (asked.length) {
-      /* Edvard, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
-       * 'needs Edvard' block on an entry, minimize it instead of leaving it
-       * full-size -- and let Edvard minimize it himself too. Don't delete it,
+      /* the owner, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
+       * 'needs the owner' block on an entry, minimize it instead of leaving it
+       * full-size -- and let the owner minimize it himself too. Don't delete it,
        * just collapse it."
        *
        * Two halves, and the second is what makes the first safe to guess at.
@@ -1470,7 +1470,7 @@
       var answered = !!(comments && comments.length);
       var ask = el("div", "entry-ask");
       var askHead = el("div", "entry-ask-head");
-      /* Edvard, unboarded capture 2026-08-21: "Change the 'needs Edvard' to
+      /* the owner, unboarded capture 2026-08-21: "Change the 'needs the owner' to
        * 'needs input'." The label is what he reads; the marker inside the
        * entry text still parses both spellings, because the archive's asks
        * are written and never edited. */
@@ -1508,7 +1508,7 @@
       card.appendChild(ask);
     }
 
-    /* Edvard, issues.md 2026-08-09: "a 2-3 line short precise Digest for
+    /* the owner, issues.md 2026-08-09: "a 2-3 line short precise Digest for
      * each cycle as a title for each journey card ... Then, when a journey
      * card is opened, the Digest is revealed. Below that, a 'read the full
      * journal' button to expand the full journal ... So its a drawer within
@@ -1587,7 +1587,7 @@
     var commenting = null;
     if (entry.cycle !== null && entry.cycle !== undefined) {
       /* Bottom right of the card rather than beside the permalink in the
-       * head -- Edvard, ideas.md 2026-08-10: "Move the Journal chat bubble
+       * head -- the owner, ideas.md 2026-08-10: "Move the Journal chat bubble
        * icon to the bottom right of the Journal cards."
        *
        * The foot is appended *before* renderComments, because renderComments
@@ -1646,7 +1646,7 @@
     setJournalOpen(fold.journal);
     setExpanded(fold.expanded);
 
-    /* Edvard, issues.md 2026-08-09: "i want to click anywhere on it to
+    /* the owner, issues.md 2026-08-09: "i want to click anywhere on it to
      * expand/close it, not just the header."
      *
      * The listener sits on the card and the button has none of its own. A
@@ -1729,7 +1729,7 @@
 
   /* `/cycle/81` is a page, not a card.
    *
-   * Edvard, inside issue #59: "its not the link thats the problem, its the
+   * The owner, inside issue #59: "its not the link thats the problem, its the
    * single view that is bad ui... Please do some propper ui research and
    * testing with this as the current solution does not make sense, is hard
    * to understand and wasteful". And on the comments board, Cycle 81: "i do
@@ -1809,7 +1809,7 @@
   }
 
   /* `opts.withOutcome === false` draws the row without the outcome pill and
-   * its qualifier. Edvard, comments board 2026-08-23, on cycle 340's card:
+   * its qualifier. The owner, comments board 2026-08-23, on cycle 340's card:
    * "What is this new grey title? ... This is ugly and seems like information
    * i do not need or want" -- and, to the proposal to drop the pill from the
    * card, "Sure. Cut it".
@@ -1829,7 +1829,7 @@
   function appendOutcome(row, entry, opts) {
     var withOutcome = !opts || opts.withOutcome !== false;
     /* On the card, only a recognised status word is drawn -- see
-     * `shortOutcome`. That is the half of the pill Edvard asked back on
+     * `shortOutcome`. That is the half of the pill the owner asked back on
      * 2026-08-24; the half he cut, free text rendered as a badge, stays
      * cut. Where the full pill is drawn (`/cycle/<n>`, a disagreeing
      * part's own row) nothing changes: those are pages opened on purpose. */
@@ -1840,7 +1840,7 @@
     /* With the pill suppressed, `isRealPr` gates the PR too. "none" is only
      * ever readable as the object of the footer's sentence -- `PR: none |
      * Outcome: no-op` -- and once the outcome half is gone it answers a
-     * question nothing on the card asked. Cycle 340's card, the one Edvard
+     * question nothing on the card asked. Cycle 340's card, the one the owner
      * complained about, is exactly this case. Where the pill is drawn, so
      * is the `none`: there it still says something. */
     if (entry.pr && (withOutcome || isRealPr(entry.pr))) {
@@ -1868,13 +1868,13 @@
     return row;
   }
 
-  /* Edvard, issues #86: "Journal cards like cycle 209 seems to have two
+  /* the owner, issues #86: "Journal cards like cycle 209 seems to have two
    * titles. Only one is enough."
    *
    * A card draws the entry's own `### ` heading title and, directly under
    * it, the brief. When the brief comes from the digest line those are two
    * sentences written for two different purposes, saying the same thing --
-   * cycle 209's heading is "Edvard asked for tabs three times and I finally
+   * cycle 209's heading is "the owner asked for tabs three times and I finally
    * built them" and its digest brief is "You asked three times for the
    * double journal entries to be one card with tabs, and now they are."
    * The digest line is the one he reads, so it is the one that stays.
@@ -1882,7 +1882,7 @@
    * The digest-line half of that shipped in #86. The entry half did not:
    * when a card has no digest line its brief is the entry's own first
    * paragraph, and that paragraph opens by restating the heading, so the
-   * card still showed two sentences saying one thing. Edvard, comments
+   * card still showed two sentences saying one thing. The owner, comments
    * board 2026-08-22, on a screenshot of cycle 329: "I'm a bit confused by
    * the Nova cycle ui. Sometimes there are two titles and they repeat
    * eachoter with different words. See image. I like the one with the
@@ -1965,7 +1965,7 @@
    *  is nothing to tell apart, and a control that switches between one
    *  thing is the same noise as a permalink to the page you are on.
    *
-   *  **Tabs, because Edvard asked three times.** Comments board at cycle
+   *  **Tabs, because the owner asked three times.** Comments board at cycle
    *  81: "If a double entry is necessary like for cycle 81, have it be
    *  combined into one card that has tabs or something similar." Inside
    *  issue #59: "they should be combined into one with tabs. Please do some
@@ -2128,7 +2128,7 @@
      * that is only their own timestamp, and it renders as nothing rather
      * than as a date printed twice. `hasBrief` because a card that draws a
      * brief already has a sentence doing this job -- see its own comment,
-     * issues #86, and Edvard's 2026-08-22 captures. */
+     * issues #86, and the owner's 2026-08-22 captures. */
     if (parts.length === 1 && cleanTitle(first.title) && !hasBrief(digestLine, first)) {
       card.appendChild(el("p", "entry-title", cleanTitle(first.title)));
     }
@@ -2235,7 +2235,7 @@
      * its own entry. So the group takes the position of the cycle's newest
      * part, and later parts join it wherever they turn up.
      *
-     * An entry with no cycle number (Edvard's own notes) is its own group:
+     * An entry with no cycle number (the owner's own notes) is its own group:
      * there is nothing to key it on, and collapsing them all under `null`
      * would merge unrelated notes into one card. */
     var groups = [];
@@ -2280,7 +2280,7 @@
       }
       return;
     }
-    /* The hole in the record, marked where it happened (#72). Edvard found
+    /* The hole in the record, marked where it happened (#72). The owner found
      * cycles 127 and 128 himself, by noticing the numbers on this feed jump
      * from 126 to 129 -- so the gap is put back exactly where he was
      * already looking, rather than summarised in a counter at the top.
@@ -2289,7 +2289,7 @@
      * to put it. That matters because a window is a contiguous slice of
      * the corpus but an unnumbered entry is not: filling in every number
      * between two cards from the client's own arithmetic would invent gaps
-     * for Edvard's own notes, which have no cycle number to be missing.
+     * for the owner's own notes, which have no cycle number to be missing.
      *
      * Where a hole belongs is decided by the cycle numbers, not by which
      * two cards happen to be adjacent. The feed is not sorted by cycle: a
@@ -2543,7 +2543,7 @@
         // loop is quiet (`journal_descriptor`), so that 304 is the common
         // case, and "can't reach Nova" would stick to the header for up to an
         // hour after the app was last actually offline. That is the flash
-        // Edvard reported, inverted onto the banner meant to explain it.
+        // The owner reported, inverted onto the banner meant to explain it.
         lastPayload[key] = body;
         if (isReplayed(r) && body && body.status) {
           return shallow(body, { status: shallow(body.status, { replayed: true }) });
@@ -2588,7 +2588,7 @@
 
   /* ---- The board pages: Issues and Ideas (issues.md #57) ----------------
    *
-   * Edvard: "I need more visualisations in the Nova app. Create more
+   * The owner: "I need more visualisations in the Nova app. Create more
    * pages to contain more, such as issue list, idea list (separate
    * pages) ..."
    *
@@ -2624,7 +2624,7 @@
     toggles: {},
     sort: "filed",
     desc: false,
-    // Whether the filter modal (Edvard, 2026-08-14: "make the filters
+    // Whether the filter modal (the owner, 2026-08-14: "make the filters
     // into a modal... remove all the filter buttons") is open, so a
     // re-render triggered by tapping an option inside it -- every filter
     // and toggle click already calls `renderBoard` -- knows to rebuild
@@ -2644,7 +2644,7 @@
    * Nothing here touches the hold-menu: edit and delete are ungated on
    * every row and always have been, which `delete_row`'s own docstring
    * gives the reason for -- "deleting a finished item is the most likely
-   * thing Edvard wants". So an outdated row stays deletable because there
+   * thing the owner wants". So an outdated row stays deletable because there
    * was never a gate, not because this filter spared it. */
   function isOutdated(item) { return item.statusKey === "outdated"; }
 
@@ -2660,7 +2660,7 @@
   ];
 
   /* The extra filters, on top of Open/Done/All rather than instead of it
-   * -- Edvard, ideas.md #71: "filter the list based on different
+   * -- the owner, ideas.md #71: "filter the list based on different
    * parameters like date, this week, priority etc. Invent 5-6 more."
    * These are the ones I wrote back to him that need no data the page
    * does not already hold. They are toggles and they AND together, so
@@ -2809,7 +2809,7 @@
     });
   }
 
-  /* The list Edvard is actually looking at: status filter, then the
+  /* The list the owner is actually looking at: status filter, then the
    * toggles, then the search, then the order. Search is last of the
    * cuts because it is the only one that can be waiting on the server:
    * until `matches` holds an answer for the string in the box, the title
@@ -2862,7 +2862,7 @@
     var open = items.length - done - outdated;
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
-    /* The page name is bold and the counts are not -- Edvard, issues.md #83:
+    /* The page name is bold and the counts are not -- the owner, issues.md #83:
      * "Make the header for issues and ideas bold". The whole line used to be
      * one dim string, so "Issues" read as part of the tally rather than as
      * the title of the page you are on. Only the name moves; the counts stay
@@ -2910,7 +2910,7 @@
    * depends on which rating is selected. */
   var PRIORITY_KEYS = ["", "low", "medium", "high", "immediate"];
 
-  /* A small custom dropdown, not a native <select> -- Edvard, 2026-08-14:
+  /* A small custom dropdown, not a native <select> -- the owner, 2026-08-14:
    * the closed control had to stay compact while the open list still
    * spelled out each rating's word. No native form control can show one
    * thing closed and another open: a <select> renders its selected
@@ -2951,7 +2951,7 @@
    * button, `.capture-prio`'s circle, showing only the glyph. That is the
    * shape a fresh, usually-unrated capture needs.
    *
-   * `chipStyle: true` (board rows) is the opposite: Edvard, 2026-08-14,
+   * `chipStyle: true` (board rows) is the opposite: The owner, 2026-08-14,
    * after the ball-only version shipped there -- "i liked the old issue
    * priority status better... make it into a button that opens the
    * modal, but the visual design is not changed from the old design."
@@ -2970,7 +2970,7 @@
     var current = opts.current || "";
     /* Board-row chips (`chipStyle: true`) still read `🟠 High` -- collapsed,
      * a chip is the rating's only on-screen representation, which is why
-     * Edvard asked for the word there (2026-08-19: *"Please do not use
+     * the owner asked for the word there (2026-08-19: *"Please do not use
      * these symbols '🟠' as i can't really see the difference as they are
      * colors. Please use the full word"*), word restored beside the glyph
      * in Cycle 268/274.
@@ -2978,7 +2978,7 @@
      * The capture box's closed trigger (`chipStyle` unset) does not carry
      * that same load: tapping it opens `.prio-menu`, which already spells
      * out every option in full, so the trigger only has to preview the
-     * pick. Edvard, 2026-08-22: the word made the closed button wide
+     * pick. The owner, 2026-08-22: the word made the closed button wide
      * enough to push the row's other buttons out of position, and "the
      * button should just show the color" -- the dropdown is where the
      * word has to be. `glyphOf` gives that trigger just the leading glyph
@@ -3028,7 +3028,7 @@
     }
 
     // Centered and full-width rather than anchored under the trigger
-    // (Edvard, 2026-08-14, after using the anchored version live: the
+    // (the owner, 2026-08-14, after using the anchored version live: the
     // native picker it replaced read as a real dialog, and a small
     // anchored dropdown read as a lesser thing next to it) -- so CSS
     // alone centers `.prio-menu`, and this only has to show it and the
@@ -3089,9 +3089,9 @@
     return { el: trigger, getValue: function () { return current; }, setValue: setValue };
   }
 
-  /* The rating cell of one boarded row, as something Edvard can change --
+  /* The rating cell of one boarded row, as something the owner can change --
    * the row's own priority indicator in `.item-meta-row`, not a second
-   * control hidden inside the write-up (Edvard, 2026-08-14: "on issues and
+   * control hidden inside the write-up (the owner, 2026-08-14: "on issues and
    * ideas the priority button should be the priority tag instead, not a
    * separate button"). `note` is a sibling element the caller places; this
    * only fills it in. No save button on the picker itself, because the
@@ -3130,7 +3130,7 @@
     });
   }
 
-  /* Edvard, issue #84: *"If i hold the card for more than 1 second i get
+  /* the owner, issue #84: *"If i hold the card for more than 1 second i get
    * into edit mode"*. His number, not a tuned one. */
   var HOLD_MS = 1000;
 
@@ -3219,7 +3219,7 @@
     return { el: panel, focus: function () { box.focus(); } };
   }
 
-  /* One row of Edvard's board. Closed it is the number, the title and a
+  /* One row of the owner's board. Closed it is the number, the title and a
    * status chip; open it reveals the write-up, which is a second request
    * the first time a row is opened and memory after that. */
   function renderBoardItem(board, item) {
@@ -3231,7 +3231,7 @@
     // A <button> (the toggle) cannot contain another <button> (the
     // priority trigger) -- nested interactive controls are invalid HTML.
     // That ruled out a real <button> for `head` once the priority trigger
-    // needed to sit inside it, level with the status chip (Edvard,
+    // needed to sit inside it, level with the status chip (the owner,
     // 2026-08-14: "the priority status button needs to be placed on the
     // same horizontal as the progress status, on its right side" -- a
     // sibling next to the whole head, tried first, could only ever line
@@ -3255,11 +3255,11 @@
     var metaRow = el("div", "item-meta-row");
     metaRow.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
 
-    // Every rating on both boards was set by a cycle, not by Edvard
+    // Every rating on both boards was set by a cycle, not by the owner
     // (issues.md capture, 2026-08-14). A finished row keeps the original
     // cycle-171 read-only chip if it has a rating and nothing if it does
     // not -- unrated getting no chip at all, rather than a grey "none"
-    // one, is what tells Edvard which open rows still want a rating; a
+    // one, is what tells the owner which open rows still want a rating; a
     // done row is not one he is going to visit for that. `item.done`
     // alone is not the editable test, it only means the row is in the
     // `## Done` table and most finished rows never move there --
@@ -3276,7 +3276,7 @@
     head.appendChild(metaRow);
     if (editable) head.appendChild(prioNote);
 
-    // Below the status/priority line rather than beside it (Edvard,
+    // Below the status/priority line rather than beside it (the owner,
     // 2026-08-14: "the date should be placed below them").
     if (item.updated) head.appendChild(el("span", "item-updated", item.updated));
 
@@ -3286,7 +3286,7 @@
     if (boardState.open !== item.number) body.hidden = true;
     row.appendChild(body);
 
-    /* Edvard, capture 2026-08-22: *"I can't delete, edit or upload a file
+    /* the owner, capture 2026-08-22: *"I can't delete, edit or upload a file
      * to a boarded issues. I wanted to delete issue #4 but i'm not able
      * to."* #4 is an ordinary open row, so nothing about that row made it
      * read-only -- the only way into the editor was the one-second hold,
@@ -3412,7 +3412,7 @@
       wrap.appendChild(box);
       var foot = el("div", "item-comment-foot");
       foot.appendChild(status);
-      /* Edvard, issues.md: *"I can't delete, edit or upload a file to a
+      /* the owner, issues.md: *"I can't delete, edit or upload a file to a
        * boarded issues."* Cycle 318 did the delete and the edit; this is
        * the third verb, and it is the same button the journal drawer and
        * the capture box already carry.
@@ -3557,7 +3557,7 @@
     return row;
   }
 
-  /* One not-boarded capture, with Edvard's edit and delete on it
+  /* One not-boarded capture, with the owner's edit and delete on it
    * (issues.md #66). Two halves of that item live here: the rule between
    * rows, and the controls.
    *
@@ -3583,7 +3583,7 @@
     var one = el("div", "capture-item" + (capture.done ? " capture-item-done" : ""));
     var body = el("div", "capture-body");
     /* The rating, shown and editable the same way a boarded row's is.
-     * Edvard, issues.md #91: *"All unboarded issues and ideas should have
+     * The owner, issues.md #91: *"All unboarded issues and ideas should have
      * the priority status icon shown (as they do when its chosen) in the
      * left top corner, but pressing it should open the modal like it does
      * sin the issue cards."*
@@ -3790,7 +3790,7 @@
     /* One section. A capture a cycle has closed carries a `DONE (Cycle N):`
      * prefix (`nova_boards.split_capture_done`); Cycle 251 gave those their
      * own "Done, not yet cleared" section so they would stop claiming to be
-     * work, and Edvard asked for that section to go, capture 2026-08-20:
+     * work, and the owner asked for that section to go, capture 2026-08-20:
      * *"I do not like or see the point of the 'Done, not yet cleared' list
      * in issues and ideas. I do not use it and to me its just noise."*
      *
@@ -3849,7 +3849,7 @@
     shown.forEach(function (item) { boardRows.appendChild(renderBoardItem(board, item)); });
   }
 
-  /* Redraw only what a search changed. Edvard, issues.md, 2026-08-15:
+  /* Redraw only what a search changed. The owner, issues.md, 2026-08-15:
    * "When i use the search bar in Nova, my keyboard is closed on every
    * letter input so i have to open the keyboard each letter."
    *
@@ -3883,7 +3883,7 @@
   }
 
   /* The search box, the filter chips and the sort control, in that order
-   * -- Edvard's two asks (ideas.md #70 and #71) are one strip on the
+   * -- the owner's two asks (ideas.md #70 and #71) are one strip on the
    * page because they are one question: which rows do I want, and in
    * what order. Rebuilt on every board render like everything else here
    * -- but deliberately *not* on a keystroke, which redraws the rows
@@ -3930,7 +3930,7 @@
     return chips;
   }
 
-  /* The filter modal -- Edvard, 2026-08-14: "make the filters into a
+  /* The filter modal -- the owner, 2026-08-14: "make the filters into a
    * modal same as the priority. remove all the filter buttons and place
    * a new filter button... next to the arrow button on the search. the
    * filter button opens a modal with the filter options."
@@ -4308,7 +4308,7 @@
 
   /* ---- The costs page (issues.md #57, page 2) --------------------------
    *
-   * Edvard, 2026-08-08: "I want you to figure out the optimal method of
+   * The owner, 2026-08-08: "I want you to figure out the optimal method of
    * quota spendage for projects. I do not know the optimal way. Figure
    * this out by trial and error and gained experience." Every cycle has
    * been writing its own cost into a ledger since; this is the first time
@@ -4365,7 +4365,7 @@
 
   /* ---- Charts, on a real charting library --------------------------------
    *
-   * Edvard, 2026-08-20, on the hand-rolled version this replaces: "there
+   * the owner, 2026-08-20, on the hand-rolled version this replaces: "there
    * are still quite the amount of bugs and better ux improvements. Can we
    * just use a third party library for this? We do not have to reinvent
    * the wheel here. ... The zoom works, but it does not give me any more
@@ -4479,7 +4479,7 @@
 
   /* Shared option scaffolding.
    *
-   * The three things Edvard asked for, each named where it is set:
+   * The three things the owner asked for, each named where it is set:
    *  - granularity: `dataZoom` re-scales the axis and ECharts re-derives
    *    its ticks, so zooming in genuinely turns "14 Aug — 20 Aug" into
    *    hours. `filterMode: "none"` keeps the marks outside the window
@@ -4623,7 +4623,7 @@
     liveCharts.forEach(function (chart) { chart.instance.resize(); });
   });
 
-  /* Full screen, unchanged in spirit from the version Edvard asked for --
+  /* Full screen, unchanged in spirit from the version the owner asked for --
    * the phone-sized figure gets the whole window, which in landscape is a
    * much bigger picture and in portrait at least stops the tiles and the
    * other charts competing for it.
@@ -4956,7 +4956,7 @@
 
   /* ---- The retrospective page (issues.md, 2026-08-13) ------------------
    *
-   * Edvard: "Rate yourself on a scale from 1 to 10 on how you feel its
+   * The owner: "Rate yourself on a scale from 1 to 10 on how you feel its
    * going, how effective do you think you are, whats good, whats bad,
    * whats the overall feeling (which is the most important metric).
    * Actually note down data and compare it to previous retros (lets also
@@ -5195,7 +5195,7 @@
   }
 
   /* The `/plan` page: `roadmap.md` and `goals.md`, which until now reached
-   * Edvard only through Obsidian (issues.md #7, goals.md's own G2).
+   * the owner only through Obsidian (issues.md #7, goals.md's own G2).
    *
    * No chart, no tiles, no summary line -- unlike every other non-journal
    * page here. Those exist because their source is a ledger of numbers and
@@ -5221,7 +5221,7 @@
    *
    * Every value on the row is also printed as text. The colour and the tick
    * are a second encoding of a verdict the word "On target" already gives,
-   * because a bar Edvard has to decode a colour to read is the same failure
+   * because a bar the owner has to decode a colour to read is the same failure
    * as the bare priority symbols he asked me to stop using. */
   /* A goal's past readings, as a line and as words.
    *
@@ -5237,7 +5237,7 @@
    * has "enough" history would make the chart appear a week after the goal.
    *
    * The dates and values are also printed as text under the line, for the
-   * same reason the bar above prints its numbers — a shape Edvard has to
+   * same reason the bar above prints its numbers — a shape the owner has to
    * squint at is not something I have told him. The line is the summary; the
    * text is the record. */
   var SPARK_W = 240;
@@ -5363,7 +5363,7 @@
    * chip, the one-sentence claim and the board row it came from.
    *
    * The chip prints the symbol and the word together, always, and the server
-   * sends both or neither -- Edvard cannot tell the coloured circles apart by
+   * sends both or neither -- the owner cannot tell the coloured circles apart by
    * colour and asked for the word beside the symbol on 2026-08-20. A status
    * the server did not recognise arrives with both fields empty and gets no
    * chip at all, which is the page declining to guess rather than defaulting
@@ -5403,7 +5403,7 @@
   /* One section of a plan document, folded under its own heading.
    *
    * `/plan` was 4,961 words in one scroll with no entry point but the top
-   * -- issue #96, in Edvard's words "just a huge wall of text. I hate
+   * -- issue #96, in the owner's words "just a huge wall of text. I hate
    * that." The scoreboard and the ranked strip above answer the page's two
    * questions; this puts the reasoning behind a control instead of
    * deleting it, which is the half he has twice asked to keep.
@@ -5495,7 +5495,7 @@
 
   /* The Notes page.
    *
-   * Edvard, issues.md 2026-08-21: *"I do not have a notes page that shows
+   * The owner, issues.md 2026-08-21: *"I do not have a notes page that shows
    * any overview of the notes made."*
    *
    * His third capture file had a button that writes to it and nothing
@@ -5735,7 +5735,7 @@
 
   /* The Questions page.
    *
-   * Edvard, ideas.md 2026-08-19: "Make a questions page in Nova where i can
+   * The owner, ideas.md 2026-08-19: "Make a questions page in Nova where i can
    * ask questions in a box and a Claude sonnet model answers me."
    *
    * The answer is not synchronous -- the question goes into an Agora
@@ -5781,7 +5781,7 @@
    * not both be tested: removing either one alone left the other covering
    * it, so both mutations passed and the navigation test pinned nothing.
    * The `.then` is the one that has to stay -- it is what catches a fetch
-   * still in flight when Edvard taps another tab -- so this is the copy
+   * still in flight when the owner taps another tab -- so this is the copy
    * that goes. */
   function pollAsk(container, attempts) {
     if (attempts >= ASK_POLL_MAX) return;
@@ -5870,7 +5870,7 @@
       });
   }
 
-  /* `/diag` -- what Edvard's own device reports about itself.
+  /* `/diag` -- what the owner's own device reports about itself.
    *
    * Three cycles running have now shipped a fix for a rendering fault on a
    * phone none of them could look at. Cycle 299 attributed a missing
@@ -6243,7 +6243,7 @@
   /* Put the capture composer back above the feed.
    *
    * The Notes page moves that one section *into* the feed so the box sits
-   * under the conversation (`renderNotes`, and Edvard's ask that the
+   * under the conversation (`renderNotes`, and the owner's ask that the
    * conversation be above the input box). Every renderer's first act is
    * `feed.textContent = ""`, so a navigation away from Notes that left it
    * there would delete the only composer in the document -- along with
@@ -6316,7 +6316,7 @@
       });
   }
 
-  /* Edvard, issues.md 2026-08-10: "Nova takes a long time to load when i
+  /* the owner, issues.md 2026-08-10: "Nova takes a long time to load when i
    * refresh it. And i have to refresh it to see new messages."
    *
    * The second half. A cycle writes an entry every hour and the page had
@@ -6416,7 +6416,7 @@
       /* Not on the first failure, and the threshold is doing real work
        * rather than hedging. A phone drops a single request routinely --
        * waking the tab, changing network -- and turning the header red for
-       * one of those would be the same flash-and-retract Edvard reported in
+       * one of those would be the same flash-and-retract the owner reported in
        * the first place. Two consecutive misses is 30 seconds of a server
        * that is genuinely not answering, which is the thing worth showing
        * and is not something a handover between cells produces. */
@@ -6447,7 +6447,7 @@
    *
    * Nothing here names the targets: `send` takes whatever `data-target`
    * the button carries and the server rejects anything not in
-   * CAPTURE_TARGETS, so the Note button (Edvard, issues.md 2026-08-12)
+   * CAPTURE_TARGETS, so the Note button (the owner, issues.md 2026-08-12)
    * needed no change in this file at all. */
   (function captureBox() {
     var form = document.getElementById("capture-form");
@@ -6456,7 +6456,7 @@
     var captureStatus = document.getElementById("capture-status");
     var buttons = Array.prototype.slice.call(form.querySelectorAll(".capture-btn"));
 
-    /* Edvard, issues.md 2026-08-14: "i want that aswell both when i input
+    /* the owner, issues.md 2026-08-14: "i want that aswell both when i input
      * in the textbox in the Nova app". Unrated is the default and stays
      * first -- most captures are a sentence he wants written down, not a
      * rating exercise, and forcing a choice would put a decision in front
@@ -6475,7 +6475,7 @@
       onPick: function () {},
     });
     /* Appended last, so it renders at the far right of the button row,
-     * on the same line as Issue/Idea/Note (Edvard, 2026-08-14). issues.md
+     * on the same line as Issue/Idea/Note (the owner, 2026-08-14). issues.md
      * 2026-08-14 split this into its own row above the buttons because at
      * 390px the select was 136px wide -- "🔴 Immediately" set its
      * intrinsic width -- which left room for exactly one of the three
@@ -6485,7 +6485,7 @@
     document.querySelector(".capture-submit").appendChild(prioPicker.el);
 
     /* The same attach button the comment drawer gets, on the box that
-     * files an issue, an idea or a note -- which is the rest of Edvard's
+     * files an issue, an idea or a note -- which is the rest of the owner's
      * list, *"next to a comment, issue, note or idea"*.
      *
      * **After the three targets and before the picker**, which is not
@@ -6493,7 +6493,7 @@
      * Idea / Note are three *destinations* and a fourth control among them
      * would read as a fourth place to file -- so it belonged before the
      * choice, which is also when it is used. A browser test caught that
-     * immediately, and it was pinning something Edvard asked for: *"The
+     * immediately, and it was pinning something the owner asked for: *"The
      * issue, idea, note and priority dropdown are now just scrambled"*,
      * and the row was rebuilt so the three targets come first and the
      * picker sits at the right edge. Prepending broke the first half.
@@ -6527,7 +6527,7 @@
     submitRow.insertBefore(captureAttach.button, prioPicker.el);
 
 
-    /* Edvard, issues.md 2026-08-09: "the input box for the Nova pwa is too
+    /* the owner, issues.md 2026-08-09: "the input box for the Nova pwa is too
      * small and not rescalable so i can't see my entire input text if its
      * more than 3 lines." CSS `resize: vertical` was already there and does
      * nothing on iOS -- mobile browsers render no resize handle at all, so
@@ -6578,7 +6578,7 @@
       button.addEventListener("click", function () { send(button.getAttribute("data-target")); });
     });
     form.addEventListener("submit", function (event) { event.preventDefault(); });
-    /* Enter is a newline. Edvard, issues.md #90: *"When i press enter on my
+    /* Enter is a newline. The owner, issues.md #90: *"When i press enter on my
      * keyboard, it automatically submits my input text as an issue in the
      * Nova text input field. Pressing enter should create a new line, not
      * submit."*

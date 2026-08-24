@@ -26,7 +26,7 @@ from agora_runner.tools_search import web_search_tinyfish
 from agora_runner.nova_capture import capture as capture_to_backlog
 from agora_runner.nova_uploads import is_image, read_upload
 
-#: The shape `store_upload` writes into Edvard's files. Deliberately the
+#: The shape `store_upload` writes into the owner's files. Deliberately the
 #: same pattern `tools.fetch_attachments` matches on, because both are
 #: pulling a name out of the same markdown line he never types by hand.
 UPLOAD_LINK = re.compile(r"/api/upload/([A-Za-z0-9._-]+)")
@@ -196,7 +196,7 @@ def _audit_vault_write(persona_name, conversation_id, capability, path, result, 
     side. Agora's Activity feed renders that as a completed diff.
 
     That matters more than it sounds: the audit log is the only durable
-    record of what a persona did to Edvard's vault, and it was lying in
+    record of what a persona did to the owner's vault, and it was lying in
     precisely the cases worth reviewing. #35 made the FAILED path
     genuinely reachable for vault_append, which is why this is being
     fixed now. On failure the attempt is still audited -- that a persona
@@ -394,7 +394,7 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             # has no channel for "this did not work", so a 409 or a missing
             # target file came back indistinguishable from success -- and
             # the reply turn's system prompt tells it to file the thing and
-            # then tell Edvard it filed it. He would have been told a bug
+            # then tell the owner it filed it. He would have been told a bug
             # was captured when nothing was written.
             #
             # The prefix rather than a new return shape because the vault

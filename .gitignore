@@ -16,7 +16,7 @@ tests/browser/node_modules
 
 # Scratch from the digest roll in `prompt.md` step 7, which tells a cycle
 # to `cd` into this repo and write `live.md`/`archive.md` here before
-# calling `tools.roll_digest`. They are fragments of Edvard's
+# calling `tools.roll_digest`. They are fragments of the owner's
 # `journal-digest.md`, not source, and they have been swept into a commit
 # by `git add -A` twice: Cycle 125 caught it before merging, Cycle 132
 # did not, and #111 shipped both files to `main`. Ignoring them is the

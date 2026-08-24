@@ -2,7 +2,7 @@
 
 `LIVE_SHAPE` is shaped off the live file as it stood on 2026-08-21 --
 nine answered notes, one of them carrying two cycle replies, and the
-empty bullet `nova_capture` leaves at the top as Edvard's cursor.
+empty bullet `nova_capture` leaves at the top as the owner's cursor.
 
 **The two wrapping cases are not in that file and the fixture does not
 pretend they are.** Every note there is a single line, because the file
@@ -49,7 +49,7 @@ def test_the_bare_bullets_above_the_first_heading_are_the_waiting_notes():
 def test_his_cursor_is_not_a_note():
     """`nova_capture` keeps an empty bullet at the top to type into.
 
-    It is punctuation in a file, not something Edvard wrote, and a card
+    It is punctuation in a file, not something the owner wrote, and a card
     drawn for it would be a permanent blank note at the top of the page.
     """
     parsed = parse_notes_page(LIVE_SHAPE)
@@ -117,7 +117,7 @@ def test_a_waiting_note_carries_no_reply_and_says_it_is_waiting():
 
 
 def test_the_page_reads_oldest_first_with_the_unanswered_notes_last():
-    """Edvard: *"ordered with the latest note at the bottom."*
+    """The owner: *"ordered with the latest note at the bottom."*
 
     This used to assert the opposite -- waiting notes first, so the
     page's first card answered "did anyone pick my note up". The page is

@@ -13,7 +13,7 @@ listed every one of them. Nova read "You have merge_pr -- merges an open
 PR, but only once every check-run on it is green. It refuses otherwise;
 there is no override" at the top of its context for five days and merged
 with a raw `gh pr merge`, which has no such guard. Nothing detected it;
-Edvard found it from the outside, from a parenthetical in a digest.
+The owner found it from the outside, from a parenthetical in a digest.
 
 #48 made the two agree for the capability sets that exist today. These
 tests are what stops them drifting apart again, and they immediately

@@ -22,7 +22,7 @@ credentials file).
 
 Same narrow contract as the bridge's: every pattern below matches a
 credential *format*, not a topic, and a hit is replaced with a visible
-`[redacted: <what>]` rather than silently dropped. Edvard's standing rule
+`[redacted: <what>]` rather than silently dropped. The owner's standing rule
 is that nothing is thrown away to make the UI tidier -- the answer to
 "too much output" is an interface, not a filter. A live credential is the
 one exception, because the danger is nameable and it has happened.
@@ -64,7 +64,7 @@ _PATTERNS = (
     #     this very system holds its CouchDB password under. It is spelled
     #     `_PASS` rather than `PASS` on purpose: a bare `pass:` is an
     #     ordinary English word, and "second pass: completed" is exactly the
-    #     over-redaction Edvard's keep-everything rule forbids.
+    #     over-redaction the owner's keep-everything rule forbids.
     ("value", re.compile(
         r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|_PASS|API[_-]?KEY|ACCESS[_-]?KEY|CREDENTIAL)S?)"
         r"(\"?\s*[=:]\s*\"?)"

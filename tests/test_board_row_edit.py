@@ -1,4 +1,4 @@
-"""Editing and deleting a boarded row -- Edvard's issue #84.
+"""Editing and deleting a boarded row -- the owner's issue #84.
 
 *"I need to be able to edit and especially delete boarded ideas and issues
 from the agora app. If i hold the card for more than 1 second i get into
@@ -6,7 +6,7 @@ edit mode and also have the option of deleting, save or cancel the edit."*
 
 The first half of this file is the parser fix the delete path needed: a
 write-up headed `### #84 — ...` was invisible to `parse_board`, which is
-21 of Edvard's 85 issue rows and 4 of his 72 idea rows.
+21 of the owner's 85 issue rows and 4 of his 72 idea rows.
 """
 
 import agora_runner.nova_capture as nova_capture
@@ -223,7 +223,7 @@ def test_delete_writes_once_and_sends_the_revision_it_read(monkeypatch):
 
 
 def test_a_deleted_row_is_archived_with_its_write_up(monkeypatch):
-    """Edvard, 2026-08-22: *"just to keep it as a deleted issue for future
+    """The owner, 2026-08-22: *"just to keep it as a deleted issue for future
     reference."* The row text and the write-up both have to survive, or the
     archive records that a number vanished rather than what it said."""
     # Path-aware on purpose: the archive file does not exist yet, and a

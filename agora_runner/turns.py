@@ -236,7 +236,7 @@ def schedule_minutes(schedule):
     number for an unrelated reason. `cycle_health` measures a silent loop
     in heartbeat intervals and had been reading a module constant to do it
     -- a constant that has been wrong twice, because the cadence is
-    Edvard's to change and he has changed it four times since 2026-08-08.
+    the owner's to change and he has changed it four times since 2026-08-08.
     One definition, two callers, same reason as `cycle_health.gaps_between`.
 
     Zero and negative are `None` rather than themselves. `every@0m` is not
@@ -300,7 +300,7 @@ def schedule_due(schedule, last_run_iso, created_iso, now_utc):
 
 
 def merge_history(thread, self_name, multi):
-    """Provider-ready history: Edvard → user; personas → assistant, other
+    """Provider-ready history: The owner → user; personas → assistant, other
     personas' lines prefixed "[Name]:" in multi-persona threads so models
     can tell speakers apart; consecutive same-role turns merged; leading
     assistant turns dropped (both providers want a user turn first);
@@ -354,7 +354,7 @@ def merge_history(thread, self_name, multi):
 
 def pending_user_turn(history):
     """The trailing user content of a merged history, or None if the
-    thread doesn't end on one — i.e. "Edvard spoke last and nobody has
+    thread doesn't end on one — i.e. "the owner spoke last and nobody has
     answered him yet". Used by run_heartbeat to decide whether the
     synthetic trigger should carry his real words along with it."""
     if history and history[-1]["role"] == "user":

@@ -1,13 +1,13 @@
 """nova_ask.py -- the Questions page's server half.
 
-Edvard's capture, ideas.md 2026-08-19: *"Make a questions page in Nova
+The owner's capture, ideas.md 2026-08-19: *"Make a questions page in Nova
 where i can ask questions in a box and a Claude sonnet model answers me."*
 
 What is worth pinning here is not "the HTTP calls happen" -- it is the
 three things that would silently stop an answer ever arriving, each of
 which looks fine from the outside:
 
-- the question is posted as `sender="Edvard"`, because `decide_turn` speaks
+- the question is posted as `sender="the owner"`, because `decide_turn` speaks
   only for a message from him and any other sender posts into silence;
 - the conversation is found by tag and created at most once, because a
   find that misses makes a fresh conversation per question and quietly

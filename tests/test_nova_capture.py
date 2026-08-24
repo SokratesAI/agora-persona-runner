@@ -51,7 +51,7 @@ def ideas_md():
 
 
 def _capture_list(markdown):
-    """The bullets above the first heading -- the list Edvard writes in."""
+    """The bullets above the first heading -- the list the owner writes in."""
     out = []
     for line in markdown.split("\n"):
         if line.strip().startswith("#"):
@@ -93,7 +93,7 @@ def test_nothing_typed_is_no_bullets(empty):
 
 # --- an attached image belongs to the text it was attached to -------------
 #
-# Edvard, capture 2026-08-21: "I see that my image upload test was split
+# The owner, capture 2026-08-21: "I see that my image upload test was split
 # into two idea entries. The image for its own separate entry and the text
 # got the other." `buildAttach` inserts the link as its own paragraph, so
 # the line rule above filed his sentence and his screenshot separately.
@@ -374,7 +374,7 @@ def test_a_missing_target_file_is_reported_not_created():
     write.assert_not_called()
 
 
-# --- notes: the third target (Edvard, issues.md 2026-08-12) ---------------
+# --- notes: the third target (the owner, issues.md 2026-08-12) ---------------
 #
 # *"I should be able to just leave you notes instead of just issues and
 # ideas. I have said this 2-3 times before. Add a button next to
@@ -395,7 +395,7 @@ def test_notes_is_a_capture_target_pointing_at_edvards_own_folder():
     """The folder changed on 2026-08-12; the database must not have.
 
     This used to assert `"/nova/" not in path`, which was a proxy for
-    "routes to Edvard's database" and stopped being one the moment his
+    "routes to the owner's database" and stopped being one the moment his
     files moved into `projects/sokrates/projects/nova/`. The real rule is
     `vault.db_for`, so `test_vault_database_routing` asks it directly for
     every target; this one just pins the path.
@@ -480,7 +480,7 @@ def test_a_bullet_below_the_first_heading_is_not_editable():
 def test_the_writer_and_the_page_agree_on_a_capture_that_wrapped():
     """The bug review found, and the reason `capture_entries` joins.
 
-    The board joins a continuation into the bullet above it so Edvard is
+    The board joins a continuation into the bullet above it so the owner is
     never shown half a sentence -- and the page is what supplies the
     address an edit comes back with. A writer that did not join would find
     no single line matching that address, so Edit and Delete were dead on
@@ -611,7 +611,7 @@ def test_an_amend_conflict_is_retried_against_freshly_read_content(issues_md):
 def test_an_amend_conflict_that_loses_to_a_boarding_does_not_resurrect_it(issues_md):
     """The retry re-reads, and the re-read no longer has the bullet: a
     cycle boarded it between the attempts. Rebuilding on top would put it
-    back in the list Edvard just watched it leave."""
+    back in the list the owner just watched it leave."""
     start = insert_captures(issues_md, ["mine"])
     with patch.object(nova_capture, "vault_read_path_rev",
                        side_effect=[(c, "1-x") for c in [start, issues_md]]), \

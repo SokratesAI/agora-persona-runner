@@ -112,7 +112,7 @@ def journal_entry_markdown(cycle):
     journal page renders the whole folder. The reply worker wants one
     entry and was calling the same function to get it: 437KB and 103
     documents assembled and parsed to answer "what did cycle 95 say",
-    on every comment Edvard leaves, growing by one entry an hour.
+    on every comment the owner leaves, growing by one entry an hour.
 
     Measured against the live vault 2026-08-11, which is why this exists:
     the folder fetch is **1.496s**, the id listing plus one document is
@@ -139,7 +139,7 @@ def journal_entry_markdown(cycle):
     # document that wrote its heading at the wrong depth parses to zero
     # entries here, and the caller's fallback is the full journal, where
     # that entry is absorbed into its neighbour and so is not found
-    # either. Without this, Edvard commenting on one of those three cards
+    # either. Without this, the owner commenting on one of those three cards
     # gets a reply written with no memory of the entry he is replying to.
     #
     # A missing read stays missing rather than becoming `""`: None is this
@@ -161,7 +161,7 @@ def digest_markdown():
     the next `##` one -- and the archive deliberately has no `##`
     heading, so its lines land inside the live file's digest section
     rather than starting a rival one -- which would not hide **Needs
-    Edvard** or **Next cycle**, as this comment used to claim, but would
+    the owner** or **Next cycle**, as this comment used to claim, but would
     silently replace the live file's own newest digest lines with the
     archive's older ones, `_sections` keeping the last heading of each
     name. Order is preserved: both files are
@@ -247,7 +247,7 @@ def board_markdown(name):
 
 
 def notes_markdown():
-    """`notes.md`, raw -- Edvard's third capture file.
+    """`notes.md`, raw -- the owner's third capture file.
 
     The path comes out of `nova_capture.CAPTURE_TARGETS` rather than
     being written here a second time. That map is what the Note button
@@ -272,7 +272,7 @@ def goal_history_json():
 
     `""` before the first snapshot, which the shaping turns into a
     scoreboard with no lines under it rather than a 502. That is the
-    right failure: the numbers Edvard actually reads are in `goals.md`
+    right failure: the numbers the owner actually reads are in `goals.md`
     and do not come from this file at all.
     """
     return vault_read_path(GOAL_HISTORY_PATH) or ""

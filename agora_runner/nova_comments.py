@@ -1,4 +1,4 @@
-"""Comments on a cycle: Edvard replying to a particular entry, not filing work.
+"""Comments on a cycle: The owner replying to a particular entry, not filing work.
 
 Agora ideas.md #44, in his words -- *"add a button with a chat bubble icon
 that opens a multiline text input so that i can add a comment more
@@ -12,23 +12,23 @@ is not a backlog item -- it is a reply *about cycle 63*, and stripped of
 which cycle it answers it loses most of its meaning. So a comment is
 stored keyed by cycle number, and the number is the whole point.
 
-**The second target is the digest's `Needs Edvard` block** (2026-08-10, his
+**The second target is the digest's `Needs the owner` block** (2026-08-10, his
 words in the `add_needs_comment` docstring). That block is the one place
 Nova asks *him* a direct question, and until now it was the one place with
 no way to answer -- idea #56 sat in it unanswered for eight cycles, which
 is not him ignoring it but a box with no reply field. Such a reply is
-stored here under `### Needs Edvard · <stamp>` rather than under a cycle,
+stored here under `### Needs the owner · <stamp>` rather than under a cycle,
 because the digest is rewritten every cycle and filing his answer under
 whichever cycle last touched the text would attach it to a card at random.
 
 **The channel only exists if a cycle reads it.** A comment nobody collects
-is Cycle 58's "Needs Edvard" box all over again: built, tested, shipped
+is Cycle 58's "Needs the owner" box all over again: built, tested, shipped
 and dead. So the file has two sections and a comment is not done when it
-is written -- `## New` is Edvard's outbox and Nova's inbox, and a cycle
+is written -- `## New` is the owner's outbox and Nova's inbox, and a cycle
 moves what it has acted on down to `## Acknowledged` with what it did,
 the same shape `inbox.md` already uses and rule 8's "organised, not
 annotated inline". `prompt.md` step 1a reads `## New` every cycle and
-never delegates it, because these are Edvard's exact words.
+never delegates it, because these are the owner's exact words.
 
 **Parsing is structural, never positional** -- the same rule
 `nova_capture` follows. A comment heading is recognised by its shape
@@ -48,7 +48,7 @@ cool, to have a conversation with comments on the Journal entry."*). It is
 stored inside the comment it answers, under a `#### Nova · <stamp>`
 heading -- one level below the comment's own heading, because it belongs
 to that comment rather than standing beside it. Structural again: the
-marker is a heading shape, not a position, and Edvard's text above it is
+marker is a heading shape, not a position, and the owner's text above it is
 still stored exactly as typed.
 
 **A reply is written once and never rewritten,** the same rule a journal
@@ -74,7 +74,7 @@ carrying the revision they read at, so `vault_write_path` picked up
 whoever had written in between and overwrote them -- a loop watching for a
 conflict that the write it wrapped could not produce. `nova_capture` was
 fixed this way on 2026-08-12 (runner #118) and this module, holding the
-file Edvard types comments into, was not.
+file the owner types comments into, was not.
 
 **This does not make `comments.md` safe, and reading it that way is the
 mistake the sentence above invites.** Both writers *here* are conditional
@@ -82,7 +82,7 @@ now, which closes phone-against-phone and phone-against-reply. The larger
 writer is elsewhere: a cycle acknowledging a comment moves it to
 `## Acknowledged` through the generic `vault_write` / `scoped_write` tools
 in `tools_dispatch`, which pass no revision at all -- so a cycle that read
-this file before Edvard's comment landed still overwrites it silently,
+this file before the owner's comment landed still overwrites it silently,
 which is precisely this bug from the other actor. That is idea #63's later
 slice, not an oversight, and it is the last write surface in the platform
 that cannot do a conditional write.
@@ -102,14 +102,14 @@ ACKNOWLEDGED_HEADING = "## Acknowledged"
 
 WRITE_ATTEMPTS = 3
 
-# The heading a reply to the `Needs Edvard` block carries instead of a
+# The heading a reply to the `Needs the owner` block carries instead of a
 # cycle number. Such a reply answers a question the *digest* is asking, and
 # the digest is rewritten every cycle -- so there is no cycle it belongs
 # to, and filing it under whichever cycle happened to write the current
 # text would attach his answer to a card at random.
 NEEDS_LABEL = "Needs Edvard"
 
-# `### Cycle 63 · 2026-08-09 22:40`, or `### Needs Edvard · 2026-08-10 08:20`.
+# `### Cycle 63 · 2026-08-09 22:40`, or `### Needs the owner · 2026-08-10 08:20`.
 # The separator is matched loosely so a heading hand-edited in Obsidian
 # still parses; which of the two targets it names is the only part anything
 # depends on.
@@ -121,7 +121,7 @@ _COMMENT_HEADING_RE = re.compile(
 
 
 def _heading_label(cycle):
-    """`None` -> the Needs Edvard block, an int -> that cycle."""
+    """`None` -> the Needs the owner block, an int -> that cycle."""
     return NEEDS_LABEL if cycle is None else f"Cycle {cycle}"
 
 _SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
@@ -186,7 +186,7 @@ def _section_bounds(lines, heading):
     or end of file. Frontmatter and fenced code are skipped at both ends --
     this file's own `contract:` line quotes both headings back at the
     reader, and a cycle's throwaway script matching that quote is what put
-    Edvard's newest comment inside the frontmatter on 2026-08-13. See
+    the owner's newest comment inside the frontmatter on 2026-08-13. See
     `md_sections`.
     """
     return section_bounds(lines, heading)
@@ -195,10 +195,10 @@ def _section_bounds(lines, heading):
 def insert_comment(markdown, cycle, text, stamp):
     """Add one comment to the top of `## New`, newest first.
 
-    `cycle` is an int, or `None` for a reply to the Needs Edvard block.
+    `cycle` is an int, or `None` for a reply to the Needs the owner block.
 
     Newest first matches every other file this loop maintains and means a
-    cycle reads the freshest thing Edvard said without scrolling. If the
+    cycle reads the freshest thing the owner said without scrolling. If the
     section is missing entirely it is created, so a comment can never be
     dropped for want of a heading it did not have.
     """
@@ -235,7 +235,7 @@ def split_replies(lines):
     reading `comments.md` can append its own answer by hand, and several
     have; those landed inside the auto-reply's body and the app painted
     `#### Nova · 2026-08-21 16:23` as literal text in the middle of a
-    bubble. Edvard sent a screenshot of exactly that on 2026-08-21.
+    bubble. The owner sent a screenshot of exactly that on 2026-08-21.
 
     `author` is `commentator` for the first block and `cycle` for every
     later one. That is positional, and it is right for the ordinary
@@ -246,7 +246,7 @@ def split_replies(lines):
     cycle's note is the first block and is labelled `commentator`, and the
     worker's own reply is then dropped by `insert_reply` for finding a
     heading already there. Getting that right needs the author written into
-    the heading, which changes the shape of a file Edvard reads, so it is
+    the heading, which changes the shape of a file the owner reads, so it is
     not done here. The failure is one bubble in the wrong colour, not lost
     text.
     """
@@ -268,7 +268,7 @@ def insert_reply(markdown, cycle, stamp, reply, reply_stamp):
     new markdown, or `None` if there is nothing to write it into.
 
     `None` covers both misses and it is deliberate that the caller cannot
-    tell them apart: the comment is gone (Edvard deleted it in Obsidian),
+    tell them apart: the comment is gone (the owner deleted it in Obsidian),
     or it already carries a reply. Either way the only correct action is
     to drop this reply and log it -- there is no version of "write it
     somewhere else" that is better than not writing it.
@@ -282,7 +282,7 @@ def insert_reply(markdown, cycle, stamp, reply, reply_stamp):
     because the first match already has one. Nothing is lost or
     misattributed -- the comment still sits in `## New` for the next cycle,
     which is the fallback the whole design rests on -- and a
-    second-resolution stamp would change the shape of every heading Edvard
+    second-resolution stamp would change the shape of every heading the owner
     reads to defend against a minute he is unlikely to spend typing twice.
     """
     lines = (markdown or "").split("\n")
@@ -496,7 +496,7 @@ def verify_write(original, updated, exempt=()):
 def _verify_added(original, updated, cycle, stamp, body):
     """Refuse unless `updated` is `original` plus exactly this one comment.
 
-    `insert_comment` is string surgery on the one file Edvard talks to
+    `insert_comment` is string surgery on the one file the owner talks to
     this loop through, it runs unattended every time he types into the
     app, and until this existed nothing between it and the vault could
     tell a good result from a damaged one. Refusing is the right direction
@@ -537,7 +537,7 @@ def _verify_replied(original, updated, cycle, stamp, reply):
 def _oldest_first(comments):
     """A thread in the order it was said, not the order the file stores it.
 
-    Edvard, 2026-08-10: *"Journal comments must be sorted with the newest
+    The owner, 2026-08-10: *"Journal comments must be sorted with the newest
     message at the bottom, so that the conversation goes downwards. That
     feels most natural."* The file stays newest-first -- that is how every
     board in this vault reads and how a cycle wants to find what it has not
@@ -557,7 +557,7 @@ def _oldest_first(comments):
 def comments_by_cycle(markdown):
     """`{cycle: [comment, ...]}` -- what the site hangs off each card, oldest first.
 
-    Needs Edvard replies are deliberately absent: they belong to no cycle,
+    Needs the owner replies are deliberately absent: they belong to no cycle,
     and letting `None` through would key a card on it.
     """
     grouped = {}
@@ -569,14 +569,14 @@ def comments_by_cycle(markdown):
 
 
 def needs_comments(markdown):
-    """`[comment, ...]` -- replies to the Needs Edvard block, oldest first."""
+    """`[comment, ...]` -- replies to the Needs the owner block, oldest first."""
     return _oldest_first([c for c in parse_comments(markdown) if c["cycle"] is None])
 
 
 def add_needs_comment(text, stamp=None):
-    """Store one reply to the Needs Edvard block. Returns (ok, message).
+    """Store one reply to the Needs the owner block. Returns (ok, message).
 
-    Edvard, 2026-08-10: *"the 'needs Edvard' is still missing a comment
+    The owner, 2026-08-10: *"the 'needs the owner' is still missing a comment
     block, so its hard for me to answer it. [...] Where did you intend me
     to answer it? [...] I want a reply button on it."* Idea #56 had been
     sitting in that block unanswered for eight cycles, and the reason was
@@ -597,7 +597,7 @@ def add_comment(cycle, text, stamp=None):
 
 
 def _store(cycle, text, stamp=None):
-    """The shared read-modify-write. `cycle` is an int, or None for Needs Edvard."""
+    """The shared read-modify-write. `cycle` is an int, or None for Needs the owner."""
     target = _heading_label(cycle).lower()
     body = clean_comment_text(text)
     if not body:

@@ -32,7 +32,7 @@
    * either of those two numbers changes, this one has to change with
    * it", and a comment is not a mechanism.
    *
-   * The `env()` is the bug Edvard reported on 2026-08-21 ("I can't see
+   * The `env()` is the bug the owner reported on 2026-08-21 ("I can't see
    * the hamburger sodemenu button anymore"). `index.html` sets
    * `viewport-fit=cover` and the manifest sets `display: standalone`,
    * so on a notched iPhone added to the home screen the layout viewport
@@ -123,7 +123,7 @@ pre code { background: none; padding: 0; }
 .status-sub { margin: 0.6rem 0 0; display: flex; gap: 0.5rem; align-items: center; }
 .status-pr { color: var(--dim); font-size: 0.85rem; }
 
-/* The status fields, side by side -- Edvard, capture 2026-08-22: "Please
+/* The status fields, side by side -- the owner, capture 2026-08-22: "Please
  * have them shown horisontal listed, not vertical."
  *
  * `flex-wrap` and not a single line: there can be four of these at once
@@ -194,7 +194,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 }
 
 /* The priority picker briefly had its own row above the buttons --
- * Edvard, issues.md 2026-08-14: *"Ui is ugly for the priority rating. The
+ * the owner, issues.md 2026-08-14: *"Ui is ugly for the priority rating. The
  * issue, idea, note and priority dropdown are now just scrambled after
  * the addition of the priority dropdown."* Measured in Chromium at 390px:
  * the select was 136px wide because "🔴 Immediately" set a select's
@@ -203,7 +203,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  *
  * That stopped applying the same day: the select no longer shows a
  * rating's word, only its glyph (a dash for unrated), so it is a fixed
- * 44px circle rather than a text-sized pill, and Edvard asked for it back
+ * 44px circle rather than a text-sized pill, and the owner asked for it back
  * on the button row, at the far right. See `.capture-submit` below --
  * it is now the fourth item in that group, appended last in app.js so it
  * lands after Note. The label that named it stays in the document for a
@@ -212,7 +212,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * `.prio-select` rule it overrides -- see the comment there for why that
  * placement matters. The board row's own trigger used to have a sibling
  * override here too; it does not any more, because it went back to being
- * `.chip.prio` (Edvard, 2026-08-14: "the visual design is not changed
+ * `.chip.prio` (the owner, 2026-08-14: "the visual design is not changed
  * from the old design") rather than a fixed-shape circle. */
 
 .capture-actions {
@@ -225,7 +225,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
    * off the edge where it cannot be tapped. What it may no longer do is
    * wrap *between* the buttons -- see `.capture-submit`. */
   flex-wrap: wrap;
-  /* Edvard, 2026-08-14: the button row read as left-aligned. `.capture-status`
+  /* the owner, 2026-08-14: the button row read as left-aligned. `.capture-status`
    * below is empty most of the time, and an empty flex item with
    * `flex-grow` still claims the row's full width on its own wrapped
    * line -- which pushes `.capture-submit` onto a line of its own, and a
@@ -277,7 +277,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .capture-btn:hover:not(:disabled) { border-color: var(--accent); }
 .capture-btn:disabled { color: var(--dim); cursor: default; }
 
-/* The ask, on the card that raised it -- Edvard, comments board 2026-08-16:
+/* The ask, on the card that raised it -- the owner, comments board 2026-08-16:
  * "add a new yellow block below the title or somehow higlight your issue so
  * that i see it."
  *
@@ -292,7 +292,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   margin: 0.2rem 0 0.9rem;
 }
 
-/* Collapsed, the block is the label row and nothing else -- Edvard,
+/* Collapsed, the block is the label row and nothing else -- the owner,
  * ideas.md 2026-08-16: "Don't delete it, just collapse it." The yellow
  * stays, so a card carrying an unanswered question still reads as one from
  * a scroll; only the prose folds. The padding tightens rather than
@@ -323,7 +323,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * `min-height: 44px` explicitly, and the reviewer is why. I wrote this
  * comment claiming "44px of tap height comes from the padding" and then set
  * 0.6rem of padding around 0.75rem text, which computes to about 29px --
- * two thirds of the floor, on the one control Edvard's whole ask depends on,
+ * two thirds of the floor, on the one control the owner's whole ask depends on,
  * on a page he opens from a phone. Fifteen other rules in this file set
  * `min-height: 44px` and say why. The negative block margin keeps the label
  * row from growing by the difference: the target is 44px, the row is not. */
@@ -354,11 +354,11 @@ a.status-sub:hover .status-pr { color: var(--text); }
   border-radius: 12px;
   padding: 1rem 1.1rem;
   margin-bottom: 1.1rem;
-  /* The whole card toggles (Edvard, issues.md 2026-08-09), so the whole
+  /* The whole card toggles (the owner, issues.md 2026-08-09), so the whole
    * card says so -- including the body, where a click really does collapse
    * it. Anchors keep the pointer they already had. */
   cursor: pointer;
-  /* Edvard, 2026-08-21: cycle 289's "Needs Edvard" block links a raw
+  /* the owner, 2026-08-21: cycle 289's "Needs the owner" block links a raw
    * GitHub URL as its visible text (`renderSpans`' `pr-link`, same as
    * every PR reference), and that one line was long enough to push the
    * whole document wider than the viewport. On a real phone browser that
@@ -373,7 +373,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   overflow-wrap: anywhere;
 }
 
-/* The eight-cycle report (Edvard, comments board at cycle 156): "They
+/* The eight-cycle report (the owner, comments board at cycle 156): "They
  * should appear like a journal card, but stand out in both color and form
  * to show that they are just summaries."
  *
@@ -394,7 +394,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 .entry.is-report .cycle-link { color: var(--report); }
 
-/* Collapsed by default (Edvard, issues.md 2026-08-09): the median entry is
+/* Collapsed by default (the owner, issues.md 2026-08-09): the median entry is
  * 4830 characters, which is about 115 lines on a phone, and there are 57 of
  * them. The whole header row is the tap target. */
 .entry-head {
@@ -483,7 +483,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 /* Which of a cycle's parts you are reading, for the fourteen cycles that
  * wrote more than once. A tab strip rather than the subheadings this used to
- * draw -- Edvard asked for tabs three times (issue #59, and the comments
+ * draw -- the owner asked for tabs three times (issue #59, and the comments
  * board at cycle 81) and got subheadings twice.
  *
  * It reuses `.tabs`/`.tab` from the boards rather than inventing a second
@@ -499,7 +499,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 /* No uppercase and no letter-spacing. Those suit a short tag -- "ADDENDUM"
  * -- and these are not tags: the label is whatever prose the cycle typed
  * into its own heading, and cycle 75's runs to ninety characters ("I watched
- * it land, and caught myself re-filing a bug Edvard had already reported").
+ * it land, and caught myself re-filing a bug the owner had already reported").
  * So the strip wraps and a long label keeps its sentence case; uppercasing a
  * sentence that long makes it slower to read than the prose underneath. */
 .entry-part-tab { text-align: left; }
@@ -514,10 +514,10 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 /* No line clamp any more. The brief arrives already cut on a sentence
  * boundary, so a clamp has nothing left to do except break it again in the
- * middle -- which is the thing Edvard was reporting.
+ * middle -- which is the thing the owner was reporting.
  *
  * The colour is inherited from the `.entry-summary` this replaces, and the
- * reason it is not var(--dim) still holds -- Edvard, issues.md 2026-08-09:
+ * reason it is not var(--dim) still holds -- the owner, issues.md 2026-08-09:
  * "the Digest is hard to read with grey against the blue background. White
  * is better like the actual journal." #8b90a0 on the card's #191b24 is
  * about 4.3:1, which passes a contrast checker and was still the hardest
@@ -711,7 +711,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .entry .comment-drawer { display: none; }
 .entry.is-commenting .comment-drawer { display: block; margin-top: 0.9rem; }
 
-/* Bottom right of the card (Edvard, ideas.md 2026-08-10). The foot is not
+/* Bottom right of the card (the owner, ideas.md 2026-08-10). The foot is not
  * in the collapse rules above, so the bubble stays reachable on a collapsed
  * card -- which is the whole point of it: comment on a cycle without
  * reading it first. */
@@ -748,7 +748,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   border-radius: 6px;
 }
 
-/* The disclosure over a folded Needs Edvard thread. Deliberately quiet --
+/* The disclosure over a folded Needs the owner thread. Deliberately quiet --
  * it names something he asked to stop seeing, so it should read as a way
  * back to it and not as an invitation. Same 44px touch target as the
  * toggle above; it is a real tap on a phone. */
@@ -765,7 +765,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * hidden -- what he said stays visible, it just stops being the thing
  * asking for attention.
  *
- * The rule itself stays green. Edvard, comments board 2026-08-21: *"my
+ * The rule itself stays green. The owner, comments board 2026-08-21: *"my
  * previous comments in this chat gets a grey backline, i want to have it
  * green all the time so i clearly see it's my comments."* The colour was
  * carrying two meanings at once here -- whose comment it is, and whether
@@ -813,7 +813,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * the same blue. The instant reply is `nova_replies.py` -- a restricted
  * session with the comment's text and nothing else, answering in seconds.
  * A cycle reply is written by an hourly cycle that read the vault, the
- * board and the code first, and it can land forty minutes later. Edvard,
+ * board and the code first, and it can land forty minutes later. The owner,
  * ideas board 2026-08-21: *"Give Nova cycle comments a purple
  * background/border in the app (mine is green, commentator is blue, Nova
  * should be purple)"*. So the rule's colour now says which of the two is
@@ -915,11 +915,11 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 /* ---- The nav, and the two board pages (issues.md #57) ----------------
  *
- * Edvard: "Create more pages to contain more, such as issue list, idea
+ * The owner: "Create more pages to contain more, such as issue list, idea
  * list (separate pages)". Three sections now exist, so there has to be
  * something to move between them with.
  *
- * That started as one row of links under the header. Edvard, 2026-08-11:
+ * That started as one row of links under the header. The owner, 2026-08-11:
  * "Move the Journal, issues & ideas tabs buttons to a sidebar that opens
  * from a hamburger button that is placed at the top right of the Nova
  * page on the same horizontal line as the Nova header. Add slide
@@ -1225,7 +1225,7 @@ body.nav-open { overflow: hidden; }
   transform: rotate(180deg);
 }
 
-/* Opens the filter modal -- Edvard, 2026-08-14: "place a new filter
+/* Opens the filter modal -- the owner, 2026-08-14: "place a new filter
  * button... next to the arrow button on the search." Same 44px square as
  * `.board-sort-dir` beside it, same card/border language, so the two read
  * as a matched pair of icon buttons rather than one control and one
@@ -1328,7 +1328,7 @@ body.nav-open { overflow: hidden; }
  * Nova" -- on 08-17 every capture on the issues board was finished and
  * the whole section was still painted as outstanding work. */
 /* `.captures-done` styled the "Done, not yet cleared" section, removed
-   from `renderBoardEdvard` on 2026-08-20 at Edvard's ask. No element
+   from `renderBoardthe owner` on 2026-08-20 at the owner's ask. No element
    carries the class any more, so these two rules were dead. */
 .capture-item-done { opacity: 0.75; }
 
@@ -1401,7 +1401,7 @@ body.nav-open { overflow: hidden; }
   overflow: hidden;
 }
 
-/* `role="button"` on a <div>, not a real <button> -- Edvard, 2026-08-14:
+/* `role="button"` on a <div>, not a real <button> -- the owner, 2026-08-14:
  * "the priority status button needs to be placed on the same horizontal
  * as the progress status, on its right side." That put the priority
  * trigger inside the same row as the status chip, and a <button> (the
@@ -1438,7 +1438,7 @@ body.nav-open { overflow: hidden; }
   gap: 0.4rem 0.6rem;
 }
 
-/* Status and priority side by side on the left (Edvard, 2026-08-14: "the
+/* Status and priority side by side on the left (the owner, 2026-08-14: "the
  * progress and the priority should both float left, not space between")
  * -- the reason they are real siblings in one flex row at all, rather
  * than two lines, is so the priority chip stays level with status
@@ -1515,12 +1515,12 @@ body.nav-open { overflow: hidden; }
 
 .item-number { color: var(--dim); font-variant-numeric: tabular-nums; }
 .item-title { flex: 1 1 60%; }
-/* Its own row below status/priority (Edvard, 2026-08-14: "the date
+/* Its own row below status/priority (the owner, 2026-08-14: "the date
  * should be placed below them") rather than trailing the status chip. */
 .item-updated { color: var(--dim); font-size: 0.85rem; }
 
 /* Also a <button>'s class since the board row's priority chip became one
- * (Edvard, 2026-08-14: "make it into a button that opens the modal, but
+ * (the owner, 2026-08-14: "make it into a button that opens the modal, but
  * the visual design is not changed from the old design") -- `background`,
  * `font` and `cursor` are here only because a <button> has its own
  * defaults for all three that a <span> never had, and this rule has to
@@ -1545,7 +1545,7 @@ body.nav-open { overflow: hidden; }
    for done at a glance. It spends no colour, because the three that do are
    all states the row is still alive in. */
 .chip-outdated { color: var(--dim); opacity: 0.7; text-decoration: line-through; }
-/* Blocked on Edvard is the one status that is a request rather than a
+/* Blocked on the owner is the one status that is a request rather than a
    report, so it is the one that should catch his eye and not mine. It
    borrows the in-progress hue because the row is still alive, and adds a
    dashed edge because nothing is moving on it until he acts. Not struck
@@ -1570,7 +1570,7 @@ body.nav-open { overflow: hidden; }
 .chip.prio[aria-expanded="true"] { border-color: var(--accent); }
 
 .item-body { padding: 0 0.9rem 0.8rem; border-top: 1px solid var(--line); }
-/* The visible way into the row editor (Edvard, 2026-08-22). Right-aligned
+/* The visible way into the row editor (the owner, 2026-08-22). Right-aligned
    and quiet: it is a control he needs to find once, not one competing with
    the write-up underneath it. */
 .item-actions { display: flex; justify-content: flex-end; padding: 0.5rem 0 0.2rem; }
@@ -1596,7 +1596,7 @@ body.nav-open { overflow: hidden; }
 .note-body p { margin: 0.3rem 0; }
 
 /* The `/notes` page, which is a conversation rather than a stack of
- * cards. Edvard, `notes.md` 2026-08-24: *"I want the notes page to be
+ * cards. The owner, `notes.md` 2026-08-24: *"I want the notes page to be
  * more like a conversation. So that alternating posts are green (mine)
  * and purple (Nova cycle response). Just like the comments."*
  *
@@ -1664,7 +1664,7 @@ body.nav-open { overflow: hidden; }
  * so its margin goes the other way from `.more`'s. */
 .note-older { margin: 0 0 1rem; }
 
-/* Edvard's own words. Every item on his boards opens with one, and until
+/* the owner's own words. Every item on his boards opens with one, and until
  * the board pages existed nothing rendered a blockquote -- the `>` showed
  * on screen in front of the one paragraph on the page he wrote himself. */
 blockquote {
@@ -1840,7 +1840,7 @@ body.has-full-chart { overflow: hidden; }
 .share-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
 .share-note { margin: 0.4rem 0 0; color: var(--dim); font-size: 0.78rem; }
 
-/* Retrospectives (Edvard, issues.md 2026-08-13). One card per Friday,
+/* Retrospectives (the owner, issues.md 2026-08-13). One card per Friday,
  * built out of the journal card's shape rather than a new one -- it is
  * the same kind of object (a dated thing Nova wrote) and does not toggle,
  * which is the only reason it is not `.entry` itself. */
@@ -1904,7 +1904,7 @@ body.has-full-chart { overflow: hidden; }
  *
  * This used to be `.capture-prio, .prio-select` -- one rule shared with
  * the board row's picker, deliberately, so the two could not drift apart
- * silently. The board row's went back to being `.chip.prio` (Edvard,
+ * silently. The board row's went back to being `.chip.prio` (the owner,
  * 2026-08-14: "i liked the old issue priority status better... the
  * visual design is not changed from the old design"), which has its own
  * sizing already (`.chip` above) and no longer has anything in common
@@ -1928,7 +1928,7 @@ body.has-full-chart { overflow: hidden; }
 .item-prio-note { font-size: 0.8rem; opacity: 0.8; }
 
 /* Held one glyph -- a ball, or a dash for unrated -- until Cycle 268, when
- * Edvard, 2026-08-19: *"Please do not use these symbols '🟠' as i can't
+ * the owner, 2026-08-19: *"Please do not use these symbols '🟠' as i can't
  * really see the difference as they are colors. Please use the full
  * word"* put a word in it, which needed `width: auto` below so
  * "Immediately" could grow the fixed circle into a pill instead of
@@ -1958,7 +1958,7 @@ body.has-full-chart { overflow: hidden; }
 
 /* The backdrop and popup both pickers open, appended to <body> and
  * shared by every picker on the page -- see `getPrioMenuOverlay` for why
- * neither is nested under the trigger. Edvard, 2026-08-14, after trying
+ * neither is nested under the trigger. The owner, 2026-08-14, after trying
  * the first version live: the native picker it replaced read as a real
  * dialog, and an anchored dropdown -- however correctly it opened with
  * full words -- read as a smaller, lesser thing next to it. Centered,
@@ -2069,7 +2069,7 @@ body.has-full-chart { overflow: hidden; }
 .goal-name { font-size: 0.9rem; font-weight: 600; }
 
 /* The verdict is a word first. The colour is the second encoding, never
- * the only one -- Edvard, 2026-08-20, on bare priority symbols. */
+ * the only one -- the owner, 2026-08-20, on bare priority symbols. */
 .goal-verdict { font-size: 0.72rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid; }
 .goal-verdict.on { color: var(--good); border-color: rgba(123, 216, 143, 0.45); }
 .goal-verdict.off { color: var(--warn); border-color: rgba(232, 183, 92, 0.45); }
@@ -2155,7 +2155,7 @@ body.has-full-chart { overflow: hidden; }
   color: var(--dim);
 }
 
-/* The Questions page -- Edvard's ideas.md capture, "a questions page in
+/* The Questions page -- the owner's ideas.md capture, "a questions page in
  * Nova where i can ask questions in a box and a Claude sonnet model
  * answers me."
  *
@@ -2242,7 +2242,7 @@ body.has-full-chart { overflow: hidden; }
  * before the prose", not a second one invented three sections later.
  *
  * The chip carries a symbol and a word together and is sized for the word,
- * because the word is the part Edvard can read: he cannot tell the coloured
+ * because the word is the part the owner can read: he cannot tell the coloured
  * circles apart by colour and said so on 2026-08-20. */
 .rank-strip {
   margin: 0.9rem 0 0.2rem;
@@ -2273,7 +2273,7 @@ body.has-full-chart { overflow: hidden; }
 
 /* The attach button and what it puts on the page.
  *
- * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"* —
+ * The owner, comments board 2026-08-21: *"How do i send a screenshot?"* —
  * he could see a layout bug on his Galaxy S25 that no renderer in this
  * loop can reproduce, and the only channel between us was text.
  *

@@ -1,6 +1,6 @@
 """The journal-card reply turn holds tools, and holds only these tools.
 
-Edvard, on the cycle 86 card: *"I wished you had more read capabilities to
+The owner, on the cycle 86 card: *"I wished you had more read capabilities to
 answer questions. And maybe some tools to add issues or report bugs we
 find."* Before this the turn had none, and answered three of his questions
 with "I don't know" about facts that were sitting in the vault.
@@ -256,7 +256,7 @@ def test_a_capture_that_did_not_write_is_reported_as_an_error():
     `execute_tool` returns one string and has no channel for "this did not
     work", so a 409 or a missing target file arrived at the model looking
     exactly like a success -- while the system prompt tells it to file the
-    thing and then tell Edvard it filed it. The reviewer subagent found
+    thing and then tell the owner it filed it. The reviewer subagent found
     this; it is the one finding of four that was not already fixed.
     """
     token = tools_mcp.grant(
@@ -309,7 +309,7 @@ def test_the_capture_tool_offers_every_target_the_backend_accepts():
     """The second capture entry point, and the one that went stale.
 
     `nova_capture` is the tool a journal-comment reply uses to file a line
-    for Edvard, and its schema carried a literal `["issues", "ideas"]`.
+    for the owner, and its schema carried a literal `["issues", "ideas"]`.
     Adding `notes` to CAPTURE_TARGETS shipped a working button on the site
     and a reply turn that could still only offer his two old files -- the
     exact two-way choice he asked three times to be rid of, with nothing
@@ -326,7 +326,7 @@ def test_the_capture_tool_offers_every_target_the_backend_accepts():
 def test_an_attached_image_reaches_the_reply_turn_as_a_picture():
     """The whole point: bytes in the vault must arrive as image content.
 
-    Edvard attached a screenshot to a comment on 2026-08-21 and the instant
+    The owner attached a screenshot to a comment on 2026-08-21 and the instant
     reply under it said "I can't see images in this chat" while the bytes
     were already stored and being served at HTTP 200. The hourly cycle got
     a fix that same day (`tools.fetch_attachments`, PR #278); this lane did
@@ -375,7 +375,7 @@ def test_the_upload_name_is_extracted_from_whatever_shape_he_pasted():
 
     `read_upload` refuses anything that is not `<32 hex>.<ext>`, so a name
     that arrives still wrapped in markdown is not a cosmetic problem -- it
-    is a failed read reported to Edvard as "no image stored under that".
+    is a failed read reported to the owner as "no image stored under that".
     """
     from agora_runner.tools_dispatch import execute_tool
     name = "89f92e607e3e8a3e85a40b40f4a07609.jpg"
@@ -413,7 +413,7 @@ def test_a_missing_image_is_an_error_not_a_confident_blank():
     """`read_upload` returns None for a name that is not ours or not there.
 
     Reported as a success it would reach the model as an empty-ish text
-    block, and the model would then tell Edvard something about a picture
+    block, and the model would then tell the owner something about a picture
     it never saw. `FAILED` is the convention `tools_mcp` already maps onto
     `isError`, so this rides the existing channel rather than adding one.
     """
@@ -458,7 +458,7 @@ def test_a_comment_with_no_attachment_says_nothing_about_images():
 
     Without this, the fix for "he never looks at the image" becomes "he
     hunts for an image that is not there", which costs a tool call and a
-    round trip on every ordinary comment Edvard writes.
+    round trip on every ordinary comment the owner writes.
     """
     entry = {"cycle": 303, "body": "Did a thing.", "pr": "none", "outcome": "shipped"}
     thread = [{"stamp": "2026-08-21 16:06", "text": "Looks good, thanks."}]

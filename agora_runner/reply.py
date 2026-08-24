@@ -5,7 +5,7 @@ from agora_runner.providers.anthropic import anthropic_generate
 from agora_runner.providers.gemini import gemini_generate_with_fallback
 from agora_runner.providers.claude_cli import claude_cli_generate
 
-# 2026-08-10, Edvard in issues.md: "Hard rule! We must never use the metered
+# 2026-08-10, the owner in issues.md: "Hard rule! We must never use the metered
 # api for other than testing! It is expensive and I only have 16$ left. You
 # can ofcourse use it for testing and research, but never implement a
 # functionality that depends on it that will drain it. We only use the

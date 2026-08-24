@@ -1,6 +1,6 @@
 """Nova's files resolve to Nova's own CouchDB database (Cycle 118).
 
-Edvard, 2026-08-11: "You have outgrown a poc project that is allowed to
+The owner, 2026-08-11: "You have outgrown a poc project that is allowed to
 use my Vault as a database. Move out and get your own space." Nova's 162
 documents now live in a `nova` database; everything else stays in
 `obsidian`. Which one answers is a pure function of the path, because a
@@ -59,7 +59,7 @@ def test_the_nova_folder_in_edvards_own_vault_is_not_novas_database():
     """Two folders say "nova" and only one of them is Nova's.
 
     `projects/sokrates/projects/agora/nova/` is Nova's database;
-    `projects/sokrates/projects/nova/` is a folder in Edvard's vault that
+    `projects/sokrates/projects/nova/` is a folder in the owner's vault that
     he asked to keep, and on 2026-08-12 the three files he writes by hand
     moved into it -- *"they can be moved into the Nova folder in my Vault
     and not be underneath the agora project folder"*. Adding that second
@@ -90,7 +90,7 @@ def test_every_capture_target_lands_in_edvards_database():
 
 def test_case_is_not_a_way_out_of_the_routing_rule():
     """Vault paths are lowercased everywhere; a caller that forgets must
-    not thereby write Nova's journal into Edvard's database."""
+    not thereby write Nova's journal into the owner's database."""
     with _routing_on():
         assert vault.db_for(NOVA_FILE.upper()) == "nova"
 
@@ -211,7 +211,7 @@ def test_listing_an_ancestor_prefix_merges_both_databases():
 
 def test_a_file_merely_starting_with_the_digests_name_is_not_the_digest():
     """`journal-digest.md` is one exact file, not a prefix. Matching it with
-    startswith routed `journal-digest.md.bak` — a file Edvard owns — into
+    startswith routed `journal-digest.md.bak` — a file the owner owns — into
     Nova's database."""
     with _routing_on():
         assert vault.db_for(DIGEST) == "nova"
@@ -228,7 +228,7 @@ def test_a_prefix_equal_to_a_single_file_queries_both_databases():
 
 def test_chunk_helpers_require_a_database():
     """They used to default to COUCHDB_DB. A caller that forgot would send
-    Nova's chunk ids to Edvard's database and get VaultIncompleteDocument
+    Nova's chunk ids to the owner's database and get VaultIncompleteDocument
     on a file that is perfectly intact."""
     import pytest
     with pytest.raises(TypeError):
@@ -249,7 +249,7 @@ def test_bulk_fetch_uses_the_database_a_doc_actually_came_from():
                 return 200, {"rows": [{"id": "h:zzz", "doc": {"data": "content"}}]}
             return 200, {"rows": [{"id": NOVA_FILE, "doc": {
                 "_id": NOVA_FILE, "path": NOVA_FILE, "children": ["h:zzz"]}}]}
-        # First-phase id listing: only Edvard's database answers, so the
+        # First-phase id listing: only the owner's database answers, so the
         # doc is found there despite db_for saying it belongs to nova.
         if path.startswith(f"{vault.COUCHDB_DB}/_all_docs?"):
             return 200, {"rows": [{"id": NOVA_FILE}]}
@@ -296,7 +296,7 @@ def test_assemble_prefers_the_database_the_doc_was_actually_read_from():
         seen.append(path)
         return 200, {"rows": [{"key": "h:ddd", "doc": {"data": "moved"}}]}
 
-    # A Nova-owned path whose doc was read out of Edvard's database, which
+    # A Nova-owned path whose doc was read out of the owner's database, which
     # is what a half-finished migration looks like. Routing by path says
     # `nova`; the stamp says where the chunks really are.
     doc = {"_id": NOVA_FILE, "path": NOVA_FILE, "children": ["h:ddd"],

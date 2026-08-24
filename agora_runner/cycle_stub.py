@@ -1,8 +1,8 @@
 """One line on the feed when a cycle dies, because silence is not a record.
 
-Sokrates' write-up on Edvard's `issues.md`, 2026-08-24, after cycles 358-360
+Sokrates' write-up on the owner's `issues.md`, 2026-08-24, after cycles 358-360
 produced nothing at all during the Hetzner outage: *"three consecutive dead
-cycles left zero trace anywhere until Edvard asked a human to go look -- no
+cycles left zero trace anywhere until the owner asked a human to go look -- no
 journal stub, no alert, nothing."* His first proposal is this module: *"When a
 heartbeat trigger fails before the claude_cli session even starts (e.g.
 DNS/network dead), write a minimal 'failed to start' journal stub instead of
@@ -22,7 +22,7 @@ proposal.** `stall_notice.due` keys on `lastWrittenAt`, the write time of the
 newest journal entry, precisely so that one message goes out per stall rather
 than one per check. A stub is a journal entry. Write one on every failed run
 and a loop that fails every cycle keeps moving that stamp, `stalled` never
-becomes true, and Edvard's phone never rings -- the marker would have replaced
+becomes true, and the owner's phone never rings -- the marker would have replaced
 the alarm with a quieter version of the same silence. So the stub declares
 itself in its own heading, `nova_journal.parse_heading` files it as
 `kind: "silence"`, and `_newest_written_at` skips it. It shows on the feed and

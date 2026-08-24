@@ -16,7 +16,7 @@ interface-compatibility with the other two providers and then ignored, so
 a claude-cli persona had the CLI's own built-in tools (Bash, Read, Write,
 ...) and none of Agora's -- no vault_read, no kubectl_read, no create_pr,
 no merge_pr -- while turns.py:build_system described every one of them to
-it in prose regardless. Edvard spotted the split from the outside:
+it in prose regardless. The owner spotted the split from the outside:
 *"There are different tools for you and Gemini? That should not be the
 case. Gemini and other agents should use the same custom tools as you
 do."* They do now -- caps is handed to tools_mcp, which serves the very
@@ -25,7 +25,7 @@ in-process, over MCP, back into this process.
 
 What has NOT changed: Agora's capability checkboxes still don't bound
 this provider the way they bound the other two. The CLI's own built-in
-tools stay unrestricted by default (Edvard's explicit 2026-08-01 call,
+tools stay unrestricted by default (the owner's explicit 2026-08-01 call,
 below), so caps widen what this persona can reach rather than limiting
 it. The calls also still happen in another pod and are invisible to this
 process while they run, which is why it hands the bridge a scoped
@@ -38,7 +38,7 @@ own audit(), which is the half carrying the before/after diff.
 v1 plan): unrestricted by default, same as an interactive Claude Code
 session -- the earlier always-on tool denylist was live-tested and found
 incomplete (the model found and used an unlisted tool to run real shell
-commands anyway), and Edvard's call was that restriction should be an
+commands anyway), and the owner's call was that restriction should be an
 explicit choice, not an incomplete default. `persona["claudeCliRestricted"]`
 (off unless a persona sets it) requests the bridge's full known-tool
 denylist for that persona's calls -- see agora-claude-bridge's
@@ -58,7 +58,7 @@ dropped them -- anthropic_generate and gemini_generate have built real
 image content blocks since 2026-07-24, and this one sent the text and
 nothing else, so an image reached the model as if it had never been
 attached. Harmless while claude-cli was Nova's own text-only lane; a live
-regression the moment Cycle 78 moved six of Edvard's chat personas onto
+regression the moment Cycle 78 moved six of the owner's chat personas onto
 it to get them off the metered API. The bridge now takes an `attachments`
 list and hands the CLI a real user message over --input-format stream-json
 (agora-claude-bridge's cli.write_stream_json_input) instead of a text-only
@@ -86,7 +86,7 @@ def _bridge_attachments(message):
     built real image blocks from 2026-07-24 and this provider built
     nothing, so a claude-cli persona saw an image as if it had never
     been sent. Harmless while claude-cli was Nova's own text-only lane;
-    a live regression the moment Cycle 78 moved six of Edvard's chat
+    a live regression the moment Cycle 78 moved six of the owner's chat
     personas onto it to get them off the metered API.
 
     Only the newest message, because unlike the stateless APIs this
@@ -148,7 +148,7 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         body["attachments"] = attachments
     # Live tool-use chips (2026-08-03): this call is about to block for up
     # to 45 minutes while the CLI does real work in another pod, and
-    # nothing about that work is visible to Edvard until it returns. The
+    # nothing about that work is visible to the owner until it returns. The
     # grant token lets the bridge narrate it as it happens, scoped to this
     # conversation and revoked the moment the call ends -- tool_activity.py
     # explains why it is a callback here rather than the bridge posting to

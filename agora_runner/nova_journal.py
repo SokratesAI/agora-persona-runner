@@ -16,7 +16,7 @@ The four, oldest to newest, all of which appear in the live file today:
 So nothing here pattern-matches a whole heading. Each em-dash-separated
 segment is classified independently as date/time metadata, a cycle
 number, or prose -- which is why a heading carrying no cycle number at
-all (`### 2026-08-02 — Edvard's first message (not a cycle)`) still
+all (`### 2026-08-02 — the owner's first message (not a cycle)`) still
 parses into a renderable entry instead of being dropped.
 """
 
@@ -44,7 +44,7 @@ DIGEST_PATH = "projects/sokrates/projects/agora/journal-digest.md"
 # whole thing every hour to get the two short sections at the top. The
 # site reads both and concatenates, so nothing a card ever showed
 # disappears -- see `digest_markdown` in nova_sources.py. This one lives
-# under `resources/` because it is ours; Edvard opens DIGEST_PATH.
+# under `resources/` because it is ours; The owner opens DIGEST_PATH.
 DIGEST_ARCHIVE_PATH = "projects/sokrates/projects/agora/nova/resources/digest-archive.md"
 
 _ENTRY_HEADING_RE = re.compile(r"^###[ \t]+(.+?)[ \t]*$", re.MULTILINE)
@@ -58,7 +58,7 @@ _SEGMENT_SPLIT_RE = re.compile(r"[ \t]+—[ \t]+")
 # The one rigid part of an entry (personality.md): a `---` rule, then the
 # PR and outcome on one line.
 #
-# The rule is optional, and that is the whole of a bug Edvard could see.
+# The rule is optional, and that is the whole of a bug the owner could see.
 # The review rubric asks every entry to carry a `Reviewer: n findings`
 # line, and Cycle 104 wrote it where the rule used to sit -- so the
 # entry ended `Reviewer: ...\nPR: #88 | Outcome: merged` with no `---`
@@ -81,7 +81,7 @@ _SEGMENT_SPLIT_RE = re.compile(r"[ \t]+—[ \t]+")
 # *quoted* one, and `outcome` swallows everything from there to the end of
 # the entry. No live entry does that today. Do not add the flag.
 #
-# `Board:` is the third field and the only optional one (Edvard, ideas.md
+# `Board:` is the third field and the only optional one (the owner, ideas.md
 # #68: "Journal cards in Nova should mark the issue or idea number they
 # worked on like they do with the prs. With links."). It sits between the
 # other two rather than after them because `outcome` is anchored to `$`
@@ -248,7 +248,7 @@ def split_digest_entries(text):
     written without a blank line between them shows both on the site and
     counts as *one* entry to the roller, so a file of 14 real cards looks
     like 12, sits under the keep-12 cap, and rolls nothing -- no error, no
-    output, the file Edvard reads growing forever, which is the single
+    output, the file the owner reads growing forever, which is the single
     thing that script exists to prevent. Measured before this was moved:
     exactly that, silently.
 
@@ -259,12 +259,12 @@ def split_digest_entries(text):
     return [p.strip() for p in _DIGEST_SPLIT_RE.split(text) if p.strip()]
 
 
-# What "Needs Edvard" says when it has nothing in it. Item 3 of idea #34
+# What "Needs the owner" says when it has nothing in it. Item 3 of idea #34
 # wants that section completely invisible rather than showing the word
 # "Nothing", so the emptiness test lives here next to the parsing.
 #
 # Emphasis is stripped before the comparison, and that is the whole of the
-# bug Edvard reported on 2026-08-09 -- "the 'needs Edvard' box should not
+# bug the owner reported on 2026-08-09 -- "the 'needs the owner' box should not
 # show when nothing is expected". The section was compared literally, so
 # `Nothing.` counted as empty and `**Nothing.**` counted as a live claim
 # on his attention. Every cycle writes the bold one, because bold is the
@@ -275,13 +275,13 @@ _EMPHASIS_RE = re.compile(r"[*_`]")
 
 
 def is_empty_needs(text):
-    """True if the `Needs Edvard` section is asking for nothing."""
+    """True if the `Needs the owner` section is asking for nothing."""
     plain = _EMPHASIS_RE.sub("", text or "").strip().lower()
     return plain.rstrip(".").strip() in _EMPTY_NEEDS
 
 
 def split_needs_items(text):
-    """The `Needs Edvard` body -> one string per ask, in file order.
+    """The `Needs the owner` body -> one string per ask, in file order.
 
     Blank-line separated paragraphs, because that is the shape every cycle
     has written since the section existed. Deliberately not
@@ -300,8 +300,8 @@ def needs_items(text):
     return [] if is_empty_needs(text) else split_needs_items(text)
 
 
-# Edvard, comments board 2026-08-16: "the solution i want is to remove the
-# 'needs Edvard' block entirely. If you need something from me, it should be
+# The owner, comments board 2026-08-16: "the solution i want is to remove the
+# 'needs the owner' block entirely. If you need something from me, it should be
 # added in the Journal card somehow and i'll answer in the comment of a
 # journal card. [...] add a new yellow block below the title or somehow
 # higlight your issue so that i see it."
@@ -316,7 +316,7 @@ def needs_items(text):
 # away with its own card.
 # The colon is required, and that is the whole difference between a label
 # and a mention. Cycles 11 and 12 predate this convention and write about
-# the old digest section in ordinary prose -- "**Needs Edvard**, **Next
+# the old digest section in ordinary prose -- "**Needs the owner**, **Next
 # cycle**, and a one-line-per-cycle **Digest**" -- at the start of a line,
 # which an optional colon matched. Both parsed as open asks, and because
 # they are the oldest cards in the corpus the header's "waiting on you"
@@ -325,12 +325,12 @@ def needs_items(text):
 #
 # Requiring the colon rather than adding an age cutoff is not a guess.
 # Across all 315 entries, every one of the five real asks writes
-# `**Needs Edvard:**` and every bare `**Needs Edvard**` is prose naming
+# `**Needs the owner:**` and every bare `**Needs the owner**` is prose naming
 # the section. A horizon would have hidden these two and still have let
 # the next such sentence through.
-# **Two labels, forever.** Edvard, unboarded capture 2026-08-21: *"Change
-# the 'needs Edvard' to 'needs input'."* New entries write `**Needs
-# input:**`; the 363 entries already written say `**Needs Edvard:**` and
+# **Two labels, forever.** The owner, unboarded capture 2026-08-21: *"Change
+# the 'needs the owner' to 'needs input'."* New entries write `**Needs
+# input:**`; the 363 entries already written say `**Needs the owner:**` and
 # are never edited, so dropping the old spelling would unrender every ask
 # in the archive. This is the one place the alternation is defined --
 # `tools/lint_entry` imports it rather than restating it, because a
@@ -347,7 +347,7 @@ _ASK_RE = re.compile(
 def split_ask(body):
     """An entry body -> (body without the ask paragraph, the ask text).
 
-    The ask is one paragraph opening `**Needs Edvard:**`. It is cut out of
+    The ask is one paragraph opening `**Needs the owner:**`. It is cut out of
     the body rather than left in place because the card renders it above the
     brief, and an entry that printed it in both would be the wall of text
     this replaced.
@@ -364,12 +364,12 @@ def split_ask(body):
     ask = " ".join(match.group("ask").split())
     # The label with nothing after it is asking nothing -- but the paragraph
     # still has to go. Returning the untouched body here put `**Needs
-    # Edvard:**` in `_first_paragraph`, so the card's one-line brief read as
+    # The owner:**` in `_first_paragraph`, so the card's one-line brief read as
     # the label and the entry's real opening sentence never appeared.
     return remainder, ask
 
 
-# Edvard, on the comments board at Cycle 156: "every 8 cycles (at 06:00,
+# The owner, on the comments board at Cycle 156: "every 8 cycles (at 06:00,
 # 14:00 & 22:00) I want a report like you just did for the last 8 cycles.
 # They should appear like a journal card, but stand out in both color and
 # form to show that they are just summaries."
@@ -406,7 +406,7 @@ def parse_heading(heading):
     """Split one `### ...` line into date, time, cycle number and title.
 
     Any of the four may be absent; a heading with no cycle number is a
-    real entry (Edvard's own message, Cycle 6's addendum) and gets
+    real entry (the owner's own message, Cycle 6's addendum) and gets
     `cycle: None` rather than being skipped.
     """
     date_match = _DATE_RE.search(heading)
@@ -522,7 +522,7 @@ def split_outcome(outcome):
     return label, detail
 
 
-# Edvard, ideas.md 2026-08-09: "I actually see that The hashtag to the prs
+# The owner, ideas.md 2026-08-09: "I actually see that The hashtag to the prs
 # are listed, but they are not clickable. Maybe leave it as is, but make
 # the listed prs be clickable links."
 #
@@ -615,7 +615,7 @@ def parse_pr_refs(pr):
 
 # The `Board:` field -> the same span shape, with one difference that is
 # the whole reason it is a second function rather than an argument: the
-# href is *internal*. An idea number is a row on Edvard's own board,
+# href is *internal*. An idea number is a row on the owner's own board,
 # which this app already renders at `/ideas` and `/ideas#68`, so the link
 # stays inside the PWA instead of opening a browser tab at GitHub.
 #
@@ -649,7 +649,7 @@ def parse_board_refs(board):
     return spans
 
 
-# Edvard, issues.md 2026-08-09: "Would be fun to use some emojis to
+# The owner, issues.md 2026-08-09: "Would be fun to use some emojis to
 # represent what was done that cycle."
 #
 # Derived from the text rather than written into each entry's footer,
@@ -830,7 +830,7 @@ def parse_journal(markdown, times_by_cycle=None):
 
     `times_by_cycle` (from `entry_times`) overrides the date and time a
     cycle typed into its own `### ` heading with the vault's write time
-    for the entry document. Edvard hit this twice: Cycle 86 woke at
+    for the entry document. The owner hit this twice: Cycle 86 woke at
     19:00:14, ran seven minutes, and the card said 19:30, because the
     stamp was never measured from anything -- it was a cycle guessing at
     when it expected to finish. The write time is measured, and a heading
@@ -1082,7 +1082,7 @@ def synthetic_heading(path):
 def entry_times(mtimes):
     """`{path: mtime_ms}` from `JOURNAL_DIR` -> `{cycle: [(date, time), ...]}`.
 
-    Oslo time, because that is what Edvard reads and what the headings
+    Oslo time, because that is what the owner reads and what the headings
     have always claimed to be. Ordered newest-first per cycle, matching
     the order `assemble_entries` puts the entries in, so `parse_journal`
     can join the two on nothing more than the cycle number both the
@@ -1143,7 +1143,7 @@ def parse_digest(markdown):
     }
 
 
-# An attachment this site wrote on Edvard's behalf, and nothing else.
+# An attachment this site wrote on the owner's behalf, and nothing else.
 # Same two constructs as `nova_uploads.ATTACHMENT_LINE` and app.js's
 # `ATTACH_RE`: `![alt](/api/upload/<name>)` for a picture, the same
 # without the bang for any other file. The path is required to start
@@ -1168,7 +1168,7 @@ _INLINE_RE = re.compile(
 )
 _FENCE_RE = re.compile(r"^[ \t]*```")
 _BULLET_RE = re.compile(r"^[ \t]*[-*][ \t]+(.*)$")
-# Every item on Edvard's boards opens with his own words as a blockquote,
+# Every item on the owner's boards opens with his own words as a blockquote,
 # and until the board pages existed nothing rendered one -- a `>` line fell
 # through to a paragraph and the marker showed on screen as literal text
 # in front of the one thing on the page he wrote himself. 66 lines across
@@ -1226,7 +1226,7 @@ def render_inline(text):
     return spans
 
 
-# Edvard, issues.md 2026-08-09: "I need a 2-3 line short precise Digest
+# The owner, issues.md 2026-08-09: "I need a 2-3 line short precise Digest
 # for each cycle as a title for each journey card ... As short as
 # possible, max 3 sentences. It should cover everything important ...
 # Then, when a journey card is opened, the Digest is revealed."
@@ -1309,7 +1309,7 @@ def strip_brief_label(text):
     An eight-cycle report opens with a bold label rather than a bold
     headline, and `split_brief`'s shortcut above cannot tell the two
     apart: it read report 242's `**TL;DR.**` as the headline and gave the
-    card that as its entire title, which is what Edvard reported in
+    card that as its entire title, which is what the owner reported in
     issues #86 -- *"the 8cycle reports have just the word tl;dr as
     title. That might be a missinderstanding about i said i wanted the
     report title to be a precise and short summarization."*
@@ -1451,7 +1451,7 @@ def _newest_written_at(entries):
     measurement and not a cycle's guess at when it expected to finish --
     the same instrument `cycle_health.newest_entry_at` reads, off the same
     mtimes. The substitution is keyed on the cycle number, so an entry
-    without one (Edvard's own notes) keeps its typed stamp; that is only
+    without one (the owner's own notes) keeps its typed stamp; that is only
     ever the newest entry in a corpus whose newest entry is not a cycle's,
     and being an hour out on the silence there is not worth reaching for a
     second time source.
@@ -1492,7 +1492,7 @@ def open_asks(entries):
     outside that window.
 
     **Which of these is still waiting is deliberately not decided here.**
-    An ask is answered when Edvard has commented on that card, and comments
+    An ask is answered when the owner has commented on that card, and comments
     live in a different document with its own cache -- folding them in
     would mean the pill kept claiming he had not replied until the *journal*
     cache next rebuilt, minutes after he did. So this stays a pure function
@@ -1523,7 +1523,7 @@ def build_status(entries, known_cycles=None):
     and if entries stopped arriving a week ago that number should stop
     growing rather than quietly keep counting.
 
-    `missingCycles` is the history half of Edvard's #72: *"Nova is 1
+    `missingCycles` is the history half of the owner's #72: *"Nova is 1
     behind agora. Agora failed a cycle Journal and you did not catch
     it."* These are the holes he found himself, by noticing the numbers
     on the feed jump from 126 to 129. Deliberately the whole list and not

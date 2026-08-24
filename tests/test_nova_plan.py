@@ -1,4 +1,4 @@
-"""The `/plan` page — `roadmap.md` and `goals.md` on Edvard's phone.
+"""The `/plan` page — `roadmap.md` and `goals.md` on the owner's phone.
 
 Issue #7 and `goals.md`'s own G2 measure: the two documents written so he
 could argue with Nova's prioritisation are the two he has to leave the app
@@ -90,7 +90,7 @@ def test_frontmatter_never_reaches_the_page():
     `_skippable` says a heading cannot live in frontmatter; it does not
     say the frontmatter is not prose. Rendered without the cut, the
     roadmap opens on its own `contract:` line — a sentence addressed to
-    Nova, on the page written for Edvard.
+    Nova, on the page written for the owner.
     """
     payload = plan_payload({"roadmap": ROADMAP})
     rendered = " ".join(_text(s) for s in _doc(payload, "roadmap")["sections"])
@@ -114,7 +114,7 @@ def test_the_standfirst_survives_with_no_heading():
     """`goals.md`'s opening paragraph says the slate is a proposal.
 
     It sits above the first `##`, so a parser that only kept named
-    sections would drop the one sentence that stops Edvard reading five
+    sections would drop the one sentence that stops the owner reading five
     proposed goals as five settled ones.
     """
     payload = plan_payload({"goals": GOALS})
@@ -133,7 +133,7 @@ def test_a_missing_document_is_a_card_and_not_an_error():
 def test_bullets_and_quotes_keep_their_block_type():
     """`render_blocks` already does this; the assertion is that the page
     passes it real bodies rather than pre-flattened text. Both documents
-    carry Edvard's own words as blockquotes."""
+    carry the owner's own words as blockquotes."""
     payload = plan_payload({"roadmap": ROADMAP})
     kinds = {
         block["type"]
@@ -549,7 +549,7 @@ def test_a_parent_with_its_own_prose_still_folds_above_the_open_newest():
     finding on #269: every fixture here had that heading empty, and an
     empty headed section takes the other branch in `planSection` entirely
     -- it renders plain rather than as a `<details>`. So the composition
-    that is actually on Edvard's screen was the one composition untested.
+    that is actually on the owner's screen was the one composition untested.
     """
     real_shape = """# Goals
 

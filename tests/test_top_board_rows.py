@@ -201,7 +201,7 @@ def test_a_thread_i_already_answered_is_not_waiting():
 
 
 def test_he_gets_the_last_word_after_my_reply_and_is_waiting_again():
-    """Positional, not a count -- Edvard, Nova, Edvard is two each and waiting."""
+    """Positional, not a count -- the owner, Nova, the owner is two each and waiting."""
     text = board((11, "reopened", BACKLOG, "2026-08-01", LOW)) + details(
         (11, "reopened", "Problem.\n\n**Edvard, 08-13:** one\n\n"
                          "**Nova, 08-13 (Cycle 1):** two\n\n**Edvard, 08-15:** three"))
@@ -249,7 +249,7 @@ def test_two_questions_answered_by_one_reply_is_not_waiting():
     assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
 
 
-# --- Edvard's unboarded captures, which this tool could not see at all ---
+# --- The owner's unboarded captures, which this tool could not see at all ---
 #
 # Cycle 241 ran the tool, took the row it named, and three of his captures
 # were sitting unread above the board. `parse_board` had been returning
@@ -257,7 +257,7 @@ def test_two_questions_answered_by_one_reply_is_not_waiting():
 # as `[top-board-rows-blind-to-captures]`.
 
 def with_captures(text, *bullets):
-    """Edvard's bare bullets above the first heading, plus his empty cursor."""
+    """The owner's bare bullets above the first heading, plus his empty cursor."""
     head = "---\ntype: log\n---\n\n" + "".join(f"- {b}\n" for b in bullets) + "- \n\n"
     return head + text
 
@@ -459,7 +459,7 @@ def test_a_nova_note_moves_the_row_it_was_written_on_down_the_ranking():
     at `Updated 08-16` and topped this tool four hours after Cycle 270
     appended a note to it.
 
-    **The note is Nova's on purpose.** One from Edvard would mark the row
+    **The note is Nova's on purpose.** One from the owner would mark the row
     `waiting`, which outranks every rating and would move it to the top for
     a reason that has nothing to do with the date -- a positive result
     guaranteed in advance, pointing the wrong way.
@@ -490,7 +490,7 @@ def test_a_blocked_row_sinks_below_a_lower_rated_actionable_one():
     """Issue #94's exact shape: 🟠 High, oldest, and nothing a cycle can do.
 
     It topped this list for five days on rating and age while every cycle
-    walked past it, which is the tax `⏸ Blocked on Edvard` exists to stop.
+    walked past it, which is the tax `⏸ Blocked on the owner` exists to stop.
     """
     text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
                  (99, "a low one I can actually take", BACKLOG, "08-20", LOW))
@@ -658,7 +658,7 @@ def test_a_row_in_the_done_table_is_waiting_too():
 
 # --- Claims: parallel cycles must not both take the same row -------------
 #
-# Edvard, `comments.md` 2026-08-23 13:31, on going from a 72-minute heartbeat
+# The owner, `comments.md` 2026-08-23 13:31, on going from a 72-minute heartbeat
 # to an 18-minute one: *"The average cycle is 18min, so we are guaranteed to
 # have some paralell cycles run, and i want that."* Everything above this line
 # assumes one reader at a time.
@@ -852,7 +852,7 @@ def test_a_second_comment_on_the_same_row_is_a_different_claim():
     """`take` refuses a slug that was ever released as done.
 
     So a reply slug derived from the row alone would make the second
-    question Edvard ever asks on a row permanently unclaimable.
+    question the owner ever asks on a row permanently unclaimable.
     """
     first = top_board_rows.open_rows(_waiting_board(), "issue")[0]["replySlug"]
     second = top_board_rows.open_rows(

@@ -1,5 +1,5 @@
 """Per-cycle conversation rotation for workflow-mode heartbeats
-(2026-08-02) -- Edvard's own framing: "all the thoughts and outputs are
+(2026-08-02) -- The owner's own framing: "all the thoughts and outputs are
 written there [the conversation]... that conversation is going to be
 longer and longer, just like the Journal." A heartbeat bound forever to
 one conversation accumulates every tool-call-heavy round of every cycle
@@ -20,7 +20,7 @@ accumulating, same as before this existed.
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.log import log
 
-# Edvard, unboarded capture 2026-08-20, rated 🔴 Immediately: "I want Agora
+# The owner, unboarded capture 2026-08-20, rated 🔴 Immediately: "I want Agora
 # to keep the last 30 conversations for a heartbeat so that i'm able to talk
 # to them." It was 5, which is about three hours of a 72-minute cadence --
 # every cycle he had not read within that window was already archived and out
@@ -38,7 +38,7 @@ BACKFILL_PER_ROTATION = 100
 def cycle_tag(heartbeat_id):
     """The tag every conversation this heartbeat creates carries. Public
     because heartbeats.py needs it to find previous cycles' conversations
-    when looking for a message from Edvard nobody has answered yet."""
+    when looking for a message from the owner nobody has answered yet."""
     return f"evolve-cycle:{heartbeat_id}"
 
 
@@ -106,7 +106,7 @@ def rotate_cycle_conversation(heartbeat, participants):
         # with the one above would save a round trip. Agora refuses the whole
         # request if `folderId` names a folder that has gone -- and it can go
         # between _ensure_folder returning its id and this patch landing, if
-        # Edvard deletes it. Bundled, that 400 would take the `tags` with it,
+        # The owner deletes it. Bundled, that 400 would take the `tags` with it,
         # and the tag is what every later cycle uses to find this
         # conversation: pruning, numbering, and the walk-back for a message
         # of his nobody answered. An unfiled conversation is cosmetic; an
@@ -136,7 +136,7 @@ def rotate_cycle_conversation(heartbeat, participants):
 
 def _ensure_folder(name):
     """The switcher folder this heartbeat's cycle conversations are filed
-    into (Edvard, ideas.md #5: "Heartbeat generated conversations should be
+    into (the owner, ideas.md #5: "Heartbeat generated conversations should be
     auto created in the same folder by default"). Named after the heartbeat,
     so Nova's 30 retained cycles collapse into one row instead of being the
     list.
@@ -207,7 +207,7 @@ def _backfill_folder(existing, folder_id):
     conversation this rotation had just created, so the folder started with
     one conversation in it and every older one stayed at the top level.
     Measured on the live service 2026-08-20, an hour after the feature went
-    out: 296 conversations, 1 filed. Edvard's switcher was exactly as long
+    out: 296 conversations, 1 filed. The owner's switcher was exactly as long
     as before, plus a folder holding a single row -- the feature looked
     broken rather than absent, which is worse.
 
@@ -221,7 +221,7 @@ def _backfill_folder(existing, folder_id):
     `_backfill_batch` picks the order and the cut.
 
     A non-2xx gets its own log line rather than only being absent from the
-    total: if Edvard deletes the folder midway through a batch, every
+    total: if the owner deletes the folder midway through a batch, every
     remaining conversation fails identically, and "filed 3 of 100" alone does
     not say why.
 

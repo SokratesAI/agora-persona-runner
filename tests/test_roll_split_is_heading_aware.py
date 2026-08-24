@@ -3,7 +3,7 @@
 `md_sections` was built for `nova_comments` after a comment landed inside
 `comments.md`'s frontmatter. The three rolling tools kept their own
 `text.find("\\n## Digest\\n")`, which is the same search with the same blind
-spots, and they run against the two files Edvard actually opens.
+spots, and they run against the two files the owner actually opens.
 
 **Five of the six tests here fail when the tool goes back to `str.find`,
 and the sixth is named as the exception.** That count is the claim, and

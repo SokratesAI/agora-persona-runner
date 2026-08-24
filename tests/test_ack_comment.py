@@ -249,7 +249,7 @@ def test_acknowledge_survives_a_block_scalar_contract():
     """The whole command, not just `find_heading`, on the one frontmatter
     shape whole-line matching cannot save you from. A YAML block scalar puts
     bare `## New` and `## Acknowledged` lines inside the frontmatter, so the
-    pre-diff matcher finds both of them first and files Edvard's comment
+    pre-diff matcher finds both of them first and files the owner's comment
     into the file's own header -- which is the 2026-08-13 failure, reached
     through the real entry point."""
     out = acknowledge(
@@ -296,7 +296,7 @@ def test_a_bystander_losing_its_reply_is_refused(monkeypatch):
 def test_no_blank_line_is_gained_or_lost_around_the_move():
     """Whitespace is not cosmetic here: the site ends a card at a blank line,
     so a block that drags its trailing blanks along and then gets another
-    one appended splits into two cards on Edvard's screen."""
+    one appended splits into two cards on the owner's screen."""
     out = _ack()
     assert "\n\n\n" not in out
 

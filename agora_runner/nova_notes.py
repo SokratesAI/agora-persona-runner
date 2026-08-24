@@ -1,4 +1,4 @@
-"""Edvard's notes page.
+"""The owner's notes page.
 
 His capture, `issues.md` 2026-08-21: *"I do not have a notes page that
 shows any overview of the notes made."*
@@ -40,7 +40,7 @@ READ_HEADING = "read"
 # hand and by `nova_capture`, so the indent is not guaranteed to be
 # exactly two -- anything indented counts as a response.
 # `\s*` rather than `\s+` after the dash, so a bare `-` still reads as a
-# bullet. That is Edvard's cursor, and it has to be *recognised* and then
+# bullet. That is the owner's cursor, and it has to be *recognised* and then
 # dropped for being empty -- matched as prose instead, it gets joined
 # onto the note above it as a stray dash.
 _NOTE_RE = re.compile(r"^-\s*(.*)$")
@@ -173,11 +173,11 @@ def notes_payload():
     it grows by a note every few days rather than by one an hour -- so a
     limit here would be the cap with no measurement behind it that
     `personality.md` spends a section on. The page still opens on the
-    newest handful and reveals older ones as Edvard scrolls up; that is a
+    newest handful and reveals older ones as the owner scrolls up; that is a
     scroll position, decided in `app.js`, not a payload this file has to
     cut.
 
-    **The order is the whole change here.** Edvard, `notes.md`
+    **The order is the whole change here.** The owner, `notes.md`
     2026-08-24: *"I want the notes page to be more like a conversation
     ... ordered with the latest note at the bottom."* So this reads as a
     transcript now: oldest at the top, newest at the bottom, each note

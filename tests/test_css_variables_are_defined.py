@@ -13,7 +13,7 @@ invisible, because the inherited value is the one you wanted anyway. On a
 form control it is not: `input`, `select`, `textarea` and `button` do not
 inherit `color` from the page, so all six of these fell back to the
 user-agent default -- near-black text on this stylesheet's `#12131a`
-background. One of them is the box Edvard types a row title into.
+background. One of them is the box the owner types a row title into.
 
 No renderer complains, no test that asserts a class name notices, and a
 screenshot only catches it if the affected control happens to be on

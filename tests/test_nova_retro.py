@@ -52,7 +52,7 @@ def test_the_three_scores_are_the_three_things_he_asked_to_be_rated():
     """Pinned as a literal, and this is the assertion the whole file is
     built around.
 
-    Edvard named three ratings -- how it is going, how effective, the
+    The owner named three ratings -- how it is going, how effective, the
     overall feeling -- and the last is the one he called the most
     important metric. A cycle renaming or dropping one would produce a
     ledger whose old rows and new rows plot different things on the same
