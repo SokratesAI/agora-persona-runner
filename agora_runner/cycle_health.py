@@ -61,6 +61,22 @@ HEARTBEAT_MINUTES = 60
 # there.
 STALL_GRACE_INTERVALS = 2
 
+# The longest a single cycle can possibly still be running. The bridge kills
+# a turn at 45 minutes -- measured Cycle 82, and the turn hook prints the
+# remaining minutes on every tool call -- so a run claimed longer ago than
+# this is over, however it ended, whatever `lastResult` still says.
+#
+# It exists because `STALL_GRACE_INTERVALS` stopped covering a running cycle
+# when the cadence dropped. At 60 minutes, two intervals was two hours and no
+# healthy cycle came close; at the 20 minutes the owner set on 2026-08-24 it is
+# 40 minutes, which is *less than one cycle's own runtime* -- so an ordinary
+# slow cycle crossed the stall threshold while it was still working, and at
+# 17:38 the site pushed "Nova has stopped writing" into Cycle 373's own live
+# conversation while that cycle was mid-turn. The grace interval is a count
+# of cadence intervals and therefore shrinks with the cadence; how long a
+# cycle runs does not, so the two need separate numbers.
+MAX_CYCLE_MINUTES = 45
+
 
 def nova_cadence_minutes():
     """Minutes between Nova's own heartbeat runs, live from Agora, or `None`.
