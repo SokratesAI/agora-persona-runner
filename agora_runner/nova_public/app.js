@@ -506,18 +506,29 @@
    * a second title above the blue summary. Bringing the field back unchanged
    * re-earns that complaint the next time a cycle writes a sentence there.
    *
-   * Measured against the live journal this cycle: of 411 outcomes on record,
-   * 404 are exactly one of the seven words below and 7 are clauses. So the
-   * vocabulary is what the loop actually writes, and a value outside it is
-   * the shape that got the pill cut -- it stays off the card, exactly as it
-   * is today. `none` and the two below it are not in the archive yet; they
-   * are the words the footer's own instructions offer, and admitting them
-   * here costs nothing and stops the next honest short answer being dropped.
+   * Measured against the live journal, re-taken cycle 362 off `/api/journal`:
+   * of 414 outcomes on record, 405 are exactly one of the seven words below
+   * -- merged 326, shipped 49, report 14, stuck 7, no-op 6, research 2,
+   * open 1 -- and 9 are clauses. So the vocabulary is what the loop actually
+   * writes, and a value outside it is the shape that got the pill cut: it
+   * stays off the card, exactly as it is today.
+   *
+   * The list held `none`, `blocked` and `partial` for one cycle and they are
+   * gone. A reviewer asked what corroborated them and the answer was
+   * nothing: zero occurrences in 414 entries, and the footer instruction
+   * they were credited to (`tests/test_nova_site.py`) offers only merged /
+   * shipped / stuck / no-op -- its `none` is the *PR* field's value, not an
+   * outcome. `none` was the actively harmful one. `isRealPr` exists to stop
+   * the header drawing the word "none", and admitting it here would have
+   * drawn it as a badge instead, which is #300's complaint coming back
+   * through the door it was thrown out of. A word earns its place here by
+   * appearing in the archive, not by sounding like something a cycle
+   * might write.
    *
    * Returns the value to draw, or "" for "not a status word". */
   function shortOutcome(outcome) {
     var value = String(outcome || "").trim();
-    return /^(merged|shipped|report|research|stuck|no-op|open|none|blocked|partial)$/i.test(value)
+    return /^(merged|shipped|report|research|stuck|no-op|open)$/i.test(value)
       ? value
       : "";
   }
@@ -705,7 +716,11 @@
      * show still writes `PR: none`, and a header field reading "none" is
      * the noise this ask is about wearing a shorter word. It is the same
      * predicate `settledPart` uses, so the header and the card agree about
-     * what counts as a PR. */
+     * what counts as a PR.
+     *
+     * The paragraph above describes #300 and is kept as the reason the
+     * *qualifier* is still gone; its sentence about the pill itself was
+     * overtaken on 2026-08-24 and the block below is what holds now. */
     /* ...and it is back, narrowed. Edvard, `issues.md` 2026-08-24: "i miss
      * the status fields. Please bring them back." Same rule as the card:
      * `shortOutcome` only, so the field can hold a badge and can never hold

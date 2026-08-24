@@ -818,6 +818,38 @@ describe("two entries for one cycle are one card", () => {
     }
   });
 
+  /* `Outcome: none` draws nothing, on the card or in the header. The
+   * vocabulary held `none` for one cycle on the theory that it was a word
+   * the footer offers; the archive has zero of them in 414 entries, and
+   * `isRealPr` exists precisely to keep the word "none" off the header --
+   * so admitting it as a badge would have restored #300's complaint through
+   * the other field. The header half of this is in the status-fields suite
+   * below, where `withStatus` is in scope. This is the test the narrowing
+   * rests on: it fails the
+   * moment `shortOutcome` gets permissive again, which the two "free text
+   * draws nothing" tests beside it cannot see, because free text was
+   * refused before this change as well. */
+  test("an outcome of none is not a status word on the card", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.outcome = "none";
+      e.outcomeDetail = "";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta.querySelector(".badge"), null, meta.textContent);
+    // The control: the same fixture with a real status word does draw one,
+    // so this is not asserting against a selector that never matches.
+    const journal2 = JSON.parse(JSON.stringify(payload.journal));
+    journal2.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.outcome = "research";
+      e.outcomeDetail = "";
+    });
+    const w2 = await loadSite("/", { journal: () => journal2 });
+    const meta2 = cards(w2)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta2.querySelector(".badge").textContent, "research");
+  });
+
   /* The qualifier stays off the card even when the word beside it is back --
    * it is the prose half, and prose in a badge row is what #300 cut. */
   test("a one-word outcome brings back the word, not its qualifier", async () => {
@@ -7408,6 +7440,25 @@ describe("the status fields are one horizontal list, and they link down to the c
     const subs2 = w2.document.querySelector("#status .status-subs").textContent;
     assert.match(subs2, /runner#289/);
     assert.match(subs2, /no-op/);
+  });
+
+  /* `Outcome: none` is not a status word either, and this is the half that
+   * would have hurt: `isRealPr` keeps the word "none" out of this field, so
+   * a `none` admitted by `shortOutcome` would have walked back in beside it
+   * as a badge. Fails the moment the vocabulary gets permissive again. */
+  test("an outcome of none draws no header field", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "none", lastPr: "none" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const subs = window.document.querySelector("#status .status-subs");
+    assert.ok(!subs || !/none/.test(subs.textContent), subs && subs.textContent);
+    // The control: a real status word on the same fixture does draw one.
+    const w2 = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "research", lastPr: "none" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.match(w2.document.querySelector("#status .status-subs").textContent, /research/);
   });
 
   /* And the case that has no field to draw at all: a free-text outcome is
