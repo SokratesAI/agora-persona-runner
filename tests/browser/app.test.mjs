@@ -3561,6 +3561,35 @@ describe("the issues page", () => {
     assert.match(sheet, /\.capture-item:first-of-type\s*{[^}]*border-top:\s*0/);
   });
 
+
+  /* Every control on a capture now lives behind a press-and-hold. The
+   * owner, 2026-08-24: *"The new buttons for the messages to edit or make
+   * idea or make issue should not be visible. Lets change it to when i
+   * press and hold it it opens a modal with al the edit options."*
+   *
+   * So a test that wants Delete has to make the gesture first, and it is
+   * driven as real events rather than by calling the handler -- the click
+   * a browser sends after the release is the one thing that could close
+   * the sheet the same instant it opened, and only the event sequence has
+   * that in it. Save and Cancel are deliberately *not* found here: they
+   * belong to the open editor on the card, not to the sheet. */
+  const CAPTURE_HOLD_MS = 1030;
+  const holdCapture = async (window, item) => {
+    const body = item.querySelector(".capture-body");
+    const fire = (type) => body.dispatchEvent(
+      new window.MouseEvent(type, { bubbles: true, cancelable: true }));
+    fire("mousedown");
+    await new Promise((resolve) => setTimeout(resolve, CAPTURE_HOLD_MS));
+    fire("mouseup");
+    click(window, body);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sheet = window.document.querySelector(".action-sheet");
+    assert.ok(sheet, "a one-second hold opened no action sheet");
+    return sheet;
+  };
+  const sheetAct = (sheet, label) =>
+    [...sheet.querySelectorAll(".capture-act")].filter((b) => b.textContent === label)[0];
+
   test("Delete sends the capture's own text, not its position", async () => {
     /* The whole point of the design: a cycle boarding a bullet above this
      * one shifts every index, and an index-addressed delete would then
@@ -3568,8 +3597,7 @@ describe("the issues page", () => {
     const window = await loadSite("/issues");
     window.confirm = () => true;
     const item = window.document.querySelector(".capture-item");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.equal(window.posted.length, 1);
@@ -3592,8 +3620,7 @@ describe("the issues page", () => {
     window.confirm = () => true;
     const items = [...window.document.querySelectorAll(".capture-item")];
     assert.equal(items.length, 2);
-    click(window, [...items[1].querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, items[1]), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.equal(window.posted[0].body.index, 1,
@@ -3638,8 +3665,7 @@ describe("the issues page", () => {
     assert.equal(window.document.querySelector(".capture-done-chip"), null);
 
     // The open one is second in the file and must still say so.
-    click(window, [...open.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, open.querySelector(".capture-item")), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(window.posted[0].body.index, 1,
       "filtering renumbered the rows and the page sent the wrong address");
@@ -3650,8 +3676,7 @@ describe("the issues page", () => {
     const window = await loadSite("/issues");
     window.confirm = () => false;
     const item = window.document.querySelector(".capture-item");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(window.posted.length, 0, "a declined confirm still deleted");
   });
@@ -3687,8 +3712,7 @@ describe("the issues page", () => {
     // what `renderBlocks` produced, which is the thing this line is about.
     assert.equal(item.querySelector(".capture-body p").textContent,
       "the /api/board page is slow", "the fixture does not render differently from its source");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Edit")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Edit"));
 
     const box = item.querySelector(".capture-input");
     assert.ok(box, "Edit did not open a field");
@@ -3709,14 +3733,88 @@ describe("the issues page", () => {
     });
   });
 
+  test("an edit box shows its attachments as pictures, and ✕ takes one out", async () => {
+    /* The owner, 2026-08-24: *"uploaded images just show like a url text,
+     * it should show like the miniature images like when i upload them."*
+     *
+     * The textarea keeps the raw markdown -- that is what the vault
+     * stores -- so the picture is a chip under the box, and removing it
+     * has to cut that construct out of the text, which is the thing he
+     * cannot do with a thumb on a 90-character URL. */
+    const raw = "look at this ![shot.jpg](/api/upload/abc123.jpg) and this [notes.pdf](/api/upload/def.pdf)";
+    const board = {
+      ...payload.board,
+      captures: [{ text: raw, blocks: [{ type: "p", spans: [{ kind: "text", text: raw }] }] }],
+    };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    const item = window.document.querySelector(".capture-item");
+    click(window, sheetAct(await holdCapture(window, item), "Edit"));
+
+    const chips = [...item.querySelectorAll(".edit-tray .attach-chip")];
+    assert.equal(chips.length, 2, "the two attachments did not become chips");
+    const thumb = chips[0].querySelector("img.attach-thumb");
+    assert.ok(thumb, "the image attachment drew no thumbnail");
+    assert.equal(thumb.getAttribute("src"), "/api/upload/abc123.jpg");
+    assert.equal(thumb.getAttribute("alt"), "shot.jpg",
+      "the alt text has to be his filename -- it is what tells two screenshots apart");
+    // The non-image one is a name, not a broken picture.
+    assert.equal(chips[1].querySelector("img"), null);
+    assert.match(chips[1].textContent, /notes\.pdf/);
+
+    click(window, chips[0].querySelector(".attach-chip-remove"));
+    const box = item.querySelector(".capture-input");
+    assert.equal(
+      box.value,
+      "look at this  and this [notes.pdf](/api/upload/def.pdf)",
+      "✕ cut the wrong span out of his text",
+    );
+    assert.equal(item.querySelectorAll(".edit-tray .attach-chip").length, 1,
+      "the strip did not redraw after a removal");
+  });
+
+  test("the second of two links to the same upload is the one ✕ removes", async () => {
+    /* `indexOf` would have taken the first, which is a different sentence
+     * of his. The chips are indistinguishable on screen, so nothing but
+     * this test can tell the two implementations apart. */
+    const raw = "first ![a.jpg](/api/upload/a.jpg) then ![a.jpg](/api/upload/a.jpg) end";
+    const board = {
+      ...payload.board,
+      captures: [{ text: raw, blocks: [{ type: "p", spans: [{ kind: "text", text: raw }] }] }],
+    };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    const item = window.document.querySelector(".capture-item");
+    click(window, sheetAct(await holdCapture(window, item), "Edit"));
+    const chips = [...item.querySelectorAll(".edit-tray .attach-chip")];
+    assert.equal(chips.length, 2);
+    click(window, chips[1].querySelector(".attach-chip-remove"));
+    assert.equal(
+      item.querySelector(".capture-input").value,
+      "first ![a.jpg](/api/upload/a.jpg) then  end",
+    );
+  });
+
+  test("Escape closes the action sheet without acting on the capture", async () => {
+    const window = await loadSite("/issues");
+    const item = window.document.querySelector(".capture-item");
+    assert.ok(await holdCapture(window, item));
+    window.document.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(window.document.querySelector(".action-sheet"), null,
+      "Escape left the sheet open");
+    assert.equal(window.posted.length, 0, "closing the sheet wrote to the server");
+  });
+
   test("saving an emptied field is not a delete", async () => {
     /* Deleting has a button and that button asks. Clearing the box has to
      * do nothing at all, or the confirm is one backspace away from being
      * bypassed. */
     const window = await loadSite("/issues");
     const item = window.document.querySelector(".capture-item");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Edit")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Edit"));
     item.querySelector(".capture-input").value = "   ";
     click(window, [...item.querySelectorAll(".capture-act")].filter(
       (b) => b.textContent === "Save")[0]);
@@ -3729,8 +3827,7 @@ describe("the issues page", () => {
     window.confirm = () => true;
     window.postReply = { ok: false, message: "that capture is no longer in the list" };
     const item = window.document.querySelector(".capture-item");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.match(item.querySelector(".capture-item-status").textContent, /no longer/);
@@ -6957,17 +7054,47 @@ describe("the notes page", () => {
    * way of changing it or editing it. So we need crude operations for
    * notes, but also the possibility to change issues/ideas/notes into one
    * of the other."* */
+  /* A note's controls moved into the same long-press sheet the two boards
+   * use -- the owner asked for it on all three surfaces at once ("Do this
+   * for issues, ideas and notes"), so the gesture is driven here the same
+   * way, as real events including the click a browser sends on release.
+   *
+   * `noteActs` still reads the message itself, and its meaning has
+   * inverted on purpose: it is now what proves a note has *no* controls,
+   * and `holdNote` returning null is the other half of that. */
   const noteActs = (window, i = 0) =>
     [...window.document.querySelectorAll(".note-msg")[i].querySelectorAll(".capture-act")];
-  const actNamed = (window, name, i = 0) =>
-    noteActs(window, i).filter((b) => b.textContent === name)[0];
+  const holdNote = async (window, i = 0) => {
+    const body = window.document.querySelectorAll(".note-msg")[i]
+      .querySelector(".note-msg-body");
+    const fire = (type) => body.dispatchEvent(
+      new window.MouseEvent(type, { bubbles: true, cancelable: true }));
+    fire("mousedown");
+    await new Promise((resolve) => setTimeout(resolve, 1030));
+    fire("mouseup");
+    click(window, body);
+    await settle();
+    return window.document.querySelector(".action-sheet");
+  };
+  const actNamed = (sheet, name) =>
+    [...sheet.querySelectorAll(".capture-act")].filter((b) => b.textContent === name)[0];
+  /* Save and Cancel are the exception: they belong to the editor that
+   * replaced the button row on the card, and holding again to find them
+   * would reopen the sheet over the box being typed into. */
+  const saveOn = (window, i = 0) =>
+    noteActs(window, i).filter((b) => b.textContent === "Save")[0];
 
   test("a waiting note carries Edit, Delete and the two conversions", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
-    const waiting = [...window.document.querySelectorAll(".note-msg")]
-      .filter((m) => m.className.includes("note-msg-waiting"))[0];
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    // Nothing on the card before the gesture -- that is the ask.
+    assert.equal(noteActs(window, waitingIndex).length, 0,
+      "the controls are on the note before it has been held");
+    const sheet = await holdNote(window, waitingIndex);
+    assert.ok(sheet, "a one-second hold on a waiting note opened no action sheet");
     assert.deepEqual(
-      [...waiting.querySelectorAll(".capture-act")].map((b) => b.textContent),
+      [...sheet.querySelectorAll(".capture-act")].map((b) => b.textContent),
       ["Edit", "Make issue", "Make idea", "Delete"],
       "Delete must stay last -- it is the destructive one",
     );
@@ -6984,6 +7111,13 @@ describe("the notes page", () => {
     assert.ok(answered.length, "the fixture has no read note, so this proves nothing");
     answered.forEach((m) =>
       assert.equal(m.querySelectorAll(".capture-act").length, 0));
+    /* And holding it opens nothing either. Since the controls left the
+     * card, counting them there would now pass on a note that *does* have
+     * them -- so the gesture is the assertion that still has teeth. */
+    const answeredIndex = [...window.document.querySelectorAll(".note-msg")]
+      .indexOf(answered[0]);
+    assert.equal(await holdNote(window, answeredIndex), null,
+      "an answered note opened an action sheet");
   });
 
   test("a waiting note with no index gets no controls either", async () => {
@@ -6999,13 +7133,15 @@ describe("the notes page", () => {
       },
     });
     assert.equal(window.document.querySelectorAll(".capture-act").length, 0);
+    assert.equal(await holdNote(window, 0),
+      null, "a note the server could not address opened an action sheet");
   });
 
   test("Make idea posts the note's own address, and the target board", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
     const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
       .findIndex((m) => m.className.includes("note-msg-waiting"));
-    click(window, actNamed(window, "Make idea", waitingIndex));
+    click(window, actNamed(await holdNote(window, waitingIndex), "Make idea"));
     await settle();
     const posted = window.posted.find((p) => p.url === "/api/capture/convert");
     assert.ok(posted, "no write reached /api/capture/convert");
@@ -7024,7 +7160,7 @@ describe("the notes page", () => {
     const window = await loadSite("/notes", { notes: twoNotes });
     const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
       .findIndex((m) => m.className.includes("note-msg-waiting"));
-    const btn = actNamed(window, "Make idea", waitingIndex);
+    const btn = actNamed(await holdNote(window, waitingIndex), "Make idea");
     click(window, btn);
     assert.equal(btn.disabled, true, "the button stayed live during its own fetch");
     click(window, btn);
@@ -7041,11 +7177,11 @@ describe("the notes page", () => {
     const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
       .findIndex((m) => m.className.includes("note-msg-waiting"));
     window.confirm = () => false;
-    click(window, actNamed(window, "Delete", waitingIndex));
+    click(window, actNamed(await holdNote(window, waitingIndex), "Delete"));
     await settle();
     assert.equal(window.posted.filter((p) => p.url.includes("delete")).length, 0);
     window.confirm = () => true;
-    click(window, actNamed(window, "Delete", waitingIndex));
+    click(window, actNamed(await holdNote(window, waitingIndex), "Delete"));
     await settle();
     const posted = window.posted.find((p) => p.url === "/api/capture/delete");
     assert.ok(posted, "a confirmed delete never reached the server");
@@ -7057,12 +7193,12 @@ describe("the notes page", () => {
     const window = await loadSite("/notes", { notes: twoNotes });
     const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
       .findIndex((m) => m.className.includes("note-msg-waiting"));
-    click(window, actNamed(window, "Edit", waitingIndex));
+    click(window, actNamed(await holdNote(window, waitingIndex), "Edit"));
     const box = window.document.querySelector(".note-acts .capture-input");
     assert.ok(box, "Edit opened no box");
     assert.equal(box.value, "Nobody has read this one.");
     box.value = "   ";
-    click(window, actNamed(window, "Save", waitingIndex));
+    click(window, saveOn(window, waitingIndex));
     await settle();
     assert.equal(
       window.posted.filter((p) => p.url === "/api/capture/edit").length,
@@ -7070,7 +7206,7 @@ describe("the notes page", () => {
       "emptying the box is not how a note is deleted",
     );
     box.value = "Actually an idea.";
-    click(window, actNamed(window, "Save", waitingIndex));
+    click(window, saveOn(window, waitingIndex));
     await settle();
     const posted = window.posted.find((p) => p.url === "/api/capture/edit");
     assert.ok(posted, "no write reached /api/capture/edit");
