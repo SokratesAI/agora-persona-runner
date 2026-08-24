@@ -917,6 +917,81 @@ def test_a_successful_amend_invalidates_the_board_it_changed(path):
     )
 
 
+def test_converting_a_capture_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "convert_capture", return_value=(True, "moved to ideas")) as conv:
+        status, _, body = _post(
+            "/api/capture/convert",
+            {"from": "notes", "to": "ideas", "index": 1, "original": "actually an idea"},
+        )
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    conv.assert_called_once_with("notes", 1, "actually an idea", "ideas")
+
+
+@pytest.mark.parametrize("payload", [
+    {"from": "../../etc/passwd", "to": "ideas", "index": 0, "original": "x"},
+    {"from": "notes", "to": "projects/sokrates/projects/nova/ideas.md", "index": 0, "original": "x"},
+    {"to": "ideas", "index": 0, "original": "x"},
+    {"from": "notes", "index": 0, "original": "x"},
+    # Converting a line into the file it is already in is a no-op the page
+    # should never send and the server should never carry out -- it would
+    # write the copy and then delete the address it had just shifted.
+    {"from": "notes", "to": "notes", "index": 0, "original": "x"},
+    {"from": "notes", "to": "ideas", "index": 0, "original": ""},
+    {"from": "notes", "to": "ideas", "index": 0, "original": 42},
+    {"from": "notes", "to": "ideas", "original": "x"},
+    {"from": "notes", "to": "ideas", "index": True, "original": "x"},
+    {"from": "notes", "to": "ideas", "index": -1, "original": "x"},
+    {"from": "notes", "to": "ideas", "index": "0", "original": "x"},
+])
+def test_a_convert_that_could_address_the_wrong_document_is_rejected(payload):
+    with patch.object(nova_site, "convert_capture") as conv:
+        status, _, _ = _post("/api/capture/convert", payload)
+    assert status == 400
+    conv.assert_not_called()
+
+
+def test_a_convert_whose_address_went_stale_is_a_conflict_rather_than_a_failure():
+    with patch.object(nova_site, "convert_capture",
+                      return_value=(False, "that capture is no longer in the list")):
+        status, _, _ = _post(
+            "/api/capture/convert",
+            {"from": "notes", "to": "ideas", "index": 0, "original": "gone"},
+        )
+    assert status == 409
+
+
+def test_a_convert_drops_both_pages_it_touched_even_when_it_half_failed():
+    """The half-done state -- copied, not removed -- has to leave both pages
+    cold. A cached destination would keep the copy invisible while the
+    message says it is in both files."""
+    nova_site.reset_cache()
+    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
+    nova_site._cache["board:ideas"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
+    with patch.object(nova_site, "convert_capture",
+                      return_value=(False, "copied to ideas, but ... it is in both")):
+        _post("/api/capture/convert",
+              {"from": "notes", "to": "ideas", "index": 0, "original": "x"})
+    assert "notes" not in nova_site._cache
+    assert "board:ideas" not in nova_site._cache
+
+
+@pytest.mark.parametrize("path", ["/api/capture", "/api/capture/edit", "/api/capture/delete"])
+def test_writing_a_note_drops_the_notes_page_not_a_board_that_never_existed(path):
+    """`board:notes` has never existed -- notes are not a board -- and for
+    every write but the first this endpoint only ever popped that key. A
+    note edited or deleted from the app left `/notes` serving the copy from
+    before the write."""
+    nova_site.reset_cache()
+    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
+    with patch.object(nova_site, "capture", return_value=(True, "ok")), \
+            patch.object(nova_site, "amend", return_value=(True, "ok")):
+        _post(path, {"target": "notes", "index": 0, "original": "x", "text": "y"})
+    assert "notes" not in nova_site._cache, (
+        "the notes page would reload to the copy from before the write"
+    )
+
+
 # Parametrized over the dict rather than a literal list: this test was
 # `["issues", "ideas"]` and its name said "both", so adding `notes` as a
 # third target left a test that still passed, still read as complete, and

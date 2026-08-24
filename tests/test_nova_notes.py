@@ -187,3 +187,51 @@ def test_the_page_reads_the_path_the_note_button_writes():
 def _payload(markdown):
     with patch.object(nova_notes, "notes_markdown", return_value=markdown):
         return notes_payload()
+
+
+# --- the address the page needs to edit, delete or convert a note ---------
+#
+# The owner, 2026-08-24: *"i have no way of changing it or editing it"*. The
+# two boards have had Edit and Delete since issues #66; this page was built
+# without them, and what it was missing was the address.
+
+
+def test_a_waiting_note_carries_its_capture_index():
+    payload = _payload(LIVE_SHAPE)
+    waiting = [n for n in payload["notes"] if n["waiting"]]
+    assert waiting, "the fixture must have a waiting note for this to mean anything"
+    assert [n["index"] for n in waiting] == list(range(len(waiting)))
+
+
+def test_a_note_already_read_has_no_index():
+    """The edit, delete and convert endpoints can only address the bare
+    bullets above the first heading. A note under `## Read` has a cycle's reply written under it, and
+    rewriting it would leave that reply answering text that is gone."""
+    payload = _payload(LIVE_SHAPE)
+    assert [n["index"] for n in payload["notes"] if not n["waiting"]] \
+        == [None] * payload["readTotal"]
+
+
+def test_the_index_is_the_one_the_capture_parser_would_resolve():
+    """Two parsers read the same span and nothing holds them together, so the
+    texts are compared rather than assumed."""
+    from agora_runner.nova_capture import list_captures
+
+    markdown = LIVE_SHAPE.replace(
+        "- A note nobody has picked up yet.",
+        "- A note nobody has picked up yet.\n- and a second one\n"
+        "  wrapped onto a continuation line",
+    )
+    payload = _payload(markdown)
+    addresses = list_captures(markdown)
+    for note in payload["notes"]:
+        if note["index"] is not None:
+            assert addresses[note["index"]] == note["text"]
+
+
+def test_a_note_the_capture_parser_disagrees_about_gets_no_controls():
+    """If the two ever drift, the page must draw nothing rather than hand
+    `/api/capture/delete` an index pointing at a different line of his file."""
+    with patch.object(nova_notes, "list_captures", return_value=["something else"]):
+        payload = _payload(LIVE_SHAPE)
+    assert [n["index"] for n in payload["notes"] if n["waiting"]] == [None]

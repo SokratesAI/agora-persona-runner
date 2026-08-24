@@ -3576,6 +3576,59 @@
    * success. Sending both means the server can refuse a disagreement
    * instead of resolving it. A stale address is a 409 and the page
    * re-reads, which is the honest outcome. */
+  /* The three capture files, and what a button offering to move a line
+   * into one of them should say. Kept as one list because the notes page
+   * and the two board pages both need it and a second copy of three
+   * strings is the drift this repo keeps filing against itself. */
+  var CAPTURE_KINDS = [
+    { target: "issues", verb: "Make issue" },
+    { target: "ideas", verb: "Make idea" },
+    { target: "notes", verb: "Make note" },
+  ];
+
+  /* Buttons that move one capture into each of the other two files.
+   *
+   * The owner, 2026-08-24: *"The note i sent regarding the rebuilding the
+   * notes page was sent as a note, but its actually an idea, but i have
+   * no way of changing it or editing it."* He chooses which of the three
+   * buttons to press before he has finished thinking, and until now that
+   * choice was permanent.
+   *
+   * `onDone` repaints from the file rather than patching the node: the
+   * line has left one page and arrived on another, and only the vault
+   * knows what both now say. `onFail` gets the message verbatim, because
+   * the one failure worth reading -- the copy landed and the removal did
+   * not -- tells him exactly which of the two to delete. */
+  function convertButtons(source, index, original, onDone, onFail, disable) {
+    return CAPTURE_KINDS.filter(function (kind) { return kind.target !== source; })
+      .map(function (kind) {
+        var btn = el("button", "capture-act", kind.verb);
+        btn.type = "button";
+        btn.addEventListener("click", function () {
+          if (disable) disable(true);
+          fetch("/api/capture/convert", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              from: source, to: kind.target, index: index, original: original,
+            }),
+          })
+            .then(function (r) { return r.json().catch(function () { return {}; }); })
+            .then(function (result) {
+              if (!result || !result.ok) {
+                throw new Error((result && (result.message || result.error)) || "failed");
+              }
+              onDone();
+            })
+            .catch(function (err) {
+              if (disable) disable(false);
+              onFail(err);
+            });
+        });
+        return btn;
+      });
+  }
+
   function renderCapture(board, capture, index) {
     /* `capture.done` is the cycle that closed it, or "". It only paints
      * -- Edit and Delete keep working, because the marker is text in his
@@ -3780,6 +3833,14 @@
 
     actions.appendChild(status);
     actions.appendChild(editBtn);
+    convertButtons(
+      board, index, capture.text,
+      function () { loadBoard(board); },
+      fail,
+      function (busy) { [editBtn, delBtn].forEach(function (b) { b.disabled = busy; }); }
+    ).forEach(function (b) { actions.appendChild(b); });
+    // Delete stays last: it is the destructive one and nothing new should
+    // grow between it and the edge his thumb aims at.
     actions.appendChild(delBtn);
     one.appendChild(actions);
     return one;
@@ -5591,7 +5652,103 @@
     if (!note.waiting && !(note.responses || []).length) {
       out.push(el("p", "note-reply-missing", "Moved to Read with no reply written."));
     }
+    /* Edit, delete and convert -- but only while nothing has acted on it.
+     *
+     * `note.index` is the capture-list position, and the server sets it
+     * to `null` for anything the edit/delete/convert endpoints cannot address: every note
+     * under `## Read`, and any waiting note whose two parsers disagreed.
+     * Rewriting a note a cycle has already answered would leave the reply
+     * underneath it answering text that no longer exists, so the missing
+     * index is the right answer rather than a limitation to work around.
+     *
+     * The two boards have had these since issues #66; the notes page was
+     * built without them and that is the gap he hit -- *"i have no way of
+     * changing it or editing it"*. */
+    if (note.waiting && typeof note.index === "number") {
+      msg.appendChild(noteActions(note));
+    }
     return out;
+  }
+
+  function noteActions(note) {
+    var actions = el("div", "capture-edit note-acts");
+    var status = el("span", "capture-item-status");
+    var editBtn = el("button", "capture-act", "Edit");
+    var delBtn = el("button", "capture-act is-danger", "Delete");
+    editBtn.type = "button";
+    delBtn.type = "button";
+
+    function busy(on) { [editBtn, delBtn].forEach(function (b) { b.disabled = on; }); }
+    function fail(err) {
+      status.textContent = String((err && (err.message || err)) || "failed");
+      status.className = "capture-item-status is-error";
+      busy(false);
+    }
+    // Repaint from the file, never patch the node: the same rule the board
+    // captures follow, and here it also re-derives every remaining note's
+    // index, which every deletion above it has just shifted.
+    function reload() { loadNotes(); }
+
+    function send(url, body) {
+      status.textContent = "saving…";
+      status.className = "capture-item-status";
+      busy(true);
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          reload();
+        })
+        .catch(fail);
+    }
+
+    editBtn.addEventListener("click", function () {
+      var box = el("textarea", "capture-input");
+      // The raw markdown, not the rendered blocks -- saving something
+      // untouched has to be a no-op rather than a reformat of his line.
+      box.value = note.text || "";
+      box.rows = 3;
+      var save = el("button", "capture-act", "Save");
+      var cancel = el("button", "capture-act", "Cancel");
+      save.type = "button";
+      cancel.type = "button";
+      actions.textContent = "";
+      actions.appendChild(box);
+      actions.appendChild(status);
+      actions.appendChild(save);
+      actions.appendChild(cancel);
+      box.focus();
+      save.addEventListener("click", function () {
+        var next = box.value.trim();
+        // Emptying the box is not how a note is deleted -- there is a
+        // button for that, and it asks first.
+        if (!next) { box.focus(); return; }
+        save.disabled = true;
+        cancel.disabled = true;
+        send("/api/capture/edit", {
+          target: "notes", index: note.index, original: note.text, text: next,
+        });
+      });
+      cancel.addEventListener("click", reload);
+    });
+
+    delBtn.addEventListener("click", function () {
+      if (!window.confirm("Delete this note?\n\n" + (note.text || ""))) return;
+      send("/api/capture/delete", { target: "notes", index: note.index, original: note.text });
+    });
+
+    actions.appendChild(status);
+    actions.appendChild(editBtn);
+    convertButtons("notes", note.index, note.text, reload, fail, busy)
+      .forEach(function (b) { actions.appendChild(b); });
+    actions.appendChild(delBtn);
+    return actions;
   }
 
   /* The composer, moved under the transcript for this page only.

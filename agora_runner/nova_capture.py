@@ -59,6 +59,7 @@ from agora_runner.nova_boards import (
     extract_row,
     set_row_priority,
     set_row_title,
+    split_capture_priority,
 )
 from agora_runner.nova_uploads import is_attachment_line
 from agora_runner.vault import vault_read_path_rev, vault_write_path
@@ -274,6 +275,72 @@ def amend(target, index, original, text):
             break
     log(f"nova-capture failed amending {target}: {result}")
     return False, f"could not write to {target}: {result}"
+
+
+def convert_capture(source, index, original, dest):
+    """Move one unboarded capture to a different capture file. Returns (ok, message).
+
+    The owner, capture 2026-08-24: *"The note i sent regarding the
+    rebuilding the notes page was sent as a note, but its actually an
+    idea, but i have no way of changing it or editing it. So we need
+    crude operations for notes, but also the possibility to change
+    issues/ideas/notes into one of the other."* He picks which of the
+    three buttons to press at the moment he types, before he has finished
+    thinking, and until now that choice was permanent -- the only way out
+    was to delete the line and retype it into the other box.
+
+    **This converts a bare bullet, not a boarded row, and that boundary is
+    deliberate rather than a first slice.** A capture is one line of his
+    text in a list, so moving it really is a move. A boarded row is a
+    numbered row with a priority cell, a `# Details` write-up and a
+    comment thread, and its number is what every journal entry, claim slug
+    and board comment points at; carrying that across to another file
+    means deciding what happens to the number and the thread, which is a
+    different piece of work with a real design question in it. A row he
+    wants moved after it is boarded is still one he can say so about.
+
+    **Write to the destination first, then remove from the source.** The
+    two files are separate documents with separate revisions, so there is
+    no transaction to be had here and one of the two orders has to be
+    chosen for what its half-done state costs him. Delete-then-write loses
+    his sentence if the second call fails. Write-then-delete leaves the
+    line in both files, which he can see and delete in one tap -- and the
+    message below says so rather than reporting success. A duplicate is
+    recoverable; his text is not.
+
+    The rating rides across with the bullet for the two boards, because it
+    is his and it is still true after the move. It is stripped going into
+    `notes.md`, whose contract is *"never numbered, never boarded"* -- a
+    priority label in a file with no board is vocabulary from a page that
+    does not exist.
+    """
+    if source not in CAPTURE_TARGETS:
+        return False, f"unknown target: {source!r}"
+    if dest not in CAPTURE_TARGETS:
+        return False, f"unknown target: {dest!r}"
+    if source == dest:
+        return False, f"already in {dest}"
+    if not (original or "").strip():
+        return False, "nothing to convert"
+
+    text = original
+    if dest == "notes":
+        _, text = split_capture_priority(original)
+        if not text.strip():
+            return False, "nothing to convert"
+
+    ok, message = capture(dest, text)
+    if not ok:
+        return False, message
+    ok, message = amend(source, index, original, "")
+    if not ok:
+        log(f"nova-capture converted {source}->{dest} but left the original: {message}")
+        return False, (
+            f"copied to {dest}, but could not remove it from {source} "
+            f"({message}) — it is in both, delete the {source} one"
+        )
+    log(f"nova-capture converted a capture from {source} to {dest}")
+    return True, f"moved to {dest}"
 
 
 def clean_capture_text(text):
