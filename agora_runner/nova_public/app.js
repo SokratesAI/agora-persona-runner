@@ -3993,15 +3993,23 @@
     document.removeEventListener("click", actionSheetHandlers.onDocClick, true);
     document.removeEventListener("keydown", actionSheetHandlers.onKeydown, true);
     actionSheetHandlers = null;
-    if (prioMenuOverlay) {
+    /* Only if the overlay is still showing *us*. Three things share that
+     * node now -- the rating popup, the filter modal and this -- and each
+     * takes it by overwriting its contents without telling the last
+     * holder. So a sheet whose overlay has since been taken over must
+     * drop its handlers and touch nothing else, or it would empty a
+     * rating popup somebody opened in the meantime. `openFor` is already
+     * how the rating trigger recognises its own popup; this is the same
+     * question asked from the other side. */
+    if (prioMenuOverlay && prioMenuOverlay.dataset.openFor === "actions") {
       prioMenuOverlay.hidden = true;
       // Emptied as well as hidden: these buttons close over one capture's
       // index, and a stale set left in the shared overlay is a set of
       // controls pointing at a bullet that may since have moved.
       prioMenuOverlay.textContent = "";
       delete prioMenuOverlay.dataset.openFor;
+      if (prioMenuBackdrop) prioMenuBackdrop.hidden = true;
     }
-    if (prioMenuBackdrop) prioMenuBackdrop.hidden = true;
   }
 
   function openActionSheet(title, buttons, opts) {
