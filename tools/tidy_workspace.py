@@ -898,25 +898,11 @@ def survey_remote_branches(repos, prefixes=_MINE):
             entry["closed_checked"] = False
         open_heads = {row.get("headRefName") for row in opened
                       if isinstance(row, dict)}
-        newest_closed = {}
-        for row in closed:
-            if not isinstance(row, dict):
-                continue
-            head = row.get("headRefName")
-            prev = newest_closed.get(head)
-            if prev is None or (row.get("closedAt") or "") > (prev.get("closedAt") or ""):
-                newest_closed[head] = row
-        newest = {}
-        for row in merged:
-            if not isinstance(row, dict):
-                continue
-            head = row.get("headRefName")
-            prev = newest.get(head)
-            # Same reason `_merged_pr` picks the newest rather than the first:
-            # this loop reuses branch names, and only the latest merge says
-            # anything about where the branch is now.
-            if prev is None or (row.get("mergedAt") or "") > (prev.get("mergedAt") or ""):
-                newest[head] = row
+        newest_closed = _newest_by_head(closed, "closedAt")
+        # Same reason `_merged_pr` picks the newest rather than the first: this
+        # loop reuses branch names, and only the latest event says anything
+        # about where the branch is now.
+        newest = _newest_by_head(merged, "mergedAt")
         for name, sha in branches:
             if name in open_heads:
                 continue
@@ -924,9 +910,22 @@ def survey_remote_branches(repos, prefixes=_MINE):
             if pr is not None and pr.get("headRefOid") == sha:
                 continue
             shut = newest_closed.get(name)
-            # A merged PR outranks a closed one: it says where the branch's
-            # content went, and a closed PR only says somebody stopped.
-            if pr is not None:
+            # **The newest event wins, not the merged one.** A merged PR says
+            # where the branch's content went and a closed one only says
+            # somebody stopped, so merged reads like the stronger fact -- but
+            # this loop reuses branch names, and a merge from 2026-08-02
+            # followed by a PR closed today describes a branch whose latest
+            # decision was the closing. Reporting the stale merge and never
+            # naming the recent close is "wrong information reads as no
+            # information" recurring one layer inside its own fix. Reviewer
+            # finding on #342. Both loops above already pick per-branch
+            # newest for exactly this reason; this is the same rule applied
+            # across the two lists rather than only within each.
+            if pr is not None and shut is not None:
+                merged_wins = (pr.get("mergedAt") or "") >= (shut.get("closedAt") or "")
+            else:
+                merged_wins = pr is not None
+            if merged_wins:
                 kind, decided_by = "past-merged-head", pr.get("number")
             elif shut is not None:
                 kind, decided_by = "closed-pr", shut.get("number")
@@ -953,6 +952,25 @@ def survey_remote_branches(repos, prefixes=_MINE):
                  "more_files": found["more_files"]})
         out.append(entry)
     return out
+
+
+def _newest_by_head(rows, stamp_key):
+    """The newest row per head branch, by `stamp_key`.
+
+    A missing or empty stamp sorts below every real one, so a row that carries
+    a date always beats one that does not, and an all-blank set keeps whichever
+    GitHub returned first rather than raising. Rows that are not dicts are
+    dropped, same as everywhere else `gh` JSON is read here.
+    """
+    newest = {}
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        head = row.get("headRefName")
+        prev = newest.get(head)
+        if prev is None or (row.get(stamp_key) or "") > (prev.get(stamp_key) or ""):
+            newest[head] = row
+    return newest
 
 
 def _compare_branch(repo, base, branch, file_limit=8):
@@ -1109,7 +1127,16 @@ def _sweep_remote(roots):
             # ever looked at it -- and the reader's next move ("go finish it")
             # is the wrong one for a decision that was already taken.
             if row["kind"] == "no-pr":
-                how = "no PR was ever opened from it, open, merged or closed"
+                # The row has to carry its own caveat rather than lean on the
+                # entry-level line above it. A row gets grepped, quoted into a
+                # commit message and read after the block has scrolled off, and
+                # "open, merged or closed" over a run where closed could not be
+                # listed is this change's own bug in the negative case.
+                # Reviewer finding on #342.
+                how = ("no PR was ever opened from it, open, merged or closed"
+                       if entry.get("closed_checked", True) else
+                       "no open or merged PR covers it, and closed PRs could "
+                       "not be listed")
             elif row["kind"] == "closed-pr":
                 how = ("#%d was opened from it and closed without merging -- "
                        "read that PR before finishing this, the work may have "
