@@ -1548,12 +1548,27 @@ def test_a_clean_checkout_on_the_base_branch_asks_nothing(squash_merged,
     asked = []
     monkeypatch.setattr(tidy_workspace, "_merged_pr",
                         lambda *a, **k: (asked.append(a) or (None, False)))
+    # Asserted on `git log` rather than only on the verdict, because the
+    # verdict is `clean` whether or not this path exists -- the reviewer
+    # caught the first version of this test agreeing with the author either
+    # way. `_remote_only_commits` returns before it spawns anything for a
+    # base branch, and that early return is the thing under test.
+    real = tidy_workspace._git
+    logged = []
+
+    def watched(root_, clone, *args, **kwargs):
+        if args and args[0] == "log" and "--not" in args:
+            logged.append(args)
+        return real(root_, clone, *args, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace, "_git", watched)
 
     survey = tidy_workspace.survey_checkouts(str(root))
 
     assert survey[0]["verdict"] == "clean"
     assert survey[0]["remote_only"] == []
     assert asked == []
+    assert logged == []
 
 
 def test_a_clean_checkout_whose_remote_check_failed_says_so(clean_but_pushed,
