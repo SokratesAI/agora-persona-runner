@@ -61,21 +61,36 @@ HEARTBEAT_MINUTES = 60
 # there.
 STALL_GRACE_INTERVALS = 2
 
-# The longest a single cycle can possibly still be running. The bridge kills
-# a turn at 45 minutes -- measured Cycle 82, and the turn hook prints the
-# remaining minutes on every tool call -- so a run claimed longer ago than
-# this is over, however it ended, whatever `lastResult` still says.
+# The longest a single cycle can possibly still be running, measured from
+# the moment Agora *claims* the run -- which is what `lastRunAt` records,
+# and it is stamped before prompt assembly, before the vault reads, before
+# the turn begins.
 #
-# It exists because `STALL_GRACE_INTERVALS` stopped covering a running cycle
-# when the cadence dropped. At 60 minutes, two intervals was two hours and no
-# healthy cycle came close; at the 20 minutes the owner set on 2026-08-24 it is
-# 40 minutes, which is *less than one cycle's own runtime* -- so an ordinary
-# slow cycle crossed the stall threshold while it was still working, and at
-# 17:38 the site pushed "Nova has stopped writing" into Cycle 373's own live
-# conversation while that cycle was mid-turn. The grace interval is a count
-# of cadence intervals and therefore shrinks with the cadence; how long a
-# cycle runs does not, so the two need separate numbers.
-MAX_CYCLE_MINUTES = 45
+# 45 was wrong here and it was my own number. The bridge kills a turn at
+# `CLI_TIMEOUT_SECONDS` (2700s), so 45 minutes is what a *turn* gets -- but
+# the runner waits `timeout=2760` on that call (`providers/claude_cli.py`)
+# precisely so it outlives the bridge, and the claim predates the request.
+# So a cycle that is genuinely alive sits past 46 minutes on this clock, and
+# a bound of 45 would call it dead and buzz his phone inside its live
+# conversation, which is the whole bug this exists to stop.
+#
+# 50 = the runner's own 46-minute give-up point, rounded up to cover a
+# claim-to-request gap I have not measured. It is deliberately generous:
+# being late to a real stall costs one check, and the silence bound in
+# `nova_site._with_silence` caps total quiet at one cadence interval plus
+# this number regardless, so nothing here can mute an alarm for good.
+#
+# It exists at all because `STALL_GRACE_INTERVALS` stopped covering a
+# running cycle when the cadence dropped. At 60 minutes, two intervals was
+# two hours and no healthy cycle came close; at the 20 minutes the owner set
+# on 2026-08-24 it is 40 minutes, which is *less than one cycle's own
+# runtime* -- so an ordinary slow cycle crossed the stall threshold while it
+# was still working, and at 17:38 the site pushed "Nova has stopped writing"
+# into Cycle 373's own live conversation while that cycle was mid-turn. The
+# grace interval is a count of cadence intervals and therefore shrinks with
+# the cadence; how long a cycle runs does not, so the two need separate
+# numbers.
+MAX_CYCLE_MINUTES = 50
 
 
 def nova_cadence_minutes():

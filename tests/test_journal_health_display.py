@@ -1078,10 +1078,47 @@ def test_a_scheduler_claiming_runs_into_a_dead_runner_cannot_mute_the_alarm():
 
 def test_the_two_badges_can_never_both_be_true_at_a_short_cadence():
     """The invariant `_running_now` was written to protect, re-checked at
-    the cadence that broke the number underneath it. Minute by minute
+    the cadence that broke the number underneath it. Every five minutes
     across four hours rather than at the offsets I happened to think of."""
     for offset in range(0, 240, 5):
         status = _silence(timedelta(minutes=offset),
                           (NOW + timedelta(minutes=max(0, offset - 10))).isoformat(),
                           "running", minutes=STALL_MINUTES)
         assert not (status["running"] and status["stalled"]), offset
+
+
+def test_a_run_older_than_a_cycle_can_last_stops_explaining_the_silence():
+    """The quadrant where the age bound is the only thing deciding, and the
+    one my first pass left uncovered. A reviewer deleted the bound and the
+    whole file stayed green: every "killed cycle" case I had written was
+    over-determined, because the silence had already outrun what one cycle
+    could explain and the silence bound alone forced the verdict.
+
+    Here it has not. The run was claimed 5 minutes after the last entry, so
+    at 56 minutes of silence the silence bound still says "explainable"
+    (56 < 20 + 50) -- and the run itself is 51 minutes old, past anything
+    that can still be executing. Only the age bound separates those, so
+    dropping it flips this assertion."""
+    status = _silence(timedelta(minutes=56),
+                      (NOW + timedelta(minutes=5)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert status["silentIntervals"] == 2
+    assert status["stalled"] is True
+    assert status["running"] is False
+    assert due(status, None) is not None
+
+
+def test_a_cycle_still_alive_past_the_bridges_turn_cap_is_not_a_stall():
+    """Why the bound is 50 and not the 45 I first wrote. `lastRunAt` is
+    stamped when Agora *claims* the run, before prompt assembly -- and the
+    runner waits 2760s on the bridge (`providers/claude_cli.py`) so that it
+    outlives the bridge's own 2700s kill. So a cycle that is genuinely still
+    working sits past 46 minutes on this clock. At 45 this case read as a
+    stall and pushed the message into the live conversation, which is the
+    exact failure the whole change exists to stop."""
+    for age in (46, 47, 48, 49):
+        status = _silence(timedelta(minutes=age + 5),
+                          (NOW + timedelta(minutes=5)).isoformat(), "running",
+                          minutes=STALL_MINUTES)
+        assert status["stalled"] is False, age
+        assert due(status, None) is None, age
