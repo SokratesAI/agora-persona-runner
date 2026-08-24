@@ -303,6 +303,32 @@ def held_by(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
     return live
 
 
+def finished_claims(ledger):
+    """`{item: row}` for every slug `take` will now refuse forever.
+
+    `held_by` is deliberately about "somebody is doing this right now".
+    This is the other half, and it exists because the two answers look
+    identical from outside the ledger and are acted on differently.
+
+    A `done` slug is not claimable again -- `take` refuses it with the
+    same exit 2 it uses for "somebody is doing this", and `prompt.md`
+    tells every cycle to accept a 2 without arguing. That is correct for
+    a slug whose *work* is finished and wrong for one whose work is not,
+    and only the recorded `outcome` can tell them apart. Measured Cycle
+    353: `capture-1d1fc76af9de` (Edvard's "switch to Claude 20x at 18:00
+    today") and `idea-63` -- the top capture and the only 🔴 Immediately
+    row -- were both `done` in the ledger while both were still live
+    work, so `top_board_rows` was printing `[claim: ...]` on the two
+    highest-priority items on the board and `take` refused both.
+
+    Rows are pruned after `DONE_KEEP_HOURS`, so this window closes on its
+    own; the caller's job is to make it visible while it is open rather
+    than to reopen the slug, because re-granting a slug a cycle really
+    did finish is the duplicate this whole ledger exists to stop.
+    """
+    return {row["item"]: row for row in ledger["claims"] if row.get("state") == DONE}
+
+
 def summarise(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
     """One line per claim, newest first, for a cycle reading the ledger."""
     lines = []
