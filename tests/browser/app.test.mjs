@@ -4147,7 +4147,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/costs", "/retro", "/plan", "/ask", "/diag"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/costs", "/retro", "/plan", "/ask", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
