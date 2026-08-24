@@ -3865,6 +3865,233 @@
       });
   }
 
+  /* The editing box for one capture or note, the size of the composer.
+   *
+   * The owner, 2026-08-24: *"Editing issues and ideas (and probably the
+   * same for notes) is hard. The edit input box is very small (see image)
+   * should be the same width and height like the main input box and also
+   * uploaded images just show like a url text, it should show like the
+   * miniature images like when i upload them."*
+   *
+   * Both halves of that are here. The box was `rows = 2` with no growth,
+   * so a capture with a 90-character upload URL in it showed about a
+   * third of itself -- and `.capture textarea` had already been given
+   * exactly this treatment for exactly this complaint on 2026-08-09
+   * ("too small and not rescalable"), which is the shape being borrowed
+   * rather than invented. `fit()` is that same function: clear the height
+   * before reading `scrollHeight`, or the box grows and never shrinks.
+   *
+   * The textarea keeps the raw markdown -- that is what the vault stores,
+   * and it is what makes saving an untouched line a no-op rather than a
+   * reformat of his sentence -- so the pictures go in a strip *under* the
+   * box, wearing the composer tray's own `.attach-chip` chrome so an
+   * attachment looks the same everywhere it appears. */
+  function buildCaptureEditor(rawText) {
+    var wrap = el("div", "capture-editor");
+    var box = el("textarea", "capture-input");
+    box.value = rawText || "";
+    // Two rows is the composer's own starting height; `fit()` takes it
+    // from there, so this is the floor rather than the size.
+    box.rows = 2;
+    wrap.appendChild(box);
+
+    var tray = el("div", "attach-tray edit-tray");
+    function renderTray() {
+      tray.textContent = "";
+      var found = [];
+      /* `ATTACH_RE` is a module-level `/g` regex shared with the readers,
+       * so its `lastIndex` is whatever the last user left behind. Reset
+       * it, or the first chip strip drawn after somebody else's `exec`
+       * silently starts halfway through the text. */
+      ATTACH_RE.lastIndex = 0;
+      var m;
+      while ((m = ATTACH_RE.exec(box.value)) !== null) {
+        found.push({ raw: m[0], isImage: m[1] === "!", name: m[2], url: m[3], at: m.index });
+      }
+      tray.hidden = found.length === 0;
+      found.forEach(function (item) {
+        var label = item.name || item.url;
+        var chip = el("div", "attach-chip");
+        if (item.isImage) {
+          var thumb = el("img", "attach-thumb");
+          thumb.src = item.url;
+          // His filename, not "image" -- with four screenshots in a row
+          // it is the only thing telling them apart to a screen reader.
+          thumb.alt = label;
+          chip.appendChild(thumb);
+        } else {
+          chip.appendChild(el("span", "attach-chip-name", "📎 " + label));
+        }
+        var remove = el("button", "attach-chip-remove", "✕");
+        remove.type = "button";
+        remove.title = "Remove " + label;
+        remove.setAttribute("aria-label", "Remove " + label);
+        remove.addEventListener("click", function () {
+          /* Cut at the offset this chip was found at, not at the first
+           * `indexOf` of its text: the same upload can legitimately be
+           * linked twice in one capture, and a global or first-match
+           * removal would take the wrong one. The offsets are re-derived
+           * on every `input`, so they are never stale by more than the
+           * event that would have redrawn them -- and the equality check
+           * is what makes that a fact rather than an assumption. */
+          var at = item.at;
+          if (box.value.slice(at, at + item.raw.length) !== item.raw) {
+            at = box.value.indexOf(item.raw);
+          }
+          if (at >= 0) {
+            box.value = box.value.slice(0, at) + box.value.slice(at + item.raw.length); // not-prose: cuts one link construct out, keeps the whole rest
+          }
+          renderTray();
+          fit();
+        });
+        chip.appendChild(remove);
+        tray.appendChild(chip);
+      });
+    }
+    wrap.appendChild(tray);
+
+    function fit() {
+      box.style.height = "auto";
+      box.style.height = box.scrollHeight + "px";
+    }
+    box.addEventListener("input", function () { renderTray(); fit(); });
+    renderTray();
+
+    return {
+      el: wrap,
+      box: box,
+      focus: function () {
+        box.focus();
+        // After it is in the document -- `scrollHeight` on a detached
+        // node is 0, which would collapse the box to its padding.
+        fit();
+      },
+    };
+  }
+
+  /* A capture's own controls, off the card and behind a long press.
+   *
+   * The owner, 2026-08-24: *"The new buttons for the messages to edit or
+   * make idea or make issue should not be visible. Lets change it to when
+   * i press and hold it it opens a modal with al the edit options. Do
+   * this for issues, ideas and notes."*
+   *
+   * Five buttons per capture, on a phone, on a page that is otherwise his
+   * own sentences -- that is what he is looking at when he says they
+   * should not be visible. The gesture is one this page already teaches:
+   * `HOLD_MS` on a board row opens that row's editor, so press-and-hold
+   * to act on a thing is not a new idea here, only a second place it
+   * applies, and the two now agree.
+   *
+   * It reuses the priority popup's overlay and backdrop rather than
+   * building a second modal -- one node, one backdrop, one Escape
+   * handler, and `dataset.openFor` already exists to record which thing
+   * is showing in it. */
+  var actionSheetHandlers = null;
+  function closeActionSheet() {
+    if (!actionSheetHandlers) return;
+    document.removeEventListener("click", actionSheetHandlers.onDocClick, true);
+    document.removeEventListener("keydown", actionSheetHandlers.onKeydown, true);
+    actionSheetHandlers = null;
+    if (prioMenuOverlay) {
+      prioMenuOverlay.hidden = true;
+      // Emptied as well as hidden: these buttons close over one capture's
+      // index, and a stale set left in the shared overlay is a set of
+      // controls pointing at a bullet that may since have moved.
+      prioMenuOverlay.textContent = "";
+      delete prioMenuOverlay.dataset.openFor;
+    }
+    if (prioMenuBackdrop) prioMenuBackdrop.hidden = true;
+  }
+
+  function openActionSheet(title, buttons, opts) {
+    var options = opts || {};
+    // The overlay is shared, so whatever else may be using it has to be
+    // told it has lost it -- otherwise its Escape and outside-click
+    // handlers stay registered against a node showing our buttons.
+    closeFiltersModal();
+    closeActionSheet();
+    var overlay = getPrioMenuOverlay();
+    overlay.textContent = "";
+    overlay.removeAttribute("role");
+    overlay.dataset.openFor = "actions";
+    var head = el("div", "modal-head");
+    head.appendChild(el("h2", "modal-title", title));
+    var closeBtn = el("button", "modal-close", "×");
+    closeBtn.type = "button";
+    closeBtn.setAttribute("aria-label", "Close actions");
+    closeBtn.addEventListener("click", closeActionSheet);
+    head.appendChild(closeBtn);
+    overlay.appendChild(head);
+    var list = el("div", "action-sheet");
+    buttons.forEach(function (btn) { list.appendChild(btn); });
+    overlay.appendChild(list);
+    prioMenuBackdrop.hidden = false;
+    overlay.hidden = false;
+
+    /* A hold opens this from `mousedown`/`touchstart`, so the release the
+     * user has not made yet still becomes a `click` on the card
+     * underneath -- which arrives at this document-level capture listener
+     * before anything can stop it and closes the sheet the instant it
+     * appears. Swallowing exactly one event is the narrow fix; the
+     * keyboard route passes no flag, because there is no trailing click
+     * to swallow there and eating the first real outside click would
+     * leave the sheet feeling stuck. */
+    var swallow = !!options.swallowNextClick;
+    function onDocClick(e) {
+      if (swallow) { swallow = false; return; }
+      if (overlay.contains(e.target)) return;
+      closeActionSheet();
+    }
+    function onKeydown(e) { if (e.key === "Escape") closeActionSheet(); }
+    actionSheetHandlers = { onDocClick: onDocClick, onKeydown: onKeydown };
+    document.addEventListener("click", onDocClick, true);
+    document.addEventListener("keydown", onKeydown, true);
+    if (buttons.length) buttons[0].focus();
+  }
+
+  /* Wire press-and-hold, and a keyboard equivalent, onto one card.
+   *
+   * `open` is called with `true` from the gesture and `false` from the
+   * keyboard, which is the flag `openActionSheet` needs for the trailing
+   * click. Written once because three surfaces now want it -- issues,
+   * ideas and notes -- and three copies of a gesture is how they end up
+   * disagreeing about how long a hold is. */
+  function bindHoldMenu(node, open) {
+    var holdTimer = null;
+    function endHold() {
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+    }
+    function startHold(e) {
+      /* A press that started on a control inside the card is that
+       * control's, not the card's. The priority chip lives in the capture
+       * body, and without this a slow tap on it would arm the rating
+       * popup and the action sheet at once, then hand the overlay to
+       * whichever fired last. */
+      if (e && e.target && e.target !== node && e.target.closest
+          && e.target.closest("button, a, textarea, input")) {
+        return;
+      }
+      endHold();
+      holdTimer = setTimeout(function () {
+        holdTimer = null;
+        open(true);
+      }, HOLD_MS);
+    }
+    node.addEventListener("mousedown", startHold);
+    node.addEventListener("touchstart", startHold);
+    ["mouseup", "mouseleave", "touchend", "touchmove", "touchcancel"].forEach(
+      function (name) { node.addEventListener(name, endHold); });
+    node.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      // Not while the editor this same menu opened is on the card -- the
+      // box is a text field and a space in it is a space.
+      if (e.target !== node) return;
+      e.preventDefault();
+      open(false);
+    });
+  }
+
   function renderCapture(board, capture, index) {
     /* `capture.done` is the cycle that closed it, or "". It only paints
      * -- Edit and Delete keep working, because the marker is text in his
@@ -3981,12 +4208,17 @@
     function fail(err) {
       status.textContent = String((err && (err.message || err)) || "failed");
       status.className = "capture-item-status is-error";
+      // The row is hidden while the card is at rest, and a failure is
+      // exactly when it stops being at rest. Without this the reason is
+      // written into a node nobody can see and the tap looks ignored.
+      actions.hidden = false;
       [editBtn, delBtn].forEach(function (b) { b.disabled = false; });
     }
 
     function send(url, payload) {
       status.textContent = "saving…";
       status.className = "capture-item-status";
+      actions.hidden = false;
       [editBtn, delBtn].forEach(function (b) { b.disabled = true; });
       return fetch(url, {
         method: "POST",
@@ -4007,22 +4239,23 @@
     }
 
     editBtn.addEventListener("click", function () {
+      closeActionSheet();
       // The textarea carries the raw markdown, not the rendered text --
       // an edit round-trips through the same field the vault stores, so
       // saving something untouched is a no-op rather than a reformat.
-      var box = el("textarea", "capture-input");
-      box.value = capture.text || "";
-      box.rows = 2;
+      var editor = buildCaptureEditor(capture.text || "");
+      var box = editor.box;
       var save = el("button", "capture-act", "Save");
       var cancel = el("button", "capture-act", "Cancel");
       save.type = "button";
       cancel.type = "button";
-      one.replaceChild(box, body);
+      one.replaceChild(editor.el, body);
+      actions.hidden = false;
       actions.textContent = "";
       actions.appendChild(status);
       actions.appendChild(save);
       actions.appendChild(cancel);
-      box.focus();
+      editor.focus();
       save.addEventListener("click", function () {
         var next = box.value.trim();
         if (!next) {
@@ -4059,6 +4292,7 @@
     });
 
     delBtn.addEventListener("click", function () {
+      closeActionSheet();
       // Deleting is the one thing here that cannot be undone from the
       // page, so it asks. This is not the confirmation modal of #6 -- a
       // native confirm is one line and blocks the accident, and building
@@ -4067,18 +4301,39 @@
       send("/api/capture/delete", { target: board, index: index, original: capture.text });
     });
 
-    actions.appendChild(status);
-    actions.appendChild(editBtn);
-    convertButtons(
+    var converts = convertButtons(
       board, index, capture.text,
       function () { loadBoard(board); },
       fail,
       function (busy) { [editBtn, delBtn].forEach(function (b) { b.disabled = busy; }); }
-    ).forEach(function (b) { actions.appendChild(b); });
+    );
+    converts.forEach(function (b) {
+      b.addEventListener("click", function () { closeActionSheet(); });
+    });
+
+    /* The row still exists and still holds the status line -- it is where
+     * "copied to ideas, but could not remove it from notes" has to land,
+     * and the sheet is gone by the time that answer comes back. What it
+     * no longer holds by default is the buttons: they live in the sheet,
+     * and `actions` is hidden until either an edit or a failure gives it
+     * something to say. */
+    actions.appendChild(status);
+    actions.hidden = true;
+    one.appendChild(actions);
+
     // Delete stays last: it is the destructive one and nothing new should
     // grow between it and the edge his thumb aims at.
-    actions.appendChild(delBtn);
-    one.appendChild(actions);
+    var sheetButtons = [editBtn].concat(converts, [delBtn]);
+    bindHoldMenu(body, function (fromGesture) {
+      // Not while the editor is open -- `body` has been swapped out for
+      // it, and offering Edit again would replace the box he is typing in.
+      if (!one.contains(body)) return;
+      openActionSheet("Capture", sheetButtons, { swallowNextClick: fromGesture });
+    });
+    body.setAttribute("role", "button");
+    body.tabIndex = 0;
+    body.setAttribute("aria-label", "Actions for capture " + (index + 1));
+
     return one;
   }
 
@@ -5901,12 +6156,12 @@
      * built without them and that is the gap he hit -- *"i have no way of
      * changing it or editing it"*. */
     if (note.waiting && typeof note.index === "number") {
-      msg.appendChild(noteActions(note));
+      msg.appendChild(noteActions(note, body));
     }
     return out;
   }
 
-  function noteActions(note) {
+  function noteActions(note, holdTarget) {
     var actions = el("div", "capture-edit note-acts");
     var status = el("span", "capture-item-status");
     var editBtn = el("button", "capture-act", "Edit");
@@ -5918,6 +6173,9 @@
     function fail(err) {
       status.textContent = String((err && (err.message || err)) || "failed");
       status.className = "capture-item-status is-error";
+      // Same as the board captures: the row is hidden at rest, and a
+      // reason painted into a hidden node is a tap that looks ignored.
+      actions.hidden = false;
       busy(false);
     }
     // Repaint from the file, never patch the node: the same rule the board
@@ -5945,21 +6203,22 @@
     }
 
     editBtn.addEventListener("click", function () {
-      var box = el("textarea", "capture-input");
+      closeActionSheet();
       // The raw markdown, not the rendered blocks -- saving something
       // untouched has to be a no-op rather than a reformat of his line.
-      box.value = note.text || "";
-      box.rows = 3;
+      var editor = buildCaptureEditor(note.text || "");
+      var box = editor.box;
       var save = el("button", "capture-act", "Save");
       var cancel = el("button", "capture-act", "Cancel");
       save.type = "button";
       cancel.type = "button";
+      actions.hidden = false;
       actions.textContent = "";
-      actions.appendChild(box);
+      actions.appendChild(editor.el);
       actions.appendChild(status);
       actions.appendChild(save);
       actions.appendChild(cancel);
-      box.focus();
+      editor.focus();
       save.addEventListener("click", function () {
         var next = box.value.trim();
         // Emptying the box is not how a note is deleted -- there is a
@@ -5975,15 +6234,32 @@
     });
 
     delBtn.addEventListener("click", function () {
+      closeActionSheet();
       if (!window.confirm("Delete this note?\n\n" + (note.text || ""))) return;
       send("/api/capture/delete", { target: "notes", index: note.index, original: note.text });
     });
 
+    var converts = convertButtons("notes", note.index, note.text, reload, fail, busy);
+    converts.forEach(function (b) {
+      b.addEventListener("click", function () { closeActionSheet(); });
+    });
+
+    // Same shape as a board capture: the row survives as the place a
+    // failure and the edit box land, and is hidden until one of those
+    // needs it. His words were "do this for issues, ideas and notes", so
+    // the third surface uses the same gesture and the same sheet.
     actions.appendChild(status);
-    actions.appendChild(editBtn);
-    convertButtons("notes", note.index, note.text, reload, fail, busy)
-      .forEach(function (b) { actions.appendChild(b); });
-    actions.appendChild(delBtn);
+    actions.hidden = true;
+
+    var sheetButtons = [editBtn].concat(converts, [delBtn]);
+    if (holdTarget) {
+      bindHoldMenu(holdTarget, function (fromGesture) {
+        openActionSheet("Note", sheetButtons, { swallowNextClick: fromGesture });
+      });
+      holdTarget.setAttribute("role", "button");
+      holdTarget.tabIndex = 0;
+      holdTarget.setAttribute("aria-label", "Actions for this note");
+    }
     return actions;
   }
 
