@@ -269,6 +269,8 @@ def clones(root):
 # nothing at all for the merged one. That difference is the only reliable
 # signal, and it is what separates `leftover` from `unfinished`.
 _BASES = ("origin/main", "origin/master")
+# The same two names without the remote, for "is this branch itself a base".
+_BASE_BRANCHES = tuple(name.split("/", 1)[1] for name in _BASES)
 
 
 # The one call here that leaves the box. Every other git command in this file
@@ -334,7 +336,7 @@ def _merged_pr(root, clone, branch):
     other means nobody asked. Reporting the second as the first is how a
     landed branch gets called unfinished, which is the bug this exists for.
     """
-    if not branch or branch in ("HEAD", "main", "master"):
+    if not branch or branch in ("HEAD",) + _BASE_BRANCHES:
         return None, False
     try:
         done = subprocess.run(
@@ -393,6 +395,51 @@ def _tip_contains_merge(root, clone, head_oid):
     return None
 
 
+def _remote_only_commits(root, clone, branch, base, merged_head=None):
+    """Commits on `origin/<branch>` that no one has taken and nothing has merged.
+
+    Every other instrument in this file reads the local HEAD, and a branch does
+    not live only in the checkout that happens to be parked on it. A cycle that
+    pushed and was then killed -- or that pushed a follow-up commit onto a
+    branch whose PR had already merged -- leaves work that exists on the remote
+    and nowhere else, and `git diff origin/main HEAD` cannot see any of it.
+
+    Returns a list of `<short-oid> <subject>` lines, empty when the remote ref
+    holds nothing outstanding, and `None` when there is no such ref to ask --
+    which is the ordinary case for a branch never pushed, and is deliberately
+    not the same answer as "nothing there".
+
+    The `--not` list is what makes this narrow rather than noisy, and it has
+    three entries for three separate reasons:
+
+    - `HEAD`, because the commits of an ordinary merged branch are reachable
+      from it, so a branch whose work landed answers empty.
+    - `<base>`, because a commit that has since reached main is not
+      outstanding however it got there.
+    - `merged_head`, the `headRefOid` GitHub reports for the merged PR, because
+      **a checkout can simply be behind the head that merged.** Measured Cycle
+      384, and it is the case that nearly shipped a false positive here: the
+      shared checkout sat at `0e94630` while `origin/` the same branch and PR
+      #316's own merged head were both `b1958cb`. Nothing was outstanding; one
+      clone was one commit stale. Without this the sweep calls every checkout
+      that has not caught up to its own merged branch unfinished forever.
+    """
+    if not branch or branch in ("HEAD",) + _BASE_BRANCHES or base is None:
+        return None
+    ref = "origin/" + branch
+    if _git(root, clone, "rev-parse", "--verify", "--quiet",
+            ref).returncode != 0:
+        return None
+    excluded = ["HEAD", base]
+    if merged_head and _git(root, clone, "cat-file", "-e",
+                            merged_head + "^{commit}").returncode == 0:
+        excluded.append(merged_head)
+    done = _git(root, clone, "log", "--oneline", ref, "--not", *excluded)
+    if done.returncode != 0:
+        return None
+    return [line for line in done.stdout.split("\n") if line.strip()]
+
+
 def _committed_after(root, clone, merged_at):
     """True if this branch's tip was committed after `merged_at`.
 
@@ -429,9 +476,12 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
     - `leftover` -- a branch whose content is identical to the base, or whose
       work went in as a merged PR that the branch has nothing on top of. Its
       work has landed; the branch is litter. The first half is the case a
-      stale ref hides, the second the case a *moving* base hides.
+      stale ref hides, the second the case a *moving* base hides. Neither is
+      given while `origin/<branch>` holds a commit this checkout does not --
+      that is work, and it is only on the remote.
     - `unfinished` -- something here is genuinely not on the base yet, either
-      uncommitted or committed. This is the one worth a cycle's attention.
+      uncommitted, committed, or pushed and present only on the remote. This
+      is the one worth a cycle's attention.
     - `no-base` -- neither `origin/main` nor `origin/master` resolves, so
       there is nothing to compare against and this says so rather than
       guessing.
@@ -516,6 +566,37 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
                     verdict = "leftover"
                 else:
                     commits_after_merge = True
+        # Both roads to `leftover` -- identical content, and a merged PR the
+        # tip has nothing on top of -- are decided entirely from this
+        # checkout's HEAD, and `leftover` is a licence to delete the branch.
+        # Measured Cycle 384 on the shared checkout, which was parked on
+        # `nova/status-word-back-on-the-card`: local ref `0e94630`,
+        # `origin/` the same branch `b1958cb`, and that commit is on no other
+        # ref in the repository. The sweep printed "its work has landed, the
+        # branch is litter" over a pushed commit nothing had merged. That is
+        # wrong in the direction that loses work, which is the direction this
+        # file has already refused to be wrong in twice.
+        remote_only = []
+        landed_locally = False
+        if verdict in ("leftover", "unfinished"):
+            found = _remote_only_commits(
+                root, clone, branch, base,
+                merged_head=merged_pr.get("headRefOid") if merged_pr else None)
+            remote_only = found or []
+            if remote_only and verdict == "leftover":
+                # Not litter. `unfinished` is the word that means "worth a
+                # cycle's attention", and the line below says where the work
+                # actually is, because it is not in the files this sweep can
+                # list -- `git diff` against a local HEAD cannot see it.
+                verdict = "unfinished"
+                # And the file list is deliberately not computed for this one.
+                # Everything in this checkout demonstrably landed -- that is
+                # what the `leftover` this replaces meant -- so `git diff
+                # <base> HEAD` here is a list of main's *own* later work, which
+                # is the Cycle 372 bug arriving through a new door. Measured on
+                # the same checkout: 120 files, none of them the outstanding
+                # commit. What is outstanding is on the line above.
+                landed_locally = True
         # Which files, not just that there are some. "has work not on
         # origin/main" is true of a half-finished feature and equally true of
         # a `-config` clone whose only delta is a stale `image:` digest --
@@ -526,7 +607,7 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
         # than leaving every reader to remember to.
         files = []
         files_failed = False
-        if verdict == "unfinished" and base is not None:
+        if verdict == "unfinished" and base is not None and not landed_locally:
             found = set()
             # Both halves, because `unfinished` is reached two ways and the
             # motivating case can arrive by either. A stale `image:` digest in
@@ -573,7 +654,9 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
                     "merged_pr": merged_pr.get("number") if merged_pr else None,
                     "merged_pr_checked": merged_pr_checked,
                     "commits_after_merge": commits_after_merge,
-                    "rests_on_clock": rests_on_clock})
+                    "rests_on_clock": rests_on_clock,
+                    "remote_only": remote_only,
+                    "landed_locally": landed_locally})
     return out
 
 
@@ -728,6 +811,13 @@ def _sweep_one(root, args):
         elif entry["verdict"] == "no-base":
             print("%s: [no-base] no origin/main or origin/master to compare "
                   "against" % (entry["clone"],))
+        elif entry["landed_locally"]:
+            # `unfinished`, but not the usual kind, and saying "has work not on
+            # origin/main" here would send a cycle looking through this
+            # checkout for something that is not in it.
+            print("%s: [unfinished] branch %s -- everything in this checkout "
+                  "has landed, but the branch is not litter"
+                  % (entry["clone"], entry["branch"]))
         else:
             print("%s: [unfinished] branch %s has work not on %s%s"
                   % (entry["clone"], entry["branch"], entry["base"],
@@ -740,13 +830,27 @@ def _sweep_one(root, args):
                 print("    could not ask GitHub whether this branch was "
                       "merged, so `unfinished` here may only mean nobody "
                       "asked")
-            if entry["files"]:
-                print("    files not on %s: %s"
-                      % (entry["base"], ", ".join(entry["files"])))
-            if entry["files_failed"]:
-                print("    could not list which files differ -- `git diff "
-                      "--name-only` failed, so the absence of a list above "
-                      "says nothing")
+        # Both `unfinished` shapes get these, which is why they sit outside the
+        # branch above rather than inside its `else`. A branch can perfectly
+        # well hold uncommitted work here *and* a commit only on the remote,
+        # and the version of this that lived in the `else` printed the second
+        # for one of the two cases.
+        if entry["remote_only"]:
+            # Said before the file list, because the file list is about a
+            # different place: these commits are on the remote and not in this
+            # checkout, so nothing below names them.
+            print("    the work is on the remote, not here -- origin/%s "
+                  "carries %d commit(s) that neither this checkout nor %s "
+                  "has: %s"
+                  % (entry["branch"], len(entry["remote_only"]),
+                     entry["base"], "; ".join(entry["remote_only"])))
+        if entry["files"]:
+            print("    files not on %s: %s"
+                  % (entry["base"], ", ".join(entry["files"])))
+        if entry["files_failed"]:
+            print("    could not list which files differ -- `git diff "
+                  "--name-only` failed, so the absence of a list above "
+                  "says nothing")
 
 
 if __name__ == "__main__":
