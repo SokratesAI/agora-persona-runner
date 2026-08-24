@@ -283,7 +283,7 @@ def _write_comment(monkeypatch, **kwargs):
 def test_a_cycles_reply_is_written_under_novas_name(monkeypatch):
     """The bug this pins is not cosmetic and it is not hypothetical.
 
-    `comment_on_row` hardcoded `author="the owner"` while its own docstring
+    `comment_on_row` hardcoded `author="Edvard"` while its own docstring  (not-prose: quoting a literal)
     told a cycle to reply with `author="Nova"`, so two replies this loop
     made are in his `issues.md` right now as words he said. And
     `unanswered_comments` calls a row waiting when the **last** note under

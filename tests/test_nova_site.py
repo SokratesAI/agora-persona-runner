@@ -4116,7 +4116,7 @@ def test_commenting_on_a_boarded_row_reaches_the_vault_through_the_real_request_
 
 
 def test_a_cycles_reply_is_attributed_to_nova_and_not_to_him():
-    """`comment_on_row` hardcoded `author="the owner"` while its own docstring
+    """`comment_on_row` hardcoded `author="Edvard"` while its own docstring  (not-prose: quoting a literal)
     told a cycle to reply with `author="Nova"`, so every reply this loop
     made through this route was written into his board as words he had
     said. Worse than cosmetic: `unanswered_comments` calls a row waiting
@@ -4137,7 +4137,7 @@ def test_an_author_neither_of_us_uses_is_refused_before_any_write(author):
     """His board is not a place to write under an arbitrary name.
 
     `" "` is in here deliberately: it is truthy, so it survives the
-    `or "the owner"` fallback and would be written as the author verbatim.
+    `or "Edvard"` fallback and would be written as the author verbatim.  (not-prose: quoting a literal)
     The casing pair is here because `append_detail_note` renders the
     string as given -- `**nova, 08-17:**` is not a name either of us uses.
     """

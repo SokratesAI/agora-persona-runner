@@ -36,7 +36,7 @@ def test_a_python_docstring_is_prose():
 
 
 def test_a_python_string_literal_is_data_and_is_left_alone():
-    # `sender == "Edvard"` is an Agora message field and `"## Needs Edvard"` is
+    # `sender == "Edvard"` is an Agora message field and `"## Needs Edvard"` is  (not-prose: quoting a literal)
     # a heading the written archive really contains. Renaming either one
     # anonymises nothing and breaks the page -- which is what the first,
     # blind version of this sweep did before the suite stopped it.
@@ -58,6 +58,14 @@ def test_js_and_css_comments_are_prose_and_their_strings_are_not():
 
 def test_markdown_is_prose_end_to_end():
     assert name_scan.hits("README.md", "Written for Edvard.\n")
+
+
+def test_a_not_prose_line_is_exempt_and_only_that_line():
+    # The case it exists for: a comment quoting the literal on the line below it.
+    src = ('# sender="Edvard" is not decoration  # not-prose\n'
+           '# and Edvard asked for this\n')
+    found = name_scan.hits("x.py", src)
+    assert [line for line, _ in found] == [2]
 
 
 def test_an_unknown_suffix_reports_nothing():

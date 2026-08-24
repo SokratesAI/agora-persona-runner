@@ -8,7 +8,7 @@ anything."*
 
 The scan is deliberately narrow, and the boundary is the whole design.
 **Prose about him is in scope; his name as data is not.** An Agora message's
-`sender`, the author label the notes page draws, `## Needs Edvard` as a
+`sender`, the author label the notes page draws, `## Needs Edvard` as a  (not-prose: quoting a literal)
 heading the written archive really contains -- those are values the product
 matches on, and a cycle that renames one of them does not anonymise anything,
 it breaks the page and relabels him on his own screen. Cycle 371 did exactly
@@ -33,6 +33,10 @@ from pathlib import Path
 # repo), and a comment that names one of them is quoting code, not writing his
 # name as prose. The capitalised form is the prose form.
 NAME = re.compile(r"Edvard")
+
+# Per-line escape hatch, borrowed from the truncation ban in `test_nova_site.py`
+# rather than invented here. See `hits` for when it is the right answer.
+EXEMPT = "not-prose"
 
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 LINE_COMMENT = re.compile(r"(?<![:\"'\\])//[^\n]*")
@@ -107,13 +111,29 @@ def prose(path, source):
 
 
 def hits(path, source):
-    """`(line, snippet)` for every prose region of *source* carrying the name."""
+    """`(line, snippet)` for every prose region of *source* carrying the name.
+
+    A physical line carrying `not-prose` is exempt. That marker is already this
+    repo's convention for "the guard is right about the wrong line" -- `app.js`
+    uses it on a `slice(0,` the truncation ban would otherwise reject -- and
+    reusing the word rather than inventing a second one is deliberate.
+
+    The case it exists for here is a comment that *quotes a literal*:
+    `# sender="Edvard" is not decoration` sits above code that really does pass  (not-prose: quoting a literal)
+    that string, and rewriting the comment would leave it describing something
+    the line beneath it does not do. Cycle 371 wrote four of those before
+    noticing. The exemption is per line, so it stays visible in the diff and
+    nobody is tempted to widen the pattern instead.
+    """
+    lines = source.splitlines()
     found = []
     for line, text in prose(path, source):
         for m in NAME.finditer(text):
+            at = line + text.count("\n", 0, m.start())
+            if 0 < at <= len(lines) and EXEMPT in lines[at - 1]:
+                continue
             start = max(0, m.start() - 40)
-            found.append((line + text.count("\n", 0, m.start()),
-                          text[start:m.end() + 40].replace("\n", " ").strip()))
+            found.append((at, text[start:m.end() + 40].replace("\n", " ").strip()))
     return found
 
 

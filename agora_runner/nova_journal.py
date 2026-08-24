@@ -259,7 +259,7 @@ def split_digest_entries(text):
     return [p.strip() for p in _DIGEST_SPLIT_RE.split(text) if p.strip()]
 
 
-# What "Needs the owner" says when it has nothing in it. Item 3 of idea #34
+# What "Needs Edvard" says when it has nothing in it. Item 3 of idea #34  (not-prose: quoting a literal)
 # wants that section completely invisible rather than showing the word
 # "Nothing", so the emptiness test lives here next to the parsing.
 #

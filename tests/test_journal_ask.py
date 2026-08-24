@@ -64,7 +64,7 @@ def test_the_label_alone_is_not_an_ask():
     """A cycle that typed the label and no question is asking nothing.
 
     Rendering the empty case would put a yellow block on the card saying
-    only "Needs the owner", which is the box-claiming-his-attention-for-nothing
+    only "Needs Edvard", which is the box-claiming-his-attention-for-nothing  (not-prose: quoting a literal)
     that hiding the old block on `**Nothing.**` existed to prevent.
     """
     remainder, ask = split_ask("**Needs Edvard:**\n\nThe real prose.")

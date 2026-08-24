@@ -109,7 +109,7 @@ def ask(text):
     cid = conversation_id(create=True)
     if not cid:
         return False, "could not reach the conversation store"
-    # sender="the owner" is not decoration: `decide_turn` speaks only when the
+    # sender="Edvard" is not decoration: `decide_turn` speaks only when the  (not-prose: quoting a literal)
     # last visible message came from him, so any other sender posts a
     # question that nothing ever answers.
     # `agora_internal` answers `(status, body)`, and the first version of

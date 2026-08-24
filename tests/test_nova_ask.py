@@ -7,7 +7,7 @@ What is worth pinning here is not "the HTTP calls happen" -- it is the
 three things that would silently stop an answer ever arriving, each of
 which looks fine from the outside:
 
-- the question is posted as `sender="the owner"`, because `decide_turn` speaks
+- the question is posted as `sender="Edvard"`, because `decide_turn` speaks  (not-prose: quoting a literal)
   only for a message from him and any other sender posts into silence;
 - the conversation is found by tag and created at most once, because a
   find that misses makes a fresh conversation per question and quietly

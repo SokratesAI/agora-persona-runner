@@ -22,7 +22,7 @@ because the digest is rewritten every cycle and filing his answer under
 whichever cycle last touched the text would attach it to a card at random.
 
 **The channel only exists if a cycle reads it.** A comment nobody collects
-is Cycle 58's "Needs the owner" box all over again: built, tested, shipped
+is Cycle 58's "Needs Edvard" box all over again: built, tested, shipped  (not-prose: quoting a literal)
 and dead. So the file has two sections and a comment is not done when it
 is written -- `## New` is the owner's outbox and Nova's inbox, and a cycle
 moves what it has acted on down to `## Acknowledged` with what it did,
