@@ -5504,54 +5504,116 @@
    *
    * Deliberately not a board. A note is *"never numbered, never boarded"*
    * (`notes.md`'s own contract), so there is no priority chip, no row
-   * editor and no comment thread here -- the two states a note actually
-   * has are "no cycle has picked this up" and "a cycle did, and said what
-   * it did". The page is those two states and nothing else.
+   * editor and no comment thread here.
+   *
+   * **It is a conversation now**, which is the second thing he asked for
+   * -- `notes.md` 2026-08-24: *"I want the notes page to be more like a
+   * conversation. So that alternating posts are green (mine) and purple
+   * (Nova cycle response). Just like the comments. The page should have
+   * the conversation above the input box for issues/ideas/notes and be
+   * ordered with the latest note at the bottom. And when i navigate to
+   * it, it should not start at the top and i have to scroll all the way
+   * down, but like a message app like agora where i can scroll upwards.
+   * Messages are lazy loaded so when i scroll up they load so it loads
+   * faster. I want to use the notes page to have a "conversation" with
+   * the cycles, even though it takes some time to get a response."*
+   *
+   * Five separate things, and each one is somewhere below:
+   *
+   * 1. Green for him, purple for a cycle -- the same two colours the
+   *    comment threads already use (`--good` and `--nova`), so the app
+   *    says the same thing the same way in both places. Both sides carry
+   *    the speaker's name in words as well, because a reader who has to
+   *    know a colour code to know who spoke has not been told.
+   * 2. Oldest at the top, newest at the bottom. `nova_notes.notes_payload`
+   *    does the ordering; this file does not re-derive it.
+   * 3. The composer below the transcript rather than above it. It is the
+   *    shell's one `#capture` section, moved into the feed for this page
+   *    only and moved home by `load()` on the way out -- one box with one
+   *    set of handlers, not a second copy that would drift from it.
+   * 4. Opens at the bottom, on the newest message.
+   * 5. Older messages arrive as he scrolls up.
+   *
+   * On 5, and this is a deliberate narrowing of what he asked for: the
+   * *fetch* is not windowed, the *render* is. `notes.md` is 17KB and the
+   * server sends all of it in one response, which is not the slow part of
+   * anything -- `nova_notes.notes_payload`'s own docstring measured that
+   * and it is still true. What he described is a page that opens on the
+   * newest message instead of the oldest, and that is a scroll position
+   * plus a render window, both of which live here. When the file does
+   * outgrow one fetch, `/api/notes` takes a `limit` and this loop asks
+   * for one; today that parameter would be a cap with nothing measured
+   * behind it.
    */
-  function renderNoteCard(note) {
-    var card = el("article", "note note-card" + (note.waiting ? " note-waiting" : ""));
-    var head = el("div", "note-head");
-    head.appendChild(el(
-      "span",
-      note.waiting ? "badge badge-warn" : "badge",
-      note.waiting ? "Waiting" : "Read"
-    ));
-    // The cycle that answered, taken from the first reply rather than
-    // re-derived here -- `nova_notes._response_cycle` owns the shape of a
-    // reply line and a second reading of it in this file is the
-    // duplication this repo keeps filing against itself.
-    var answered = (note.responses || []).filter(function (r) {
-      return r.cycle !== null && r.cycle !== undefined;
-    });
-    if (answered.length) {
-      var link = el("a", "note-cycle", "Cycle " + answered[0].cycle);
-      link.href = "/cycle/" + answered[0].cycle;
-      head.appendChild(link);
-    }
-    card.appendChild(head);
-    var body = el("div", "note-body");
+
+  // How many messages the page opens with, and how many more each scroll
+  // to the top reveals. Not a limit on anything -- every note is one
+  // scroll away and `notesShown` only ever grows.
+  var NOTES_PAGE = 12;
+  var notesShown = NOTES_PAGE;
+  var notesPayload = null;
+
+  function renderNoteMessage(note) {
+    var msg = el("article", "note-msg note-msg-mine" + (note.waiting ? " note-msg-waiting" : ""));
+    var who = el("p", "note-msg-who");
+    who.appendChild(el("span", "note-msg-name", "Edvard"));
+    // "Waiting" is the one piece of state a note has that he cannot see
+    // from the transcript itself: a note with no purple reply under it is
+    // either unanswered or answered badly, and only the file knows which.
+    if (note.waiting) who.appendChild(el("span", "badge badge-warn", "Waiting"));
+    msg.appendChild(who);
+    var body = el("div", "note-msg-body");
     renderBlocks(body, note.blocks || []);
-    card.appendChild(body);
+    msg.appendChild(body);
+    var out = [msg];
     (note.responses || []).forEach(function (response) {
-      var reply = el("div", "note-reply");
-      reply.appendChild(el("div", "note-reply-who", "Nova"));
-      var text = el("div", "note-reply-body");
+      var reply = el("article", "note-msg note-msg-nova");
+      var head = el("p", "note-msg-who");
+      head.appendChild(el("span", "note-msg-name", "Nova"));
+      // The cycle that answered, taken from the reply itself rather than
+      // re-derived here -- `nova_notes._response_cycle` owns the shape of
+      // a reply line and a second reading of it in this file is the
+      // duplication this repo keeps filing against itself.
+      if (response.cycle !== null && response.cycle !== undefined) {
+        var link = el("a", "note-msg-cycle", "Cycle " + response.cycle);
+        link.href = "/cycle/" + response.cycle;
+        head.appendChild(link);
+      }
+      reply.appendChild(head);
+      var text = el("div", "note-msg-body");
       renderBlocks(text, response.blocks || []);
       reply.appendChild(text);
-      card.appendChild(reply);
+      out.push(reply);
     });
     // A note moved under `## Read` with nothing written under it is a
-    // real state -- half the contract done -- and saying so beats an
-    // answered-looking card with no answer in it.
+    // real state -- half the contract done -- and saying so beats a
+    // transcript that just goes quiet.
     if (!note.waiting && !(note.responses || []).length) {
-      card.appendChild(el("p", "note-reply-missing", "Moved to Read with no reply written."));
+      out.push(el("p", "note-reply-missing", "Moved to Read with no reply written."));
     }
-    return card;
+    return out;
   }
 
-  function renderNotes(payload) {
+  /* The composer, moved under the transcript for this page only.
+   *
+   * `#capture` is a single section in `index.html`, above the feed on
+   * every page, and `captureBox()` binds its handlers once at startup. So
+   * this moves that node rather than building a second one: two composers
+   * would need two sets of handlers, and the second copy is the drift
+   * this repo keeps filing against itself. `captureHome()` in `load()` is
+   * the other half -- every navigation puts it back before the next page
+   * clears the feed out from under it.
+   */
+  function moveCaptureInto(parent) {
+    var capture = document.getElementById("capture");
+    if (capture) parent.appendChild(capture);
+  }
+
+  function renderNotes(payload, options) {
+    var opts = options || {};
     stopPolling();
     markNav();
+    notesPayload = payload;
     var notes = payload.notes || [];
     var waiting = payload.waitingTotal || 0;
     statusEl.textContent = "";
@@ -5566,14 +5628,74 @@
     if (payload.replayed) statusEl.appendChild(savedCopyLine());
     feed.textContent = "";
     if (!notes.length) {
-      feed.appendChild(el("p", "empty", "No notes yet. The Note button on the Journal page writes here."));
+      feed.appendChild(el("p", "empty", "No notes yet. Type below and tap Note."));
+      moveCaptureInto(feed);
       return;
     }
-    var wrap = el("div", "board");
-    notes.forEach(function (note) {
-      wrap.appendChild(renderNoteCard(note));
+    if (notesShown > notes.length) notesShown = notes.length;
+    var window_ = notes.slice(notes.length - notesShown);
+    var thread = el("div", "note-thread");
+    if (notesShown < notes.length) {
+      /* The scroll-up handle. A button as well as a scroll trigger, on
+       * purpose: an IntersectionObserver that fires on its own is the
+       * lazy load he asked for, and a tappable control is what still
+       * works when it does not -- the same belt-and-braces the board
+       * pager uses. */
+      var older = el("button", "more note-older", "Load older notes");
+      older.type = "button";
+      older.addEventListener("click", showOlderNotes);
+      thread.appendChild(older);
+      watchForOlderNotes(older);
+    } else {
+      thread.appendChild(el("p", "note-start", "The beginning of our notes."));
+    }
+    window_.forEach(function (note) {
+      renderNoteMessage(note).forEach(function (node) { thread.appendChild(node); });
     });
-    feed.appendChild(wrap);
+    feed.appendChild(thread);
+    moveCaptureInto(feed);
+    // Opening at the bottom is the point of the whole page -- "it should
+    // not start at the top and i have to scroll all the way down". Not on
+    // a re-render that grew the window, though: that would throw him back
+    // to the newest message the instant he reached the oldest one.
+    if (!opts.keepScroll) scrollNotesToLatest();
+  }
+
+  function scrollNotesToLatest() {
+    // Twice: once now, and once after the layout that follows the images
+    // and fonts settling. A single call lands short on a phone, which
+    // reads as "it still starts in the wrong place".
+    var toBottom = function () {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+    };
+    toBottom();
+    window.setTimeout(toBottom, 0);
+  }
+
+  function showOlderNotes() {
+    if (!notesPayload) return;
+    var notes = notesPayload.notes || [];
+    if (notesShown >= notes.length) return;
+    // Keep his eye on the message he was reading: the document grows
+    // upwards, so scroll down by exactly the height that appeared above
+    // him. Without this, revealing older notes silently teleports him.
+    var before = document.documentElement.scrollHeight;
+    var at = window.pageYOffset || document.documentElement.scrollTop || 0;
+    notesShown += NOTES_PAGE;
+    renderNotes(notesPayload, { keepScroll: true });
+    var grew = document.documentElement.scrollHeight - before;
+    window.scrollTo(0, at + grew);
+  }
+
+  /* `loadWhenScrolledTo` is the journal's own infinite-scroll helper and
+   * this is deliberately the same mechanism pointed the other way -- the
+   * journal watches a pager at the bottom of the feed for older entries,
+   * this watches one at the top. Sharing it rather than writing a second
+   * observer means the notes pager inherits its disconnect-before-click
+   * and its one-live-observer rule, both of which took a reviewer to get
+   * right the first time. */
+  function watchForOlderNotes(node) {
+    loadWhenScrolledTo(node);
   }
 
   function loadNotes() {
@@ -6099,12 +6221,31 @@
     });
   }
 
+  /* Put the capture composer back above the feed.
+   *
+   * The Notes page moves that one section *into* the feed so the box sits
+   * under the conversation (`renderNotes`, and Edvard's ask that the
+   * conversation be above the input box). Every renderer's first act is
+   * `feed.textContent = ""`, so a navigation away from Notes that left it
+   * there would delete the only composer in the document -- along with
+   * the handlers `captureBox()` bound to it at startup, which nothing
+   * re-binds. Hence: home first, then render. Doing it here rather than
+   * in each renderer means a page added later cannot forget.
+   */
+  function captureHome() {
+    var capture = document.getElementById("capture");
+    if (capture && capture.parentNode !== feed.parentNode) {
+      feed.parentNode.insertBefore(capture, feed);
+    }
+  }
+
   function load() {
     // The overlay is fixed to the viewport and the feed under it is about
     // to be replaced, so a navigation that left it open would strand a
     // chart of the old page on top of the new one -- and the figure it
     // points at is gone, so nothing could close it.
     closeFullChart();
+    captureHome();
     var here = route(window.location.pathname);
     if (here.view === "board") {
       loadBoard(here.board);

@@ -167,18 +167,36 @@ def _shape(note, waiting):
 
 
 def notes_payload():
-    """Everything the `/notes` page draws.
+    """Everything the `/notes` page draws, oldest note first.
 
-    Not windowed. The whole file is 11KB against `issues.md`'s 68KB, and
+    Not windowed. The whole file is 17KB against `issues.md`'s 68KB, and
     it grows by a note every few days rather than by one an hour -- so a
     limit here would be the cap with no measurement behind it that
-    `personality.md` spends a section on.
+    `personality.md` spends a section on. The page still opens on the
+    newest handful and reveals older ones as Edvard scrolls up; that is a
+    scroll position, decided in `app.js`, not a payload this file has to
+    cut.
+
+    **The order is the whole change here.** Edvard, `notes.md`
+    2026-08-24: *"I want the notes page to be more like a conversation
+    ... ordered with the latest note at the bottom."* So this reads as a
+    transcript now: oldest at the top, newest at the bottom, each note
+    followed by whatever a cycle wrote back.
+
+    `notes.md` itself is newest-first in both of its halves -- the bare
+    bullets above `## Read` are the notes no cycle has answered yet, and
+    they are newer than everything under it. Ascending time is therefore
+    the `## Read` list reversed, then the waiting ones. That is the only
+    ordering fact this file knows; there are no timestamps in `notes.md`
+    to sort by, so file position is the clock.
     """
     parsed = parse_notes_page(notes_markdown())
     waiting = [_shape(note, True) for note in parsed["waiting"]]
     read = [_shape(note, False) for note in parsed["read"]]
+    notes = list(reversed(read)) + waiting
     return {
-        "notes": waiting + read,
+        "notes": notes,
+        "notesTotal": len(notes),
         "waitingTotal": len(waiting),
         "readTotal": len(read),
     }

@@ -102,8 +102,10 @@ def test_a_note_hard_wrapped_at_column_zero_keeps_its_tail():
 def test_a_reply_carries_the_cycle_it_links_to():
     payload = _payload(LIVE_SHAPE)
     read = [note for note in payload["notes"] if not note["waiting"]]
-    assert [r["cycle"] for r in read[0]["responses"]] == [258]
-    assert [r["cycle"] for r in read[1]["responses"]] == [241, 244]
+    # Oldest first, so the ci-builder note -- lower in `## Read` and
+    # therefore older -- comes before the platform-config one.
+    assert [r["cycle"] for r in read[0]["responses"]] == [241, 244]
+    assert [r["cycle"] for r in read[1]["responses"]] == [258]
 
 
 def test_a_waiting_note_carries_no_reply_and_says_it_is_waiting():
@@ -114,15 +116,31 @@ def test_a_waiting_note_carries_no_reply_and_says_it_is_waiting():
     assert waiting[0]["answered"] is False
 
 
-def test_waiting_notes_come_first():
-    """The page's whole question is "did anyone pick my note up".
+def test_the_page_reads_oldest_first_with_the_unanswered_notes_last():
+    """Edvard: *"ordered with the latest note at the bottom."*
 
-    A waiting note buried under nine answered ones answers it last.
+    This used to assert the opposite -- waiting notes first, so the
+    page's first card answered "did anyone pick my note up". The page is
+    a conversation now and it opens scrolled to the bottom, so the
+    newest message is the one he lands on either way; what changed is
+    that everything above it now reads downwards in time like a chat
+    log instead of upwards like a feed.
+
+    `notes.md` is newest-first in both halves, so ascending time is the
+    `## Read` list reversed with the unanswered bullets after it. Both
+    halves matter: reversing only one of them would put the newest note
+    in the middle.
     """
     payload = _payload(LIVE_SHAPE)
-    assert [note["waiting"] for note in payload["notes"]][:1] == [True]
+    assert [note["text"] for note in payload["notes"]] == [
+        "Follow-up on the ci-builder idea: please research it before anything gets built.",
+        "Platform-config dispatch billing block is fine to leave as-is.",
+        "A note nobody has picked up yet.",
+    ]
+    assert [note["waiting"] for note in payload["notes"]] == [False, False, True]
     assert payload["waitingTotal"] == 1
     assert payload["readTotal"] == 2
+    assert payload["notesTotal"] == 3
 
 
 def test_a_note_moved_to_read_with_no_reply_is_not_reported_as_answered():
@@ -143,7 +161,12 @@ def test_a_file_with_no_read_section_still_shows_the_waiting_notes():
 
 def test_a_missing_notes_file_is_an_empty_page_not_a_crash():
     payload = _payload("")
-    assert payload == {"notes": [], "waitingTotal": 0, "readTotal": 0}
+    assert payload == {
+        "notes": [],
+        "notesTotal": 0,
+        "waitingTotal": 0,
+        "readTotal": 0,
+    }
 
 
 def test_the_page_reads_the_path_the_note_button_writes():
