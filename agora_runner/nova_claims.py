@@ -158,7 +158,12 @@ def is_stale(row, now, ttl_minutes=CLAIM_TTL_MINUTES):
 
 
 def prune(ledger, now, keep_hours=DONE_KEEP_HOURS):
-    """Drop completed claims nobody can still be racing. Mutates and returns."""
+    """Drop released claims nobody can still be racing. Mutates and returns.
+
+    Both released states, not just `done`: a progressed row is a breadcrumb
+    for whoever picks the item up next, and once no live cycle could still
+    be reading it, it is a row in a file every claim rewrites.
+    """
     kept = []
     for row in ledger["claims"]:
         if row.get("state") in RELEASE_STATES \
@@ -177,6 +182,11 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
     pick something else. Re-taking your own open claim is granted and
     changes nothing, so a cycle that loses a write conflict and retries is
     not told it lost to itself.
+
+    A `PROGRESSED` item is granted, which is the whole reason that state
+    exists, and the row it produces carries `resumed_from` and
+    `resumed_after` so the previous cycle's account of what it got done
+    survives being picked up.
     """
     if not SLUG_RE.match(item or ""):
         raise ClaimError(
