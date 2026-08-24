@@ -11,6 +11,7 @@ Every test runs against a `tmp_path`, never the real workspace.
 import os
 import subprocess
 import time
+import types
 
 import pytest
 
@@ -480,7 +481,7 @@ def test_the_cli_names_the_leftover_branch(squash_merged, capsys):
     tidy_workspace.main(["--root", str(root)])
 
     out = capsys.readouterr().out
-    assert "repo: branch nova/feature is already on origin/main" in out
+    assert "repo: [leftover] branch nova/feature is already on origin/main" in out
     # The tidy half found nothing, and that must not read as an all-clear for
     # the workspace as a whole.
     assert "nothing to tidy" in out
@@ -743,7 +744,7 @@ def test_the_survey_reports_the_root_it_was_given_not_the_shared_one(
     tidy_workspace.main(["--no-fetch"])
 
     out = capsys.readouterr().out
-    assert "repo: branch" in out
+    assert "repo: [unfinished] branch" in out
     assert "not-swept" not in out
 
 
@@ -820,3 +821,217 @@ def test_the_default_root_is_read_when_called_not_when_imported(tmp_path, monkey
 
     assert archived == ["entry.md"]
     assert (own / "_scratch-archive-2026-08-24" / "entry.md").exists()
+
+
+# --- a base that moves, not just a ref that is stale -------------------------
+#
+# `test_the_fetch_turns_that_into_leftover` above holds only while main stops
+# at the squash. When main carries on -- six PRs in the four hours after #316,
+# on this loop's real cadence -- `git diff origin/main HEAD` fills with main's
+# own newer files and the branch reads `unfinished` again. Every test in this
+# file agreed the fetch had fixed it, and the shared checkout was being
+# misreported the whole time.
+
+
+@pytest.fixture(autouse=True)
+def no_real_gh(monkeypatch):
+    """Nothing in this file may reach GitHub.
+
+    The survey now asks `gh` whether a branch was merged. In a tmp_path clone
+    of a bare local origin that question has no answer, and a test that waited
+    for `gh` to work it out would be a network call in a unit suite. The
+    default is "could not ask", which is the same verdict these tests asserted
+    before the check existed; the tests below override it deliberately.
+    """
+    monkeypatch.setattr(tidy_workspace, "_merged_pr", lambda *a, **k: (None, False))
+
+
+@pytest.fixture
+def moved_on(squash_merged):
+    """The squash-merged clone, plus a later commit on main touching nothing
+    the branch touched. Content alone can no longer tell landed from
+    unfinished here -- only GitHub can."""
+    root, repo = squash_merged
+    merger = root.parent / "merger"
+    _commit(merger, "later.txt", "main moved on\n")
+    _git(merger, "push", "-q", "origin", "main")
+    return root, repo
+
+
+def test_a_moving_base_calls_landed_work_unfinished_without_the_pr_check(moved_on):
+    """The bug as measured on the real workspace: fetched, up to date, and
+    still `unfinished`, because main has files the branch has never seen."""
+    root, _ = moved_on
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+
+
+def test_a_merged_pr_makes_it_leftover(moved_on, monkeypatch):
+    """The fix. GitHub says a PR merged from this head and the branch has
+    nothing on top of it, so the branch is litter however far main has run."""
+    root, _ = moved_on
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316,
+                                          "mergedAt": "2099-01-01T00:00:00Z"}, True))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["leftover"]
+    assert survey[0]["merged_pr"] == 316
+
+
+def test_a_commit_on_top_of_a_merged_pr_is_still_unfinished(moved_on, monkeypatch):
+    """The direction that stops this laundering real work. A merged PR is not
+    a promise that nothing was written after it."""
+    root, _ = moved_on
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316,
+                                          "mergedAt": "2000-01-01T00:00:00Z"}, True))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+    assert survey[0]["commits_after_merge"] is True
+
+
+def test_uncommitted_work_never_asks_github(moved_on, monkeypatch):
+    """A merged PR says nothing about an edit a cycle was killed halfway
+    through, so the question is not even asked."""
+    root, repo = moved_on
+    (repo / "half-written.txt").write_text("mid-edit", encoding="utf-8")
+    asked = []
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: (asked.append(a) or
+                                         ({"number": 316,
+                                           "mergedAt": "2099-01-01T00:00:00Z"}, True)))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+    assert asked == []
+
+
+def test_an_unanswerable_gh_says_so_rather_than_reading_as_unfinished(moved_on, capsys):
+    """`gh` absent and `gh` answering "no merged PR" mean opposite things. The
+    first must not be printed as the second in silence."""
+    root, _ = moved_on
+
+    for entry in tidy_workspace.survey_checkouts(str(root)):
+        assert entry["merged_pr_checked"] is False
+    tidy_workspace.main(["--root", str(root), "--no-fetch"])
+
+    out = capsys.readouterr().out
+    assert "could not ask GitHub whether this branch was merged" in out
+
+
+def test_a_gh_that_answers_no_merged_pr_prints_no_caveat(moved_on, monkeypatch, capsys):
+    """The other half of the same distinction: asked and answered "none" is
+    a real `unfinished`, and adding a caveat to it would train cycles to
+    ignore the caveat."""
+    root, _ = moved_on
+    monkeypatch.setattr(tidy_workspace, "_merged_pr", lambda *a, **k: (None, True))
+
+    tidy_workspace.main(["--root", str(root), "--no-fetch"])
+
+    out = capsys.readouterr().out
+    assert "could not ask GitHub" not in out
+    assert "[unfinished]" in out
+
+
+def test_the_verdict_word_is_printed_beside_the_sentence(moved_on, monkeypatch, capsys):
+    """`prompt.md` step 1c describes this output by the verdict words. Two
+    cycles looked for them, found prose, and filed the feature as missing."""
+    root, _ = moved_on
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316,
+                                          "mergedAt": "2099-01-01T00:00:00Z"}, True))
+
+    tidy_workspace.main(["--root", str(root), "--no-fetch"])
+
+    out = capsys.readouterr().out
+    assert "[leftover]" in out
+    assert "already merged as #316" in out
+    assert "the branch is litter" in out
+
+
+# --- the gh call itself ------------------------------------------------------
+#
+# Everything above stubs `_merged_pr`, so these are the only tests that see it.
+# The distinction it exists to preserve -- "asked, no merged PR" versus "could
+# not ask" -- is decided entirely in here.
+
+
+# The autouse fixture above stubs `_merged_pr` for every test in this file, so
+# the real one is held here, taken at import before any stub exists.
+_REAL_MERGED_PR = tidy_workspace._merged_pr
+
+
+def _gh_returning(monkeypatch, **result):
+    """Replace the `gh` subprocess and nothing else."""
+    real = subprocess.run
+
+    def fake(cmd, *a, **k):
+        if cmd and cmd[0] == "gh":
+            if "raises" in result:
+                raise result["raises"]
+            return types.SimpleNamespace(returncode=result.get("returncode", 0),
+                                         stdout=result.get("stdout", ""),
+                                         stderr="")
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", fake)
+
+
+def test_merged_pr_reads_the_row_gh_prints(tmp_path, monkeypatch):
+    _gh_returning(monkeypatch,
+                  stdout='[{"number": 316, "mergedAt": "2026-08-24T10:57:11Z"}]')
+
+    pr, checked = _REAL_MERGED_PR(str(tmp_path), "repo", "nova/x")
+
+    assert checked is True
+    assert pr["number"] == 316
+
+
+def test_merged_pr_distinguishes_none_from_could_not_ask(tmp_path, monkeypatch):
+    """An empty list is an answer. A non-zero exit is not."""
+    _gh_returning(monkeypatch, stdout="[]")
+    assert _REAL_MERGED_PR(str(tmp_path), "repo", "nova/x") == (None, True)
+
+    _gh_returning(monkeypatch, returncode=1, stdout="")
+    assert _REAL_MERGED_PR(str(tmp_path), "repo", "nova/x") == (None, False)
+
+
+def test_merged_pr_survives_gh_missing_or_hanging(tmp_path, monkeypatch):
+    """`gh` is not guaranteed to exist wherever this runs, and it talks to the
+    network. Neither may take the sweep down -- this is the first thing a
+    cycle runs."""
+    _gh_returning(monkeypatch, raises=FileNotFoundError("gh"))
+    assert _REAL_MERGED_PR(str(tmp_path), "repo", "nova/x") == (None, False)
+
+    _gh_returning(monkeypatch,
+                  raises=subprocess.TimeoutExpired(cmd="gh", timeout=30))
+    assert _REAL_MERGED_PR(str(tmp_path), "repo", "nova/x") == (None, False)
+
+    _gh_returning(monkeypatch, stdout="not json")
+    assert _REAL_MERGED_PR(str(tmp_path), "repo", "nova/x") == (None, False)
+
+
+def test_merged_pr_does_not_ask_about_a_base_branch(tmp_path, monkeypatch):
+    """`main` is not a feature branch, and a detached HEAD has no branch name
+    to ask about. Neither is a question worth a network call."""
+    def explode(*a, **k):
+        raise AssertionError("gh must not run")
+
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", explode)
+
+    for branch in ("main", "master", "HEAD", ""):
+        assert _REAL_MERGED_PR(str(tmp_path), "repo", branch) == (None, False)
+
+
+def test_an_unparseable_merge_stamp_leaves_the_branch_unfinished(tmp_path):
+    """`_committed_after` answers True on anything it cannot read, because the
+    safe error is to leave real work looking like real work."""
+    assert tidy_workspace._committed_after(str(tmp_path), "repo", None) is True
+    assert tidy_workspace._committed_after(str(tmp_path), "repo", "not a date") is True

@@ -42,6 +42,7 @@ since a cycle in its wrap-up is about to write them.
 """
 import argparse
 import datetime
+import json
 import os
 import re
 import shutil
@@ -302,6 +303,81 @@ def _git(root, clone, *args):
         return _Failed()
 
 
+# The content comparison above answers "did this branch's work land" only for
+# as long as the base stands still. It does not: `git diff origin/main HEAD` on
+# a branch squash-merged six commits ago reports every file main has changed
+# *since*, so the branch reads `unfinished` and the file list narrates main's
+# own later work as work somebody abandoned. Measured Cycle 372 on the shared
+# checkout, parked on `nova/status-word-back-on-the-card`: 14 files, 1,403
+# deletions, all of them main's. Cycle 365 read that verdict and treated the
+# branch as something to finish; Cycles 366 and 367 read the same line.
+#
+# Three git-only instruments were tried on that exact branch and all three
+# failed, so they are written down rather than left to be retried:
+# `git cherry` said `+` (the squash rewrote the patch-id), `git merge-tree`
+# conflicted in both files, and reverse-applying the branch's three-dot patch
+# to main's tree failed on moved context. The first attempt at that last one
+# "succeeded" against the *working tree* -- which is checked out on the branch,
+# so it was a guaranteed positive that proved nothing.
+#
+# GitHub knows the answer and can simply be asked: a merged PR whose head is
+# this branch. That is the authoritative fact, not an inference from content.
+GH_TIMEOUT_SECONDS = 30
+
+
+def _merged_pr(root, clone, branch):
+    """The newest merged PR whose head branch is `branch`, or None.
+
+    Returns `(pr, checked)`. `checked` is False when `gh` could not answer at
+    all -- absent, unauthenticated, timed out -- which is deliberately not the
+    same as "no merged PR": one means the branch really is unfinished, the
+    other means nobody asked. Reporting the second as the first is how a
+    landed branch gets called unfinished, which is the bug this exists for.
+    """
+    if not branch or branch in ("HEAD", "main", "master"):
+        return None, False
+    try:
+        done = subprocess.run(
+            ["gh", "pr", "list", "--state", "merged", "--head", branch,
+             "--limit", "1", "--json", "number,mergedAt"],
+            cwd=os.path.join(root, clone), capture_output=True, text=True,
+            check=False, timeout=GH_TIMEOUT_SECONDS)
+    except (subprocess.TimeoutExpired, OSError):
+        return None, False
+    if done.returncode != 0:
+        return None, False
+    try:
+        rows = json.loads(done.stdout or "[]")
+    except ValueError:
+        return None, False
+    if not isinstance(rows, list) or not rows:
+        return None, True
+    return rows[0], True
+
+
+def _committed_after(root, clone, merged_at):
+    """True if this branch's tip was committed after `merged_at`.
+
+    A merged PR does not make the local branch litter on its own -- a cycle
+    can commit on top of a branch after its PR went in, and that work really
+    is unfinished. Anything this cannot parse answers True, because the safe
+    error is to leave a branch marked unfinished.
+    """
+    if not merged_at:
+        return True
+    stamp = _git(root, clone, "log", "-1", "--format=%cI", "HEAD").stdout.strip()
+    if not stamp:
+        return True
+    try:
+        tip = datetime.datetime.fromisoformat(stamp)
+        merged = datetime.datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if tip.tzinfo is None or merged.tzinfo is None:
+        return True
+    return tip > merged
+
+
 def survey_checkouts(root=WORKSPACE, fetch=True):
     root = _default_root(root)
     """One verdict per clone, after refreshing its remote refs.
@@ -310,8 +386,10 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
 
     - `clean` -- no uncommitted files and nothing on this branch that the
       base does not already have.
-    - `leftover` -- a branch whose content is identical to the base. Its work
-      has landed; the branch is litter. This is the case a stale ref hides.
+    - `leftover` -- a branch whose content is identical to the base, or whose
+      work went in as a merged PR that the branch has nothing on top of. Its
+      work has landed; the branch is litter. The first half is the case a
+      stale ref hides, the second the case a *moving* base hides.
     - `unfinished` -- something here is genuinely not on the base yet, either
       uncommitted or committed. This is the one worth a cycle's attention.
     - `no-base` -- neither `origin/main` nor `origin/master` resolves, so
@@ -371,6 +449,19 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
             verdict = "leftover"
         else:
             verdict = "unfinished"
+        # Only for a clean tree. Uncommitted files are unfinished whatever
+        # GitHub says about the branch they sit on -- a merged PR says nothing
+        # about an edit a cycle was killed halfway through.
+        merged_pr = None
+        merged_pr_checked = False
+        commits_after_merge = False
+        if verdict == "unfinished" and not dirty:
+            merged_pr, merged_pr_checked = _merged_pr(root, clone, branch)
+            if merged_pr:
+                if _committed_after(root, clone, merged_pr.get("mergedAt")):
+                    commits_after_merge = True
+                else:
+                    verdict = "leftover"
         # Which files, not just that there are some. "has work not on
         # origin/main" is true of a half-finished feature and equally true of
         # a `-config` clone whose only delta is a stale `image:` digest --
@@ -424,7 +515,10 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
         out.append({"clone": clone, "branch": branch, "base": base,
                     "dirty": dirty, "ahead": ahead, "verdict": verdict,
                     "fetched": fetched, "files": files,
-                    "files_failed": files_failed})
+                    "files_failed": files_failed,
+                    "merged_pr": merged_pr.get("number") if merged_pr else None,
+                    "merged_pr_checked": merged_pr_checked,
+                    "commits_after_merge": commits_after_merge})
     return out
 
 
@@ -551,17 +645,34 @@ def _sweep_one(root, args):
                   "already on disk and may be stale" % (entry["clone"],))
         if entry["verdict"] == "clean":
             continue
+        # The verdict word, printed. `prompt.md` step 1c describes this output
+        # by the words `leftover` and `unfinished`, the tool printed only
+        # prose, and two cycles in a row went looking for the words, found
+        # neither and filed the feature as missing. The sentence is the better
+        # thing for a human to read, so both are printed rather than one
+        # replacing the other.
         if entry["verdict"] == "leftover":
-            print("%s: branch %s is already on %s -- its work has landed, "
+            landed = ("is already merged as #%d" % entry["merged_pr"]
+                      if entry["merged_pr"]
+                      else "is already on %s" % entry["base"])
+            print("%s: [leftover] branch %s %s -- its work has landed, "
                   "the branch is litter" % (entry["clone"], entry["branch"],
-                                            entry["base"]))
+                                            landed))
         elif entry["verdict"] == "no-base":
-            print("%s: no origin/main or origin/master to compare against"
-                  % (entry["clone"],))
+            print("%s: [no-base] no origin/main or origin/master to compare "
+                  "against" % (entry["clone"],))
         else:
-            print("%s: branch %s has work not on %s%s"
+            print("%s: [unfinished] branch %s has work not on %s%s"
                   % (entry["clone"], entry["branch"], entry["base"],
                      " (uncommitted)" if entry["dirty"] else ""))
+            if entry["commits_after_merge"]:
+                print("    #%d merged from this branch, and its tip was "
+                      "committed after that -- what is below is the part "
+                      "added since" % (entry["merged_pr"],))
+            elif not entry["dirty"] and not entry["merged_pr_checked"]:
+                print("    could not ask GitHub whether this branch was "
+                      "merged, so `unfinished` here may only mean nobody "
+                      "asked")
             if entry["files"]:
                 print("    files not on %s: %s"
                       % (entry["base"], ", ".join(entry["files"])))
