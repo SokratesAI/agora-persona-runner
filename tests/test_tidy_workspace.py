@@ -1764,16 +1764,77 @@ def test_the_newest_merge_decides_a_reused_branch_name(monkeypatch):
      "SokratesAI/agora-persona-runner"),
     ("", None),
     ("notaurl", None),
+    # The three that used to parse into a plausible-looking repo and send a
+    # live API call after it. The first is what every fixture in this file
+    # has for an origin. Reviewer finding on #341.
+    ("/tmp/pytest-of-nova/test_squash0/origin.git", None),
+    ("https://gitlab.com/someone/mirror.git", None),
+    ("git@internal.example:team/thing.git", None),
 ])
-def test_origin_urls_this_loop_actually_uses_parse(url, expected):
+def test_only_a_github_origin_becomes_a_repo(url, expected):
     assert tidy_workspace._repo_from_url(url) == expected
+
+
+def test_a_clone_with_no_github_origin_is_named_not_dropped(workspace, capsys):
+    """`origin_repos` returning nothing and the sweep finding nothing print
+    the same thing unless somebody says which happened. Every other check in
+    this file refuses that equation; this is the one that feeds them all."""
+    (workspace / "local-only").mkdir()
+    subprocess.run(["git", "init", "-b", "main", str(workspace / "local-only")],
+                   check=True, capture_output=True)
+
+    repos, unplaceable = tidy_workspace.origin_repos([str(workspace)])
+
+    # Every clone in this fixture is a bare `.git` with no origin, so all
+    # four land here -- which is the point: not one of them is silently
+    # absent from the answer.
+    assert repos == [] and "local-only" in unplaceable
+    assert len(unplaceable) == len(tidy_workspace.clones(str(workspace)))
+
+    tidy_workspace._sweep_remote([str(workspace)])
+    assert "local-only" in capsys.readouterr().out
+
+
+def test_the_remote_sweep_can_be_switched_off(workspace, monkeypatch, capsys):
+    """`--no-remote` and `--no-gh` both suppress it. Nothing tested the
+    wiring, so a future change could drop the guard silently."""
+    called = []
+    monkeypatch.setattr(tidy_workspace, "_sweep_remote",
+                        lambda roots: called.append(roots))
+
+    tidy_workspace.main(["--root", str(workspace), "--no-remote", "--no-fetch"])
+    assert called == []
+
+    tidy_workspace.main(["--root", str(workspace), "--no-gh", "--no-fetch"])
+    assert called == []
+
+    capsys.readouterr()
+
+
+def test_the_remote_is_swept_once_for_two_roots(tmp_path, monkeypatch, capsys):
+    """A remote belongs to a repo, not to a directory, and the two roots share
+    all four origins. Sweeping per root would ask GitHub the same question
+    twice and print the same branch twice -- the comment on the call says so
+    and nothing checked it."""
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+    called = []
+    monkeypatch.setattr(tidy_workspace, "_sweep_remote",
+                        lambda roots: called.append(list(roots)))
+
+    tidy_workspace.main(["--root", str(tmp_path / "a"),
+                         "--root", str(tmp_path / "b"), "--no-fetch"])
+
+    assert called == [[str(tmp_path / "a"), str(tmp_path / "b")]]
+    capsys.readouterr()
 
 
 def test_the_sweep_prints_the_branch_and_what_is_on_it(monkeypatch, capsys):
     """The output is the whole product here -- a cycle reads this line and
     goes and looks. Reviewer-proofing the wording is not the point; that the
     branch, the count and the files all reach the page is."""
-    monkeypatch.setattr(tidy_workspace, "origin_repos", lambda roots: ["o/r"])
+    monkeypatch.setattr(tidy_workspace, "origin_repos",
+                        lambda roots: (["o/r"], []))
     monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
         branches=[("nova/killed-midway", "bbb")],
         compares={"nova/killed-midway": _compare(3, ["tools/x.py", "b.py"])}))
@@ -1790,7 +1851,8 @@ def test_the_sweep_prints_the_branch_and_what_is_on_it(monkeypatch, capsys):
 def test_a_repo_the_sweep_could_not_reach_says_so(monkeypatch, capsys):
     """Silence here would read as an all-clear for the one repo nobody
     checked."""
-    monkeypatch.setattr(tidy_workspace, "origin_repos", lambda roots: ["o/r"])
+    monkeypatch.setattr(tidy_workspace, "origin_repos",
+                        lambda roots: (["o/r"], []))
     monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
         branches=[("nova/mine", "bbb")], broken=["/branches"]))
 

@@ -768,8 +768,21 @@ def _repo_from_url(url):
     Both forms this loop actually uses -- `https://github.com/o/n.git` and
     `git@github.com:o/n` -- and nothing clever: a URL this cannot parse gets
     left out rather than guessed at.
+
+    **The host check is not belt-and-braces, it is the whole guard.** Without
+    it this took the last two path segments of *any* string, so a clone whose
+    origin is a local path -- `/tmp/pytest-of-nova/test_x0/origin.git` -- came
+    back as the repo `test_x0/origin` and the sweep then asked the live GitHub
+    API about it. Reviewer finding on #341, and it was not hypothetical: about
+    fifteen tests in this file drive `main()` against fixtures whose origin is
+    a `tmp_path`, and removing the calls took this file's suite from 29s to
+    14s. In production the same shape reports "could not sweep the remote"
+    about a repo that was never on GitHub, which is a false alarm rather than
+    a missed one -- still the failure this sweep exists to not produce.
     """
     url = (url or "").strip()
+    if "github.com" not in url:
+        return None
     if url.endswith(".git"):
         url = url[:-4]
     url = url.rstrip("/")
@@ -780,13 +793,21 @@ def _repo_from_url(url):
 
 
 def origin_repos(roots):
-    """Every `owner/name` these workspaces have a clone of, deduped and sorted.
+    """`(repos, unplaceable)` -- every `owner/name` these workspaces clone.
 
     Derived from the clones rather than hardcoded, because the list of repos
     this loop touches is exactly the list it has checked out, and a hardcoded
     one is the stale constant this repo has already had to fix twice.
+
+    **The second half of the tuple is why this returns one.** A clone whose
+    origin cannot be placed on GitHub -- no remote, a local path, a different
+    host, a `git` that failed -- used to be dropped with nothing counted, and
+    if every clone dropped, the sweep printed exactly what it prints when it
+    checked everything and found nothing. That is the one equation the rest of
+    this file spends a page refusing to write. Reviewer finding on #341.
     """
     repos = set()
+    unplaceable = []
     for root in roots:
         root = _default_root(root)
         if not os.path.isdir(root):
@@ -796,7 +817,9 @@ def origin_repos(roots):
                 _git(root, clone, "remote", "get-url", "origin").stdout)
             if repo:
                 repos.add(repo)
-    return sorted(repos)
+            else:
+                unplaceable.append(clone)
+    return sorted(repos), sorted(set(unplaceable))
 
 
 def survey_remote_branches(repos, prefixes=_MINE):
@@ -1013,7 +1036,13 @@ def main(argv=None):
 
 
 def _sweep_remote(roots):
-    for entry in survey_remote_branches(origin_repos(roots)):
+    repos, unplaceable = origin_repos(roots)
+    if unplaceable:
+        print("not swept: %s -- no GitHub origin, so nothing here says whether "
+              "%s an abandoned branch"
+              % (", ".join(unplaceable),
+                 "they have" if len(unplaceable) > 1 else "it has"))
+    for entry in survey_remote_branches(repos):
         if not entry["checked"]:
             # Loud, and on its own line. This whole sweep exists because
             # nothing was looking; a run where the looking failed must not
@@ -1036,7 +1065,11 @@ def _sweep_remote(roots):
             how = ("no PR was ever opened from it" if row["kind"] == "no-pr"
                    else "#%d merged from it and it has moved since"
                         % (row["merged_pr"],))
-            print("    %s: %d commit(s) past %s, last commit %s -- %s"
+            # The date is GitHub's, and GitHub's is UTC. Saying so is one word
+            # and beats either a silent UTC date -- which is a day early for
+            # anything committed after 22:00 Oslo -- or a conversion that
+            # depends on tzdata being in the image. Reviewer finding on #341.
+            print("    %s: %d commit(s) past %s, last commit %s (UTC) -- %s"
                   % (row["branch"], row["ahead"], entry["base"], row["date"],
                      how))
             if row["files"]:
