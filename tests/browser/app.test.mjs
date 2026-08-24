@@ -6663,6 +6663,80 @@ describe("the notes page", () => {
     );
   });
 
+  /* The owner, issues.md 2026-08-24, on the page as it shipped:
+   *
+   * "Navigating to it takes me to the bottom of the page, but when i
+   * navigate then to another page i'm scrolled down on that page to and
+   * also the input box for ideas and issues are now gone. I have to
+   * refresh Nova to get it back, so lots of bugs there."
+   *
+   * One mechanism, both symptoms. The pager at the *top* of the
+   * conversation is watched by an IntersectionObserver, and nothing
+   * disconnected it on the way out. So leaving the page ran
+   * `window.scrollTo(0, 0)` in the link handler, which put that pager
+   * on screen, which fired the watcher, which clicked it, which
+   * re-rendered the whole notes conversation into the page he had just
+   * navigated to -- moving the app's one composer into the feed on the
+   * way, where the arriving page's `feed.textContent = ""` then deleted
+   * it -- and finished by scrolling him back down to keep his place in a
+   * conversation that was no longer on screen.
+   *
+   * Both tests below fire the observer by hand rather than trusting a
+   * spy that only records. The three notes tests above this one all use
+   * a stub that never fires, which is exactly why this survived them. */
+  const firablePager = (spy, window) => {
+    const pager = window.document.querySelector(".note-older");
+    assert.ok(pager, "no pager on the notes page, so this test proves nothing");
+    const watch = spy.watching.filter((one) => one.node === pager)[0];
+    assert.ok(watch, "the notes pager is not watched, so this test proves nothing");
+    return { pager, watch };
+  };
+
+  test("leaving the page stops the pager watching for a scroll", async () => {
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = () => {}; },
+    });
+    const { pager } = firablePager(spy, window);
+    window.document.querySelector('.nav-tab[href="/issues"]').click();
+    await settle();
+    assert.equal(
+      spy.watching.filter((one) => one.node === pager).length,
+      0,
+      "the notes pager is still being watched from another page",
+    );
+  });
+
+  test("a pager that fires after the page is gone changes nothing", async () => {
+    const scrolls = [];
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = (x, y) => scrolls.push(y); },
+    });
+    const { pager, watch } = firablePager(spy, window);
+    window.document.querySelector('.nav-tab[href="/issues"]').click();
+    await settle();
+    scrolls.length = 0;
+    // What the browser does when `scrollTo(0, 0)` brings a pager that
+    // nobody disconnected into view. The node is detached by now, so this
+    // is the only way to reach that code path from a test.
+    watch.observer.callback([{ isIntersecting: true, target: pager }]);
+    await settle();
+    const feed = window.document.getElementById("feed");
+    assert.equal(
+      feed.querySelectorAll(".note-msg").length,
+      0,
+      "the notes conversation was repainted over another page",
+    );
+    const capture = window.document.getElementById("capture");
+    assert.ok(capture, "the composer was destroyed from every page");
+    assert.equal(capture.parentNode, feed.parentNode, "the composer is inside the feed on a board page");
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+    assert.deepEqual(scrolls, [], "the notes page scrolled a page it was no longer on");
+  });
+
   test("the top of the conversation says so instead of offering a pager", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
     assert.equal(window.document.querySelector(".note-older"), null);

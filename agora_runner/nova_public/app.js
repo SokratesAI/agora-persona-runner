@@ -410,6 +410,27 @@
     node.textContent = "↓ " + node.textContent.replace(/^Show /, "").toLowerCase();
   }
 
+  /* Drop the live watcher, because a page that is being left has no pager.
+   *
+   * `attached` is disconnected when a *new* pager takes its place, which
+   * is enough while every pager sits at the bottom of the feed: the feed
+   * is emptied on the way out, the node stops intersecting, nothing
+   * fires. The notes conversation put one at the *top* instead, and that
+   * turned the same arrangement into the owner's bug report of
+   * 2026-08-24. The link handler's own `window.scrollTo(0, 0)` scrolls
+   * the pager into view on the way out, so the watcher fires, clicks a
+   * button belonging to a page that is no longer on screen, and repaints
+   * the notes conversation over whatever was arriving.
+   *
+   * `load()` calls this before it renders anything, so the rule is the
+   * same shape as `captureHome()` beside it: a page added later cannot
+   * forget, because leaving is handled once rather than per renderer.
+   */
+  function stopScrollWatch() {
+    if (attached) attached.disconnect();
+    attached = null;
+  }
+
   function renderSpans(parent, spans) {
     (spans || []).forEach(function (span) {
       if (span.kind === "code") parent.appendChild(el("code", null, span.text));
@@ -5868,6 +5889,13 @@
 
   function showOlderNotes() {
     if (!notesPayload) return;
+    // The same guard `loadNotes` puts on its own fetch, for the same
+    // reason and one layer further in: this is reached from a click, and
+    // a click can be dispatched at a detached button by anything that
+    // kept a reference to it. Repainting the conversation over another
+    // page is the one thing that must not happen, so it is refused here
+    // as well as prevented in `load()`.
+    if (route(window.location.pathname).view !== "notes") return;
     var notes = notesPayload.notes || [];
     if (notesShown >= notes.length) return;
     // Keep his eye on the message he was reading: the document grows
@@ -6445,6 +6473,7 @@
     // points at is gone, so nothing could close it.
     closeFullChart();
     captureHome();
+    stopScrollWatch();
     var here = route(window.location.pathname);
     if (here.view === "board") {
       loadBoard(here.board);
