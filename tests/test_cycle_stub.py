@@ -64,13 +64,26 @@ def test_a_marker_does_not_move_the_stamp_the_stall_notice_dedupes_on():
     assert any(e["kind"] == "silence" for e in with_marker)
 
 
-def test_next_seq_takes_the_number_after_the_highest_in_the_folder():
-    assert cycle_stub.next_seq(["a/070-cycle-65.md", "a/418-cycle-364.md"]) == 419
-    assert cycle_stub.next_seq([]) == 1
+def test_a_marker_rides_on_the_newest_number_and_never_takes_a_fresh_one():
+    """The collision the first version of this had, and the reason for the suffix.
+
+    A live cycle reserves its sequence number in `claims.json` before its
+    file exists. Taking `max + 1` off the folder listing therefore hands a
+    marker the number that cycle is about to use -- and the two names
+    differ, so `if_rev=None` never notices. Riding on the previous number
+    cannot collide with a reservation, because it is already taken.
+    """
+    folder = ["j/070-cycle-65.md", "j/418-cycle-364.md"]
+    assert cycle_stub.current_seq(folder) == 418
+    assert cycle_stub.current_seq([]) == 0
+    assert cycle_stub.stub_filename(418) == "418a-silence.md"
+    # Sorts after the entry it follows, which is what makes the tie safe.
+    assert "418-cycle-364.md" < cycle_stub.stub_filename(418)
+    # And never equals a name a cycle could write.
+    assert cycle_stub.stub_filename(419) != "419-cycle-366.md"
 
 
-def test_a_sequence_conflict_walks_up_instead_of_giving_up():
-    """Two runners racing for one number is what `if_rev=None` is for."""
+def test_a_second_marker_in_one_outage_walks_the_suffix():
     attempts = []
 
     def write(path, body, if_rev=None):
@@ -82,8 +95,17 @@ def test_a_sequence_conflict_walks_up_instead_of_giving_up():
                                  list_paths=lambda: ["j/418-cycle-364.md"],
                                  write=write)
     assert [p.rsplit("/", 1)[-1] for p in attempts] == [
-        "419-silence.md", "420-silence.md", "421-silence.md"]
-    assert path.endswith("421-silence.md")
+        "418a-silence.md", "418b-silence.md", "418c-silence.md"]
+    assert path.endswith("418c-silence.md")
+
+
+def test_a_corpus_of_nothing_but_markers_does_not_describe_the_header():
+    """`build_status`'s last fallback used to reach for the marker itself."""
+    only = parse_journal(cycle_stub.stub_markdown("failed: boom") + "\n")
+    status = build_status(only)
+    assert status["lastOutcome"] == ""
+    assert status["lastPr"] == ""
+    assert status["lastWrittenAt"] == ""
 
 
 def test_a_refusal_that_is_not_a_conflict_is_not_retried():
@@ -105,7 +127,7 @@ def test_a_marker_never_raises_out_of_the_failure_path():
     assert cycle_stub.write_stub("failed: boom", list_paths=list, write=boom) is None
 
 
-def test_write_stub_gives_up_rather_than_spinning_on_endless_conflicts():
+def test_one_outage_cannot_write_an_unbounded_number_of_markers():
     calls = []
 
     def write(path, body, if_rev=None):
@@ -113,7 +135,7 @@ def test_write_stub_gives_up_rather_than_spinning_on_endless_conflicts():
         return "FAILED(409 conflict: taken)"
 
     assert cycle_stub.write_stub("failed: boom", list_paths=list, write=write,
-                                 attempts=3) is None
+                                 suffixes="abc") is None
     assert len(calls) == 3
 
 
@@ -154,3 +176,42 @@ def test_a_failed_monitoring_heartbeat_writes_nothing(runner):
     persona = {"id": "someone-else", "name": "Watchdog", "model": "claude-cli:haiku",
                "capabilities": dict(runner.NO_CAPS)}
     assert not _failing_heartbeat(runner, heartbeat, persona).called
+
+
+def test_the_marker_block_cannot_kill_the_thread_that_finishes_the_run(runner):
+    """The marker is worth less than clearing `forceRun`, and it sits before it.
+
+    `run_heartbeat` runs on a bare thread with no enclosing handler, so
+    anything escaping this block leaves the heartbeat stuck on `running`
+    and it never fires again. `write_stub` promising not to raise does not
+    cover the predicate call beside it, which is what this breaks.
+    """
+    from agora_runner import cycle_health
+    from agora_runner.config import NOVA_PERSONA_ID
+
+    heartbeat = {"id": "hb1", "personaId": NOVA_PERSONA_ID, "conversationId": "conv-1",
+                 "schedule": "every@72m", "name": "Nova cycle", "enabled": True}
+    persona = {"id": NOVA_PERSONA_ID, "name": "Nova", "model": "claude-cli:opus",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    patches = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == "/heartbeats/hb1":
+            patches.append(payload)
+        return 200, {}
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply",
+                      side_effect=RuntimeError("boom")), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal), \
+         patch.object(cycle_health, "nova_cycle_heartbeats",
+                      side_effect=RuntimeError("predicate exploded")):
+        runner.run_heartbeat(heartbeat)
+
+    # The closing PATCH still landed, so the heartbeat is not wedged.
+    assert patches[-1]["lastResult"].startswith("failed:")
+    assert patches[-1]["forceRun"] is False

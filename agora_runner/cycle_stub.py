@@ -34,26 +34,45 @@ from datetime import datetime
 from agora_runner.log import log
 from agora_runner.nova_journal import JOURNAL_DIR, OSLO, SILENCE_TITLE, entry_seq
 
-#: How many sequence numbers to walk before giving up. A conflict means
-#: another writer took the number between the listing and the PUT, which is
-#: one cycle of retry per concurrent writer -- and the concurrency limit is
-#: three, so five is slack rather than a guess at a distribution.
-ATTEMPTS = 5
+#: Suffixes a marker may take at one position, in order. The letters are
+#: the bound on how many markers one outage can add: they all ride on the
+#: same sequence number (see `stub_filename`), so the 27th failed run in a
+#: row writes nothing. That is a consequence of the naming rather than a
+#: number I picked -- and 26 cards is already far past the point where the
+#: feed has made its point.
+SUFFIXES = "abcdefghijklmnopqrstuvwxyz"
 
 
-def stub_filename(seq):
-    """`372` -> `372-silence.md`.
+def stub_filename(seq, attempt=0):
+    """`(418, 0)` -> `418a-silence.md`.
+
+    **A marker rides on the newest entry's number instead of taking the
+    next one, and that is the whole collision story.** The obvious version
+    -- `max(seq) + 1` -- looks safe because `if_rev=None` 409s a second PUT
+    to the same path, and it is not: a live cycle reserves its number in
+    `claims.json` *before* its file exists, so a sibling run that dies
+    mid-way sees no `419-*` on disk, writes `419-silence.md`, and the cycle
+    then writes `419-cycle-366.md`. Different paths, no conflict, two
+    documents at one position in the only total order the folder has. That
+    is verbatim the bug `tools/put_entry.py` exists to prevent, and my
+    first version of this file asserted it could not happen.
+
+    Sharing the previous entry's number sidesteps the ledger entirely
+    rather than reimplementing it in the failure path: a marker never
+    claims a number a cycle might want. Ties sort by name, and
+    `418-cycle-364.md` < `418a-silence.md`, so the marker lands just after
+    the entry it follows.
 
     Deliberately not `nova_journal.entry_filename`, which would slug the
-    declaration into `372-silence-a-heartbeat-run-failed-before-i.md`. The
+    declaration into `418-silence-a-heartbeat-run-failed-before-i.md`. The
     name is the one part of a marker a human greps for.
     """
-    return f"{seq:03d}-silence.md"
+    return f"{seq:03d}{SUFFIXES[attempt]}-silence.md"
 
 
-def next_seq(paths):
-    """The first sequence number no entry in the folder has taken."""
-    return max((entry_seq(p) for p in paths), default=0) + 1
+def current_seq(paths):
+    """The number of the newest entry in the folder -- the one to ride on."""
+    return max((entry_seq(p) for p in paths), default=0)
 
 
 def stub_markdown(reason, when=None):
@@ -83,19 +102,20 @@ def stub_markdown(reason, when=None):
     ])
 
 
-def write_stub(reason, when=None, list_paths=None, write=None, attempts=ATTEMPTS):
+def write_stub(reason, when=None, list_paths=None, write=None, suffixes=SUFFIXES):
     """Put one marker in the journal folder. Returns its path, or `None`.
 
     Never raises: the caller is `run_heartbeat`'s failure path, and a
     marker that fails to land must cost a marker, not the rest of the
     failure handling.
 
-    The sequence number is claimed by the write itself rather than through
-    `claims.json` the way `tools/put_entry.py` does it. Two writers racing
-    for the same number is exactly what `if_rev=None` already answers --
-    CouchDB 409s the second PUT because a document is there -- and reaching
-    for the ledger from the runner would mean a second implementation of it
-    on a path that only ever runs when things are already broken.
+    A conflict here means a marker is already sitting at this position --
+    an earlier failed run in the same outage -- so the suffix walks on.
+    `if_rev=None` is what makes that safe: CouchDB 409s a PUT with no
+    revision against a live document, so two runners racing for one name
+    cannot both think they wrote it. Note what that does *not* cover, and
+    why `stub_filename` rides on the previous number rather than taking the
+    next: two writers on two different names never conflict at all.
     """
     if list_paths is None or write is None:
         from agora_runner.vault import vault_list_ids, vault_write_path
@@ -104,12 +124,12 @@ def write_stub(reason, when=None, list_paths=None, write=None, attempts=ATTEMPTS
         write = write or vault_write_path
     body = stub_markdown(reason, when)
     try:
-        seq = next_seq(list_paths())
+        seq = current_seq(list_paths())
     except Exception as error:  # noqa: BLE001 -- see docstring
         log(f"silence marker: could not list {JOURNAL_DIR}: {error!r}")
         return None
-    for _ in range(attempts):
-        path = JOURNAL_DIR + stub_filename(seq)
+    for attempt in range(len(suffixes)):
+        path = JOURNAL_DIR + stub_filename(seq, attempt)
         try:
             result = write(path, body, if_rev=None)
         except Exception as error:  # noqa: BLE001 -- see docstring
@@ -119,10 +139,10 @@ def write_stub(reason, when=None, list_paths=None, write=None, attempts=ATTEMPTS
             log(f"silence marker written at {path}")
             return path
         if "409" not in str(result):
-            # Anything that is not a conflict will say the same thing at
-            # the next sequence number too, so retrying is a spin.
+            # Not a conflict, so the next suffix would be refused the same
+            # way -- retrying is a spin. The refusal is logged rather than
+            # swallowed because this is the failure path's failure path.
             log(f"silence marker: {path} refused with {result}")
             return None
-        seq += 1
-    log(f"silence marker: gave up after {attempts} sequence conflicts")
+    log(f"silence marker: {len(suffixes)} already at position {seq}, not writing another")
     return None

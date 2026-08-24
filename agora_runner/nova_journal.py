@@ -435,7 +435,7 @@ def parse_heading(heading):
         "date": date_match.group(0) if date_match else "",
         "time": time_match.group(0) if time_match else "",
         "title": title,
-        # "cycle" or "report" -- the card's shape, decided here so that
+        # "cycle", "report" or "silence" -- the card's shape, decided here so that
         # every consumer of an entry gets the same answer. See
         # `_REPORT_TITLE_RE` for why the declaration is safe to read off a
         # heading when it would not be safe to read off a body.
@@ -1586,7 +1586,13 @@ def build_status(entries, known_cycles=None):
     # Document order inside one cycle, so a cycle's own addendum wins over
     # the entry it amends -- it is that cycle's latest word.
     of_newest = [e for e in cycles if e["cycle"] == newest_cycle]
-    latest = (of_newest or cycles or entries or [None])[0]
+    # The last fallback is `spoken`, not `entries`: on a corpus whose only
+    # documents are silence markers, `entries[0]` put the marker's own
+    # `Outcome: stuck` and `PR: none` into the header, which is the header
+    # describing the runner rather than the loop. Production always holds a
+    # real entry so this was masked, and nothing enforced that.
+    spoken = [e for e in entries if e.get("kind") != "silence"]
+    latest = (of_newest or cycles or spoken or [None])[0]
     running_days = 0
     if dated:
         from datetime import date

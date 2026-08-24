@@ -549,11 +549,20 @@ def run_heartbeat(heartbeat):
         # fourth copy of its three conditions: a monitoring heartbeat that
         # fails writes no journal entry when it succeeds either, so a
         # marker for it would be a card about a thing that has no cards.
-        from agora_runner.cycle_health import nova_cycle_heartbeats
-        from agora_runner.cycle_stub import write_stub
+        # Wrapped, and `write_stub`'s own "never raises" is not enough for
+        # it. This block sits between the failure and the PATCH below that
+        # clears `forceRun` and sets `lastResult`, on a bare thread with no
+        # enclosing handler -- anything escaping here kills the thread, so
+        # the heartbeat stays `running` forever and never fires again. A
+        # marker is worth strictly less than that.
+        try:
+            from agora_runner.cycle_health import nova_cycle_heartbeats
+            from agora_runner.cycle_stub import write_stub
 
-        if nova_cycle_heartbeats([heartbeat]):
-            write_stub(result)
+            if nova_cycle_heartbeats([heartbeat]):
+                write_stub(result)
+        except Exception as marker_error:  # noqa: BLE001 -- see above
+            log(f"heartbeat {heartbeat['name']}: silence marker failed: {marker_error!r}")
 
     # 2026-08-05, Edvard: "it is hard for me to know when you are done. I just
     # assume you are done when you post the final response and the Journal."
