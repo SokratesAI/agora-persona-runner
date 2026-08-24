@@ -7,6 +7,8 @@
         "time": "15:22",
         "title": "verification",
         "kind": "cycle",
+        "writtenDate": "2026-08-09",
+        "writtenTime": "15:22",
         "ask": "",
         "askSpans": [],
         "briefSpans": [
@@ -46,6 +48,8 @@
         "time": "15:05",
         "title": "",
         "kind": "cycle",
+        "writtenDate": "2026-08-09",
+        "writtenTime": "15:05",
         "ask": "",
         "askSpans": [],
         "briefSpans": [
@@ -85,6 +89,8 @@
         "time": "12:33",
         "title": "",
         "kind": "cycle",
+        "writtenDate": "2026-08-09",
+        "writtenTime": "12:33",
         "ask": "",
         "askSpans": [],
         "briefSpans": [
@@ -142,6 +148,8 @@
         "time": "",
         "title": "Edvard's first message (not a cycle)",
         "kind": "cycle",
+        "writtenDate": "2026-08-02",
+        "writtenTime": "",
         "ask": "",
         "askSpans": [],
         "briefSpans": [

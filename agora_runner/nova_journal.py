@@ -22,7 +22,7 @@ parses into a renderable entry instead of being dropped.
 
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from agora_runner.config import OSLO
 from agora_runner.nova_uploads import ATTACHMENT_PATTERN
@@ -818,7 +818,7 @@ def parse_journal_file(markdown, times_by_cycle=None):
     return parse_journal(entries_body(markdown), times_by_cycle)
 
 
-def parse_journal(markdown, times_by_cycle=None):
+def parse_journal(markdown, times_by_cycle=None, written_by_cycle=None):
     """An entries body -> a list of entries in the order they appear (newest first).
 
     An entries body is what every hourly path holds: the site's feed,
@@ -836,6 +836,17 @@ def parse_journal(markdown, times_by_cycle=None):
     when it expected to finish. The write time is measured, and a heading
     with no cycle number (his own messages, an addendum) keeps its typed
     stamp rather than borrowing someone else's.
+
+    `written_by_cycle` is the *unmodified* `entry_times` map, and it exists
+    because `times_by_cycle` no longer always is one. `with_start_times`
+    replaces the write time with the cycle's wake time for display, and
+    `lastWrittenAt` -- which `stall_notice` keys the "Nova has stopped
+    writing" alarm on -- must not move with it: a card reading 45 minutes
+    earlier would make a healthy loop look silent for 45 minutes longer
+    than it was, which is the false stall Cycle 376 spent its whole run
+    removing. So the display stamp and the written stamp are two fields
+    now. Omit it and `writtenDate`/`writtenTime` mirror `date`/`time`,
+    which is what every caller that passes one map still means.
     """
     if not markdown:
         return []
@@ -872,6 +883,11 @@ def parse_journal(markdown, times_by_cycle=None):
             seen_per_cycle[cycle] = nth + 1
             if nth < len(stamps):
                 entry["date"], entry["time"] = stamps[nth]
+            written = (written_by_cycle or {}).get(cycle) or []
+            if nth < len(written):
+                entry["writtenDate"], entry["writtenTime"] = written[nth]
+        entry.setdefault("writtenDate", entry["date"])
+        entry.setdefault("writtenTime", entry["time"])
         label, detail = split_outcome(outcome)
         raw_body, ask = split_ask(raw_body)
         entry["ask"] = ask
@@ -1098,6 +1114,75 @@ def entry_times(mtimes):
             (stamp.strftime("%Y-%m-%d"), stamp.strftime("%H:%M"))
         )
     return out
+
+
+def with_start_times(times_by_cycle, starts_by_cycle):
+    """`entry_times` output, with each cycle's stamp moved to when it *woke*.
+
+    The owner, capture 2026-08-24: *"I want the time slot on the journals
+    to be when they started, as it seems to show when they ended."* He is
+    reading it right. `entry_times` takes the vault document's write time,
+    and a cycle writes its entry in the last few minutes of its run -- so
+    Cycle 381 woke at 20:40 and its card says 20:54.
+
+    The typed heading is not the answer either, and that is why this needs
+    a third source rather than a preference between the two the code
+    already had: a cycle types its own stamp at the end as well, and Cycle
+    86 typed one 23 minutes into its own future, which is what moved the
+    card onto the write time in the first place.
+
+    `starts_by_cycle` is `{cycle: iso8601}` from the Agora conversation
+    each cycle runs inside (`cycle_number.starts_in`) -- created by the
+    heartbeat *before* the session opens, so it is measured rather than
+    typed and it is measured at the right end.
+
+    Two boundaries, both deliberate:
+
+    - **Only cycles already in `times_by_cycle` are touched.** That map is
+      keyed on the filename, so it is the answer to "did this cycle write
+      an entry"; a conversation with no entry must not become one, and
+      `journal_payload` reads exactly that to decide which cycles are
+      missing.
+    - **Every entry a cycle wrote gets the same start.** A cycle that wrote
+      twice has two documents with two write times and one wake, and the
+      wake is the true answer for both. The list keeps its length so
+      `parse_journal`'s nth-entry indexing is unchanged.
+
+    A cycle with no parseable conversation keeps its write time. That is
+    most of the archive's future rather than a corner case -- conversations
+    are the owner's to delete, and 382 of them exist today.
+    """
+    if not starts_by_cycle:
+        return times_by_cycle
+    out = {}
+    for cycle, stamps in (times_by_cycle or {}).items():
+        started = starts_by_cycle.get(cycle)
+        oslo = _oslo_stamp(started)
+        out[cycle] = [oslo] * len(stamps) if oslo else stamps
+    return out
+
+
+def _oslo_stamp(iso):
+    """`2026-08-24T17:20:04.072Z` -> `("2026-08-24", "19:20")` in Oslo, or None.
+
+    Agora stamps UTC with a `Z`, which `fromisoformat` refused before 3.11,
+    so the explicit `+00:00` is what makes this independent of the runtime
+    version rather than of a version claim. A stamp in any other shape
+    must not take the page down for a badge's worth of precision, so
+    anything unparseable is a `None` the caller reads as "keep what you
+    had". A naive stamp is treated as UTC, which is what Agora sends and
+    what every other reader of these fields in this package assumes.
+    """
+    if not iso:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    local = stamp.astimezone(OSLO)
+    return (local.strftime("%Y-%m-%d"), local.strftime("%H:%M"))
 
 
 def _sections(markdown):
@@ -1470,11 +1555,18 @@ def _newest_written_at(entries):
         # it was supposed to raise. See `cycle_stub`.
         if entry.get("kind") == "silence":
             continue
-        if not entry.get("date") or not entry.get("time"):
+        # `writtenDate`/`writtenTime` and not `date`/`time`: since the card
+        # started showing when a cycle *woke*, the two differ by the length
+        # of the run and only one of them is what this function is named
+        # after. `parse_journal` mirrors them when there is nothing to
+        # separate, so this is the same read it always was for every caller
+        # that passes one map.
+        date = entry.get("writtenDate") or entry.get("date")
+        time_of_day = entry.get("writtenTime") or entry.get("time")
+        if not date or not time_of_day:
             continue
         try:
-            stamp = datetime.strptime(
-                entry["date"] + " " + entry["time"], "%Y-%m-%d %H:%M")
+            stamp = datetime.strptime(date + " " + time_of_day, "%Y-%m-%d %H:%M")
         except ValueError:
             continue
         return stamp.replace(tzinfo=OSLO)

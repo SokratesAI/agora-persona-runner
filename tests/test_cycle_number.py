@@ -334,3 +334,89 @@ def test_main_without_a_conversation_id_warns_that_the_number_may_not_be_yours(m
 def test_main_rejects_too_many_arguments(monkeypatch):
     monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1", "conv-1", "extra"])
     assert cycle_number.main() == 2
+
+
+# --- start times, for the journal card ------------------------------------
+#
+# The owner, capture 2026-08-24: *"I want the time slot on the journals to
+# be when they started, as it seems to show when they ended."* The
+# conversation's `createdAt` is the only measured wake time this system
+# keeps -- see `nova_journal.with_start_times`.
+
+
+def test_starts_come_off_created_at_keyed_by_cycle_number():
+    conversations = [
+        conv("Nova — Cycle 380", createdAt="2026-08-24T18:00:04.296Z"),
+        conv("Nova — Cycle 381", createdAt="2026-08-24T18:40:09.019Z"),
+    ]
+    assert cycle_number.starts_in(conversations, TAG) == {
+        380: "2026-08-24T18:00:04.296Z",
+        381: "2026-08-24T18:40:09.019Z",
+    }
+
+
+def test_another_heartbeats_conversations_are_not_start_times_for_these_cycles():
+    """The retrospective and the ideas run also target Nova and also count
+    from 1, so their `Cycle 3` is a different run three weeks from the
+    hourly loop's. Without the tag filter their `createdAt` lands on an
+    unrelated journal card."""
+    conversations = [
+        conv("Nova — Cycle 3", createdAt="2026-08-02T09:00:00Z"),
+        # The retro counter is on its own run 1, three weeks later. Both
+        # numbers have to be wrong for this to catch anything: an unfiltered
+        # sweep gains a `1` that belongs to Cycle 1 in early August, and
+        # would move that card by three weeks.
+        conv("Nova — retrospective — Cycle 1", tag="evolve-cycle:hb-retro",
+             createdAt="2026-08-24T04:00:00Z"),
+    ]
+    assert cycle_number.starts_in(conversations, TAG) == {
+        3: "2026-08-02T09:00:00Z",
+    }
+
+
+def test_the_earliest_of_two_conversations_sharing_a_number_wins():
+    """Three cycles were all numbered 380 on 2026-08-24. When work under one
+    number began is the earliest of them, and it must not depend on how the
+    API happened to sort the list."""
+    late = conv("Nova — Cycle 380", createdAt="2026-08-24T18:20:00Z")
+    early = conv("Nova — Cycle 380", createdAt="2026-08-24T18:00:00Z")
+    assert cycle_number.starts_in([late, early], TAG) == {
+        380: "2026-08-24T18:00:00Z",
+    }
+    assert cycle_number.starts_in([early, late], TAG) == {
+        380: "2026-08-24T18:00:00Z",
+    }
+
+
+def test_a_conversation_with_no_created_at_is_skipped_not_guessed():
+    conversations = [
+        conv("Nova — Cycle 12"),
+        conv("Nova — Cycle 13", createdAt="2026-08-24T18:00:00Z"),
+        conv("Agora Evolve", createdAt="2026-08-01T10:00:00Z"),
+    ]
+    assert cycle_number.starts_in(conversations, TAG) == {
+        13: "2026-08-24T18:00:00Z",
+    }
+
+
+def test_cycle_starts_answers_empty_rather_than_raising_when_agora_is_down():
+    """The only caller is the journal page. A page that will not render
+    because one timestamp source was unreachable is worse than a page
+    showing the write times it showed for its whole life until now."""
+    def boom(path):
+        raise OSError("no route to host")
+
+    monkeypatched = cycle_number.agora_get
+    try:
+        cycle_number.agora_get = boom
+        assert cycle_number.cycle_starts("hb-1") == {}
+        cycle_number.agora_get = lambda path: (503, {})
+        assert cycle_number.cycle_starts("hb-1") == {}
+        cycle_number.agora_get = lambda path: (200, {"conversations": [
+            conv("Nova — Cycle 9", createdAt="2026-08-24T18:00:00Z"),
+        ]})
+        assert cycle_number.cycle_starts("hb-1") == {
+            9: "2026-08-24T18:00:00Z",
+        }
+    finally:
+        cycle_number.agora_get = monkeypatched

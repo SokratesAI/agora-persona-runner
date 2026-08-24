@@ -100,6 +100,17 @@ NOVA_REPLY_MODEL = os.environ.get("NOVA_REPLY_MODEL", "claude-sonnet-5")
 NOVA_PERSONA_ID = os.environ.get(
     "NOVA_PERSONA_ID", "08ffac94-7c4a-4506-897f-968c592358cb"
 )
+# The *hourly* cycle heartbeat, specifically -- not "a heartbeat pointed at
+# Nova", of which there are three. The retrospective and the ideas run also
+# target this persona and also name their conversations `... Cycle N`, off
+# their own counters starting at 1, so their `Cycle 3` and the hourly loop's
+# `Cycle 3` are different runs three weeks apart. Anything joining journal
+# entries to conversations by number has to narrow to this one id first;
+# `cycle_number.cycle_starts` is the caller that does. Defaulted rather than
+# required for the same reason as the persona above.
+NOVA_CYCLE_HEARTBEAT_ID = os.environ.get(
+    "NOVA_CYCLE_HEARTBEAT_ID", "ca31c116-6125-49f6-9eff-5af181fec485"
+)
 # Where the bridge sends live tool-use reports back to -- this process's
 # own in-cluster address (tool_activity.py explains why the reports come
 # here rather than going straight to Agora's internal API). A default

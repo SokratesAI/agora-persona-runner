@@ -105,7 +105,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
-from agora_runner.config import NOVA_PORT, OSLO
+from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID, NOVA_PORT, OSLO
 from agora_runner.log import log
 from agora_runner.nova_uploads import (
     MAX_UPLOAD_BYTES,
@@ -135,11 +135,13 @@ from agora_runner.nova_comments import (
     format_stamp,
     needs_comments,
 )
+from agora_runner.cycle_number import cycle_starts
 from agora_runner.nova_journal import (
     build_status,
     parse_digest,
     parse_journal,
     render_blocks,
+    with_start_times,
 )
 from agora_runner.nova_replies import (
     WAITING_AFTER_SECONDS,
@@ -292,11 +294,29 @@ def journal_payload():
     is not allowed to interpret -- sending both is the same text twice.
     """
     markdown, times = journal_markdown(with_times=True)
+    # The card's time is when the cycle *woke*, not when it filed -- the
+    # owner's capture, 2026-08-24: *"I want the time slot on the journals to
+    # be when they started, as it seems to show when they ended."* `times`
+    # is the vault document's write time and a cycle writes last, so a card
+    # was reading up to 45 minutes late; the Agora conversation each cycle
+    # runs inside is created before the session opens and carries the other
+    # end. See `nova_journal.with_start_times` for why neither of the two
+    # stamps already here could answer this.
+    #
+    # A second fetch on this build, paid alongside the ledger below and for
+    # the same reason: this payload is cached per process and warmed before
+    # the first visit. Failure is `{}` inside `cycle_starts`, which
+    # `with_start_times` reads as "keep every write time" -- so an
+    # unreachable Agora costs this page its precision and nothing else.
+    # `stamps` deliberately does not replace `times`: `build_status` below
+    # reads `times.keys()` as the answer to "which cycles wrote an entry",
+    # and that must stay keyed on filenames rather than on conversations.
+    stamps = with_start_times(times, cycle_starts(NOVA_CYCLE_HEARTBEAT_ID))
     # `journal_markdown` always hands back an entries body -- no preamble
     # from either source -- so there is nothing to strip, and asking the
     # parser to look for one lets an entry that quotes `## Entries` in its
     # prose cut every newer entry off the front of the feed.
-    entries = parse_journal(markdown, times)
+    entries = parse_journal(markdown, stamps, written_by_cycle=times)
     # `times` is keyed by the cycle number in the *filename*, which is the
     # only reliable answer to "did this cycle write an entry": the heading
     # is written by hand and the filename is not, so the two disagree

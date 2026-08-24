@@ -108,7 +108,21 @@ def _stamped(entry):
     """
     if entry.get("cycle") is None:
         return None
-    date, time = entry.get("date"), entry.get("time")
+    # `writtenDate`/`writtenTime`, not `date`/`time`, and the difference is
+    # load-bearing here rather than cosmetic. `cycle_runtimes` joins by
+    # taking the nearest ledger session *preceding* this stamp, which is
+    # only right because a cycle types its heading partway through its own
+    # run -- the invariant this module's own docstring states. Since the
+    # card started showing when a cycle *woke*
+    # (`nova_journal.with_start_times`), `date`/`time` sits a few seconds
+    # *before* the session starts instead, and `bisect_right` then lands on
+    # the previous cycle's session or on nothing at all: a runtime badge
+    # showing somebody else's duration, or vanishing, with no error
+    # anywhere. `parse_journal` mirrors the two when there is nothing to
+    # separate, so this is the same read it always was for every caller
+    # that passes one stamp map.
+    date = entry.get("writtenDate") or entry.get("date")
+    time = entry.get("writtenTime") or entry.get("time")
     if not date or not time:
         return None
     try:
