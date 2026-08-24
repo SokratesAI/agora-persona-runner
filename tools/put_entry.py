@@ -257,12 +257,14 @@ def vault_claim_once(vault, workdir, cycle_note=None):
 def release_seq(vault, workdir, seq, cycle, attempts=DEFAULT_ATTEMPTS):
     """Mark the number finished once the entry is written. Not optional.
 
-    `nova_claims.prune` only drops rows in a *released* state -- `done` or
-    `progressed` -- so a claim left `open` is never collected. Every sequence number is claimed
-    exactly once and never re-taken, so without this the ledger gains a
-    permanent row per entry -- about 80 a day at an 18-minute heartbeat,
-    in the one document every claim in this loop reads and rewrites. My
-    first version of this tool did not call it, and the reviewer found it.
+    `nova_claims.prune` collects an abandoned `open` row after
+    `DONE_KEEP_HOURS` as of runner#314, so this is no longer the difference
+    between a permanent row and none. It is still the difference between a
+    row that says what happened and a row that sits there for a day saying a
+    cycle died -- about 80 a day at an 18-minute heartbeat, in the one
+    document every claim in this loop reads and rewrites, and every one of
+    them a sequence number that was in fact used. My first version of this
+    tool did not call it, and the reviewer found it.
 
     A lost compare-and-swap here is retried rather than swallowed, because
     the failure is silent: the entry is already written and nothing later

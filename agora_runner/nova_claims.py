@@ -137,10 +137,27 @@ def _minutes_between(earlier, later):
 
 
 def _parse_at(row):
+    """The row's timestamp, as an aware datetime, or `ClaimError`.
+
+    The naive case is checked here rather than left to the subtraction,
+    because `fromisoformat("2026-08-15T11:12:00")` *succeeds* and hands back
+    a naive datetime that then raises `TypeError` inside `_minutes_between`
+    -- outside this guard, so `tools/claim.py` and `tools/put_entry.py`
+    print a traceback instead of the one-line message their exit codes
+    promise. Nothing in this module writes a naive `at`; the ledger is a
+    vault document and a hand-edit is the ordinary case. Reviewer finding
+    on runner#314.
+    """
     try:
-        return datetime.fromisoformat(row["at"])
+        parsed = datetime.fromisoformat(row["at"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ClaimError(f"claim on {row.get('item')!r} has no readable 'at': {exc}")
+    if parsed.tzinfo is None:
+        raise ClaimError(
+            f"claim on {row.get('item')!r} has a naive 'at' ({row['at']!r}); "
+            f"every timestamp in this ledger carries an offset"
+        )
+    return parsed
 
 
 def find(ledger, item):
@@ -158,16 +175,64 @@ def is_stale(row, now, ttl_minutes=CLAIM_TTL_MINUTES):
 
 
 def prune(ledger, now, keep_hours=DONE_KEEP_HOURS):
-    """Drop released claims nobody can still be racing. Mutates and returns.
+    """Drop claims nobody can still be racing or resuming. Mutates and returns.
 
     Both released states, not just `done`: a progressed row is a breadcrumb
     for whoever picks the item up next, and once no live cycle could still
     be reading it, it is a row in a file every claim rewrites.
+
+    And an `open` row **that carries no breadcrumb**, on the same clock,
+    which it was not until now. The rule this narrows was "never drop an
+    open claim however stale", on the grounds that a stale open row is
+    evidence a cycle died and dropping it would delete the only record
+    anyone was working on the item. That is right about a row with a
+    `resumed_after` on it and wrong about the rest. A plain open row says a
+    cycle started something and was killed; `take` deletes that same row
+    itself the moment anybody claims the slug again while it is stale, so
+    the record survived only where nothing wanted the slug -- and the loop
+    no longer produces such rows on purpose, because runner#313 withdrew the
+    advice to "leave the claim alone and let it go stale" in favour of
+    `release --progress`.
+
+    Measured Cycle 355: four such rows, from 15, 21 and 22 August, in a file
+    every claim in this loop reads and rewrites. At a 45-minute cap and a
+    cadence heading for 18 minutes with three cycles in flight, a killed
+    cycle is an ordinary event, so that is a leak with no ceiling.
+
+    `resumed_after` is the exception and it is not a nicety. A cycle that
+    resumes progressed work inherits the previous cycle's account of what is
+    left, and that account is the whole content of the `progressed` state --
+    runner#313's own reviewer found it dying at exactly this seam. Ageing it
+    out would hand the next taker a clean row and let it rebuild work that
+    was already done, which is the duplication this module exists to stop,
+    arriving through a different door. So a breadcrumb row leaks instead;
+    that is a smaller and rarer leak than the one being fixed, and it is the
+    right direction to fail in. Reviewer finding on runner#314.
+
+    `keep_hours` and not `CLAIM_TTL_MINUTES`: the 45-minute expiry exists so
+    a later cycle can *take over* a dead claim and have the handover
+    recorded, and pruning at 45 minutes would take that window away.
+
+    A row whose `at` will not parse is kept, not dropped. Every row this
+    module writes carries an offset timestamp, so an unreadable one is a
+    hand-edit -- and `prune` runs inside `take` and `release`, on every
+    item, so raising here would make one bad row fail every claim in the
+    loop including `put_entry`'s journal reservation. Keeping it leaves the
+    ledger exactly as legible as it was and lets the readers that genuinely
+    need that row's date be the ones that complain. Reviewer finding on
+    runner#314.
     """
     kept = []
     for row in ledger["claims"]:
-        if row.get("state") in RELEASE_STATES \
-                and _minutes_between(_parse_at(row), now) > keep_hours * 60:
+        if row.get("state") == OPEN and row.get("resumed_after"):
+            kept.append(row)
+            continue
+        try:
+            age = _minutes_between(_parse_at(row), now)
+        except ClaimError:
+            kept.append(row)
+            continue
+        if age > keep_hours * 60:
             continue
         kept.append(row)
     ledger["claims"] = kept
