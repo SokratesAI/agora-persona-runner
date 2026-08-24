@@ -612,3 +612,136 @@ def test_a_detached_head_at_the_base_tip_is_not_called_a_leftover_branch(
 
     assert survey[0]["branch"] == "HEAD"
     assert [e["verdict"] for e in survey] == ["clean"]
+
+
+# ---- Which workspace it sweeps ----------------------------------------
+#
+# The bug these pin, measured Cycle 368: every concurrent cycle runs this
+# tool from its own private worktree and it swept `/data/workspace` -- a
+# directory that cycle does not work in -- while its own root went untouched
+# and its own clones were invisible, because a linked worktree's `.git` is a
+# file and `clones()` asked `isdir`. Both halves reported success.
+
+def test_the_cycles_own_workspace_comes_first_and_the_shared_one_stays(
+        tmp_path, monkeypatch):
+    own = tmp_path / "concurrent" / "7"
+    shared = tmp_path / "shared"
+    own.mkdir(parents=True)
+    shared.mkdir()
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+
+    roots = tidy_workspace.workspace_roots({"NOVA_WORKSPACE": str(own)})
+
+    assert roots == [str(own), str(shared)]
+
+
+def test_a_serialized_cycle_gets_the_shared_root_once_not_twice(
+        tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+
+    roots = tidy_workspace.workspace_roots({"NOVA_WORKSPACE": str(shared)})
+
+    assert roots == [str(shared)]
+
+
+def test_a_workspace_variable_pointing_nowhere_is_dropped(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+
+    roots = tidy_workspace.workspace_roots(
+        {"NOVA_WORKSPACE": str(tmp_path / "never-created")})
+
+    assert roots == [str(shared)]
+
+
+def test_an_unset_variable_still_gives_the_shared_root(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+
+    assert tidy_workspace.workspace_roots({}) == [str(shared)]
+
+
+def test_a_linked_worktree_is_a_clone_even_though_its_git_is_a_file(tmp_path):
+    """`git worktree add` writes `.git` as a one-line file, not a directory.
+
+    Built with real git rather than by writing a `.git` file by hand: the
+    thing under test is what git actually lays down for a worktree, which is
+    exactly the assumption `isdir` got wrong.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "n@example.com")
+    _git(origin, "config", "user.name", "Nova")
+    _commit(origin, "a.txt", "one")
+
+    root = tmp_path / "concurrent"
+    root.mkdir()
+    _git(origin, "worktree", "add", "--detach", str(root / "origin"), "HEAD")
+
+    assert (root / "origin" / ".git").is_file()
+    assert tidy_workspace.clones(str(root)) == ["origin"]
+
+
+def test_the_survey_sees_a_linked_worktree(tmp_path):
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "n@example.com")
+    _git(origin, "config", "user.name", "Nova")
+    _commit(origin, "a.txt", "one")
+
+    root = tmp_path / "concurrent"
+    root.mkdir()
+    _git(origin, "worktree", "add", "--detach", str(root / "origin"), "HEAD")
+
+    surveyed = tidy_workspace.survey_checkouts(str(root), fetch=False)
+
+    assert [entry["clone"] for entry in surveyed] == ["origin"]
+
+
+def test_both_roots_are_swept_and_each_is_named(tmp_path, monkeypatch, capsys):
+    own = tmp_path / "own"
+    shared = tmp_path / "shared"
+    own.mkdir()
+    shared.mkdir()
+    (own / "entry.md").write_text("draft", encoding="utf-8")
+    (shared / "digest-new.md").write_text("draft", encoding="utf-8")
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+    monkeypatch.setenv("NOVA_WORKSPACE", str(own))
+
+    assert tidy_workspace.main([]) == 0
+
+    out = capsys.readouterr().out
+    assert "== %s" % (own,) in out
+    assert "== %s" % (shared,) in out
+    assert "entry.md" in out and "digest-new.md" in out
+    stamp = "_scratch-archive-" + tidy_workspace._today()
+    assert (own / stamp / "entry.md").exists()
+    assert (shared / stamp / "digest-new.md").exists()
+
+
+def test_one_root_prints_no_heading(workspace, capsys):
+    """The single-root output every existing caller reads is unchanged."""
+    tidy_workspace.main(["--root", str(workspace), "--dry-run"])
+
+    assert "== " not in capsys.readouterr().out
+
+
+def test_the_survey_reports_the_root_it_was_given_not_the_shared_one(
+        squash_merged, monkeypatch, capsys):
+    """The failure in one line: a verdict about a directory you do not work in."""
+    root, _repo = squash_merged
+    shared = os.path.join(root, "..", "not-swept")
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", shared)
+    monkeypatch.setenv("NOVA_WORKSPACE", str(root))
+
+    tidy_workspace.main(["--no-fetch"])
+
+    out = capsys.readouterr().out
+    assert "repo: branch" in out
+    assert "not-swept" not in out

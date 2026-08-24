@@ -1,4 +1,7 @@
-"""Sweep the scratch files this loop leaves in `/data/workspace`.
+"""Sweep the scratch files this loop leaves in its workspace.
+
+Workspace, plural: this cycle's own `$NOVA_WORKSPACE` and the shared
+`/data/workspace` they are cut from, in that order. See `workspace_roots`.
 
 Every cycle writes drafts at the workspace root -- `entry.md`, `digest-new.md`,
 `live.md`, whatever a shell block needed a file for -- and nothing has ever
@@ -48,7 +51,46 @@ import time
 # Where the loop actually works. Not derived from `__file__`: this script
 # lives in a clone *inside* the workspace, so walking up from here would make
 # the target depend on how deep the clone happens to be.
-WORKSPACE = "/data/workspace"
+#
+# **This constant was the shared checkout and only the shared checkout, and
+# concurrent cycles made that wrong in both directions.** The bridge exports
+# `NOVA_WORKSPACE`, and for a concurrent cycle it is a private worktree at
+# `/data/workspace-concurrent/<slot>/` -- every other command in `prompt.md`
+# says `${NOVA_WORKSPACE:-/data/workspace}` and this file said the literal
+# path. So a cycle running `python3 -m tools.tidy_workspace` from its own
+# checkout archived files in, and reported the branches of, a directory it
+# does not work in, while its own root was never swept and its own clones
+# were never surveyed. Measured Cycle 368: the tool named
+# `nova/status-word-back-on-the-card`, which is the *shared* checkout's parked
+# branch, to a cycle whose four clones were all detached at `origin/main`.
+# Two handoffs read that as a defect in the verdict.
+SHARED_WORKSPACE = "/data/workspace"
+
+
+def workspace_roots(environ=None):
+    """The roots to sweep, this cycle's own first, deduplicated.
+
+    Both, not one. Pointing this at `NOVA_WORKSPACE` alone would fix the
+    blindness and introduce the mirror of it: the shared checkout is where a
+    serialized cycle's leftover branch sits (it is parked on one right now),
+    and its `_scratch-archive-*` directories would stop expiring the moment
+    cycles went concurrent, which is every cycle. So the shared root stays on
+    the list and simply stops being the only thing on it. It is dropped when
+    it does not exist, so a box that never had one does not get an error
+    every run.
+    """
+    env = os.environ if environ is None else environ
+    roots = []
+    for path in (env.get("NOVA_WORKSPACE"), SHARED_WORKSPACE):
+        if path and os.path.isdir(path) and path not in roots:
+            roots.append(path)
+    return roots
+
+
+# Kept as the single-root default for `tidy()` and `survey_checkouts()`, which
+# each still take exactly one root -- `main` is what iterates. Read at import,
+# so a caller that wants the live value asks `workspace_roots()`.
+WORKSPACE = (workspace_roots() or [SHARED_WORKSPACE])[0]
 
 # A reviewer worktree is registered in the clone it was made from, so
 # deleting the directory alone leaves an entry that makes `git worktree list`
@@ -165,9 +207,19 @@ def stale_review_worktrees(root, min_age_hours=MIN_WORKTREE_AGE_HOURS, now=None)
 
 
 def clones(root):
-    """Every directory under `root` that is a git clone, sorted."""
+    """Every directory under `root` that is a git clone, sorted.
+
+    `.git` is a *file* in a linked worktree -- one line pointing at the real
+    git directory -- and every clone a concurrent cycle works in is one of
+    those. `os.path.isdir` on it is False, so this returned an empty list for
+    a concurrent workspace and the survey reported nothing rather than
+    reporting a gap. That is the shape this file's own comments keep naming:
+    a check whose negative result was guaranteed in advance. `os.path.exists`
+    covers both, and the survey's git commands fail harmlessly on a directory
+    that merely happens to contain something called `.git`.
+    """
     return sorted(name for name in os.listdir(root)
-                  if os.path.isdir(os.path.join(root, name, ".git")))
+                  if os.path.exists(os.path.join(root, name, ".git")))
 
 
 # The branch a squash merge leaves behind, which is the thing this survey
@@ -409,7 +461,9 @@ def tidy(root=WORKSPACE, retention_days=DEFAULT_RETENTION_DAYS, dry_run=False,
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--root", default=WORKSPACE)
+    parser.add_argument("--root", action="append", default=None,
+                        help="sweep this root instead of the cycle's own "
+                             "workspace and the shared checkout; repeatable")
     parser.add_argument("--retention-days", type=int,
                         default=DEFAULT_RETENTION_DAYS)
     parser.add_argument("--min-worktree-age-hours", type=float,
@@ -422,8 +476,19 @@ def main(argv=None):
                              "disk; the verdicts are only as fresh as they are")
     args = parser.parse_args(argv)
 
+    roots = args.root or workspace_roots() or [SHARED_WORKSPACE]
+    # Only when there is more than one, so the ordinary single-root output
+    # every existing caller and test reads is byte-identical.
+    for root in roots:
+        if len(roots) > 1:
+            print("== %s" % (root,))
+        _sweep_one(root, args)
+    return 0
+
+
+def _sweep_one(root, args):
     archived, expired, worktrees = tidy(
-        args.root, args.retention_days, dry_run=args.dry_run,
+        root, args.retention_days, dry_run=args.dry_run,
         min_age_hours=args.min_worktree_age_hours)
 
     owners = getattr(tidy, "last_owners", {})
@@ -449,7 +514,7 @@ def main(argv=None):
     # to tidy is exactly the cycle that most needs to be told a checkout is
     # holding unfinished work, and "nothing to tidy" above it reads like an
     # all-clear for the whole workspace.
-    for entry in survey_checkouts(args.root, fetch=not args.no_fetch):
+    for entry in survey_checkouts(root, fetch=not args.no_fetch):
         # Said even for a clone the survey then calls clean, because "clean"
         # off a ref that could not be refreshed is the reassuring answer with
         # nothing behind it -- the shape of failure this whole function was
@@ -477,7 +542,6 @@ def main(argv=None):
                 print("    could not list which files differ -- `git diff "
                       "--name-only` failed, so the absence of a list above "
                       "says nothing")
-    return 0
 
 
 if __name__ == "__main__":
