@@ -1,6 +1,6 @@
 """One authoritative cycle number, shared by Agora and the journal.
 
-Edvard, capture 2026-08-20, rated Immediately: *"There is a mossmaych
+The owner, capture 2026-08-20, rated Immediately: *"There is a mossmaych
 between the cycles displayed in Nova and the cycle name than ran in
 agora. It is very confusing. They need to be the same number. The big is
 that some cycles did not write their journals in the past."*
@@ -20,7 +20,7 @@ nothing ever pulls them back together, so the gap is permanent and grows.
 Measured 2026-08-20 07:53 Oslo: 277 tagged conversations exist, the newest
 named `Nova — Cycle 277`, while the newest journal entry is Cycle 274 --
 three runs that wrote nothing, three numbers of drift, and every journal
-card on Edvard's page mislabelled by three.
+card on the owner's page mislabelled by three.
 
 The fix is to stop deriving the number twice. The run count is the honest
 one: it is a fact about what actually happened, it cannot go backwards,
@@ -161,7 +161,7 @@ def claim_next_number(heartbeat_id, conversations, tag):
         # is most likely to hand back a number somebody else already holds
         # -- CLAIM_ATTEMPTS conflicts in a row means real contention, not a
         # sick CouchDB. A duplicate cycle number is exactly the symptom
-        # Edvard reported as Immediately on 2026-08-20, so the one case
+        # the owner reported as Immediately on 2026-08-20, so the one case
         # that can still produce one should not be the one that leaves no
         # trace to find it by.
         log(f"claim_next_number({heartbeat_id}): {CLAIM_ATTEMPTS} conflicts "

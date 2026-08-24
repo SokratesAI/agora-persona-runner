@@ -27,7 +27,7 @@ archive_title`'s fixture: four archived entries where there were two, one
 of them the fragment `title is append only.\\n---`; the rolling cycle line
 written *above* the frontmatter's closing `---`, where no reader can see
 it; and the frontmatter handed back severed mid-sentence with that `---`
-gone. The site concatenates this archive onto the digest section Edvard
+gone. The site concatenates this archive onto the digest section the owner
 opens, so the fragment lands on his page as a cycle line.
 
 **`verify` passed all of that**, which is why the assertions below are
@@ -151,7 +151,7 @@ def test_the_archive_header_keeps_its_frontmatter_whole():
 
     The substring version cut mid-sentence and dropped the closing `---`,
     so the file stopped being frontmatter at all and its remainder
-    rendered as body text on a page Edvard opens.
+    rendered as body text on a page the owner opens.
     """
     header = _archive_header(DIGEST_ARCHIVE_NAMING_ITS_TITLE, roll_digest.SPEC)
     assert _frontmatter(header) == _frontmatter(DIGEST_ARCHIVE_NAMING_ITS_TITLE)
@@ -235,7 +235,7 @@ def test_an_archive_keeps_its_own_title_line_rather_than_the_specs():
     gets written is a live question with a real answer.
 
     The archive's own is the right one: these files are hand-edited in
-    Obsidian, and silently restyling a heading Edvard typed is an edit
+    Obsidian, and silently restyling a heading the owner typed is an edit
     nobody asked for in a file the site renders.
     """
     archive = DIGEST_ARCHIVE_NAMING_ITS_TITLE.replace(

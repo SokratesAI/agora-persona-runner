@@ -23,7 +23,7 @@ DEBUG_LOGGING = os.environ.get("DEBUG_LOGGING", "").strip().lower() in ("1", "tr
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 # Escape hatch for the metered-provider guard in reply.py. Off by default:
 # an unattended turn (heartbeat, workflow step) may not spend the prepaid
-# Anthropic balance. See reply.py's METERED_PROVIDERS comment for Edvard's
+# Anthropic balance. See reply.py's METERED_PROVIDERS comment for the owner's
 # rule and why attended turns are deliberately still allowed.
 ALLOW_METERED_UNATTENDED = os.environ.get(
     "ALLOW_METERED_UNATTENDED", "").strip().lower() in ("1", "true", "yes")
@@ -42,7 +42,7 @@ CLAUDE_BRIDGE_TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 # with it off, a heartbeat that arrives while another is running waits its
 # turn, which is exactly what happens today and is safe. With it on, both
 # run, and each gets its own git worktree (bridge `_provision_workspace`).
-# This is the switch for Edvard's 18-minute cadence -- at 18 minutes an
+# This is the switch for the owner's 18-minute cadence -- at 18 minutes an
 # average 18-minute cycle overlaps the next one by design, and he asked
 # for that overlap rather than a queue. One env var so the flip is a
 # config change and the rollback is the same change back.
@@ -60,7 +60,7 @@ def _max_concurrent_runs():
     to move for cycles to actually overlap.
 
     3 is the ceiling of 45/18: the turn cap is 45 minutes and the cadence
-    Edvard is switching to is 18, so at most three cycles can genuinely
+    the owner is switching to is 18, so at most three cycles can genuinely
     be in flight at once. It is a bound on a runaway (a hung run's thread
     never dies, and every later tick would stack another on top of it),
     not a throttle -- at the intended cadence it is never reached.
@@ -168,7 +168,7 @@ AI_TURN_CAP = 6           # consecutive automated turns before a persona-to-
                           # persona @mention chain stops (it no longer pauses
                           # the conversation -- see conversations.py)
 
-# Nothing auto-pauses a conversation any more. Edvard, 2026-08-05: *"Please
+# Nothing auto-pauses a conversation any more. The owner, 2026-08-05: *"Please
 # turn off the auto pause of conversations as they are just blocking now.
 # They belong to the previous architecture, outdated."* A pause needs a manual
 # resume from the conversation menu, so a transient provider outage locked him
@@ -192,7 +192,7 @@ FAILURE_BACKOFF_MAX_SECONDS = 3600 # ceiling on the doubling
 TOOL_ROUNDS_MAX = 100     # client-side tool loop bound (Issues.md: bumped 50->100)
 VAULT_CONTEXT_CAP = 24000  # chars of injected vault content per heartbeat (critique #8)
 # 2026-07-25: a monitoring-style heartbeat (K3s Sentinel) should only post to
-# the chat when it actually finds something worth Edvard's attention -- a
+# the chat when it actually finds something worth the owner's attention -- a
 # clean/healthy check silently posting "all good" every run is just noise.
 # A heartbeat's own prompt opts into this by instructing the model to reply
 # with EXACTLY this sentinel (and nothing else) when there's nothing to
@@ -314,7 +314,7 @@ NO_CAPS = {
     "githubWrite": False,
     "githubMerge": False,
     "terminalExec": False,
-    # Write one bullet into Edvard's issues.md/ideas.md capture list, and
+    # Write one bullet into the owner's issues.md/ideas.md capture list, and
     # nothing else -- the narrow write half of the journal-card reply turn
     # (nova_replies.py). Deliberately not folded into vaultWrite: that cap
     # advertises vault_write/vault_append, which can address any document

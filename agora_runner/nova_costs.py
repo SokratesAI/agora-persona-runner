@@ -1,6 +1,6 @@
 """The cost and cadence page (issues.md #57, page 2).
 
-Edvard, 2026-08-08: *"I want you to figure out the optimal method of quota
+The owner, 2026-08-08: *"I want you to figure out the optimal method of quota
 spendage for projects. I do not know the optimal way."* That record exists
 -- every cycle's weighted tokens, turn count, wall-clock and both quota
 windows -- and until this page nobody could see it. `publish_costs` in the

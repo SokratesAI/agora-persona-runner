@@ -1,10 +1,10 @@
 """Move one comment from `## New` to `## Acknowledged`, as a command.
 
 `prompt.md` step 1a tells every cycle to read `## New`, act on what
-Edvard said, then "move each one under `## Acknowledged` with one line
+the owner said, then "move each one under `## Acknowledged` with one line
 on what you did". That instruction has been carried out by hand, in
 a throwaway script, once an hour, for weeks -- and on 2026-08-13 at
-07:06 one of those scripts spliced Edvard's newest comment into the
+07:06 one of those scripts spliced the owner's newest comment into the
 middle of the file's YAML frontmatter, because it looked for
 `## Acknowledged` with a substring search and the frontmatter quotes
 that heading in its own `contract:` line. The app's parser cannot see a
@@ -33,7 +33,7 @@ either pod with whichever client that pod has:
 It refuses rather than guesses. Before writing it re-parses its own
 output and checks that the frontmatter is byte-identical, that the set
 of comments is unchanged, that the one named moved from new to
-acknowledged carrying Edvard's text and its existing reply unaltered,
+acknowledged carrying the owner's text and its existing reply unaltered,
 and that every other comment is untouched in all four of those
 respects. A move that cannot prove all of it is not written, and the
 file on disk is left exactly as it was found.
@@ -41,7 +41,7 @@ file on disk is left exactly as it was found.
 What it deliberately does *not* prove is anything about blank lines,
 because `parse_comments` cannot see them -- and the first version of
 this tool left a doubled blank line behind at the cut, which is where a
-card ends on Edvard's screen. That is pinned by a test on the output
+card ends on the owner's screen. That is pinned by a test on the output
 text rather than by `_verify`, and the distinction is worth keeping in
 mind before trusting the verifier with a new kind of damage.
 """
@@ -102,7 +102,7 @@ def _block_bounds(lines, start, end, cycle, stamp):
 def acknowledge(markdown, cycle, stamp, note, note_stamp):
     """Markdown with `(cycle, stamp)` moved to the top of `## Acknowledged`.
 
-    `cycle` is an int, or None for a reply to the Needs Edvard block. The
+    `cycle` is an int, or None for a reply to the Needs Edvard block. The  (not-prose: quoting a literal)
     note is appended inside the comment as a `#### Nova` block, which is
     the same shape a live reply uses -- what a cycle did about a comment
     and what it said back are the same kind of thing to whoever reads the
@@ -134,7 +134,7 @@ def acknowledge(markdown, cycle, stamp, note, note_stamp):
     # Cutting the block leaves its blank line behind next to the blank line
     # that preceded it. Two in a row is not cosmetic in this vault: a blank
     # line is where a card ends, so a doubled one splits what is left into
-    # a second, empty card on Edvard's screen.
+    # a second, empty card on the owner's screen.
     tail = lines[last:]
     while tail and not tail[0].strip() and first > 0 and not lines[first - 1].strip():
         tail.pop(0)

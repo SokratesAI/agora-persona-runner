@@ -1,6 +1,6 @@
 """Reserve a journal `<seq>` and write the entry under it, safely at 18 minutes.
 
-Edvard is moving this loop to Claude 20x, which wakes a cycle every 18
+The owner is moving this loop to Claude 20x, which wakes a cycle every 18
 minutes instead of every 72, so two of me will be writing a journal entry
 inside the same minute. `prompt.md` step 7 says that is already handled:
 *"if another cycle picked `071` too, exactly one of you lands and the

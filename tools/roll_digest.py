@@ -3,8 +3,8 @@
 The digest reached 100,991 bytes -- 96,740 of it 54 accumulated cycle
 lines -- and grows ~1.8KB every hour forever. `prompt.md` step 1a
 forbids a cycle from delegating that read, so every cycle pays for all
-of it to reach the 3.6KB of **Needs Edvard** / **Next cycle** at the
-top. Same shape as `journal.md` at 291KB, which Edvard called urgent.
+of it to reach the 3.6KB of **Needs Edvard** / **Next cycle** at the  (not-prose: quoting a literal)
+top. Same shape as `journal.md` at 291KB, which the owner called urgent.
 
 This is a script rather than a paragraph in `prompt.md` for the reason
 `split_journal.py` is one: a rule that lives only in prose is a rule
@@ -52,7 +52,7 @@ from tools import rolling
 from tools.rolling import RollError, RollSpec, dedup, join_paragraphs
 
 # Half a day at the current one-cycle-an-hour cadence. The number is not
-# arbitrary: Edvard sleeps 22:00-07:00, so nine cycles run while he is
+# arbitrary: The owner sleeps 22:00-07:00, so nine cycles run while he is
 # away, and anything below ~10 means he wakes to a digest that has
 # already dropped part of the night.
 KEEP = 12
@@ -100,7 +100,7 @@ def _check_archive(new_archive):
     Worth stating precisely, because the obvious guess is wrong and a
     reviewer had to correct it: `_sections` keys sections by heading text
     and keeps the last of each, so a `## Digest` landing in the archive
-    does *not* touch **Needs Edvard** or **Next cycle** -- those come from
+    does *not* touch **Needs Edvard** or **Next cycle** -- those come from  (not-prose: quoting a literal)
     different keys, populated from the live file. What it silently
     discards is the live file's own digest lines, the newest ones, in
     favour of the archive's older ones. That is precisely the data this

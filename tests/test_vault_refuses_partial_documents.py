@@ -6,7 +6,7 @@ substituted `""` for any chunk CouchDB did not return, so a note with a
 hole in the middle came back as its surviving pieces concatenated --
 mid-word, with no marker at the seam, and parsing perfectly well.
 
-It happened to `projects/sokrates/projects/agora/ideas.md`, Edvard's
+It happened to `projects/sokrates/projects/agora/ideas.md`, the owner's
 idea board. A LiveSync client re-chunked it from 1 chunk into 184 and 6
 of those never reached the database. 1238 characters vanished: the
 `## Board` heading, the table header, rows #57 through #50, and the tail
@@ -121,7 +121,7 @@ def test_the_spliced_text_is_never_returned(couch):
 
 def test_it_is_a_runtime_error_so_the_site_reports_it_as_502(couch):
     """nova_site already catches RuntimeError out of vault_read_path and
-    answers 502 with the message. Subclassing is what makes Edvard see
+    answers 502 with the message. Subclassing is what makes the owner see
     the damage described instead of rendered."""
     assert issubclass(vault.VaultIncompleteDocument, RuntimeError)
 

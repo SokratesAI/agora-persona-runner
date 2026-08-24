@@ -316,7 +316,7 @@ def test_a_clean_hourly_log_measures_sixty():
 
 
 def test_a_manual_start_splits_an_interval_and_the_mode_survives_it():
-    """Edvard talking to Nova opens a session too, which inserts a start
+    """The owner talking to Nova opens a session too, which inserts a start
     partway through an interval. That splits one 60 into 31 + 29 without
     changing their sum, so the low buckets fill up with halves."""
     rows = _starts(0, 60, 120, 151, 180, 240, 244, 300)
@@ -331,7 +331,7 @@ def test_a_manual_start_splits_an_interval_and_the_mode_survives_it():
 
 
 def test_two_starts_in_the_same_minute_are_one_wake_up_not_two():
-    # 0 and 1 are a re-entry inside one session: no cadence Edvard has
+    # 0 and 1 are a re-entry inside one session: no cadence the owner has
     # ever set is under 40 minutes. Dropping them leaves four real gaps.
     rows = _starts(0, 1, 60, 120, 180, 240)
     assert observed_cadence_minutes(rows, now=240 * 60) == (60, 4, 4)

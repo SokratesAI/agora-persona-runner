@@ -1,13 +1,13 @@
-"""The capture box: one field on Nova's site, one bullet in Edvard's backlog.
+"""The capture box: one field on Nova's site, one bullet in the owner's backlog.
 
 Idea #34 item 6, and the first thing on this site that *writes* to the
 vault. It replaces opening Obsidian on a phone to type one line.
 
 **Where a capture lands, and why exactly there.** Both target files
-declare their own contract in frontmatter -- *"Edvard writes in the bare
+declare their own contract in frontmatter -- *"the owner writes in the bare
 bullet list at the top ... Nova numbers it, boards it, and always leaves
 exactly one empty bullet there so he can start typing immediately"*. A
-capture is Edvard writing, so it goes in that list and nowhere else, with
+capture is the owner writing, so it goes in that list and nowhere else, with
 no timestamp, no "via web" marker and no provenance tag. It has to be
 indistinguishable from the same line typed in Obsidian, because it *is*
 the same line by the same author, and prompt.md treats a bare bullet at
@@ -64,7 +64,7 @@ from agora_runner.nova_uploads import is_attachment_line
 from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 # These three moved out of `projects/sokrates/projects/agora/` on
-# 2026-08-12. Edvard had asked whether they should follow Nova into its
+# 2026-08-12. The owner had asked whether they should follow Nova into its
 # own database; the answer was no, and the reason is worth keeping:
 # *"It is actually a good point to leave them in my Vault just in case
 # the Nova app malfunctions or something else goes wrong. Then I have
@@ -82,7 +82,7 @@ from agora_runner.vault import vault_read_path_rev, vault_write_path
 CAPTURE_TARGETS = {
     "issues": "projects/sokrates/projects/nova/issues.md",
     "ideas": "projects/sokrates/projects/nova/ideas.md",
-    # Edvard, issues.md 2026-08-12: *"I should be able to just leave you
+    # The owner, issues.md 2026-08-12: *"I should be able to just leave you
     # notes instead of just issues and ideas. I have said this 2-3 times
     # before. Add a button next to issues/ideas in the Nova app that lets
     # me just send you notes."* A note is neither a bug nor a proposal --
@@ -106,7 +106,7 @@ MAX_BODY_BYTES = 64 * 1024
 
 WRITE_ATTEMPTS = 3
 
-# Where a row Edvard deletes from the app goes so a cycle can still see it
+# Where a row the owner deletes from the app goes so a cycle can still see it
 # (his capture, 2026-08-22). `resources/` because it is my bookkeeping --
 # he asked to be able to remove a row from his board, not to be given a
 # second page of removed rows to read.
@@ -167,7 +167,7 @@ def capture_entries(markdown):
     **`text` is exactly what `nova_boards._captures` puts on the page**,
     joining rule included: a continuation line is folded into the bullet
     above it, because the same files are edited in Obsidian on a phone and
-    a capture that wrapped would otherwise show Edvard half a sentence.
+    a capture that wrapped would otherwise show the owner half a sentence.
     That joining is why this returns a *span* rather than a line number --
     one capture can be two lines in the file, and replacing only the first
     would leave its second half orphaned as a stray paragraph.
@@ -216,7 +216,7 @@ def replace_capture(markdown, index, original, bullets):
 
     So: the index says which one, the text says it has not moved, and a
     disagreement is refused rather than resolved. `None` means "not there
-    any more", which is a different answer to Edvard than a failed write
+    any more", which is a different answer to the owner than a failed write
     and only one of them is an error.
 
     Passing no bullets deletes it. The empty cursor bullet is not a
@@ -286,7 +286,7 @@ def clean_capture_text(text):
     break the list it lives in.
 
     **With one exception, and it is not a guess about intent either: a
-    line the attach button wrote.** Edvard, capture 2026-08-21: *"I see
+    line the attach button wrote.** The owner, capture 2026-08-21: *"I see
     that my image upload test was split into two idea entries. The image
     for its own separate entry and the text got the other."* That is
     exactly what the rule above does to him -- `buildAttach`'s `onInsert`
@@ -346,7 +346,7 @@ def clean_capture_text(text):
 def insert_captures(markdown, bullets):
     """Add `bullets` to the capture list, keeping exactly one empty bullet last.
 
-    The empty bullet is the cursor Edvard types into, so it stays at the
+    The empty bullet is the cursor the owner types into, so it stays at the
     bottom of the list and captures accumulate above it in the order they
     were written. If the file has lost its empty bullet, this restores it
     -- that is the file's own documented contract, not invented structure.
@@ -383,7 +383,7 @@ def capture(target, text, priority=""):
     `priority` rides at the front of the bullet as its full label and a
     colon (`🟠 High: ...`, `CAPTURE_PRIORITY_SEP`), and only on the
     first bullet: a
-    paste that splits into four lines is one thought Edvard rated once,
+    paste that splits into four lines is one thought the owner rated once,
     not four items each rated separately. It is the same rating vocabulary
     the board column uses, checked against `PRIORITY_LABELS` here as well
     as at the endpoint, because this is the function that decides what
@@ -391,7 +391,7 @@ def capture(target, text, priority=""):
 
     It was a bare coloured glyph until Cycle 268 -- this is the one place
     colour was the *only* signal, because a bare bullet has no column to
-    spell the word out in, and Edvard cannot tell the four balls apart
+    spell the word out in, and the owner cannot tell the four balls apart
     (comments board 2026-08-19). Cycle 268 then dropped the glyph
     entirely, which he corrected the next morning (*"if you use the
     symbol and text, thats completely fine!"*), so what gets written now
@@ -433,7 +433,7 @@ def capture(target, text, priority=""):
 
 
 def _amend_board(target, number, mutate, what):
-    """Read-modify-write one of Edvard's board files. Returns (ok, message).
+    """Read-modify-write one of the owner's board files. Returns (ok, message).
 
     The fourth and fifth write paths on this site share one loop rather
     than copying `set_priority`'s a fourth and fifth time. The 409 retry
@@ -482,7 +482,7 @@ def _amend_board(target, number, mutate, what):
 def edit_row(target, number, title):
     """Retitle one boarded row. Returns (ok, message).
 
-    Edvard, issue #84: *"I need to be able to edit and especially delete
+    The owner, issue #84: *"I need to be able to edit and especially delete
     boarded ideas and issues from the agora app. If i hold the card for
     more than 1 second i get into edit mode and also have the option of
     deleting, save or cancel the edit."*
@@ -612,7 +612,7 @@ def set_priority(target, number, priority):
     """Change one boarded row's rating. Returns (ok, message).
 
     The third write path on this site, and the first that edits something
-    *I* wrote rather than something Edvard wrote. Same read-modify-write
+    *I* wrote rather than something the owner wrote. Same read-modify-write
     and same 409 retry as `capture` and `amend`, for the same reason: a
     cycle boarding these very files is the concurrent writer, and it is
     the one most likely to be running, since boarding is what step 6 of

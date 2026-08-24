@@ -1,4 +1,4 @@
-"""One counter for Agora and the journal -- Edvard's Immediately capture,
+"""One counter for Agora and the journal -- the owner's Immediately capture,
 2026-08-20: "They need to be the same number."
 """
 import json

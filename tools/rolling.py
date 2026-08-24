@@ -3,7 +3,7 @@
 It moved on 2026-08-16 for one reason and it is a deployment fact, not a
 taste: the container image copies `agora_runner/` and does not copy
 `tools/`, so anything the *site* has to run cannot live here. Issue #93
-asked for a button on the page that archives an answered Needs Edvard
+asked for a button on the page that archives an answered Needs Edvard  (not-prose: quoting a literal)
 item, which is exactly the transform `roll_needs_edvard.py` already did
 from a shell -- and the alternative to moving this file was writing a
 second implementation of it inside `agora_runner/`, i.e. the third-fix-of-

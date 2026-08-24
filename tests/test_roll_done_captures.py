@@ -1,6 +1,6 @@
 """`tools.roll_done_captures` -- finished captures leave, nothing else does.
 
-The failure this guards is silent: these two files are Edvard's own, the
+The failure this guards is silent: these two files are the owner's own, the
 app renders them through `nova_boards.parse_board`, and a rewrite that
 tears a `### #N` write-up out of its heading makes it stop appearing on
 his phone with every test still green. So the assertions below are on
@@ -150,7 +150,7 @@ def test_a_line_the_reader_ignores_is_not_dragged_along():
 #
 # Reviewer finding on #298: widening `_CAPTURE_DONE_RE` to tolerate anything
 # after the cycle number inside the bracket changes what this tool *writes*
-# into Edvard's own board files, and every fixture above still used the plain
+# into the owner's own board files, and every fixture above still used the plain
 # `DONE (Cycle N):` shape. The read path was covered; this write path was not.
 
 NAMED_PR = """---

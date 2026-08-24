@@ -28,7 +28,7 @@ def _routing_on():
 
 
 def _one_db_down(status=503):
-    """Nova's database refuses everything; Edvard's answers with one file."""
+    """Nova's database refuses everything; The owner's answers with one file."""
     def fake_couch_req(method, path, body=None):
         if path.startswith("nova/"):
             return status, {}

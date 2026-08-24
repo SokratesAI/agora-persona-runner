@@ -1,7 +1,7 @@
-"""File uploads: the attachment Edvard has never had.
+"""File uploads: the attachment the owner has never had.
 
 **Images first, then everything else.** This module was images-only until
-2026-08-21 21:09, when Edvard tried to send something that was not one:
+2026-08-21 21:09, when the owner tried to send something that was not one:
 *"How about a file? It seems i only can upload images. Or atleas the ui
 forces only my Google photos to open and i have no option to upload
 files."* Both halves of that were true and they were separate bugs — the
@@ -11,7 +11,7 @@ and `RENDERED_TYPES` below; the rest of this docstring is unchanged and
 still describes where the bytes go.
 
 
-Edvard, comments board 2026-08-21 12:07, trying to show me a bug he could
+The owner, comments board 2026-08-21 12:07, trying to show me a bug he could
 see and I could not: *"How do i send a screenshot?"* — and, three minutes
 later, *"Then a good idea is to figure out the best way i can upload an
 image. Maybe now is the time to bump the priority of me being able to
@@ -41,7 +41,7 @@ repo that is tested, revision-guarded and collapse-guarded. The cost is
 encoder is `base64.b64encode`, right here, and the read is its exact
 inverse.
 
-**It lands in Nova's database, not Edvard's.** The prefix routes to
+**It lands in Nova's database, not the owner's.** The prefix routes to
 `COUCHDB_NOVA_DB` (`vault.db_for`), so a 2MB screenshot does not
 replicate onto the phone it was taken with, and his three capture files
 stay text. What goes into *his* file is one markdown line pointing at
@@ -85,7 +85,7 @@ IMAGE_TYPES = {
     "image/avif": "avif",
 }
 
-#: Everything else Edvard might send. Edvard, comments board 2026-08-21
+#: Everything else the owner might send. The owner, comments board 2026-08-21
 #: 21:09: *"How about a file? It seems i only can upload images. Or atleas
 #: the ui forces only my Google photos to open and i have no option to
 #: upload files."*
@@ -113,7 +113,7 @@ CONTENT_TYPES = {**IMAGE_TYPES, **FILE_TYPES}
 #: Filename extension -> content type, for the case the browser gives us
 #: nothing. Android's file picker reports `""` for `.md` and `.log` and
 #: `application/octet-stream` for plenty else, so without this every
-#: text file Edvard sends would be stored as an opaque blob.
+#: text file the owner sends would be stored as an opaque blob.
 EXTENSION_TYPES = {
     "pdf": "application/pdf",
     "txt": "text/plain",
@@ -147,7 +147,7 @@ EXTENSION = re.compile(r"^[a-z0-9]{1,8}$")
 
 
 class UploadRejected(ValueError):
-    """The upload is malformed. The message is shown to Edvard verbatim."""
+    """The upload is malformed. The message is shown to the owner verbatim."""
 
 
 def _envelope(content_type, filename, encoded):
@@ -236,7 +236,7 @@ def store_upload(filename, content_type, data_b64):
 
     `data_b64` is the payload as the browser's `FileReader` produced it —
     either bare base64 or a full `data:` URL, because both are one line of
-    client code apart and rejecting the wrong one is a round trip Edvard
+    client code apart and rejecting the wrong one is a round trip the owner
     pays for on a phone.
 
     The fourth return value is the resolved content type, so the caller can
@@ -262,7 +262,7 @@ def store_upload(filename, content_type, data_b64):
     # Content-addressed, so the same screenshot sent twice is one document
     # and the URL is safe to cache forever. Truncated to 32 hex characters:
     # collisions are not an adversarial concern here and the name ends up
-    # on Edvard's screen.
+    # on the owner's screen.
     digest = hashlib.sha256(raw).hexdigest()[:32]
     name = f"{digest}.{_stored_extension(safe_name, content_type)}"
     path = UPLOAD_PREFIX + name
@@ -281,7 +281,7 @@ def store_upload(filename, content_type, data_b64):
     return name, f"/api/upload/{name}", len(raw), content_type
 
 
-#: An attachment link this site wrote on Edvard's behalf —
+#: An attachment link this site wrote on the owner's behalf —
 #: `![alt](/api/upload/<name>)` for an image and `[alt](/api/upload/<name>)`
 #: for any other file, the two constructs `buildAttach`'s `onInsert`
 #: inserts into a text box in `app.js`. It lives here rather than in the
@@ -316,7 +316,7 @@ def is_attachment_line(line):
 
     Used to decide whether a line is a capture of its own or belongs to
     the one above it. Deliberately narrow: it matches the single construct
-    this site generates and nothing Edvard types himself, so a plain
+    this site generates and nothing the owner types himself, so a plain
     markdown image, a remote URL or a stray `![` stays the ordinary text
     it has always been.
     """

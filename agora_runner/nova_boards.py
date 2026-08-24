@@ -1,6 +1,6 @@
 """The backlog boards, parsed for the site: issues and ideas, his and mine.
 
-Edvard, issues.md #57: *"I need more visualisations in the Nova app.
+The owner, issues.md #57: *"I need more visualisations in the Nova app.
 Create more pages to contain more, such as issue list, idea list
 (separate pages) ..."* This is that page's data.
 
@@ -65,7 +65,7 @@ _SECTION_RE = re.compile(r"^(#{1,2})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 _ROW_NUMBER_RE = re.compile(r"#(\d+)")
 # `DONE (Cycle 247): shipped in runner#228 — <the rest of his bullet>`.
 # The shape `prompt.md` step 6 asks a cycle to write when its work closed
-# one of Edvard's captures; see `split_capture_done`. The colon is
+# one of the owner's captures; see `split_capture_done`. The colon is
 # required so a bullet that merely opens with the word cannot match.
 #
 # **Anything else inside the parentheses is allowed, and that is a fix.**
@@ -75,7 +75,7 @@ _ROW_NUMBER_RE = re.compile(r"#(\d+)")
 # write, and nothing in `prompt.md` forbids it. It matched nothing, so at
 # 09:05 on 2026-08-23 `tools/top_board_rows.py` printed that finished
 # capture under *"these outrank every row below. Take one"*, and
-# `roll_done_captures` would never have moved it out of Edvard's file.
+# `roll_done_captures` would never have moved it out of the owner's file.
 # That is the precise failure `split_capture_done` was written to prevent,
 # walking back in through a comma. The cycle number is still the only
 # thing captured, so every caller reads what it always read.
@@ -84,7 +84,7 @@ _CAPTURE_DONE_RE = re.compile(r"^DONE\s*\(\s*(Cycle\s*\d+)[^)]*\)\s*:", re.IGNOR
 # `## 57 — More pages in the Nova app` and `### #84 — Edit and delete a
 # boarded idea or issue by holding the card`.
 #
-# **The second shape was unreadable for twenty-one of Edvard's rows.** This
+# **The second shape was unreadable for twenty-one of the owner's rows.** This
 # pattern was `^##[ \t]+(\d+)` -- two hashes, no `#` before the number --
 # and `_sections` only ever offered it `#`/`##` headings, so a `### #84`
 # write-up was not a section and never reached it. Measured against the
@@ -96,7 +96,7 @@ _CAPTURE_DONE_RE = re.compile(r"^DONE\s*\(\s*(Cycle\s*\d+)[^)]*\)\s*:", re.IGNOR
 # error.
 #
 # Both shapes are accepted rather than one normalised, because these are
-# Edvard's files: rewriting 87 headings to suit the parser is a large diff
+# the owner's files: rewriting 87 headings to suit the parser is a large diff
 # through his prose to fix a regex.
 _DETAIL_RE = re.compile(
     r"^(#{2,3})[ \t]+(#?)(\d+)[ \t]*[—–-][ \t]*(.*?)[ \t]*$", re.MULTILINE)
@@ -120,7 +120,7 @@ def status_key(status):
 
 
 # The fifth status, and the exact cell text a cycle writes it as.
-# Edvard, `issues.md` #85: *"Some of them are implemented and some of them
+# The owner, `issues.md` #85: *"Some of them are implemented and some of them
 # are outdated. We need to clean it up. Maybe we need a new status called
 # 'outdated', so i can go through them and delete them myself."* So the
 # split of labour is his: a cycle proposes, he deletes. Nothing here sets
@@ -141,7 +141,7 @@ OUTDATED_STATUS = "⚫ Outdated"
 # for the stray spelling in the wrong place and left the real one alone.)
 # The sixth status, and the only one that says *why* a row is not moving.
 # Issue #94 is the case it was written for: the investigation finished on
-# 2026-08-16, Edvard approved the change on 08-17, and the remaining step is
+# 2026-08-16, the owner approved the change on 08-17, and the remaining step is
 # a click on a GitHub settings page no token in this loop can make. It stayed
 # `🟡 In progress` because that was the closest thing available, so it kept
 # winning `top_board_rows` on rating and age, and four cycles each spent a
@@ -167,7 +167,7 @@ STATUS_LABELS = {
 _CLOSED_STATUS_KEYS = frozenset({"done", "outdated"})
 
 
-# Edvard's four ratings, and the words he actually used for them:
+# The owner's four ratings, and the words he actually used for them:
 # "low, medium, high, immediately priority" (`ideas.md` capture,
 # 2026-08-14). "immediately" is his word and "immediate" is the one a
 # hand-edit is likely to reach for, so both land in the same bucket
@@ -178,10 +178,10 @@ _PRIORITY_ALIASES = {"immediately": "immediate", "now": "immediate", "urgent": "
 # reduces it to. `""` clears the cell back to unrated, which has to stay
 # reachable: Cycle 188 rated all 71 open rows itself, so every rating on
 # both boards right now is mine, and "actually nobody has decided this"
-# is an answer Edvard must be able to give me back.
+# is an answer the owner must be able to give me back.
 #
 # **Glyph and word together, and the word is the part that is not
-# optional.** Cycle 268 read Edvard's *"Please do not use these symbols
+# optional.** Cycle 268 read the owner's *"Please do not use these symbols
 # '🟠' as i can't really see the difference as they are colors. Please
 # use the full word such as 'high' or 'immediately'"* as "delete the
 # glyph", stripped it from these labels and from 87 cells in his two
@@ -216,7 +216,7 @@ PRIORITY_LABELS = {
 }
 
 # The glyph each rating carries, indexed the other way round so a bullet
-# written as a bare glyph -- every capture Edvard typed before Cycle 268,
+# written as a bare glyph -- every capture the owner typed before Cycle 268,
 # and every one his phone writes from an `app.js` cached before Cycle 274
 # -- still parses back to its rating. Read by `split_capture_priority`;
 # what gets *written* comes from `PRIORITY_LABELS` and always has the
@@ -252,7 +252,7 @@ def canonical_priority(value):
     was fine while that dict never changed. Cycle 268 changed it, and a
     phone holding a cached `app.js` still sends the coloured spelling --
     so an exact-match check would have answered 400 to every rating
-    Edvard set from the capture box until he happened to hard-reload,
+    the owner set from the capture box until he happened to hard-reload,
     with nothing on screen to explain it. Matching on `priority_key`
     accepts the old vocabulary and stores the new one, which costs
     nothing and makes the rename invisible from his side.
@@ -268,7 +268,7 @@ def priority_key(priority):
     """`🔴 Immediately` -> `immediate`, for a CSS class and a filter.
 
     Emoji-stripped and aliased the same way `status_key` is, and for the
-    same reason: the rating is written by hand, by Edvard, in Obsidian,
+    same reason: the rating is written by hand, by the owner, in Obsidian,
     so it has to survive him typing a synonym or dropping the emoji. An
     unrated row returns `""` rather than a bucket, because "nobody has
     rated this" is a real state -- `prompt.md` tells a cycle to fill it
@@ -320,7 +320,7 @@ def _table_rows(body):
 def split_capture_priority(bullet):
     """`🟠 High: text` -> `("🟠 High", "text")`. Unrated -> `("", bullet)`.
 
-    The other half of Edvard's capture: *"i want that aswell both when i
+    The other half of the owner's capture: *"i want that aswell both when i
     input in the textbox in the Nova app"*. A capture is a bare bullet in
     his file and has nowhere to put a column, so the rating rides at the
     front of the bullet as the one glyph the rating already is -- which
@@ -359,7 +359,7 @@ def split_capture_done(bullet):
 
     `prompt.md` step 6 tells every cycle to edit a capture it closed so
     the bullet starts with `DONE (Cycle N):` -- that is the only mark
-    these bullets carry, because a capture is a bare line in Edvard's
+    these bullets carry, because a capture is a bare line in the owner's
     file with nowhere to put a status cell. Nothing read the mark. So a
     closed capture stayed, by every mechanism that looks at these files,
     exactly as unprocessed as one he typed a minute ago: at Cycle 251 all
@@ -387,7 +387,7 @@ def split_capture_done(bullet):
 def set_row_priority(markdown, number, priority):
     """Rewrite one `## Board` row's rating cell. Returns markdown, or `None`.
 
-    Edvard's capture, `issues.md` 2026-08-14: *"You made it possible for
+    The owner's capture, `issues.md` 2026-08-14: *"You made it possible for
     yourself to rate the priority of tasks, but i want that aswell both
     when i input in the textbox in the Nova app, and when they are boarded
     its possible for me to change the priority."* Until now the only way
@@ -406,7 +406,7 @@ def set_row_priority(markdown, number, priority):
     cell is what decides, not which table the row is in.
 
     The rewrite is line-wise on the raw file rather than a reparse-and-
-    render, because these files are Edvard's and everything I am not
+    render, because these files are the owner's and everything I am not
     editing has to come back byte-identical -- his prose, his detail
     sections, the blank lines the two files disagree about. Only the one
     row is rebuilt, and only from cells that were already in it.
@@ -488,7 +488,7 @@ def set_row_status(markdown, number, status, updated=None):
     # is free text from a caller and can. `set_row_title` refuses the same
     # two characters for the same reason -- a `|` splits the row into an
     # extra column and a newline splits it into two rows, and both land in
-    # Edvard's file looking like a table he wrote.
+    # the owner's file looking like a table he wrote.
     if updated is not None and ("|" in updated or "\n" in updated):
         return None
     lines = (markdown or "").split("\n")
@@ -505,7 +505,7 @@ def set_row_status(markdown, number, status, updated=None):
 
 
 # Who a write-up note may be attributed to. A closed set, because the
-# value is interpolated inside `**...**` in Edvard's own file -- see
+# value is interpolated inside `**...**` in the owner's own file -- see
 # `append_detail_note`. The key is lowercased so a route may pass either
 # case; the value is what gets written.
 NOTE_AUTHORS = {"nova": "Nova", "edvard": "Edvard"}
@@ -516,7 +516,7 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
 
     The other side of issue #85. `set_row_status` moves a row to `✅ Done`
     and the *reason* it moved lands in a journal entry, in a different
-    file, in a different database -- so Edvard opens `issues.md` on his
+    file, in a different database -- so the owner opens `issues.md` on his
     phone, sees a row that closed itself, and has nothing in front of him
     that says why. That is the same drift he filed #85 about, pointing the
     other way: last time the row was stale, this time the row is right and
@@ -525,7 +525,7 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
 
     So a status change gets a sentence written where the status is, and
     this is the call that writes it. The line goes at the *end* of the
-    write-up body rather than the top: the write-up is Edvard's statement
+    write-up body rather than the top: the write-up is the owner's statement
     of the problem and these are notes accumulating under it in order, so
     the newest-first convention his capture lists use is the wrong one
     here -- it would put a closing note above the problem it closed.
@@ -538,7 +538,7 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
     argument.** `_detail_spans` ends a write-up at the next `#` or `##`
     heading, so a note carrying one would not merely look wrong -- it
     would truncate the block it was appended to, and every later line of
-    Edvard's own text would fall outside the span and stop rendering on
+    the owner's own text would fall outside the span and stop rendering on
     the page. One line in, one line out.
 
     **`\\r` counts, and it is the one that gets past a `"\\n" in note`
@@ -554,7 +554,7 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
     `author` is who the line is attributed to and defaults to me. Idea
     #64 is what needs the other value: *"Lets me have the same comment
     conversation on ideas, notes and issues like the Journal."* A comment
-    from Edvard is the same one-line append in the same place -- the
+    from the owner is the same one-line append in the same place -- the
     write-up is already where he goes looking for commentary, and the
     board page already renders it -- so the thread is this call with a
     different name in front of the colon, not a second store.
@@ -607,7 +607,7 @@ def append_detail_note(markdown, number, note, dated, cycle=None, author=None):
     # `None` is "not specified" and means me. An empty or blank string is
     # not the same thing: it is a caller that meant to name someone and
     # sent nothing, which is almost always an unset payload field -- and
-    # defaulting *that* to me is how Edvard's sentence ends up signed with
+    # defaulting *that* to me is how the owner's sentence ends up signed with
     # my name, which is the one outcome this argument exists to prevent.
     name = NOTE_AUTHORS.get(("Nova" if author is None else author).strip().lower())
     if name is None:
@@ -626,11 +626,11 @@ def _touch_row_updated(markdown, number, dated):
     """Set one `## Board` row's `Updated` cell to `dated`. Never fails.
 
     **The `Updated` cell is a sort key, and until now nothing kept it
-    true.** `tools.top_board_rows` ranks Edvard's two boards by rating and
+    true.** `tools.top_board_rows` ranks the owner's two boards by rating and
     then by `age_key(updated)`, oldest first, so the cell decides which
     row a cycle is told to take. `append_detail_note` is the one call that
     always means the row was genuinely worked -- it is how a status change
-    gets its reason, and how Edvard's own comments land (`nova_capture`'s
+    gets its reason, and how the owner's own comments land (`nova_capture`'s
     comment route) -- and it wrote the note into the write-up while
     leaving the cell alone.
 
@@ -639,12 +639,12 @@ def _touch_row_updated(markdown, number, dated):
     write-up already carried `**Nova, 08-20 (Cycle 270):**` from four
     hours earlier. The instrument that exists to stop a cycle picking the
     cheapest row was ranking on a date four days stale, on the row it
-    named first. Edvard filed the general version as issue #85 -- a row
+    named first. The owner filed the general version as issue #85 -- a row
     that does not say what happened to it -- and this is that same drift
     in the column that gets sorted.
 
     Both authors stamp it. The cell means "when did this row last change",
-    not "when did I last work it", and a comment from Edvard changes it as
+    not "when did I last work it", and a comment from the owner changes it as
     much as a note from me. That cannot bury an unanswered question: a row
     whose write-up ends on one of his notes is marked `UNANSWERED` by
     `top_board_rows` and outranks every rating, ahead of the age key
@@ -657,7 +657,7 @@ def _touch_row_updated(markdown, number, dated):
     raise. There is no shape check here because there is already one that
     matters more: `_COMMENT_NOTE_RE` requires `\\d{2}-\\d{2}` to read a
     note back, so a date the sort key cannot parse is a note the page
-    cannot see, and that fails loudly on Edvard's screen rather than
+    cannot see, and that fails loudly on the owner's screen rather than
     quietly in a ranking. Reviewer finding on the PR that added this,
     recorded rather than coded.
 
@@ -665,7 +665,7 @@ def _touch_row_updated(markdown, number, dated):
     request and the stamp is bookkeeping on top of it. Only some detail
     write-ups have a board row at all (`append_detail_note`'s own
     docstring says so), and refusing the whole append because the row is
-    missing would lose Edvard's sentence to fix a sort order. A `## Done`
+    missing would lose the owner's sentence to fix a sort order. A `## Done`
     row is out of reach for `set_row_status`'s reason -- the two tables do
     not share a column layout and the fourth cell there is `Where`, a list
     of PRs, not a date.
@@ -679,7 +679,7 @@ def _touch_row_updated(markdown, number, dated):
     return "\n".join(lines)
 
 
-# One dated note, as `append_detail_note` writes it: `**Edvard, 08-15:** ...`
+# One dated note, as `append_detail_note` writes it: `**Edvard, 08-15:** ...`  (not-prose: quoting a literal)
 # or `**Nova, 08-15 (Cycle 221):** ...`. Anchored at the start of the line
 # and built from `NOTE_AUTHORS` rather than a typed-out alternation, so the
 # day a third author is allowed this matcher learns about it instead of
@@ -687,7 +687,7 @@ def _touch_row_updated(markdown, number, dated):
 #
 # **The `MM-DD` is required, and that is what keeps prose out.** Without it
 # the pattern is "his name, a comma, anything, a colon", which a sentence
-# like `**Edvard, in his own words:**` in a write-up satisfies -- and a
+# like `**Edvard, in his own words:**` in a write-up satisfies -- and a  (not-prose: quoting a literal)
 # false positive here is a row that claims to be waiting on a reply
 # forever, since no reply of mine can clear a note that was never a note.
 # `append_detail_note` refuses an empty `dated`, so every real note has one
@@ -699,7 +699,7 @@ _COMMENT_NOTE_RE = re.compile(
 
 
 def unanswered_comments(markdown):
-    """Row numbers whose write-up ends on a comment from Edvard.
+    """Row numbers whose write-up ends on a comment from the owner.
 
     Descending row number, which is deterministic and nothing more. It
     said "newest first" until a reviewer pointed out that row 4 can carry
@@ -718,7 +718,7 @@ def unanswered_comments(markdown):
 
     So: a row is waiting when the **last** note under it is his. That is
     the whole rule, and it is deliberately positional rather than a count
-    of his notes against mine. A thread that ran Edvard → Nova → Edvard
+    of his notes against mine. A thread that ran the owner → Nova → the owner
     is waiting even though both have spoken twice; a thread that ended on
     my reply is not, however much he said before it. Counting would call
     the first one answered.
@@ -728,9 +728,9 @@ def unanswered_comments(markdown):
     part of the conversation.
 
     **This sees the comment box, not the file.** Only the shape
-    `append_detail_note` writes counts, so a comment Edvard types straight
+    `append_detail_note` writes counts, so a comment the owner types straight
     into `issues.md` in Obsidian is invisible here -- and he does that:
-    `## 59` in the live file already carries `- comment from Edvard: i now
+    `## 59` in the live file already carries `- comment from the owner: i now
     see that this link only appears when...`, written by hand before the
     comment box existed (reviewer, PR #212). The bad case is not the
     missed flag, it is that a hand-typed question landing *after* one of
@@ -752,11 +752,11 @@ def unanswered_comment_bodies(markdown):
 
     The text is what a *reply claim* is named after. A row slug cannot do
     that job: `issue-7` is claimed once and, once released, is finished
-    for good, so the second question Edvard ever asks on a row could never
+    for good, so the second question the owner ever asks on a row could never
     be claimed by anybody. A comment is the unit of work here, not the
     row, so the identity has to come from the comment.
 
-    The body runs from the `**Edvard, MM-DD:**` marker to the end of the
+    The body runs from the `**Edvard, MM-DD:**` marker to the end of the  (not-prose: quoting a literal)
     write-up rather than to the end of its first line. Two comments he
     leaves on one row on one day are distinguished by their text and
     nothing else, and a long comment's first line is very often just the
@@ -821,7 +821,7 @@ def _row_span(lines, number, tables=("board", "done")):
     Unlike `set_row_priority` this does not care by default which of the
     two tables the row is in. Rating a finished item is meaningless, so
     that function refuses one; deleting a finished item is the *most*
-    likely thing Edvard wants, since `## Done` is where the rows he has
+    likely thing the owner wants, since `## Done` is where the rows he has
     stopped caring about accumulate.
 
     `tables` narrows it, and `set_row_status` is why it exists. **The two
@@ -864,7 +864,7 @@ _ROW_LINK_RE = re.compile(r"^\[\[#(\d+)[ \t]*[—–-][ \t]*(.*?)\\?\|(\d+)\]\]$
 def set_row_title(markdown, number, title):
     """Retitle one boarded row, in all three places at once. Or `None`.
 
-    Edvard, issue #84: *"I need to be able to edit and especially delete
+    The owner, issue #84: *"I need to be able to edit and especially delete
     boarded ideas and issues from the agora app."*
 
     **A title is written three times in these files and only one of them
@@ -920,13 +920,13 @@ def delete_row(markdown, number):
     unreachable from the page and invisible in the board tables, so
     leaving it behind is not a conservative choice: it is an orphan that
     only shows up the next time a cycle renumbers something. The row is
-    the thing Edvard is looking at when he asks for this, and the write-up
+    the thing the owner is looking at when he asks for this, and the write-up
     is mine.
 
     The deletion is line-wise on the raw file, like `set_row_priority`,
     so everything else comes back byte-identical. `None` if the number is
     not on either table -- there is nothing to delete, which is a
-    different answer to Edvard than a failed write.
+    different answer to the owner than a failed write.
     """
     lines = (markdown or "").split("\n")
     index, _ = _row_span(lines, number)
@@ -943,7 +943,7 @@ def delete_row(markdown, number):
 def extract_row(markdown, number):
     """The raw text `delete_row` is about to remove, or `None`.
 
-    Edvard, capture 2026-08-22: *"Maybe the delete function should tell
+    The owner, capture 2026-08-22: *"Maybe the delete function should tell
     your next cycle that i have deleted it just in case some work was
     being done or just to keep it as a deleted issue for future
     reference."*
@@ -978,7 +978,7 @@ def _sections(markdown):
 
 
 def _captures(markdown):
-    """The bare bullets above the first heading -- Edvard writing directly.
+    """The bare bullets above the first heading -- the owner writing directly.
 
     Found structurally, the same way `nova_capture.insert_captures` finds
     the list it writes into: everything before the first heading, minus
@@ -1004,14 +1004,14 @@ def _captures(markdown):
             # A capture that wrapped. `nova_capture.clean_capture_text`
             # splits a paste on newlines so this should not happen from
             # the box, but the same file is edited in Obsidian on a phone,
-            # and half of Edvard's sentence going missing with no error is
+            # and half of the owner's sentence going missing with no error is
             # the worst failure this page has.
             bullets[-1] = bullets[-1] + " " + stripped
     return bullets
 
 
 def parse_board(markdown):
-    """One of Edvard's board files -> its captures, rows and detail bodies.
+    """One of the owner's board files -> its captures, rows and detail bodies.
 
     Returns `{"captures": [...], "items": [...], "details": {n: markdown}}`.
     An item is `{number, title, status, statusKey, updated, where, done}`;
@@ -1052,7 +1052,7 @@ def parse_board(markdown):
                 # *display*. `app.js` puts this exact string in the chip
                 # and looks it up in its own `PRIORITIES` array to pick
                 # the colour class, so an un-normalised legacy value came
-                # out as the glyph Edvard cannot read, wearing a dead
+                # out as the glyph the owner cannot read, wearing a dead
                 # `prio-` class with no colour at all -- strictly worse
                 # than before the rename, on every row nobody re-saved.
                 priority = canonical_priority(priority) or priority

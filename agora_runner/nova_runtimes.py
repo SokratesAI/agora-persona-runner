@@ -1,6 +1,6 @@
 """How long a cycle actually ran, joined onto the journal (issues.md #59).
 
-Edvard asked for "runtime for how long a cycle ran for" on a journal
+The owner asked for "runtime for how long a cycle ran for" on a journal
 card. The write-up under that row has said since 2026-08-11 that this is
 not knowable -- "Nothing writes down when a cycle stops" -- and offered
 him either a rough estimate from heartbeat-fired to entry-written, or a

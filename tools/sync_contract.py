@@ -29,7 +29,7 @@ What may *not* differ is the handful of names below, because each one is a
 question both processes ask of the same stored bytes:
 
   * the routing tuples decide which of two databases a path lives in, so a
-    disagreement writes Edvard's file into Nova's store or the reverse;
+    disagreement writes the owner's file into Nova's store or the reverse;
     note the *inputs* only -- see the limit below;
   * the chunker decides how a document is cut into chunk ids, so a
     disagreement stops the two reusing each other's chunks and brings the
@@ -339,8 +339,8 @@ PROBE_PREFIXES = (
 # rather than a name, because two of the three answers depend on how routing
 # is configured.
 #
-#   nova   -- Nova's database, or Edvard's when routing is off
-#   edvard -- Edvard's database
+#   nova   -- Nova's database, or the owner's when routing is off
+#   edvard -- the owner's database
 #   both   -- a prefix straddling the two, so a listing has to query both
 #
 # Agreement is not evidence here, and this is the last stage of the vault
@@ -367,7 +367,7 @@ _ROUTING_EXPECTED_PATHS = {
     # The `.bak` beside the digest. `NOVA_DB_FILES` is an exact-match list
     # precisely so this one does not follow it across.
     "projects/sokrates/projects/agora/journal-digest.md.bak": "edvard",
-    # Edvard's own Nova folder, which is not Nova's. Two folders now say
+    # The owner's own Nova folder, which is not Nova's. Two folders now say
     # "nova" and only `agora/nova/` routes to Nova's database.
     "projects/sokrates/projects/nova/nova.md": "edvard",
     "projects/sokrates/projects/nova/issues.md": "edvard",
@@ -385,7 +385,7 @@ _ROUTING_EXPECTED_PATHS = {
 
 _ROUTING_EXPECTED_PREFIXES = {
     # Ancestors of Nova's folder: a whole-vault listing that queried only
-    # Edvard's database would quietly lose every Nova file.
+    # the owner's database would quietly lose every Nova file.
     "": "both",
     None: "both",
     "projects/": "both",
@@ -393,7 +393,7 @@ _ROUTING_EXPECTED_PREFIXES = {
     "projects/sokrates/projects/agora/nova/": "nova",
     "projects/sokrates/projects/agora/nova/journal/": "nova",
     # As a *prefix* the digest's own path also matches its neighbours, and
-    # the `.bak` beside it is Edvard's -- so both, not Nova's alone.
+    # the `.bak` beside it is the owner's -- so both, not Nova's alone.
     "projects/sokrates/projects/agora/journal-digest.md": "both",
     # One character longer than any Nova target, so nothing is under it.
     "projects/sokrates/projects/agora/journal-digest.md.bak": "edvard",
@@ -402,7 +402,7 @@ _ROUTING_EXPECTED_PREFIXES = {
 }
 
 # Routing off is `if not <nova db>: return <db>` in both copies, so every
-# token collapses to Edvard's database -- which is what makes these usable
+# token collapses to the owner's database -- which is what makes these usable
 # under both configurations rather than needing a second table.
 _ROUTING_EXPECTED_DB = {
     "nova": lambda db, nova_db: nova_db or db,
@@ -410,7 +410,7 @@ _ROUTING_EXPECTED_DB = {
 }
 
 # Lists, and the order is part of the answer: `dbs_for_prefix` returns
-# Edvard's first, both copies do, and a reordering is a real difference in
+# the owner's first, both copies do, and a reordering is a real difference in
 # which database a listing reads before the other.
 _ROUTING_EXPECTED_DBS = {
     "nova": lambda db, nova_db: [nova_db] if nova_db else [db],
@@ -741,7 +741,7 @@ _PROBE_CHUNKS = ("h:probe-chunk-a", "h:probe-chunk-b")
 #   stamp    -- the database the doc says it was read from
 #   explicit -- the `db=` argument the caller passed
 #   nova     -- whatever `db_for` calls Nova's database in this configuration
-#   edvard   -- likewise, Edvard's
+#   edvard   -- likewise, the owner's
 _ASSEMBLY_EXPECTED = {
     "stamp": lambda db, nova_db: PROBE_NOVA_DB,
     "explicit": lambda db, nova_db: PROBE_DB,
@@ -773,7 +773,7 @@ def _assembly_questions(src_db_key):
         # just read the doc out of.
         #
         # The path here routes to Nova's database *and* the stamp names it,
-        # so `explicit` is the only one of the three that answers Edvard's.
+        # so `explicit` is the only one of the three that answers the owner's.
         # It read `unrelated/file.md` for one commit, which routes to the
         # same database the explicit argument names -- a copy that ignored
         # the argument entirely and fell through to the path scored the row
@@ -1833,7 +1833,7 @@ _HEALTH_ADVICE = (
 # same problem `_check_the_probe_reached_both` solves for routing. Agreement
 # is free to a degenerate function: two copies that both stopped redacting
 # agree on every line of this table, and so do two that redact everything.
-# One direction is a leaked credential and the other is Edvard's standing
+# One direction is a leaked credential and the other is the owner's standing
 # rule that nothing is thrown away to make the output tidier. Both are
 # checked, and only when nothing drifted -- a real difference is reported as
 # itself rather than masked by an instrumentation error.

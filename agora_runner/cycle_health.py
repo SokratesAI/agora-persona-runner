@@ -1,6 +1,6 @@
 """Which cycles woke up and left no journal entry behind.
 
-Edvard, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not already
+The owner, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not already
 have a self check that your previous cycles worked correctly, you should
 make yourself do this and self repair automatically."* He found that hole
 by eye, reading the journal on his phone, which is the whole problem --
@@ -34,7 +34,7 @@ it does not read the vault, does not write to it, and does not decide what
 to do about a gap. That is deliberate -- the repair for a dead cycle is
 picking up whatever it left in `/data/workspace` and finishing it, which
 only a cycle can do, and a module that invented a replacement journal entry
-would be putting a machine's guess into an append-only record that Edvard
+would be putting a machine's guess into an append-only record that the owner
 reads as mine.
 """
 
@@ -46,7 +46,7 @@ from agora_runner.nova_journal import file_cycle
 # The last-resort fallback, not the truth. `nova_cadence_minutes` below is
 # the truth, and this is what a caller measures in when that returns `None`
 # -- Agora unreachable, or a schedule with no single interval. It says
-# `every@60m` because that is what Edvard set on 2026-08-09; he has changed
+# `every@60m` because that is what the owner set on 2026-08-09; he has changed
 # the cadence four times since 2026-08-08, so treat any agreement between
 # this number and reality as luck.
 HEARTBEAT_MINUTES = 60
@@ -79,7 +79,7 @@ def nova_cadence_minutes():
 
     Lives here, beside the constant it replaces, because both callers are
     asking the same question for the same reason and #166/#167 answered it
-    twice. `nova_site` asks it for the badge Edvard reads and caches the
+    twice. `nova_site` asks it for the badge the owner reads and caches the
     answer off the request path; `heartbeats.nova_health_note` asks it for
     the line handed to a waking cycle. That second caller has one
     heartbeat's schedule in hand and used only that, which is a different
@@ -97,7 +97,7 @@ def nova_heartbeat_snapshot():
     because it was already making the call and throwing away every field
     but `schedule`.
 
-    `lastRunAt` and `lastResult` are the other half of Edvard's #72. The
+    `lastRunAt` and `lastResult` are the other half of the owner's #72. The
     cadence tells the page how long silence is allowed to last; these two
     tell it whether the silence is a cycle *working*. Agora writes
     `lastResult: "running"` when it claims a run and overwrites it with
@@ -214,7 +214,7 @@ RECENT_GAP_WINDOW = 24
 def recent_gaps(numbers, window=RECENT_GAP_WINDOW):
     """`gaps_between`, cut to holes within `window` cycles of the newest.
 
-    Edvard, comments board 2026-08-14, on the header's stall badge:
+    The owner, comments board 2026-08-14, on the header's stall badge:
     *"Should be displayed if the return fetch came in with missing
     journals."* The header's whole job is whether the loop is alive, and
     the only thing it has ever said about that is a clock -- how long
@@ -233,7 +233,7 @@ def recent_gaps(numbers, window=RECENT_GAP_WINDOW):
     worth interrupting him about.
 
     24 is that window and it is a duration in disguise: across every
-    cadence Edvard has actually run -- 40, 60 and 72 minutes -- it spans
+    cadence the owner has actually run -- 40, 60 and 72 minutes -- it spans
     16 to 29 hours, so "a cycle failed within about the last day". It is
     also roughly the first screen of the feed (Cycle 205 measured 20
     cards), which means a hole the header names is one he can scroll to
@@ -427,7 +427,7 @@ def describe(report):
     (`import agora_runner` outside a checkout is a `ModuleNotFoundError`), so
     the only way to run this there is out of a git checkout in the workspace,
     where the names this package wants default to empty. `db_for` then routes
-    the journal to Edvard's database instead of Nova's, that request 401s, the
+    the journal to the owner's database instead of Nova's, that request 401s, the
     listing comes back with zero files, and every finding below is vacuously
     clean. The check printed nothing and exited 0 while the live folder
     visibly skipped 134 -- an all-clear from a blind instrument, which is

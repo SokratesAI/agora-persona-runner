@@ -118,7 +118,7 @@ function notModified() {
  * endpoint costs the bubbles, not the feed" test reaches the catch that
  * app.js's Promise.all relies on.
  *
- * `digest` and `comments` override those two responses. The Needs Edvard
+ * `digest` and `comments` override those two responses. The Needs the owner
  * tests need both: the live fixture's digest asks for nothing (so the
  * section is hidden), and its comments carry no reply to it.
  *
@@ -175,7 +175,7 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
     }
     if (url.includes("/api/notes")) {
       // No fixture default, for the reason `/api/retro` and `/api/plan`
-      // have none: a vault where Edvard has never left a note really is
+      // have none: a vault where the owner has never left a note really is
       // empty, and "nothing supplied" must mean that rather than a body
       // no live server has ever sent.
       return res(notes || { notes: [], waitingTotal: 0, readTotal: 0 }, notesStatus);
@@ -355,7 +355,7 @@ describe("cards expand and collapse", () => {
   test("a click anywhere on the card expands it, not just the header", () => {
     // `.entry-body` used to be in this list -- it was the furthest thing from
     // the header that is still the card. It is deliberately not any more:
-    // Edvard asked for the full journal to close when its own text is
+    // The owner asked for the full journal to close when its own text is
     // clicked, so inside the body a click means "shut this drawer" rather
     // than "collapse the card". That is pinned below instead.
     for (const selector of [".entry-brief", ".entry-meta", ".entry-toggle"]) {
@@ -419,7 +419,7 @@ describe("cards expand and collapse", () => {
   });
 });
 
-/* Edvard, on the comments board at cycle 81: "i do not like the double entry
+/* the owner, on the comments board at cycle 81: "i do not like the double entry
  * Journal cards. If a double entry is necessary like for cycle 81, have it be
  * combined into one card that has tabs or something similar. Its confusing
  * that its two separate cards."
@@ -430,7 +430,7 @@ describe("cards expand and collapse", () => {
  * card, an addendum summarising itself so the two would not look identical,
  * an anchor id and a comment bubble owned by whichever card came first. All
  * of that machinery existed only because there were two cards. */
-/* Edvard, issues #86, on the feed rather than on `/cycle/N`. The two
+/* the owner, issues #86, on the feed rather than on `/cycle/N`. The two
  * surfaces draw a card from the same rules and #199 made that deliberate,
  * so the rule is asserted on both -- it lives in two functions. */
 describe("a feed card carries one title, not two", () => {
@@ -470,7 +470,7 @@ describe("a feed card carries one title, not two", () => {
       lineBrief(payload.digest.lines.find((l) => l.cycle === solo.cycle)));
   });
 
-  /* Edvard, comments board 2026-08-22: "Sometimes there are two titles and
+  /* the owner, comments board 2026-08-22: "Sometimes there are two titles and
    * they repeat eachoter with different words ... I like the one with the
    * colored backline", then "The one line summary can be cut." The card he
    * photographed had no digest line, so #86's rule did not cover it and the
@@ -597,7 +597,7 @@ describe("two entries for one cycle are one card", () => {
 
   test("the digest summary renders its bold instead of showing asterisks", () => {
     // The digest line was the only text on the page rendering its own
-    // markup, and it is the line Edvard called hard to read.
+    // markup, and it is the line the owner called hard to read.
     const summary = cards(window)[0].querySelector(".entry-brief");
     assert.equal(summary.querySelectorAll("strong").length, 1);
     assert.equal(
@@ -652,7 +652,7 @@ describe("two entries for one cycle are one card", () => {
     assert.match(meta.textContent, new RegExp(parts[1].time));
   });
 
-  /* Edvard's issues.md #59, the three small pickings on the journal card.
+  /* the owner's issues.md #59, the three small pickings on the journal card.
    * Each of these asserts an absence, so each one also proves the selector
    * matches something when the thing is present -- Cycle 202 shipped a
    * `.prio-picker` assertion against markup that never rendered that class
@@ -764,7 +764,7 @@ describe("two entries for one cycle are one card", () => {
     assert.match(own.textContent, /no-op/);
   });
 
-  /* Edvard, comments board 2026-08-23, on cycle 340's card: "What is this new
+  /* the owner, comments board 2026-08-23, on cycle 340's card: "What is this new
    * grey title? ... This is ugly and seems like information i do not need or
    * want", then "Sure. Cut it" to dropping the pill from the card. His card
    * had a free-text Outcome 84 characters long, uppercased by the stylesheet,
@@ -793,7 +793,7 @@ describe("two entries for one cycle are one card", () => {
     assert.ok(pageMeta.querySelector(".badge"), "the page keeps the pill");
   });
 
-  /* The other half of the rule, and the one Edvard asked for back on
+  /* The other half of the rule, and the one the owner asked for back on
    * 2026-08-24: "i miss the status fields. Please bring them back." A word
    * from the closed vocabulary is a badge, so it goes back on the card; the
    * clause above is what stays cut. Of 411 outcomes in the live journal, 404
@@ -993,7 +993,7 @@ describe("PR references are links", () => {
 });
 
 describe("a journal card names the board item it worked on", () => {
-  /* Edvard, ideas.md #68: "Journal cards in Nova should mark the issue or
+  /* the owner, ideas.md #68: "Journal cards in Nova should mark the issue or
    * idea number they worked on like they do with the prs. With links."
    *
    * No live entry carries the field yet -- it starts from the next one
@@ -1041,7 +1041,7 @@ describe("a journal card names the board item it worked on", () => {
 });
 
 describe("an outdated row leaves Open without claiming it shipped", () => {
-  /* Edvard, issues.md #85: "Some of them are implemented and some of them
+  /* the owner, issues.md #85: "Some of them are implemented and some of them
    * are outdated. We need to clean it up. Maybe we need a new status called
    * 'outdated', so i can go through them and delete them myself." A cycle
    * writes the status; he deletes the row. So the two things that have to
@@ -1104,7 +1104,7 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
      * picker drawn here would be a control whose only outcome is a
      * rejection — the same reason a done row has never had one. The
      * picker lives in the row's header now, not a body only an open row
-     * renders (Edvard, 2026-08-14: "the priority button should be the
+     * renders (the owner, 2026-08-14: "the priority button should be the
      * priority tag instead"), so there is no need to open the row to
      * check for it -- and payload.board.items[1] is unrated in the
      * fixture, so a non-editable row shows no chip at all rather than a
@@ -1187,8 +1187,8 @@ describe("a board link opens the row it names", () => {
 });
 
 describe("an ask lives on the card that raised it", () => {
-  /* Edvard, comments board 2026-08-16: "the solution i want is to remove the
-   * 'needs Edvard' block entirely. If you need something from me, it should
+  /* the owner, comments board 2026-08-16: "the solution i want is to remove the
+   * 'needs the owner' block entirely. If you need something from me, it should
    * be added in the Journal card somehow and i'll answer in the comment of a
    * journal card. [...] add a new yellow block below the title or somehow
    * higlight your issue so that i see it." */
@@ -1256,9 +1256,9 @@ describe("an ask lives on the card that raised it", () => {
     assert.equal(ask.querySelectorAll(".entry-ask-label").length, 1);
   });
 
-  /* Edvard, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
-   * 'needs Edvard' block on an entry, minimize it instead of leaving it
-   * full-size -- and let Edvard minimize it himself too. Don't delete it,
+  /* the owner, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
+   * 'needs the owner' block on an entry, minimize it instead of leaving it
+   * full-size -- and let the owner minimize it himself too. Don't delete it,
    * just collapse it." */
 
   /** The cycle the fixture's newest entry belongs to. */
@@ -1315,7 +1315,7 @@ describe("an ask lives on the card that raised it", () => {
      * like every card with nothing to answer.
      *
      * Reviewer finding, Cycle 249. This test used to assert `ask.hidden ===
-     * false` and that the label read "Needs Edvard", which nothing in the
+     * false` and that the label read "Needs the owner", which nothing in the
      * feature can move: `setAskOpen` never touches `ask.hidden`, and the
      * label was rendered unconditionally before the change too. It passed
      * with the whole feature reverted. What it has to assert is the
@@ -1424,7 +1424,7 @@ describe("an ask lives on the card that raised it", () => {
   });
 });
 
-/* Edvard, in issue #59: "its not the link thats the problem, its the single
+/* the owner, in issue #59: "its not the link thats the problem, its the single
  * view that is bad ui... does not make sense, is hard to understand and
  * wasteful", and on the comments board: "If a double entry is necessary like
  * for cycle 81, have it be combined into one card".
@@ -1636,7 +1636,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.ok(headings[1].startsWith("Addendum · "), headings[1]);
   });
 
-  /* Tabs, which is what Edvard asked for three times (issues.md #59, and
+  /* Tabs, which is what the owner asked for three times (issues.md #59, and
    * the comments board at cycle 81) and did not get twice. The tests below
    * pin the behaviour that makes a tab acceptable rather than the fact that
    * one exists: exactly one part visible, all of them still in the DOM, the
@@ -1782,7 +1782,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.equal(cards(window)[0].querySelector(".entry-title").textContent, solo.title);
   });
 
-  /* Edvard, comments board 2026-08-22, on a screenshot of cycle 329's card:
+  /* the owner, comments board 2026-08-22, on a screenshot of cycle 329's card:
    * "Sometimes there are two titles and they repeat eachoter with different
    * words. See image. I like the one with the colored backline", then "The
    * one line summary can be cut."
@@ -1820,7 +1820,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
       "The brief the entry wrote for itself, in app.js");
   });
 
-  /* Edvard, issues #86: "Journal cards like cycle 209 seems to have two
+  /* the owner, issues #86: "Journal cards like cycle 209 seems to have two
    * titles. Only one is enough." The digest line is the one he reads. */
   test("a cycle with a digest line shows that and not its heading title too", async () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
@@ -1896,7 +1896,7 @@ describe("the vault cannot inject markup", () => {
   });
 });
 
-/* Edvard, issues.md 2026-08-09: "when a journey card is opened, the Digest is
+/* the owner, issues.md 2026-08-09: "when a journey card is opened, the Digest is
  * revealed. Below that, a 'read the full journal' button to expand the full
  * journal. If the full journal text is clicked or the button, the full journal
  * is closed again. So its a drawer within a drawer."
@@ -2060,7 +2060,7 @@ describe("commenting on a cycle", () => {
   });
 
   test("the bubble sits in the card's foot, below the drawer's opener, not in the head", () => {
-    /* Edvard, ideas.md 2026-08-10: "Move the Journal chat bubble icon to the
+    /* the owner, ideas.md 2026-08-10: "Move the Journal chat bubble icon to the
      * bottom right of the Journal cards." Two separate things have to hold,
      * because each breaks on its own:
      *   - it is out of `.entry-head` and inside `.entry-foot` (the move), and
@@ -2154,7 +2154,7 @@ describe("commenting on a cycle", () => {
 
   test("existing comments are shown in the server's order, with the read ones marked", () => {
     // Oldest at the top, newest just above the box he types in: "the
-    // conversation goes downwards" (Edvard, 2026-08-10). The order is the
+    // conversation goes downwards" (the owner, 2026-08-10). The order is the
     // server's -- `comments_by_cycle` sorts by stamp across both sections --
     // and this file renders it as given rather than sorting again.
     const card = cardFor(window, 57);
@@ -2190,7 +2190,7 @@ describe("commenting on a cycle", () => {
     const card = cardFor(window, 55);
     const reply = card.querySelector(".comment-reply");
     assert.ok(reply, "the reply is rendered");
-    /* Edvard, issues.md 2026-08-10: "they should be below each other on the
+    /* the owner, issues.md 2026-08-10: "they should be below each other on the
      * same indentation. So the comments alternates between blue and green
      * downwards." So the reply is the comment's next sibling in the list,
      * not a child of it, and it carries `.comment` for the same box. */
@@ -2206,7 +2206,7 @@ describe("commenting on a cycle", () => {
   });
 
   test("a cycle's answer is its own purple bubble, not text inside the blue one", async () => {
-    /* Edvard, ideas board 2026-08-21: *"Give Nova cycle comments a purple
+    /* the owner, ideas board 2026-08-21: *"Give Nova cycle comments a purple
      * background/border in the app (mine is green, commentator is blue,
      * Nova should be purple)"*. Two different things answer him under one
      * name -- the instant reply worker, and an hourly cycle -- and until
@@ -2237,7 +2237,7 @@ describe("commenting on a cycle", () => {
   });
 
   test("a reply written after his next comment is painted after it, not beside its question", async () => {
-    /* Edvard, issues.md 2026-08-23: *"Comment thread ordering bug: a Nova
+    /* the owner, issues.md 2026-08-23: *"Comment thread ordering bug: a Nova
      * cycle reply posted at 14:01 rendered between two of my comments
      * timestamped 13:31 and 13:40 instead of after both — thread isn't
      * sorting strictly by time."*
@@ -2655,7 +2655,7 @@ describe("commenting on a cycle", () => {
   });
 });
 
-/* Replying to Needs Edvard (2026-08-10). Edvard: "the 'needs Edvard' is
+/* Replying to Needs the owner (2026-08-10). The owner: "the 'needs the owner' is
  * still missing a comment block, so its hard for me to answer it. [...]
  * Where did you intend me to answer it? [...] I want a reply button on it."
  *
@@ -2736,7 +2736,7 @@ describe("the page notices new entries on its own", () => {
     assert.ok(window.document.contains(card), "an absent version read as a change");
   });
 
-  /* Edvard, issues.md 2026-08-11: "The Nova site closes all drawers on what
+  /* the owner, issues.md 2026-08-11: "The Nova site closes all drawers on what
    * seems like every 30 sec or so. Is this a refresh bug?"
    *
    * The two tests above cover the half where the page rebuilt for nothing.
@@ -2955,7 +2955,7 @@ describe("a poll asks whether anything changed, not for the whole journal", () =
    * the comment that arrived alongside the unchanged journal never renders.
    *
    * That is the live case, not a contrived one. The journal changes once an
-   * hour and comments change whenever Edvard types, so almost every poll
+   * hour and comments change whenever the owner types, so almost every poll
    * that has anything to show is exactly this one. */
   test("a new comment renders on a poll where the journal did not change", async () => {
     const { window, timers } = await pollable();
@@ -3164,7 +3164,7 @@ describe("the feed loads a window rather than the whole journal", () => {
 
 /* Scrolling to the end of the feed loads the next window on its own.
  *
- * Edvard, issues.md #71: "Make it more lazy load when i scroll down instead
+ * the owner, issues.md #71: "Make it more lazy load when i scroll down instead
  * of a button i press."
  *
  * jsdom has no IntersectionObserver at all, which is why every test above
@@ -3447,7 +3447,7 @@ describe("an unsent comment survives a re-render", () => {
 
 /* The board pages -- Issues and Ideas (issues.md #57).
  *
- * Edvard: "I need more visualisations in the Nova app. Create more pages
+ * the owner: "I need more visualisations in the Nova app. Create more pages
  * to contain more, such as issue list, idea list (separate pages)".
  *
  * These drive the real router, so what is being checked is what a cold
@@ -3548,7 +3548,7 @@ describe("the issues page", () => {
   });
 
   test("each not-boarded capture is separated from the next", async () => {
-    /* Edvard, issues.md #66: "should have a separator line or something
+    /* the owner, issues.md #66: "should have a separator line or something
      * that shows a clear separation of the not boarded issues." The block
      * already had a border; what ran together was one bullet against the
      * next. Pinned on the rule rather than on a class name being present,
@@ -3603,7 +3603,7 @@ describe("the issues page", () => {
 
   test("a capture a cycle closed is not shown, and the ones left keep their addresses", async () => {
     /* Cycle 251 gave closed captures their own "Done, not yet cleared"
-     * section; Edvard asked for that section to go, capture 2026-08-20:
+     * section; The owner asked for that section to go, capture 2026-08-20:
      * *"I do not like or see the point of the 'Done, not yet cleared' list
      * in issues and ideas. I do not use it and to me its just noise."*
      *
@@ -3663,7 +3663,7 @@ describe("the issues page", () => {
      * every capture in the live payload -- so a test written against one
      * of those passes whether the code is right or wrong. Here the two
      * genuinely differ: the field must hold the backticks and asterisks,
-     * because what Edvard edits is what the vault stores. */
+     * because what the owner edits is what the vault stores. */
     const raw = "the `/api/board` page is **slow**";
     const board = {
       ...payload.board,
@@ -3801,7 +3801,7 @@ describe("the issues page", () => {
   });
 });
 
-/* The sidebar. Edvard, issues.md 2026-08-11: "Move the Journal, issues &
+/* The sidebar. The owner, issues.md 2026-08-11: "Move the Journal, issues &
  * ideas tabs buttons to a sidebar that opens from a hamburger button that
  * is placed at the top right of the Nova page on the same horizontal line
  * as the Nova header. Add slide animations."
@@ -3974,7 +3974,7 @@ describe("navigating away mid-fetch", () => {
   });
 });
 
-/* Edvard, issues.md #83: "Make the header for issues and ideas bold". The
+/* the owner, issues.md #83: "Make the header for issues and ideas bold". The
  * whole line was one dim string, so the page you were on read as part of
  * the tally after it. Two assertions, because either alone passes on its
  * own: the name has to be in the bold element, and the counts have to have
@@ -4111,7 +4111,7 @@ describe("the costs page", () => {
 
 /* ---- Zoom, pan, selection and full screen on a chart ---------------------
  *
- * Edvard, 2026-08-20, on the version this replaces: "The zoom works, but
+ * the owner, 2026-08-20, on the version this replaces: "The zoom works, but
  * it does not give me any more granulation in the graph, it just makes the
  * graph bars larger. I want actual graph zoom as in expanding the values
  * on the x/y axis and showing more granularity. Also the hover effect when
@@ -4272,7 +4272,7 @@ describe("a chart can be zoomed, panned, selected and opened full screen", () =>
 });
 
 /* A cycle that ran and wrote nothing, marked where it happened -- the
- * display half of Edvard's #72. He found cycles 127 and 128 himself by
+ * display half of the owner's #72. He found cycles 127 and 128 himself by
  * noticing the feed jump from 126 to 129, so the gap goes back exactly
  * where he was already looking. The committed fixture carries a real one:
  * cycles 57 and 55, with 56 missing, and an unnumbered entry of his own
@@ -4305,7 +4305,7 @@ describe("a hole in the record is visible in the feed", () => {
   });
 
   /* The client does its own arithmetic between two adjacent cards, so it
-   * has to be told which numbers count. Edvard's own notes carry no cycle
+   * has to be told which numbers count. The owner's own notes carry no cycle
    * number and sit in the feed between numbered entries -- filling in
    * every number between two cards would invent a gap out of a note, and
    * the server is the only one that knows the difference. */
@@ -4463,7 +4463,7 @@ describe("the service worker says so when it answers from its cache", () => {
 describe("a cycle that is running says so in the header", () => {
   /* The other half of #72. The header names the newest cycle that has
    * *written*, so for the first 20-45 minutes of every hour it names one
-   * behind the cycle actually running -- which is what Edvard reported as
+   * behind the cycle actually running -- which is what the owner reported as
    * a failure. The server decides; these assert the page renders that
    * decision and, more importantly, that it never renders it beside the
    * badge that contradicts it. */
@@ -4487,7 +4487,7 @@ describe("a cycle that is running says so in the header", () => {
     assert.deepEqual(live(window), ["cycle running"]);
   });
 
-  /* The state Edvard is looking at almost every time he opens the app: a
+  /* The state the owner is looking at almost every time he opens the app: a
    * cycle finished, the next has not woken. The badge must be absent, not
    * merely worded differently -- a badge that is always up is a badge
    * nobody reads, which is the objection this whole header is built
@@ -4546,12 +4546,12 @@ describe("an ask nobody answered is named in the header", () => {
   /* An ask lives on the journal card that raised it, and the card scrolls
    * off the feed while the question stays open. #94's waited a day on card
    * 247 -- by then fourteen cards down -- while the board row it blocks sat
-   * at the top of Edvard's board and three cycles in a row skipped it. The
+   * at the top of the owner's board and three cycles in a row skipped it. The
    * card was the right home for the ask; nothing was the home for "this one
    * is still waiting". */
   const pill = (window) => window.document.querySelector("#status .badge-ask");
   /* The href moved off the badge and onto the field around it when the
-   * status fields became one horizontal, clickable list (Edvard's capture,
+   * status fields became one horizontal, clickable list (the owner's capture,
    * 2026-08-22): the whole field is the link now, so the badge inside it
    * had to stop being one -- an `<a>` inside an `<a>` is unnested by the
    * parser. Same destination, bigger tap target. */
@@ -4797,7 +4797,7 @@ describe("a loop that has gone quiet says so in the header", () => {
    * set it, but only `fetchVersioned` read it -- so the journal marked itself
    * and the board, the costs page and the retro page went on rendering a
    * saved copy as fully current. The board is the one that actually costs
-   * something: it is the page Edvard rates rows on, so an unmarked stale
+   * something: it is the page the owner rates rows on, so an unmarked stale
    * board invites a tap on a row that has already moved.
    *
    * Each of these loads only its own route replayed and leaves the journal
@@ -4846,7 +4846,7 @@ describe("a loop that has gone quiet says so in the header", () => {
       /showing a saved copy/);
   });
 
-  /* Edvard asked for both journal-health badges to go, capture 2026-08-20:
+  /* the owner asked for both journal-health badges to go, capture 2026-08-20:
    * *"I do not like he statuses on the top of Nova. The message 'cycle 265
    * wrote no entry' just stands there forever. Please remove all those
    * statuses as i do not want them."*
@@ -4904,7 +4904,7 @@ describe("a loop that has gone quiet says so in the header", () => {
   });
 
   /* Five tests stood here asserting the stall badge and the gap badge
-   * render, the newest citing Edvard's own 2026-08-14 ask for the second
+   * render, the newest citing the owner's own 2026-08-14 ask for the second
    * one. He reversed that on 2026-08-20 and they are replaced by the
    * single invariant above rather than rewritten one by one -- there is
    * only one behaviour left to pin, and five tests asserting the absence
@@ -4920,7 +4920,7 @@ describe("a loop that has gone quiet says so in the header", () => {
  * to parse -- and the page rendered it. Four written "Could not load ..."
  * messages sat in this file's `.catch` blocks, unreachable, for as long as
  * they have existed. Cycles 163 and 164 fixed the server side of this twice;
- * this is the browser side, and it is the half Edvard actually sees. */
+ * this is the browser side, and it is the half the owner actually sees. */
 describe("a server error is shown, not rendered as emptiness", () => {
   const feedText = (window) => window.document.getElementById("feed").textContent;
 
@@ -4984,7 +4984,7 @@ describe("a server error is shown, not rendered as emptiness", () => {
   });
 });
 
-/* The retrospective page (Edvard, issues.md 2026-08-13).
+/* The retrospective page (the owner, issues.md 2026-08-13).
  *
  * The chart is SVG built with createElementNS, so jsdom can be asked what
  * was actually drawn -- which is the half of this page that no Python test
@@ -5131,13 +5131,13 @@ describe("the retrospective page", () => {
   });
 });
 
-/* The capture row's layout. Edvard, issues.md 2026-08-14: *"Ui is ugly for
+/* The capture row's layout. The owner, issues.md 2026-08-14: *"Ui is ugly for
  * the priority rating. The issue, idea, note and priority dropdown are now
  * just scrambled after the addition of the priority dropdown."* That was
  * fixed the same day by giving the picker its own row above the buttons,
  * while it still showed a rating's word and grew to 136px wide.
  *
- * Edvard, 2026-08-14, later: once the picker shrank to a fixed 44px glyph
+ * the owner, 2026-08-14, later: once the picker shrank to a fixed 44px glyph
  * he asked for it back on the button row, at the far right. jsdom lays
  * nothing out, so none of these can see a wrap on a real phone -- that is
  * measured in Chromium at 390px, and the fix is CSS. What is real code,
@@ -5148,7 +5148,7 @@ describe("the retrospective page", () => {
  * expect. */
 /* The attach button, in a DOM rather than in a substring.
 
- * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"*
+ * The owner, comments board 2026-08-21: *"How do i send a screenshot?"*
  *
  * The Python side of this feature is pinned by tests that `open(app.js)`
  * and count substrings, and those cannot see placement. That is not a
@@ -5174,7 +5174,7 @@ describe("the attach button is on the page, not just in the source", () => {
     const input = window.document.querySelector("#capture-form .attach-input");
     assert.ok(input, "no file input reachable from the capture form");
     assert.equal(input.type, "file");
-    // Was `image/*` until Cycle 309. Edvard, 2026-08-21: "It seems i only
+    // Was `image/*` until Cycle 309. The owner, 2026-08-21: "It seems i only
     // can upload images. Or atleas the ui forces only my Google photos to
     // open and i have no option to upload files." On Android that
     // attribute is not a filter over a file browser -- it is what opens
@@ -5233,7 +5233,7 @@ describe("the attach button is on the page, not just in the source", () => {
   });
 });
 
-/* Cycle 309. Edvard, comments board 2026-08-21 21:09: "How about a file?
+/* Cycle 309. The owner, comments board 2026-08-21 21:09: "How about a file?
  * It seems i only can upload images. Or atleas the ui forces only my
  * Google photos to open and i have no option to upload files."
  *
@@ -5357,7 +5357,7 @@ describe("the capture row does not scramble", () => {
 
   /* Cycle 191's finding was that the two pickers sharing one CSS rule
    * could drift apart silently; that rule is gone now that the board
-   * row's picker went back to `.chip.prio` (Edvard, 2026-08-14) and has
+   * row's picker went back to `.chip.prio` (the owner, 2026-08-14) and has
    * nothing left in common with the capture box's circle to protect. This
    * pins the replacement invariant instead: `.capture-prio` is still held
    * to the 44px iOS touch minimum this stylesheet holds every button to,
@@ -5377,7 +5377,7 @@ describe("the capture row does not scramble", () => {
   });
 });
 
-/* Edvard, issues.md #90: "When i press enter on my keyboard, it
+/* the owner, issues.md #90: "When i press enter on my keyboard, it
  * automatically submits my input text as an issue in the Nova text input
  * field. Pressing enter should create a new line, not submit."
  *
@@ -5444,7 +5444,7 @@ describe("Enter in the capture box is a newline", () => {
   });
 });
 
-/* Edvard, issues.md #91: "All unboarded issues and ideas should have the
+/* the owner, issues.md #91: "All unboarded issues and ideas should have the
  * priority status icon shown (as they do when its chosen) in the left top
  * corner, but pressing it should open the modal like it does sin the issue
  * cards." */
@@ -5596,7 +5596,7 @@ describe("the priority picker (buildPrioPicker)", () => {
     );
     const high = [...menu.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
     click(window, high);
-    // Glyph only, no word. Edvard, 2026-08-22: the word made the closed
+    // Glyph only, no word. The owner, 2026-08-22: the word made the closed
     // button wide enough to shove the row's other buttons out of place, and
     // "the button should just show the color". The word is not lost -- the
     // menu two assertions up spells out all five, and a board row's chip
@@ -5655,7 +5655,7 @@ describe("the priority picker (buildPrioPicker)", () => {
   });
 
   test("a board row's priority trigger is in the head, so a closed row still shows it", async () => {
-    // Edvard, 2026-08-14: "on issues and ideas the priority button should
+    // the owner, 2026-08-14: "on issues and ideas the priority button should
     // be the priority tag instead, not a separate button" -- the old
     // picker lived in `.item-body`, which only exists once a row opens.
     const window = await loadSite("/issues");
@@ -5667,7 +5667,7 @@ describe("the priority picker (buildPrioPicker)", () => {
   });
 
   test("a rated board row's trigger keeps the original cycle-171 chip look", async () => {
-    // Edvard, 2026-08-14: "i liked the old issue priority status better...
+    // the owner, 2026-08-14: "i liked the old issue priority status better...
     // make it into a button that opens the modal, but the visual design is
     // not changed from the old design" -- same class, same full text, on
     // a <button> instead of a <span>.
@@ -5734,7 +5734,7 @@ describe("the priority picker (buildPrioPicker)", () => {
   });
 });
 
-/* Edvard, ideas.md #71: "Ability to search through issues or ideas. Also
+/* the owner, ideas.md #71: "Ability to search through issues or ideas. Also
  * filter the list based on different parameters like date, this week,
  * priority etc." and #70: "Lets me sort issues and ideas ... make sure
  * its both upwards and downwards option ... a button with a
@@ -5743,7 +5743,7 @@ describe("searching, filtering and sorting a board", () => {
   const rows = (window) =>
     [...window.document.querySelectorAll(".item-number")].map((n) => n.textContent);
   /* The filter and toggle buttons this suite reaches for all moved into
-   * the filter modal (Edvard, 2026-08-14: "make the filters into a
+   * the filter modal (the owner, 2026-08-14: "make the filters into a
    * modal... remove all the filter buttons"). `chip` opens it first if
    * it is not already, so every existing call site in this file keeps
    * working unchanged rather than needing its own "open the modal" step
@@ -5808,7 +5808,7 @@ describe("searching, filtering and sorting a board", () => {
     assert.deepEqual(rows(window), ["#57", "#58"]);
   });
 
-  /* Edvard, issues.md 2026-08-15: "When i use the search bar in Nova, my
+  /* the owner, issues.md 2026-08-15: "When i use the search bar in Nova, my
    * keyboard is closed on every letter input so i have to open the
    * keyboard each letter. This is very frustrating."
    *
@@ -6044,7 +6044,7 @@ describe("searching, filtering and sorting a board", () => {
   });
 });
 
-/* Edvard, comments board 2026-08-14, on the stall badge: "Or a display
+/* the owner, comments board 2026-08-14, on the stall badge: "Or a display
  * error if the fetch failed, also".
  *
  * The header is the part of the page that answers "is the loop alive", and
@@ -6112,7 +6112,7 @@ describe("the header says so when it cannot reach the server", () => {
   });
 });
 
-/* Holding a boarded card -- Edvard's issue #84.
+/* Holding a boarded card -- the owner's issue #84.
  *
  * *"I need to be able to edit and especially delete boarded ideas and
  * issues from the agora app. If i hold the card for more than 1 second i
@@ -6126,7 +6126,7 @@ describe("holding a board row opens edit mode", () => {
   const HOLD = 1000;
   const press = (window, node, type) =>
     node.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true }));
-  /** A whole press: down, the second Edvard asked for, then up and the
+  /** A whole press: down, the second the owner asked for, then up and the
    *  click a browser sends after it. */
   const hold = async (window, node, ms = HOLD + 30) => {
     press(window, node, "mousedown");
@@ -6277,7 +6277,7 @@ describe("holding a board row opens edit mode", () => {
 
 /* ---- Commenting on a boarded row (idea #64) -----------------------------
  *
- * Edvard: *"Lets me have the same comment conversation on ideas, notes and
+ * the owner: *"Lets me have the same comment conversation on ideas, notes and
  * issues like the Journal. Add a comment button and let me leave comments
  * that discuss each idea."* Rated 🔴 Immediately and open since 08-12 --
  * skipped by every cycle since, which is what he filed.
@@ -6436,14 +6436,14 @@ describe("commenting on a boarded row", () => {
 });
 
 /* The `/plan` page (issues.md #7). `roadmap.md` and `goals.md` are the two
- * documents written so Edvard could argue with Nova's prioritisation, and
+ * documents written so the owner could argue with Nova's prioritisation, and
  * until now the only way to read either was to open Obsidian.
  *
  * The server tests already pin the payload. What only a rendered DOM can
  * answer is whether he sees any of it: this repo has shipped a feature
  * that was built, tested, merged and completely dead on his screen. */
 describe("the notes page", () => {
-  /* Edvard, issues.md 2026-08-21: "I do not have a notes page that shows
+  /* the owner, issues.md 2026-08-21: "I do not have a notes page that shows
    * any overview of the notes made."
    *
    * And `notes.md` 2026-08-24, which turned it into a conversation:
@@ -6799,7 +6799,7 @@ describe("the plan page", () => {
     assert.match(window.document.querySelector("#feed").textContent, /Could not load the plan/);
   });
 
-  /* The goals scoreboard (issue #96). Edvard: "It is just a huge wall of
+  /* The goals scoreboard (issue #96). The owner: "It is just a huge wall of
    * text. I hate that ... i understand visuals much faster."
    *
    * What only the DOM can answer here is whether the numbers are readable
@@ -7075,7 +7075,7 @@ describe("the plan page folds its prose", () => {
 
 /* The Questions page.
  *
- * Edvard, ideas.md 2026-08-19: "Make a questions page in Nova where i can
+ * the owner, ideas.md 2026-08-19: "Make a questions page in Nova where i can
  * ask questions in a box and a Claude sonnet model answers me."
  *
  * The behaviour worth pinning is the one this page has and no other page
@@ -7426,7 +7426,7 @@ describe("the device page", () => {
   });
 });
 
-/* Edvard, capture 2026-08-22: "I can't delete, edit or upload a file to a
+/* the owner, capture 2026-08-22: "I can't delete, edit or upload a file to a
  * boarded issues. I wanted to delete issue #4 but i'm not able to."
  *
  * #4 was an ordinary open row, so nothing had made it read-only -- the only
@@ -7464,7 +7464,7 @@ describe("an opened board row offers a visible way into the editor", () => {
 });
 
 describe("the status fields are one horizontal list, and they link down to the card", () => {
-  /* Edvard, capture 2026-08-22: *"The status fields at the top, we are
+  /* the owner, capture 2026-08-22: *"The status fields at the top, we are
    * keeping them. Please have them shown horisontal listed, not vertical.
    * Also clicking them navigates me down to the Journal it references."*
    *
@@ -7549,7 +7549,7 @@ describe("the status fields are one horizontal list, and they link down to the c
     assert.equal(running.tagName, "P");
   });
 
-  /* Edvard, `issues.md` 2026-08-23: "Drop the Outcome pill from the
+  /* the owner, `issues.md` 2026-08-23: "Drop the Outcome pill from the
    * top-of-page header too, not just the card view — it's the same ugly
    * all-caps duplicate of the blue summary line, shown twice on the same
    * screen." Both copies were on the feed at once, which is what "twice on
@@ -7577,7 +7577,7 @@ describe("the status fields are one horizontal list, and they link down to the c
    * `PR: none`, and the field must not become the word "none" linking to a
    * cycle -- that is the noise #300 removed and it stays removed.
    *
-   * What changed on 2026-08-24 is the other half. Edvard: "i miss the status
+   * What changed on 2026-08-24 is the other half. The owner: "i miss the status
    * fields. Please bring them back", written while a run of cycles was dying
    * without shipping anything. So a cycle whose PR is `none` now gets a
    * field again -- carrying its one-word status, never the `none`. */

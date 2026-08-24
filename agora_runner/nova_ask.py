@@ -1,12 +1,12 @@
-"""The Questions page: Edvard types a question, a Sonnet persona answers it.
+"""The Questions page: The owner types a question, a Sonnet persona answers it.
 
-Edvard's capture, `ideas.md` 2026-08-19: *"Make a questions page in Nova
+The owner's capture, `ideas.md` 2026-08-19: *"Make a questions page in Nova
 where i can ask questions in a box and a Claude sonnet model answers me."*
 
 **Almost nothing new happens on the answering side, and that is the whole
 design.** `poll_once` already walks every conversation each tick, and
 `decide_turn` already makes a persona speak whenever the last visible
-message came from Edvard. So a question posted into a conversation whose
+message came from the owner. So a question posted into a conversation whose
 curator is a Sonnet persona gets answered by the machinery that is already
 running -- no model call in this process, no second answer path to keep in
 step with `conversations.speak`, and nothing here to go stale when that
@@ -50,9 +50,9 @@ ASK_TAG = "nova-ask"
 MAX_QUESTION_CHARS = 4000
 
 # Newest N rendered on the page. The thread is one long-lived conversation,
-# so this is the only thing standing between Edvard's phone and a year of
+# so this is the only thing standing between the owner's phone and a year of
 # transcript -- the same "what does this look like after 100 items" question
-# that the Needs Edvard wall failed.
+# that the Needs Edvard wall failed.  (not-prose: quoting a literal)
 MAX_THREAD = 40
 
 
@@ -100,7 +100,7 @@ def conversation_id(create=False):
 
 
 def ask(text):
-    """(ok, message). `message` is for Edvard's screen on failure."""
+    """(ok, message). `message` is for the owner's screen on failure."""
     if not isinstance(text, str) or not text.strip():
         return False, "a question needs some text"
     text = text.strip()
@@ -109,7 +109,7 @@ def ask(text):
     cid = conversation_id(create=True)
     if not cid:
         return False, "could not reach the conversation store"
-    # sender="Edvard" is not decoration: `decide_turn` speaks only when the
+    # sender="Edvard" is not decoration: `decide_turn` speaks only when the  (not-prose: quoting a literal)
     # last visible message came from him, so any other sender posts a
     # question that nothing ever answers.
     # `agora_internal` answers `(status, body)`, and the first version of

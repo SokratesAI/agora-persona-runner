@@ -1,6 +1,6 @@
 """One-shot migration: `journal.md` -> one vault document per entry.
 
-Edvard, 2026-08-09: *"I think its quite urgent that you stop writing
+The owner, 2026-08-09: *"I think its quite urgent that you stop writing
 your journals to a huge huge file in Vault and start putting them into a
 database! You spent a huge amount of time and tokens reading and
 searching through that huge file. Prioritised this!"*

@@ -1,6 +1,6 @@
-"""Print the highest-rated open rows on Edvard's two boards, as one line.
+"""Print the highest-rated open rows on the owner's two boards, as one line.
 
-Edvard, `comments.md` 2026-08-15, after Cycle 218 went after an infra
+The owner, `comments.md` 2026-08-15, after Cycle 218 went after an infra
 question while the only 🔴 Immediately row on either board had been open
 three days: *"Why did it skip the issues/ideas with 'immediately'
 priority? It seems to me like something is off with your
@@ -9,7 +9,7 @@ prioritizations."* Boarded as issue #88.
 He is right, and prose is not the fix. `prompt.md` already ranks his
 board above the handoff and says so twice, so the gap is not that a
 cycle does not know -- it is that a cycle reads "an open item on
-Edvard's board", sees 52 of them, and the cheapest one wins. A 🔴 pulls
+the owner's board", sees 52 of them, and the cheapest one wins. A 🔴 pulls
 no harder than a ⚪ because nothing ever puts the two side by side.
 
 So this prints the top of the board as a **named row**, once, at the
@@ -22,9 +22,9 @@ contract, and it is deliberately the weaker of the two fixes #88 names.
 The stronger one -- refusing a claim on anything else while a 🔴 is open
 -- narrows what a cycle is allowed to work on, which is the kind of rule
 that is wrong in a way you cannot see from inside it. That one is
-Edvard's to approve.
+the owner's to approve.
 
-Above the ranking sit Edvard's **unprocessed captures** -- the bare
+Above the ranking sit the owner's **unprocessed captures** -- the bare
 bullets he types above `## Board`, which `prompt.md` step 2 places above
 the board, above the handoff and above everything else. They are printed
 first and unranked, because a capture has no rating cell to sort on and
@@ -37,7 +37,7 @@ since 08-04, and "it has been waiting longest" is the only signal left
 once the rating is spent.
 
 **Every named line now carries a `[claim: <slug>]`, and a row a live cycle
-already holds sinks to the bottom marked 🔒.** Edvard is considering moving
+already holds sinks to the bottom marked 🔒.** The owner is considering moving
 the heartbeat from 72 minutes to 18 (`comments.md`, 2026-08-23 13:31), which he says plainly will run cycles in
 parallel and that this is wanted. One top row handed to three simultaneous
 cycles is three cycles doing it. The ledger and its compare-and-swap are
@@ -94,7 +94,7 @@ VAULT_TOOL = "/app/bridge/vault_tool.py"
 OSLO = ZoneInfo("Europe/Oslo")
 
 # Taken from `BOARD_PATHS` rather than typed again. Both of these moved on
-# 2026-08-12, from `projects/sokrates/projects/agora/` into Edvard's own
+# 2026-08-12, from `projects/sokrates/projects/agora/` into the owner's own
 # `projects/sokrates/projects/nova/`, and `nova_boards` carries the note
 # about it. A second hand-typed copy of a path that has already moved once
 # is a copy that will be wrong the next time it moves -- and wrong here is
@@ -103,7 +103,7 @@ OSLO = ZoneInfo("Europe/Oslo")
 # not have to.
 ISSUES_PATH = BOARD_PATHS["issues"]["edvard"]
 IDEAS_PATH = BOARD_PATHS["ideas"]["edvard"]
-# Edvard's third capture file, and the last one the opening read could only
+# The owner's third capture file, and the last one the opening read could only
 # reach by hand. It is not a board -- a note is never numbered and never
 # rated, so it has no row to rank -- but it carries the same bare-bullet
 # contract as the other two, which is why `parse_board`'s capture half reads
@@ -114,7 +114,7 @@ NOTES_PATH = CAPTURE_TARGETS["notes"]
 
 # Ranking order, best first. Unrated sorts last rather than first: a
 # blank cell means nobody has looked, which is a reason to rate it, not
-# a reason to work on it ahead of something Edvard called High.
+# a reason to work on it ahead of something the owner called High.
 _RANK = {"immediate": 0, "high": 1, "medium": 2, "low": 3, "": 4}
 
 # Imported rather than re-spelled, underscore and all. A local copy of
@@ -188,7 +188,7 @@ def fetch_claims(path=CLAIMS_PATH):
 
 
 def unread_notes(markdown):
-    """`notes.md` -> the notes Edvard has left that no cycle has moved.
+    """`notes.md` -> the notes the owner has left that no cycle has moved.
 
     The contract is `prompt.md` step 1a's: he writes bare bullets at the
     top, a cycle acts on each and moves it under `## Read` with a line on
@@ -206,7 +206,7 @@ def unread_notes(markdown):
 
 
 def unboarded_captures(markdown, board):
-    """The bare bullets above `## Board` -- Edvard talking, unfiled.
+    """The bare bullets above `## Board` -- the owner talking, unfiled.
 
     These outrank every row this tool ranks. `prompt.md` step 2 puts an
     unprocessed capture above a live incident, above the board and above
@@ -216,7 +216,7 @@ def unboarded_captures(markdown, board):
     `captures` key sitting beside it in the same return value.
 
     That is not a theoretical gap. Cycle 241 ran this tool, took the row
-    it named, and three of Edvard's captures were sitting above the board
+    it named, and three of the owner's captures were sitting above the board
     unread -- only the delegated subagent found them, and the tool whose
     entire job is to stop exactly that had reported a confident top row.
     Filed by that cycle as `[top-board-rows-blind-to-captures]`.
@@ -241,7 +241,7 @@ def unboarded_captures(markdown, board):
             continue
         priority, text = split_capture_priority(rest)
         captures.append({"board": board, "priority": priority, "text": text,
-                         # Hashed off the bullet Edvard typed, not off the
+                         # Hashed off the bullet the owner typed, not off the
                          # rating or the DONE marker a cycle may prepend
                          # later -- so the slug survives him re-rating it.
                          "slug": slug_for_capture(text)})
@@ -325,7 +325,7 @@ def row_slug(item):
 def apply_claims(items, live, my_cycle=None):
     """Stamp `heldBy` on anything another live cycle has already claimed.
 
-    Edvard, `comments.md` 2026-08-23 13:31, on moving the heartbeat from 72
+    The owner, `comments.md` 2026-08-23 13:31, on moving the heartbeat from 72
     minutes to 18: *"The average cycle is 18min, so we are guaranteed to have
     some paralell cycles run, and i want that."* (He wrote it on the comments
     board, not on `issues.md` -- the bullet on his board is my paraphrase of
@@ -433,7 +433,7 @@ def rank(rows):
     moment a cycle replies, so nothing is lost by putting it first and a
     question of his is lost by not.
 
-    **And a row blocked on Edvard sinks below every actionable one,
+    **And a row blocked on the owner sinks below every actionable one,
     whatever its rating.** The point of this tool is to name the row a
     cycle should take, and a row whose only remaining step is a click in
     a settings page is one no cycle can take at any rating. It is ranked
@@ -675,7 +675,7 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
                    "row is often 'this is not actually done' — read it before "
                    "you assume the status settles it.")
     # Named, not hidden. The whole reason this status exists is that a row
-    # only Edvard can finish was being skipped in silence; sinking it in the
+    # only the owner can finish was being skipped in silence; sinking it in the
     # ranking without saying so would automate the silence instead of the
     # skip. If one of these has in fact become actionable, the fix is to
     # change its status back, and a cycle can only notice that if it can see

@@ -1,6 +1,6 @@
 """The Friday retrospective ledger, and the page that plots it.
 
-Edvard, `issues.md` 2026-08-13: *"Every Friday, spend a full cycle to do a
+The owner, `issues.md` 2026-08-13: *"Every Friday, spend a full cycle to do a
 full retrospective on yourself. ... Rate yourself on a scale from 1 to 10
 on how you feel its going, how effective do you think you are, whats
 good, whats bad, whats the overall feeling (which is the most important

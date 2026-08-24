@@ -1,4 +1,4 @@
-"""A file Edvard deleted must not still be readable by his agents.
+"""A file the owner deleted must not still be readable by his agents.
 
 Why this exists (2026-08-07): Obsidian LiveSync does not remove a
 document when a note is deleted. It keeps the document, attaches its
@@ -17,7 +17,7 @@ from them.
 
 The concrete damage: `kanban.md` was deleted outright on 2026-08-06 with
 no replacement, and Nova's own `prompt.md` step 1 told every cycle to
-read it as "Edvard's own real backlog". Four cycles a day were being
+read it as "the owner's own real backlog". Four cycles a day were being
 handed a board frozen on 2026-07-29 -- open PR numbers, a "Phase 9" that
 had long since shipped -- and had no way to tell it from a live file.
 That is worse than an empty result: a tool that returns nothing prompts

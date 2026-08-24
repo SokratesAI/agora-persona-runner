@@ -10,7 +10,7 @@ Service's endpoints) for the whole 30-45 minutes a cycle takes, so the
 site was simply down while Nova was working.
 
 That was cosmetic while the site was read-only. It stopped being
-cosmetic when the capture box shipped the same day: the box Edvard types
+cosmetic when the capture box shipped the same day: the box the owner types
 an idea into was dead at exactly the moment he was most likely to be
 reading about a cycle in progress.
 

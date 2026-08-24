@@ -158,7 +158,7 @@ def test_rotate_prunes_beyond_retention_keeping_the_newest():
 
 
 def test_rotate_default_retention_keeps_thirty_when_heartbeat_says_nothing():
-    """Edvard's 🔴 Immediately capture, 2026-08-20: "keep the last 30
+    """The owner's 🔴 Immediately capture, 2026-08-20: "keep the last 30
     conversations for a heartbeat so that i'm able to talk to them". A
     heartbeat that sets no `conversationRetention` must keep 30 active,
     not the 5 this defaulted to for the first eighteen days."""
@@ -250,7 +250,7 @@ def _rotation_calls(folder_response):
 
 
 def test_rotate_files_the_new_conversation_into_a_folder_named_after_the_heartbeat():
-    """Edvard, ideas.md #5: "Heartbeat generated conversations should be
+    """The owner, ideas.md #5: "Heartbeat generated conversations should be
     auto created in the same folder by default"."""
     result, calls = _rotation_calls((201, {"folder": {"id": "f-nova", "name": "Agora Evolve v1"}}))
     assert result == "c-new"
@@ -288,7 +288,7 @@ def test_rotate_still_runs_the_cycle_when_the_folder_call_fails():
 def test_rotate_keeps_the_cycle_tag_when_filing_is_refused():
     """Reviewer finding on agora#63: Agora refuses the whole PATCH if
     `folderId` names a folder that has gone, so bundling the filing with the
-    tag would let a folder Edvard deleted mid-rotation take the tag with it.
+    tag would let a folder the owner deleted mid-rotation take the tag with it.
     The tag is how every later cycle finds this conversation."""
     heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
                  "rotateConversationEachRun": True}
@@ -360,7 +360,7 @@ def test_rotate_backfills_older_conversations_into_the_folder():
 
 
 def test_rotate_backfill_leaves_already_filed_conversations_alone():
-    """Edvard can move a conversation out of the folder by hand; a rotation
+    """The owner can move a conversation out of the folder by hand; a rotation
     that re-filed everything every time would drag it back. Only an unfiled
     one is touched."""
     _, calls = _rotation_with_existing([_cycle(1, filed=True), _cycle(2), _cycle(3, filed=True)])
@@ -467,7 +467,7 @@ def test_backfill_never_splits_a_root_from_its_forks_across_the_cap():
 
 
 def test_backfill_logs_a_refused_patch_rather_than_only_a_lower_total():
-    """If Edvard deletes the folder midway through a batch every remaining
+    """If the owner deletes the folder midway through a batch every remaining
     conversation fails identically, and "filed 3 of 100" alone does not say
     why."""
     lines = []

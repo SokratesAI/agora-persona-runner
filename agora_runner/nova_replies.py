@@ -1,6 +1,6 @@
-"""Answering a comment on a journal card, while Edvard is still looking at it.
+"""Answering a comment on a journal card, while the owner is still looking at it.
 
-Edvard, 2026-08-10, commenting on cycle 80's own card -- *"A good idea is
+The owner, 2026-08-10, commenting on cycle 80's own card -- *"A good idea is
 to have the session that created the Journal instantly reply to my
 comments on the Journal! That would be so cool, to have a conversation
 with comments on the Journal entry."*
@@ -14,7 +14,7 @@ that did the work. The alternative would be a reply that implies a memory
 it does not have, which is worse than a slow one.
 
 **It can go and check now, and until 2026-08-10 it could not.** The first
-version had no tools at all, and Edvard said what that was like on the
+version had no tools at all, and the owner said what that was like on the
 cycle 86 card: *"It is atleast a good start to have you read and answer
 questions about the cycle, but I wished you had more read capabilities to
 answer questions. And maybe some tools to add issues or report bugs we
@@ -56,7 +56,7 @@ the old 45-minute wait is back, and a caller that had gone inline on
 that assumption would block the request thread instead. The POST that
 stores the comment still returns immediately. One worker rather than a
 thread per comment because arrival order is worth more here than
-parallelism across two comments Edvard typed seconds apart.
+parallelism across two comments the owner typed seconds apart.
 
 **This spends the subscription, not the metered API** (identity.md rule
 9). It does not call `reply.generate_reply` and so is not covered by that
@@ -128,7 +128,7 @@ Talk like yourself -- first person, plain, honest, the voice the entry is writte
 # report bugs we find."*
 #
 # Everything absent here is absent on purpose. This turn is triggered by an
-# HTTP POST carrying text Edvard typed, so the blast radius of a comment is
+# HTTP POST carrying text the owner typed, so the blast radius of a comment is
 # exactly this list: no terminal, no code execution, no GitHub write, no
 # merge, no vault write outside the two capture files. `restricted` below
 # still blocks the CLI's own built-in roster (Bash/Read/Write/Edit/...),
@@ -229,7 +229,7 @@ def _entry_for(cycle):
     shape -- and this reads the assembled folder, where those entries are
     present and findable by heading.
 
-    One behaviour change worth naming, because it reaches Edvard's screen:
+    One behaviour change worth naming, because it reaches the owner's screen:
     a journal folder the vault could not fully read now raises here
     instead of quietly finding nothing. `_run_once` catches it and records
     the message, so he gets a failed reply carrying the reason rather than
@@ -247,7 +247,7 @@ def _entry_for(cycle):
             return entry
     if unreadable:
         # Found nothing *and* could not see all of it. Returning None here
-        # would tell Edvard "no journal entry for cycle N" about a cycle
+        # would tell the owner "no journal entry for cycle N" about a cycle
         # that may well have written one, which is the wrong answer stated
         # confidently -- the same shape as the empty feed this PR deleted.
         raise RuntimeError(
@@ -279,7 +279,7 @@ def _generate(system, prompt):
         "stateless": True,
         # Skip the bridge's process-wide invocation lock rather than
         # queueing behind a Nova cycle that may hold it for 45 minutes.
-        # This is the whole reason the lane exists: Edvard asked for an
+        # This is the whole reason the lane exists: The owner asked for an
         # answer "immediately. Or within 10 seconds", and a reply that
         # arrives after the cycle finishes is not a conversation. The
         # bridge decides, not us -- it opens the lane only while the
@@ -308,7 +308,7 @@ def _generate(system, prompt):
 def reply_to(cycle, stamp):
     """Generate and store one reply. Returns (ok, message). Blocking.
 
-    Times each phase and logs one line. Edvard asked for a reply "within
+    Times each phase and logs one line. The owner asked for a reply "within
     10 seconds" and the honest answer on 2026-08-11 was 10 to 15, spread
     unmeasured between the vault, the bridge and however many tools the
     model decided to call -- a spread nobody could see, because nothing
@@ -357,7 +357,7 @@ _queue = queue.Queue()
 # sitting behind a cycle's 45-minute hold on the bridge lock.
 _pending = {}
 # (cycle, stamp) -> why the last attempt gave up. Kept after the pending
-# entry is gone, because "the line just vanished" is the failure Edvard
+# entry is gone, because "the line just vanished" is the failure the owner
 # actually saw: the card has to say a reply is not coming.
 _failed = {}
 _pending_lock = threading.Lock()

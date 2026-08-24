@@ -1,6 +1,6 @@
 """The `/plan` page: what Nova would do next, and what any of it is for.
 
-Edvard, `issues.md` #7: *"Need evolve to think like a product manager.
+The owner, `issues.md` #7: *"Need evolve to think like a product manager.
 Both so it becomes better, but also so i learn and get experience from it
 since my dream is to become the worlds best platform product manager."*
 Cycle 226 answered the first half by writing `roadmap.md` -- the
@@ -33,7 +33,7 @@ The page can be wrong about the styling of a section it has never seen;
 it cannot silently drop one.
 
 **The one exception, and it is built to keep that rule rather than bend
-it.** Edvard, 2026-08-20: *"It is just a huge wall of text. I hate that
+it.** The owner, 2026-08-20: *"It is just a huge wall of text. I hate that
 ... i understand visuals much faster."* `/plan` is 4,961 words on one
 route with no number pulled out anywhere, so `goals.md` may now carry an
 optional fenced ```goal block per goal and `roadmap.md` a ```next block per
@@ -107,7 +107,7 @@ def _goal(lines):
     """The body lines of one ```goal fence -> one scoreboard row, or `None`.
 
     A block with no `name` is dropped: the name is the only field the row
-    cannot be rendered without, and a nameless meter on Edvard's page is
+    cannot be rendered without, and a nameless meter on the owner's page is
     a number he cannot attribute to anything.
     """
     row = {}
@@ -155,7 +155,7 @@ def _fenced(text, builders):
     contract; this is the exception that keeps the rule, because the block
     is **optional and additive**. A goal with no block still renders as
     prose, a document with no blocks renders exactly as it did before, and
-    nothing here reads a word Edvard or a cycle wrote for a human.
+    nothing here reads a word the owner or a cycle wrote for a human.
 
     The blocks are removed from the text on the way through, so the fence
     does not also render as a code block underneath the row it drew.
@@ -188,7 +188,7 @@ def _fenced(text, builders):
     def abandon():
         # An unterminated fence is a half-written edit, not a row. Put the
         # lines back rather than swallowing them -- the document is what
-        # Edvard is reading, and text disappearing is worse than a stray
+        # the owner is reading, and text disappearing is worse than a stray
         # fence appearing. Measured as a real case: deleting a block's last
         # two lines by hand makes the *next* block's opening fence look like
         # this one's body, so without this every paragraph in between
@@ -222,7 +222,7 @@ def _fenced(text, builders):
 # vocabulary is the boards' own -- `issues.md` and `ideas.md` use these exact
 # three -- so a row does not mean one thing on `/plan` and another on `/board`.
 #
-# **The word travels with the symbol, and that is not decoration.** Edvard,
+# **The word travels with the symbol, and that is not decoration.** The owner,
 # 2026-08-20: *"always pair priority symbols (e.g. 🟠) with the word (e.g.
 # 'High') -- don't use the symbol alone, it was hard to read"*, after saying he
 # cannot tell the coloured circles apart by colour. So the payload carries both
@@ -254,7 +254,7 @@ def _next(lines):
     the strip. The file numbers these items in its own prose and strikes one
     through when it is done without renumbering the rest -- item 3 is
     finished and still called 3 -- so position and rank genuinely disagree,
-    and the number Edvard reads in the paragraph is the one that has to be
+    and the number the owner reads in the paragraph is the one that has to be
     on the card.
     """
     row = {}
@@ -307,7 +307,7 @@ def _mark_open(sections):
     """Give every section an `open` flag: is it expanded when the page paints?
 
     `/plan` is 4,961 words on one route -- a 25-minute read on a phone,
-    with no entry point but the top, which is the complaint Edvard filed
+    with no entry point but the top, which is the complaint the owner filed
     as issue #96 (*"It is just a huge wall of text. I hate that."*). So
     every headed section arrives collapsed and the page opens at two
     screens of scoreboard and ranked strip instead of at paragraph one.
@@ -328,7 +328,7 @@ def _mark_open(sections):
     That second rule is deliberately structural rather than named. This
     module's contract is that sections are *discovered, never named* --
     matching on the literal text "Weekly review" would put a heading
-    Edvard is free to retitle into the parser, and the page would go
+    the owner is free to retitle into the parser, and the page would go
     quietly back to a wall the day he did. A date prefix is a shape.
 
     A lone dated section is not a stack and stays collapsed: with nothing

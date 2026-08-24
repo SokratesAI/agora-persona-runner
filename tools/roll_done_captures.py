@@ -1,6 +1,6 @@
-"""Move Edvard's finished captures off the top of his two board files.
+"""Move the owner's finished captures off the top of his two board files.
 
-Edvard types into a bare bullet list above `## Board` in
+The owner types into a bare bullet list above `## Board` in
 `projects/sokrates/projects/nova/issues.md` and `.../ideas.md`. When a
 cycle closes one of those captures it rewrites the bullet to start with
 `DONE (Cycle N):` and leaves it exactly where it was. Nothing has ever
@@ -16,7 +16,7 @@ checked them against the files this paragraph claims to have measured.)
 `nova_boards.split_capture_done` (Cycle 251) already stops a closed
 capture being *read* as work: the ranking drops it and the page hides
 it. That fixed the consumers and left the file, and the file is the half
-Edvard actually opens -- these two documents live in his own vault
+the owner actually opens -- these two documents live in his own vault
 precisely so his phone can reach them without the Nova app.
 
 So this is `identity.md` rule 8 applied to his boards: *"finished items
@@ -32,7 +32,7 @@ fixes, not a place to put it.
 
 **It takes a path on disk and knows nothing about the vault, so the
 caller owns the compare-and-swap.** A cycle boarding these same files,
-or Edvard's phone syncing through Obsidian, is the concurrent writer
+or the owner's phone syncing through Obsidian, is the concurrent writer
 `nova_capture` defends against with `_rev` and the one most likely to be
 running. Read and write it the way `prompt.md` step 6 does:
 
@@ -54,7 +54,7 @@ the capture list and reports `nothing to move`.
 **The check that matters is the one that asks the reader.** These files
 are parsed by `nova_boards.parse_board` for the app's board pages, and
 the failure mode of moving text inside one is silent: a row or a
-write-up stops rendering and nobody sees it until Edvard does. So the
+write-up stops rendering and nobody sees it until the owner does. So the
 rewrite is verified by parsing both versions and asserting that
 `items` and `details` come back **identical**, and that `captures` lost
 exactly the `DONE` bullets and nothing else. That is
@@ -65,7 +65,7 @@ The `## Processed captures` heading is a level-2 heading on purpose.
 `nova_boards._detail_spans` ends a write-up at the next `#` or `##`, so
 appending it closes the final `### #N` block cleanly instead of being
 swallowed into it; and `_captures` stops at the first heading, so a
-bullet down there can never be read back as something Edvard just typed.
+bullet down there can never be read back as something the owner just typed.
 """
 
 import argparse
@@ -86,7 +86,7 @@ def _has_processed_heading(text):
     """Is the archive heading already a heading in `text`?
 
     A substring search would find the phrase inside any write-up that
-    happened to mention it -- and these files are 190KB of Edvard's and
+    happened to mention it -- and these files are 190KB of the owner's and
     my own prose, so that is a matter of time. The heading would then be
     skipped and the next roll would append bare bullets under whatever
     section ends the file. Reviewer finding on runner#286.
@@ -105,7 +105,7 @@ def plan(markdown):
     non-blank, and not starting `-`, `*` or `|`. Sharing the rule is not
     cosmetic: a line the reader folds into the bullet above must move
     with it, and a line the reader ignores must stay put, or the page and
-    the file disagree about where Edvard's sentence ends. Neither real
+    the file disagree about where the owner's sentence ends. Neither real
     file has such a line today, so this is pinned by test rather than by
     data.
     """

@@ -1,6 +1,6 @@
 """Who is already working on a handoff item, so two cycles do not both do it.
 
-Edvard, `issues.md` #74: *"The messages you leave to the next cycle might
+The owner, `issues.md` #74: *"The messages you leave to the next cycle might
 not scale with the 4 cycles a day as they might overlap and two or more
 cycles might read the note left from a previous cycle and then do the
 same work in confliction."*
@@ -81,7 +81,7 @@ DONE = "done"
 #: gap between them is where three separate bugs came from. A cycle that
 #: did part of an item and stopped had exactly one way to stop holding it
 #: -- `release` -- and `release` meant "finished forever", because `take`
-#: refuses a `done` slug. Measured Cycle 353: the top capture on Edvard's
+#: refuses a `done` slug. Measured Cycle 353: the top capture on the owner's
 #: board and the only 🔴 Immediately row were both `done` while both were
 #: still live work. Cycle 343 released one, Cycle 347 the other, both
 #: after real but partial progress, and neither was choosing "finished" --
@@ -388,7 +388,7 @@ def release(ledger, item, cycle, now, outcome=None, state=DONE):
 
 
 def slug_for_row(board, number):
-    """The claim slug for a row on one of Edvard's two boards.
+    """The claim slug for a row on one of the owner's two boards.
 
     A handoff item's slug is written by hand by the cycle that wrote the
     handoff. A board row cannot work that way: two overlapping cycles both
@@ -403,7 +403,7 @@ def slug_for_row(board, number):
 
 
 def slug_for_capture(text):
-    """The claim slug for one of Edvard's unboarded captures.
+    """The claim slug for one of the owner's unboarded captures.
 
     A capture has no number -- it is a bare bullet he typed -- so the text
     is the only identity it has. Whitespace is normalised first because the
@@ -432,12 +432,12 @@ def slug_for_comment(board, number, text):
     and the hash is what makes it a *comment* claim rather than a row one.
     `take` refuses a slug that has ever been released as done, which is
     right for a row and fatal for a thread: without the hash, the second
-    question Edvard asked on `issue #7` would be permanently unclaimable
+    question the owner asked on `issue #7` would be permanently unclaimable
     because the first one was answered.
 
     **That is a guarantee about distinct questions, not about all second
     questions**, and the gap is worth naming rather than rounding off. The
-    body this hashes starts at the `**Edvard, MM-DD:**` marker, so the same
+    body this hashes starts at the `**Edvard, MM-DD:**` marker, so the same  (not-prose: quoting a literal)
     sentence on a different day is a different slug -- but the same sentence
     on the *same* day, asked again after a reply that did not satisfy him,
     hashes the same and is refused until `prune` drops the finished claim
@@ -483,7 +483,7 @@ def finished_claims(ledger):
     tells every cycle to accept a 2 without arguing. That is correct for
     a slug whose *work* is finished and wrong for one whose work is not,
     and only the recorded `outcome` can tell them apart. Measured Cycle
-    353: `capture-1d1fc76af9de` (Edvard's "switch to Claude 20x at 18:00
+    353: `capture-1d1fc76af9de` (the owner's "switch to Claude 20x at 18:00
     today") and `idea-63` -- the top capture and the only 🔴 Immediately
     row -- were both `done` in the ledger while both were still live
     work, so `top_board_rows` was printing `[claim: ...]` on the two

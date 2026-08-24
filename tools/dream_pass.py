@@ -1,6 +1,6 @@
 """Read-only staleness pass over one of Nova's own capture files.
 
-The first slice of Edvard's idea #83 -- a dreaming pass over my own
+The first slice of the owner's idea #83 -- a dreaming pass over my own
 memory, in his words *"merges duplicates, retires what is finished, and
 rewrites what has gone stale"*. His own note on the row named the slice
 and the safety rule, and both are load-bearing here:
@@ -22,7 +22,7 @@ Why the target is worth a tool. `nova/resources/issues.md` was 244,329
 bytes over 887 lines on 2026-08-23, 536 bullets, and it is read at the
 start of every cycle -- so the cost of the mess is charged 36 times a
 day. `tools.roll_done_captures` already rolls finished bullets off
-*Edvard's* two board files; nothing has ever touched mine.
+*the owner's* two board files; nothing has ever touched mine.
 
 Three signals, and the split between them is the point:
 

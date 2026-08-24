@@ -210,7 +210,7 @@ def test_attach_button_is_wired_into_every_composer():
     """The guard for the gap that made every server-side test above moot.
 
     `buildAttach` returns a node. A node nobody appends is not a feature,
-    and no Python test can tell the difference. Edvard named four places
+    and no Python test can tell the difference. The owner named four places
     he wants it -- *"next to a comment, issue, note or idea"* -- and two
     composers covered all four: the journal comment drawer, and the
     capture box whose three buttons are Issue, Idea and Note.
@@ -278,7 +278,7 @@ def test_the_attach_button_has_styles_and_a_touch_target():
 
 
 def test_the_content_type_allowlist_covers_what_an_android_phone_produces():
-    """Edvard is on a Galaxy S25 (comments board 2026-08-21), not iOS."""
+    """The owner is on a Galaxy S25 (comments board 2026-08-21), not iOS."""
     assert {"image/png", "image/jpeg", "image/webp", "image/heic"} <= set(CONTENT_TYPES)
     # Every extension is distinct, or two content types would collide on
     # one name and `read_upload` would hand back the wrong header.
@@ -287,7 +287,7 @@ def test_the_content_type_allowlist_covers_what_an_android_phone_produces():
 
 # --- Files that are not images (Cycle 309) ------------------------------
 #
-# Edvard, comments board 2026-08-21 21:09: *"How about a file? It seems i
+# the owner, comments board 2026-08-21 21:09: *"How about a file? It seems i
 # only can upload images. Or atleas the ui forces only my Google photos to
 # open and i have no option to upload files."* Two bugs behind that one
 # sentence -- the picker was pinned to `image/*` in `app.js`, and

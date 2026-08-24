@@ -1,4 +1,4 @@
-"""Edvard changing a rating a cycle wrote (`issues.md` capture, 2026-08-14)."""
+"""The owner changing a rating a cycle wrote (`issues.md` capture, 2026-08-14)."""
 
 import agora_runner.nova_capture as nova_capture
 from agora_runner.nova_boards import (
@@ -117,7 +117,7 @@ def test_set_priority_writes_once_and_sends_the_revision_it_read(monkeypatch):
     assert ok and "#57" in message
     assert len(calls) == 1
     assert seen["if_rev"] == "7-abc"
-    # The invariant that survived both renames, and the only one Edvard
+    # The invariant that survived both renames, and the only one the owner
     # ever actually asked for: the **word** is in what gets written. The
     # glyph came back beside it in Cycle 274 (*"if you use the symbol and
     # text, thats completely fine!"*); what may never come back is the
@@ -151,7 +151,7 @@ def test_a_rated_bullet_splits_into_a_rating_and_his_words():
 
 
 def test_a_bullet_captured_before_the_glyph_was_dropped_still_reads():
-    """Edvard's two files are full of these and nothing rewrites them.
+    """The owner's two files are full of these and nothing rewrites them.
 
     Cycle 268 stopped *writing* the coloured ball; every bullet captured
     before it still carries one, so dropping the read would silently
@@ -166,7 +166,7 @@ def test_the_word_form_needs_its_colon_because_a_word_can_open_a_sentence():
 
     A leading glyph is unambiguous -- no sentence opens with a coloured
     ball. "High" opens one easily, and reading it as a rating would eat
-    the first word of the capture and file it under a rating Edvard never
+    the first word of the capture and file it under a rating the owner never
     gave it. This is the regression the rename could have shipped.
     """
     assert split_capture_priority("High memory use in the runner pod") == (
@@ -285,7 +285,7 @@ def test_the_javascript_rating_list_is_byte_identical_to_the_python_one():
     # And the separator beside it, for the same reason and with a sharper
     # failure: `app.js` builds the capture bullet and `split_capture_priority`
     # parses it back, so a drift here does not raise anything -- it writes
-    # `High fix the thing` into Edvard's file, which reads as unrated prose
+    # `High fix the thing` into the owner's file, which reads as unrated prose
     # with his rating gone and the word left in his sentence.
     sep = re.search(r'var PRIORITY_SEP = ("[^"]*");', source)
     assert sep, "app.js no longer declares PRIORITY_SEP as a single-line string"
@@ -293,7 +293,7 @@ def test_the_javascript_rating_list_is_byte_identical_to_the_python_one():
 
 
 def test_an_outdated_row_is_refused_a_rating_the_same_way_a_done_one_is():
-    """`⚫ Outdated` is the fifth status, from Edvard's `issues.md` #85.
+    """`⚫ Outdated` is the fifth status, from the owner's `issues.md` #85.
 
     It means the row will never be built, which is a closed row -- so it
     takes no rating, for the same reason `✅ Done` takes none: a priority

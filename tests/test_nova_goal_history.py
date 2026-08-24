@@ -1,6 +1,6 @@
 """The weekly goal-snapshot ledger (idea #38).
 
-What these pin is the two ways a chart of Edvard's own goals could lie to
+What these pin is the two ways a chart of the owner's own goals could lie to
 him: a point drawn from something that is not a measurement, and a series
 that quietly restarts when he rewrites a goal's wording.
 """

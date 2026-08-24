@@ -43,7 +43,7 @@ HISTORY = "/data/claude-home/quota-history.jsonl"
 
 # The last-resort fallback, not the truth. `nova_cadence_minutes()` in
 # `agora_runner.cycle_health` is the truth and `main` asks it first --
-# Edvard has changed the cadence five times since 2026-08-08, so a
+# the owner has changed the cadence five times since 2026-08-08, so a
 # constant here would be exactly the mistake this module's docstring
 # accuses `prompt.md` of. It is only used when that lookup has no honest
 # answer (Agora unreachable, or a schedule with no single interval) and
@@ -193,7 +193,7 @@ def observed_cadence_minutes(rows, now, window_hours=48, bucket=5):
     which is the pod that cannot ask Agora what the schedule says.
 
     It is the **mode** of the gaps and not the median, because not every
-    start is a heartbeat -- Edvard talking to Nova directly opens a
+    start is a heartbeat -- the owner talking to Nova directly opens a
     session too, and that inserts an extra start which splits one
     interval into two short ones without changing their sum. Those land
     all over the low buckets while the scheduled ones pile up on one, so
@@ -204,7 +204,7 @@ def observed_cadence_minutes(rows, now, window_hours=48, bucket=5):
     Gaps rounding to zero are dropped. That is the one assumption here
     and it is narrow: two starts inside half a bucket are a re-entry
     within one session, not two wake-ups, because the shortest cadence
-    Edvard has ever set is 40 minutes and a turn alone is capped at 45.
+    the owner has ever set is 40 minutes and a turn alone is capped at 45.
 
     Returns `(None, 0, sampled)` when the sample cannot support a mode --
     a winner backed by a single gap is not a measurement.

@@ -392,7 +392,7 @@ def test_asterisks_inside_backticks_stay_literal():
 
 
 def test_an_attachment_becomes_a_span_with_its_url_split_out():
-    """Edvard's uploaded picture, in a board write-up rather than a comment.
+    """The owner's uploaded picture, in a board write-up rather than a comment.
 
     A board comment is appended to the row's own write-up, which reaches
     the page as server-parsed spans -- so until this existed, the file he
@@ -964,7 +964,7 @@ def test_an_oversized_body_is_refused_without_being_read():
 
 
 def test_a_body_at_the_limit_is_still_accepted():
-    """The cap is a memory bound, not an opinion about how much Edvard may
+    """The cap is a memory bound, not an opinion about how much the owner may
     type, so the boundary itself has to pass."""
     text = "x" * (nova_capture.MAX_BODY_BYTES - 200)
     with patch.object(nova_site, "capture", return_value=(True, "ok")) as cap:
@@ -1163,7 +1163,7 @@ def test_the_site_entrypoint_script_reaches_site_main():
     assert entrypoint.main is site_main_module.main
 
 
-# --- Cycle 56: the emoji Edvard asked for, and the collapsed card ---
+# --- Cycle 56: the emoji the owner asked for, and the collapsed card ---
 
 
 def _entry(body, title=""):
@@ -1242,7 +1242,7 @@ def truncations_in(source):
     The rule this serves is that a journal card's prose is hidden by CSS
     and never cut client-side -- a server-side or client-side truncation
     puts the text out of reach of find-in-page, and cutting it mid-sentence
-    is what Edvard reported on 2026-08-09.
+    is what the owner reported on 2026-08-09.
 
     It stays a blunt, whole-file ban on `slice(0,` and `substring(` on
     purpose. Cycle 323 first tried narrowing it to receivers that *read*
@@ -1309,14 +1309,14 @@ def test_the_truncation_guard_can_actually_fail():
 
 
 def test_a_collapsed_card_hides_the_body_without_dropping_it():
-    """Edvard asked for cards that collapse to 2-3 lines, then for a drawer
+    """The owner asked for cards that collapse to 2-3 lines, then for a drawer
     within a drawer. Every level is hidden by a class and none of them is cut
     -- all the text stays in the DOM. A server-side truncation would have been
     the easy version and would have put the prose out of reach of find-in-page.
 
     The line clamp this used to assert is deliberately gone. The brief now
     arrives already cut on a sentence boundary, so a clamp could only break it
-    again in the middle, which is the thing Edvard reported on 2026-08-09."""
+    again in the middle, which is the thing the owner reported on 2026-08-09."""
     css = open(
         os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "style.css"),
         encoding="utf-8",
@@ -1342,7 +1342,7 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
     )
 
 
-# --- The `Needs Edvard` box, and the emphasis that kept it on screen -------
+# --- The `Needs Edvard` box, and the emphasis that kept it on screen -------  (not-prose: quoting a literal)
 
 
 @pytest.mark.parametrize(
@@ -1350,7 +1350,7 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
     ["**Nothing.**", "*Nothing*", "__none__", "`nothing`", "**None**", "Nothing.", "  ", ""],
 )
 def test_a_bolded_nothing_is_still_nothing(text):
-    """Edvard, issues.md 2026-08-09: "The 'needs Edvard' box should not show
+    """The owner, issues.md 2026-08-09: "The 'needs the owner' box should not show
     when nothing is expected."
 
     The section was compared literally, so `Nothing.` was empty and
@@ -1440,7 +1440,7 @@ def test_an_unrecognised_prefix_becomes_no_link_at_all():
 
 def test_no_pr_field_in_the_live_journal_loses_a_character(journal_md):
     """The spans must reassemble the field exactly. This is the invariant
-    that makes "leave it as is" (Edvard's words) checkable rather than
+    that makes "leave it as is" (the owner's words) checkable rather than
     asserted -- linkifying is allowed to add structure and never to edit."""
     fields = {e["pr"] for e in parse_journal_file(journal_md) if e["pr"]}
     assert fields
@@ -1455,7 +1455,7 @@ def test_the_payload_carries_the_pr_spans_the_client_reads():
     assert all("prSpans" in entry for entry in payload["entries"])
 
 
-# --- The `Board:` field becomes links into Edvard's own boards -------------
+# --- The `Board:` field becomes links into the owner's own boards -------------
 
 
 @pytest.mark.parametrize(
@@ -1478,7 +1478,7 @@ def test_a_board_reference_resolves_to_the_page_that_holds_it(field, expected):
 def test_a_board_field_with_no_word_and_number_makes_no_link(field):
     """A bare `#68` is the one shape that must stay plain text. In the `PR:`
     field a bare number has exactly one meaning; here it could be either
-    board, and the two are different pages -- so guessing sends Edvard to a
+    board, and the two are different pages -- so guessing sends the owner to a
     real write-up that is not the one the cycle worked on."""
     spans = parse_board_refs(field)
     assert not [s for s in spans if s["kind"] == "link"]
@@ -1584,7 +1584,7 @@ def _css_rule(selector):
 
 
 def test_the_digest_summary_is_the_same_colour_as_the_prose_it_summarises():
-    """Edvard, issues.md 2026-08-09: "the Digest is hard to read with grey
+    """The owner, issues.md 2026-08-09: "the Digest is hard to read with grey
     against the blue background. White is better like the actual journal."
 
     Worth a test rather than a look, because this is the one change of the
@@ -1601,7 +1601,7 @@ def test_the_digest_summary_is_the_same_colour_as_the_prose_it_summarises():
 def test_a_digest_line_carries_its_bold_as_spans_not_asterisks():
     """Nearly every digest line opens with a bolded sentence. The card
     rendered `text` verbatim, so it was the only text on the page showing
-    its own markup -- and it is the same line Edvard called hard to read.
+    its own markup -- and it is the same line the owner called hard to read.
     Found by rendering the live files rather than the fixtures, which do
     not happen to contain a bold digest line.
 
@@ -1627,7 +1627,7 @@ def test_a_digest_line_carries_its_bold_as_spans_not_asterisks():
 
 
 def test_two_digest_lines_with_no_blank_line_between_them_are_two_cards():
-    """A missing blank line cost Edvard a whole card without anything going
+    """A missing blank line cost the owner a whole card without anything going
     red. The live file had Cycle 66 and Cycle 65 separated by a single
     newline, so the digest parsed 21 cards from 22 lines: Cycle 65 vanished
     and Cycle 66's card ended on Cycle 65's closing sentence. The card
@@ -1677,7 +1677,7 @@ def test_a_cycle_line_glued_under_prose_still_gets_its_own_card():
 
 # --- The brief, and the drawer within a drawer ----------------------------
 #
-# Edvard, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
+# the owner, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
 # each cycle as a title for each journey card ... As short as possible, max 3
 # sentences ... Then, when a journey card is opened, the Digest is revealed.
 # Below that, a 'read the full journal' button to expand the full journal ...
@@ -1719,7 +1719,7 @@ def test_brief_and_rest_reconstruct_the_whole_summary():
 
 def test_a_bold_opening_sentence_is_the_whole_brief():
     """The house style for a digest line is a bolded opening sentence saying
-    what changed for Edvard -- all 9 live lines have one. That sentence was
+    what changed for the owner -- all 9 live lines have one. That sentence was
     written to be the headline, so pulling a second sentence in after it
     whenever the headline was short is the opposite of "as short as possible"."""
     text = "**Short headline.** A second sentence that the budget would otherwise have room for."
@@ -1729,7 +1729,7 @@ def test_a_bold_opening_sentence_is_the_whole_brief():
 
 
 def test_a_bold_label_is_not_the_report_cards_whole_title():
-    """Edvard, issues #86: "the 8cycle reports have just the word tl;dr as
+    """The owner, issues #86: "the 8cycle reports have just the word tl;dr as
     title". Report 242's first paragraph really is shaped like this, and
     `split_brief` alone returns `**TL;DR.**` and nothing else."""
     text = (
@@ -1881,7 +1881,7 @@ def test_a_comment_is_audited_with_what_was_typed():
 )
 def test_a_malformed_comment_is_400_and_never_touches_the_vault(payload):
     """400 rather than 502: these are the client asking for something
-    wrong, not the vault failing, and the difference is what tells Edvard
+    wrong, not the vault failing, and the difference is what tells the owner
     whether retrying is worth anything."""
     with patch.object(nova_site, "add_comment") as add:
         status, _, _ = _post("/api/comment", payload)
@@ -1932,7 +1932,7 @@ def test_an_oversized_comment_is_refused_before_it_is_read():
 
 # --- one document per entry (issues.md: "stop writing to a huge file") ----
 #
-# Edvard asked for the journal to stop being one 291KB vault document, so
+# the owner asked for the journal to stop being one 291KB vault document, so
 # entries now live one-per-document under `JOURNAL_DIR`. The invariant the
 # whole migration rests on is that the split is *lossless*: joining the
 # per-entry documents back together must parse to exactly what the
@@ -2427,7 +2427,7 @@ def test_the_single_entry_fetch_normalises_the_same_way_the_folder_does(monkeypa
     # The reply worker's fast path. Without this it parses to zero
     # entries and falls back to the full journal, where -- before this
     # change -- the entry was absorbed into its neighbour and so was not
-    # found there either, leaving Edvard's reply written with no memory
+    # found there either, leaving the owner's reply written with no memory
     # of the entry he was replying to.
     from agora_runner import nova_sources
 
@@ -2654,7 +2654,7 @@ def test_accept_encoding_is_parsed_not_pattern_matched(header, expected):
     assert nova_site.accepts_gzip(header) is expected
 
 
-# --- Replying to Needs Edvard over HTTP (2026-08-10) ------------------------
+# --- Replying to Needs Edvard over HTTP (2026-08-10) ------------------------  (not-prose: quoting a literal)
 #
 # `{"target": "needs"}` instead of a `cycle`. The boundary is the same one
 # the rest of this endpoint holds: `target` is checked against a one-value
@@ -2812,7 +2812,7 @@ def test_the_comments_endpoint_says_which_replies_are_still_coming():
 
 
 def test_a_long_wait_is_flagged_rather_than_called_a_reply_being_written():
-    """Edvard, on cycle 81: "Nova is replying..." should only be visible if
+    """The owner, on cycle 81: "Nova is replying..." should only be visible if
     its actually working on replying". Past the threshold something is
     holding it up. Which thing is deliberately not asserted here -- see
     comments_payload and issue #80."""
@@ -2893,7 +2893,7 @@ def test_a_reply_that_failed_says_so_instead_of_vanishing():
 
 # --- the card's time, measured instead of typed --------------------------
 #
-# Edvard, issues.md 2026-08-10: "I actually see in Agora that the cycle 86
+# the owner, issues.md 2026-08-10: "I actually see in Agora that the cycle 86
 # did start precisely at 19:00 at only ran for 7 minutes. But the Journal
 # said 19:30. Thats wierd."
 #
@@ -2920,7 +2920,7 @@ def test_the_entry_time_comes_from_the_documents_mtime_not_the_typed_heading():
 
 
 def test_a_heading_with_no_cycle_number_keeps_its_typed_stamp():
-    # Edvard's own messages and the odd addendum carry no cycle number, so
+    # The owner's own messages and the odd addendum carry no cycle number, so
     # there is no file to join them to. Borrowing another entry's time
     # would be worse than the guess it replaced.
     times = {86: [("2026-08-10", "19:06")]}
@@ -2964,7 +2964,7 @@ def test_a_document_with_no_mtime_is_skipped_rather_than_crashing():
     assert entry_times({JOURNAL_DIR + "093-cycle-86.md": None}) == {}
 
 
-# Edvard, issues.md 2026-08-10: "Nova takes a long time to load when i
+# The owner, issues.md 2026-08-10: "Nova takes a long time to load when i
 # refresh it." /api/journal cost 3.0-3.5s on the live pod and was rebuilt,
 # identically, on every request. It is served from cache now -- and none of
 # that was pinned by a test when it shipped.
@@ -3001,7 +3001,7 @@ def test_a_stale_payload_is_refreshed_behind_the_request_that_got_it(journal_md)
     assert read.call_count > served, "a stale payload was served and never refreshed"
 
 
-# Edvard, issues.md #71: "I takes 6-7 seconds to load the Nova app, even
+# The owner, issues.md #71: "I takes 6-7 seconds to load the Nova app, even
 # though only 20 journals are shown." The cache above fixed the *second*
 # load and left the first one alone -- and this process is new most hours,
 # because a cycle merging into the runner rolls the nova-site pod. Measured
@@ -3384,7 +3384,7 @@ def test_a_digest_asked_for_the_old_way_is_still_the_whole_digest(journal_md, di
 def test_the_handoff_section_survives_every_window(journal_md, digest_md):
     """`nextCycle` is the header, not the feed -- it is not part of what
     gets sliced, and it renders on every window the same way the status
-    header does. `needsEdvard` used to be asserted here too; the block was
+    header does. `needsEdvard` used to be asserted here too; the block was  (not-prose: an identifier)
     deleted from the page in #229 and its server half in #236."""
     with _both(journal_md, digest_md):
         _, _, windowed = _get("/api/digest?limit=1")
@@ -3598,7 +3598,7 @@ def test_health_routes_pin_every_branch_of_the_routing_rule():
         _, _, body = _get("/api/health")
     routes = {r["path"]: r["database"] for r in json.loads(body)["routes"]}
     assert routes["projects/sokrates/projects/agora/journal-digest.md"] == "nova"
-    # A `.bak` beside the digest is Edvard's file and must not follow it.
+    # A `.bak` beside the digest is the owner's file and must not follow it.
     assert routes["projects/sokrates/projects/agora/journal-digest.md.bak"] == "obsidian"
     # The Nova folder he asked to keep in his own vault.
     assert routes["projects/sokrates/projects/nova/nova.md"] == "obsidian"
@@ -3659,7 +3659,7 @@ def test_health_probes_use_a_short_timeout_not_the_60s_default():
 
 # --- a capture is visible on the very next request -----------------------
 #
-# Edvard, `issues.md` 2026-08-12: *"When i create a new issues, the 'not
+# the owner, `issues.md` 2026-08-12: *"When i create a new issues, the 'not
 # boarded yet' block for issues is not refreshed automatically. This is
 # probably a problem for ideas aswell."*
 #
@@ -3695,7 +3695,7 @@ def _board_captures(name="issues"):
 
 
 def test_a_capture_is_in_the_board_on_the_very_next_request():
-    """The bug, stated as the behaviour Edvard expects."""
+    """The bug, stated as the behaviour the owner expects."""
     nova_site.reset_cache()
     live = {"text": "---\n---\n\n- an older capture\n- \n\n## Board\n"}
     with patch.object(nova_site, "board_markdown",
@@ -3794,7 +3794,7 @@ def test_only_the_window_the_reader_asked_for_is_ever_rendered():
             assert render.call_count == len(page["entries"])
 
 
-# --- The eight-cycle report card (Edvard, comments board at cycle 156) ---
+# --- The eight-cycle report card (the owner, comments board at cycle 156) ---
 
 
 REPORT_ENTRY = (
@@ -3919,7 +3919,7 @@ def test_nova_site_main_is_runnable_as_a_module():
     assert source.rstrip().endswith("main()")
 
 
-# --- POST /api/board/edit and /api/board/delete: Edvard's issue #84 ---
+# --- POST /api/board/edit and /api/board/delete: The owner's issue #84 ---
 # *"I need to be able to edit and especially delete boarded ideas and
 # issues from the agora app."* The same two boundaries as every other
 # write path here: `target` is a key into a dict of literal paths, never a
@@ -4116,7 +4116,7 @@ def test_commenting_on_a_boarded_row_reaches_the_vault_through_the_real_request_
 
 
 def test_a_cycles_reply_is_attributed_to_nova_and_not_to_him():
-    """`comment_on_row` hardcoded `author="Edvard"` while its own docstring
+    """`comment_on_row` hardcoded `author="Edvard"` while its own docstring  (not-prose: quoting a literal)
     told a cycle to reply with `author="Nova"`, so every reply this loop
     made through this route was written into his board as words he had
     said. Worse than cosmetic: `unanswered_comments` calls a row waiting
@@ -4137,7 +4137,7 @@ def test_an_author_neither_of_us_uses_is_refused_before_any_write(author):
     """His board is not a place to write under an arbitrary name.
 
     `" "` is in here deliberately: it is truthy, so it survives the
-    `or "Edvard"` fallback and would be written as the author verbatim.
+    `or "Edvard"` fallback and would be written as the author verbatim.  (not-prose: quoting a literal)
     The casing pair is here because `append_detail_note` renders the
     string as given -- `**nova, 08-17:**` is not a name either of us uses.
     """
@@ -4234,7 +4234,7 @@ def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
     inv.assert_called_once_with("board:ideas")
 
 
-# --- Clearing a Needs Edvard item from the page (issue #93) ---------------
+# --- Clearing a Needs Edvard item from the page (issue #93) ---------------  (not-prose: quoting a literal)
 
 
 
@@ -4246,7 +4246,7 @@ def test_the_plan_page_and_its_endpoint_both_answer():
     tests stub `fetch`, so nothing else here would notice `/plan` or
     `/api/plan` disappearing and the nav tab 404ing on his phone. That
     is not hypothetical on this page: the two documents it serves live
-    in Edvard's own database, which this process reaches with a
+    in the owner's own database, which this process reaches with a
     different credential from the one the boards use.
 
     The second half asserts what a *missing* document does, because it
@@ -4284,7 +4284,7 @@ def test_the_notes_page_and_its_endpoint_both_answer():
     tests stub `fetch`, so nothing else here would notice `/notes` or
     `/api/notes` disappearing and the nav tab 404ing on his phone.
 
-    Edvard's capture, 2026-08-21: *"I do not have a notes page that shows
+    The owner's capture, 2026-08-21: *"I do not have a notes page that shows
     any overview of the notes made."* `notes.md` is in his own database,
     which this process reaches with a different credential from the one
     the boards use -- so the empty half matters here as much as it does

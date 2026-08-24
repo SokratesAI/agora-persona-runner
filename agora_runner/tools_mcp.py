@@ -1,7 +1,7 @@
 """One toolset for every agent -- Agora's own capability tools, served to
 claude-cli personas over MCP.
 
-Edvard, 2026-08-06, reading a digest line that mentioned "both tools that
+The owner, 2026-08-06, reading a digest line that mentioned "both tools that
 made them -- the one I use and the one your Gemini/Anthropic personas
 use": *"There are different tools for you and Gemini? That should not be
 the case. Gemini and other agents should use the same custom tools as you

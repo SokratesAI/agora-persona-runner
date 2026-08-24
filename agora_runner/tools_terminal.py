@@ -9,7 +9,7 @@ from agora_runner.log import log
 # --------------------------------------------------------------------------
 # terminal_exec (2026-07-29, terminalExec) -- Issues.md's #1 open item:
 # "no tool grants direct shell access". Runs in this same pod, the same
-# one kubectl_read/github_read/create_pr already run in -- Edvard's
+# one kubectl_read/github_read/create_pr already run in -- the owner's
 # explicit call (asked directly rather than assumed) was to build it here
 # rather than an isolated per-command sandbox, so it has no narrower
 # blast radius than the union of every other tool in this file plus

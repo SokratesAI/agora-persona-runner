@@ -47,7 +47,7 @@ def _run(couch, name, args, conversation_id=CONV, active_step=None):
 
 
 def test_a_write_after_someone_else_wrote_loses_instead_of_clobbering():
-    """The whole point, end to end through the tool belt. Edvard types a
+    """The whole point, end to end through the tool belt. The owner types a
     comment while a cycle is mid-edit; the cycle's write must fail rather
     than take his words with it."""
     couch = FakeCouch()
@@ -79,7 +79,7 @@ def test_a_lost_race_is_audited_as_a_failure_and_not_as_a_diff():
     """The recovery sentence is appended to the client's string, so the
     "FAILED" prefix `_audit_vault_write` keys on has to survive it. If it
     did not, the audit log -- the only durable record of what a persona did
-    to Edvard's vault -- would render a completed before/after diff for a
+    to the owner's vault -- would render a completed before/after diff for a
     write that never happened."""
     couch = FakeCouch()
     couch.seed(PATH, "one\n")

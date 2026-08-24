@@ -1,11 +1,11 @@
 """A dead cycle leaves a marker on the feed, and the marker does not disarm the alarm.
 
-Sokrates' proposal on Edvard's `issues.md`, 2026-08-24: a run that fails
+Sokrates' proposal on the owner's `issues.md`, 2026-08-24: a run that fails
 before it can write leaves nothing on the journal feed, so three dead cycles
 looked exactly like three quiet hours. The half these tests care most about
 is the trap in it -- a marker is a journal entry, and `stall_notice` dedupes
 on the newest journal entry's write time, so a marker that counted as the
-loop writing would silence the one message that reaches Edvard's phone.
+loop writing would silence the one message that reaches the owner's phone.
 """
 
 from datetime import datetime

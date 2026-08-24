@@ -1,4 +1,4 @@
-"""Tell Edvard when the loop has stopped, because silence looks like a quiet hour.
+"""Tell the owner when the loop has stopped, because silence looks like a quiet hour.
 
 The open half of his issue #70. Detection has been built for days --
 `cycle_health.stalled_for` counts whole heartbeat intervals since the newest
@@ -51,10 +51,10 @@ def nova_conversation(heartbeats):
     Read from the live heartbeat rather than configured, because the
     heartbeat rotates Nova into a new conversation every cycle -- an id
     baked into a manifest would be correct for one hour and then point at
-    a conversation Edvard has stopped reading.
+    a conversation the owner has stopped reading.
 
     **`push` comes off the same heartbeat, and the first version of this
-    threw it away.** `pushNotifications: false` is the switch Edvard asked
+    threw it away.** `pushNotifications: false` is the switch the owner asked
     for on 2026-08-14 and got the same day (#178): a muted heartbeat still
     posts, it just does not buzz. A notice that ignores it defeats the mute
     for the one case a mute cannot distinguish from nothing happening,
@@ -158,7 +158,7 @@ class StallWatch:
 
         Never raises. This runs inside the site's shutdown loop, and a
         transient failure reaching Agora or the vault must cost a check,
-        not the process serving Edvard's app.
+        not the process serving the owner's app.
         """
         now = time.monotonic() if now is None else now
         if self._checked_at is None:
@@ -198,7 +198,7 @@ def _live_status():
     most. `_with_silence` measures a live `now` against a cached
     `lastWrittenAt`, so a rebuild that keeps failing reads as a loop that
     stopped writing -- and unlike the badge, this consumer *pushes to
-    Edvard's phone*. Without the age it would tell him the loop is dead
+    the owner's phone*. Without the age it would tell him the loop is dead
     because this process lost its own connection to the vault, which is
     the one false alarm that costs the notice its credibility.
 

@@ -4,7 +4,7 @@ The reply worker answers a comment on cycle N's card and needs cycle N's
 entry. It got there through `journal_markdown`, which pulls the whole
 `nova/journal/` folder because the site's journal *page* renders the whole
 folder -- 103 documents and 437KB assembled and parsed to answer a
-question about one of them, on every comment Edvard leaves.
+question about one of them, on every comment the owner leaves.
 
 Measured against the live vault on 2026-08-11, which is what these tests
 are protecting:

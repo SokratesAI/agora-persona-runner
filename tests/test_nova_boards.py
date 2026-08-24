@@ -1,6 +1,6 @@
 """The board pages: the parser, and the route that serves them.
 
-Edvard, issues.md #57: *"Create more pages to contain more, such as
+The owner, issues.md #57: *"Create more pages to contain more, such as
 issue list, idea list (separate pages)"*.
 
 The fixtures are real, for the reason `test_nova_site.py` gives at
@@ -273,7 +273,7 @@ def test_the_rolled_off_captures_still_reach_the_page(board_md, notes_md):
     """The blocker Cycle 112 refused to roll around.
 
     `roll_captures.py` moves everything past the newest 60 into an
-    archive beside the live file. This page is what Edvard opens, so if
+    archive beside the live file. This page is what the owner opens, so if
     it reads only the live path, the first roll silently deletes two
     thirds of it. Live notes first, archived ones after, because both
     files are newest-first and the archive holds only what is older.
@@ -335,7 +335,7 @@ def test_the_board_reads_the_same_file_the_capture_button_writes():
 
 
 def test_priority_is_read_from_the_fifth_column():
-    """Edvard's rating, appended rather than inserted.
+    """The owner's rating, appended rather than inserted.
 
     Appended so that every cell above it keeps its index: a board he has
     not rated yet has four columns and must still parse, and it does --
@@ -403,7 +403,7 @@ def test_done_rows_never_take_a_priority():
 
 
 def test_immediately_and_immediate_are_one_bucket():
-    """"immediately" is the word Edvard used in the capture; "immediate"
+    """"immediately" is the word the owner used in the capture; "immediate"
     is the word a hand-edit reaches for. A rating that fell into its own
     bucket would sort last, which is the opposite of what it says."""
     assert priority_key("Immediately") == "immediate"
@@ -504,7 +504,7 @@ def test_unanswered_comments_clears_once_nova_replies():
 
 
 def test_unanswered_comments_is_positional_not_a_count():
-    """Edvard, Nova, Edvard is one note each way and still waiting on me."""
+    """The owner, Nova, the owner is one note each way and still waiting on me."""
     assert _uc("**Edvard, 08-13:** one\n\n**Nova, 08-13 (Cycle 1):** two\n\n"
                "**Edvard, 08-15:** three") == [4]
 
@@ -547,7 +547,7 @@ def test_unanswered_comments_is_positional_where_a_count_would_disagree():
     that makes the flag worth ignoring.
 
     Written after mutating the rule to a count and watching all 63 tests
-    pass: `Edvard, Nova, Edvard` is 2-vs-1 and both rules call it waiting,
+    pass: `the owner, Nova, the owner` is 2-vs-1 and both rules call it waiting,
     so the test that claimed to pin this pinned nothing.
     """
     assert _uc("**Edvard, 08-13:** one\n\n**Edvard, 08-13:** and another\n\n"
@@ -555,7 +555,7 @@ def test_unanswered_comments_is_positional_where_a_count_would_disagree():
 
 
 def test_unanswered_comments_ignores_bold_prose_that_looks_like_a_note():
-    """`**Edvard, in his own words:**` is prose and must not flag the row.
+    """`**Edvard, in his own words:**` is prose and must not flag the row.  (not-prose: quoting a literal)
 
     A false positive here never clears: no reply of mine can answer a note
     that was never a note, so the row claims to be waiting forever. The

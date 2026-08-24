@@ -2,7 +2,7 @@
 
 runner#45 stopped a message typed into a cycle transcript from firing a
 whole PR-opening Claude Code run, which was right -- but it replaced an
-expensive answer with no answer at all. Edvard's message IS carried into
+expensive answer with no answer at all. The owner's message IS carried into
 the next scheduled run (heartbeats.pending_across_cycles), and from a
 phone that is indistinguishable from being ignored for up to six hours.
 This is the missing third option: acknowledge in one HTTP call, do the
@@ -23,19 +23,19 @@ from agora_runner.audit import audit
 
 # The chip's capability, which is also its dedupe key: "have I already
 # acknowledged this?" is answered by looking for one of these stamped
-# after Edvard's newest message, with no local state at all. An
+# after the owner's newest message, with no local state at all. An
 # in-process memo would re-post the chip after every pod restart.
 QUEUED_CAPABILITY = "Queued"
 
 # Stamped when ordinary turn-taking has just answered him *live* in the
 # conversation a rotating heartbeat currently points at (2026-08-19, at
-# Edvard's ask -- see in_flight_cycle_conversation_ids). It is the same
+# the owner's ask -- see in_flight_cycle_conversation_ids). It is the same
 # stateless-dedupe trick as QUEUED_CAPABILITY, used for the opposite
 # purpose: _unread_from_edvard reads it as "already answered, do not
 # carry this into the next run's trigger".
 #
 # A chip rather than the persona reply itself, because in a cycle
-# transcript a persona message after Edvard is ambiguous -- it is either
+# transcript a persona message after the owner is ambiguous -- it is either
 # the live answer this marks, or the running cycle's own report landing
 # underneath something he typed mid-run, which must still be carried.
 # Only one of those two stamps a chip.
@@ -75,7 +75,7 @@ def _speaker_name(summary):
 
 
 def acknowledge_deferred(summary):
-    """Post one chip if Edvard has written here since we last said so.
+    """Post one chip if the owner has written here since we last said so.
 
     `summary` is poll_once's existing listing entry, so the common case
     (nothing new) costs nothing but a dict lookup.
@@ -115,7 +115,7 @@ def acknowledge_deferred(summary):
     # That is the behaviour we want -- he is already looking at the app if
     # he just typed here, and a run that fires four times a day should not
     # ring his phone to say it has not started yet.
-    # Edvard, 2026-08-20, on the text this replaces ("Noted — carried into
+    # The owner, 2026-08-20, on the text this replaces ("Noted — carried into
     # the next run. The answer arrives in that run's own conversation, not
     # here."): "That message should be removed and you should actually
     # answer my responds and do actual work immediately. Like the good old

@@ -1,6 +1,6 @@
 """
 Tests for the agora_runner package (moved here 2026-07-29 from agora-config's
-persona-runner.yaml embedded ConfigMap script -- Edvard's explicit ask to
+persona-runner.yaml embedded ConfigMap script -- the owner's explicit ask to
 migrate off a single giant embedded script onto a real repo + built image +
 real modules, both for editability and because a monolithic YAML-embedded
 script was a bad substrate for the planned self-evolution loop to work
@@ -825,7 +825,7 @@ def test_vault_write_path_lowercases_the_path_field_not_just_the_id(runner):
 
 def test_vault_write_path_does_not_copy_previous_content_into_the_vault(runner):
     """Every overwrite used to write a second document holding the old
-    content under agora/backups/. Edvard asked for it to stop
+    content under agora/backups/. The owner asked for it to stop
     (2026-08-05) -- "since the switch to Nova, this is just noise" -- and
     the folder was deleted. The daily GitHub snapshot is the recovery
     path now."""
@@ -882,7 +882,7 @@ def test_vault_append_path_appends_at_end_when_no_marker_given(runner):
 # instead -- silently, with no error. That is exactly how the identical
 # bug in the bridge's own vault tool (agora-claude-bridge#10) buried three
 # of Nova's journal entries at the bottom of a file whose header promises
-# newest-first; Edvard read it as the loop having stopped writing. The
+# newest-first; The owner read it as the loop having stopped writing. The
 # old behaviour had a passing test asserting it, which is why it survived.
 # Asking for a position and quietly getting the opposite end of the file
 # is the same class of mistake as appending to a file that doesn't exist,
@@ -937,7 +937,7 @@ def test_execute_tool_vault_append_dispatches_and_audits(runner):
 
 
 # 2026-08-03: the audit log is the only durable record of what a persona
-# did to Edvard's vault, and it was lying in exactly the cases worth
+# did to the owner's vault, and it was lying in exactly the cases worth
 # reviewing -- every write branch passed before/after unconditionally, so
 # a call that wrote nothing still produced an entry carrying the new
 # content as the "after" side, which Agora's Activity feed renders as a
@@ -1184,7 +1184,7 @@ def test_anthropic_generate_single_text_block_still_works(runner):
 
 
 # ---------------------------------------------------------------------------
-# 2026-07-31: bring back visible "thinking" (Edvard's old Slack-bridge setup
+# 2026-07-31: bring back visible "thinking" (the owner's old Slack-bridge setup
 # streamed thought blocks as thread replies to a "Thinking..." placeholder;
 # Agora never had this for either provider). Anthropic already excluded
 # thinking blocks from round_text correctly -- they just had nowhere to go.
@@ -1282,7 +1282,7 @@ def _make_poll_fixtures(runner, conversation_id="conv-1"):
 
 
 def test_repeated_speak_failures_back_off_without_pausing(runner):
-    """Edvard, 2026-08-05: auto-pause is gone -- it blocked the conversation
+    """The owner, 2026-08-05: auto-pause is gone -- it blocked the conversation
     until he resumed it by hand. The conversation must stay active and the
     retry must simply be deferred."""
     runner._conversation_failures.clear()
@@ -1309,7 +1309,7 @@ def test_repeated_speak_failures_back_off_without_pausing(runner):
 def test_backoff_notice_surfaces_the_real_exception(runner):
     # The label used to be a generic "(rate limit or outage)" guess, with
     # the real exception only ever reaching stdout via poll.py's own
-    # try/except -- never the conversation Edvard actually reads.
+    # try/except -- never the conversation the owner actually reads.
     runner._conversation_failures.clear()
     runner._conversation_backoff.clear()
     summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
@@ -1740,7 +1740,7 @@ def test_backoff_delay_doubles_and_is_capped(runner):
 
 
 def test_turn_cap_stops_the_chain_without_pausing(runner):
-    """PAUSE_SENTINEL used to PATCH status=paused. Edvard asked for that gone;
+    """PAUSE_SENTINEL used to PATCH status=paused. The owner asked for that gone;
     the chain must just stop."""
     summary, detail, calls, fake_agora_get, fake_agora_internal, _ = _make_poll_fixtures(runner)
 
@@ -2010,7 +2010,7 @@ def test_gemini_generate_streams_preamble_before_function_call_then_final_text(r
 def test_gemini_generate_requests_include_thoughts_when_thinking_on(runner):
     """2026-07-31: thinkingBudget alone makes Gemini think for real but
     returns none of it -- includeThoughts is what actually makes the API
-    send thought-summary parts back. This is the entire reason Edvard
+    send thought-summary parts back. This is the entire reason the owner
     never saw Gemini's thoughts in Agora; not a UI gap, a missing request
     param."""
     caps = dict(runner.NO_CAPS)
@@ -2902,7 +2902,7 @@ def test_run_heartbeat_claims_run_even_when_persona_missing(runner):
 # 2026-07-25: K3s Sentinel was created via New Conversation without
 # kubectlRead (fixed separately, agora#19), and even once it had the tool,
 # a monitoring heartbeat reporting "all clear" every single run would be
-# noise -- Edvard's explicit ask: "only send a message back to the chat if
+# noise -- the owner's explicit ask: "only send a message back to the chat if
 # it finds something worth reporting. A clean working cluster should not
 # trigger a message." HEARTBEAT_NO_REPORT_SENTINEL is the mechanism: a
 # heartbeat's own prompt can ask for this exact string when there's
@@ -2954,7 +2954,7 @@ def test_run_heartbeat_uses_rotated_conversation_id(runner):
 
 def test_run_heartbeat_folds_edvards_last_message_into_the_trigger(runner):
     """2026-08-02: claude-cli only ever sees history[-1] (the synthetic
-    trigger) -- without this, a real message Edvard typed into the
+    trigger) -- without this, a real message the owner typed into the
     conversation would be invisible to a claude-cli persona regardless
     of timing."""
     heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
@@ -3012,7 +3012,7 @@ def test_run_heartbeat_trigger_stays_generic_when_last_message_is_from_persona(r
 
 
 # ---------------------------------------------------------------------------
-# 2026-08-05, Edvard's two asks in one message: tell the persona when *he*
+# 2026-08-05, the owner's two asks in one message: tell the persona when *he*
 # started the run rather than the schedule, and give him a visible end to a
 # run he currently has to guess at.
 # ---------------------------------------------------------------------------
@@ -3020,7 +3020,7 @@ def test_run_heartbeat_trigger_stays_generic_when_last_message_is_from_persona(r
 def _heartbeat_run(runner, heartbeat, reply="did a thing", raises=None, system_extra=""):
     """Drives run_heartbeat and returns (system prompt, last history entry,
     chip labels) so a test can assert on what the persona saw and what
-    Edvard saw."""
+    the owner saw."""
     persona = {"id": "p1", "name": "Nova", "model": "claude-cli:claude-opus-5",
                "capabilities": dict(runner.NO_CAPS)}
     detail = {"personas": [], "messages": [], "stickyFallback": False}
@@ -3048,7 +3048,7 @@ def _heartbeat_run(runner, heartbeat, reply="did a thing", raises=None, system_e
 
 
 def test_run_heartbeat_tells_the_persona_edvard_triggered_it_by_hand(runner):
-    """forceRun is the only trace of "Edvard pressed Run", and the claim
+    """forceRun is the only trace of "the owner pressed Run", and the claim
     PATCH clears it server-side -- so if run_heartbeat doesn't read it from
     its own snapshot, nothing downstream can ever know."""
     system, trigger, chips = _heartbeat_run(runner, {
@@ -3088,7 +3088,7 @@ def test_run_heartbeat_closes_the_run_with_a_chip(runner):
 
 
 def test_run_heartbeat_closes_the_run_even_when_it_fails(runner):
-    """The case Edvard actually loses time to: no reply is coming, and
+    """The case the owner actually loses time to: no reply is coming, and
     without this the thread's last entry stays the opening chip forever."""
     _system, _trigger, chips = _heartbeat_run(runner, {
         "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
@@ -3184,7 +3184,7 @@ def _rotating_heartbeat_run(runner, old_messages, persona_name="Test", older=Non
 
 def test_run_heartbeat_carries_edvards_message_across_a_rotation(runner):
     """2026-08-02: rotation replaces `detail` with a brand-new EMPTY
-    conversation, so the fold-in of Edvard's last message could never
+    conversation, so the fold-in of the owner's last message could never
     fire on a rotating heartbeat -- the two halves of #27 cancelled each
     other out and anything he typed between cycles was dropped silently.
     Evolve's own heartbeat rotates, so this was live."""
@@ -3197,7 +3197,7 @@ def test_run_heartbeat_carries_edvards_message_across_a_rotation(runner):
 
 def test_a_message_typed_while_the_cycle_was_running_is_still_carried(runner):
     """This test used to assert the opposite, on the theory that a persona
-    message underneath Edvard's meant he had been answered. In a cycle
+    message underneath the owner's meant he had been answered. In a cycle
     transcript that theory is wrong, and wrong in the most common case
     there is: he watches a run work, types something at minute ten, and at
     minute forty the run posts its own report -- built from a trigger
@@ -3234,7 +3234,7 @@ def test_run_heartbeat_carries_a_message_from_behind_a_dead_cycle(runner):
     """2026-08-02: #28's one-step lookback lands on an EMPTY conversation
     whenever the previous cycle was killed before it replied -- which has
     happened twice in one day, because merging into this repo rolls the
-    pod running the cycle. Everything Edvard typed the cycle before that
+    pod running the cycle. Everything the owner typed the cycle before that
     was then dropped silently and forever. That is exactly why he says he
     can only reach this loop through vault files."""
     history = _rotating_heartbeat_run(runner, [], older={
@@ -3247,7 +3247,7 @@ def test_run_heartbeat_carries_a_message_from_behind_a_dead_cycle(runner):
 
 def test_a_message_already_offered_to_an_earlier_run_is_not_carried_again(runner):
     """The boundary of "already seen". An old cycle conversation ends on
-    Edvard forever -- it gets answered in the NEW conversation, never in
+    the owner forever -- it gets answered in the NEW conversation, never in
     itself -- so without a boundary every cycle would re-surface the same
     line for the rest of its life. Until 2026-08-05 that boundary was "a
     persona replied here"; it is now "this arrived before my last run",
@@ -3263,7 +3263,7 @@ def test_a_message_already_offered_to_an_earlier_run_is_not_carried_again(runner
 
 
 def test_a_message_written_into_an_older_thread_since_the_last_run_is_carried(runner):
-    """The regression that cost a whole cycle on 2026-08-05. Edvard typed
+    """The regression that cost a whole cycle on 2026-08-05. The owner typed
     a one-line note into a transcript from an earlier cycle; the walk
     stopped before reaching it (the previous cycle had replied, as a
     healthy one always does), so ordinary turn-taking answered it instead
@@ -3283,7 +3283,7 @@ def test_a_message_written_into_an_older_thread_since_the_last_run_is_carried(ru
 
 
 def test_every_unanswered_cycle_conversation_is_carried_oldest_first(runner):
-    """Two dead cycles in a row, Edvard writing into both: he gets read
+    """Two dead cycles in a row, the owner writing into both: he gets read
     once, in the order he wrote, not just his newest line."""
     history = _rotating_heartbeat_run(runner, [], older={
         "c-cycle3": [{"sender": "Test", "text": "cycle 3's report", "id": "m1"},
@@ -3318,7 +3318,7 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
     the fan-out stays bounded: one listing plus at most CYCLE_LOOKBACK
     message fetches, however many old conversations exist."""
     heartbeat = {"id": "hb1", "conversationId": "c-new"}
-    # Nothing from Edvard anywhere: this test is about the fan-out, and a
+    # Nothing from the owner anywhere: this test is about the fan-out, and a
     # carried message would only make the empty-result assertion below
     # measure something it isn't trying to measure.
     previous = {"personas": [], "messages": [
@@ -3345,7 +3345,7 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
 
 
 def test_pending_across_cycles_drops_the_oldest_when_over_the_char_cap(runner):
-    """Edvard's own constraint on a long-lived channel: "i do not want
+    """The owner's own constraint on a long-lived channel: "i do not want
     Claude to read that every time as it can quickly be megabytes of
     tokens." Newest wins; nothing is truncated mid-sentence."""
     heartbeat = {"id": "hb1", "conversationId": "c-new"}
@@ -3411,7 +3411,7 @@ def test_run_heartbeat_skips_notify_when_sentinel_returned(runner):
 
 
 # ---------------------------------------------------------------------------
-# 2026-08-03, Edvard: "Tool usage and heartbeats does show in the
+# 2026-08-03, the owner: "Tool usage and heartbeats does show in the
 # conversations, but are displayed after the process is finished... They are
 # there to show that something is processing, but if its displayed after the
 # process is done they serve no purpose other than hindsight logging. I want
@@ -3449,14 +3449,14 @@ def _heartbeat_call_order(runner, *, task=None, reply="all done", raises=None):
 def test_heartbeat_chip_is_posted_before_the_model_is_called(runner):
     """The whole point of the chip is to show a run is in flight, so it has
     to land before the slow part, not after it. For a claude-cli cycle
-    generate_reply is the ~45 minutes Edvard spends staring at nothing."""
+    generate_reply is the ~45 minutes the owner spends staring at nothing."""
     assert _heartbeat_call_order(runner) == \
         ["audit", "generate_reply", "notify", "audit"]
 
 
 def test_heartbeat_chip_survives_a_run_that_dies_midway(runner):
     """A cycle killed or failed after it started used to leave NO trace in
-    the conversation at all -- the failure mode that made Edvard think the
+    the conversation at all -- the failure mode that made the owner think the
     loop had stopped. The up-front chip is now that trace -- and since
     2026-08-05 a closing one says the run is over, not still going."""
     assert _heartbeat_call_order(runner, raises=RuntimeError("boom")) == \
@@ -3589,7 +3589,7 @@ class _DeadStub:
 
 
 def test_a_second_nova_cycle_spawns_while_the_first_is_still_running(runner):
-    """The thing Edvard's 18-minute cadence actually needs.
+    """The thing the owner's 18-minute cadence actually needs.
 
     Opening the bridge's invocation lock (CLAUDE_CLI_CONCURRENT) does
     nothing on its own: this guard sits a layer above it and used to drop
@@ -3832,7 +3832,7 @@ def test_the_next_start_reports_how_many_ticks_were_dropped(runner):
 
 
 def test_force_run_is_exempt_from_the_spawn_mark(runner):
-    """Edvard pressing "run now" is a new request, not one slot read
+    """The owner pressing "run now" is a new request, not one slot read
     twice -- and under the old guard it silently no-opped whenever a
     cycle was already in flight."""
     heartbeat = _plain_hb(forceRun=True, lastRunAt="2026-08-23T19:00:00+00:00")
@@ -3857,7 +3857,7 @@ def test_force_run_is_exempt_from_the_spawn_mark(runner):
 
 def test_a_workflow_heartbeat_never_overlaps_itself(runner):
     """v1's duplicate PRs came from a workflow step re-entering itself.
-    The switch Edvard asked for is about Nova's own cycle."""
+    The switch the owner asked for is about Nova's own cycle."""
     heartbeat = _plain_hb(workflowId="wf1")
 
     with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveStub()]}), \
@@ -4063,7 +4063,7 @@ def test_poll_once_skips_workflow_bound_conversations_but_still_runs_heartbeats(
 def test_cycle_bound_conversation_ids_only_counts_enabled_rotating_heartbeats(runner):
     """Keyed on rotateConversationEachRun, not on being heartbeat-bound
     at all: a non-rotating heartbeat's conversation (K3s Sentinel) is a
-    durable channel Edvard may chat in and must keep ordinary
+    durable channel the owner may chat in and must keep ordinary
     turn-taking."""
     heartbeats_list = [
         {"enabled": True, "rotateConversationEachRun": True, "conversationId": "c1"},
@@ -4078,7 +4078,7 @@ def test_cycle_bound_conversation_ids_only_counts_enabled_rotating_heartbeats(ru
 def test_poll_once_answers_live_cycle_conversation_and_a_plain_heartbeats(runner):
     """A non-rotating heartbeat's conversation (K3s Sentinel) and a normal
     chat have always answered right away, and still do. Since 2026-08-19
-    the live cycle transcript joins them at Edvard's ask.
+    the live cycle transcript joins them at the owner's ask.
 
     This test used to assert the opposite for `cycle9`, on his 2026-08-03
     report that replying there fired an immediate full cycle. He reversed
@@ -4146,7 +4146,7 @@ def _run_in_flight_for(runner, heartbeat_id):
 
 def test_poll_once_answers_a_retired_cycle_conversation_too(runner):
     """2026-08-20: this test used to assert the opposite, and the reversal
-    is Edvard's, twice over.
+    is the owner's, twice over.
 
     The original rule (2026-08-05) skipped every cycle transcript because
     one line typed into an old thread fired a full Claude Code cycle nine
@@ -4199,7 +4199,7 @@ def test_poll_once_answers_a_retired_cycle_conversation_too(runner):
 
 def test_message_in_an_in_flight_cycle_conversation_still_reaches_the_next_trigger(runner):
     """The two halves of the deal, asserted together: poll_once must NOT
-    answer Edvard in a transcript whose own cycle is still running, and
+    answer the owner in a transcript whose own cycle is still running, and
     run_heartbeat MUST then carry what he wrote into the next scheduled
     run's trigger.
 
@@ -4245,7 +4245,7 @@ def test_message_in_an_in_flight_cycle_conversation_still_reaches_the_next_trigg
 
 
 def test_every_cycle_conversation_answers_edvard_on_the_spot(runner):
-    """Edvard's ask, 2026-08-20, after getting the Noted chip in a retired
+    """The owner's ask, 2026-08-20, after getting the Noted chip in a retired
     cycle's thread: "What? I thought i could have a conversation with you
     again? ... you should actually answer my responds and do actual work
     immediately."
@@ -4288,7 +4288,7 @@ def test_every_cycle_conversation_answers_edvard_on_the_spot(runner):
 
 def test_no_answered_live_chip_when_the_turn_did_not_speak(runner):
     """poll_conversation returns falsy for every reason it declined to
-    reply (archived, backoff, last sender not Edvard). Stamping the chip
+    reply (archived, backoff, last sender not the owner). Stamping the chip
     anyway would tell the next run a message had been answered when
     nothing was said, and that message would then never be carried --
     the silent drop #28/#30 exist to prevent."""
@@ -4470,7 +4470,7 @@ def test_run_workflow_steps_round_robin_continues_across_steps(runner):
 def test_run_workflow_steps_scopes_round_robin_to_step_personaids(runner):
     """2026-07-30 fix: a step with personaIds only round-robins among
     that subset, not the whole conversation's participants -- the whole
-    reason it exists (Edvard: round-robin was meant for multi-agent
+    reason it exists (the owner: round-robin was meant for multi-agent
     discussion, not a pipeline step with one designated owner)."""
     participants = [
         {"personaId": "p1", "name": "Coder", "role": "curator"},
@@ -4516,7 +4516,7 @@ def test_run_workflow_steps_skips_step_when_personaids_match_nobody(runner):
 def test_run_workflow_steps_refetches_conversation_every_round(runner):
     """2026-07-30 fix: each round re-fetches the conversation fresh
     instead of working from a static snapshot taken once at the start
-    of the run -- otherwise a message Edvard posts while a run is
+    of the run -- otherwise a message the owner posts while a run is
     executing never reaches a later round of that same run."""
     participants = [{"personaId": "p1", "name": "A", "role": "curator"}]
     persona = {"id": "p1", "name": "A", "model": "anthropic:claude-haiku-4-5-20251001",
@@ -4527,7 +4527,7 @@ def test_run_workflow_steps_refetches_conversation_every_round(runner):
     def fake_agora_get(path):
         fetch_count["n"] += 1
         if fetch_count["n"] == 2:
-            # Simulate Edvard posting mid-run, between round 1 and round 2.
+            # Simulate the owner posting mid-run, between round 1 and round 2.
             return 200, {"messages": [{"sender": "Edvard", "text": "stop and check X"}]}
         return 200, {"messages": []}
 
@@ -5894,7 +5894,7 @@ def test_sleep_between_ticks_returns_early_once_shutdown_is_requested(drainable_
 
 # ---------------------------------------------------------------------------
 # tool_activity.py + /tool-activity -- live tool-use chips for claude-cli
-# personas (2026-08-03). Edvard, asked whether he wanted every tool call or
+# personas (2026-08-03). The owner, asked whether he wanted every tool call or
 # only the ones that change something: "All. I want to know whats going on.
 # It takes away my feeling of control if everything is hidden."
 # ---------------------------------------------------------------------------
@@ -5964,7 +5964,7 @@ def test_grants_are_unique_per_call(clean_grants):
 
 def test_every_tool_call_is_reported_however_many_there_are(clean_grants):
     """There is no ceiling here, on purpose. This used to stop at 400 chips
-    and go silent; Edvard struck that down on 2026-08-04 -- "limiting the tool
+    and go silent; The owner struck that down on 2026-08-04 -- "limiting the tool
     calls (which limits your ability) just because you think it will improve
     the ui is against everything we stand for". Volume is handled by
     collapsing narration in the UI (agora#38), not by dropping it here."""
@@ -6081,7 +6081,7 @@ def test_tool_activity_endpoint_records_a_chip(clean_grants):
 
 
 def test_tool_activity_endpoint_records_what_a_tool_returned(clean_grants):
-    """Edvard's issue 1, asked three times: "I need to see the command with
+    """The owner's issue 1, asked three times: "I need to see the command with
     all metadata and also the output from that command, such as the return
     of a echo command". The output arrives as its own report, tagged with
     the id of the call it belongs to."""
@@ -6263,7 +6263,7 @@ def test_redact_replaces_each_credential_shape_with_a_visible_marker(runner):
 
 def test_redact_keeps_the_variable_name_and_drops_only_the_value(runner):
     """Knowing that ANTHROPIC_API_KEY is *set* is exactly the kind of thing
-    Edvard wants to be able to see; the value is the part that must not ship."""
+    the owner wants to be able to see; the value is the part that must not ship."""
     out = audit_module.redact("ANTHROPIC_API_KEY=hunter2-and-then-some\nHOME=/root")
     assert "ANTHROPIC_API_KEY=[redacted: value]" in out
     assert "hunter2-and-then-some" not in out
@@ -6306,7 +6306,7 @@ def test_redact_covers_the_name_this_system_keeps_its_own_password_under(runner)
 
 def test_redact_does_not_eat_the_english_word_pass(runner):
     """Why `_PASS` carries its underscore. Over-redacting prose is the
-    failure Edvard's keep-everything rule is actually about, so the widening
+    failure the owner's keep-everything rule is actually about, so the widening
     above has to be pinned from both sides or the next cycle drops the
     underscore to catch one more case."""
     for text in ("second pass: completed successfully",
@@ -6443,7 +6443,7 @@ def test_a_second_message_after_an_acknowledgment_is_acknowledged_again(runner):
 
 def test_a_cycle_talking_to_itself_is_not_acknowledged(runner):
     """A running cycle fills its own transcript with chips and passages.
-    None of that is Edvard, and acknowledging it would post a chip every
+    None of that is the owner, and acknowledging it would post a chip every
     five seconds for forty-five minutes."""
     calls, _ = _ack(runner, [
         {"sender": "Nova", "text": "Bash: pytest", "ts": "2026-08-05T15:30:00Z",
@@ -6526,7 +6526,7 @@ def test_the_acknowledgment_reads_only_the_tail_of_the_conversation(runner):
 
 def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
     """The two skip sets are kept apart on purpose. A cycle transcript
-    defers Edvard's message to the next scheduled run and can promise him
+    defers the owner's message to the next scheduled run and can promise him
     one; a workflow-bound conversation makes no such promise, and saying
     it did would be a lie in the one place he already cannot see what
     happened.
@@ -6586,7 +6586,7 @@ def test_an_archived_cycle_thread_is_not_acknowledged(runner):
 
 # ---------------------------------------------------------------------------
 # tools_mcp.py + /mcp -- one toolset for every agent (2026-08-06).
-# Edvard: "There are different tools for you and Gemini? That should not be
+# The owner: "There are different tools for you and Gemini? That should not be
 # the case. Gemini and other agents should use the same custom tools as you
 # do." A claude-cli persona had none of Agora's capability tools while
 # build_system described all of them to it in prose; these serve the same
@@ -6854,7 +6854,7 @@ def test_claude_cli_generate_omits_the_mcp_block_for_a_persona_with_no_capabilit
 
 
 # ---------------------------------------------------------------------------
-# Anchored interval schedules — Edvard's issues.md capture, 2026-08-08:
+# Anchored interval schedules — the owner's issues.md capture, 2026-08-08:
 # "run every 6 hours from 12:00, so it runs 12:00 the first time, then 18:00,
 # then 24:00. Currently it runs 6 hours after the previous job was finished.
 # So all Nova heartbeats starts at somewhat random timestamps."
@@ -6969,7 +6969,7 @@ def test_anchored_minutes_work_too():
 
 
 # ---------------------------------------------------------------------------
-# cron schedules -- Edvard's issues.md #37, second half: "Maybe have it so we
+# cron schedules -- the owner's issues.md #37, second half: "Maybe have it so we
 # can tweak it as cronjobs or just as advanced timesetting. But it has to be
 # user friendly." Cron is the storage format; the picker in the heartbeat form
 # is the user-friendly half. These pin the three things the anchored interval
@@ -7218,7 +7218,7 @@ def test_a_delta_is_appended_to_the_window_rather_than_replacing_it(runner, poll
 
 
 def test_an_edit_behind_us_replaces_the_window_instead_of_appending(runner, polling):
-    """Edvard edits or deletes an older message: the server's fingerprint of
+    """The owner edits or deletes an older message: the server's fingerprint of
     the prefix stops matching, it answers incremental=False with the whole
     window, and we must replace. Appending here would duplicate history."""
     summary, seen, fake_decide_turn = polling
@@ -7330,7 +7330,7 @@ def test_pruning_drops_windows_for_conversations_that_are_gone(runner):
     assert set(runner.conversations._message_window_cache) == {"still-here"}
 
 
-# --- Metered-provider guard (2026-08-10, Edvard's "hard rule" capture in
+# --- Metered-provider guard (2026-08-10, the owner's "hard rule" capture in
 # issues.md: the prepaid Anthropic balance had $16 left and will not be
 # refilled, so no scheduled thing may spend it). Two halves, tested apart:
 # reply.py must refuse, AND the unattended call sites must actually ask it
@@ -7355,7 +7355,7 @@ def test_unattended_turn_on_metered_provider_is_refused_before_any_spend(runner)
 
 
 def test_attended_turn_on_metered_provider_still_runs(runner):
-    """Edvard kept testing and research allowed -- a person typing in the app
+    """The owner kept testing and research allowed -- a person typing in the app
     is bounded by the person. Blocking this would be over-reading the rule."""
     persona = {"name": "Test", "model": "anthropic:claude-haiku-4-5-20251001"}
 
@@ -7382,7 +7382,7 @@ def test_unattended_turn_on_subscription_provider_is_untouched(runner):
 
 
 def test_allow_metered_unattended_env_flag_reopens_the_path(runner):
-    """A deliberate override Edvard can set in one config line, so this is a
+    """A deliberate override the owner can set in one config line, so this is a
     guarded capability rather than a deleted one."""
     persona = {"name": "Test", "model": "anthropic:claude-sonnet-5"}
 
@@ -7481,7 +7481,7 @@ def test_workflow_round_declares_itself_unattended(runner):
 def test_schedule_minutes_is_the_one_definition_of_an_every_interval():
     """Extracted from `schedule_due` so `cycle_health` measures a stalled
     loop in the interval that is actually running, rather than in a
-    constant nobody updates when Edvard changes the cadence."""
+    constant nobody updates when the owner changes the cadence."""
     from agora_runner.turns import schedule_minutes
 
     assert schedule_minutes("every@40m") == 40
@@ -7549,7 +7549,7 @@ def test_run_heartbeat_hands_the_journal_health_check_its_own_schedule(runner):
 
 
 # ---------------------------------------------------------------------------
-# 2026-08-14, Edvard: "Did you fix the notification for agora heartbeats?
+# 2026-08-14, the owner: "Did you fix the notification for agora heartbeats?
 # So i can turn them off?" -- pushNotifications:false on the heartbeat
 # mutes the phone push for its reply. The message is still posted.
 # ---------------------------------------------------------------------------
