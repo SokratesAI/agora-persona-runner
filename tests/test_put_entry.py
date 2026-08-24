@@ -189,11 +189,15 @@ def _claims(vault):
 
 
 def test_a_written_entry_releases_its_number(tmp_path):
-    """`prune` only collects rows in the `done` state.
+    """A number taken and never released says a cycle died, not that it wrote.
 
-    A claim left open is a permanent row in the one document every claim
-    in this loop reads and rewrites -- about 80 a day at an 18-minute
-    heartbeat. My first version never released, and a reviewer found it.
+    `prune` collects an abandoned open row after a day as of runner#314, so
+    this is no longer the difference between a permanent row and none -- it
+    is the difference between a row that records the entry landing and a row
+    that spends a day claiming a cycle was killed mid-write. About 80 a day
+    at an 18-minute heartbeat, in the one document every claim in this loop
+    reads and rewrites. My first version never released, and a reviewer
+    found it.
     """
     from tools.put_entry import GRANTED, release_seq, vault_claim_once
 
