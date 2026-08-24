@@ -1044,3 +1044,15 @@ def test_an_unparseable_ledger_leaves_every_claim_command_printed(tmp_path, caps
     out = capsys.readouterr().out
     assert code == 0
     assert "[claim: issue-10]" in out
+
+
+def test_a_multi_line_outcome_cannot_split_the_row_it_is_printed_on():
+    """`release --outcome` is free shell text and this output is one item
+    per line: a newline in there would read as a second board entry."""
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(
+        rows, {"idea-63": {"cycle": 347, "outcome": "built it\nand broke\tthe line"}})
+    line = top_board_rows._line(rows[0])
+    assert "\n" not in line
+    assert "built it and broke the line" in line

@@ -512,7 +512,11 @@ def _claim_tag(item):
     spent = item.get("spentClaim")
     if not spent:
         return f"  [claim: {row_slug(item)}]"
-    outcome = (spent.get("outcome") or "no outcome recorded").strip()
+    # `release --outcome` is free shell text, and this tool's whole output
+    # is one item per line -- a newline in there would split the row and
+    # read as a second board entry. Same shape as the Outcome pill that
+    # rendered as a title the first time a cycle wrote a long one.
+    outcome = " ".join((spent.get("outcome") or "no outcome recorded").split())
     return f"  [⛔ claim spent by cycle {spent['cycle']}: {outcome} — work it without claiming]"
 
 
