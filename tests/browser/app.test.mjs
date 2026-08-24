@@ -6698,13 +6698,21 @@ describe("the notes page", () => {
       notes: manyNotes(30),
       install: (w) => { spy.install(w); w.scrollTo = () => {}; },
     });
-    const { pager } = firablePager(spy, window);
+    firablePager(spy, window);
     window.document.querySelector('.nav-tab[href="/issues"]').click();
     await settle();
+    /* Matched on the class, not on the node captured before the
+     * navigation. Against the unfixed code that identity check passes,
+     * and it passes *because the bug fires*: leaving the page repaints
+     * the conversation, which builds a second pager and disconnects the
+     * first, so the node this test was holding is legitimately no longer
+     * watched. The assertion was satisfied by the defect it was written
+     * to catch -- the rubric's item 13, arrived at from an unexpected
+     * direction. Any live notes pager is the honest question. */
     assert.equal(
-      spy.watching.filter((one) => one.node === pager).length,
+      spy.watching.filter((one) => one.node.className.includes("note-older")).length,
       0,
-      "the notes pager is still being watched from another page",
+      "a notes pager is still being watched from another page",
     );
   });
 
