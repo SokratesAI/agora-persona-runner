@@ -88,6 +88,56 @@ def numbers_in(conversations, tag):
     return sorted(found)
 
 
+def starts_in(conversations, tag):
+    """`{cycle number: createdAt}` for every tagged conversation that names one.
+
+    The heartbeat creates a cycle's conversation just before the session
+    opens, so `createdAt` is when that cycle *woke* -- the one measured
+    start time this system has. `nova_journal.with_start_times` puts it on
+    the journal card, because the write time it used to show is the end of
+    the run and the owner asked for the other end.
+
+    **Earliest wins on a duplicate.** Two conversations can carry one
+    number -- three did on 2026-08-24, before `current_number` learned to
+    ask which one it was running in -- and the earliest is the honest
+    answer to "when did work under this number begin". Picking by
+    iteration order instead would make the card's time depend on how the
+    API happened to sort, which is the kind of thing that looks stable for
+    weeks and then is not.
+    """
+    out = {}
+    for conversation in conversations or []:
+        if tag not in (conversation.get("tags") or []):
+            continue
+        match = _NAME_RE.search(conversation.get("name") or "")
+        created = conversation.get("createdAt")
+        if not match or not created:
+            continue
+        number = int(match.group(1))
+        if number not in out or created < out[number]:
+            out[number] = created
+    return out
+
+
+def cycle_starts(heartbeat_id):
+    """`starts_in` against a live Agora, or `{}` if it cannot be reached.
+
+    `{}` rather than an exception, and rather than `None`: the only caller
+    is the journal page, and a page that will not render because one
+    timestamp source was unreachable is a worse answer than a page showing
+    the write times it showed for its whole life until now.
+    """
+    try:
+        status, listing = agora_get("/conversations")
+    except Exception as e:
+        log(f"cycle_starts: /conversations failed: {e}")
+        return {}
+    if status != 200:
+        log(f"cycle_starts: /conversations returned {status}")
+        return {}
+    return starts_in(listing.get("conversations", []), cycle_tag(heartbeat_id))
+
+
 def next_number(conversations, tag):
     """The number to give the conversation being created right now.
 

@@ -3071,6 +3071,131 @@ def test_a_document_with_no_mtime_is_skipped_rather_than_crashing():
     assert entry_times({JOURNAL_DIR + "093-cycle-86.md": None}) == {}
 
 
+# The owner, capture 2026-08-24: "I want the time slot on the journals to be
+# when they started, as it seems to show when they ended."
+#
+# He is reading it right, and it is the mtime rule above working as designed:
+# a cycle writes its entry in its last few minutes, so the measured stamp is
+# measured at the wrong end. The Agora conversation a cycle runs inside is
+# created before the session opens, which is the other end and is measured too.
+
+
+def test_the_card_shows_when_the_cycle_woke_not_when_it_filed():
+    from agora_runner.nova_journal import entry_times, with_start_times
+
+    # Cycle 381 woke at 20:40 Oslo and filed at 20:54.
+    times = entry_times({JOURNAL_DIR + "437-cycle-381.md": 1787597640000})
+    assert times == {381: [("2026-08-24", "20:54")]}
+
+    stamps = with_start_times(times, {381: "2026-08-24T18:40:09.019Z"})
+    entry = parse_journal(
+        "### 2026-08-24 20:54 (Oslo) — Cycle 381 — A number of its own\n\nProse.",
+        stamps,
+    )[0]
+    assert (entry["date"], entry["time"]) == ("2026-08-24", "20:40")
+
+
+def test_a_cycle_with_no_conversation_keeps_the_write_time():
+    # Conversations are the owner's to delete, and the archive reaches back
+    # further than Agora's list does. Losing a start time must cost the card
+    # its precision, never its stamp.
+    from agora_runner.nova_journal import with_start_times
+
+    times = {86: [("2026-08-10", "19:06")]}
+    assert with_start_times(times, {381: "2026-08-24T18:40:09.019Z"}) == times
+    assert with_start_times(times, {}) == times
+
+
+def test_an_unparseable_created_at_keeps_the_write_time():
+    from agora_runner.nova_journal import with_start_times
+
+    times = {86: [("2026-08-10", "19:06")]}
+    assert with_start_times(times, {86: "not a timestamp"}) == times
+    assert with_start_times(times, {86: None}) == times
+
+
+def test_a_naive_created_at_is_read_as_utc_and_shown_in_oslo():
+    # Agora stamps UTC with a `Z`; every other reader of these fields in the
+    # package assumes UTC when the offset is missing, and disagreeing here
+    # would move a card by two hours rather than by the fourteen minutes
+    # this change is about.
+    from agora_runner.nova_journal import with_start_times
+
+    assert with_start_times(
+        {381: [("2026-08-24", "20:54")]}, {381: "2026-08-24T18:40:09"}
+    ) == {381: [("2026-08-24", "20:40")]}
+
+
+def test_both_entries_of_a_cycle_that_wrote_twice_take_the_one_wake():
+    # Two documents, two write times, one run -- and the run woke once. The
+    # list keeps its length so `parse_journal`'s nth-entry indexing is
+    # untouched.
+    from agora_runner.nova_journal import with_start_times
+
+    times = {81: [("2026-08-10", "14:48"), ("2026-08-10", "14:46")]}
+    assert with_start_times(times, {81: "2026-08-10T12:10:00Z"}) == {
+        81: [("2026-08-10", "14:10"), ("2026-08-10", "14:10")],
+    }
+
+
+def test_a_conversation_for_a_cycle_that_wrote_nothing_adds_no_entry():
+    # `journal_payload` reads `times.keys()` as the answer to "which cycles
+    # wrote an entry" and builds the missing-cycle list from it. A run that
+    # wrote nothing has a conversation and must not gain a card.
+    from agora_runner.nova_journal import with_start_times
+
+    stamps = with_start_times(
+        {381: [("2026-08-24", "20:54")]},
+        {379: "2026-08-24T17:40:07.030Z", 381: "2026-08-24T18:40:09.019Z"},
+    )
+    assert set(stamps) == {381}
+
+
+def test_api_journal_serves_the_start_time_end_to_end():
+    """The one test that pins the wiring rather than the arithmetic.
+
+    Everything above tests `with_start_times` directly. `journal_payload` is
+    where it is actually called, and the tests around it hand the shim an
+    empty mtime map -- so with the seam deleted they all still pass, which is
+    the whole failure shape this repo keeps re-finding. This one supplies
+    real mtimes, so the write time is what the page shows unless the start
+    time reaches it."""
+    markdown = (
+        "### 2026-08-24 20:54 (Oslo) — Cycle 381 — A number of its own\n\n"
+        "Prose.\n\n---\nPR: #335 | Outcome: merged\n"
+    )
+    path = JOURNAL_DIR + "437-cycle-381.md"
+
+    def _bulk(prefix, with_mtimes=False):
+        files = VaultFiles({path: markdown} if prefix == JOURNAL_DIR else {})
+        # 2026-08-24 20:54 Oslo -- when this cycle filed.
+        return (files, {path: 1787597640000}) if with_mtimes else files
+
+    def _read(_path):
+        return None
+
+    def _time_on_the_card():
+        nova_site.reset_cache()
+        with patch.object(nova_sources, "vault_bulk_fetch", side_effect=_bulk), \
+                patch.object(nova_sources, "vault_read_path", side_effect=_read):
+            status, _, body = _get("/api/journal")
+        assert status == 200
+        entries = json.loads(body)["entries"]
+        assert len(entries) == 1
+        return entries[0]["time"]
+
+    with patch.object(nova_site, "cycle_starts", return_value={}):
+        assert _time_on_the_card() == "20:54", "no start time: the write time stands"
+
+    # 18:40:09Z -- when the heartbeat opened this cycle's conversation.
+    with patch.object(
+        nova_site, "cycle_starts", return_value={381: "2026-08-24T18:40:09.019Z"}
+    ):
+        assert _time_on_the_card() == "20:40"
+
+    nova_site.reset_cache()
+
+
 # The owner, issues.md 2026-08-10: "Nova takes a long time to load when i
 # refresh it." /api/journal cost 3.0-3.5s on the live pod and was rebuilt,
 # identically, on every request. It is served from cache now -- and none of

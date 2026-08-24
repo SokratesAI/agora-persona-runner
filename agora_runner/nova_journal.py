@@ -22,7 +22,7 @@ parses into a renderable entry instead of being dropped.
 
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from agora_runner.config import OSLO
 from agora_runner.nova_uploads import ATTACHMENT_PATTERN
@@ -1098,6 +1098,74 @@ def entry_times(mtimes):
             (stamp.strftime("%Y-%m-%d"), stamp.strftime("%H:%M"))
         )
     return out
+
+
+def with_start_times(times_by_cycle, starts_by_cycle):
+    """`entry_times` output, with each cycle's stamp moved to when it *woke*.
+
+    The owner, capture 2026-08-24: *"I want the time slot on the journals
+    to be when they started, as it seems to show when they ended."* He is
+    reading it right. `entry_times` takes the vault document's write time,
+    and a cycle writes its entry in the last few minutes of its run -- so
+    Cycle 381 woke at 20:40 and its card says 20:54.
+
+    The typed heading is not the answer either, and that is why this needs
+    a third source rather than a preference between the two the code
+    already had: a cycle types its own stamp at the end as well, and Cycle
+    86 typed one 23 minutes into its own future, which is what moved the
+    card onto the write time in the first place.
+
+    `starts_by_cycle` is `{cycle: iso8601}` from the Agora conversation
+    each cycle runs inside (`cycle_number.starts_in`) -- created by the
+    heartbeat *before* the session opens, so it is measured rather than
+    typed and it is measured at the right end.
+
+    Two boundaries, both deliberate:
+
+    - **Only cycles already in `times_by_cycle` are touched.** That map is
+      keyed on the filename, so it is the answer to "did this cycle write
+      an entry"; a conversation with no entry must not become one, and
+      `journal_payload` reads exactly that to decide which cycles are
+      missing.
+    - **Every entry a cycle wrote gets the same start.** A cycle that wrote
+      twice has two documents with two write times and one wake, and the
+      wake is the true answer for both. The list keeps its length so
+      `parse_journal`'s nth-entry indexing is unchanged.
+
+    A cycle with no parseable conversation keeps its write time. That is
+    most of the archive's future rather than a corner case -- conversations
+    are the owner's to delete, and 382 of them exist today.
+    """
+    if not starts_by_cycle:
+        return times_by_cycle
+    out = {}
+    for cycle, stamps in (times_by_cycle or {}).items():
+        started = starts_by_cycle.get(cycle)
+        oslo = _oslo_stamp(started)
+        out[cycle] = [oslo] * len(stamps) if oslo else stamps
+    return out
+
+
+def _oslo_stamp(iso):
+    """`2026-08-24T17:20:04.072Z` -> `("2026-08-24", "19:20")` in Oslo, or None.
+
+    Agora stamps UTC with a `Z`, which `fromisoformat` refused until 3.11
+    and this runs on 3.11 -- but a stamp that arrives in any other shape
+    must not take the page down for a badge's worth of precision, so
+    anything unparseable is a `None` the caller reads as "keep what you
+    had". A naive stamp is treated as UTC, which is what Agora sends and
+    what every other reader of these fields in this package assumes.
+    """
+    if not iso:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    local = stamp.astimezone(OSLO)
+    return (local.strftime("%Y-%m-%d"), local.strftime("%H:%M"))
 
 
 def _sections(markdown):
