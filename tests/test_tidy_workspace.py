@@ -742,3 +742,28 @@ def test_the_cli_names_the_commit_it_moved_off(squash_merged, capsys):
     tidy_workspace.main(["--root", str(root)])
 
     assert before[:7] in capsys.readouterr().out
+
+
+def test_a_clone_whose_head_cannot_be_read_is_not_moved(squash_merged,
+                                                        monkeypatch):
+    """The printed sha is the whole reversibility argument -- it is the
+    argument to the `git reset --hard` that undoes the move. A `_git` that
+    could not run answers an empty stdout, so without this guard the tool
+    would move a checkout while printing no way back."""
+    root, repo = _behind_on_main(squash_merged)
+    survey = tidy_workspace.survey_checkouts(str(root))
+    before = _head(repo)
+    real = tidy_workspace._git
+
+    def no_head(root_, clone, *args):
+        if args[:2] == ("rev-parse", "HEAD"):
+            return tidy_workspace._Failed()
+        return real(root_, clone, *args)
+
+    monkeypatch.setattr(tidy_workspace, "_git", no_head)
+
+    moves = tidy_workspace.fast_forward_stale(str(root), survey)
+
+    assert [m["moved"] for m in moves] == [False]
+    assert "nothing to reverse to" in moves[0]["error"]
+    assert _head(repo) == before

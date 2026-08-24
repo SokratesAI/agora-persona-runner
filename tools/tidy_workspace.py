@@ -420,6 +420,15 @@ def fast_forward_stale(root, entries, dry_run=False):
         move = {"clone": entry["clone"], "base": base,
                 "behind": entry["behind"], "was": was, "moved": False,
                 "error": None}
+        if not was:
+            # The sha is the whole reversibility argument -- it is the one
+            # argument to the `git reset --hard` that undoes this. `_git`
+            # answers an empty stdout when the command could not run at all,
+            # so moving here would be moving a checkout while printing no way
+            # back. Refuse instead, and say why.
+            move["error"] = "could not read HEAD, so nothing to reverse to"
+            moves.append(move)
+            continue
         if dry_run:
             moves.append(move)
             continue
