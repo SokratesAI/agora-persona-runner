@@ -339,7 +339,7 @@ def _merged_pr(root, clone, branch):
     try:
         done = subprocess.run(
             ["gh", "pr", "list", "--state", "merged", "--head", branch,
-             "--limit", "1", "--json", "number,mergedAt"],
+             "--limit", "10", "--json", "number,mergedAt,headRefOid"],
             cwd=os.path.join(root, clone), capture_output=True, text=True,
             check=False, timeout=GH_TIMEOUT_SECONDS)
     except (subprocess.TimeoutExpired, OSError):
@@ -352,16 +352,56 @@ def _merged_pr(root, clone, branch):
         return None, False
     if not isinstance(rows, list) or not rows:
         return None, True
-    return rows[0], True
+    # `--limit 1` trusted an ordering `gh` does not document. A branch name
+    # this loop reuses -- `nova/<slug>` collides readily -- can carry several
+    # merged PRs, and the one that decides this verdict must be the newest,
+    # picked here rather than assumed. Reviewer finding on #324.
+    rows = [r for r in rows if isinstance(r, dict)]
+    if not rows:
+        return None, True
+    return max(rows, key=lambda r: r.get("mergedAt") or ""), True
+
+
+def _tip_contains_merge(root, clone, head_oid):
+    """Whether HEAD is exactly the commit GitHub merged, from the graph.
+
+    Returns True (landed), False (there is something on top), or None when the
+    question cannot be answered here -- the merged commit is not in this
+    clone's object store, which is the ordinary case for a branch deleted on
+    the remote after its merge.
+
+    This is the check `_committed_after` should have been. Reviewer finding on
+    #324, and the severity was right: deciding "throw this branch away" by
+    comparing two wall clocks is wrong in the direction that loses work.
+    `git rebase --committer-date-is-author-date`, an unsynced container clock
+    and an explicit `GIT_COMMITTER_DATE` all produce a tip that timestamps
+    *before* a merge it does not contain.
+    """
+    if not head_oid:
+        return None
+    if _git(root, clone, "cat-file", "-e", head_oid + "^{commit}").returncode != 0:
+        return None
+    tip = _git(root, clone, "rev-parse", "HEAD").stdout.strip()
+    if tip == head_oid:
+        return True
+    # HEAD is a descendant of the merged head: real commits sit on top of it.
+    if _git(root, clone, "merge-base", "--is-ancestor", head_oid,
+            "HEAD").returncode == 0:
+        return False
+    # The merged head is not on this branch at all -- a rewritten or
+    # unrelated history. Not an answer, and not a licence to guess.
+    return None
 
 
 def _committed_after(root, clone, merged_at):
     """True if this branch's tip was committed after `merged_at`.
 
-    A merged PR does not make the local branch litter on its own -- a cycle
-    can commit on top of a branch after its PR went in, and that work really
-    is unfinished. Anything this cannot parse answers True, because the safe
-    error is to leave a branch marked unfinished.
+    The fallback, used only when `_tip_contains_merge` cannot answer from the
+    graph. It reads two clocks and is therefore fallible in both directions,
+    so a verdict that rests on it is flagged and printed as resting on it.
+
+    Anything this cannot parse answers True, because the safe error is to
+    leave a branch marked unfinished.
     """
     if not merged_at:
         return True
@@ -378,7 +418,7 @@ def _committed_after(root, clone, merged_at):
     return tip > merged
 
 
-def survey_checkouts(root=WORKSPACE, fetch=True):
+def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
     root = _default_root(root)
     """One verdict per clone, after refreshing its remote refs.
 
@@ -455,13 +495,27 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
         merged_pr = None
         merged_pr_checked = False
         commits_after_merge = False
-        if verdict == "unfinished" and not dirty:
+        rests_on_clock = False
+        if verdict == "unfinished" and not dirty and ask_github:
             merged_pr, merged_pr_checked = _merged_pr(root, clone, branch)
+            if not merged_pr_checked:
+                # One systemic failure -- no `gh`, no auth, no egress -- fails
+                # identically for every clone, and each attempt costs up to
+                # GH_TIMEOUT_SECONDS on the first thing a cycle runs. Sixteen
+                # of those is eight minutes of nothing. Reviewer finding on
+                # #324. One "could not ask" answers for the whole sweep.
+                ask_github = False
             if merged_pr:
-                if _committed_after(root, clone, merged_pr.get("mergedAt")):
-                    commits_after_merge = True
-                else:
+                contains = _tip_contains_merge(root, clone,
+                                               merged_pr.get("headRefOid"))
+                if contains is None:
+                    rests_on_clock = True
+                    contains = not _committed_after(root, clone,
+                                                    merged_pr.get("mergedAt"))
+                if contains:
                     verdict = "leftover"
+                else:
+                    commits_after_merge = True
         # Which files, not just that there are some. "has work not on
         # origin/main" is true of a half-finished feature and equally true of
         # a `-config` clone whose only delta is a stale `image:` digest --
@@ -518,7 +572,8 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
                     "files_failed": files_failed,
                     "merged_pr": merged_pr.get("number") if merged_pr else None,
                     "merged_pr_checked": merged_pr_checked,
-                    "commits_after_merge": commits_after_merge})
+                    "commits_after_merge": commits_after_merge,
+                    "rests_on_clock": rests_on_clock})
     return out
 
 
@@ -590,6 +645,9 @@ def main(argv=None):
     parser.add_argument("--no-fetch", action="store_true",
                         help="survey checkouts against the refs already on "
                              "disk; the verdicts are only as fresh as they are")
+    parser.add_argument("--no-gh", action="store_true",
+                        help="do not ask GitHub whether a branch was merged; "
+                             "a landed branch then reads `unfinished`")
     args = parser.parse_args(argv)
 
     roots = args.root or workspace_roots() or [SHARED_WORKSPACE]
@@ -635,7 +693,8 @@ def _sweep_one(root, args):
     # to tidy is exactly the cycle that most needs to be told a checkout is
     # holding unfinished work, and "nothing to tidy" above it reads like an
     # all-clear for the whole workspace.
-    for entry in survey_checkouts(root, fetch=not args.no_fetch):
+    for entry in survey_checkouts(root, fetch=not args.no_fetch,
+                                  ask_github=not args.no_gh):
         # Said even for a clone the survey then calls clean, because "clean"
         # off a ref that could not be refreshed is the reassuring answer with
         # nothing behind it -- the shape of failure this whole function was
@@ -658,6 +717,14 @@ def _sweep_one(root, args):
             print("%s: [leftover] branch %s %s -- its work has landed, "
                   "the branch is litter" % (entry["clone"], entry["branch"],
                                             landed))
+            if entry["rests_on_clock"]:
+                # The merged commit is not in this clone, so "nothing was
+                # added after the merge" was decided by comparing two clocks
+                # rather than by the commit graph. Say so before anyone
+                # deletes a branch on the strength of it.
+                print("    the merged commit is not in this clone, so that "
+                      "rests on the commit date being no later than the "
+                      "merge, not on the history")
         elif entry["verdict"] == "no-base":
             print("%s: [no-base] no origin/main or origin/master to compare "
                   "against" % (entry["clone"],))
