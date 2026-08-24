@@ -1448,15 +1448,46 @@ body.nav-open { overflow: hidden; }
 /* A card that answers a long press says so, faintly, on a pointer that
  * can hover. On a phone there is no hover and nothing changes -- which is
  * the honest state, since the gesture is the only affordance there. */
-.capture-body[role="button"],
-.note-msg-body[role="button"] { cursor: default; }
+/* The two new hold targets, and the one rule that decides whether the
+ * gesture works at all on the device it was built for. `.item-head` --
+ * the only other one-second hold on this site -- has carried this since
+ * issue #84 with the reason written beside it: on a phone a one-second
+ * hold on text is the browser's own gesture, iOS pops the selection
+ * handles and the callout menu, Android starts a selection, and both land
+ * on top of what the hold just opened. Worse here than there, because
+ * `touchcancel` is in `bindHoldMenu`'s end list, so a browser that takes
+ * the gesture over clears the timer and the sheet never opens.
+ *
+ * These two elements are pure prose, i.e. the most selectable thing on
+ * the page, and the first version of this rule set `cursor` and a focus
+ * outline and nothing else. Found reviewing the merged diff.
+ *
+ * Deliberately *not* `role="button"`: the capture body is his sentence,
+ * with the rating control and any links inside it, and an `aria-label` on
+ * a `role="button"` replaces all of that as the accessible name. On the
+ * notes page that would make the transcript itself unreadable. The card
+ * stays prose that happens to be focusable, so `user-select: none` is
+ * doing something a reader can notice and the text is still there. */
+.capture-hold {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 
-.capture-body[role="button"]:focus-visible,
-.note-msg-body[role="button"]:focus-visible {
+.capture-hold:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
   border-radius: 0.4rem;
 }
+
+/* `.capture-edit` sets an author `display: flex`, which beats the user
+ * agent's `[hidden] { display: none }` outright -- so without this the
+ * row is hidden in jsdom, which loads no stylesheet, and visible in every
+ * real browser. That is the exact trap `.item-head` has a paragraph about
+ * further down this file, and every other `hidden` consumer here
+ * (`.board-search-clear`, `.prio-menu`, `.attach-tray`) carries its
+ * companion rule. This one was added to that club without one. */
+.capture-edit[hidden] { display: none; }
 
 .item {
   background: var(--card);
