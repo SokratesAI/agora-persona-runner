@@ -612,3 +612,211 @@ def test_a_detached_head_at_the_base_tip_is_not_called_a_leftover_branch(
 
     assert survey[0]["branch"] == "HEAD"
     assert [e["verdict"] for e in survey] == ["clean"]
+
+
+# ---- Which workspace it sweeps ----------------------------------------
+#
+# The bug these pin, measured Cycle 368: every concurrent cycle runs this
+# tool from its own private worktree and it swept `/data/workspace` -- a
+# directory that cycle does not work in -- while its own root went untouched
+# and its own clones were invisible, because a linked worktree's `.git` is a
+# file and `clones()` asked `isdir`. Both halves reported success.
+
+def test_the_cycles_own_workspace_comes_first_and_the_shared_one_stays(
+        tmp_path, monkeypatch):
+    own = tmp_path / "concurrent" / "7"
+    shared = tmp_path / "shared"
+    own.mkdir(parents=True)
+    shared.mkdir()
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+
+    roots = tidy_workspace.workspace_roots({"NOVA_WORKSPACE": str(own)})
+
+    assert roots == [str(own), str(shared)]
+
+
+def test_a_serialized_cycle_gets_the_shared_root_once_not_twice(
+        tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+
+    roots = tidy_workspace.workspace_roots({"NOVA_WORKSPACE": str(shared)})
+
+    assert roots == [str(shared)]
+
+
+def test_a_workspace_variable_pointing_nowhere_is_dropped(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+
+    roots = tidy_workspace.workspace_roots(
+        {"NOVA_WORKSPACE": str(tmp_path / "never-created")})
+
+    assert roots == [str(shared)]
+
+
+def test_an_unset_variable_still_gives_the_shared_root(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+
+    assert tidy_workspace.workspace_roots({}) == [str(shared)]
+
+
+def test_a_linked_worktree_is_a_clone_even_though_its_git_is_a_file(tmp_path):
+    """`git worktree add` writes `.git` as a one-line file, not a directory.
+
+    Built with real git rather than by writing a `.git` file by hand: the
+    thing under test is what git actually lays down for a worktree, which is
+    exactly the assumption `isdir` got wrong.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "n@example.com")
+    _git(origin, "config", "user.name", "Nova")
+    _commit(origin, "a.txt", "one")
+
+    root = tmp_path / "concurrent"
+    root.mkdir()
+    _git(origin, "worktree", "add", "--detach", str(root / "origin"), "HEAD")
+
+    assert (root / "origin" / ".git").is_file()
+    assert tidy_workspace.clones(str(root)) == ["origin"]
+
+
+def test_the_survey_sees_a_linked_worktree(tmp_path):
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "n@example.com")
+    _git(origin, "config", "user.name", "Nova")
+    _commit(origin, "a.txt", "one")
+
+    root = tmp_path / "concurrent"
+    root.mkdir()
+    _git(origin, "worktree", "add", "--detach", str(root / "origin"), "HEAD")
+
+    surveyed = tidy_workspace.survey_checkouts(str(root), fetch=False)
+
+    assert [entry["clone"] for entry in surveyed] == ["origin"]
+
+
+def test_both_roots_are_swept_and_each_is_named(tmp_path, monkeypatch, capsys):
+    own = tmp_path / "own"
+    shared = tmp_path / "shared"
+    own.mkdir()
+    shared.mkdir()
+    (own / "entry.md").write_text("draft", encoding="utf-8")
+    (shared / "digest-new.md").write_text("draft", encoding="utf-8")
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
+    monkeypatch.setenv("NOVA_WORKSPACE", str(own))
+
+    assert tidy_workspace.main([]) == 0
+
+    out = capsys.readouterr().out
+    assert "== %s (yours)" % (own,) in out
+    assert "== %s (shared)" % (shared,) in out
+    assert "entry.md" in out and "digest-new.md" in out
+    stamp = "_scratch-archive-" + tidy_workspace._today()
+    assert (own / stamp / "entry.md").exists()
+    assert (shared / stamp / "digest-new.md").exists()
+
+
+def test_one_root_prints_no_heading(workspace, capsys):
+    """The single-root output every existing caller reads is unchanged."""
+    tidy_workspace.main(["--root", str(workspace), "--dry-run"])
+
+    assert "== " not in capsys.readouterr().out
+
+
+def test_the_survey_reports_the_root_it_was_given_not_the_shared_one(
+        squash_merged, monkeypatch, capsys):
+    """The failure in one line: a verdict about a directory you do not work in."""
+    root, _repo = squash_merged
+    shared = os.path.join(root, "..", "not-swept")
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", shared)
+    monkeypatch.setenv("NOVA_WORKSPACE", str(root))
+
+    tidy_workspace.main(["--no-fetch"])
+
+    out = capsys.readouterr().out
+    assert "repo: branch" in out
+    assert "not-swept" not in out
+
+
+def test_a_reviewer_worktree_is_not_surveyed_as_a_clone(tmp_path):
+    """`_review-*` is a linked worktree too, and widening `.git` matched it.
+
+    Reproduced by the reviewer on runner#319: `clones()` answered
+    `['_review-c178', 'repo']`, the survey printed a verdict for a checkout a
+    reader was mid-read in, and `_remove_worktree` fed it back in as a
+    candidate owner and had it deregister itself. The old `isdir` predicate
+    excluded these by accident; this pins it on purpose.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "n@example.com")
+    _git(origin, "config", "user.name", "Nova")
+    _commit(origin, "a.txt", "one")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    _git(origin, "worktree", "add", "--detach", str(root / "repo"), "HEAD")
+    _git(origin, "worktree", "add", "--detach", str(root / "_review-c368"), "HEAD")
+
+    # The precondition, asserted rather than assumed: without it the negative
+    # below is guaranteed whether or not the exclusion exists.
+    assert (root / "_review-c368" / ".git").is_file()
+
+    assert tidy_workspace.clones(str(root)) == ["repo"]
+    assert [e["clone"] for e in
+            tidy_workspace.survey_checkouts(str(root), fetch=False)] == ["repo"]
+
+
+def test_the_owner_search_is_never_offered_a_review_worktree(tmp_path, monkeypatch):
+    """`_remove_worktree` takes its candidate owners from `clones()`."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "n@example.com")
+    _git(origin, "config", "user.name", "Nova")
+    _commit(origin, "a.txt", "one")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    _git(origin, "worktree", "add", "--detach", str(root / "repo"), "HEAD")
+    review = root / "_review-c368"
+    _git(origin, "worktree", "add", "--detach", str(review), "HEAD")
+    os.utime(review, (0, 0))
+
+    offered = []
+    real = tidy_workspace._remove_worktree
+
+    def spy(root_, name, clone_names):
+        offered.extend(clone_names)
+        return real(root_, name, clone_names)
+
+    monkeypatch.setattr(tidy_workspace, "_remove_worktree", spy)
+    _archived, _expired, worktrees = tidy_workspace.tidy(
+        str(root), today="2026-08-24")
+
+    assert worktrees == ["_review-c368"]
+    assert offered == ["repo"]
+
+
+def test_the_default_root_is_read_when_called_not_when_imported(tmp_path, monkeypatch):
+    """`NOVA_WORKSPACE` set after import must still be the root that is swept."""
+    own = tmp_path / "own"
+    own.mkdir()
+    (own / "entry.md").write_text("draft", encoding="utf-8")
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(tmp_path / "gone"))
+    monkeypatch.setenv("NOVA_WORKSPACE", str(own))
+
+    archived, _expired, _worktrees = tidy_workspace.tidy(today="2026-08-24")
+
+    assert archived == ["entry.md"]
+    assert (own / "_scratch-archive-2026-08-24" / "entry.md").exists()
