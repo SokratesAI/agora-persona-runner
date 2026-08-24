@@ -7172,7 +7172,12 @@
           renderStatusUnreachable(fetchFailureDetail(err));
         }
       })
-      .then(schedulePoll);
+      // Both arms, not just the resolved one: a throw inside the `catch`
+      // above would otherwise skip `schedulePoll`, and `polling` is now
+      // what gates every resume -- so the page would stop catching up
+      // permanently, with nothing on screen saying why. Before the resume
+      // work that was only a lost timer.
+      .then(schedulePoll, schedulePoll);
   }
 
   function schedulePoll() {
@@ -7203,17 +7208,32 @@
    * concurrent polls are not merely wasteful: they render in completion
    * order, so the older answer can land last and put the stale header
    * back. */
-  function resume() {
+  /* `wasAway` is what licenses skipping the `typing()` deferral, and only
+   * two of the four events carry it. Coming back to a tab that was hidden,
+   * or restoring one out of the back/forward cache, both mean he was not
+   * at the keyboard. `focus` fires on an ordinary window switch and
+   * `online` on a wifi blip, either of which can land while he is
+   * mid-sentence in a drawer he is looking at -- so those two ask for a
+   * poll and still defer to the box he is typing in. Reviewer finding on
+   * runner#332; my own comment there had reasoned about the backgrounded
+   * tab and then wired all four through it. */
+  function resume(wasAway) {
     if (document.hidden || polling) return;
-    poll(true);
+    // The armed timer is the other half of the in-flight guard: without
+    // this it can fire during a slow resumed fetch and start a second one,
+    // which is the race the guard is here to stop. `schedulePoll` at the
+    // end of this round re-arms it.
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+    poll(!!wasAway);
   }
 
-  document.addEventListener("visibilitychange", resume);
+  document.addEventListener("visibilitychange", function () { resume(true); });
   window.addEventListener("pageshow", function (event) {
-    if (event && event.persisted) resume();
+    if (event && event.persisted) resume(true);
   });
-  window.addEventListener("focus", resume);
-  window.addEventListener("online", resume);
+  window.addEventListener("focus", function () { resume(false); });
+  window.addEventListener("online", function () { resume(false); });
 
   /* The capture box (item 6). One button per target rather than a target
    * toggle plus a submit: it is one tap fewer on a phone, which is the
