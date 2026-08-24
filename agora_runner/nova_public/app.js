@@ -58,6 +58,7 @@
     if (path === "/issues") return { view: "board", cycle: null, board: "issues" };
     if (path === "/ideas") return { view: "board", cycle: null, board: "ideas" };
     if (path === "/notes") return { view: "notes", cycle: null, board: null };
+    if (path === "/pool") return { view: "pool", cycle: null, board: null };
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
@@ -6063,6 +6064,175 @@
       });
   }
 
+  /* The Pool page -- idea #92, phase 1.
+   *
+   * The owner: *"the thing that sparkes this idea is to also have a list of
+   * ideas that you have generated per project, and i can approve or comment
+   * on these."*
+   *
+   * **One candidate at a time, not a list of ten.** A wall of ten is a page
+   * he has to read before he can act on any of it, and the whole value here
+   * is that steering what I work on costs one tap instead of a written
+   * capture. So: one card, three buttons, and the next one slides in behind
+   * it. `poolAt` is where he is in the deck and it survives a decision
+   * because the decided candidate leaves the pool -- staying at the same
+   * index really does show the next one.
+   *
+   * Skip is deliberately not a decision. It moves past a card without
+   * writing anything, so a candidate he does not want to think about yet
+   * stays in the pool rather than being pushed into the discarded pile for
+   * lack of a third answer. */
+  var poolAt = 0;
+
+  function poolChip(text, className) {
+    return el("span", "pool-chip " + (className || ""), text);
+  }
+
+  function renderPoolCard(candidate, payload) {
+    var card = el("article", "pool-card");
+    var head = el("header", "pool-head");
+    head.appendChild(el("h2", "pool-title", candidate.title));
+    var chips = el("div", "pool-chips");
+    if (candidate.project) chips.appendChild(poolChip(candidate.project, "pool-project"));
+    if (candidate.priority) {
+      // `priorityKey` comes from the server for the reason board rows get
+      // theirs there: the browser-side mapping lives inside a closure this
+      // page cannot reach, and a second copy would drift. The word rides
+      // with the glyph, which is the 2026-08-19 correction -- a colour he
+      // cannot tell apart is not a signal.
+      chips.appendChild(poolChip(
+        candidate.priority, "chip prio prio-" + (candidate.priorityKey || "")));
+    }
+    head.appendChild(chips);
+    card.appendChild(head);
+
+    if (candidate.body) card.appendChild(el("p", "pool-body", candidate.body));
+
+    var note = el("p", "pool-note");
+    var box = el("textarea", "pool-comment");
+    box.setAttribute("placeholder", "Why, or what you would change (optional)");
+    box.setAttribute("rows", "2");
+    card.appendChild(box);
+
+    function decide(decision) {
+      note.textContent = decision === "approve" ? "Boarding…" : "Discarding…";
+      fetch("/api/pool/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          index: candidate.index,
+          // The title goes back with the index because the index alone is
+          // not an address: a refill that ran while this card was open
+          // renumbers everything below it, and the server refuses rather
+          // than deciding the wrong idea.
+          title: candidate.title,
+          decision: decision,
+          comment: box.value || ""
+        })
+      })
+        .then(json)
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+          // Re-fetch rather than splicing the card out locally: the pool is
+          // written by cycles too, and the honest state after a write is
+          // whatever the document now says.
+          loadPool();
+        })
+        .catch(function (err) {
+          note.textContent = "Could not save: " + err;
+        });
+    }
+
+    var actions = el("div", "pool-actions");
+    var approve = el("button", "pool-btn pool-approve", "Approve");
+    approve.addEventListener("click", function () { decide("approve"); });
+    var reject = el("button", "pool-btn pool-reject", "Reject");
+    reject.addEventListener("click", function () { decide("reject"); });
+    var skip = el("button", "pool-btn pool-skip", "Skip");
+    skip.addEventListener("click", function () {
+      poolAt += 1;
+      renderPool(payload);
+    });
+    actions.appendChild(approve);
+    actions.appendChild(reject);
+    actions.appendChild(skip);
+    card.appendChild(actions);
+    card.appendChild(note);
+    return card;
+  }
+
+  function renderPool(payload) {
+    stopPolling();
+    markNav();
+    var candidates = (payload && payload.candidates) || [];
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el("p", "status-line",
+      candidates.length
+        ? "Ideas I came up with — " + candidates.length + " waiting on you"
+        : "Ideas I came up with"));
+    feed.textContent = "";
+
+    if (poolAt >= candidates.length) poolAt = 0;
+    if (!candidates.length) {
+      feed.appendChild(el("p", "empty",
+        payload && payload.missing
+          ? "No pool yet — I will fill it on the next ideas run."
+          : "Nothing waiting. I top this up on Tuesdays, Thursdays and Saturdays."));
+    } else {
+      feed.appendChild(renderPoolCard(candidates[poolAt], payload));
+      if (candidates.length > 1) {
+        feed.appendChild(el("p", "pool-count",
+          (poolAt + 1) + " of " + candidates.length));
+      }
+    }
+
+    var ask = el("button", "pool-generate", "Ask for more");
+    var askNote = el("p", "pool-note");
+    if (payload && payload.generateRequested) {
+      ask.disabled = true;
+      askNote.textContent = "Asked — the next cycle will top it up.";
+    }
+    ask.addEventListener("click", function () {
+      askNote.textContent = "Asking…";
+      fetch("/api/pool/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      })
+        .then(json)
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+          ask.disabled = true;
+          // Said plainly rather than "generating", because nothing is: this
+          // process has no model access and never will. The button asks and
+          // a cycle answers, within about twenty minutes.
+          askNote.textContent = "Asked — the next cycle will top it up.";
+        })
+        .catch(function (err) {
+          askNote.textContent = "Could not ask: " + err;
+        });
+    });
+    feed.appendChild(ask);
+    feed.appendChild(askNote);
+  }
+
+  function loadPool() {
+    fetchPage("/api/pool")
+      .then(function (payload) {
+        // The same guard the plan, retro and costs fetches carry: two taps
+        // in quick succession leave two fetches in flight and the loser
+        // must not paint over the winner.
+        if (route(window.location.pathname).view !== "pool") return;
+        renderPool(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the pool: " + err));
+      });
+  }
+
   /* The Notes page.
    *
    * the owner, issues.md 2026-08-21: *"I do not have a notes page that shows
@@ -6994,6 +7164,10 @@
     }
     if (here.view === "notes") {
       loadNotes();
+      return;
+    }
+    if (here.view === "pool") {
+      loadPool();
       return;
     }
     if (here.view === "costs") {
