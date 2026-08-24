@@ -601,13 +601,20 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
         remote_only = []
         remote_only_failed = False
         landed_locally = False
-        if verdict == "clean" and branch not in _BASE_BRANCHES:
+        if verdict == "clean":
             # A `clean` clone was never asked about its remote at all, and
             # `clean` is the one verdict `main` prints nothing for -- so a
             # commit pushed to `origin/<branch>` and taken by nobody was
             # invisible here in exactly the way the whole remote check exists
             # to stop. `clean` means "nothing here the base has not got", and
             # that is a statement about *here*.
+            #
+            # A clone parked on `main` -- the common one -- is filtered by
+            # `_remote_only_commits` itself, which returns before it spawns
+            # anything for a base branch. A second guard here read as caution
+            # and pinned nothing: the mutation that deletes it leaves all 88
+            # tests green, which is the file's own rule about a check whose
+            # negative result was guaranteed in advance.
             #
             # Asked without `merged_head` first, because that is local git
             # only. An empty answer is the common case and it costs no GitHub
