@@ -6446,50 +6446,111 @@ describe("the notes page", () => {
   /* Edvard, issues.md 2026-08-21: "I do not have a notes page that shows
    * any overview of the notes made."
    *
-   * The question this page answers is "did anyone pick my note up", so
-   * every test below is some form of that: which state a card is in, and
-   * whether the answer is on it. */
+   * And `notes.md` 2026-08-24, which turned it into a conversation:
+   * "alternating posts are green (mine) and purple (Nova cycle
+   * response) ... the conversation above the input box ... ordered with
+   * the latest note at the bottom ... it should not start at the top and
+   * i have to scroll all the way down ... lazy loaded so when i scroll up
+   * they load".
+   *
+   * Five asks, and each has a test below. The fixture is in the order the
+   * server now sends -- oldest first, unanswered last -- because a page
+   * that re-sorted what it was given would pass a test written the other
+   * way round and still be wrong on the live payload. */
   const feedText = (window) => window.document.getElementById("feed").textContent;
+  const settle = () => new Promise((r) => setTimeout(r, 260));
+  /* A local copy of the journal suite's observer stub, which is scoped
+   * inside its own `describe`. Deliberately the smaller half of it: this
+   * block only needs to know *which node* got watched, not to replay an
+   * initial observation, so `install` records and never fires. */
+  const observerSpy = () => {
+    const watching = [];
+    return {
+      watching,
+      install(window) {
+        window.IntersectionObserver = class {
+          constructor(callback, options) { this.callback = callback; this.options = options; }
+          observe(node) { watching.push({ node, observer: this }); }
+          disconnect() {
+            for (let i = watching.length - 1; i >= 0; i -= 1) {
+              if (watching[i].observer === this) watching.splice(i, 1);
+            }
+          }
+        };
+      },
+    };
+  };
+  const note = (text, opts = {}) => ({
+    text,
+    blocks: [{ kind: "p", spans: [{ text }] }],
+    responses: (opts.responses || []).map((r) => ({
+      cycle: r.cycle === undefined ? null : r.cycle,
+      blocks: [{ kind: "p", spans: [{ text: r.text }] }],
+    })),
+    answered: !!(opts.responses || []).length,
+    waiting: !!opts.waiting,
+  });
   const twoNotes = {
     waitingTotal: 1,
     readTotal: 1,
+    notesTotal: 2,
     notes: [
-      {
-        text: "Nobody has read this one.",
-        blocks: [{ kind: "p", spans: [{ text: "Nobody has read this one." }] }],
-        responses: [],
-        answered: false,
-        waiting: true,
-      },
-      {
-        text: "Platform-config billing block is fine as-is.",
-        blocks: [{ kind: "p", spans: [{ text: "Platform-config billing block is fine as-is." }] }],
-        responses: [
-          {
-            cycle: 258,
-            blocks: [{ kind: "p", spans: [{ text: "Read Cycle 258. Recorded it." }] }],
-          },
-        ],
-        answered: true,
-        waiting: false,
-      },
+      note("Platform-config billing block is fine as-is.", {
+        responses: [{ cycle: 258, text: "Read Cycle 258. Recorded it." }],
+      }),
+      note("Nobody has read this one.", { waiting: true }),
     ],
+  };
+  const manyNotes = (count) => {
+    const notes = [];
+    for (let i = 1; i <= count; i += 1) notes.push(note("Note number " + i));
+    return { waitingTotal: 0, readTotal: count, notesTotal: count, notes };
   };
 
   test("a vault with no notes is a page that says so, not an error", async () => {
     const window = await loadSite("/notes");
     assert.match(feedText(window), /No notes yet/);
-    assert.equal(window.document.querySelectorAll(".note-card").length, 0);
+    assert.equal(window.document.querySelectorAll(".note-msg").length, 0);
     assert.doesNotMatch(feedText(window), /Could not load/);
+  });
+
+  test("his messages are green and a cycle's are purple, both named in words", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const messages = [...window.document.querySelectorAll(".note-msg")];
+    // Three messages from two notes: his, the cycle's answer, then his
+    // unanswered one.
+    assert.deepEqual(
+      messages.map((m) => m.className.includes("note-msg-nova")),
+      [false, true, false],
+    );
+    assert.deepEqual(
+      messages.map((m) => m.querySelector(".note-msg-name").textContent),
+      ["Edvard", "Nova", "Edvard"],
+    );
+    assert.match(messages[1].querySelector(".note-msg-body").textContent, /Recorded it/);
+    assert.equal(messages[1].querySelector(".note-msg-cycle").getAttribute("href"), "/cycle/258");
+  });
+
+  test("the transcript is drawn in the order the server sent, not re-sorted", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const bodies = [...window.document.querySelectorAll(".note-msg-body")]
+      .map((b) => b.textContent);
+    assert.deepEqual(bodies, [
+      "Platform-config billing block is fine as-is.",
+      "Read Cycle 258. Recorded it.",
+      "Nobody has read this one.",
+    ]);
   });
 
   test("a waiting note says Waiting in words, not only in colour", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
-    const cards = [...window.document.querySelectorAll(".note-card")];
-    assert.equal(cards.length, 2);
-    assert.match(cards[0].querySelector(".badge").textContent, /Waiting/);
-    assert.ok(cards[0].classList.contains("note-waiting"));
-    assert.match(cards[1].querySelector(".badge").textContent, /Read/);
+    const messages = [...window.document.querySelectorAll(".note-msg")];
+    const waiting = messages[messages.length - 1];
+    assert.match(waiting.querySelector(".badge").textContent, /Waiting/);
+    assert.ok(waiting.classList.contains("note-msg-waiting"));
+    // And the answered one carries no badge at all -- the purple reply
+    // under it is what says a cycle got there.
+    assert.equal(messages[0].querySelector(".badge"), null);
   });
 
   test("the waiting count is the headline, because it is the question", async () => {
@@ -6497,11 +6558,69 @@ describe("the notes page", () => {
     assert.match(window.document.querySelector(".status-line").textContent, /1 note waiting/);
   });
 
-  test("an answered note carries the reply and links the cycle that wrote it", async () => {
+  test("the composer sits under the conversation, not above it", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
-    const answered = [...window.document.querySelectorAll(".note-card")][1];
-    assert.match(answered.querySelector(".note-reply-body").textContent, /Recorded it/);
-    assert.equal(answered.querySelector(".note-cycle").getAttribute("href"), "/cycle/258");
+    const feed = window.document.getElementById("feed");
+    const capture = window.document.getElementById("capture");
+    assert.equal(capture.parentNode, feed, "the composer is not in the feed");
+    assert.equal(feed.lastElementChild, capture, "the composer is not the last thing on the page");
+    // The one composer the shell has, not a second copy that could drift
+    // from the handlers `captureBox()` bound at startup.
+    assert.equal(window.document.querySelectorAll("#capture-form").length, 1);
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+  });
+
+  test("navigating away puts the composer back rather than deleting it", async () => {
+    /* The destructive one. Every renderer's first act is to empty the
+     * feed, so a composer left inside it is gone -- and nothing rebinds
+     * `captureBox()`, so the box would be missing from every page until
+     * a reload. */
+    const window = await loadSite("/notes", { notes: twoNotes });
+    window.document.querySelector('.nav-tab[href="/issues"]').click();
+    await settle();
+    const capture = window.document.getElementById("capture");
+    assert.ok(capture, "the composer was destroyed by navigating away from Notes");
+    assert.equal(capture.parentNode, window.document.getElementById("feed").parentNode);
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+  });
+
+  test("it opens on the newest message instead of at the top", async () => {
+    const scrolls = [];
+    const window = await loadSite("/notes", {
+      notes: twoNotes,
+      install: (w) => { w.scrollTo = (x, y) => scrolls.push(y); },
+    });
+    assert.ok(scrolls.length, "nothing scrolled the page at all");
+    // jsdom lays nothing out, so scrollHeight is 0 and the value cannot
+    // be asserted -- what is checkable is that the page asked to go to
+    // the bottom of the document rather than to a fixed offset.
+    assert.equal(scrolls[scrolls.length - 1], window.document.documentElement.scrollHeight);
+  });
+
+  test("older messages are behind a pager that the scroll watcher fires", async () => {
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = () => {}; },
+    });
+    const shown = [...window.document.querySelectorAll(".note-msg-body")].map((b) => b.textContent);
+    assert.equal(shown.length, 12, "the page did not open on a window of the newest messages");
+    assert.equal(shown[shown.length - 1], "Note number 30");
+    assert.equal(shown[0], "Note number 19");
+    const pager = window.document.querySelector(".note-older");
+    assert.ok(pager, "no way to reach the older messages");
+    assert.ok(spy.watching.some((one) => one.node === pager), "the notes pager is not watched");
+    pager.click();
+    const wider = [...window.document.querySelectorAll(".note-msg-body")].map((b) => b.textContent);
+    assert.equal(wider.length, 24);
+    assert.equal(wider[0], "Note number 7");
+    assert.equal(wider[wider.length - 1], "Note number 30", "revealing older ones lost the newest");
+  });
+
+  test("the top of the conversation says so instead of offering a pager", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    assert.equal(window.document.querySelector(".note-older"), null);
+    assert.match(window.document.querySelector(".note-start").textContent, /beginning/i);
   });
 
   test("a note moved to Read with no reply is not drawn as answered", async () => {
@@ -6509,15 +6628,12 @@ describe("the notes page", () => {
       notes: {
         waitingTotal: 0,
         readTotal: 1,
-        notes: [{
-          text: "Moved and never written up.",
-          blocks: [{ kind: "p", spans: [{ text: "Moved and never written up." }] }],
-          responses: [], answered: false, waiting: false,
-        }],
+        notesTotal: 1,
+        notes: [note("Moved and never written up.")],
       },
     });
     assert.match(feedText(window), /no reply written/i);
-    assert.equal(window.document.querySelectorAll(".note-cycle").length, 0);
+    assert.equal(window.document.querySelectorAll(".note-msg-cycle").length, 0);
   });
 
   test("a failed fetch says so instead of leaving the last page up", async () => {

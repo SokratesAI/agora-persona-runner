@@ -4302,8 +4302,10 @@ def test_the_notes_page_and_its_endpoint_both_answer():
     assert status == 200
     payload = json.loads(body)
     assert payload["waitingTotal"] == 1 and payload["readTotal"] == 1
-    assert payload["notes"][0]["text"] == "Waiting on someone."
-    assert payload["notes"][1]["responses"][0]["cycle"] == 258
+    # Oldest first, unanswered last -- the page is a conversation and it
+    # opens scrolled to the bottom (`nova_notes.notes_payload`).
+    assert payload["notes"][0]["responses"][0]["cycle"] == 258
+    assert payload["notes"][1]["text"] == "Waiting on someone."
     assert shell_status == 200 and b"<!doctype html>" in shell.lower()
 
     with patch.object(nova_sources, "vault_read_path", return_value=None):

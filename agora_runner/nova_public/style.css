@@ -1595,39 +1595,74 @@ body.nav-open { overflow: hidden; }
 .note-cycle { color: var(--accent); text-decoration: none; }
 .note-body p { margin: 0.3rem 0; }
 
-/* The `/notes` page. `.note` above is the card on a board page's Nova
- * tab and these are the two things a note on its own page has that a
- * board note does not: a state, and Nova's answer under it.
+/* The `/notes` page, which is a conversation rather than a stack of
+ * cards. Edvard, `notes.md` 2026-08-24: *"I want the notes page to be
+ * more like a conversation. So that alternating posts are green (mine)
+ * and purple (Nova cycle response). Just like the comments."*
  *
- * A waiting note gets a left edge in the warn colour rather than a
- * different background. The badge already carries the meaning in words
- * -- `personality.md`'s rule that a colour alone is not a sentence --
- * so the stripe is there to find the card while scrolling, not to say
- * anything on its own. */
-.note-waiting { border-left: 3px solid var(--warn); }
+ * "Just like the comments" is taken literally, and it is the reason
+ * these are left rules and not chat bubbles: `.comment` and
+ * `.comment-reply-cycle` already say "him" and "a cycle" in exactly
+ * these two colours on the journal cards, and a second visual language
+ * for the same two speakers would mean the app says one thing two ways.
+ * --good and --nova are those same variables, not new ones.
+ *
+ * The colour is never the only thing carrying it. Each message is
+ * labelled with who said it, and a cycle's carries its number as a link
+ * to the card -- `personality.md`'s rule that if a reader has to know a
+ * colour code to know what was said, it has not been said. */
+.note-thread { display: flex; flex-direction: column; }
 
-.note-reply {
-  margin-top: 0.6rem;
-  padding-left: 0.7rem;
+.note-msg {
   border-left: 2px solid var(--line);
+  padding-left: 0.8rem;
+  margin-bottom: 0.9rem;
 }
 
-.note-reply-who {
-  color: var(--accent);
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 0.15rem;
+.note-msg-mine { border-left-color: var(--good); }
+.note-msg-nova { border-left-color: var(--nova); }
+
+.note-msg-who {
+  margin: 0 0 0.25rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--dim);
 }
 
-.note-reply-body p { margin: 0.3rem 0; }
-.note-reply-body { color: var(--dim); }
+.note-msg-mine .note-msg-name { color: var(--good); }
+.note-msg-nova .note-msg-name { color: var(--nova); }
+.note-msg-cycle { color: var(--nova); text-decoration: none; }
+
+.note-msg-body { color: var(--text); }
+.note-msg-body p { margin: 0.3rem 0; }
+/* A cycle's answer reads as the quieter half of the exchange, the same
+ * way `.comment-reply .comment-body` does -- his words are the ones the
+ * page is for. */
+.note-msg-nova .note-msg-body { color: var(--dim); }
+
+/* Waiting for a cycle to pick it up. The badge says it in a word; this
+ * only makes it findable while scrolling. */
+.note-msg-waiting { border-left-width: 3px; }
 
 .note-reply-missing {
-  margin: 0.6rem 0 0;
+  margin: 0 0 0.9rem;
   color: var(--warn);
   font-size: 0.85rem;
 }
+
+/* The top of the transcript. Quiet -- it is a full stop, not a control. */
+.note-start {
+  margin: 0 0 1rem;
+  text-align: center;
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+
+/* The scroll-up pager sits above the conversation rather than below it,
+ * so its margin goes the other way from `.more`'s. */
+.note-older { margin: 0 0 1rem; }
 
 /* Edvard's own words. Every item on his boards opens with one, and until
  * the board pages existed nothing rendered a blockquote -- the `>` showed
