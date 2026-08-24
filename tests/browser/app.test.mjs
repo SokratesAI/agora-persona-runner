@@ -5354,6 +5354,17 @@ describe("the attach button is on the page, not just in the source", () => {
       kids.indexOf(attach) < kids.findIndex((el) => el.className.includes("comment-send")),
       "the attach button is after the send button",
     );
+    // And its tray (Cycle 377), between the box and this row. The drawer is
+    // the one composer that gets rebuilt on every poll, so "the node is on
+    // the page" is worth asserting here even though the upload behaviour is
+    // covered on the capture form.
+    const drawer = actions.parentNode;
+    const order = [...drawer.children].map((n) => n.className.split(" ")[0]);
+    assert.ok(
+      order.indexOf("attach-tray") > order.indexOf("comment-text")
+        && order.indexOf("attach-tray") < order.indexOf("comment-actions"),
+      `the tray should sit under the box and above the buttons, got ${order.join(",")}`,
+    );
   });
 });
 
@@ -6482,6 +6493,20 @@ describe("commenting on a boarded row", () => {
     assert.ok(
       order.indexOf("attach-btn") < order.indexOf("item-comment-send"),
       `attach should sit before Comment, got ${order.join(",")}`,
+    );
+    /* And the tray it fills (Cycle 377), between the box and that row. The
+     * upload tests live on the capture form because that is where the
+     * fixture lets a file be picked -- so this composer's only exposure to
+     * the feature is whether the tray is on the page at all, which is the
+     * "built, tested, and dead on his screen" failure this suite exists
+     * for. */
+    const wrap = composer(window);
+    const kids = [...wrap.children].map((n) => n.className.split(" ")[0]);
+    assert.ok(kids.includes("attach-tray"), `no tray in the board composer, got ${kids.join(",")}`);
+    assert.ok(
+      kids.indexOf("attach-tray") > kids.indexOf("item-comment-box")
+        && kids.indexOf("attach-tray") < kids.indexOf("item-comment-foot"),
+      `the tray should sit under the box and above the buttons, got ${kids.join(",")}`,
     );
   });
 
