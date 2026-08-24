@@ -385,6 +385,14 @@ def split_ask(body):
 _REPORT_TITLE_RE = re.compile(r"\AReport[ \t]+·[ \t]+Cycles[ \t]+\d+[–-]\d+\Z")
 REPORT_EMOJI = "📋"
 
+#: The heading a silence marker declares itself with -- `cycle_stub` writes
+#: it, `parse_heading` reads it back. One constant rather than a string in
+#: each module, because a marker that stops matching stops being excluded
+#: from the silence measure and quietly disarms the stall notice.
+SILENCE_TITLE = "Silence · a heartbeat run failed before it could write"
+_SILENCE_TITLE_RE = re.compile(r"\ASilence[ \t]+·[ \t]+")
+SILENCE_EMOJI = "🔇"
+
 
 def _is_metadata_only(segment):
     """True if a heading segment carries only a date/time and punctuation."""
@@ -431,8 +439,28 @@ def parse_heading(heading):
         # every consumer of an entry gets the same answer. See
         # `_REPORT_TITLE_RE` for why the declaration is safe to read off a
         # heading when it would not be safe to read off a body.
-        "kind": "report" if cycle is None and _REPORT_TITLE_RE.match(title) else "cycle",
+        "kind": _kind(cycle, title),
     }
+
+
+def _kind(cycle, title):
+    """`"cycle"`, `"report"` or `"silence"` -- the card's shape.
+
+    A silence marker is written by the runner, not by a cycle, and carries
+    no cycle number for the same reason a report does not: the cycle it is
+    about never got far enough to have one. It is a separate kind rather
+    than a report because the two are excluded from different things --
+    a report is kept out of the header, a marker is kept out of the
+    *silence measure*, and folding them together would mean a report
+    could no longer end a stall (which it should, since a cycle wrote it).
+    """
+    if cycle is not None:
+        return "cycle"
+    if _REPORT_TITLE_RE.match(title):
+        return "report"
+    if _SILENCE_TITLE_RE.match(title):
+        return "silence"
+    return "cycle"
 
 
 # The renderer's own answer to "does this entry have a title", ported
@@ -708,6 +736,13 @@ def assign_emoji(entries):
         # a card that is always the same kind of thing.
         if entry.get("kind") == "report":
             entry["emoji"] = REPORT_EMOJI
+            continue
+        # Same argument as the report above, one step further: a marker's
+        # body is a sentence about the runner failing, so the scorer would
+        # give every one of them whatever topic that sentence happens to
+        # hit. They are all the same kind of thing and should look it.
+        if entry.get("kind") == "silence":
+            entry["emoji"] = SILENCE_EMOJI
             continue
         opening = (entry.get("body", "") or "").split("\n\n", 1)[0].lower()
         if _INCIDENT_RE.search(opening):
@@ -1428,6 +1463,13 @@ def _newest_written_at(entries):
     is why the caller reports it as `None` instead of `0`.
     """
     for entry in entries:
+        # A silence marker is the runner saying a cycle died, not the loop
+        # writing. Counting it here would move `lastWrittenAt` on every
+        # failed run, and `stall_notice.due` dedupes on exactly that stamp
+        # -- so a loop failing every cycle would keep resetting the alarm
+        # it was supposed to raise. See `cycle_stub`.
+        if entry.get("kind") == "silence":
+            continue
         if not entry.get("date") or not entry.get("time"):
             continue
         try:
@@ -1539,7 +1581,7 @@ def build_status(entries, known_cycles=None):
 
     dated = [e for e in entries if e["date"]]
     numbered = [e for e in entries if e["cycle"] is not None]
-    cycles = [e for e in entries if e.get("kind") != "report"]
+    cycles = [e for e in entries if e.get("kind") not in ("report", "silence")]
     newest_cycle = max((e["cycle"] for e in numbered), default=None)
     # Document order inside one cycle, so a cycle's own addendum wins over
     # the entry it amends -- it is that cycle's latest word.
