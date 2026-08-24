@@ -2348,7 +2348,9 @@ body.has-full-chart { overflow: hidden; }
   padding: 0.25rem;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--panel, transparent);
+  /* No fill, same as `.attach-file`: the border is what makes it a chip and
+   * the thumbnail supplies all the colour it needs. */
+  background: none;
   max-width: 100%;
 }
 

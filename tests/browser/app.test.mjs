@@ -5342,6 +5342,43 @@ describe("the attach button is on the page, not just in the source", () => {
     assert.equal(tray.hidden, true);
   });
 
+  /* Reviewer finding, Cycle 377. The journal drawer is rebuilt whole on a
+   * render and the upload chain is not cancelled with it, so a file that
+   * finishes uploading into an orphaned composer used to push a chip, call
+   * `onChange`, and write itself back into the draft store the *live*
+   * drawer had already read -- including after a successful send had
+   * deleted it, which resurrects an attachment he has already sent.
+   *
+   * Detaching the tray is the whole condition, so that is what this drives
+   * directly rather than trying to reproduce a poll landing mid-batch. */
+  test("an upload that lands after its composer is gone does not attach", async () => {
+    const window = await loadSite("/");
+    const tray = window.document.querySelector(CAPTURE_TRAY);
+    window.document.querySelector("#capture-form textarea").value = "";
+    await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
+      [{ name: "before.jpg", type: "image/jpeg", isImage: true }]);
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 1);
+
+    tray.remove();
+    const input = window.document.querySelector(CAPTURE_INPUT);
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new window.File([new Uint8Array([1])], "after.jpg", { type: "image/jpeg" })],
+    });
+    window.fetch = () => res({ ok: true, name: "y", url: "/api/upload/y.jpg", bytes: 1, isImage: true });
+    input.dispatchEvent(new window.Event("change"));
+    // Long enough for the FileReader task and the POST microtask to land.
+    for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 5));
+
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 1,
+      "an orphaned composer attached a picture nobody can see");
+    assert.match(
+      window.document.querySelector(".capture-status").textContent,
+      /after the page moved on/,
+      "the dropped upload was swallowed rather than reported",
+    );
+  });
+
   test("the comment drawer has one too", async () => {
     const window = await loadSite("/");
     const actions = window.document.querySelector(".comment-actions");

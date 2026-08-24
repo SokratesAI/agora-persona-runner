@@ -227,10 +227,10 @@
      * follow it.
      *
      * Without this the two controls race, and the race loses the picture
-     * silently: `submit()` reads `box.value` synchronously, so tapping
-     * Comment while the POST is still going sends the text *without* the
-     * markdown line -- and then the upload resolves, `onInsert` writes into
-     * a box `submit()` has already cleared, and the image reappears as an
+     * silently: `submit()` reads the tray synchronously, so tapping Comment
+     * while the POST is still going sends the text *without* the
+     * attachment -- and then the upload resolves and pushes a chip into a
+     * tray `submit()` has already cleared, so the image reappears as an
      * orphaned draft attached to nothing. He gets a comment with no
      * screenshot in it and no sign that anything went wrong.
      *
@@ -303,6 +303,34 @@
       if (opts.onChange) opts.onChange(pending.slice());
     }
 
+    /* Whether this composer is still the one on screen.
+     *
+     * The journal drawer is thrown away and rebuilt whole on a render, and
+     * the upload chain below is not cancelled when that happens -- it keeps
+     * running inside the dead closure, with its own `pending` array, its own
+     * detached tray and a `status` element nobody can see. Reviewer finding,
+     * Cycle 377, and the worst of the three consequences is the one I would
+     * not have predicted: `clear()` on a successful send deletes the draft,
+     * and then the dead chain's next completed upload calls `changed()` and
+     * *resurrects* it, so the next time he opens that drawer a picture he
+     * already sent is sitting there looking unsent.
+     *
+     * So a completed upload that has nowhere visible to go is treated as a
+     * failed one. It is reported, not swallowed -- the status line it writes
+     * to is detached, which is exactly why the count in the batch summary
+     * matters -- and the live drawer's tray keeps showing only what it will
+     * actually send. That is the property worth protecting: an under-count
+     * he can see beats a silent over-count he cannot.
+     *
+     * `isConnected` and not a generation counter, because the question this
+     * has to answer is literally "is my tray on the page", and a counter
+     * would be a second thing that has to be kept in step with the DOM. The
+     * tray is in the document from the moment the composer is built, so this
+     * is false only after a rebuild has orphaned it. */
+    function live() {
+      return tray.isConnected !== false;
+    }
+
     render();
 
     /* One file, from picked to sitting in the tray. Rejects rather than
@@ -326,6 +354,9 @@
             .then(function (result) {
               if (!result || !result.ok) {
                 throw new Error((result && (result.message || result.error)) || "upload failed");
+              }
+              if (!live()) {
+                throw new Error(file.name + " finished after the page moved on");
               }
               pending.push({
                 name: file.name || "file",
