@@ -1595,3 +1595,205 @@ def test_a_clean_checkout_whose_remote_check_failed_says_so(clean_but_pushed,
     tidy_workspace.main(["--root", str(root), "--no-fetch"])
     out = capsys.readouterr().out
     assert "could not list what origin/nova/feature carries" in out
+
+
+# --- the remote sweep: branches no checkout is parked on -------------------
+#
+# Everything above this line asks about a directory on this disk. These ask
+# GitHub, so the fake is at `subprocess.run` rather than at `_git`: that keeps
+# `_gh_lines` and `_gh_json` -- including the "a failure is not an empty
+# answer" split that the rest of this file exists to defend -- inside the test
+# rather than mocked past.
+
+
+def _gh_fake(branches, merged=(), opened=(), compares=None, broken=()):
+    """A `subprocess.run` that answers the four `gh` calls the sweep makes."""
+    compares = compares or {}
+
+    def run(argv, **kwargs):
+        joined = " ".join(argv)
+        for mark in broken:
+            if mark in joined:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        if "/branches" in joined:
+            return types.SimpleNamespace(
+                returncode=0, stderr="",
+                stdout="".join("%s\t%s\n" % pair for pair in branches))
+        if "compare/" in joined:
+            branch = joined.split("...", 1)[1].split(" ", 1)[0]
+            found = compares.get(branch)
+            if found is None:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+            return types.SimpleNamespace(returncode=0, stderr="",
+                                         stdout=json.dumps(found))
+        if "--state merged" in joined:
+            return types.SimpleNamespace(returncode=0, stderr="",
+                                         stdout=json.dumps(list(merged)))
+        if "--state open" in joined:
+            return types.SimpleNamespace(returncode=0, stderr="",
+                                         stdout=json.dumps(list(opened)))
+        if joined.startswith("gh api repos/"):
+            return types.SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+        raise AssertionError("unexpected gh call: %s" % joined)
+
+    return run
+
+
+def _compare(ahead, files=("a.py",), date="2026-08-24T13:59:44Z"):
+    return {"ahead": ahead, "files": list(files), "date": date}
+
+
+def test_a_pushed_branch_with_no_pr_is_reported(monkeypatch):
+    """The case this whole sweep exists for: a cycle pushed and then died.
+
+    Nothing else in this file can see it. No checkout is parked on the branch,
+    so `survey_checkouts` never names it, and there is no PR for `gh pr list`
+    to return."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("main", "aaa"), ("nova/killed-midway", "bbb")],
+        compares={"nova/killed-midway": _compare(3, ["tools/x.py"])}))
+
+    survey = tidy_workspace.survey_remote_branches(["o/r"])
+
+    assert survey[0]["checked"] is True
+    assert [row["branch"] for row in survey[0]["outstanding"]] == \
+        ["nova/killed-midway"]
+    row = survey[0]["outstanding"][0]
+    assert row["kind"] == "no-pr" and row["ahead"] == 3
+    assert row["date"] == "2026-08-24" and row["files"] == ["tools/x.py"]
+
+
+def test_a_branch_that_moved_past_its_merged_head_is_reported(monkeypatch):
+    """The merged part landed; whatever was pushed on top of it did not."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/feature", "newer")],
+        merged=[{"number": 316, "headRefName": "nova/feature",
+                 "headRefOid": "older", "mergedAt": "2026-08-24T10:46:35Z"}],
+        compares={"nova/feature": _compare(1)}))
+
+    row = tidy_workspace.survey_remote_branches(["o/r"])[0]["outstanding"][0]
+
+    assert row["kind"] == "past-merged-head" and row["merged_pr"] == 316
+
+
+def test_the_branch_a_merge_left_behind_is_not_reported(monkeypatch):
+    """270 of the runner's 290 branches are this. Reporting them is noise."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/landed", "same")],
+        merged=[{"number": 300, "headRefName": "nova/landed",
+                 "headRefOid": "same", "mergedAt": "2026-08-24T10:00:00Z"}]))
+
+    assert tidy_workspace.survey_remote_branches(["o/r"])[0]["outstanding"] == []
+
+
+def test_a_branch_with_an_open_pr_is_not_reported(monkeypatch):
+    """Work in flight is being tracked by the thing that tracks work."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/in-flight", "bbb")],
+        opened=[{"number": 341, "headRefName": "nova/in-flight"}],
+        compares={"nova/in-flight": _compare(2)}))
+
+    assert tidy_workspace.survey_remote_branches(["o/r"])[0]["outstanding"] == []
+
+
+def test_a_branch_the_base_already_contains_is_not_reported(monkeypatch):
+    """`ahead == 0` is litter however it got that way -- a rebase, a rewrite,
+    a merge whose head oid no longer matches. The question is whether there is
+    work on it, and there is not."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/rewritten", "bbb")],
+        compares={"nova/rewritten": _compare(0, [])}))
+
+    assert tidy_workspace.survey_remote_branches(["o/r"])[0]["outstanding"] == []
+
+
+def test_branches_outside_the_prefixes_are_counted_not_dropped(monkeypatch):
+    """`platform-config` carries 42 branches other automation wrote. They are
+    out of scope, and the number of them is printed rather than swallowed --
+    the same rule this repo applies to every other cap it takes."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/mine", "bbb"), ("deploy/prod/theirs", "ccc"),
+                  ("sealed-secrets/20260310", "ddd")],
+        compares={"nova/mine": _compare(1)}))
+
+    entry = tidy_workspace.survey_remote_branches(["o/r"])[0]
+
+    assert entry["mine"] == 1 and entry["skipped_prefix"] == 2
+
+
+def test_gh_failing_is_not_an_empty_answer(monkeypatch):
+    """The rule the rest of this file is built on. `checked: False` and an
+    empty `outstanding` read identically to a caller that only looks at the
+    list, so the caller is told which one it got."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/mine", "bbb")], broken=["/branches"]))
+
+    entry = tidy_workspace.survey_remote_branches(["o/r"])[0]
+
+    assert entry["checked"] is False and entry["outstanding"] == []
+
+
+def test_a_failed_compare_is_reported_rather_than_dropped(monkeypatch):
+    """A compare that could not run must not silently remove the branch it
+    could not judge -- that would hide exactly the branch this sweep exists
+    to surface, and hide it with no line saying so."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/unknown", "bbb")], compares={}))
+
+    row = tidy_workspace.survey_remote_branches(["o/r"])[0]["outstanding"][0]
+
+    assert row["compared"] is False and row["ahead"] is None
+
+
+def test_the_newest_merge_decides_a_reused_branch_name(monkeypatch):
+    """`nova/<slug>` collides readily and `_merged_pr` already learned this."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/reused", "second")],
+        merged=[{"number": 10, "headRefName": "nova/reused",
+                 "headRefOid": "first", "mergedAt": "2026-08-01T10:00:00Z"},
+                {"number": 20, "headRefName": "nova/reused",
+                 "headRefOid": "second", "mergedAt": "2026-08-24T10:00:00Z"}]))
+
+    assert tidy_workspace.survey_remote_branches(["o/r"])[0]["outstanding"] == []
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://github.com/SokratesAI/agora.git", "SokratesAI/agora"),
+    ("https://github.com/SokratesAI/agora", "SokratesAI/agora"),
+    ("git@github.com:SokratesAI/agora-persona-runner.git",
+     "SokratesAI/agora-persona-runner"),
+    ("", None),
+    ("notaurl", None),
+])
+def test_origin_urls_this_loop_actually_uses_parse(url, expected):
+    assert tidy_workspace._repo_from_url(url) == expected
+
+
+def test_the_sweep_prints_the_branch_and_what_is_on_it(monkeypatch, capsys):
+    """The output is the whole product here -- a cycle reads this line and
+    goes and looks. Reviewer-proofing the wording is not the point; that the
+    branch, the count and the files all reach the page is."""
+    monkeypatch.setattr(tidy_workspace, "origin_repos", lambda roots: ["o/r"])
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/killed-midway", "bbb")],
+        compares={"nova/killed-midway": _compare(3, ["tools/x.py", "b.py"])}))
+
+    tidy_workspace._sweep_remote(["/nowhere"])
+    out = capsys.readouterr().out
+
+    assert "nova/killed-midway" in out
+    assert "3 commit(s) past main" in out
+    assert "no PR was ever opened from it" in out
+    assert "tools/x.py, b.py" in out
+
+
+def test_a_repo_the_sweep_could_not_reach_says_so(monkeypatch, capsys):
+    """Silence here would read as an all-clear for the one repo nobody
+    checked."""
+    monkeypatch.setattr(tidy_workspace, "origin_repos", lambda roots: ["o/r"])
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/mine", "bbb")], broken=["/branches"]))
+
+    tidy_workspace._sweep_remote(["/nowhere"])
+
+    assert "could not sweep the remote" in capsys.readouterr().out

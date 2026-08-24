@@ -717,6 +717,204 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
     return out
 
 
+# Everything above answers "did a cycle leave work in a checkout here", and a
+# branch is only ever looked at because some checkout happens to be parked on
+# it. There are four clones in a workspace and 290 branches on the runner
+# alone, so all but four of them are invisible to the sweep above by
+# construction -- and the thing that lands on a branch nobody is parked on is
+# precisely a cycle that pushed and then got killed before it opened the PR.
+#
+# Measured on this change, 2026-08-24: `nova/fast-forward-shared-checkout`
+# (3 commits, 03:46 today) and `nova/notes-composer-survives-scroll-up`
+# (3 commits, 13:59 today, one of them titled "Re-trigger CI: the
+# pull_request event did not fire on the first push") are both on the remote,
+# on no checkout, and have no PR at all. Two cycles' work from the same day,
+# and nothing in this loop could see either.
+_MINE = ("nova/", "evolve/")
+
+
+def _gh_lines(argv):
+    """`gh` returning one string per line. Returns `(lines, checked)`.
+
+    `checked` is False when `gh` could not answer -- absent, unauthenticated,
+    timed out. Deliberately not the same as an empty list, for the reason
+    `_merged_pr` gives: "nobody asked" reported as "nothing there" is how this
+    file has twice been wrong in the direction that loses work.
+    """
+    try:
+        done = subprocess.run(["gh", *argv], capture_output=True, text=True,
+                              check=False, timeout=GH_TIMEOUT_SECONDS)
+    except (subprocess.TimeoutExpired, OSError):
+        return [], False
+    if done.returncode != 0:
+        return [], False
+    return [line for line in done.stdout.split("\n") if line.strip()], True
+
+
+def _gh_json(argv):
+    """`gh` returning parsed JSON. Returns `(value, checked)`, as `_gh_lines`."""
+    lines, checked = _gh_lines(argv)
+    if not checked:
+        return None, False
+    try:
+        return json.loads("\n".join(lines) or "null"), True
+    except ValueError:
+        return None, False
+
+
+def _repo_from_url(url):
+    """`owner/name` out of an origin URL, or None.
+
+    Both forms this loop actually uses -- `https://github.com/o/n.git` and
+    `git@github.com:o/n` -- and nothing clever: a URL this cannot parse gets
+    left out rather than guessed at.
+    """
+    url = (url or "").strip()
+    if url.endswith(".git"):
+        url = url[:-4]
+    url = url.rstrip("/")
+    parts = [part for part in re.split(r"[/:]", url) if part]
+    if len(parts) < 2:
+        return None
+    return "%s/%s" % (parts[-2], parts[-1])
+
+
+def origin_repos(roots):
+    """Every `owner/name` these workspaces have a clone of, deduped and sorted.
+
+    Derived from the clones rather than hardcoded, because the list of repos
+    this loop touches is exactly the list it has checked out, and a hardcoded
+    one is the stale constant this repo has already had to fix twice.
+    """
+    repos = set()
+    for root in roots:
+        root = _default_root(root)
+        if not os.path.isdir(root):
+            continue
+        for clone in clones(root):
+            repo = _repo_from_url(
+                _git(root, clone, "remote", "get-url", "origin").stdout)
+            if repo:
+                repos.add(repo)
+    return sorted(repos)
+
+
+def survey_remote_branches(repos, prefixes=_MINE):
+    """One entry per repo: branches holding work that nothing is tracking.
+
+    A branch is reported when it carries commits the default branch does not
+    have, **and** no open PR covers it, **and** it is not simply the branch a
+    merged PR left behind. Two shapes reach that:
+
+    - `no-pr` -- no PR was ever opened from it. A cycle pushed and died.
+    - `past-merged-head` -- a PR from this branch merged, and the branch has
+      moved since. The merged part landed; whatever is on top did not.
+
+    Scoped to `prefixes` on purpose, and the count of what that skipped is in
+    the entry rather than dropped silently. `platform-config` carries 42
+    branches written by other automation entirely -- `deploy/*`,
+    `sealed-secrets/*` -- and calling those "work Nova abandoned" would be
+    false about somebody else's system. The question this answers is about
+    branches this loop pushes.
+    """
+    out = []
+    for repo in repos:
+        entry = {"repo": repo, "checked": True, "outstanding": [],
+                 "mine": 0, "skipped_prefix": 0, "base": None}
+        rows, checked = _gh_lines(
+            ["api", "repos/%s/branches" % repo, "--paginate",
+             "--jq", ".[] | [.name, .commit.sha] | @tsv"])
+        default, base_checked = _gh_lines(
+            ["api", "repos/%s" % repo, "--jq", ".default_branch"])
+        if not checked or not base_checked or not default:
+            entry["checked"] = False
+            out.append(entry)
+            continue
+        entry["base"] = default[0].strip()
+        branches = []
+        for row in rows:
+            name, _, sha = row.partition("\t")
+            if not name.strip() or not sha.strip():
+                continue
+            if name.startswith(tuple(prefixes)):
+                branches.append((name, sha.strip()))
+            else:
+                entry["skipped_prefix"] += 1
+        entry["mine"] = len(branches)
+        merged, merged_ok = _gh_json(
+            ["pr", "list", "--repo", repo, "--state", "merged", "--limit",
+             "1000", "--json", "number,headRefName,headRefOid,mergedAt"])
+        opened, open_ok = _gh_json(
+            ["pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
+             "--json", "number,headRefName"])
+        if not merged_ok or not open_ok or merged is None or opened is None:
+            entry["checked"] = False
+            out.append(entry)
+            continue
+        open_heads = {row.get("headRefName") for row in opened
+                      if isinstance(row, dict)}
+        newest = {}
+        for row in merged:
+            if not isinstance(row, dict):
+                continue
+            head = row.get("headRefName")
+            prev = newest.get(head)
+            # Same reason `_merged_pr` picks the newest rather than the first:
+            # this loop reuses branch names, and only the latest merge says
+            # anything about where the branch is now.
+            if prev is None or (row.get("mergedAt") or "") > (prev.get("mergedAt") or ""):
+                newest[head] = row
+        for name, sha in branches:
+            if name in open_heads:
+                continue
+            pr = newest.get(name)
+            if pr is not None and pr.get("headRefOid") == sha:
+                continue
+            found = _compare_branch(repo, entry["base"], name)
+            if found is None:
+                entry["outstanding"].append(
+                    {"branch": name, "sha": sha, "compared": False,
+                     "kind": "past-merged-head" if pr else "no-pr",
+                     "merged_pr": pr.get("number") if pr else None,
+                     "ahead": None, "date": "", "files": [],
+                     "more_files": 0})
+                continue
+            if not found["ahead"]:
+                # Nothing on it the base has not got. A branch left behind by
+                # a merge whose head oid this cannot match -- a rebase, a
+                # rewrite -- lands here, and it is litter rather than work.
+                continue
+            entry["outstanding"].append(
+                {"branch": name, "sha": sha, "compared": True,
+                 "kind": "past-merged-head" if pr else "no-pr",
+                 "merged_pr": pr.get("number") if pr else None,
+                 "ahead": found["ahead"], "date": found["date"],
+                 "files": found["files"],
+                 "more_files": found["more_files"]})
+        out.append(entry)
+    return out
+
+
+def _compare_branch(repo, base, branch, file_limit=8):
+    """What `branch` has that `base` does not, or None if GitHub would not say.
+
+    None is the "could not check" answer and the caller prints it as such.
+    Answering `ahead: 0` for a failed comparison would quietly drop exactly
+    the branch this sweep exists to surface.
+    """
+    found, checked = _gh_json(
+        ["api", "repos/%s/compare/%s...%s" % (repo, base, branch),
+         "--jq", "{ahead: .ahead_by, files: [.files[].filename], "
+                 "date: (.commits[-1].commit.committer.date // \"\")}"])
+    if not checked or not isinstance(found, dict):
+        return None
+    files = found.get("files") or []
+    return {"ahead": found.get("ahead") or 0,
+            "files": files[:file_limit],
+            "more_files": max(0, len(files) - file_limit),
+            "date": (found.get("date") or "")[:10]}
+
+
 def _remove_worktree(root, name, clone_names):
     """`git worktree remove` from whichever clone owns it, then a plain delete.
 
@@ -788,6 +986,9 @@ def main(argv=None):
     parser.add_argument("--no-gh", action="store_true",
                         help="do not ask GitHub whether a branch was merged; "
                              "a landed branch then reads `unfinished`")
+    parser.add_argument("--no-remote", action="store_true",
+                        help="skip the sweep for remote branches no checkout "
+                             "is parked on (~11s over four repos)")
     args = parser.parse_args(argv)
 
     roots = args.root or workspace_roots() or [SHARED_WORKSPACE]
@@ -802,7 +1003,46 @@ def main(argv=None):
             print("== %s (%s)"
                   % (root, "shared" if root == SHARED_WORKSPACE else "yours"))
         _sweep_one(root, args)
+    # Once, after the roots, because a remote is a property of the repo and
+    # not of the directory it happens to be checked out into. Two roots share
+    # all four origins, and sweeping per root would ask GitHub the same
+    # question twice and print the same branch twice.
+    if not (args.no_remote or args.no_gh):
+        _sweep_remote(roots)
     return 0
+
+
+def _sweep_remote(roots):
+    for entry in survey_remote_branches(origin_repos(roots)):
+        if not entry["checked"]:
+            # Loud, and on its own line. This whole sweep exists because
+            # nothing was looking; a run where the looking failed must not
+            # read the same as a run where there was nothing to find.
+            print("%s: could not sweep the remote -- `gh` did not answer, so "
+                  "nothing here rules out an abandoned branch" % (entry["repo"],))
+            continue
+        if not entry["outstanding"]:
+            continue
+        print("%s: %d of %d %s branch(es) hold work that is on no checkout "
+              "and in no open PR"
+              % (entry["repo"], len(entry["outstanding"]), entry["mine"],
+                 "/".join(prefix.rstrip("/") for prefix in _MINE)))
+        for row in entry["outstanding"]:
+            if not row["compared"]:
+                print("    %s: could not ask GitHub what it carries -- the "
+                      "compare failed, so whether there is work on it is "
+                      "unknown" % (row["branch"],))
+                continue
+            how = ("no PR was ever opened from it" if row["kind"] == "no-pr"
+                   else "#%d merged from it and it has moved since"
+                        % (row["merged_pr"],))
+            print("    %s: %d commit(s) past %s, last commit %s -- %s"
+                  % (row["branch"], row["ahead"], entry["base"], row["date"],
+                     how))
+            if row["files"]:
+                more = (" (+%d more)" % row["more_files"]
+                        if row["more_files"] else "")
+                print("        %s%s" % (", ".join(row["files"]), more))
 
 
 def _sweep_one(root, args):
