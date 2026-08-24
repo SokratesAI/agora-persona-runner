@@ -2089,13 +2089,21 @@ def test_boilerplate_short_lines_are_not_evidence_of_anything(content_repo):
     root, clone = content_repo
     repo = pathlib.Path(root) / clone
     _git(repo, "checkout", "-q", "-b", "nova/boilerplate", "main")
+    # `return 1` is already on main, twice over, and it is the whole point:
+    # the first version of this test added `}` to a base file holding no `}`,
+    # so it pinned "nothing matchable" and not "a short line that *is* on the
+    # base is not counted". Setting the constant to 2 left every test green.
+    # Reviewer finding on #343.
     (repo / "tool.py").write_text(
-        "def sweep():\n    return 1\n    }\n    }\n", encoding="utf-8")
-    _git(repo, "commit", "-qam", "braces")
+        "def sweep():\n    return 1\n    return 1\n"
+        + _OUTSTANDING, encoding="utf-8")
+    _git(repo, "commit", "-qam", "one short line and one real one")
     _git(repo, "push", "-q", "origin", "nova/boilerplate")
 
+    # One added line long enough to count, and it has not landed. The short
+    # `return 1` is on the base and is still not counted, so the total is 1.
     assert tidy_workspace._content_landed(str(root), clone, "main",
-                                          "nova/boilerplate") is None
+                                          "nova/boilerplate") == (0, 1)
 
 
 def test_a_file_the_base_does_not_have_is_outstanding_not_a_failure(
@@ -2194,8 +2202,20 @@ def test_a_diff_that_fails_is_not_a_branch_with_nothing_landed(monkeypatch,
     real = tidy_workspace._git
 
     def flaky(a_root, a_clone, *args):
-        if args and args[0] == "diff":
-            return types.SimpleNamespace(returncode=128, stdout="", stderr="x")
+        if "diff" in args:
+            # Partial stdout on purpose. The first version of this test
+            # returned nothing, so control reached `if not total: return None`
+            # and the assertion held with the guard deleted -- a test for the
+            # error path that passed because it never reached the error path.
+            # A `git diff` killed mid-write leaves exactly this. Reviewer
+            # finding on #343, and the second time this file has shipped a
+            # test that pinned nothing.
+            return types.SimpleNamespace(
+                returncode=128,
+                stdout=("diff --git a/tool.py b/tool.py\n"
+                        "--- a/tool.py\n+++ b/tool.py\n@@ -1,2 +1,3 @@\n"
+                        "+" + _LANDED.strip() + "\n"),
+                stderr="fatal: killed")
         return real(a_root, a_clone, *args)
 
     monkeypatch.setattr(tidy_workspace, "_git", flaky)
