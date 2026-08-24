@@ -729,7 +729,11 @@ def main(argv=None):
     # built for (idea #63 sat nine cycles). Left out, it is the one comment
     # two cycles could still both answer.
     apply_claims(closed_waiting, live, args.cycle)
-    for group in (rows, captures, closed_waiting):
+    # Rows and captures only: `closed_waiting` is rendered by its own path
+    # that prints the board, the number and the reply claim, and never goes
+    # through `_line`. Stamping it would be code that reads as coverage and
+    # changes nothing on the page.
+    for group in (rows, captures):
         apply_finished(group, finished)
 
     print(render(rows, runners_up=args.runners_up, captures=captures,

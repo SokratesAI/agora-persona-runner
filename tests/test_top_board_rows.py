@@ -1027,8 +1027,12 @@ def test_main_marks_a_spent_capture_from_the_ledger_it_reads(tmp_path, capsys):
 def test_an_unparseable_ledger_leaves_every_claim_command_printed(tmp_path, capsys):
     """The ranking survives an unreadable ledger and so must this.
 
-    `live` and `finished` are read from one parse, so a crash in the new
-    half would take the 🔒 marks with it.
+    Narrower than it looks, and worth saying so: the parse fails inside
+    `load_claims`, so `finished_claims` is never reached and this cannot
+    show that the new half handles bad rows. What it does pin is the
+    except branch's tuple, which this change widened -- leave `finished`
+    out of it and `apply_finished` raises `NameError` on every run with
+    an unreadable ledger. Mutation-checked that way, not assumed.
     """
     issues = tmp_path / "issues.md"
     issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
