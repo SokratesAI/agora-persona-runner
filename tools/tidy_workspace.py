@@ -806,7 +806,22 @@ def origin_repos(roots):
     checked everything and found nothing. That is the one equation the rest of
     this file spends a page refusing to write. Reviewer finding on #341.
     """
-    repos = set()
+    placed, unplaceable = _origin_clones(roots)
+    return sorted(placed), sorted(set(unplaceable))
+
+
+def _origin_clones(roots):
+    """`({owner/name: (root, clone)}, unplaceable)` -- a local checkout per repo.
+
+    The same walk `origin_repos` needs, keeping the checkout it found the repo
+    in rather than throwing it away. `_content_landed` needs one: GitHub's
+    compare API answers "how many commits ahead", and the question this sweep
+    actually has is "is this content on main", which only a git that holds both
+    sides can answer. The first clone wins when several point at one repo --
+    they are the same objects, and a concurrent cycle's worktree is as good a
+    place to run `git show` as the shared one.
+    """
+    placed = {}
     unplaceable = []
     for root in roots:
         root = _default_root(root)
@@ -816,13 +831,84 @@ def origin_repos(roots):
             repo = _repo_from_url(
                 _git(root, clone, "remote", "get-url", "origin").stdout)
             if repo:
-                repos.add(repo)
+                placed.setdefault(repo, (root, clone))
             else:
                 unplaceable.append(clone)
-    return sorted(repos), sorted(set(unplaceable))
+    return placed, unplaceable
 
 
-def survey_remote_branches(repos, prefixes=_MINE):
+# An added line has to be this long, ignoring surrounding space, before its
+# presence on the base counts for anything. `}`, `else:` and `return` are on
+# every base branch that ever existed, so counting them makes a branch of
+# ordinary code read as already-landed -- and "already landed" is the reading
+# that ends with somebody deleting the branch. Measured on
+# `nova/fast-forward-shared-checkout`: see the journal entry for Cycle 391.
+_MIN_MATCHABLE = 12
+
+
+def _content_landed(root, clone, base, branch):
+    """`(landed, total)` added lines of `branch` already on `base`, or None.
+
+    **Every other question this sweep asks GitHub is about PR metadata, and the
+    question it has is about content.** `ahead_by` counts commits; a cycle that
+    was killed, re-pushed its work under a new branch name and merged that is
+    still "3 commits past main" on the old branch forever. So is a branch whose
+    PR was closed after the same change landed elsewhere. Both printed as work
+    nobody had taken, and Cycle 390 spent four calls by hand discovering that
+    two of the three branches this sweep reported were finished.
+
+    Reading the added lines answers it directly and survives what a metadata
+    lookup cannot: squash merges, rebases, renamed branches, a PR closed in
+    favour of another. It is deliberately only a *number* -- this returns a
+    ratio and the caller prints it. Nothing in this file deletes a remote
+    branch, and a heuristic that decided a verdict would be a licence to.
+
+    None means the question could not be asked -- no such ref, a `git` that
+    failed, or a diff with no line long enough to be worth matching. The
+    caller prints nothing rather than an invented 0.
+
+    Compared per file, against the base's copy of the same path. A line that
+    landed under a *different* filename reads as not-landed here, which
+    under-reports how much has landed -- the direction that leaves a branch
+    looking like work.
+    """
+    ref = "origin/" + branch
+    if _git(root, clone, "rev-parse", "--verify", "--quiet",
+            ref + "^{commit}").returncode != 0:
+        return None
+    base_ref = "origin/" + base
+    if _git(root, clone, "rev-parse", "--verify", "--quiet",
+            base_ref + "^{commit}").returncode != 0:
+        return None
+    diff = _git(root, clone, "diff", base_ref + "..." + ref)
+    if diff.returncode != 0:
+        return None
+    added = {}
+    path = None
+    for line in diff.stdout.split("\n"):
+        if line.startswith("+++ "):
+            target = line[4:].strip()
+            path = None if target == "/dev/null" else target[2:]
+        elif line.startswith("+") and path is not None:
+            text = line[1:].strip()
+            if len(text) >= _MIN_MATCHABLE:
+                added.setdefault(path, []).append(text)
+    total = sum(len(lines) for lines in added.values())
+    if not total:
+        return None
+    landed = 0
+    for path, lines in added.items():
+        shown = _git(root, clone, "show", "%s:%s" % (base_ref, path))
+        if shown.returncode != 0:
+            # No such path on the base: a file this branch adds. Every line of
+            # it is outstanding, which is what leaving `landed` alone says.
+            continue
+        have = {existing.strip() for existing in shown.stdout.split("\n")}
+        landed += sum(1 for text in lines if text in have)
+    return landed, total
+
+
+def survey_remote_branches(repos, prefixes=_MINE, locations=None):
     """One entry per repo: branches holding work that nothing is tracking.
 
     A branch is reported when it carries commits the default branch does not
@@ -937,19 +1023,23 @@ def survey_remote_branches(repos, prefixes=_MINE):
                     {"branch": name, "sha": sha, "compared": False,
                      "kind": kind, "merged_pr": decided_by,
                      "ahead": None, "date": "", "files": [],
-                     "more_files": 0})
+                     "more_files": 0, "landed": None})
                 continue
             if not found["ahead"]:
                 # Nothing on it the base has not got. A branch left behind by
                 # a merge whose head oid this cannot match -- a rebase, a
                 # rewrite -- lands here, and it is litter rather than work.
                 continue
+            here = (locations or {}).get(repo)
+            landed = (_content_landed(here[0], here[1], entry["base"], name)
+                      if here else None)
             entry["outstanding"].append(
                 {"branch": name, "sha": sha, "compared": True,
                  "kind": kind, "merged_pr": decided_by,
                  "ahead": found["ahead"], "date": found["date"],
                  "files": found["files"],
-                 "more_files": found["more_files"]})
+                 "more_files": found["more_files"],
+                 "landed": landed})
         out.append(entry)
     return out
 
@@ -1097,7 +1187,8 @@ def _sweep_remote(roots):
               "%s an abandoned branch"
               % (", ".join(unplaceable),
                  "they have" if len(unplaceable) > 1 else "it has"))
-    for entry in survey_remote_branches(repos):
+    locations, _ = _origin_clones(roots)
+    for entry in survey_remote_branches(repos, locations=locations):
         if not entry["checked"]:
             # Loud, and on its own line. This whole sweep exists because
             # nothing was looking; a run where the looking failed must not
@@ -1156,6 +1247,18 @@ def _sweep_remote(roots):
                 more = (" (+%d more)" % row["more_files"]
                         if row["more_files"] else "")
                 print("        %s%s" % (", ".join(row["files"]), more))
+            # The commit count above is metadata and this is the content. They
+            # disagree exactly when it matters: a branch re-pushed under a new
+            # name after a cycle was killed stays "3 commits past main" forever
+            # while every line of it sits on main. Printed as a number, never
+            # folded into the verdict -- what to do about a branch that has
+            # mostly landed is a judgement, and the whole point is to hand the
+            # reader the fact they would otherwise spend four calls getting.
+            if row.get("landed"):
+                got, total = row["landed"]
+                print("        content: %d of %d added line(s) are already on "
+                      "%s%s" % (got, total, entry["base"],
+                                " -- all of it" if got == total else ""))
 
 
 def _sweep_one(root, args):

@@ -10,6 +10,7 @@ Every test runs against a `tmp_path`, never the real workspace.
 """
 import json
 import os
+import pathlib
 import subprocess
 import time
 import types
@@ -1608,11 +1609,21 @@ def test_a_clean_checkout_whose_remote_check_failed_says_so(clean_but_pushed,
 
 def _gh_fake(branches, merged=(), opened=(), closed=(), compares=None,
              broken=()):
-    """A `subprocess.run` that answers the five `gh` calls the sweep makes."""
+    """A `subprocess.run` that answers the five `gh` calls the sweep makes.
+
+    Anything that is not a `gh` call runs for real. The sweep asks `git` about
+    a local checkout now as well -- `_content_landed` -- and a fake for one
+    program answering for another is how a stub starts lying: it would fail
+    every git call identically and the content line would silently never
+    print, which is the shape of a test that pins nothing.
+    """
     compares = compares or {}
+    real_run = subprocess.run
 
     def run(argv, **kwargs):
         joined = " ".join(argv)
+        if argv[0] != "gh":
+            return real_run(argv, **kwargs)
         for mark in broken:
             if mark in joined:
                 return types.SimpleNamespace(returncode=1, stdout="", stderr="")
@@ -1991,3 +2002,179 @@ def test_a_repo_the_sweep_could_not_reach_says_so(monkeypatch, capsys):
     tidy_workspace._sweep_remote(["/nowhere"])
 
     assert "could not sweep the remote" in capsys.readouterr().out
+
+
+# --- the content check: did this branch's work land, whatever the metadata says
+
+
+_LANDED = "    the sweep asks GitHub whether a pull request covers it\n"
+_OUTSTANDING = "    nothing anywhere has ever seen this particular sentence\n"
+
+
+@pytest.fixture
+def content_repo(tmp_path):
+    """A clone plus an origin, where one branch's content squash-merged.
+
+    `nova/landed` was merged into main under a different commit -- the squash
+    -- so nothing links the two by oid, and if the branch were re-pushed under
+    another name after a killed cycle nothing would link them by name either.
+    That is the shape `_content_landed` exists to answer, and the shape every
+    other instrument in this file gets wrong.
+
+    Returns `(root, clone_name)` ready for `_content_landed(root, clone, ...)`.
+    """
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)],
+                   check=True, capture_output=True)
+    root = tmp_path / "workspace"
+    root.mkdir()
+    repo = root / "repo"
+    subprocess.run(["git", "clone", str(origin), str(repo)],
+                   check=True, capture_output=True)
+    _git(repo, "config", "user.email", "nova@example.com")
+    _git(repo, "config", "user.name", "Nova")
+    _commit(repo, "tool.py", "def sweep():\n    return 1\n")
+    _git(repo, "push", "-q", "origin", "main")
+
+    _git(repo, "checkout", "-q", "-b", "nova/landed")
+    (repo / "tool.py").write_text(
+        "def sweep():\n    return 1\n" + _LANDED, encoding="utf-8")
+    _git(repo, "commit", "-qam", "landed work")
+    _git(repo, "push", "-q", "origin", "nova/landed")
+
+    _git(repo, "checkout", "-q", "-b", "nova/outstanding", "main")
+    (repo / "tool.py").write_text(
+        "def sweep():\n    return 1\n" + _OUTSTANDING, encoding="utf-8")
+    _git(repo, "commit", "-qam", "outstanding work")
+    _git(repo, "push", "-q", "origin", "nova/outstanding")
+
+    # The squash: same lines, a commit `nova/landed` has never seen.
+    _git(repo, "checkout", "-q", "main")
+    (repo / "tool.py").write_text(
+        "def sweep():\n    return 1\n" + _LANDED, encoding="utf-8")
+    _git(repo, "commit", "-qam", "squashed (#1)")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "fetch", "-q", "origin")
+    return root, "repo"
+
+
+def test_content_that_squash_merged_reads_as_landed(content_repo):
+    """The branch is still commits-ahead of main and every line of it is on
+    main. `ahead_by` says work, the content says finished, and the content is
+    the question the reader actually has."""
+    root, clone = content_repo
+
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/landed") == (1, 1)
+
+
+def test_content_nobody_merged_reads_as_outstanding(content_repo):
+    """The other direction, and the one that stops this being a check that
+    calls everything landed."""
+    root, clone = content_repo
+
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/outstanding") == (0, 1)
+
+
+def test_boilerplate_short_lines_are_not_evidence_of_anything(content_repo):
+    """`}` and `else:` are on every base branch there has ever been.
+
+    Counting them makes ordinary code read as already-landed, and
+    already-landed is the reading that ends with somebody deleting a branch.
+    Measured on the real `nova/fast-forward-shared-checkout`: counting every
+    added line put 91 of 329 on main, and 68 of that 91 were lines under 12
+    characters. Here the branch adds nothing else, so there is nothing
+    matchable and the honest answer is "could not tell", not "100% landed"."""
+    root, clone = content_repo
+    repo = pathlib.Path(root) / clone
+    _git(repo, "checkout", "-q", "-b", "nova/boilerplate", "main")
+    (repo / "tool.py").write_text(
+        "def sweep():\n    return 1\n    }\n    }\n", encoding="utf-8")
+    _git(repo, "commit", "-qam", "braces")
+    _git(repo, "push", "-q", "origin", "nova/boilerplate")
+
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/boilerplate") is None
+
+
+def test_a_file_the_base_does_not_have_is_outstanding_not_a_failure(
+        content_repo):
+    """`git show main:new.py` exits non-zero, and that is an answer -- the
+    base has not got the file, so none of its lines have landed. Returning
+    None there would drop a whole new file out of the count."""
+    root, clone = content_repo
+    repo = pathlib.Path(root) / clone
+    _git(repo, "checkout", "-q", "-b", "nova/brand-new", "main")
+    _commit(repo, "new.py", "a sentence long enough to be matchable\n")
+    _git(repo, "push", "-q", "origin", "nova/brand-new")
+
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/brand-new") == (0, 1)
+
+
+def test_a_branch_with_no_remote_ref_says_it_could_not_tell(content_repo):
+    """None is "could not ask", and the caller prints nothing. A 0 here would
+    read as "none of it landed" about a branch nobody ever pushed."""
+    root, clone = content_repo
+
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/never-pushed") is None
+    assert tidy_workspace._content_landed(str(root), clone, "no-such-base",
+                                          "nova/landed") is None
+
+
+def test_the_remote_sweep_carries_the_ratio_when_it_has_a_checkout(
+        monkeypatch, content_repo):
+    """The wiring. `survey_remote_branches` gets repo *names*; only a local
+    checkout can answer a content question, so it has to be handed one."""
+    root, clone = content_repo
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/landed", "bbb")],
+        compares={"nova/landed": _compare(1, ["tool.py"])}))
+
+    without = tidy_workspace.survey_remote_branches(["o/r"])
+    with_it = tidy_workspace.survey_remote_branches(
+        ["o/r"], locations={"o/r": (str(root), clone)})
+
+    assert without[0]["outstanding"][0]["landed"] is None
+    assert with_it[0]["outstanding"][0]["landed"] == (1, 1)
+
+
+def test_the_ratio_is_printed_next_to_the_commit_count(monkeypatch, capsys,
+                                                       content_repo):
+    """Cycle 390 spent four calls by hand getting this number. It is one line
+    of output now, and it is deliberately only a number -- nothing in this
+    file deletes a remote branch, and a heuristic that decided a verdict
+    would be a licence to."""
+    root, clone = content_repo
+    monkeypatch.setattr(tidy_workspace, "origin_repos",
+                        lambda roots: (["o/r"], []))
+    monkeypatch.setattr(tidy_workspace, "_origin_clones",
+                        lambda roots: ({"o/r": (str(root), clone)}, []))
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/landed", "bbb")],
+        compares={"nova/landed": _compare(1, ["tool.py"])}))
+
+    tidy_workspace._sweep_remote(["/nowhere"])
+
+    assert "content: 1 of 1 added line(s) are already on main -- all of it" \
+        in capsys.readouterr().out
+
+
+def test_origin_clones_keeps_the_checkout_origin_repos_throws_away(tmp_path):
+    """`origin_repos` is the same walk with the location dropped. Both come
+    off one pass so they cannot disagree about which clones exist."""
+    repo = tmp_path / "agora"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True,
+                   capture_output=True)
+    _git(repo, "remote", "add", "origin",
+         "https://github.com/SokratesAI/agora.git")
+
+    placed, unplaceable = tidy_workspace._origin_clones([str(tmp_path)])
+
+    assert placed == {"SokratesAI/agora": (str(tmp_path), "agora")}
+    assert unplaceable == []
+    assert tidy_workspace.origin_repos([str(tmp_path)]) == \
+        (["SokratesAI/agora"], [])
