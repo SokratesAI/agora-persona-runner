@@ -187,3 +187,69 @@ def test_the_page_reads_the_path_the_note_button_writes():
 def _payload(markdown):
     with patch.object(nova_notes, "notes_markdown", return_value=markdown):
         return notes_payload()
+
+
+# --- the address the page needs to edit, delete or convert a note ---------
+#
+# The owner, 2026-08-24: *"i have no way of changing it or editing it"*. The
+# two boards have had Edit and Delete since issues #66; this page was built
+# without them, and what it was missing was the address.
+
+
+def test_a_waiting_note_carries_its_capture_index():
+    payload = _payload(LIVE_SHAPE)
+    waiting = [n for n in payload["notes"] if n["waiting"]]
+    assert waiting, "the fixture must have a waiting note for this to mean anything"
+    assert [n["index"] for n in waiting] == list(range(len(waiting)))
+
+
+def test_a_note_already_read_has_no_index():
+    """The edit, delete and convert endpoints can only address the bare
+    bullets above the first heading. A note under `## Read` has a cycle's reply written under it, and
+    rewriting it would leave that reply answering text that is gone."""
+    payload = _payload(LIVE_SHAPE)
+    assert [n["index"] for n in payload["notes"] if not n["waiting"]] \
+        == [None] * payload["readTotal"]
+
+
+def test_a_waiting_note_with_an_indented_bullet_under_it_gets_no_controls():
+    """A real divergence between the two parsers, with nothing mocked.
+
+    `_bullets` reads an indented bullet as a *cycle's reply* to the note
+    above it; `capture_entries` strips the line first, sees `- `, and reads
+    it as its own capture. So a waiting note somebody has already scribbled
+    under shifts every capture index after it, and the naive
+    position-for-position mapping would hand the edit/delete endpoints an
+    address one line off. The guard notices and draws nothing.
+
+    Reviewer finding on this change: the test that used to sit here asserted
+    `addresses[note["index"]] == note["text"]`, which is what the guard's own
+    `if` had just established, on a fixture where the two parsers agreed
+    anyway. It passed with the guard deleted.
+    """
+    from agora_runner.nova_capture import list_captures
+
+    markdown = LIVE_SHAPE.replace(
+        "- A note nobody has picked up yet.",
+        "- A note nobody has picked up yet.\n  - a stray indented line\n- and a later one",
+    )
+    # The precondition, asserted rather than assumed: the two parsers really
+    # do disagree here, or the negative below proves nothing.
+    parsed = parse_notes_page(markdown)
+    assert len(list_captures(markdown)) != len(parsed["waiting"]), \
+        "the parsers agree on this fixture, so the guard is never reached"
+
+    payload = _payload(markdown)
+    waiting = [n for n in payload["notes"] if n["waiting"]]
+    assert [n["text"] for n in waiting] == [
+        "A note nobody has picked up yet.", "and a later one"]
+    assert [n["index"] for n in waiting] == [0, None], \
+        "the note after the divergence must lose its controls, not get a wrong address"
+
+
+def test_a_note_the_capture_parser_disagrees_about_gets_no_controls():
+    """If the two ever drift, the page must draw nothing rather than hand
+    `/api/capture/delete` an index pointing at a different line of his file."""
+    with patch.object(nova_notes, "list_captures", return_value=["something else"]):
+        payload = _payload(LIVE_SHAPE)
+    assert [n["index"] for n in payload["notes"] if n["waiting"]] == [None]

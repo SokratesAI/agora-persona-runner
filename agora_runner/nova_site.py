@@ -117,10 +117,12 @@ from agora_runner.nova_uploads import (
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
     MAX_BODY_BYTES,
+    STALE_CAPTURE,
     amend,
     capture,
     clean_capture_text,
     comment_on_row,
+    convert_capture,
     edit_row,
     remove_row,
     set_priority,
@@ -857,6 +859,24 @@ def invalidate(name):
         # read the vault before the write landed, so its result is stale
         # and `_refresh` will now discard it. Clearing the flag here would
         # let a *second* refresh start while the first is still running.
+
+
+def _invalidate_capture_target(target):
+    """Drop whichever cached page shows captures for `target`.
+
+    Two of the three capture files are boards and cache under
+    `board:<name>`; `notes.md` is not a board and caches under `notes`,
+    and `board:notes` has never existed. The new-capture path in
+    `_post_capture` has said both halves since notes got a page of their
+    own; the edit and delete path said only the first, so a note edited or
+    deleted from the app left `/notes` serving the copy from before the
+    write -- the same deterministic staleness `invalidate` above was built
+    for, in the one place a second caller had to remember it. One function
+    now, called by everything that writes a capture file.
+    """
+    invalidate("board:" + target)
+    if target == "notes":
+        invalidate("notes")
 
 
 def reset_cache():
@@ -1803,7 +1823,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if ok:
             # Exactly as for a new capture: the board the owner is looking at
             # has gone stale and `app.js` reloads on the next tick.
-            invalidate("board:" + target)
+            _invalidate_capture_target(target)
 
         audit(
             "Nova",
@@ -1819,6 +1839,84 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "message": message})
             return
         stale = "no longer" in message
+        self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
+    def _post_convert(self, payload):
+        """`POST /api/capture/convert` -- move one capture to another file.
+
+        The owner, capture 2026-08-24: *"The note i sent regarding the
+        rebuilding the notes page was sent as a note, but its actually an
+        idea, but i have no way of changing it or editing it."*
+
+        Same boundaries as `_post_amend`, and one more: `from` and `to`
+        are both keys into CAPTURE_TARGETS, so neither addresses a
+        document. `original` is the whole safety of the operation -- it is
+        what `replace_capture` matches on, so a bullet a cycle boarded
+        while this page was open is a 409 rather than a wrong line moved.
+        """
+        source = payload.get("from")
+        dest = payload.get("to")
+        index = payload.get("index")
+        original = payload.get("original")
+        for name, value in (("from", source), ("to", dest)):
+            if value not in CAPTURE_TARGETS:
+                self._send_json(
+                    400, {"error": f"{name} must be one of {sorted(CAPTURE_TARGETS)}"})
+                return
+        if source == dest:
+            self._send_json(400, {"error": "from and to must differ"})
+            return
+        if not isinstance(original, str) or not original.strip():
+            self._send_json(400, {"error": "original must be a non-empty string"})
+            return
+        # `True` is an int in Python and would silently address capture 1.
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            self._send_json(400, {"error": "index must be a non-negative number"})
+            return
+
+        try:
+            ok, message = convert_capture(source, index, original, dest)
+        except Exception as e:
+            # Both sides here too, and that is the point of the `finally`
+            # shape rather than a tidy early return: an exception can land
+            # *after* the destination write succeeded, and a cached page
+            # would then hide the copy that really is there. Reviewer
+            # finding on this PR.
+            _invalidate_capture_target(source)
+            _invalidate_capture_target(dest)
+            log(f"nova-site capture convert failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        # Both sides on any outcome but a refused write: the destination
+        # may hold the copy even when the source removal failed, which is
+        # exactly the state the message describes, and a page that still
+        # shows the old payload would contradict it.
+        _invalidate_capture_target(source)
+        _invalidate_capture_target(dest)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Convert {source} -> {dest} · {'ok' if ok else message}",
+            before=original[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        # **Not `_post_amend`'s predicate, and copying it was a bug.** There
+        # 409 means "nothing happened, the address moved, re-read" -- and
+        # `STALE_CAPTURE` can appear here *inside* the half-done message,
+        # after the destination write already landed. Answering 409 would
+        # tell the page nothing changed while a copy sits in `dest`. So the
+        # only 409 here is a refusal that never wrote anything, which is a
+        # destination write that failed before `amend` was reached.
+        # Reviewer finding on this PR.
+        wrote_destination = message.startswith("copied to ")
+        stale = not wrote_destination and STALE_CAPTURE in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
     def _post_priority(self, payload):
@@ -2205,7 +2303,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._post_upload()
             return
         if path not in (
-            "/api/capture", "/api/capture/edit", "/api/capture/delete", "/api/comment",
+            "/api/capture", "/api/capture/edit", "/api/capture/delete",
+            "/api/capture/convert", "/api/comment",
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
             "/api/board/comment", "/api/ask",
         ):
@@ -2223,6 +2322,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path in ("/api/capture/edit", "/api/capture/delete"):
             self._post_amend(payload, delete=path.endswith("delete"))
+            return
+        if path == "/api/capture/convert":
+            self._post_convert(payload)
             return
         if path == "/api/board/priority":
             self._post_priority(payload)
@@ -2262,16 +2364,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             # `board:notes` never exists -- notes are not a board -- and
             # popping a missing key is a no-op, so this line stays exactly
             # as it was for the two targets that are boards.
-            invalidate("board:" + target)
-            # Notes now have a page of their own, cached under its own
-            # name (`/api/notes`). The comment above used to say notes had
-            # no page and that popping a missing key made a special case
-            # unnecessary -- half of that is still true and the other half
-            # is what a note captured from the app would have hit: the
-            # `/notes` reload landing on the pre-capture payload, with his
-            # new note missing from the page that just told him it saved.
-            if target == "notes":
-                invalidate("notes")
+            # Notes have a page of their own, cached under its own name
+            # (`/api/notes`), and `board:notes` never exists. Both halves
+            # live in `_invalidate_capture_target` now, because the edit
+            # and delete path needed the same pair and had only the first.
+            _invalidate_capture_target(target)
 
         # Recorded whether or not it succeeded, and the Tailscale identity
         # headers go in as evidence rather than as a check -- nothing here

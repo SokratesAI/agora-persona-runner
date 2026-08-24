@@ -6489,6 +6489,10 @@ describe("the notes page", () => {
     })),
     answered: !!(opts.responses || []).length,
     waiting: !!opts.waiting,
+    // The capture-list position, or null on anything the edit, delete and
+    // convert endpoints cannot address -- every note under `## Read`. It is
+    // what the server sends and what decides whether controls are drawn.
+    index: opts.index === undefined ? null : opts.index,
   });
   const twoNotes = {
     waitingTotal: 1,
@@ -6498,7 +6502,7 @@ describe("the notes page", () => {
       note("Platform-config billing block is fine as-is.", {
         responses: [{ cycle: 258, text: "Read Cycle 258. Recorded it." }],
       }),
-      note("Nobody has read this one.", { waiting: true }),
+      note("Nobody has read this one.", { waiting: true, index: 0 }),
     ],
   };
   const manyNotes = (count) => {
@@ -6676,6 +6680,135 @@ describe("the notes page", () => {
     });
     assert.match(feedText(window), /no reply written/i);
     assert.equal(window.document.querySelectorAll(".note-msg-cycle").length, 0);
+  });
+
+  /* Edit, delete and convert on the notes page.
+   *
+   * The owner, 2026-08-24: *"The note i sent regarding the rebuilding the
+   * notes page was sent as a note, but its actually an idea, but i have no
+   * way of changing it or editing it. So we need crude operations for
+   * notes, but also the possibility to change issues/ideas/notes into one
+   * of the other."* */
+  const noteActs = (window, i = 0) =>
+    [...window.document.querySelectorAll(".note-msg")[i].querySelectorAll(".capture-act")];
+  const actNamed = (window, name, i = 0) =>
+    noteActs(window, i).filter((b) => b.textContent === name)[0];
+
+  test("a waiting note carries Edit, Delete and the two conversions", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waiting = [...window.document.querySelectorAll(".note-msg")]
+      .filter((m) => m.className.includes("note-msg-waiting"))[0];
+    assert.deepEqual(
+      [...waiting.querySelectorAll(".capture-act")].map((b) => b.textContent),
+      ["Edit", "Make issue", "Make idea", "Delete"],
+      "Delete must stay last -- it is the destructive one",
+    );
+  });
+
+  test("a note a cycle has already answered has no controls at all", async () => {
+    /* Rewriting it would leave the reply underneath answering text that is
+     * gone, and the edit/delete/convert endpoints cannot address it in any case: the server
+     * sends `index: null` for everything under `## Read`. */
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const answered = [...window.document.querySelectorAll(".note-msg")]
+      .filter((m) => !m.className.includes("note-msg-waiting"))
+      .filter((m) => !m.className.includes("note-msg-nova"));
+    assert.ok(answered.length, "the fixture has no read note, so this proves nothing");
+    answered.forEach((m) =>
+      assert.equal(m.querySelectorAll(".capture-act").length, 0));
+  });
+
+  test("a waiting note with no index gets no controls either", async () => {
+    /* The two parsers disagreed. Drawing nothing is the answer; drawing a
+     * Delete would hand the server an index pointing at a different line
+     * of his file. */
+    const window = await loadSite("/notes", {
+      notes: {
+        waitingTotal: 1,
+        readTotal: 0,
+        notesTotal: 1,
+        notes: [note("Nobody has read this one.", { waiting: true })],
+      },
+    });
+    assert.equal(window.document.querySelectorAll(".capture-act").length, 0);
+  });
+
+  test("Make idea posts the note's own address, and the target board", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    click(window, actNamed(window, "Make idea", waitingIndex));
+    await settle();
+    const posted = window.posted.find((p) => p.url === "/api/capture/convert");
+    assert.ok(posted, "no write reached /api/capture/convert");
+    assert.equal(posted.body.from, "notes");
+    assert.equal(posted.body.to, "ideas");
+    assert.equal(posted.body.index, 0);
+    assert.equal(posted.body.original, "Nobody has read this one.");
+  });
+
+  test("a second tap on Make idea cannot fire a second conversion", async () => {
+    /* The destination write is unconditional, so a double tap on a slow
+     * connection lands a second copy in the target file and the removal
+     * then fails because the first tap already took the line. The first
+     * version of `convertButtons` disabled only the caller's Edit and
+     * Delete and left its own buttons live for the whole fetch. */
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    const btn = actNamed(window, "Make idea", waitingIndex);
+    click(window, btn);
+    assert.equal(btn.disabled, true, "the button stayed live during its own fetch");
+    click(window, btn);
+    await settle();
+    assert.equal(
+      window.posted.filter((p) => p.url === "/api/capture/convert").length,
+      1,
+      "a double tap converted twice",
+    );
+  });
+
+  test("Delete on a note asks first and never fires when refused", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    window.confirm = () => false;
+    click(window, actNamed(window, "Delete", waitingIndex));
+    await settle();
+    assert.equal(window.posted.filter((p) => p.url.includes("delete")).length, 0);
+    window.confirm = () => true;
+    click(window, actNamed(window, "Delete", waitingIndex));
+    await settle();
+    const posted = window.posted.find((p) => p.url === "/api/capture/delete");
+    assert.ok(posted, "a confirmed delete never reached the server");
+    assert.equal(posted.body.target, "notes");
+    assert.equal(posted.body.index, 0);
+  });
+
+  test("Edit opens the raw text of the note, not the rendered blocks", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    click(window, actNamed(window, "Edit", waitingIndex));
+    const box = window.document.querySelector(".note-acts .capture-input");
+    assert.ok(box, "Edit opened no box");
+    assert.equal(box.value, "Nobody has read this one.");
+    box.value = "   ";
+    click(window, actNamed(window, "Save", waitingIndex));
+    await settle();
+    assert.equal(
+      window.posted.filter((p) => p.url === "/api/capture/edit").length,
+      0,
+      "emptying the box is not how a note is deleted",
+    );
+    box.value = "Actually an idea.";
+    click(window, actNamed(window, "Save", waitingIndex));
+    await settle();
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.ok(posted, "no write reached /api/capture/edit");
+    assert.equal(posted.body.target, "notes");
+    assert.equal(posted.body.text, "Actually an idea.");
+    assert.equal(posted.body.original, "Nobody has read this one.");
   });
 
   test("a failed fetch says so instead of leaving the last page up", async () => {

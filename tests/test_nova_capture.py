@@ -25,6 +25,7 @@ from agora_runner.nova_capture import (
     capture,
     clean_capture_text,
     capture_entries,
+    convert_capture,
     insert_captures,
     list_captures,
     replace_capture,
@@ -691,3 +692,128 @@ def test_an_amend_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
     assert _capture_list(final) == ["- mine, edited", "- "]
     assert "| 70 | boarded meanwhile | Open | 2026-08-12 |" in final, \
         "the board row the other writer added must survive the amend"
+
+
+# --- moving a capture between the three files -----------------------------
+#
+# The owner, 2026-08-24: *"The note i sent regarding the rebuilding the
+# notes page was sent as a note, but its actually an idea, but i have no
+# way of changing it or editing it. So we need crude operations for notes,
+# but also the possibility to change issues/ideas/notes into one of the
+# other."*
+
+
+def _two_file_vault(paths):
+    """A FakeCouch seeded with several capture files at once."""
+    couch = FakeCouch()
+    for target, markdown in paths.items():
+        couch.seed(CAPTURE_TARGETS[target], markdown)
+    return couch
+
+
+def test_convert_moves_the_bullet_out_of_one_file_and_into_the_other(notes_md, ideas_md):
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["rebuild the notes page"]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("notes", 0, "rebuild the notes page", "ideas")
+    assert ok, message
+    assert "rebuild the notes page" not in couch.text(CAPTURE_TARGETS["notes"])
+    assert "- rebuild the notes page" in couch.text(CAPTURE_TARGETS["ideas"])
+
+
+def test_convert_leaves_the_source_alone_when_the_destination_write_fails(notes_md):
+    """Write-then-delete, and this is the half it buys.
+
+    The destination is not seeded, so `vault_read_path_rev` returns None
+    and `capture` refuses before anything is removed. His sentence has to
+    still be in `notes.md` afterwards -- that is the whole reason the two
+    calls are in this order.
+    """
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"])})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+    assert not ok
+    assert "actually an idea" in couch.text(CAPTURE_TARGETS["notes"]), \
+        "a failed destination write must never cost him the line"
+
+
+def test_convert_says_so_when_the_copy_landed_but_the_removal_did_not(notes_md, ideas_md):
+    """The one half-done state this ordering can produce, reported not hidden."""
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req), \
+            patch.object(nova_capture, "amend", return_value=(False, "boom")):
+        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+    assert not ok
+    assert "it is in both" in message, message
+    assert "- actually an idea" in couch.text(CAPTURE_TARGETS["ideas"])
+
+
+def test_convert_carries_the_rating_between_the_two_boards(issues_md, ideas_md):
+    rated = "🟠 High: the runner drops replies"
+    couch = _two_file_vault({"issues": insert_captures(issues_md, [rated]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("issues", 0, rated, "ideas")
+    assert ok, message
+    assert "- " + rated in couch.text(CAPTURE_TARGETS["ideas"])
+
+
+def test_convert_strips_the_rating_going_into_notes(issues_md, notes_md):
+    """`notes.md` is *"never numbered, never boarded"* -- a priority label
+    in a file with no board is vocabulary from a page that does not exist."""
+    rated = "🟠 High: the runner drops replies"
+    couch = _two_file_vault({"issues": insert_captures(issues_md, [rated]),
+                             "notes": notes_md})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("issues", 0, rated, "notes")
+    assert ok, message
+    notes = couch.text(CAPTURE_TARGETS["notes"])
+    assert "- the runner drops replies" in notes
+    assert "🟠" not in notes
+
+
+def test_convert_refuses_a_stale_address_without_moving_anything(notes_md, ideas_md):
+    """The bullet the page addressed is not the bullet in the file.
+
+    `replace_capture` refuses rather than resolving, and the destination
+    copy is what the message tells him to delete.
+    """
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["one"]), "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("notes", 0, "something else entirely", "ideas")
+    assert not ok
+    assert "- one" in couch.text(CAPTURE_TARGETS["notes"])
+
+
+def test_convert_refuses_unknown_and_identical_targets():
+    with patch.object(nova_capture, "vault_read_path_rev") as read:
+        assert convert_capture("notes", 0, "x", "notes")[0] is False
+        assert convert_capture("notes", 0, "x", "kanban")[0] is False
+        assert convert_capture("kanban", 0, "x", "ideas")[0] is False
+        assert convert_capture("notes", 0, "   ", "ideas")[0] is False
+    assert read.call_count == 0, "a refused conversion must not touch the vault"
+
+
+def test_a_second_convert_of_the_same_line_does_not_claim_it_is_in_both(notes_md, ideas_md):
+    """The double-tap, which is what the page's disabled buttons now prevent
+    and what the message has to be honest about if it happens anyway.
+
+    The first call moved the line. The second finds the destination write
+    succeeds again -- it is unconditional -- and the removal refuses because
+    the address is stale. The source is *clean* at that point, so "it is in
+    both, delete the notes one" would send him to the wrong file for a copy
+    that is not there. Found by review.
+    """
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        assert convert_capture("notes", 0, "actually an idea", "ideas")[0] is True
+        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+    assert not ok
+    assert "it is in both" not in message, message
+    assert "duplicate" in message, message
+    assert "actually an idea" not in couch.text(CAPTURE_TARGETS["notes"]), \
+        "the source really is clean, so the message must not point him at it"
+    assert couch.text(CAPTURE_TARGETS["ideas"]).count("- actually an idea") == 2, \
+        "the fixture must actually have produced the duplicate this is about"
