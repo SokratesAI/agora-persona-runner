@@ -2829,6 +2829,79 @@ describe("the page notices new entries on its own", () => {
     await timers.firePagePoll();
     assert.ok(!window.document.contains(card), "the deferred update never arrived");
   });
+
+  /* the owner, issues.md 2026-08-24, with a screenshot of the header reading
+   * "Cycle 374 · last woke 17:50" at 19:25, two entries behind: "Nova app
+   * does not auto refresh/sync when i open it up. Look at the time in the
+   * top left at compare it to the latest run cycle."
+   *
+   * Two things could hold a poll off forever, and these pin both. */
+  /** Let the fetches a dispatched event started settle. `firePagePoll` does
+   *  this internally; an event-driven poll has no timer to fire. Node's own
+   *  `setTimeout`, not the window's -- `captureTimers` has taken that one. */
+  const settle = async () => {
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  test("opening the app catches up even with a half-typed comment left in a drawer", async () => {
+    /* Every card carries a comment drawer, so `typing()` sees a textarea per
+     * entry on the page. One unsent reply -- in a drawer that is closed and
+     * scrolled away -- deferred every poll for the life of the tab, and the
+     * store behind it is in memory, so a reload cleared it and nothing on
+     * the page ever said why. Opening the app is not typing. */
+    const { window, timers } = await pollable();
+    const card = cards(window)[0];
+    const box = window.document.querySelector("textarea");
+    box.value = "half a sentence";
+    box.dispatchEvent(new window.Event("input"));
+    serve(window, grown('W/"reopened"'));
+
+    await timers.firePagePoll();
+    assert.ok(window.document.contains(card), "the background timer should still hold off while he types");
+
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    await settle();
+    assert.ok(!window.document.contains(card), "opening the app left the feed on the old entries");
+    assert.equal(
+      window.document.querySelector("textarea").value,
+      "half a sentence",
+      "the rebuild lost what he had typed",
+    );
+  });
+
+  test("a page restored from the back/forward cache catches up too", async () => {
+    /* A restore fires `pageshow` with `persisted` and need never have gone
+     * hidden, so the visibility handler alone does not see it. */
+    const { window } = await pollable();
+    const before = cards(window).length;
+    serve(window, grown('W/"restored"'));
+
+    const event = new window.Event("pageshow");
+    Object.defineProperty(event, "persisted", { value: true });
+    window.dispatchEvent(event);
+    await settle();
+    assert.equal(cards(window).length, before + 1, "a restored page kept showing what it had");
+  });
+
+  test("two ways of coming back at once still make one request", async () => {
+    /* Opening the app fires more than one of these, in separate tasks. Two
+     * polls in flight render in completion order, so the older answer can
+     * land last and put the stale header back. */
+    const { window } = await pollable();
+    let journalFetches = 0;
+    window.fetch = (url) => {
+      if (String(url).includes("/api/journal")) journalFetches += 1;
+      return res(
+        String(url).includes("/api/digest") ? payload.digest
+          : String(url).includes("/api/comments") ? payload.comments
+            : grown('W/"both"'),
+      );
+    };
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    window.dispatchEvent(new window.Event("focus"));
+    await settle();
+    assert.equal(journalFetches, 1, "both events fetched, so they can race each other");
+  });
 });
 
 /* The other half of the same complaint: "Nova takes a long time to load."

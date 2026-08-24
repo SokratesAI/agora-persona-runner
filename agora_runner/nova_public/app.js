@@ -7075,6 +7075,10 @@
   var renderedReplayed = false;
   var renderedComments = null;
   var pollTimer = null;
+  /* Whether a poll's fetch is outstanding. Read only by `resume` below --
+   * the timer cannot overlap itself, because it is only ever rescheduled
+   * once the previous round has settled. */
+  var polling = false;
 
   function typing() {
     var boxes = document.querySelectorAll("textarea");
@@ -7084,12 +7088,32 @@
     return false;
   }
 
-  function poll() {
+  /* `resumed` is true when this poll is the app being opened rather than
+   * the background timer coming round. The difference is the `typing()`
+   * deferral below, and it is the whole of the owner's report that the
+   * page shows an old time when he opens it.
+   *
+   * `typing()` looks at every textarea on the page, and every journal card
+   * carries a comment drawer -- so one half-typed reply, in a drawer that
+   * is closed and off screen, defers every poll for the life of the tab.
+   * It is in-memory (`drafts`), so a reload clears it and nothing on the
+   * page ever says why. That deferral is right for a timer firing while he
+   * is mid-sentence and wrong for the moment he opens the app: he is
+   * plainly not typing then, and a render no longer loses the text anyway
+   * -- `drafts` restores it into the rebuilt drawer, and an open drawer
+   * stays open.
+   *
+   * I could not reproduce his exact tab, so this is the class of failure
+   * rather than a confirmed single cause; the other half of the fix is the
+   * event list below. */
+  function poll(resumed) {
     // The poll is the journal's. On a board page it would fetch the feed
     // and render it straight over the list -- the same "never interrupt"
     // rule the typing check below exists for, one level up.
     if (route(window.location.pathname).view !== "journal") return schedulePoll();
-    if (document.hidden || typing()) return schedulePoll();
+    if (document.hidden) return schedulePoll();
+    if (typing() && !resumed) return schedulePoll();
+    polling = true;
     fetchAll()
       .then(function (results) {
         var journal = results[0];
@@ -7124,7 +7148,7 @@
           renderStatus(journal.status || {}, results[2] ? (results[2].byCycle || {}) : null);
         }
         pollFailures = 0;
-        if (changed && !typing()) {
+        if (changed && (resumed || !typing())) {
           /* New entries land at the top, so a naive re-render shoves
            * whatever he was reading down the page by exactly the height
            * that was added. Holding the offset by that delta keeps the
@@ -7152,13 +7176,44 @@
   }
 
   function schedulePoll() {
+    polling = false;
     if (pollTimer) clearTimeout(pollTimer);
-    pollTimer = setTimeout(poll, POLL_MS);
+    // `setTimeout(poll, ...)` hands the timer id to `poll` as its first
+    // argument in some runtimes, which would read as `resumed`. Wrapped so
+    // a scheduled poll is always the ordinary kind.
+    pollTimer = setTimeout(function () { poll(); }, POLL_MS);
   }
 
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) poll();
+  /* Four ways an app comes back, and this file listened for one of them.
+   *
+   * `visibilitychange` is the phone case and it is the one that was here.
+   * It is not the only one: a page restored from the back/forward cache
+   * fires `pageshow` with `persisted` set and need never have gone hidden,
+   * a window that regains focus without a visibility transition fires only
+   * `focus`, and a phone that comes back on a network fires `online` while
+   * already visible -- in that last case the timer is running and the next
+   * catch-up is up to 30 seconds away, which is exactly the wait he is
+   * describing. Each of these is one line and none of them costs anything
+   * when the page is already current: the fetch is conditional and a 304
+   * carries no body.
+   *
+   * They overlap on purpose -- opening the app fires two of them -- and
+   * they arrive in separate tasks, so `resume` skips while a poll is
+   * already in flight rather than trying to debounce on a timer. Two
+   * concurrent polls are not merely wasteful: they render in completion
+   * order, so the older answer can land last and put the stale header
+   * back. */
+  function resume() {
+    if (document.hidden || polling) return;
+    poll(true);
+  }
+
+  document.addEventListener("visibilitychange", resume);
+  window.addEventListener("pageshow", function (event) {
+    if (event && event.persisted) resume();
   });
+  window.addEventListener("focus", resume);
+  window.addEventListener("online", resume);
 
   /* The capture box (item 6). One button per target rather than a target
    * toggle plus a submit: it is one tap fewer on a phone, which is the
