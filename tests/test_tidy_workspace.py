@@ -2178,3 +2178,27 @@ def test_origin_clones_keeps_the_checkout_origin_repos_throws_away(tmp_path):
     assert unplaceable == []
     assert tidy_workspace.origin_repos([str(tmp_path)]) == \
         (["SokratesAI/agora"], [])
+
+
+def test_a_diff_that_fails_is_not_a_branch_with_nothing_landed(monkeypatch,
+                                                               content_repo):
+    """The error path, which is the one this whole file keeps getting wrong.
+
+    `git diff` failing means the question could not be asked -- a concurrent
+    `fetch --prune` on the shared clone causes it, and three cycles share one
+    checkout. Returning `(0, n)` there prints "0 of n added lines are already
+    on main" over a branch that may have landed entirely, which is a failure
+    reported as a measurement. `_remote_only_commits` has the same rule and it
+    was a reviewer finding on #337."""
+    root, clone = content_repo
+    real = tidy_workspace._git
+
+    def flaky(a_root, a_clone, *args):
+        if args and args[0] == "diff":
+            return types.SimpleNamespace(returncode=128, stdout="", stderr="x")
+        return real(a_root, a_clone, *args)
+
+    monkeypatch.setattr(tidy_workspace, "_git", flaky)
+
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/landed") is None

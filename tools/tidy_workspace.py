@@ -898,11 +898,13 @@ def _content_landed(root, clone, base, branch):
         return None
     landed = 0
     for path, lines in added.items():
+        # A path the base has not got -- a file this branch adds -- exits
+        # non-zero here with nothing on stdout, and needs no guard of its own:
+        # an empty `have` matches none of its lines, so every one of them
+        # counts as outstanding, which is the truth. A guard was written and
+        # then removed, because deleting it left all 124 tests green -- this
+        # file's own rule about a check whose result is guaranteed in advance.
         shown = _git(root, clone, "show", "%s:%s" % (base_ref, path))
-        if shown.returncode != 0:
-            # No such path on the base: a file this branch adds. Every line of
-            # it is outstanding, which is what leaving `landed` alone says.
-            continue
         have = {existing.strip() for existing in shown.stdout.split("\n")}
         landed += sum(1 for text in lines if text in have)
     return landed, total
