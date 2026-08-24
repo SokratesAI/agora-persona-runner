@@ -817,9 +817,13 @@ def _origin_clones(roots):
     in rather than throwing it away. `_content_landed` needs one: GitHub's
     compare API answers "how many commits ahead", and the question this sweep
     actually has is "is this content on main", which only a git that holds both
-    sides can answer. The first clone wins when several point at one repo --
-    they are the same objects, and a concurrent cycle's worktree is as good a
-    place to run `git show` as the shared one.
+    sides can answer. The first clone wins when several point at one repo,
+    which is right for the linked worktrees a concurrent cycle gets -- they
+    share one object store -- and only approximately right for two independent
+    clones, which have their own remote-tracking refs and can disagree about
+    where a branch is. Known limit, reviewer finding on #343: the winner is
+    not checked against the sha GitHub reported, so a branch force-pushed
+    after an earlier version landed can be measured off a stale local ref.
     """
     placed = {}
     unplaceable = []
@@ -867,10 +871,16 @@ def _content_landed(root, clone, base, branch):
     failed, or a diff with no line long enough to be worth matching. The
     caller prints nothing rather than an invented 0.
 
-    Compared per file, against the base's copy of the same path. A line that
-    landed under a *different* filename reads as not-landed here, which
-    under-reports how much has landed -- the direction that leaves a branch
-    looking like work.
+    Compared per file, as set membership against the base's copy of the same
+    path, and **that is a coarse instrument in both directions.** A line that
+    landed under a different filename reads as not-landed, which under-reports.
+    A branch that only *moves* lines, re-indents a file, or adds a second copy
+    of a line the base already has reads as fully landed, which over-reports --
+    and so does a branch whose real work is a deletion, since deletions are not
+    counted at all. All four were reproduced by the reviewer on #343. The
+    printed line is therefore a hint for a reader who is about to go and look,
+    never a verdict: `_sweep_remote` prints it beside the commit count and
+    nothing in this file acts on it.
     """
     ref = "origin/" + branch
     if _git(root, clone, "rev-parse", "--verify", "--quiet",
@@ -880,7 +890,17 @@ def _content_landed(root, clone, base, branch):
     if _git(root, clone, "rev-parse", "--verify", "--quiet",
             base_ref + "^{commit}").returncode != 0:
         return None
-    diff = _git(root, clone, "diff", base_ref + "..." + ref)
+    # The `a/` and `b/` prefixes and the C-quoting of non-ASCII paths are
+    # *user configuration*, not part of the format: `diff.noprefix=true`
+    # emits `+++ tool.py` and `core.quotePath=true` emits
+    # `+++ "b/caf\\303\\251.py"`. Either one makes every `git show` below fail
+    # and every branch print `0 of N added lines are already on main` -- a
+    # config setting rendered as a confident measurement, in the direction
+    # that makes finished work look outstanding. Pinned on the command rather
+    # than trusted. Reviewer finding on #343.
+    diff = _git(root, clone, "-c", "core.quotePath=false",
+                "diff", "--src-prefix=a/", "--dst-prefix=b/",
+                base_ref + "..." + ref)
     if diff.returncode != 0:
         return None
     added = {}
@@ -897,8 +917,11 @@ def _content_landed(root, clone, base, branch):
         elif line.startswith("@@ "):
             in_hunk = True
         elif not in_hunk and line.startswith("+++ "):
-            target = line[4:].strip()
-            path = None if target == "/dev/null" else target[2:]
+            # No `/dev/null` arm: it appears only for a deletion, whose
+            # hunks carry no `+` lines at all, so the path is never read.
+            # Deleting the arm left every test green -- this file's own rule
+            # about a check whose result is guaranteed in advance.
+            path = line[4:].strip()[2:]
         elif in_hunk and line.startswith("+") and path is not None:
             text = line[1:].strip()
             if len(text) >= _MIN_MATCHABLE:
@@ -1199,6 +1222,11 @@ def _sweep_remote(roots):
               "%s an abandoned branch"
               % (", ".join(unplaceable),
                  "they have" if len(unplaceable) > 1 else "it has"))
+    # Deliberately a second walk rather than one. Collapsing them is correct
+    # and cheap and it silently breaks the seam a dozen tests here use --
+    # they monkeypatch `origin_repos`, and a `_sweep_remote` that no longer
+    # calls it asks the live GitHub API from a unit test. Reviewer finding on
+    # #343, filed rather than taken: it wants both call sites moved together.
     locations, _ = _origin_clones(roots)
     for entry in survey_remote_branches(repos, locations=locations):
         if not entry["checked"]:
