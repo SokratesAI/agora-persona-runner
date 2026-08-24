@@ -423,9 +423,9 @@ def test_a_numeric_string_cycle_is_accepted():
     assert parse_comments(write.call_args[0][1])[0]["cycle"] == 63
 
 
-# --- Replies to the Needs the owner block (2026-08-10) -------------------------
+# --- Replies to the Needs Edvard block (2026-08-10) -------------------------  (not-prose: quoting a literal)
 #
-# The owner: *"the 'needs the owner' is still missing a comment block, so its hard
+# the owner: *"the 'needs the owner' is still missing a comment block, so its hard
 # for me to answer it. [...] I want a reply button on it."* These defend the
 # one property that makes such a reply different from a comment on a cycle:
 # it belongs to no cycle, so it must never be filed under one -- the digest
@@ -763,7 +763,7 @@ def test_a_comment_that_loses_a_real_race_keeps_the_one_that_landed():
 # --- the write is checked before it leaves ---------------------------------
 #
 # `insert_comment` and `insert_reply` are string surgery on the one file
-# The owner talks to this loop through, and both run unattended -- one every
+# the owner talks to this loop through, and both run unattended -- one every
 # time he types into the app, one every time the reply worker answers. Until
 # these existed, nothing between them and the vault could tell a good result
 # from a damaged one. `ack_comment` has had that check since Cycle 159; the

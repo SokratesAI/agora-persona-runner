@@ -385,7 +385,7 @@ _ROUTING_EXPECTED_PATHS = {
 
 _ROUTING_EXPECTED_PREFIXES = {
     # Ancestors of Nova's folder: a whole-vault listing that queried only
-    # The owner's database would quietly lose every Nova file.
+    # the owner's database would quietly lose every Nova file.
     "": "both",
     None: "both",
     "projects/": "both",
@@ -410,7 +410,7 @@ _ROUTING_EXPECTED_DB = {
 }
 
 # Lists, and the order is part of the answer: `dbs_for_prefix` returns
-# The owner's first, both copies do, and a reordering is a real difference in
+# the owner's first, both copies do, and a reordering is a real difference in
 # which database a listing reads before the other.
 _ROUTING_EXPECTED_DBS = {
     "nova": lambda db, nova_db: [nova_db] if nova_db else [db],

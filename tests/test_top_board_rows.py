@@ -658,7 +658,7 @@ def test_a_row_in_the_done_table_is_waiting_too():
 
 # --- Claims: parallel cycles must not both take the same row -------------
 #
-# The owner, `comments.md` 2026-08-23 13:31, on going from a 72-minute heartbeat
+# the owner, `comments.md` 2026-08-23 13:31, on going from a 72-minute heartbeat
 # to an 18-minute one: *"The average cycle is 18min, so we are guaranteed to
 # have some paralell cycles run, and i want that."* Everything above this line
 # assumes one reader at a time.

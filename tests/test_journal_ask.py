@@ -41,7 +41,7 @@ def test_prose_naming_the_old_section_is_not_an_ask():
 
 
 def test_a_colon_outside_the_bold_still_reads_as_a_label():
-    """`**Needs the owner**:` is a typo of the convention, not a mention."""
+    """`**Needs Edvard**:` is a typo of the convention, not a mention."""  # not-prose: quoting a literal
     _, ask = split_ask("**Needs Edvard**: raise the spending limit.")
     assert ask == "raise the spending limit."
 
@@ -64,7 +64,7 @@ def test_the_label_alone_is_not_an_ask():
     """A cycle that typed the label and no question is asking nothing.
 
     Rendering the empty case would put a yellow block on the card saying
-    only "Needs Edvard", which is the box-claiming-his-attention-for-nothing  (not-prose: quoting a literal)
+    only "Needs Edvard", which is the box-claiming-his-attention-for-nothing  # not-prose: quoting a literal
     that hiding the old block on `**Nothing.**` existed to prevent.
     """
     remainder, ask = split_ask("**Needs Edvard:**\n\nThe real prose.")
@@ -105,7 +105,7 @@ def test_the_brief_is_taken_after_the_ask_is_cut():
 def test_the_bare_label_is_still_cut_from_the_body():
     """Reviewer finding, Cycle 247. The empty case returned the body untouched.
 
-    `_first_paragraph` then briefed on `**Needs the owner:**`, so the collapsed
+    `_first_paragraph` then briefed on `**Needs Edvard:**`, so the collapsed  # not-prose: quoting a literal
     card's one line read as the label and the entry's real opening sentence
     never appeared on his page at all.
     """
@@ -202,11 +202,11 @@ def test_the_status_header_carries_the_asks():
 
 # --- The label the owner reads changed; the archive's did not -----------------
 #
-# The owner, unboarded capture 2026-08-21: *"Change the 'needs the owner' to
+# the owner, unboarded capture 2026-08-21: *"Change the 'needs the owner' to
 # 'needs input'."* Every test above this line writes the old spelling, and
 # that is the backward-compatibility half of this change under test -- the
 # 363 entries already in the vault are never edited, so the day `Needs
-# The owner` stops parsing is the day every ask in the archive unrenders.
+# the owner` stops parsing is the day every ask in the archive unrenders.
 
 
 def test_the_new_label_parses_as_an_ask():

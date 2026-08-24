@@ -102,7 +102,7 @@ def _block_bounds(lines, start, end, cycle, stamp):
 def acknowledge(markdown, cycle, stamp, note, note_stamp):
     """Markdown with `(cycle, stamp)` moved to the top of `## Acknowledged`.
 
-    `cycle` is an int, or None for a reply to the Needs the owner block. The
+    `cycle` is an int, or None for a reply to the Needs Edvard block. The  (not-prose: quoting a literal)
     note is appended inside the comment as a `#### Nova` block, which is
     the same shape a live reply uses -- what a cycle did about a comment
     and what it said back are the same kind of thing to whoever reads the

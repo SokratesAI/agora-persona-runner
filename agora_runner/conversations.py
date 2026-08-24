@@ -113,7 +113,7 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
     # without that, a leftover "Now let's..." chunk would become the
     # thread's last message and decide_turn would think a persona had
     # already replied, silently breaking retry (last-sender-must-be-
-    # The owner is the only signal decide_turn has).
+    # the owner is the only signal decide_turn has).
     posted_ids = []
 
     def on_text(chunk, is_final):

@@ -555,7 +555,7 @@ def test_unanswered_comments_is_positional_where_a_count_would_disagree():
 
 
 def test_unanswered_comments_ignores_bold_prose_that_looks_like_a_note():
-    """`**the owner, in his own words:**` is prose and must not flag the row.
+    """`**Edvard, in his own words:**` is prose and must not flag the row.  (not-prose: quoting a literal)
 
     A false positive here never clears: no reply of mine can answer a note
     that was never a note, so the row claims to be waiting forever. The

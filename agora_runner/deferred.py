@@ -29,7 +29,7 @@ QUEUED_CAPABILITY = "Queued"
 
 # Stamped when ordinary turn-taking has just answered him *live* in the
 # conversation a rotating heartbeat currently points at (2026-08-19, at
-# The owner's ask -- see in_flight_cycle_conversation_ids). It is the same
+# the owner's ask -- see in_flight_cycle_conversation_ids). It is the same
 # stateless-dedupe trick as QUEUED_CAPABILITY, used for the opposite
 # purpose: _unread_from_edvard reads it as "already answered, do not
 # carry this into the next run's trigger".

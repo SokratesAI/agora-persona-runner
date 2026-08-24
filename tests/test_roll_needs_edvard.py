@@ -325,7 +325,7 @@ def test_dates_come_from_oslo_not_the_system_clock(tmp_path, monkeypatch):
     ),
 ])
 def test_the_cli_splits_the_block_on_real_headings_not_fenced_ones(digest):
-    """A fenced `## Needs the owner` must not end the section early.
+    """A fenced `## Needs Edvard` must not end the section early.  (not-prose: quoting a literal)
 
     This used to assert that `parse_digest` and `live_items` split the
     block identically -- the page's Done button named an item by text and

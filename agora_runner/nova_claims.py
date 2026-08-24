@@ -437,7 +437,7 @@ def slug_for_comment(board, number, text):
 
     **That is a guarantee about distinct questions, not about all second
     questions**, and the gap is worth naming rather than rounding off. The
-    body this hashes starts at the `**the owner, MM-DD:**` marker, so the same
+    body this hashes starts at the `**Edvard, MM-DD:**` marker, so the same  (not-prose: quoting a literal)
     sentence on a different day is a different slug -- but the same sentence
     on the *same* day, asked again after a reply that did not satisfy him,
     hashes the same and is refused until `prune` drops the finished claim

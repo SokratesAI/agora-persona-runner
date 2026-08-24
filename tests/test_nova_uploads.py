@@ -287,7 +287,7 @@ def test_the_content_type_allowlist_covers_what_an_android_phone_produces():
 
 # --- Files that are not images (Cycle 309) ------------------------------
 #
-# The owner, comments board 2026-08-21 21:09: *"How about a file? It seems i
+# the owner, comments board 2026-08-21 21:09: *"How about a file? It seems i
 # only can upload images. Or atleas the ui forces only my Google photos to
 # open and i have no option to upload files."* Two bugs behind that one
 # sentence -- the picker was pinned to `image/*` in `app.js`, and

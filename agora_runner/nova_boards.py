@@ -96,7 +96,7 @@ _CAPTURE_DONE_RE = re.compile(r"^DONE\s*\(\s*(Cycle\s*\d+)[^)]*\)\s*:", re.IGNOR
 # error.
 #
 # Both shapes are accepted rather than one normalised, because these are
-# The owner's files: rewriting 87 headings to suit the parser is a large diff
+# the owner's files: rewriting 87 headings to suit the parser is a large diff
 # through his prose to fix a regex.
 _DETAIL_RE = re.compile(
     r"^(#{2,3})[ \t]+(#?)(\d+)[ \t]*[—–-][ \t]*(.*?)[ \t]*$", re.MULTILINE)
@@ -488,7 +488,7 @@ def set_row_status(markdown, number, status, updated=None):
     # is free text from a caller and can. `set_row_title` refuses the same
     # two characters for the same reason -- a `|` splits the row into an
     # extra column and a newline splits it into two rows, and both land in
-    # The owner's file looking like a table he wrote.
+    # the owner's file looking like a table he wrote.
     if updated is not None and ("|" in updated or "\n" in updated):
         return None
     lines = (markdown or "").split("\n")
@@ -679,7 +679,7 @@ def _touch_row_updated(markdown, number, dated):
     return "\n".join(lines)
 
 
-# One dated note, as `append_detail_note` writes it: `**the owner, 08-15:** ...`
+# One dated note, as `append_detail_note` writes it: `**Edvard, 08-15:** ...`  (not-prose: quoting a literal)
 # or `**Nova, 08-15 (Cycle 221):** ...`. Anchored at the start of the line
 # and built from `NOTE_AUTHORS` rather than a typed-out alternation, so the
 # day a third author is allowed this matcher learns about it instead of
@@ -687,7 +687,7 @@ def _touch_row_updated(markdown, number, dated):
 #
 # **The `MM-DD` is required, and that is what keeps prose out.** Without it
 # the pattern is "his name, a comma, anything, a colon", which a sentence
-# like `**the owner, in his own words:**` in a write-up satisfies -- and a
+# like `**Edvard, in his own words:**` in a write-up satisfies -- and a  (not-prose: quoting a literal)
 # false positive here is a row that claims to be waiting on a reply
 # forever, since no reply of mine can clear a note that was never a note.
 # `append_detail_note` refuses an empty `dated`, so every real note has one
@@ -756,7 +756,7 @@ def unanswered_comment_bodies(markdown):
     be claimed by anybody. A comment is the unit of work here, not the
     row, so the identity has to come from the comment.
 
-    The body runs from the `**the owner, MM-DD:**` marker to the end of the
+    The body runs from the `**Edvard, MM-DD:**` marker to the end of the  (not-prose: quoting a literal)
     write-up rather than to the end of its first line. Two comments he
     leaves on one row on one day are distinguished by their text and
     nothing else, and a long comment's first line is very often just the

@@ -93,7 +93,7 @@ def test_nothing_typed_is_no_bullets(empty):
 
 # --- an attached image belongs to the text it was attached to -------------
 #
-# The owner, capture 2026-08-21: "I see that my image upload test was split
+# the owner, capture 2026-08-21: "I see that my image upload test was split
 # into two idea entries. The image for its own separate entry and the text
 # got the other." `buildAttach` inserts the link as its own paragraph, so
 # the line rule above filed his sentence and his screenshot separately.

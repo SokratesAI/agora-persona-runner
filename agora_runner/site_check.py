@@ -55,7 +55,7 @@ ABSENT_PATH = "/__site_check_absent__"
 API_KEYS = {
     "/api/journal": ("entries", "status"),
     # `needsEdvard` was here until #236. It stopped being served when the  (not-prose: an identifier)
-    # Needs the owner block's server half was deleted, and a key listed here
+    # Needs Edvard block's server half was deleted, and a key listed here  (not-prose: quoting a literal)
     # that the payload no longer carries is a permanent false alarm on a
     # healthy site -- the exact failure this module exists to catch, aimed
     # at itself. `test_the_digest_keys_are_ones_the_payload_still_carries`

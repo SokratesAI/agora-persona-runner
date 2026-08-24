@@ -1,4 +1,4 @@
-"""Move answered items out of `journal-digest.md`'s **Needs the owner** block.
+"""Move answered items out of `journal-digest.md`'s **Needs Edvard** block.  (not-prose: quoting a literal)
 
 The owner, issue #89, rated 🔴 Immediately: *"The 'need the owner' block contains
 all previous answers to previous topics. This makes the block very long,

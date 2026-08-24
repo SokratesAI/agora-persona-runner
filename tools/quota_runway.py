@@ -43,7 +43,7 @@ HISTORY = "/data/claude-home/quota-history.jsonl"
 
 # The last-resort fallback, not the truth. `nova_cadence_minutes()` in
 # `agora_runner.cycle_health` is the truth and `main` asks it first --
-# The owner has changed the cadence five times since 2026-08-08, so a
+# the owner has changed the cadence five times since 2026-08-08, so a
 # constant here would be exactly the mistake this module's docstring
 # accuses `prompt.md` of. It is only used when that lookup has no honest
 # answer (Agora unreachable, or a schedule with no single interval) and

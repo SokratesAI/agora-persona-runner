@@ -358,7 +358,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
    * card says so -- including the body, where a click really does collapse
    * it. Anchors keep the pointer they already had. */
   cursor: pointer;
-  /* the owner, 2026-08-21: cycle 289's "Needs the owner" block links a raw
+  /* the owner, 2026-08-21: cycle 289's "Needs Edvard" block links a raw  (not-prose: quoting a literal)
    * GitHub URL as its visible text (`renderSpans`' `pr-link`, same as
    * every PR reference), and that one line was long enough to push the
    * whole document wider than the viewport. On a real phone browser that
@@ -748,7 +748,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   border-radius: 6px;
 }
 
-/* The disclosure over a folded Needs the owner thread. Deliberately quiet --
+/* The disclosure over a folded Needs Edvard thread. Deliberately quiet --  (not-prose: quoting a literal)
  * it names something he asked to stop seeing, so it should read as a way
  * back to it and not as an invitation. Same 44px touch target as the
  * toggle above; it is a real tap on a phone. */
@@ -915,7 +915,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 /* ---- The nav, and the two board pages (issues.md #57) ----------------
  *
- * The owner: "Create more pages to contain more, such as issue list, idea
+ * the owner: "Create more pages to contain more, such as issue list, idea
  * list (separate pages)". Three sections now exist, so there has to be
  * something to move between them with.
  *
@@ -2273,7 +2273,7 @@ body.has-full-chart { overflow: hidden; }
 
 /* The attach button and what it puts on the page.
  *
- * The owner, comments board 2026-08-21: *"How do i send a screenshot?"* —
+ * the owner, comments board 2026-08-21: *"How do i send a screenshot?"* —
  * he could see a layout bug on his Galaxy S25 that no renderer in this
  * loop can reproduce, and the only channel between us was text.
  *

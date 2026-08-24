@@ -424,7 +424,7 @@ def comments_payload():
             comment["replyFailed"] = asked_at is None and key in gave_up
     return {
         "byCycle": {str(cycle): items for cycle, items in grouped.items()},
-        # Replies to the digest's Needs the owner block, which belong to no
+        # Replies to the digest's Needs Edvard block, which belong to no  (not-prose: quoting a literal)
         # cycle and so cannot ride in `byCycle`.
         "needs": needs_comments(markdown),
     }
@@ -1578,7 +1578,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             if path == "/api/notes":
                 # Cached like the boards and for the same reason: the
                 # vault read is the slow part and the file changes when
-                # The owner types a note or a cycle answers one, not
+                # the owner types a note or a cycle answers one, not
                 # between two taps. It is also the smallest payload on
                 # the site -- 11KB of markdown -- so nothing here wants
                 # a window.
@@ -1606,7 +1606,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # Never cached, for `/api/comments`' reason and one more:
                 # this endpoint is polled *because* it is expected to
                 # change, and a CACHE_FRESH_SECONDS window would show
-                # The owner a thread that stays "waiting" after the answer
+                # the owner a thread that stays "waiting" after the answer
                 # has already landed.
                 self._send_json(200, ask_thread())
                 return
@@ -2072,7 +2072,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         """`/api/comment` -- the owner replying to one cycle (ideas.md #44).
 
         `{"target": "needs"}` instead of a `cycle` answers the digest's
-        Needs the owner block (2026-08-10) -- see `nova_comments`.
+        Needs Edvard block (2026-08-10) -- see `nova_comments`.  (not-prose: quoting a literal)
 
         The same two boundaries as the capture box, and the same reason
         they hold: the tailnet authenticates, and the endpoint's shape
@@ -2120,7 +2120,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # can land in the next minute.
         stamp = format_stamp()
         if self._store_comment(lambda: add_comment(cycle, text, stamp), text, f"cycle {cycle}"):
-            # Only cycle comments get a reply. A `Needs the owner` answer is a
+            # Only cycle comments get a reply. A `Needs Edvard` answer is a  (not-prose: quoting a literal)
             # decision for a cycle to act on, not a conversation -- replying
             # to it would put a paragraph where a piece of work belongs.
             enqueue_reply(cycle, stamp)

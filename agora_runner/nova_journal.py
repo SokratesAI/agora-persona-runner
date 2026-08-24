@@ -275,13 +275,13 @@ _EMPHASIS_RE = re.compile(r"[*_`]")
 
 
 def is_empty_needs(text):
-    """True if the `Needs the owner` section is asking for nothing."""
+    """True if the `Needs Edvard` section is asking for nothing."""  # not-prose: quoting a literal
     plain = _EMPHASIS_RE.sub("", text or "").strip().lower()
     return plain.rstrip(".").strip() in _EMPTY_NEEDS
 
 
 def split_needs_items(text):
-    """The `Needs the owner` body -> one string per ask, in file order.
+    """The `Needs Edvard` body -> one string per ask, in file order.  # not-prose: quoting a literal
 
     Blank-line separated paragraphs, because that is the shape every cycle
     has written since the section existed. Deliberately not
@@ -316,7 +316,7 @@ def needs_items(text):
 # away with its own card.
 # The colon is required, and that is the whole difference between a label
 # and a mention. Cycles 11 and 12 predate this convention and write about
-# the old digest section in ordinary prose -- "**Needs the owner**, **Next
+# the old digest section in ordinary prose -- "**Needs Edvard**, **Next  # not-prose: quoting a literal
 # cycle**, and a one-line-per-cycle **Digest**" -- at the start of a line,
 # which an optional colon matched. Both parsed as open asks, and because
 # they are the oldest cards in the corpus the header's "waiting on you"
@@ -325,12 +325,12 @@ def needs_items(text):
 #
 # Requiring the colon rather than adding an age cutoff is not a guess.
 # Across all 315 entries, every one of the five real asks writes
-# `**Needs the owner:**` and every bare `**Needs the owner**` is prose naming
+# `**Needs Edvard:**` and every bare `**Needs Edvard**` is prose naming  # not-prose: quoting a literal
 # the section. A horizon would have hidden these two and still have let
 # the next such sentence through.
 # **Two labels, forever.** The owner, unboarded capture 2026-08-21: *"Change
 # the 'needs the owner' to 'needs input'."* New entries write `**Needs
-# input:**`; the 363 entries already written say `**Needs the owner:**` and
+# input:**`; the 363 entries already written say `**Needs Edvard:**` and  # not-prose: quoting a literal
 # are never edited, so dropping the old spelling would unrender every ask
 # in the archive. This is the one place the alternation is defined --
 # `tools/lint_entry` imports it rather than restating it, because a
@@ -347,7 +347,7 @@ _ASK_RE = re.compile(
 def split_ask(body):
     """An entry body -> (body without the ask paragraph, the ask text).
 
-    The ask is one paragraph opening `**Needs the owner:**`. It is cut out of
+    The ask is one paragraph opening `**Needs Edvard:**`. It is cut out of  # not-prose: quoting a literal
     the body rather than left in place because the card renders it above the
     brief, and an entry that printed it in both would be the wall of text
     this replaced.
@@ -364,7 +364,7 @@ def split_ask(body):
     ask = " ".join(match.group("ask").split())
     # The label with nothing after it is asking nothing -- but the paragraph
     # still has to go. Returning the untouched body here put `**Needs
-    # The owner:**` in `_first_paragraph`, so the card's one-line brief read as
+    # the owner:**` in `_first_paragraph`, so the card's one-line brief read as
     # the label and the entry's real opening sentence never appeared.
     return remainder, ask
 

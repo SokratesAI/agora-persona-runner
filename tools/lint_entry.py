@@ -84,7 +84,7 @@ from agora_runner.nova_journal import (
 
 # `<seq>-cycle-<n>.md`, and the `-addendum` suffixes twelve live files
 # carry. Entry 004 has no cycle token at all and never will -- it is
-# The owner's own first message -- so a filename that does not match is not
+# the owner's own first message -- so a filename that does not match is not
 # a finding, it just means there is no second statement of the cycle
 # number to check the heading against.
 _FILENAME_CYCLE_RE = re.compile(r"\A\d+-cycle-(\d+)(?:-|\.)")
@@ -173,7 +173,7 @@ def _footer_finding(body):
     )
 
 
-# A paragraph that opens `**Needs the owner**` with no colon, and then says
+# A paragraph that opens `**Needs Edvard**` with no colon, and then says  (not-prose: quoting a literal)
 # something. Cycle 262 made `_ASK_RE` require the colon (runner#242), which
 # fixed a real defect -- two 2026-08-11 entries name the old digest section
 # in ordinary prose and were parsing as open asks, so the header's "waiting
@@ -184,20 +184,20 @@ def _footer_finding(body):
 #
 # **The paragraph anchor is what keeps the prose out, and it is measured
 # rather than reasoned.** Anchoring on the line instead fires on
-# `012-cycle-12.md`, which wraps a sentence so that `**Needs the owner** and
+# `012-cycle-12.md`, which wraps a sentence so that `**Needs Edvard** and  (not-prose: quoting a literal)
 # **Next cycle** in there with it` starts a line mid-paragraph -- the
 # entries are hard-wrapped, so a line start is not a paragraph start. With
 # the blank-line anchor this matches **0 of the 326 live entries** and
 # still fires on the bare label written as an ask.
 #
 # `ASK_LABEL` is imported rather than respelled here so that the two
-# spellings -- the current `Needs input` and the archive's `Needs the owner`
+# spellings -- the current `Needs input` and the archive's `Needs Edvard`  (not-prose: quoting a literal)
 # -- can never drift apart between the parser and its own linter.
 _BARE_ASK_RE = re.compile(r"(?:\A|\n[ \t]*\n)\*\*" + ASK_LABEL + r"\*\*[ \t]+\S")
 
 
 def _ask_finding(body):
-    """A `Needs the owner` ask the site would drop for want of a colon.
+    """A `Needs Edvard` ask the site would drop for want of a colon.  (not-prose: quoting a literal)
 
     Runs the real parser rather than restating it, the same way
     `_board_finding` runs `parse_board_refs`: the finding is "`split_ask`
@@ -224,7 +224,7 @@ def _ask_finding(body):
 #
 # **A `?` inside a quotation is not this sentence asking anything**, and
 # that is the failure that matters, because every ask ever written quotes
-# The owner or quotes an earlier entry. Reviewer's case on #254, run rather
+# the owner or quotes an earlier entry. Reviewer's case on #254, run rather
 # than argued: *The card that said "should I proceed?" was from last week
 # and is now stale. Should I proceed now, yes or no?* opens with a
 # statement, is exactly the wall-of-text shape this check exists to
@@ -279,7 +279,7 @@ def _first_sentence_end(ask):
 
 
 def _ask_question_finding(body):
-    """A `Needs the owner` ask whose first sentence is not the question.
+    """A `Needs Edvard` ask whose first sentence is not the question.  (not-prose: quoting a literal)
 
     The owner, unboarded capture 2026-08-20: *"The 'needs the owner' blocks needs
     to present the issue in the first line to me as a question. Take the
@@ -879,7 +879,7 @@ def main(argv=None):
         return 2
     name = args.name or args.file.rsplit("/", 1)[-1]
     # Run on the whole document rather than the parsed body: the sentence
-    # The owner objected to was a *title*, and that is the part of an entry he
+    # the owner objected to was a *title*, and that is the part of an entry he
     # reads on a card without opening it.
     for note in absolute_claim_notes(content):
         print(f"lint_entry: {note}", file=sys.stderr)

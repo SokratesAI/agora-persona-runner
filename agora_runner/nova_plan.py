@@ -188,7 +188,7 @@ def _fenced(text, builders):
     def abandon():
         # An unterminated fence is a half-written edit, not a row. Put the
         # lines back rather than swallowing them -- the document is what
-        # The owner is reading, and text disappearing is worse than a stray
+        # the owner is reading, and text disappearing is worse than a stray
         # fence appearing. Measured as a real case: deleting a block's last
         # two lines by hand makes the *next* block's opening fence look like
         # this one's body, so without this every paragraph in between

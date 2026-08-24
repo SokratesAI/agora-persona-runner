@@ -638,7 +638,7 @@ def test_the_badge_the_page_draws_moves_with_the_live_cadence(monkeypatch):
 
 # --- the holes worth a badge, which is the recent ones ---------------------
 #
-# The owner, comments board 2026-08-14, on the header's stall badge: *"Should
+# the owner, comments board 2026-08-14, on the header's stall badge: *"Should
 # be displayed if the return fetch came in with missing journals."* The
 # header only ever spoke about the clock. These pin the evidence half.
 

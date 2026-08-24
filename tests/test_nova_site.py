@@ -1342,7 +1342,7 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
     )
 
 
-# --- The `Needs the owner` box, and the emphasis that kept it on screen -------
+# --- The `Needs Edvard` box, and the emphasis that kept it on screen -------  (not-prose: quoting a literal)
 
 
 @pytest.mark.parametrize(
@@ -1677,7 +1677,7 @@ def test_a_cycle_line_glued_under_prose_still_gets_its_own_card():
 
 # --- The brief, and the drawer within a drawer ----------------------------
 #
-# The owner, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
+# the owner, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
 # each cycle as a title for each journey card ... As short as possible, max 3
 # sentences ... Then, when a journey card is opened, the Digest is revealed.
 # Below that, a 'read the full journal' button to expand the full journal ...
@@ -1932,7 +1932,7 @@ def test_an_oversized_comment_is_refused_before_it_is_read():
 
 # --- one document per entry (issues.md: "stop writing to a huge file") ----
 #
-# The owner asked for the journal to stop being one 291KB vault document, so
+# the owner asked for the journal to stop being one 291KB vault document, so
 # entries now live one-per-document under `JOURNAL_DIR`. The invariant the
 # whole migration rests on is that the split is *lossless*: joining the
 # per-entry documents back together must parse to exactly what the
@@ -2654,7 +2654,7 @@ def test_accept_encoding_is_parsed_not_pattern_matched(header, expected):
     assert nova_site.accepts_gzip(header) is expected
 
 
-# --- Replying to Needs the owner over HTTP (2026-08-10) ------------------------
+# --- Replying to Needs Edvard over HTTP (2026-08-10) ------------------------  (not-prose: quoting a literal)
 #
 # `{"target": "needs"}` instead of a `cycle`. The boundary is the same one
 # the rest of this endpoint holds: `target` is checked against a one-value
@@ -2893,7 +2893,7 @@ def test_a_reply_that_failed_says_so_instead_of_vanishing():
 
 # --- the card's time, measured instead of typed --------------------------
 #
-# The owner, issues.md 2026-08-10: "I actually see in Agora that the cycle 86
+# the owner, issues.md 2026-08-10: "I actually see in Agora that the cycle 86
 # did start precisely at 19:00 at only ran for 7 minutes. But the Journal
 # said 19:30. Thats wierd."
 #
@@ -3659,7 +3659,7 @@ def test_health_probes_use_a_short_timeout_not_the_60s_default():
 
 # --- a capture is visible on the very next request -----------------------
 #
-# The owner, `issues.md` 2026-08-12: *"When i create a new issues, the 'not
+# the owner, `issues.md` 2026-08-12: *"When i create a new issues, the 'not
 # boarded yet' block for issues is not refreshed automatically. This is
 # probably a problem for ideas aswell."*
 #
@@ -4234,7 +4234,7 @@ def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
     inv.assert_called_once_with("board:ideas")
 
 
-# --- Clearing a Needs the owner item from the page (issue #93) ---------------
+# --- Clearing a Needs Edvard item from the page (issue #93) ---------------  (not-prose: quoting a literal)
 
 
 

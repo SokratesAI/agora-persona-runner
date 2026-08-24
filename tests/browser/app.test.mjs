@@ -3164,7 +3164,7 @@ describe("the feed loads a window rather than the whole journal", () => {
 
 /* Scrolling to the end of the feed loads the next window on its own.
  *
- * The owner, issues.md #71: "Make it more lazy load when i scroll down instead
+ * the owner, issues.md #71: "Make it more lazy load when i scroll down instead
  * of a button i press."
  *
  * jsdom has no IntersectionObserver at all, which is why every test above
@@ -3447,7 +3447,7 @@ describe("an unsent comment survives a re-render", () => {
 
 /* The board pages -- Issues and Ideas (issues.md #57).
  *
- * The owner: "I need more visualisations in the Nova app. Create more pages
+ * the owner: "I need more visualisations in the Nova app. Create more pages
  * to contain more, such as issue list, idea list (separate pages)".
  *
  * These drive the real router, so what is being checked is what a cold
@@ -5137,7 +5137,7 @@ describe("the retrospective page", () => {
  * fixed the same day by giving the picker its own row above the buttons,
  * while it still showed a rating's word and grew to 136px wide.
  *
- * The owner, 2026-08-14, later: once the picker shrank to a fixed 44px glyph
+ * the owner, 2026-08-14, later: once the picker shrank to a fixed 44px glyph
  * he asked for it back on the button row, at the far right. jsdom lays
  * nothing out, so none of these can see a wrap on a real phone -- that is
  * measured in Chromium at 390px, and the fix is CSS. What is real code,
@@ -5655,7 +5655,7 @@ describe("the priority picker (buildPrioPicker)", () => {
   });
 
   test("a board row's priority trigger is in the head, so a closed row still shows it", async () => {
-    // The owner, 2026-08-14: "on issues and ideas the priority button should
+    // the owner, 2026-08-14: "on issues and ideas the priority button should
     // be the priority tag instead, not a separate button" -- the old
     // picker lived in `.item-body`, which only exists once a row opens.
     const window = await loadSite("/issues");
@@ -5667,7 +5667,7 @@ describe("the priority picker (buildPrioPicker)", () => {
   });
 
   test("a rated board row's trigger keeps the original cycle-171 chip look", async () => {
-    // The owner, 2026-08-14: "i liked the old issue priority status better...
+    // the owner, 2026-08-14: "i liked the old issue priority status better...
     // make it into a button that opens the modal, but the visual design is
     // not changed from the old design" -- same class, same full text, on
     // a <button> instead of a <span>.
@@ -6277,7 +6277,7 @@ describe("holding a board row opens edit mode", () => {
 
 /* ---- Commenting on a boarded row (idea #64) -----------------------------
  *
- * The owner: *"Lets me have the same comment conversation on ideas, notes and
+ * the owner: *"Lets me have the same comment conversation on ideas, notes and
  * issues like the Journal. Add a comment button and let me leave comments
  * that discuss each idea."* Rated 🔴 Immediately and open since 08-12 --
  * skipped by every cycle since, which is what he filed.
@@ -7075,7 +7075,7 @@ describe("the plan page folds its prose", () => {
 
 /* The Questions page.
  *
- * The owner, ideas.md 2026-08-19: "Make a questions page in Nova where i can
+ * the owner, ideas.md 2026-08-19: "Make a questions page in Nova where i can
  * ask questions in a box and a Claude sonnet model answers me."
  *
  * The behaviour worth pinning is the one this page has and no other page

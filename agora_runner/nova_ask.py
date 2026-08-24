@@ -52,7 +52,7 @@ MAX_QUESTION_CHARS = 4000
 # Newest N rendered on the page. The thread is one long-lived conversation,
 # so this is the only thing standing between the owner's phone and a year of
 # transcript -- the same "what does this look like after 100 items" question
-# that the Needs the owner wall failed.
+# that the Needs Edvard wall failed.  (not-prose: quoting a literal)
 MAX_THREAD = 40
 
 

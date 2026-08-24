@@ -1,4 +1,4 @@
-"""The **Needs the owner** block: what an item is, and how one leaves.
+"""The **Needs Edvard** block: what an item is, and how one leaves.  (not-prose: quoting a literal)
 
 **The block itself is retired.** The owner asked for it gone on 2026-08-16;
 #229 deleted it from the page and #236 the server half that fed it, so an

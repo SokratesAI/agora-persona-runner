@@ -615,7 +615,7 @@ def test_an_unquoted_claim_beside_a_quoted_one_is_still_caught():
     assert "30 minutes" in found[0]
 
 
-# --- The `Needs the owner` ask label -----------------------------------------
+# --- The `Needs Edvard` ask label -----------------------------------------  (not-prose: quoting a literal)
 #
 # Cycle 262 made `_ASK_RE` require the colon, which fixed two 2026-08-11
 # entries that named the old digest section in prose and parsed as open
@@ -645,7 +645,7 @@ def test_an_ask_that_lost_its_colon_is_caught():
 
 
 def test_the_colon_outside_the_bold_is_the_parsers_other_accepted_form():
-    """`_ASK_RE` takes `**Needs the owner**:` as well, so this check must not
+    """`_ASK_RE` takes `**Needs Edvard**:` as well, so this check must not  (not-prose: quoting a literal)
     contradict it -- a linter that disagrees with the parser is worse than
     no linter."""
     entry = GOOD.replace(
@@ -665,7 +665,7 @@ def test_prose_naming_the_section_mid_paragraph_is_not_an_ask():
     """The measured false positive, and why the anchor is a blank line
     rather than a line start.
 
-    `012-cycle-12.md` wraps a sentence so that `**Needs the owner** and **Next
+    `012-cycle-12.md` wraps a sentence so that `**Needs Edvard** and **Next  (not-prose: quoting a literal)
     cycle** in there with it` begins a line in the middle of a paragraph.
     The entries are hard-wrapped, so a line start is not a paragraph start;
     anchoring on one fires on that entry, and on the blank line it matches
@@ -682,7 +682,7 @@ def test_prose_naming_the_section_mid_paragraph_is_not_an_ask():
 
 def test_prose_naming_the_section_at_a_paragraph_start_still_needs_no_colon_after_it():
     """A paragraph genuinely opening with the label as prose reads
-    `**Needs the owner**,` -- punctuation, not whitespace -- so it is out of
+    `**Needs Edvard**,` -- punctuation, not whitespace -- so it is out of  (not-prose: quoting a literal)
     reach of the check by shape rather than by exception."""
     entry = GOOD.replace(
         "Something real happened and here is the honest account of it.",
@@ -694,7 +694,7 @@ def test_prose_naming_the_section_at_a_paragraph_start_still_needs_no_colon_afte
 
 # --- The ask has to open with the question --------------------------------
 #
-# The owner, unboarded capture 2026-08-20, naming Cycle 273's block: *"its a
+# the owner, unboarded capture 2026-08-20, naming Cycle 273's block: *"its a
 # wall of text and a question hidden in it at the very bottom ... Example
 # is 'yes or no, keep the symbols for x, y, z?' After that, you can explain
 # the reason"*. Measured over all 333 live entries before the check was
@@ -829,7 +829,7 @@ def test_the_bare_label_is_told_about_the_colon_and_not_about_the_shape():
 
 
 def test_the_new_ask_label_without_a_colon_is_a_finding():
-    """`**Needs input**` drops the same silent way `**Needs the owner**` did.
+    """`**Needs input**` drops the same silent way `**Needs Edvard**` did.  (not-prose: quoting a literal)
 
     The bare-label check imports `ASK_LABEL` from the parser instead of
     respelling it, so this is the test that the import actually carries

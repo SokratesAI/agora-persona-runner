@@ -122,7 +122,7 @@
 
   /* Which cards were open, so that rebuilding the feed puts them back.
    *
-   * The owner, issues.md 2026-08-11: "The Nova site closes all drawers on what
+   * the owner, issues.md 2026-08-11: "The Nova site closes all drawers on what
    * seems like every 30 sec or so. Is this a refresh bug?"
    *
    * A card's open/closed state lived only in the DOM, so every path that
@@ -163,7 +163,7 @@
 
   /* An attach button for any composer on this site.
    *
-   * The owner, comments board 2026-08-21: *"How do i send a screenshot?"* He
+   * the owner, comments board 2026-08-21: *"How do i send a screenshot?"* He
    * could see a layout bug on his Galaxy S25 that no renderer in this loop
    * can reproduce, and the only channel between us was text. Cycle 299 had
    * to answer "you can't" and ask him to describe the pixels instead.
@@ -339,7 +339,7 @@
 
   /* Make a pager fire when it is scrolled to, instead of when it is tapped.
    *
-   * The owner, issues.md #71: "Make it more lazy load when i scroll down
+   * the owner, issues.md #71: "Make it more lazy load when i scroll down
    * instead of a button i press."
    *
    * The button stays. It is not a fallback nobody reaches -- it is the
@@ -605,7 +605,7 @@
 
   /* One status field, and where it points.
    *
-   * The owner, capture 2026-08-22: *"The status fields at the top, we are
+   * the owner, capture 2026-08-22: *"The status fields at the top, we are
    * keeping them. Please have them shown horisontal listed, not vertical.
    * Also clicking them navigates me down to the Journal it references."*
    *
@@ -889,7 +889,7 @@
    * would need innerHTML or createElementNS, and the first is banned here
    * for a good reason and the second buys nothing at this size. */
   /* `target` is what the drawer is attached to, so the same drawer serves
-   * both a journal card and the Needs the owner block:
+   * both a journal card and the Needs Edvard block:  (not-prose: quoting a literal)
    *   body(text)  -> the /api/comment payload naming that target
    *   pick(data)  -> that target's comments out of /api/comments
    *   placeholder, ariaLabel -> the words for it
@@ -941,7 +941,7 @@
      * scroll past every single time i want to read your newest journals,
      * which is 6-8 times a day."*
      *
-     * He is describing the Needs the owner block, and the cause is that its
+     * He is describing the Needs Edvard block, and the cause is that its  (not-prose: quoting a literal)
      * drawer was the one drawer that was never folded (that block is gone) --
      * so every reply he has ever made to it, since 2026-08-10, is painted
      * open at the top of the page, above the newest journal card. A cycle
@@ -1060,7 +1060,7 @@
 
       /* One flat list in the order things were actually said.
        *
-       * The owner, issues.md 2026-08-23: *"a Nova cycle reply posted at 14:01
+       * the owner, issues.md 2026-08-23: *"a Nova cycle reply posted at 14:01
        * rendered between two of my comments timestamped 13:31 and 13:40
        * instead of after both — thread isn't sorting strictly by time."*
        *
@@ -1306,7 +1306,7 @@
 
   /* One card per cycle, however many entries that cycle wrote.
    *
-   * The owner, on the comments board at cycle 81: "i do not like the double
+   * the owner, on the comments board at cycle 81: "i do not like the double
    * entry Journal cards. If a double entry is necessary like for cycle 81,
    * have it be combined into one card that has tabs or something similar.
    * Its confusing that its two separate cards."
@@ -1729,7 +1729,7 @@
 
   /* `/cycle/81` is a page, not a card.
    *
-   * The owner, inside issue #59: "its not the link thats the problem, its the
+   * the owner, inside issue #59: "its not the link thats the problem, its the
    * single view that is bad ui... Please do some propper ui research and
    * testing with this as the current solution does not make sense, is hard
    * to understand and wasteful". And on the comments board, Cycle 81: "i do
@@ -2543,7 +2543,7 @@
         // loop is quiet (`journal_descriptor`), so that 304 is the common
         // case, and "can't reach Nova" would stick to the header for up to an
         // hour after the app was last actually offline. That is the flash
-        // The owner reported, inverted onto the banner meant to explain it.
+        // the owner reported, inverted onto the banner meant to explain it.
         lastPayload[key] = body;
         if (isReplayed(r) && body && body.status) {
           return shallow(body, { status: shallow(body.status, { replayed: true }) });
@@ -2588,7 +2588,7 @@
 
   /* ---- The board pages: Issues and Ideas (issues.md #57) ----------------
    *
-   * The owner: "I need more visualisations in the Nova app. Create more
+   * the owner: "I need more visualisations in the Nova app. Create more
    * pages to contain more, such as issue list, idea list (separate
    * pages) ..."
    *
@@ -4308,7 +4308,7 @@
 
   /* ---- The costs page (issues.md #57, page 2) --------------------------
    *
-   * The owner, 2026-08-08: "I want you to figure out the optimal method of
+   * the owner, 2026-08-08: "I want you to figure out the optimal method of
    * quota spendage for projects. I do not know the optimal way. Figure
    * this out by trial and error and gained experience." Every cycle has
    * been writing its own cost into a ledger since; this is the first time
@@ -4956,7 +4956,7 @@
 
   /* ---- The retrospective page (issues.md, 2026-08-13) ------------------
    *
-   * The owner: "Rate yourself on a scale from 1 to 10 on how you feel its
+   * the owner: "Rate yourself on a scale from 1 to 10 on how you feel its
    * going, how effective do you think you are, whats good, whats bad,
    * whats the overall feeling (which is the most important metric).
    * Actually note down data and compare it to previous retros (lets also
@@ -5495,7 +5495,7 @@
 
   /* The Notes page.
    *
-   * The owner, issues.md 2026-08-21: *"I do not have a notes page that shows
+   * the owner, issues.md 2026-08-21: *"I do not have a notes page that shows
    * any overview of the notes made."*
    *
    * His third capture file had a button that writes to it and nothing
@@ -5735,7 +5735,7 @@
 
   /* The Questions page.
    *
-   * The owner, ideas.md 2026-08-19: "Make a questions page in Nova where i can
+   * the owner, ideas.md 2026-08-19: "Make a questions page in Nova where i can
    * ask questions in a box and a Claude sonnet model answers me."
    *
    * The answer is not synchronous -- the question goes into an Agora

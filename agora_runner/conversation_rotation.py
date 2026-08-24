@@ -106,7 +106,7 @@ def rotate_cycle_conversation(heartbeat, participants):
         # with the one above would save a round trip. Agora refuses the whole
         # request if `folderId` names a folder that has gone -- and it can go
         # between _ensure_folder returning its id and this patch landing, if
-        # The owner deletes it. Bundled, that 400 would take the `tags` with it,
+        # the owner deletes it. Bundled, that 400 would take the `tags` with it,
         # and the tag is what every later cycle uses to find this
         # conversation: pruning, numbering, and the walk-back for a message
         # of his nobody answered. An unfiled conversation is cosmetic; an

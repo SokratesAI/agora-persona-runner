@@ -3,7 +3,7 @@
 The digest reached 100,991 bytes -- 96,740 of it 54 accumulated cycle
 lines -- and grows ~1.8KB every hour forever. `prompt.md` step 1a
 forbids a cycle from delegating that read, so every cycle pays for all
-of it to reach the 3.6KB of **Needs the owner** / **Next cycle** at the
+of it to reach the 3.6KB of **Needs Edvard** / **Next cycle** at the  (not-prose: quoting a literal)
 top. Same shape as `journal.md` at 291KB, which the owner called urgent.
 
 This is a script rather than a paragraph in `prompt.md` for the reason
@@ -100,7 +100,7 @@ def _check_archive(new_archive):
     Worth stating precisely, because the obvious guess is wrong and a
     reviewer had to correct it: `_sections` keys sections by heading text
     and keeps the last of each, so a `## Digest` landing in the archive
-    does *not* touch **Needs the owner** or **Next cycle** -- those come from
+    does *not* touch **Needs Edvard** or **Next cycle** -- those come from  (not-prose: quoting a literal)
     different keys, populated from the live file. What it silently
     discards is the live file's own digest lines, the newest ones, in
     favour of the archive's older ones. That is precisely the data this

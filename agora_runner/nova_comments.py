@@ -12,17 +12,17 @@ is not a backlog item -- it is a reply *about cycle 63*, and stripped of
 which cycle it answers it loses most of its meaning. So a comment is
 stored keyed by cycle number, and the number is the whole point.
 
-**The second target is the digest's `Needs the owner` block** (2026-08-10, his
+**The second target is the digest's `Needs Edvard` block** (2026-08-10, his  # not-prose: quoting a literal
 words in the `add_needs_comment` docstring). That block is the one place
 Nova asks *him* a direct question, and until now it was the one place with
 no way to answer -- idea #56 sat in it unanswered for eight cycles, which
 is not him ignoring it but a box with no reply field. Such a reply is
-stored here under `### Needs the owner · <stamp>` rather than under a cycle,
+stored here under `### Needs Edvard · <stamp>` rather than under a cycle,  # not-prose: quoting a literal
 because the digest is rewritten every cycle and filing his answer under
 whichever cycle last touched the text would attach it to a card at random.
 
 **The channel only exists if a cycle reads it.** A comment nobody collects
-is Cycle 58's "Needs Edvard" box all over again: built, tested, shipped  (not-prose: quoting a literal)
+is Cycle 58's "Needs Edvard" box all over again: built, tested, shipped  # not-prose: quoting a literal
 and dead. So the file has two sections and a comment is not done when it
 is written -- `## New` is the owner's outbox and Nova's inbox, and a cycle
 moves what it has acted on down to `## Acknowledged` with what it did,
@@ -102,14 +102,14 @@ ACKNOWLEDGED_HEADING = "## Acknowledged"
 
 WRITE_ATTEMPTS = 3
 
-# The heading a reply to the `Needs the owner` block carries instead of a
+# The heading a reply to the `Needs Edvard` block carries instead of a  # not-prose: quoting a literal
 # cycle number. Such a reply answers a question the *digest* is asking, and
 # the digest is rewritten every cycle -- so there is no cycle it belongs
 # to, and filing it under whichever cycle happened to write the current
 # text would attach his answer to a card at random.
 NEEDS_LABEL = "Needs Edvard"
 
-# `### Cycle 63 · 2026-08-09 22:40`, or `### Needs the owner · 2026-08-10 08:20`.
+# `### Cycle 63 · 2026-08-09 22:40`, or `### Needs Edvard · 2026-08-10 08:20`.  # not-prose: quoting a literal
 # The separator is matched loosely so a heading hand-edited in Obsidian
 # still parses; which of the two targets it names is the only part anything
 # depends on.
@@ -121,7 +121,7 @@ _COMMENT_HEADING_RE = re.compile(
 
 
 def _heading_label(cycle):
-    """`None` -> the Needs the owner block, an int -> that cycle."""
+    """`None` -> the Needs Edvard block, an int -> that cycle. (not-prose: quoting a literal)"""
     return NEEDS_LABEL if cycle is None else f"Cycle {cycle}"
 
 _SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
@@ -195,7 +195,7 @@ def _section_bounds(lines, heading):
 def insert_comment(markdown, cycle, text, stamp):
     """Add one comment to the top of `## New`, newest first.
 
-    `cycle` is an int, or `None` for a reply to the Needs the owner block.
+    `cycle` is an int, or `None` for a reply to the Needs Edvard block.  # not-prose: quoting a literal
 
     Newest first matches every other file this loop maintains and means a
     cycle reads the freshest thing the owner said without scrolling. If the
@@ -557,7 +557,7 @@ def _oldest_first(comments):
 def comments_by_cycle(markdown):
     """`{cycle: [comment, ...]}` -- what the site hangs off each card, oldest first.
 
-    Needs the owner replies are deliberately absent: they belong to no cycle,
+    Needs Edvard replies are deliberately absent: they belong to no cycle,  # not-prose: quoting a literal
     and letting `None` through would key a card on it.
     """
     grouped = {}
@@ -569,12 +569,12 @@ def comments_by_cycle(markdown):
 
 
 def needs_comments(markdown):
-    """`[comment, ...]` -- replies to the Needs the owner block, oldest first."""
+    """`[comment, ...]` -- replies to the Needs Edvard block, oldest first. (not-prose: quoting a literal)"""
     return _oldest_first([c for c in parse_comments(markdown) if c["cycle"] is None])
 
 
 def add_needs_comment(text, stamp=None):
-    """Store one reply to the Needs the owner block. Returns (ok, message).
+    """Store one reply to the Needs Edvard block. Returns (ok, message).  # not-prose: quoting a literal
 
     The owner, 2026-08-10: *"the 'needs the owner' is still missing a comment
     block, so its hard for me to answer it. [...] Where did you intend me
@@ -597,7 +597,7 @@ def add_comment(cycle, text, stamp=None):
 
 
 def _store(cycle, text, stamp=None):
-    """The shared read-modify-write. `cycle` is an int, or None for Needs the owner."""
+    """The shared read-modify-write. `cycle` is an int, or None for Needs Edvard. (not-prose: quoting a literal)"""
     target = _heading_label(cycle).lower()
     body = clean_comment_text(text)
     if not body:

@@ -161,7 +161,7 @@ def claim_next_number(heartbeat_id, conversations, tag):
         # is most likely to hand back a number somebody else already holds
         # -- CLAIM_ATTEMPTS conflicts in a row means real contention, not a
         # sick CouchDB. A duplicate cycle number is exactly the symptom
-        # The owner reported as Immediately on 2026-08-20, so the one case
+        # the owner reported as Immediately on 2026-08-20, so the one case
         # that can still produce one should not be the one that leaves no
         # trace to find it by.
         log(f"claim_next_number({heartbeat_id}): {CLAIM_ATTEMPTS} conflicts "
