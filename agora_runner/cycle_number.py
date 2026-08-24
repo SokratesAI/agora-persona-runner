@@ -258,12 +258,6 @@ def main():
         print("warning: no conversation id given, so this is the highest number that "
               "exists, not necessarily yours -- concurrent cycles will collide on it",
               file=sys.stderr)
-    elif current_number(sys.argv[1], None) == number:
-        # Not proof of a miss -- the newest cycle's own id resolves to the
-        # highest number too, and that is the common case. Silence here would
-        # be wrong in the other direction, though: the whole failure this
-        # fixes looked exactly like success.
-        print(f"note: {number} is also the highest number that exists", file=sys.stderr)
     print(number)
     return 0
 
