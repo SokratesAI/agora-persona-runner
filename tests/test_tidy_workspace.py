@@ -767,3 +767,51 @@ def test_a_clone_whose_head_cannot_be_read_is_not_moved(squash_merged,
     assert [m["moved"] for m in moves] == [False]
     assert "nothing to reverse to" in moves[0]["error"]
     assert _head(repo) == before
+
+
+def test_no_fetch_does_not_grant_permission_to_move_a_checkout(squash_merged):
+    """Reviewer finding, and the guard I thought I had tested. `fetched` is
+    True under `--no-fetch` by construction (`fetched = not fetch`) -- it means
+    "the caller says these refs are current", which is the right signal for
+    whether to warn and the wrong one for whether to write. My own guard test
+    set `fetched` to False by hand and so never went near this path."""
+    root, repo = _behind_on_main(squash_merged)
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "remote", "set-url", "origin", str(repo / "no-such-remote.git"))
+    before = _head(repo)
+    survey = tidy_workspace.survey_checkouts(str(root), fetch=False)
+    assert survey[0]["fetched"] is True and survey[0]["behind"] == 1
+
+    tidy_workspace.fast_forward_stale(str(root), survey)
+
+    assert _head(repo) == before
+
+
+def test_a_refusal_reports_gits_cause_and_never_its_advice(squash_merged):
+    """Reviewer finding, reproduced by it: the last line of git's index.lock
+    error is `remove the file manually to continue.` -- which, printed to an
+    autonomous cycle at the start of every run, is an instruction to delete a
+    lock another live cycle is holding. git puts the cause first and the advice
+    after, so the first line is the only safe one to surface."""
+    root, repo = _behind_on_main(squash_merged)
+    survey = tidy_workspace.survey_checkouts(str(root))
+    (repo / ".git" / "index.lock").write_text("held by another cycle\n")
+
+    moves = tidy_workspace.fast_forward_stale(str(root), survey)
+
+    assert [m["moved"] for m in moves] == [False]
+    assert "index.lock" in moves[0]["error"]
+    assert "remove the file manually" not in moves[0]["error"]
+
+
+def test_a_clone_that_is_already_current_is_not_merged_at_all(squash_merged):
+    """The `behind < 1` guard, which the reviewer found unpinned. Without it
+    every up-to-date clone gets a pointless `git merge` and the CLI reports a
+    0-commit fast-forward every cycle, on every clone."""
+    root, repo = _behind_on_main(squash_merged)
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "merge", "-q", "--ff-only", "origin/main")
+    survey = tidy_workspace.survey_checkouts(str(root))
+    assert survey[0]["verdict"] == "clean" and survey[0]["behind"] == 0
+
+    assert tidy_workspace.fast_forward_stale(str(root), survey) == []

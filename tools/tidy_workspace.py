@@ -31,9 +31,18 @@ One thing here does write to a checkout rather than to a name of its own:
 `fast_forward_stale` advances a clone that is clean and behind onto its base,
 because under concurrency nothing else ever updates the shared checkout every
 worktree is cut from. It carries its own safety argument at the function, and
-it is the same one -- a fast-forward of a clean tree loses nothing and is
-reversible in one command, and every other shape is skipped rather than
-merged.
+it is the same one -- every shape but one is skipped rather than merged.
+
+**It is not safe to merge as written and it is not enabled.** A second reader
+found the hole: `git status --porcelain` does not list ignored files, so a
+clone holding them reads `clean`, and `git merge --ff-only` *silently
+overwrites* an ignored file when an incoming commit tracks that path. The
+shared checkout holds about 25 ignored files at its root -- `claims.json` and
+`ledger.json` among them, which are the concurrency ledger every cycle reads
+and rewrites -- and this repo's own `.gitignore` records three occasions when
+a root `.md`/`.json` was tracked on main by accident. `git reset --hard` to the
+printed sha does not recover them either; it deletes them, because the old
+commit does not track them. See runner#315.
 
 **Run it at the start of a cycle, not at the end**, and note that this is now
 advice rather than the only thing standing between a mistimed run and a
@@ -362,6 +371,7 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
             files = sorted(found)
         out.append({"clone": clone, "branch": branch, "base": base,
                     "dirty": dirty, "ahead": ahead, "behind": behind,
+                    "refreshed": bool(fetch) and fetched,
                     "verdict": verdict,
                     "fetched": fetched, "files": files,
                     "files_failed": files_failed})
@@ -384,7 +394,9 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
 # checkout is only obviously safe in one shape:
 #
 #   - the survey called it `clean`: no uncommitted files, nothing committed
-#     here that the base has not got, so there is no work to lose;
+#     here that the base has not got. NOTE: `clean` does not mean "nothing to
+#     lose" -- `git status --porcelain` is blind to ignored files, which is the
+#     open hole above and the reason this is not wired on;
 #   - `HEAD` is the base's own branch by name, not a detached head and not a
 #     feature branch that merely happens to be behind -- those are somebody's
 #     position, not staleness;
@@ -407,7 +419,13 @@ def fast_forward_stale(root, entries, dry_run=False):
     moves = []
     for entry in entries:
         base = entry["base"]
-        if base is None or not entry["fetched"]:
+        # `refreshed`, not `fetched`. `fetched` is True under `--no-fetch` by
+        # design -- it means "the caller says these refs are current", which is
+        # the right signal for whether to *warn* and the wrong one for whether
+        # to *write*. Reviewer finding: guarding on `fetched` let `--no-fetch`
+        # move a checkout against refs that were never refreshed, which is the
+        # opposite of what that flag's help text promises.
+        if base is None or not entry.get("refreshed"):
             continue
         if entry["verdict"] != "clean" or entry["behind"] < 1:
             continue
@@ -441,8 +459,9 @@ def fast_forward_stale(root, entries, dry_run=False):
             # earlier, which is harmless and self-correcting -- but a clone
             # that silently never advances is the whole bug this function
             # exists to remove, so the caller is told either way.
-            move["error"] = (done.stderr or done.stdout or "").strip().split(
-                "\n")[-1] or "git merge --ff-only failed"
+            lines = [ln.strip() for ln in
+                     (done.stderr or done.stdout or "").split("\n") if ln.strip()]
+            move["error"] = lines[0] if lines else "git merge --ff-only failed"
         moves.append(move)
     return moves
 
