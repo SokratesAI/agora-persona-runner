@@ -25,6 +25,7 @@ from agora_runner.cycle_health import (
     nova_cadence_minutes,
     recent_gaps,
 )
+from agora_runner.stall_notice import due
 from agora_runner.nova_journal import JOURNAL_DIR, build_status, parse_journal
 from agora_runner.nova_site import (
     _refresh_cadence,
@@ -1002,3 +1003,85 @@ def test_the_newest_run_still_wins_among_heartbeats_in_the_same_state(monkeypatc
         _with_agora(monkeypatch, _FakeAgora(heartbeats=order))
         assert nova_heartbeat_snapshot()[1:] == (
             "2026-08-12T15:20:00+02:00", "research"), order
+
+
+# The false alarm the owner reported on 2026-08-24, and the two bounds that stop
+# the fix from muting a real one.
+#
+# He sent a screenshot of his own phone: at 17:38, inside the live "Nova —
+# Cycle 373" conversation, between two of that cycle's own tool calls, the
+# platform posted "Nova has stopped writing. The last journal entry is Cycle
+# 372's, written at 2026-08-24 16:54, and that is 2 heartbeat intervals ago
+# with nothing since." His words: *"Seems like there is a big [bug] with the
+# auto agora message. There was nothing wrong with the cycle it seems as it
+# continues to work."*
+#
+# He was right and the arithmetic is the whole story. 17:38 minus 16:54 is 44
+# minutes; at the 20-minute cadence he set that morning it is two intervals,
+# which is `STALL_GRACE_INTERVALS`. Two intervals was a safe margin at the
+# 60-minute cadence this check was written under -- two hours, and no cycle
+# runs that long. At 20 minutes it is 40, which is shorter than a single
+# cycle's own 45-minute turn cap, so an ordinary slow cycle now trips the
+# stall threshold while it is still working.
+
+STALL_MINUTES = 20
+
+
+def test_a_running_cycle_is_not_reported_as_a_stall_at_a_short_cadence():
+    """His screenshot, reproduced. The entry is 44 minutes old and Agora's
+    record says a run claimed 18 minutes ago is still going -- so the
+    silence is a cycle mid-flight, which is the opposite of a stall."""
+    status = _silence(timedelta(minutes=44),
+                      (NOW + timedelta(minutes=26)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert status["silentIntervals"] == 2
+    assert status["stalled"] is False
+    assert status["running"] is True
+
+
+def test_the_notice_stays_silent_for_that_status():
+    """The end of the path, not the middle. `stalled` is the only thing
+    `due` reads, so this is what actually decides whether his phone gets a
+    message -- and it is the assertion that would have failed on 2026-08-24."""
+    status = _silence(timedelta(minutes=44),
+                      (NOW + timedelta(minutes=26)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert due(status, None) is None
+
+
+def test_a_killed_cycle_is_still_reported_once_its_turn_cap_has_passed():
+    """The alarm this module exists for, at the same short cadence. A killed
+    cycle never writes its closing PATCH, so `lastResult` stays "running"
+    forever; `lastRunAt` dates the claim, and past the 45-minute turn cap
+    that run is over whatever the record says."""
+    status = _silence(timedelta(minutes=70),
+                      (NOW + timedelta(minutes=20)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert status["stalled"] is True
+    assert status["running"] is False
+    assert due(status, None) is not None
+
+
+def test_a_scheduler_claiming_runs_into_a_dead_runner_cannot_mute_the_alarm():
+    """The hole a naive "is anything running?" gate would open. If Agora
+    keeps claiming a run every cadence but nothing ever writes, `lastRunAt`
+    stays fresh forever and the in-flight fact alone would suppress the
+    notice for good. One in-flight cycle can only account for a cadence
+    interval plus a turn cap of silence; past that, two cycles in a row
+    have failed to write and it is a stall."""
+    status = _silence(timedelta(minutes=90),
+                      (NOW + timedelta(minutes=80)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert status["stalled"] is True
+    assert due(status, None) is not None
+
+
+def test_the_two_badges_can_never_both_be_true_at_a_short_cadence():
+    """The invariant `_running_now` was written to protect, re-checked at
+    the cadence that broke the number underneath it. Minute by minute
+    across four hours rather than at the offsets I happened to think of."""
+    for offset in range(0, 240, 5):
+        status = _silence(timedelta(minutes=offset),
+                          (NOW + timedelta(minutes=max(0, offset - 10))).isoformat(),
+                          "running", minutes=STALL_MINUTES)
+        assert not (status["running"] and status["stalled"]), offset

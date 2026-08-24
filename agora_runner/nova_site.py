@@ -101,7 +101,7 @@ import os
 import threading
 import time
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
@@ -1092,7 +1092,55 @@ def reset_cadence():
         _cadence_refreshing = False
 
 
-def _running_now(written, last_run_at, last_result, stalled):
+def _in_flight(written, last_run_at, last_result, now=None):
+    """Is a cycle in flight right now, as a fact about Agora's own record.
+
+    The same three-condition test `_running_now` has always made, minus the
+    `stalled` veto and plus an age bound -- and pulling it out is the fix for
+    the false alarm the owner reported on 2026-08-24.
+
+    `_running_now` defers to `stalled`, which is correct for a badge and
+    exactly wrong for the stall *notice*: it means the one fact that
+    disproves a stall is consulted only after the stall has already been
+    declared. At 17:38 the site pushed "Nova has stopped writing" into Cycle
+    373's own conversation, between two of that cycle's tool calls, because
+    the newest entry was 44 minutes old and 44 minutes is two intervals at a
+    20-minute cadence. Agora's record said `lastResult: "running"` the whole
+    time.
+
+    The age bound is what makes this safe to trust in the other direction. A
+    killed cycle never writes its closing PATCH, so `lastResult` stays
+    `"running"` forever -- which is precisely why `_running_now` had a veto
+    at all. `lastRunAt` dates that claim, and a run older than
+    `MAX_CYCLE_MINUTES` has been killed by the turn cap whatever the record
+    says, so the claim expires on its own rather than needing the stall
+    clock to overrule it.
+
+    No lower bound on the age deliberately: a `lastRunAt` stamped in the
+    future is a clock disagreement, and the caller's second bound (silence
+    no longer than one cadence plus one cycle) is what stops a stuck record
+    from silencing the alarm, so this one does not have to.
+    """
+    from agora_runner.cycle_health import MAX_CYCLE_MINUTES
+
+    if last_result != "running" or not last_run_at:
+        return False
+    try:
+        ran = datetime.fromisoformat(last_run_at)
+        stamp = datetime.fromisoformat(written or "")
+    except ValueError:
+        return False
+    if ran.tzinfo is None:
+        ran = ran.replace(tzinfo=OSLO)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=OSLO)
+    if ran <= stamp:
+        return False
+    age = (now or datetime.now(OSLO)) - ran
+    return age <= timedelta(minutes=MAX_CYCLE_MINUTES)
+
+
+def _running_now(written, last_run_at, last_result, stalled, now=None):
     """Is a cycle in flight right now -- measured, not inferred from the clock.
 
     The half of #72 that had no answer for 130 cycles. The owner: *"Nova is 1
@@ -1129,19 +1177,14 @@ def _running_now(written, last_run_at, last_result, stalled):
     `False` when anything is missing, including the cold-cache
     `(None, None, None)`. Silence is the status quo here and a wrong
     "running" is worse than a late one.
+
+    The three conditions now live in `_in_flight`, which the stall decision
+    also uses; the `stalled` veto stays here and only here, so the badge and
+    the stall flag still cannot disagree.
     """
-    if last_result != "running" or not last_run_at or stalled:
+    if stalled:
         return False
-    try:
-        ran = datetime.fromisoformat(last_run_at)
-        stamp = datetime.fromisoformat(written or "")
-    except ValueError:
-        return False
-    if ran.tzinfo is None:
-        ran = ran.replace(tzinfo=OSLO)
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=OSLO)
-    return ran > stamp
+    return _in_flight(written, last_run_at, last_result, now)
 
 
 def _with_silence(status, now=None, minutes=None, record_age=None, heartbeat=None):
@@ -1192,16 +1235,19 @@ def _with_silence(status, now=None, minutes=None, record_age=None, heartbeat=Non
             heartbeat = snapshot[1:]
     if heartbeat is None:
         heartbeat = (None, None)
+    now = now or datetime.now(OSLO)
     out = dict(status)
     written = out.get("lastWrittenAt") or ""
     silent = None
+    silent_minutes = None
     if written:
         try:
             stamp = datetime.fromisoformat(written)
         except ValueError:
             stamp = None
         if stamp is not None:
-            elapsed = (now or datetime.now(OSLO)) - stamp
+            elapsed = now - stamp
+            silent_minutes = max(0.0, elapsed.total_seconds() / 60)
             # An entry stamped in the future is a clock disagreement, not a
             # stalled loop -- zero rather than a negative the client would
             # have to guard. The same call `cycle_health.stalled_for` makes.
@@ -1234,11 +1280,35 @@ def _with_silence(status, now=None, minutes=None, record_age=None, heartbeat=Non
     # removes. The page gets the fact; the age stays a parameter.
     stale = record_age is not None and record_age >= RECORD_TRUST_SECONDS
     out["recordStale"] = stale
+
+    # A cycle that is demonstrably running right now explains the silence,
+    # and the grace interval no longer covers that on its own -- see
+    # `MAX_CYCLE_MINUTES`. Two bounds, and both are needed:
+    #
+    # - `_in_flight` believes Agora's "running" for at most one turn cap, so
+    #   a killed cycle stops explaining anything ~45 minutes after it died.
+    # - the silence itself must still be short enough for *one* in-flight
+    #   cycle to account for: one cadence interval to wake, plus at most one
+    #   turn to write. Past that, two consecutive cycles have failed to write
+    #   and it is a stall whatever the heartbeat record claims -- which is
+    #   what stops a scheduler that keeps claiming runs into a dead runner
+    #   from muting the alarm for good.
+    from agora_runner.cycle_health import MAX_CYCLE_MINUTES
+
+    in_flight = _in_flight(written, heartbeat[0], heartbeat[1], now)
+    explained = (
+        in_flight
+        and silent_minutes is not None
+        and silent_minutes < minutes + MAX_CYCLE_MINUTES
+    )
     out["stalled"] = (
-        not stale and silent is not None and silent >= STALL_GRACE_INTERVALS
+        not stale
+        and silent is not None
+        and silent >= STALL_GRACE_INTERVALS
+        and not explained
     )
     out["running"] = not stale and _running_now(
-        written, heartbeat[0], heartbeat[1], out["stalled"]
+        written, heartbeat[0], heartbeat[1], out["stalled"], now
     )
     return out
 
