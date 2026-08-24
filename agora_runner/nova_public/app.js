@@ -5626,6 +5626,20 @@
         : waiting + " notes waiting for a cycle to pick them up"
     ));
     if (payload.replayed) statusEl.appendChild(savedCopyLine());
+    /* **Before the feed is emptied, not after.** `load()` calls
+     * `captureHome()` on every navigation, which covers arriving here
+     * and leaving -- and misses the case this page creates for itself:
+     * `showOlderNotes` re-renders in place, with the composer already
+     * inside the feed from the render before it, so `textContent = ""`
+     * detaches the one composer the whole app has and `moveCaptureInto`
+     * below then finds nothing to put back. It is gone from every page
+     * until a reload. Scrolling up is the central interaction of this
+     * feature, so that was the dominant path through it. Found by the
+     * reviewer, which reproduced it in a real DOM rather than reasoning
+     * about it, after I had merged. The rule the two calls make together
+     * is worth stating once: **the composer is outside the feed whenever
+     * the feed is cleared, without exception.** */
+    captureHome();
     feed.textContent = "";
     if (!notes.length) {
       feed.appendChild(el("p", "empty", "No notes yet. Type below and tap Note."));
@@ -5699,6 +5713,11 @@
   }
 
   function loadNotes() {
+    // Every fresh open starts on the newest window, which is what the
+    // page promises -- `notesShown` only grows, so without this a visit
+    // after a scroll-up session would render 36 messages and call it
+    // "the newest handful".
+    notesShown = NOTES_PAGE;
     fetchPage("/api/notes")
       .then(function (payload) {
         // The guard the retro, costs and plan fetches carry: two taps in
