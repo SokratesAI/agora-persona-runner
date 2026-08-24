@@ -101,7 +101,8 @@ NOVA_PERSONA_ID = os.environ.get(
     "NOVA_PERSONA_ID", "08ffac94-7c4a-4506-897f-968c592358cb"
 )
 # The *hourly* cycle heartbeat, specifically -- not "a heartbeat pointed at
-# Nova", of which there are three. The retrospective and the ideas run also
+# Nova", of which there are four as of 2026-08-24. The retrospective, the
+# ideas run and the Monday goal review / reprioritise all
 # target this persona and also name their conversations `... Cycle N`, off
 # their own counters starting at 1, so their `Cycle 3` and the hourly loop's
 # `Cycle 3` are different runs three weeks apart. Anything joining journal
