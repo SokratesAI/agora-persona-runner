@@ -1050,6 +1050,77 @@ def test_an_unparseable_ledger_leaves_every_claim_command_printed(tmp_path, caps
     assert "[claim: issue-10]" in out
 
 
+def _progressed(item, cycle, outcome):
+    return {"claims": [{"item": item, "cycle": cycle, "state": "progressed",
+                        "at": "2026-08-23T15:23:26.424577+02:00",
+                        "outcome": outcome}]}
+
+
+def test_a_progressed_slug_keeps_its_take_command_and_gains_the_note():
+    """The whole difference from a spent slug: `take` grants this one.
+
+    Printing ⛔ here would be the same bug in reverse -- a row a cycle can
+    take, read as one it cannot.
+    """
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_progress(
+        rows, {"idea-63": {"cycle": 347, "outcome": "three of four pieces built"}})
+    line = top_board_rows._line(rows[0])
+    assert "[claim: idea-63]" in line
+    assert "claim spent" not in line
+    assert "cycle 347 left this open: three of four pieces built" in line
+
+
+def test_a_spent_slug_wins_over_a_progressed_one_on_the_same_row():
+    """Both keys can be stamped; only one of them can be true.
+
+    `finished_claims` and `progressed_claims` read disjoint states out of
+    one ledger, so this cannot arise from a real ledger -- it can arise
+    from a caller that stamps stale data, and printing a take command for
+    a slug `take` refuses is the failure runner#312 already fixed once.
+    """
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "done"}})
+    top_board_rows.apply_progress(rows, {"idea-63": {"cycle": 340, "outcome": "half"}})
+    line = top_board_rows._line(rows[0])
+    assert "claim spent by cycle 347" in line
+    assert "[claim: idea-63]" not in line
+
+
+def test_a_progressed_outcome_cannot_split_the_row_either():
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_progress(
+        rows, {"idea-63": {"cycle": 347, "outcome": "did this\nand\tthat"}})
+    line = top_board_rows._line(rows[0])
+    assert "\n" not in line
+    assert "did this and that" in line
+
+
+def test_main_marks_a_progressed_capture_from_the_ledger_it_reads(tmp_path, capsys):
+    import json
+    issues = tmp_path / "issues.md"
+    issues.write_text("- switch to Claude 20x by 18:00\n\n" + board())
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)))
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    slug = top_board_rows.slug_for_capture("switch to Claude 20x by 18:00")
+    claims = tmp_path / "claims.json"
+    claims.write_text(json.dumps(_progressed(slug, 343, "two collision surfaces remain")))
+
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "353"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert f"[claim: {slug}]" in out
+    assert "cycle 343 left this open: two collision surfaces remain" in out
+    assert "claim spent" not in out
+
+
 def test_a_multi_line_outcome_cannot_split_the_row_it_is_printed_on():
     """`release --outcome` is free shell text and this output is one item
     per line: a newline in there would read as a second board entry."""

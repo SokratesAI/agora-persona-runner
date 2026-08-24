@@ -80,7 +80,8 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_claims import (
-    CLAIMS_PATH, ClaimError, finished_claims, held_by, load as load_claims, slug_for_capture,
+    CLAIMS_PATH, ClaimError, finished_claims, held_by, load as load_claims,
+    progressed_claims, slug_for_capture,
     slug_for_comment, slug_for_row,
 )
 
@@ -509,15 +510,25 @@ def _claim_tag(item):
     ranks captures above everything, and a spent claim is a fact about
     the ledger, never a fact about the work.
     """
-    spent = item.get("spentClaim")
-    if not spent:
-        return f"  [claim: {row_slug(item)}]"
     # `release --outcome` is free shell text, and this tool's whole output
     # is one item per line -- a newline in there would split the row and
     # read as a second board entry. Same shape as the Outcome pill that
     # rendered as a title the first time a cycle wrote a long one.
-    outcome = " ".join((spent.get("outcome") or "no outcome recorded").split())
-    return f"  [⛔ claim spent by cycle {spent['cycle']}: {outcome} — work it without claiming]"
+    spent = item.get("spentClaim")
+    if spent:
+        outcome = " ".join((spent.get("outcome") or "no outcome recorded").split())
+        return (f"  [⛔ claim spent by cycle {spent['cycle']}: {outcome}"
+                f" — work it without claiming]")
+    progress = item.get("progressClaim")
+    if progress:
+        # The take command stays, because `take` really does grant this
+        # one -- that is the entire difference from the branch above, and
+        # printing ⛔ here would recreate the bug in reverse: a claimable
+        # row read as unclaimable.
+        outcome = " ".join((progress.get("outcome") or "no outcome recorded").split())
+        return (f"  [claim: {row_slug(item)}]"
+                f"  🔁 cycle {progress['cycle']} left this open: {outcome}")
+    return f"  [claim: {row_slug(item)}]"
 
 
 def apply_finished(items, finished):
@@ -531,6 +542,20 @@ def apply_finished(items, finished):
     """
     for item in items:
         item["spentClaim"] = finished.get(row_slug(item))
+
+
+def apply_progress(items, progressed):
+    """Stamp `progressClaim` on anything a cycle stopped on without finishing.
+
+    Like `apply_finished` this changes nothing about the ranking -- a row
+    somebody left open is not a row to skip, it is a row that comes with a
+    note saying what is already done. It is a separate pass from
+    `apply_finished` for the same reason that one is separate from
+    `apply_claims`: the three states are three different answers and only
+    one of them makes the take command unrunnable.
+    """
+    for item in items:
+        item["progressClaim"] = progressed.get(row_slug(item))
 
 
 def _capture_line(capture):
@@ -569,6 +594,11 @@ def _claim_footer(rows, captures, claims_readable):
     out.append("  Claim before you work — cycles overlap now: "
                "python3 -m tools.claim take --ledger claims.json "
                "--item <claim slug> --cycle <N>  (see prompt.md step 2)")
+    # The page prints 🔁 for a row somebody left open and never named the
+    # word that produces one. A reader who learns the state here and not
+    # the flag has to go and find it. Reviewer finding on runner#313.
+    out.append("  Release it with --done if you finished it, or --progress "
+               "--outcome '<what is left>' if you did not; there is no default.")
     return out
 
 
@@ -685,12 +715,13 @@ def main(argv=None):
         ledger = load_claims(claims_text)
         live = held_by(ledger, datetime.now(OSLO))
         finished = finished_claims(ledger)
+        progressed = progressed_claims(ledger)
     except ClaimError as exc:
         # A ledger that will not parse is unreadable, not empty. Saying so
         # and carrying on beats refusing to print the board at all: the
         # ranking is still correct, it is only the 🔒 marks that are gone.
         print(f"claims ledger will not parse: {exc}", file=sys.stderr)
-        live, finished, claims_readable = {}, {}, False
+        live, finished, progressed, claims_readable = {}, {}, {}, False
 
     rows = []
     captures = []
@@ -735,6 +766,7 @@ def main(argv=None):
     # changes nothing on the page.
     for group in (rows, captures):
         apply_finished(group, finished)
+        apply_progress(group, progressed)
 
     print(render(rows, runners_up=args.runners_up, captures=captures,
                  closed_waiting=closed_waiting, claims_readable=claims_readable))

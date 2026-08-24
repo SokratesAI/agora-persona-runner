@@ -75,6 +75,29 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,47}$")
 OPEN = "open"
 DONE = "done"
 
+#: The cycle stopped working on this and the work is *not* finished.
+#:
+#: `open` and `done` were the only two answers for eleven days, and the
+#: gap between them is where three separate bugs came from. A cycle that
+#: did part of an item and stopped had exactly one way to stop holding it
+#: -- `release` -- and `release` meant "finished forever", because `take`
+#: refuses a `done` slug. Measured Cycle 353: the top capture on Edvard's
+#: board and the only 🔴 Immediately row were both `done` while both were
+#: still live work. Cycle 343 released one, Cycle 347 the other, both
+#: after real but partial progress, and neither was choosing "finished" --
+#: there was nothing else to choose.
+#:
+#: So a progressed claim is not held (nobody is on it this minute) and not
+#: spent (`take` grants it). Its whole content is the `outcome` text, which
+#: is what tells the next cycle what is left. It is pruned on the same
+#: clock as `done`, because it is a breadcrumb rather than a lock and a
+#: breadcrumb nobody can still be racing is just a row.
+PROGRESSED = "progressed"
+
+#: The states `release` may leave behind. Both mean "I am no longer
+#: holding this"; they differ only in whether `take` will grant it again.
+RELEASE_STATES = (DONE, PROGRESSED)
+
 #: What `vault_tool.py get` prints for a path that holds no document. It
 #: exits 0 and prints this, so the first cycle to claim anything is handed
 #: a file containing a sentence rather than an empty one. Anchored at both
@@ -135,10 +158,16 @@ def is_stale(row, now, ttl_minutes=CLAIM_TTL_MINUTES):
 
 
 def prune(ledger, now, keep_hours=DONE_KEEP_HOURS):
-    """Drop completed claims nobody can still be racing. Mutates and returns."""
+    """Drop released claims nobody can still be racing. Mutates and returns.
+
+    Both released states, not just `done`: a progressed row is a breadcrumb
+    for whoever picks the item up next, and once no live cycle could still
+    be reading it, it is a row in a file every claim rewrites.
+    """
     kept = []
     for row in ledger["claims"]:
-        if row.get("state") == DONE and _minutes_between(_parse_at(row), now) > keep_hours * 60:
+        if row.get("state") in RELEASE_STATES \
+                and _minutes_between(_parse_at(row), now) > keep_hours * 60:
             continue
         kept.append(row)
     ledger["claims"] = kept
@@ -153,6 +182,11 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
     pick something else. Re-taking your own open claim is granted and
     changes nothing, so a cycle that loses a write conflict and retries is
     not told it lost to itself.
+
+    A `PROGRESSED` item is granted, which is the whole reason that state
+    exists, and the row it produces carries `resumed_from` and
+    `resumed_after` so the previous cycle's account of what it got done
+    survives being picked up.
     """
     if not SLUG_RE.match(item or ""):
         raise ClaimError(
@@ -162,29 +196,52 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
         raise ClaimError(f"cycle must be a positive integer, got {cycle!r}")
 
     existing = find(ledger, item)
+    taken_over = None
+    resumed = None
+    carried = None
     if existing is not None:
         if existing.get("state") == DONE:
             return False, (
                 f"{item} was finished by cycle {existing['cycle']} at {existing['at']}"
             )
-        if existing["cycle"] == cycle:
+        if existing.get("state") == PROGRESSED:
+            # Not held and not spent: the previous cycle said in writing
+            # that it stopped and the work did not. Granting it is the
+            # whole reason the state exists, and carrying its outcome
+            # forward is what stops the breadcrumb dying at the moment
+            # somebody picks the item up.
+            resumed = existing
+            ledger["claims"].remove(existing)
+        elif existing["cycle"] == cycle:
             return True, f"{item} was already yours (cycle {cycle}), unchanged"
-        if not is_stale(existing, now, ttl_minutes):
+        elif not is_stale(existing, now, ttl_minutes):
             held = int(_minutes_between(_parse_at(existing), now))
             return False, (
                 f"{item} is held by cycle {existing['cycle']}, claimed {held} min ago "
                 f"at {existing['at']} -- pick something else"
             )
-        ledger["claims"].remove(existing)
-        taken_over = existing["cycle"]
-    else:
-        taken_over = None
+        else:
+            ledger["claims"].remove(existing)
+            taken_over = existing["cycle"]
+            # Carry any inherited breadcrumb across the takeover. A cycle
+            # that resumed a progressed item and was then killed at the
+            # turn cap is the canonical case for this state, and it was
+            # the one case where the note was silently dropped. Reviewer
+            # finding on runner#313.
+            carried = existing
 
     row = {"item": item, "cycle": cycle, "state": OPEN, "at": now.isoformat()}
     if note:
         row["note"] = note
     if taken_over is not None:
         row["took_over_from"] = taken_over
+    if resumed is not None:
+        row["resumed_from"] = resumed["cycle"]
+        if resumed.get("outcome"):
+            row["resumed_after"] = resumed["outcome"]
+    elif carried is not None and carried.get("resumed_after"):
+        row["resumed_from"] = carried.get("resumed_from", carried["cycle"])
+        row["resumed_after"] = carried["resumed_after"]
     ledger["claims"].insert(0, row)
     prune(ledger, now)
     if taken_over is not None:
@@ -192,30 +249,76 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
             f"{item} claimed by cycle {cycle} -- taken over from cycle {taken_over}, "
             f"whose claim was older than {ttl_minutes} min"
         )
+    if resumed is not None:
+        left = " ".join((resumed.get("outcome") or "no outcome recorded").split())
+        return True, (
+            f"{item} claimed by cycle {cycle} -- resumed from cycle {resumed['cycle']}, "
+            f"which left it open: {left}"
+        )
     return True, f"{item} claimed by cycle {cycle}"
 
 
-def release(ledger, item, cycle, now, outcome=None):
-    """Mark `item` finished. Returns (ok, message).
+def release(ledger, item, cycle, now, outcome=None, state=DONE):
+    """Stop holding `item`. Returns (ok, message).
+
+    `state` says which kind of stopping this was: `DONE` means the work is
+    finished and the slug is spent forever, `PROGRESSED` means the cycle
+    stopped and the work did not, so the next cycle may `take` it. That
+    choice is the caller's and there is no way to infer it here -- the
+    ledger has never known what the item *is*.
 
     Only the holder may release, and a claim taken over by a later cycle
     is no longer yours -- saying so is the point, because it is the one
     moment the loop can notice the duplication happened at all.
+
+    A progressed claim may be released again as `done` by the same cycle,
+    which is the ordinary case of finishing something you had paused. The
+    reverse is refused: once a slug is spent, calling it open again would
+    re-grant work that really was finished, which is the duplicate this
+    whole ledger exists to stop.
     """
+    if state not in RELEASE_STATES:
+        raise ClaimError(f"release state must be one of {RELEASE_STATES}, got {state!r}")
+    if state == PROGRESSED and not (outcome or "").strip():
+        # The outcome is the entire content of a progressed row -- without
+        # it the board prints "left this open: no outcome recorded", which
+        # tells the next cycle that somebody stopped partway and not what
+        # is left. That is worse than an unmarked row, because it implies
+        # a note exists. Reviewer finding on runner#313.
+        raise ClaimError(
+            f"{item}: --progress needs an outcome saying what is left; that text is "
+            f"the whole reason the state exists"
+        )
     existing = find(ledger, item)
     if existing is None:
         return False, f"{item} is not claimed by anyone -- nothing to release"
     if existing["cycle"] != cycle:
+        if existing.get("state") == PROGRESSED:
+            # Not "held": `held_by` returns nothing for this row and the
+            # board prints no 🔒 on it. Take it first -- that is the
+            # documented way to finish somebody else's paused work, and it
+            # records the handover. Reviewer finding on runner#313.
+            return False, (
+                f"{item} was left open by cycle {existing['cycle']}, not {cycle} -- "
+                f"take it before releasing it"
+            )
         return False, (
             f"{item} is held by cycle {existing['cycle']}, not {cycle} -- refusing to release"
         )
     if existing.get("state") == DONE:
         return True, f"{item} was already released at {existing['at']}"
-    existing["state"] = DONE
+    if existing.get("state") == PROGRESSED and state == PROGRESSED:
+        return True, f"{item} was already left open at {existing['at']}"
+    existing["state"] = state
     existing["at"] = now.isoformat()
     if outcome:
         existing["outcome"] = outcome
     prune(ledger, now)
+    if state == PROGRESSED:
+        return True, (
+            f"{item} left open by cycle {cycle} -- still claimable, the next cycle "
+            f"will be shown your outcome"
+        )
     return True, f"{item} released by cycle {cycle}"
 
 
@@ -325,8 +428,27 @@ def finished_claims(ledger):
     own; the caller's job is to make it visible while it is open rather
     than to reopen the slug, because re-granting a slug a cycle really
     did finish is the duplicate this whole ledger exists to stop.
+
+    A cycle that stops without finishing has `PROGRESSED` now and is in
+    `progressed_claims` instead, so a row landing *here* is a cycle
+    saying, in one word it had to type, that there is nothing left.
     """
     return {row["item"]: row for row in ledger["claims"] if row.get("state") == DONE}
+
+
+def progressed_claims(ledger):
+    """`{item: row}` for every slug a cycle stopped on without finishing.
+
+    The third answer, and the reason the state exists. `held_by` says
+    "somebody is on this right now" and `finished_claims` says "somebody
+    already did this"; this one says "somebody did part of this and
+    stopped, and here is what they got done". `take` grants these, so a
+    caller rendering a line should still print the take command -- what it
+    adds is the outcome text, which is the only thing that says what is
+    left.
+    """
+    return {row["item"]: row for row in ledger["claims"]
+            if row.get("state") == PROGRESSED}
 
 
 def summarise(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
@@ -335,10 +457,19 @@ def summarise(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
     for row in ledger["claims"]:
         if row.get("state") == DONE:
             state = "done"
+        elif row.get("state") == PROGRESSED:
+            state = "prog"
         elif is_stale(row, now, ttl_minutes):
             state = "stale"
         else:
             state = "open"
-        note = f" — {row['note']}" if row.get("note") else ""
-        lines.append(f"{state:<5} {row['item']}  cycle {row['cycle']}  {row['at']}{note}")
+        # The outcome as well as the note, not instead of it: on a
+        # `progressed` row the outcome is the entire content -- what got
+        # done and what is left -- and a reader of `claim list` who cannot
+        # see it has to open the raw JSON. `resumed_after` is here for the
+        # same reason: on an open row it is the only record of what the
+        # cycle before this one got done.
+        parts = [row[k] for k in ("note", "resumed_after", "outcome") if row.get(k)]
+        tail = f" — {' | '.join(parts)}" if parts else ""
+        lines.append(f"{state:<5} {row['item']}  cycle {row['cycle']}  {row['at']}{tail}")
     return "\n".join(lines) if lines else "no claims"
