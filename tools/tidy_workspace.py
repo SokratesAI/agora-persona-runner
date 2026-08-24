@@ -87,10 +87,18 @@ def workspace_roots(environ=None):
     return roots
 
 
-# Kept as the single-root default for `tidy()` and `survey_checkouts()`, which
-# each still take exactly one root -- `main` is what iterates. Read at import,
-# so a caller that wants the live value asks `workspace_roots()`.
-WORKSPACE = (workspace_roots() or [SHARED_WORKSPACE])[0]
+# The single-root default for `tidy()` and `survey_checkouts()`, which each
+# still take exactly one root -- `main` is what iterates. A sentinel rather
+# than a path, because the value read at import is the one the interpreter
+# started with: a caller that sets `NOVA_WORKSPACE` and then relies on the
+# default would silently get the old one. Reviewer finding on runner#319.
+WORKSPACE = None
+
+
+def _default_root(root):
+    return root if root is not None else (
+        workspace_roots() or [SHARED_WORKSPACE])[0]
+
 
 # A reviewer worktree is registered in the clone it was made from, so
 # deleting the directory alone leaves an entry that makes `git worktree list`
@@ -217,9 +225,21 @@ def clones(root):
     a check whose negative result was guaranteed in advance. `os.path.exists`
     covers both, and the survey's git commands fail harmlessly on a directory
     that merely happens to contain something called `.git`.
+
+    **`_review-*` is excluded, and widening the predicate is exactly what
+    made that necessary.** A reviewer worktree is itself a linked worktree,
+    so the moment `.git` stopped having to be a directory these started
+    matching -- reproduced by the reviewer on this change: `clones()`
+    answered `['_review-c178', '_review-c179', 'main_clone']`, the survey
+    printed verdicts for two in-flight review checkouts alongside the real
+    clone, and `_remove_worktree` fed them back in as candidate owners and
+    had `_review-c178` deregister itself. A review worktree is not a clone
+    and never was; the old predicate excluded it by accident, and the
+    accident is now a rule.
     """
     return sorted(name for name in os.listdir(root)
-                  if os.path.exists(os.path.join(root, name, ".git")))
+                  if not _REVIEW_NAME.match(name)
+                  and os.path.exists(os.path.join(root, name, ".git")))
 
 
 # The branch a squash merge leaves behind, which is the thing this survey
@@ -283,6 +303,7 @@ def _git(root, clone, *args):
 
 
 def survey_checkouts(root=WORKSPACE, fetch=True):
+    root = _default_root(root)
     """One verdict per clone, after refreshing its remote refs.
 
     Returns a list of dicts, one per clone, sorted by name:
@@ -440,6 +461,7 @@ def _remove_worktree(root, name, clone_names):
 def tidy(root=WORKSPACE, retention_days=DEFAULT_RETENTION_DAYS, dry_run=False,
          today=None, min_age_hours=MIN_WORKTREE_AGE_HOURS, now=None):
     """Run the sweep. Returns `(archived, expired, worktrees)`."""
+    root = _default_root(root)
     stamp = _today(today)
     worktrees = stale_review_worktrees(root, min_age_hours, now)
     owners = {}
@@ -481,7 +503,12 @@ def main(argv=None):
     # every existing caller and test reads is byte-identical.
     for root in roots:
         if len(roots) > 1:
-            print("== %s" % (root,))
+            # Labelled, not just named. A fresh session reading two absolute
+            # paths has to infer which is its own from the shape of the path,
+            # and the whole point of this change is that a cycle was reading a
+            # true report about the wrong directory. Reviewer finding on #319.
+            print("== %s (%s)"
+                  % (root, "shared" if root == SHARED_WORKSPACE else "yours"))
         _sweep_one(root, args)
     return 0
 

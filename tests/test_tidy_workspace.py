@@ -717,8 +717,8 @@ def test_both_roots_are_swept_and_each_is_named(tmp_path, monkeypatch, capsys):
     assert tidy_workspace.main([]) == 0
 
     out = capsys.readouterr().out
-    assert "== %s" % (own,) in out
-    assert "== %s" % (shared,) in out
+    assert "== %s (yours)" % (own,) in out
+    assert "== %s (shared)" % (shared,) in out
     assert "entry.md" in out and "digest-new.md" in out
     stamp = "_scratch-archive-" + tidy_workspace._today()
     assert (own / stamp / "entry.md").exists()
@@ -745,3 +745,78 @@ def test_the_survey_reports_the_root_it_was_given_not_the_shared_one(
     out = capsys.readouterr().out
     assert "repo: branch" in out
     assert "not-swept" not in out
+
+
+def test_a_reviewer_worktree_is_not_surveyed_as_a_clone(tmp_path):
+    """`_review-*` is a linked worktree too, and widening `.git` matched it.
+
+    Reproduced by the reviewer on runner#319: `clones()` answered
+    `['_review-c178', 'repo']`, the survey printed a verdict for a checkout a
+    reader was mid-read in, and `_remove_worktree` fed it back in as a
+    candidate owner and had it deregister itself. The old `isdir` predicate
+    excluded these by accident; this pins it on purpose.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "n@example.com")
+    _git(origin, "config", "user.name", "Nova")
+    _commit(origin, "a.txt", "one")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    _git(origin, "worktree", "add", "--detach", str(root / "repo"), "HEAD")
+    _git(origin, "worktree", "add", "--detach", str(root / "_review-c368"), "HEAD")
+
+    # The precondition, asserted rather than assumed: without it the negative
+    # below is guaranteed whether or not the exclusion exists.
+    assert (root / "_review-c368" / ".git").is_file()
+
+    assert tidy_workspace.clones(str(root)) == ["repo"]
+    assert [e["clone"] for e in
+            tidy_workspace.survey_checkouts(str(root), fetch=False)] == ["repo"]
+
+
+def test_the_owner_search_is_never_offered_a_review_worktree(tmp_path, monkeypatch):
+    """`_remove_worktree` takes its candidate owners from `clones()`."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "n@example.com")
+    _git(origin, "config", "user.name", "Nova")
+    _commit(origin, "a.txt", "one")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    _git(origin, "worktree", "add", "--detach", str(root / "repo"), "HEAD")
+    review = root / "_review-c368"
+    _git(origin, "worktree", "add", "--detach", str(review), "HEAD")
+    os.utime(review, (0, 0))
+
+    offered = []
+    real = tidy_workspace._remove_worktree
+
+    def spy(root_, name, clone_names):
+        offered.extend(clone_names)
+        return real(root_, name, clone_names)
+
+    monkeypatch.setattr(tidy_workspace, "_remove_worktree", spy)
+    _archived, _expired, worktrees = tidy_workspace.tidy(
+        str(root), today="2026-08-24")
+
+    assert worktrees == ["_review-c368"]
+    assert offered == ["repo"]
+
+
+def test_the_default_root_is_read_when_called_not_when_imported(tmp_path, monkeypatch):
+    """`NOVA_WORKSPACE` set after import must still be the root that is swept."""
+    own = tmp_path / "own"
+    own.mkdir()
+    (own / "entry.md").write_text("draft", encoding="utf-8")
+    monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(tmp_path / "gone"))
+    monkeypatch.setenv("NOVA_WORKSPACE", str(own))
+
+    archived, _expired, _worktrees = tidy_workspace.tidy(today="2026-08-24")
+
+    assert archived == ["entry.md"]
+    assert (own / "_scratch-archive-2026-08-24" / "entry.md").exists()
