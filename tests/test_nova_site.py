@@ -2262,6 +2262,45 @@ def test_a_good_cost_ledger_puts_a_runtime_on_the_card_it_belongs_to():
     assert got == {2: 940, 1: 600}
 
 
+def test_a_runtime_badge_survives_the_card_showing_the_wake_time():
+    """The combination the whole test suite could not reach.
+
+    `conftest` blocks the network, so `cycle_starts` returns `{}` in every
+    test that does not patch it and the wake-time overlay is inert -- which
+    means the positive control above passes whether or not this feature
+    exists. `cycle_runtimes` joins an entry to the nearest ledger session
+    *preceding* its stamp, and that is only correct while the stamp falls
+    inside the run. A wake time falls a few seconds *before* it, so without
+    the written-stamp split each card takes the previous cycle's duration
+    and the oldest takes none. Found by review, not by me.
+    """
+    files = {
+        JOURNAL_DIR + "002-cycle-2.md": "### 2026-08-15 02:14 (Oslo) — Cycle 2\n\nNewest.",
+        JOURNAL_DIR + "001-cycle-1.md": "### 2026-08-15 01:10 (Oslo) — Cycle 1\n\nOldest.",
+    }
+    mtimes = {
+        JOURNAL_DIR + "002-cycle-2.md": 1786752840000,   # 2026-08-15 02:14 Oslo
+        JOURNAL_DIR + "001-cycle-1.md": 1786749000000,   # 2026-08-15 01:10 Oslo
+    }
+    ledger = json.dumps({"cycles": [
+        {"startedAt": "2026-08-14T23:00:00Z", "durationSeconds": 600.0},   # 01:00 Oslo
+        {"startedAt": "2026-08-15T00:00:00Z", "durationSeconds": 940.0},   # 02:00 Oslo
+    ]})
+    # Each conversation is created seconds before its own session starts.
+    starts = {1: "2026-08-14T22:59:30Z", 2: "2026-08-14T23:59:30Z"}
+    nova_site.reset_cache()
+    with patch.object(nova_sources, "vault_bulk_fetch",
+                      return_value=(VaultFiles(files), mtimes)), \
+            patch.object(nova_site, "cost_ledger_json", return_value=ledger), \
+            patch.object(nova_site, "cycle_starts", return_value=starts):
+        payload = nova_site.journal_payload()
+    by_cycle = {e["cycle"]: e for e in payload["entries"]}
+    assert by_cycle[2]["time"] == "01:59", "the card shows the wake time"
+    assert by_cycle[1]["time"] == "00:59"
+    assert {c: e.get("runtimeSeconds") for c, e in by_cycle.items()} == {2: 940, 1: 600}
+    nova_site.reset_cache()
+
+
 def test_the_journal_never_reads_the_emptied_archive_again():
     """`journal.md` is a 614-byte signpost, not a journal, and has been
     since 2026-08-10.

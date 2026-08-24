@@ -1165,8 +1165,9 @@ def with_start_times(times_by_cycle, starts_by_cycle):
 def _oslo_stamp(iso):
     """`2026-08-24T17:20:04.072Z` -> `("2026-08-24", "19:20")` in Oslo, or None.
 
-    Agora stamps UTC with a `Z`, which `fromisoformat` refused until 3.11
-    and this runs on 3.11 -- but a stamp that arrives in any other shape
+    Agora stamps UTC with a `Z`, which `fromisoformat` refused before 3.11,
+    so the explicit `+00:00` is what makes this independent of the runtime
+    version rather than of a version claim. A stamp in any other shape
     must not take the page down for a badge's worth of precision, so
     anything unparseable is a `None` the caller reads as "keep what you
     had". A naive stamp is treated as UTC, which is what Agora sends and
