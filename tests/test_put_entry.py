@@ -9,9 +9,12 @@ gone rather than that the new one is present -- see
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import argparse
+
 import pytest
 
 from agora_runner.nova_claims import dumps, load, take
+from agora_runner.nova_journal import file_cycle
 from tools.put_entry import (
     GRANTED,
     LOST,
@@ -21,6 +24,7 @@ from tools.put_entry import (
     reserve_seq,
     seq_slug,
     taken_seqs,
+    weekly_slug,
 )
 
 OSLO = ZoneInfo("Europe/Oslo")
@@ -83,6 +87,32 @@ def test_seq_slug_pads_so_one_number_has_one_name():
 
 def test_entry_name_carries_both_numbers():
     assert entry_name(371, 343) == "371-cycle-343.md"
+
+
+def test_weekly_entry_drops_the_cycle_number():
+    """A weekly run's entry is named by what it is, not by a colliding number.
+
+    Its heartbeat is its own Agora conversation with its own counter, so the
+    `<n>` it would stamp starts at 1 and is a number an hourly cycle already
+    used. The slug replaces it; the `<seq>` prefix is untouched, because that
+    is the journal's only total order and a weekly entry takes its place in it.
+    """
+    assert entry_name(421, 1, "monday-research") == "421-monday-research.md"
+    assert file_cycle("421-monday-research.md") is None
+
+
+def test_weekly_slug_refuses_a_name_the_gap_detector_would_misread():
+    """`cycle-` in a weekly slug would file it as an hourly cycle.
+
+    `nova_journal.file_cycle` matches `-cycle-(\\d+)` anywhere in the stem, so
+    `monday-cycle-3` would answer 3 and `cycle_health.missing_cycles` would
+    stop reporting a real hourly cycle 3 that never ran.
+    """
+    assert weekly_slug("friday-retrospective") == "friday-retrospective"
+    for bad in ("cycle-3", "monday-cycle-3", "Monday-Research", "monday--research",
+                "-monday", "monday research", ""):
+        with pytest.raises(argparse.ArgumentTypeError):
+            weekly_slug(bad)
 
 
 def test_two_cycles_never_share_a_seq():
