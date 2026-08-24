@@ -404,10 +404,21 @@ def _remote_only_commits(root, clone, branch, base, merged_head=None):
     branch whose PR had already merged -- leaves work that exists on the remote
     and nowhere else, and `git diff origin/main HEAD` cannot see any of it.
 
-    Returns a list of `<short-oid> <subject>` lines, empty when the remote ref
-    holds nothing outstanding, and `None` when there is no such ref to ask --
-    which is the ordinary case for a branch never pushed, and is deliberately
-    not the same answer as "nothing there".
+    Returns `(commits, failed)`. `commits` is a list of `<short-oid> <subject>`
+    lines, empty both when the remote ref holds nothing outstanding and when
+    there is no such ref to ask -- the ordinary case for a branch never pushed.
+    `failed` is True when the question could not be *asked*: `git log` itself
+    exited non-zero, which a concurrent `fetch --prune` on the shared clone can
+    cause at any time.
+
+    Those two are separated because collapsing them is the bug this whole
+    function exists to fix, arriving on the error path. An empty list is read
+    one line down as "nothing outstanding" and hands back `leftover`, which
+    reads "the branch is litter". `files_failed` in this same module already
+    carries the rule: reporting a failure as an empty list is reporting a
+    failure as success. Reviewer finding on #337, and it had it right -- the
+    first version returned a bare `None` for both, and the caller`s `or []`
+    threw the distinction away one line after a docstring claimed to keep it.
 
     The `--not` list is what makes this narrow rather than noisy, and it has
     three entries for three separate reasons:
@@ -425,19 +436,20 @@ def _remote_only_commits(root, clone, branch, base, merged_head=None):
       that has not caught up to its own merged branch unfinished forever.
     """
     if not branch or branch in ("HEAD",) + _BASE_BRANCHES or base is None:
-        return None
+        return [], False
     ref = "origin/" + branch
     if _git(root, clone, "rev-parse", "--verify", "--quiet",
             ref).returncode != 0:
-        return None
+        # No such ref. Genuinely nothing to report, not a failure to ask.
+        return [], False
     excluded = ["HEAD", base]
     if merged_head and _git(root, clone, "cat-file", "-e",
                             merged_head + "^{commit}").returncode == 0:
         excluded.append(merged_head)
     done = _git(root, clone, "log", "--oneline", ref, "--not", *excluded)
     if done.returncode != 0:
-        return None
-    return [line for line in done.stdout.split("\n") if line.strip()]
+        return [], True
+    return [line for line in done.stdout.split("\n") if line.strip()], False
 
 
 def _committed_after(root, clone, merged_at):
@@ -577,12 +589,12 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
         # wrong in the direction that loses work, which is the direction this
         # file has already refused to be wrong in twice.
         remote_only = []
+        remote_only_failed = False
         landed_locally = False
         if verdict in ("leftover", "unfinished"):
-            found = _remote_only_commits(
+            remote_only, remote_only_failed = _remote_only_commits(
                 root, clone, branch, base,
                 merged_head=merged_pr.get("headRefOid") if merged_pr else None)
-            remote_only = found or []
             if remote_only and verdict == "leftover":
                 # Not litter. `unfinished` is the word that means "worth a
                 # cycle's attention", and the line below says where the work
@@ -656,6 +668,7 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
                     "commits_after_merge": commits_after_merge,
                     "rests_on_clock": rests_on_clock,
                     "remote_only": remote_only,
+                    "remote_only_failed": remote_only_failed,
                     "landed_locally": landed_locally})
     return out
 
@@ -835,6 +848,17 @@ def _sweep_one(root, args):
         # well hold uncommitted work here *and* a commit only on the remote,
         # and the version of this that lived in the `else` printed the second
         # for one of the two cases.
+        if entry["remote_only_failed"]:
+            # Printed under `leftover` as well as `unfinished`, and that is the
+            # whole point: `leftover` reads "the branch is litter", and the one
+            # thing that could have contradicted it is the check that just
+            # failed. Same shape as the `rests_on_clock` caveat above -- the
+            # verdict stands, because flipping it on any transient git failure
+            # would make the sweep cry wolf on lock contention, but nobody gets
+            # to read it as though the remote had been consulted.
+            print("    could not list what origin/%s carries -- `git log` "
+                  "failed, so nothing above rules out a commit sitting on the "
+                  "remote" % (entry["branch"],))
         if entry["remote_only"]:
             # Said before the file list, because the file list is about a
             # different place: these commits are on the remote and not in this

@@ -414,9 +414,12 @@ def test_a_branch_level_with_its_remote_is_still_litter(squash_merged):
     assert survey[0]["landed_locally"] is False
 
 
-def test_a_branch_that_was_never_pushed_is_still_litter(squash_merged):
-    """No `origin/<branch>` to ask about is not the same answer as "nothing
-    there", and it must not be read as work either."""
+def test_a_branch_whose_remote_ref_is_gone_is_still_litter(squash_merged):
+    """Named for what it builds, which is not what it used to claim. The
+    fixture pushes the branch, so this is a remote ref *deleted* after the
+    merge -- ordinary post-merge cleanup -- rather than a branch never
+    published. Same code path, different real scenario, and the old name
+    described the one it does not set up. Reviewer finding on #337."""
     root, repo = squash_merged
     _git(repo, "push", "-q", "origin", "--delete", "nova/feature")
 
@@ -1345,3 +1348,90 @@ def test_a_commit_pushed_past_the_merged_head_is_still_reported(
     assert survey[0]["verdict"] == "unfinished"
     assert [c.split(" ", 1)[1] for c in survey[0]["remote_only"]] \
         == ["add later.txt"]
+
+
+def test_a_git_log_that_fails_is_not_an_empty_remote(pushed_past_the_merge,
+                                                     monkeypatch):
+    """A failure reported as success, in the one verdict that deletes things.
+
+    Reviewer finding on #337, and it reproduced: the first version returned a
+    bare `None` for "could not ask" and the caller's `or []` read that as
+    "nothing outstanding", handing back `leftover` -- "the branch is litter" --
+    over a real remote-only commit. A concurrent `fetch --prune` on the shared
+    clone is enough to cause it, and this loop runs three cycles at once.
+    """
+    real = tidy_workspace._git
+
+    def broken(root_, clone, *args, **kwargs):
+        if args and args[0] == "log" and "--not" in args:
+            return types.SimpleNamespace(returncode=128, stdout="", stderr="")
+        return real(root_, clone, *args, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace, "_git", broken)
+    root, _ = pushed_past_the_merge
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["remote_only_failed"] is True
+    assert survey[0]["remote_only"] == []
+
+
+def test_a_failed_remote_check_says_so_under_leftover(pushed_past_the_merge,
+                                                      monkeypatch, capsys):
+    """And it has to be said where it matters. The verdict deliberately stands
+    -- flipping it on any transient git failure would have the sweep crying
+    wolf on lock contention -- so the caveat is the whole of the protection,
+    and it must print under `leftover`, not only under `unfinished`."""
+    real = tidy_workspace._git
+
+    def broken(root_, clone, *args, **kwargs):
+        if args and args[0] == "log" and "--not" in args:
+            return types.SimpleNamespace(returncode=128, stdout="", stderr="")
+        return real(root_, clone, *args, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace, "_git", broken)
+    root, _ = pushed_past_the_merge
+
+    tidy_workspace.main(["--root", str(root)])
+
+    out = capsys.readouterr().out
+    assert "the branch is litter" in out
+    assert "could not list what origin/nova/feature carries" in out
+
+
+def test_no_remote_ref_is_not_reported_as_a_failure(squash_merged):
+    """The other half of the same distinction, and the reason it is two values
+    rather than one. A branch with no `origin/` ref has nothing to report and
+    nothing went wrong, so a caveat there would be noise on every clone whose
+    branch was cleaned up after its merge."""
+    root, repo = squash_merged
+    _git(repo, "push", "-q", "origin", "--delete", "nova/feature")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["remote_only_failed"] is False
+    assert survey[0]["remote_only"] == []
+
+
+def test_a_remote_only_commit_squash_merged_into_main_is_still_reported(
+        pushed_past_the_merge):
+    """The corner #337's PR body claimed was "written into a test" when it was
+    only written into a comment. Reviewer finding, and it is fair: a claim
+    about behaviour belongs where it can fail.
+
+    A squash creates a new commit, so the original stays reachable from neither
+    HEAD nor the base and is still listed. That errs towards "come and look"
+    rather than "delete it", which is the only direction this verdict may err.
+    """
+    root, repo = pushed_past_the_merge
+    merger = root.parent / "merger"
+    _git(merger, "fetch", "-q", "origin")
+    _git(merger, "merge", "--squash", "origin/nova/feature")
+    _git(merger, "commit", "-m", "squashed the follow-up too (#317)")
+    _git(merger, "push", "-q", "origin", "main")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["remote_only_failed"] is False
+    assert [c.split(" ", 1)[1] for c in survey[0]["remote_only"]] \
+        == ["add after.txt"]
