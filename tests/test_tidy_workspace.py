@@ -339,6 +339,93 @@ def test_work_that_really_is_unfinished_survives_the_fetch(squash_merged):
     assert [e["verdict"] for e in survey] == ["unfinished"]
 
 
+@pytest.fixture
+def pushed_past_the_merge(squash_merged):
+    """The same clone, with one more commit that exists only on the remote.
+
+    Measured on the real workspace, Cycle 384: `nova/status-word-back-on-the-card`
+    was `0e94630` locally and `b1958cb` on `origin`, and that commit is on no
+    other ref. A cycle pushes a follow-up and is killed, or pushes a reviewer
+    fix onto a branch whose PR has already merged -- either way the work is on
+    the remote and every instrument in this file reads the local HEAD.
+    """
+    root, repo = squash_merged
+    _commit(repo, "after.txt", "only on the remote\n")
+    _git(repo, "push", "-q", "origin", "nova/feature")
+    _git(repo, "reset", "--hard", "-q", "HEAD~1")
+    return root, repo
+
+
+def test_a_commit_only_on_the_remote_is_not_litter(pushed_past_the_merge):
+    """The bug, stated as a test. `leftover` reads "the branch is litter", and
+    a cycle acting on that deletes a commit nothing has merged."""
+    root, _ = pushed_past_the_merge
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+    assert survey[0]["landed_locally"] is True
+    assert len(survey[0]["remote_only"]) == 1
+    assert "after.txt" in survey[0]["remote_only"][0]
+
+
+def test_the_cli_says_where_the_work_actually_is(pushed_past_the_merge, capsys):
+    root, _ = pushed_past_the_merge
+
+    tidy_workspace.main(["--root", str(root)])
+
+    out = capsys.readouterr().out
+    assert "everything in this checkout has landed" in out
+    assert "the work is on the remote, not here" in out
+    assert "origin/nova/feature carries 1 commit(s)" in out
+
+
+def test_fetching_the_remote_commit_clears_it(pushed_past_the_merge):
+    """How this state actually ends, and the reason the check is reachability
+    and not content: once the checkout holds the commit, `--not HEAD` excludes
+    it and the sweep goes back to talking about files.
+
+    Worth knowing the corner this leaves: a remote-only commit that is later
+    *squash*-merged into main is still reported, because the squash is a new
+    commit and the original is reachable from neither HEAD nor the base. That
+    errs towards "look at this" rather than "delete it", which is the direction
+    this whole verdict is required to err in.
+    """
+    root, repo = pushed_past_the_merge
+    _git(repo, "merge", "-q", "--ff-only", "origin/nova/feature")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["remote_only"] == []
+    assert survey[0]["landed_locally"] is False
+    assert survey[0]["files"] == ["after.txt"]
+
+
+def test_a_branch_level_with_its_remote_is_still_litter(squash_merged):
+    """The guard against the fix firing on everything. An ordinary merged
+    branch's commits are all reachable from HEAD, so the remote holds nothing
+    this checkout is missing and the verdict is untouched."""
+    root, _ = squash_merged
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["leftover"]
+    assert survey[0]["remote_only"] == []
+    assert survey[0]["landed_locally"] is False
+
+
+def test_a_branch_that_was_never_pushed_is_still_litter(squash_merged):
+    """No `origin/<branch>` to ask about is not the same answer as "nothing
+    there", and it must not be read as work either."""
+    root, repo = squash_merged
+    _git(repo, "push", "-q", "origin", "--delete", "nova/feature")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["leftover"]
+    assert survey[0]["remote_only"] == []
+
+
 def test_unfinished_names_the_files_that_differ(squash_merged):
     """"has work not on origin/main" is the same sentence for a half-built
     feature and for a `-config` clone whose only delta is a stale `image:`
@@ -1176,3 +1263,31 @@ def test_merged_pr_takes_the_newest_of_a_reused_branch_name(tmp_path, monkeypatc
 
     assert checked is True
     assert pr["number"] == 316
+
+
+def test_a_demoted_branch_carries_no_file_list_of_mains_own_work(
+        moved_on, monkeypatch):
+    """The half that is easy to get wrong, and the one measured live.
+
+    Everything in this checkout landed, so `git diff origin/main HEAD` here
+    lists what *main* has done since -- 120 files of it on the real workspace,
+    Cycle 384, none of them the outstanding commit. That is the Cycle 372 bug
+    arriving through a new door: a file list that narrates main's own work as
+    work somebody abandoned. What is outstanding is on the remote, and the
+    line naming it is the only one this entry should print.
+    """
+    root, repo = moved_on
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316,
+                                          "mergedAt": "2099-01-01T00:00:00Z"},
+                                         True))
+    _commit(repo, "after.txt", "only on the remote\n")
+    _git(repo, "push", "-q", "origin", "nova/feature")
+    _git(repo, "reset", "--hard", "-q", "HEAD~1")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "unfinished"
+    assert survey[0]["landed_locally"] is True
+    assert survey[0]["files"] == []
+    assert "after.txt" in survey[0]["remote_only"][0]
