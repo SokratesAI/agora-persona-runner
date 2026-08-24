@@ -242,3 +242,95 @@ def test_claim_next_number_logs_when_it_gives_up_after_repeated_conflicts(caplog
     assert claimed == 10
     assert len(logged) == 1, f"expected exactly one give-up log, got {logged}"
     assert "conflicts" in logged[0] and "10" in logged[0]
+
+
+def test_a_cycle_that_knows_its_conversation_gets_its_own_number_not_the_newest(monkeypatch):
+    """The bug the owner reported on 2026-08-24. Three cycles were alive at
+    once; each asked for "the highest" and all three answered 380."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 378", id="conv-378"),
+            conv("Nova — Cycle 379", id="conv-379"),
+            conv("Nova — Cycle 380", id="conv-380"),
+        ]}
+    ))
+    assert cycle_number.current_number("hb-1", "conv-378") == 378
+    assert cycle_number.current_number("hb-1", "conv-379") == 379
+    assert cycle_number.current_number("hb-1", "conv-380") == 380
+    # And the old answer, which every one of those three used to get.
+    assert cycle_number.current_number("hb-1") == 380
+
+
+def test_an_id_that_names_no_conversation_falls_back_to_the_highest(monkeypatch):
+    """Falling back is right -- the alternative is handing a cycle no number
+    at all -- and `main` is what says out loud that it happened."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [conv("Nova — Cycle 9", id="conv-9")]}
+    ))
+    assert cycle_number.current_number("hb-1", "conv-gone") == 9
+
+
+def test_a_conversation_whose_name_does_not_parse_falls_back_too(monkeypatch):
+    """Renamed by hand. `numbers_in` already skips it rather than guessing;
+    this keeps the same rule when the id resolves and the name does not."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 9", id="conv-9"),
+            conv("Nova — renamed by hand", id="conv-mine"),
+        ]}
+    ))
+    assert cycle_number.number_of(
+        [conv("Nova — renamed by hand", id="conv-mine")], "conv-mine") is None
+    assert cycle_number.current_number("hb-1", "conv-mine") == 9
+
+
+def test_an_id_wins_even_when_the_conversation_carries_another_heartbeats_tag(monkeypatch):
+    """The id names one conversation exactly; the tag is a filter that only
+    matters when there is no id to go on."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 9", id="conv-9"),
+            conv("Nova — Cycle 4", tag=cycle_tag("hb-other"), id="conv-mine"),
+        ]}
+    ))
+    assert cycle_number.current_number("hb-1", "conv-mine") == 4
+
+
+def test_an_unreachable_agora_still_returns_none_with_an_id(monkeypatch):
+    """An id does not make a guess acceptable."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (503, {}))
+    assert cycle_number.current_number("hb-1", "conv-1") is None
+
+
+def test_main_prints_only_the_number_on_stdout(monkeypatch, capsys):
+    """`$(...)` around this has to be exactly one integer, so every word about
+    how the number was derived goes to stderr."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 378", id="conv-378"),
+            conv("Nova — Cycle 380", id="conv-380"),
+        ]}
+    ))
+    monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1", "conv-378"])
+    assert cycle_number.main() == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "378"
+    assert out.err.strip() == ""
+
+
+def test_main_without_a_conversation_id_warns_that_the_number_may_not_be_yours(monkeypatch, capsys):
+    """The failure this fixes looked exactly like success, so the one call
+    that can still produce a duplicate says so."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [conv("Nova — Cycle 380", id="conv-380")]}
+    ))
+    monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1"])
+    assert cycle_number.main() == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "380"
+    assert "concurrent cycles will collide" in out.err
+
+
+def test_main_rejects_too_many_arguments(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1", "conv-1", "extra"])
+    assert cycle_number.main() == 2
