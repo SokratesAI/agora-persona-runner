@@ -1136,6 +1136,9 @@ def test_one_unanswerable_gh_stops_the_sweep_asking_again(moved_on, monkeypatch)
     for extra in ("second", "third"):
         subprocess.run(["git", "clone", str(repo), str(root / extra)],
                        check=True, capture_output=True)
+        # CI has no global git identity; a clone inherits none either.
+        _git(root / extra, "config", "user.email", "nova@example.com")
+        _git(root / extra, "config", "user.name", "Nova")
         _git(root / extra, "checkout", "-q", "-b", "nova/" + extra)
         _commit(root / extra, extra + ".txt", "work\n")
     calls = []
