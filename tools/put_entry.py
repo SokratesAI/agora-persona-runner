@@ -66,7 +66,7 @@ from zoneinfo import ZoneInfo
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_claims import ClaimError, dumps, load, release, take
+from agora_runner.nova_claims import DONE, ClaimError, dumps, load, release, take
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 JOURNAL_DIR = "projects/sokrates/projects/agora/nova/journal/"
@@ -257,8 +257,8 @@ def vault_claim_once(vault, workdir, cycle_note=None):
 def release_seq(vault, workdir, seq, cycle, attempts=DEFAULT_ATTEMPTS):
     """Mark the number finished once the entry is written. Not optional.
 
-    `nova_claims.prune` only drops rows in the `done` state, so a claim
-    left `open` is never collected. Every sequence number is claimed
+    `nova_claims.prune` only drops rows in a *released* state -- `done` or
+    `progressed` -- so a claim left `open` is never collected. Every sequence number is claimed
     exactly once and never re-taken, so without this the ledger gains a
     permanent row per entry -- about 80 a day at an 18-minute heartbeat,
     in the one document every claim in this loop reads and rewrites. My
@@ -270,7 +270,8 @@ def release_seq(vault, workdir, seq, cycle, attempts=DEFAULT_ATTEMPTS):
     """
     for _ in range(attempts):
         outcome = _ledger_pass(vault, workdir, lambda ledger: release(
-            ledger, seq_slug(seq), cycle, datetime.now(OSLO), outcome="written"))
+            ledger, seq_slug(seq), cycle, datetime.now(OSLO), outcome="written",
+            state=DONE))
         if outcome != LOST:
             return outcome
     return LOST

@@ -278,7 +278,7 @@ def test_a_progressed_claim_is_not_held_by_anyone():
     # it sinks the row in the ranking.
     ledger = empty()
     take(ledger, "idea-63", 347, T0)
-    release(ledger, "idea-63", 347, at(30), state=PROGRESSED)
+    release(ledger, "idea-63", 347, at(30), outcome="half", state=PROGRESSED)
     assert held_by(ledger, at(31)) == {}
     assert finished_claims(ledger) == {}
     assert set(progressed_claims(ledger)) == {"idea-63"}
@@ -302,7 +302,7 @@ def test_a_finished_claim_cannot_be_downgraded_back_to_progressed():
     ledger = empty()
     take(ledger, "idea-63", 347, T0)
     release(ledger, "idea-63", 347, at(10), outcome="built", state="done")
-    ok, message = release(ledger, "idea-63", 347, at(20), state=PROGRESSED)
+    ok, message = release(ledger, "idea-63", 347, at(20), outcome="more", state=PROGRESSED)
     assert ok is True
     assert "already released" in message
     assert ledger["claims"][0]["state"] == "done"
@@ -321,7 +321,7 @@ def test_a_progressed_claim_is_pruned_on_the_same_clock_as_a_done_one():
     # would grow the one file every claim in this loop rewrites.
     ledger = empty()
     take(ledger, "idea-63", 347, T0)
-    release(ledger, "idea-63", 347, at(5), state=PROGRESSED)
+    release(ledger, "idea-63", 347, at(5), outcome="half", state=PROGRESSED)
     prune(ledger, at(23 * 60))
     assert len(ledger["claims"]) == 1
     prune(ledger, at(25 * 60))
@@ -335,6 +335,63 @@ def test_summarise_says_prog_rather_than_done():
     line = summarise(ledger, at(10))
     assert line.startswith("prog ")
     assert "half" in line
+
+
+def test_progress_without_an_outcome_is_an_error_not_an_empty_note():
+    # The outcome is the entire content of a progressed row. Without it
+    # the board says "left this open: no outcome recorded", which implies
+    # a note exists and carries none -- worse than an unmarked row.
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    with pytest.raises(ClaimError):
+        release(ledger, "idea-63", 347, at(10), state=PROGRESSED)
+    with pytest.raises(ClaimError):
+        release(ledger, "idea-63", 347, at(10), outcome="   ", state=PROGRESSED)
+    assert ledger["claims"][0]["state"] == "open"
+
+
+def test_a_resumed_breadcrumb_survives_the_resuming_cycle_being_killed():
+    """The case the state was invented for, and the one that dropped it.
+
+    A cycle takes a progressed item, is killed at the 45-minute cap
+    without releasing, and a later cycle takes the stale claim over. That
+    later cycle is the one that most needs to know what was already done.
+    """
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(10), outcome="three of four built", state=PROGRESSED)
+    take(ledger, "idea-63", 353, at(20))            # resumes it
+    take(ledger, "idea-63", 360, at(20 + CLAIM_TTL_MINUTES + 1))   # 353 died
+    row = ledger["claims"][0]
+    assert row["cycle"] == 360
+    assert row["took_over_from"] == 353
+    assert row["resumed_after"] == "three of four built"
+    assert "three of four built" in summarise(ledger, at(70))
+
+
+def test_a_progressed_row_is_not_reported_as_held_when_releasing():
+    # The one sentence the whole change exists to deny. `held_by` returns
+    # nothing for this row and the board prints no lock on it, so the
+    # refusal must not say "held".
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(10), outcome="half", state=PROGRESSED)
+    ok, message = release(ledger, "idea-63", 353, at(20), outcome="rest", state="done")
+    assert ok is False
+    assert "is held by" not in message
+    assert "was left open by cycle 347" in message
+    assert "take it before releasing it" in message
+
+
+def test_summarise_keeps_the_note_as_well_as_the_outcome():
+    # It used to print `outcome or note`, which silently dropped the note
+    # from every released row -- a behaviour change nothing asked for.
+    ledger = empty()
+    take(ledger, "confirm-deploy-171", 189, T0, note="handoff item 1")
+    release(ledger, "confirm-deploy-171", 189, at(5), outcome="merged #172")
+    line = summarise(ledger, at(10))
+    assert "handoff item 1" in line
+    assert "merged #172" in line
 
 
 # --- keeping the file small ------------------------------------------------
@@ -413,6 +470,45 @@ def test_cli_release_without_done_or_progress_is_refused(tmp_path):
     code = claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
                            "--cycle", "189", "--outcome", "half of it"])
     assert code == 1
+    assert open(path, encoding="utf-8").read() == before
+
+
+def test_cli_release_guard_names_the_flag_rather_than_the_states(tmp_path, capsys):
+    """The cause fix, pinned by its own words.
+
+    Reviewer finding on runner#313: without this, deleting the guard
+    entirely still passes, because `release(state=None)` raises inside the
+    library and `main` maps that to the same exit 1 with the same
+    untouched file. The only thing the guard adds is the sentence that
+    tells a cycle which flag it wants, so that sentence is what the test
+    has to assert.
+    """
+    path = write(tmp_path, "")
+    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
+    capsys.readouterr()
+    assert claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--outcome", "half"]) == 1
+    err = capsys.readouterr().err
+    assert "--done or --progress" in err
+    assert "If the work is not finished, it is --progress." in err
+
+
+def test_cli_rejects_the_release_flags_on_take_and_list(tmp_path):
+    # `take --progress`, meaning "record that I made progress", used to
+    # open a fresh claim and say nothing at all.
+    path = write(tmp_path, "")
+    assert claim_cli.main(["take", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--progress"]) == 1
+    assert claim_cli.main(["list", "--ledger", path, "--done"]) == 1
+    assert open(path, encoding="utf-8").read() == ""
+
+
+def test_cli_progress_without_an_outcome_is_refused(tmp_path):
+    path = write(tmp_path, "")
+    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
+    before = open(path, encoding="utf-8").read()
+    assert claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--progress"]) == 1
     assert open(path, encoding="utf-8").read() == before
 
 

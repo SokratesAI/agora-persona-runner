@@ -198,6 +198,7 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
     existing = find(ledger, item)
     taken_over = None
     resumed = None
+    carried = None
     if existing is not None:
         if existing.get("state") == DONE:
             return False, (
@@ -222,6 +223,12 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
         else:
             ledger["claims"].remove(existing)
             taken_over = existing["cycle"]
+            # Carry any inherited breadcrumb across the takeover. A cycle
+            # that resumed a progressed item and was then killed at the
+            # turn cap is the canonical case for this state, and it was
+            # the one case where the note was silently dropped. Reviewer
+            # finding on runner#313.
+            carried = existing
 
     row = {"item": item, "cycle": cycle, "state": OPEN, "at": now.isoformat()}
     if note:
@@ -232,6 +239,9 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
         row["resumed_from"] = resumed["cycle"]
         if resumed.get("outcome"):
             row["resumed_after"] = resumed["outcome"]
+    elif carried is not None and carried.get("resumed_after"):
+        row["resumed_from"] = carried.get("resumed_from", carried["cycle"])
+        row["resumed_after"] = carried["resumed_after"]
     ledger["claims"].insert(0, row)
     prune(ledger, now)
     if taken_over is not None:
@@ -269,10 +279,29 @@ def release(ledger, item, cycle, now, outcome=None, state=DONE):
     """
     if state not in RELEASE_STATES:
         raise ClaimError(f"release state must be one of {RELEASE_STATES}, got {state!r}")
+    if state == PROGRESSED and not (outcome or "").strip():
+        # The outcome is the entire content of a progressed row -- without
+        # it the board prints "left this open: no outcome recorded", which
+        # tells the next cycle that somebody stopped partway and not what
+        # is left. That is worse than an unmarked row, because it implies
+        # a note exists. Reviewer finding on runner#313.
+        raise ClaimError(
+            f"{item}: --progress needs an outcome saying what is left; that text is "
+            f"the whole reason the state exists"
+        )
     existing = find(ledger, item)
     if existing is None:
         return False, f"{item} is not claimed by anyone -- nothing to release"
     if existing["cycle"] != cycle:
+        if existing.get("state") == PROGRESSED:
+            # Not "held": `held_by` returns nothing for this row and the
+            # board prints no 🔒 on it. Take it first -- that is the
+            # documented way to finish somebody else's paused work, and it
+            # records the handover. Reviewer finding on runner#313.
+            return False, (
+                f"{item} was left open by cycle {existing['cycle']}, not {cycle} -- "
+                f"take it before releasing it"
+            )
         return False, (
             f"{item} is held by cycle {existing['cycle']}, not {cycle} -- refusing to release"
         )
@@ -434,11 +463,13 @@ def summarise(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
             state = "stale"
         else:
             state = "open"
-        # The outcome, not just the note: on a `progressed` row it is the
-        # entire content -- what got done and what is left -- and a reader
-        # of `claim list` who cannot see it has to open the raw JSON to
-        # learn the one thing the row exists to say.
-        tail = row.get("outcome") or row.get("note") or ""
-        tail = f" — {tail}" if tail else ""
+        # The outcome as well as the note, not instead of it: on a
+        # `progressed` row the outcome is the entire content -- what got
+        # done and what is left -- and a reader of `claim list` who cannot
+        # see it has to open the raw JSON. `resumed_after` is here for the
+        # same reason: on an open row it is the only record of what the
+        # cycle before this one got done.
+        parts = [row[k] for k in ("note", "resumed_after", "outcome") if row.get(k)]
+        tail = f" — {' | '.join(parts)}" if parts else ""
         lines.append(f"{state:<5} {row['item']}  cycle {row['cycle']}  {row['at']}{tail}")
     return "\n".join(lines) if lines else "no claims"

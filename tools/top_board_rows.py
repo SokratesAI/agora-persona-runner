@@ -594,6 +594,11 @@ def _claim_footer(rows, captures, claims_readable):
     out.append("  Claim before you work — cycles overlap now: "
                "python3 -m tools.claim take --ledger claims.json "
                "--item <claim slug> --cycle <N>  (see prompt.md step 2)")
+    # The page prints 🔁 for a row somebody left open and never named the
+    # word that produces one. A reader who learns the state here and not
+    # the flag has to go and find it. Reviewer finding on runner#313.
+    out.append("  Release it with --done if you finished it, or --progress "
+               "--outcome '<what is left>' if you did not; there is no default.")
     return out
 
 

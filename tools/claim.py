@@ -28,8 +28,10 @@ was `--done` and three cycles used it for work that was still open (Cycle
 bullet). The choice is the one thing this command knows that the ledger
 cannot infer, so it is the one thing it refuses to guess.
 
-Exit codes are the whole interface: **0 the item is yours, 2 somebody
-else has it or already did it, 1 something is wrong**. So the `&&` above
+Exit codes are the whole interface: **0 the command did what it says --
+for `take`, the item is yours; for `release --progress`, it explicitly is
+not any more -- 2 somebody else has it or already did it, 1 something is
+wrong**. So the `&&` above
 means an unclaimed item is never written back as claimed, and a refusal
 never touches the vault. If the `put` exits 3 you lost the
 compare-and-swap to a cycle that claimed something in between -- start
@@ -122,6 +124,16 @@ def main(argv=None):
         ledger = load(_read(args.ledger))
     except ClaimError as exc:
         print(f"claim: {exc}", file=sys.stderr)
+        return 1
+
+    if args.action != "release" and args.release_state is not None:
+        # Silently discarding them would be the worst possible reading of
+        # a diff whose whole thesis is that these two words are
+        # load-bearing: `take --progress` meaning "record that I made
+        # progress" would open a fresh claim and say nothing. Reviewer
+        # finding on runner#313.
+        print(f"claim: --done and --progress belong to release, not {args.action}",
+              file=sys.stderr)
         return 1
 
     if args.action == "list":
