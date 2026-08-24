@@ -1844,7 +1844,7 @@ def test_the_sweep_prints_the_branch_and_what_is_on_it(monkeypatch, capsys):
 
     assert "nova/killed-midway" in out
     assert "3 commit(s) past main" in out
-    assert "no PR was ever opened from it" in out
+    assert "no open or merged PR covers it" in out
     assert "tools/x.py, b.py" in out
 
 

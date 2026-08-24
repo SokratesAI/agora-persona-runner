@@ -1062,7 +1062,13 @@ def _sweep_remote(roots):
                       "compare failed, so whether there is work on it is "
                       "unknown" % (row["branch"],))
                 continue
-            how = ("no PR was ever opened from it" if row["kind"] == "no-pr"
+            # "no PR was ever opened from it" is wider than the check: this
+            # asks GitHub for open and merged PRs, so a PR opened and closed
+            # without merging is invisible to it. Say what was actually
+            # looked at. `lint_entry` caught this on the journal entry that
+            # quoted the line, which is the guard working across a boundary
+            # it was not built for.
+            how = ("no open or merged PR covers it" if row["kind"] == "no-pr"
                    else "#%d merged from it and it has moved since"
                         % (row["merged_pr"],))
             # The date is GitHub's, and GitHub's is UTC. Saying so is one word
