@@ -56,6 +56,7 @@ this is an answer not a fault" code `tools/claim.py` uses.
 """
 
 import argparse
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -96,9 +97,41 @@ class _Parser(argparse.ArgumentParser):
         self.exit(1, f"{self.prog}: error: {message}\n")
 
 
-def entry_name(seq, cycle):
-    """`370-cycle-343.md` -- zero padded so a lexical sort stays chronological."""
+def entry_name(seq, cycle, slug=None):
+    """`370-cycle-343.md` -- zero padded so a lexical sort stays chronological.
+
+    `slug` replaces the `cycle-<n>` tail for a run that is not one of the
+    hourly cycles -- `421-monday-research.md`. A weekly heartbeat is a
+    separate Agora conversation with its own counter starting at 1, so
+    stamping its entry `cycle-1` would put it under a name Cycle 1 already
+    used in 2026-08-01. It carries no cycle number instead, which is a
+    shape the journal already has: the fifteen `NNN-report-...` documents
+    predate this and render fine, `nova_journal.file_cycle` answers `None`
+    for them, and `cycle_health.missing_cycles` counts hourly cycles off
+    the `-cycle-` filenames and so cannot mistake a weekly entry for a gap.
+    """
+    if slug:
+        return f"{seq:03d}-{slug}.md"
     return f"{seq:03d}-cycle-{cycle}.md"
+
+
+#: A weekly slug names a file in the one folder that is the journal's total
+#: order, so it is validated rather than trusted. `cycle-<anything>` is
+#: refused specifically: `nova_journal.file_cycle` and the gap detector both
+#: read `-cycle-(\d+)` out of a filename, and a weekly entry that smuggled
+#: that substring in would be counted as an hourly cycle that never ran.
+_WEEKLY_SLUG_RE = re.compile(r"\A(?!cycle-)[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+
+
+def weekly_slug(value):
+    """argparse type for `--weekly`: lowercase, hyphens, never `cycle-...`."""
+    if not _WEEKLY_SLUG_RE.match(value or "") or "-cycle-" in value:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a weekly slug: lowercase letters, digits and "
+            "single hyphens, and it may not contain `cycle-` -- that is how "
+            "the journal names an hourly cycle and the gap detector reads it"
+        )
+    return value
 
 
 def seq_slug(seq):
@@ -296,6 +329,9 @@ def main(argv=None):
     parser.add_argument("draft", help="the entry as written, on local disk")
     parser.add_argument("--cycle", type=int, required=True,
                         help="Agora cycle number, from agora_runner.cycle_number")
+    parser.add_argument("--weekly", default=None, type=weekly_slug,
+                        help="name a weekly run's entry `<seq>-<slug>.md` instead "
+                             "of `<seq>-cycle-<n>.md`, e.g. --weekly monday-research")
     parser.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
     parser.add_argument("--workdir", default="/tmp")
     parser.add_argument("--note", default=None, help="note recorded on the claim")
@@ -320,7 +356,7 @@ def main(argv=None):
               file=sys.stderr)
         return REFUSED_EXIT
 
-    name = entry_name(seq, args.cycle)
+    name = entry_name(seq, args.cycle, args.weekly)
     if not lint(args.draft, name, repo_root):
         # The claim is deliberately left standing. `nova_claims.take`
         # grants a cycle its own open claim again, so fixing the entry and
