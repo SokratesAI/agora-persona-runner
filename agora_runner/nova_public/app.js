@@ -3600,12 +3600,35 @@
    * the one failure worth reading -- the copy landed and the removal did
    * not -- tells him exactly which of the two to delete. */
   function convertButtons(source, index, original, onDone, onFail, disable) {
+    /* **These disable themselves, not just the caller's Edit and Delete.**
+     * The first version handed the caller's `disable` the two buttons it
+     * already knew about and left its own live for the whole in-flight
+     * fetch -- so a second tap, which is an ordinary thing to do on a
+     * phone with a slow connection, ran the whole conversion again. The
+     * destination write is unconditional, so that lands a *second* copy
+     * in the target file and the removal then fails because the first tap
+     * already took the line. Found by review, which walked the double-tap
+     * through both calls rather than reading the handler. */
+    var mine = [];
+    var pending = false;
+    var setBusy = function (on) {
+      pending = on;
+      mine.forEach(function (b) { b.disabled = on; });
+      if (disable) disable(on);
+    };
     return CAPTURE_KINDS.filter(function (kind) { return kind.target !== source; })
       .map(function (kind) {
         var btn = el("button", "capture-act", kind.verb);
         btn.type = "button";
+        mine.push(btn);
         btn.addEventListener("click", function () {
-          if (disable) disable(true);
+          /* `disabled` is the guard a real browser honours; this is the one
+           * that does not depend on the browser honouring it. A click event
+           * that arrives some other way -- synthesised, or from an assistive
+           * technology -- would otherwise start a second unconditional
+           * write to the destination file. */
+          if (pending) return;
+          setBusy(true);
           fetch("/api/capture/convert", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -3621,7 +3644,7 @@
               onDone();
             })
             .catch(function (err) {
-              if (disable) disable(false);
+              setBusy(false);
               onFail(err);
             });
         });

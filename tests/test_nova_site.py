@@ -961,6 +961,38 @@ def test_a_convert_whose_address_went_stale_is_a_conflict_rather_than_a_failure(
     assert status == 409
 
 
+def test_a_half_done_convert_is_502_even_though_its_message_says_no_longer():
+    """`_post_amend`'s 409 means "nothing happened, re-read". Here the same
+    substring can appear *after* the destination write landed, and answering
+    409 would tell the page nothing changed while a copy sits in `dest`.
+    Reviewer finding on this change."""
+    with patch.object(nova_site, "convert_capture", return_value=(
+            False, "copied to ideas, but could not remove it from notes "
+                   "(that capture is no longer in the list) — it is in both, "
+                   "delete the notes one")):
+        status, _, _ = _post(
+            "/api/capture/convert",
+            {"from": "notes", "to": "ideas", "index": 0, "original": "x"},
+        )
+    assert status == 502, "a landed destination write must not read as nothing happened"
+
+
+def test_an_exception_after_the_destination_write_still_drops_both_pages():
+    """The write may already have happened when the exception is raised, and a
+    cached page would hide the copy that really is there."""
+    nova_site.reset_cache()
+    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
+    nova_site._cache["board:ideas"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
+    with patch.object(nova_site, "convert_capture", side_effect=RuntimeError("boom")):
+        status, _, _ = _post(
+            "/api/capture/convert",
+            {"from": "notes", "to": "ideas", "index": 0, "original": "x"},
+        )
+    assert status == 502
+    assert "notes" not in nova_site._cache
+    assert "board:ideas" not in nova_site._cache
+
+
 def test_a_convert_drops_both_pages_it_touched_even_when_it_half_failed():
     """The half-done state -- copied, not removed -- has to leave both pages
     cold. A cached destination would keep the copy invisible while the

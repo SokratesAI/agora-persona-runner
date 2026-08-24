@@ -1343,15 +1343,29 @@ body.nav-open { overflow: hidden; }
   white-space: nowrap;
 }
 
+/* Wraps, because this row grew from two buttons to four. Edit and Delete
+ * fitted a phone; Edit / Make issue / Make idea / Delete does not, and an
+ * unwrapped flex row answers that by squashing every button below the
+ * 44px touch target the rule further down exists to guarantee. The status
+ * span takes the whole first line when anything wraps (`flex-basis:100%`
+ * below) so an error message never pushes a button off the row. */
 .capture-edit {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   margin-top: 0.35rem;
 }
 
+/* The same row under a note, where the Edit box replaces the buttons and
+ * needs the full width rather than a share of a flex line. */
+.note-acts .capture-input { flex-basis: 100%; }
+
 .capture-item-status {
   flex: 1;
+  /* Its own line once the row wraps, so a long "copied to ideas, but could
+   * not remove it from notes" never shoulders a button onto a third row. */
+  flex-basis: 100%;
   font-size: 0.8rem;
   color: var(--dim);
   min-width: 0;

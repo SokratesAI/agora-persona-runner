@@ -107,6 +107,12 @@ MAX_BODY_BYTES = 64 * 1024
 
 WRITE_ATTEMPTS = 3
 
+# `amend`'s "nothing happened, the address moved" answer. Named because
+# `convert_capture` and `_post_convert` both have to tell it apart from a
+# failed write, and a substring match on prose typed twice is the drift
+# this repo keeps filing against itself.
+STALE_CAPTURE = "no longer in the list"
+
 # Where a row the owner deletes from the app goes so a cycle can still see it
 # (his capture, 2026-08-22). `resources/` because it is my bookkeeping --
 # he asked to be able to remove a row from his board, not to be given a
@@ -265,7 +271,7 @@ def amend(target, index, original, text):
             # Not a write failure: the bullet is not there to amend. Most
             # likely a cycle boarded it while this page was open, which is
             # the ordinary outcome rather than a fault.
-            return False, "that capture is no longer in the list"
+            return False, f"that capture is {STALE_CAPTURE}"
         result = vault_write_path(path, amended, if_rev=rev)
         if result == "written":
             what = "edited" if bullets else "deleted"
@@ -332,12 +338,24 @@ def convert_capture(source, index, original, dest):
     ok, message = capture(dest, text)
     if not ok:
         return False, message
-    ok, message = amend(source, index, original, "")
+    ok, removal = amend(source, index, original, "")
     if not ok:
-        log(f"nova-capture converted {source}->{dest} but left the original: {message}")
+        log(f"nova-capture converted {source}->{dest} but left the original: {removal}")
+        # **Two failures, and telling him the wrong one costs him a
+        # duplicate he cannot find.** A write that failed really does leave
+        # the line in both files. A *stale address* does not: the bullet
+        # was boarded, edited, or already removed by a second tap of the
+        # same button, so the source may be clean and the copy in `dest`
+        # may be the second one. Found by review, which walked a
+        # double-tap through both calls.
+        if STALE_CAPTURE in removal:
+            return False, (
+                f"copied to {dest}, but {source} moved under me — "
+                f"check {dest} for a duplicate"
+            )
         return False, (
             f"copied to {dest}, but could not remove it from {source} "
-            f"({message}) — it is in both, delete the {source} one"
+            f"({removal}) — it is in both, delete the {source} one"
         )
     log(f"nova-capture converted a capture from {source} to {dest}")
     return True, f"moved to {dest}"

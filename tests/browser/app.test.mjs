@@ -6747,6 +6747,27 @@ describe("the notes page", () => {
     assert.equal(posted.body.original, "Nobody has read this one.");
   });
 
+  test("a second tap on Make idea cannot fire a second conversion", async () => {
+    /* The destination write is unconditional, so a double tap on a slow
+     * connection lands a second copy in the target file and the removal
+     * then fails because the first tap already took the line. The first
+     * version of `convertButtons` disabled only the caller's Edit and
+     * Delete and left its own buttons live for the whole fetch. */
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    const btn = actNamed(window, "Make idea", waitingIndex);
+    click(window, btn);
+    assert.equal(btn.disabled, true, "the button stayed live during its own fetch");
+    click(window, btn);
+    await settle();
+    assert.equal(
+      window.posted.filter((p) => p.url === "/api/capture/convert").length,
+      1,
+      "a double tap converted twice",
+    );
+  });
+
   test("Delete on a note asks first and never fires when refused", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
     const waitingIndex = [...window.document.querySelectorAll(".note-msg")]

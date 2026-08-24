@@ -793,3 +793,27 @@ def test_convert_refuses_unknown_and_identical_targets():
         assert convert_capture("kanban", 0, "x", "ideas")[0] is False
         assert convert_capture("notes", 0, "   ", "ideas")[0] is False
     assert read.call_count == 0, "a refused conversion must not touch the vault"
+
+
+def test_a_second_convert_of_the_same_line_does_not_claim_it_is_in_both(notes_md, ideas_md):
+    """The double-tap, which is what the page's disabled buttons now prevent
+    and what the message has to be honest about if it happens anyway.
+
+    The first call moved the line. The second finds the destination write
+    succeeds again -- it is unconditional -- and the removal refuses because
+    the address is stale. The source is *clean* at that point, so "it is in
+    both, delete the notes one" would send him to the wrong file for a copy
+    that is not there. Found by review.
+    """
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        assert convert_capture("notes", 0, "actually an idea", "ideas")[0] is True
+        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+    assert not ok
+    assert "it is in both" not in message, message
+    assert "duplicate" in message, message
+    assert "actually an idea" not in couch.text(CAPTURE_TARGETS["notes"]), \
+        "the source really is clean, so the message must not point him at it"
+    assert couch.text(CAPTURE_TARGETS["ideas"]).count("- actually an idea") == 2, \
+        "the fixture must actually have produced the duplicate this is about"

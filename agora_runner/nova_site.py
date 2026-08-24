@@ -117,6 +117,7 @@ from agora_runner.nova_uploads import (
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
     MAX_BODY_BYTES,
+    STALE_CAPTURE,
     amend,
     capture,
     clean_capture_text,
@@ -1876,6 +1877,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         try:
             ok, message = convert_capture(source, index, original, dest)
         except Exception as e:
+            # Both sides here too, and that is the point of the `finally`
+            # shape rather than a tidy early return: an exception can land
+            # *after* the destination write succeeded, and a cached page
+            # would then hide the copy that really is there. Reviewer
+            # finding on this PR.
+            _invalidate_capture_target(source)
+            _invalidate_capture_target(dest)
             log(f"nova-site capture convert failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
             return
@@ -1899,7 +1907,16 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if ok:
             self._send_json(200, {"ok": True, "message": message})
             return
-        stale = "no longer" in message
+        # **Not `_post_amend`'s predicate, and copying it was a bug.** There
+        # 409 means "nothing happened, the address moved, re-read" -- and
+        # `STALE_CAPTURE` can appear here *inside* the half-done message,
+        # after the destination write already landed. Answering 409 would
+        # tell the page nothing changed while a copy sits in `dest`. So the
+        # only 409 here is a refusal that never wrote anything, which is a
+        # destination write that failed before `amend` was reached.
+        # Reviewer finding on this PR.
+        wrote_destination = message.startswith("copied to ")
+        stale = not wrote_destination and STALE_CAPTURE in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
     def _post_priority(self, payload):
