@@ -942,3 +942,121 @@ def test_main_applies_claims_to_the_closed_rows_too(tmp_path, capsys):
     assert code == 0
     assert "idea #63 (cycle 99)" in out
     assert "waiting on a reply from you" not in out
+
+
+# --- a claim slug the ledger has already spent -----------------------------
+#
+# Cycle 353, measured on the live board: the top capture and the only 🔴
+# Immediately row both carried `[claim: <slug>]` for a slug `take` refuses
+# forever, because an earlier cycle released each one `done` while the work
+# was still live. Exit 2 reads as "somebody is doing this"; the honest
+# answer was "somebody already did some of this, and here is what".
+
+
+def _spent(item, cycle, outcome):
+    return {"claims": [{"item": item, "cycle": cycle, "state": "done",
+                        "at": "2026-08-23T15:23:26.424577+02:00",
+                        "outcome": outcome}]}
+
+
+def test_a_spent_slug_prints_the_outcome_instead_of_a_take_command():
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "built the last piece"}})
+    line = top_board_rows._line(rows[0])
+    assert "[claim: idea-63]" not in line
+    assert "claim spent by cycle 347" in line
+    assert "built the last piece" in line
+
+
+def test_an_unspent_slug_still_prints_the_take_command():
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {})
+    assert "[claim: idea-63]" in top_board_rows._line(rows[0])
+
+
+def test_a_spent_claim_with_no_outcome_says_so_rather_than_printing_nothing():
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": None}})
+    assert "no outcome recorded" in top_board_rows._line(rows[0])
+
+
+def test_a_spent_claim_does_not_move_the_row_down_the_ranking():
+    """A spent claim is a fact about the ledger, never about the work.
+
+    `heldBy` sinks a row because somebody is on it this minute. Nobody is
+    on this one, and `prompt.md` still ranks a 🔴 above everything -- so
+    hiding it would be the tool making the judgement the reader has to.
+    """
+    rows = (top_board_rows.open_rows(
+                board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+            + top_board_rows.open_rows(
+                board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)), "idea"))
+    top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "part of it"}})
+    assert top_board_rows.rank(rows)[0]["number"] == 63
+
+
+def test_main_marks_a_spent_capture_from_the_ledger_it_reads(tmp_path, capsys):
+    import json
+    issues = tmp_path / "issues.md"
+    issues.write_text("- switch to Claude 20x by 18:00\n\n" + board())
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)))
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    slug = top_board_rows.slug_for_capture("switch to Claude 20x by 18:00")
+    claims = tmp_path / "claims.json"
+    claims.write_text(json.dumps(_spent(slug, 343, "journal seq race closed")))
+
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "353"])
+    out = capsys.readouterr().out
+    assert code == 0
+    # Still printed as a capture, still top of the page -- only the
+    # unrunnable command is gone.
+    assert "switch to Claude 20x by 18:00" in out
+    assert f"[claim: {slug}]" not in out
+    assert "claim spent by cycle 343: journal seq race closed" in out
+    # The board row beside it is untouched.
+    assert "[claim: idea-92]" in out
+
+
+def test_an_unparseable_ledger_leaves_every_claim_command_printed(tmp_path, capsys):
+    """The ranking survives an unreadable ledger and so must this.
+
+    Narrower than it looks, and worth saying so: the parse fails inside
+    `load_claims`, so `finished_claims` is never reached and this cannot
+    show that the new half handles bad rows. What it does pin is the
+    except branch's tuple, which this change widened -- leave `finished`
+    out of it and `apply_finished` raises `NameError` on every run with
+    an unreadable ledger. Mutation-checked that way, not assumed.
+    """
+    issues = tmp_path / "issues.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board())
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    claims = tmp_path / "claims.json"
+    claims.write_text("{ not json")
+
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "[claim: issue-10]" in out
+
+
+def test_a_multi_line_outcome_cannot_split_the_row_it_is_printed_on():
+    """`release --outcome` is free shell text and this output is one item
+    per line: a newline in there would read as a second board entry."""
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(
+        rows, {"idea-63": {"cycle": 347, "outcome": "built it\nand broke\tthe line"}})
+    line = top_board_rows._line(rows[0])
+    assert "\n" not in line
+    assert "built it and broke the line" in line

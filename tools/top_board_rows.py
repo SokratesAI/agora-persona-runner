@@ -80,7 +80,7 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_claims import (
-    CLAIMS_PATH, ClaimError, held_by, load as load_claims, slug_for_capture,
+    CLAIMS_PATH, ClaimError, finished_claims, held_by, load as load_claims, slug_for_capture,
     slug_for_comment, slug_for_row,
 )
 
@@ -489,7 +489,48 @@ def _line(row):
              if row.get("waiting") and not row.get("replyHeldBy") else "")
     return (f"{row['board']} #{row['number']}  {waiting}{rating}  {row['status']}"
             f"  (updated {row['updated']})  {row['title']}"
-            f"  [claim: {row_slug(row)}]{reply}")
+            f"{_claim_tag(row)}{reply}")
+
+
+def _claim_tag(item):
+    """`[claim: <slug>]`, or why that command would be refused.
+
+    A slug the ledger already records as `done` is not claimable again,
+    so printing the take command beside it is an instruction that cannot
+    work. The cycle types it, gets exit 2, and is then holding the one
+    fact the line should have carried in the first place -- and exit 2
+    reads as "somebody is doing this", which is a different answer from
+    "somebody already did this" and is acted on differently.
+
+    So the outcome the releasing cycle wrote is printed inline. That is
+    the sentence that decides whether there is still work here, and
+    fetching it costs a cycle a shell call and a detour through the
+    ledger. Deliberately *not* a reason to skip the item: `prompt.md`
+    ranks captures above everything, and a spent claim is a fact about
+    the ledger, never a fact about the work.
+    """
+    spent = item.get("spentClaim")
+    if not spent:
+        return f"  [claim: {row_slug(item)}]"
+    # `release --outcome` is free shell text, and this tool's whole output
+    # is one item per line -- a newline in there would split the row and
+    # read as a second board entry. Same shape as the Outcome pill that
+    # rendered as a title the first time a cycle wrote a long one.
+    outcome = " ".join((spent.get("outcome") or "no outcome recorded").split())
+    return f"  [⛔ claim spent by cycle {spent['cycle']}: {outcome} — work it without claiming]"
+
+
+def apply_finished(items, finished):
+    """Stamp `spentClaim` on anything whose slug is already `done`.
+
+    Separate from `apply_claims` because the two answers are separate:
+    `heldBy` sinks a row in the ranking (somebody is on it this minute),
+    and this one changes nothing about the order (nobody is on it, and
+    whether it is finished is a judgement the reader makes from the
+    outcome text).
+    """
+    for item in items:
+        item["spentClaim"] = finished.get(row_slug(item))
 
 
 def _capture_line(capture):
@@ -497,7 +538,7 @@ def _capture_line(capture):
     # would invite a cycle to go and rate something that has nowhere to
     # put a rating.
     held = f"🔒 HELD by cycle {capture['heldBy']}  " if capture.get("heldBy") else ""
-    claim = f"  [claim: {row_slug(capture)}]"
+    claim = _claim_tag(capture)
     if capture["board"] == "note":
         return f"notes.md  {held}{capture['text']}{claim}"
     rating = capture["priority"] or "(unrated)"
@@ -641,13 +682,15 @@ def main(argv=None):
     else:
         claims_text, claims_readable = fetch_claims()
     try:
-        live = held_by(load_claims(claims_text), datetime.now(OSLO))
+        ledger = load_claims(claims_text)
+        live = held_by(ledger, datetime.now(OSLO))
+        finished = finished_claims(ledger)
     except ClaimError as exc:
         # A ledger that will not parse is unreadable, not empty. Saying so
         # and carrying on beats refusing to print the board at all: the
         # ranking is still correct, it is only the 🔒 marks that are gone.
         print(f"claims ledger will not parse: {exc}", file=sys.stderr)
-        live, claims_readable = {}, False
+        live, finished, claims_readable = {}, {}, False
 
     rows = []
     captures = []
@@ -686,6 +729,12 @@ def main(argv=None):
     # built for (idea #63 sat nine cycles). Left out, it is the one comment
     # two cycles could still both answer.
     apply_claims(closed_waiting, live, args.cycle)
+    # Rows and captures only: `closed_waiting` is rendered by its own path
+    # that prints the board, the number and the reply claim, and never goes
+    # through `_line`. Stamping it would be code that reads as coverage and
+    # changes nothing on the page.
+    for group in (rows, captures):
+        apply_finished(group, finished)
 
     print(render(rows, runners_up=args.runners_up, captures=captures,
                  closed_waiting=closed_waiting, claims_readable=claims_readable))
