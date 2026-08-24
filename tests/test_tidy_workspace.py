@@ -8,6 +8,7 @@ for deleting one.
 
 Every test runs against a `tmp_path`, never the real workspace.
 """
+import json
 import os
 import subprocess
 import time
@@ -247,6 +248,12 @@ def test_the_cli_says_what_it_did(workspace, capsys):
 def _git(cwd, *args):
     subprocess.run(["git", "-C", str(cwd), *args], check=True,
                    capture_output=True, text=True)
+
+
+def _git_out(cwd, *args):
+    """The same call, when the test needs what git said."""
+    return subprocess.run(["git", "-C", str(cwd), *args], check=True,
+                          capture_output=True, text=True).stdout.strip()
 
 
 def _commit(cwd, name, text):
@@ -1035,3 +1042,137 @@ def test_an_unparseable_merge_stamp_leaves_the_branch_unfinished(tmp_path):
     safe error is to leave real work looking like real work."""
     assert tidy_workspace._committed_after(str(tmp_path), "repo", None) is True
     assert tidy_workspace._committed_after(str(tmp_path), "repo", "not a date") is True
+
+
+# --- deciding litter from the graph, not from two clocks ---------------------
+#
+# The first version of this compared the branch tip's committer date to the
+# PR's mergedAt. A reviewer called that a blocker and was right: it is wrong in
+# the direction that loses work. `git rebase --committer-date-is-author-date`,
+# an unsynced container clock and an explicit `GIT_COMMITTER_DATE` all give a
+# tip that timestamps before a merge it does not contain.
+
+
+def test_the_merged_head_itself_is_landed(squash_merged):
+    """HEAD is exactly what GitHub merged. No clock consulted."""
+    root, repo = squash_merged
+    head = _git_out(repo, "rev-parse", "HEAD")
+
+    assert tidy_workspace._tip_contains_merge(str(root), "repo", head) is True
+
+
+def test_a_commit_on_top_of_the_merged_head_is_not_landed(squash_merged):
+    """The graph says it directly: HEAD descends from the merged commit, so
+    there is real work sitting on top of it."""
+    root, repo = squash_merged
+    head = _git_out(repo, "rev-parse", "HEAD")
+    _commit(repo, "after.txt", "written after the merge\n")
+
+    assert tidy_workspace._tip_contains_merge(str(root), "repo", head) is False
+
+
+def test_an_oid_this_clone_has_never_seen_is_not_an_answer(squash_merged):
+    """The ordinary case: the remote branch was deleted after its merge, so
+    the merged commit is in no local object store. `None` means "ask something
+    else", not "landed"."""
+    root, _ = squash_merged
+
+    assert tidy_workspace._tip_contains_merge(
+        str(root), "repo", "0" * 40) is None
+    assert tidy_workspace._tip_contains_merge(str(root), "repo", "") is None
+
+
+def test_a_clock_behind_the_merge_cannot_launder_real_work(moved_on, monkeypatch):
+    """The reviewer's scenario, as a test. Real commits on top of the merged
+    head, and a tip whose committer date is set *before* the merge -- which a
+    rebase flag or an unsynced clock produces without any malice. The graph
+    answers first, so the clock never gets to say `leftover`."""
+    root, repo = moved_on
+    head = _git_out(repo, "rev-parse", "HEAD")
+    _git(repo, "-c", "user.email=n@example.com", "-c", "user.name=Nova",
+         "commit", "--allow-empty", "-m", "real work, old timestamp")
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316, "headRefOid": head,
+                                          "mergedAt": "2099-01-01T00:00:00Z"}, True))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+    assert survey[0]["commits_after_merge"] is True
+
+
+def test_a_verdict_that_rests_on_the_clock_says_so(moved_on, monkeypatch, capsys):
+    """When the merged commit is not in the clone there is nothing but the
+    timestamps, and that has to be visible before anyone deletes a branch."""
+    root, _ = moved_on
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316, "headRefOid": "0" * 40,
+                                          "mergedAt": "2099-01-01T00:00:00Z"}, True))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+    assert survey[0]["rests_on_clock"] is True
+    tidy_workspace.main(["--root", str(root), "--no-fetch"])
+
+    assert "rests on the commit date" in capsys.readouterr().out
+
+
+def test_a_graph_answer_does_not_say_it_rests_on_the_clock(squash_merged, monkeypatch):
+    root, repo = squash_merged
+    head = _git_out(repo, "rev-parse", "HEAD")
+    _commit(repo, "later-on-main.txt", "x\n")
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316, "headRefOid": head,
+                                          "mergedAt": "1999-01-01T00:00:00Z"}, True))
+
+    survey = tidy_workspace.survey_checkouts(str(root), fetch=False)
+
+    assert survey[0]["rests_on_clock"] is False
+
+
+def test_one_unanswerable_gh_stops_the_sweep_asking_again(moved_on, monkeypatch):
+    """A systemic failure fails identically for every clone, and each attempt
+    costs up to GH_TIMEOUT_SECONDS on the first thing a cycle runs."""
+    root, repo = moved_on
+    for extra in ("second", "third"):
+        subprocess.run(["git", "clone", str(repo), str(root / extra)],
+                       check=True, capture_output=True)
+        # CI has no global git identity; a clone inherits none either.
+        _git(root / extra, "config", "user.email", "nova@example.com")
+        _git(root / extra, "config", "user.name", "Nova")
+        _git(root / extra, "checkout", "-q", "-b", "nova/" + extra)
+        _commit(root / extra, extra + ".txt", "work\n")
+    calls = []
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: (calls.append(a[2]), (None, False))[1])
+
+    tidy_workspace.survey_checkouts(str(root), fetch=False)
+
+    assert len(calls) == 1
+
+
+def test_no_gh_skips_the_question_entirely(moved_on, monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("gh must not be asked")
+
+    root, _ = moved_on
+    monkeypatch.setattr(tidy_workspace, "_merged_pr", explode)
+
+    survey = tidy_workspace.survey_checkouts(str(root), fetch=False,
+                                             ask_github=False)
+
+    assert [e["verdict"] for e in survey] == ["unfinished"]
+
+
+def test_merged_pr_takes_the_newest_of_a_reused_branch_name(tmp_path, monkeypatch):
+    """`--limit 1` trusted an ordering gh does not document, and this loop
+    reuses `nova/<slug>` names readily."""
+    _gh_returning(monkeypatch, stdout=json.dumps([
+        {"number": 100, "mergedAt": "2026-01-01T00:00:00Z", "headRefOid": "a"},
+        {"number": 316, "mergedAt": "2026-08-24T10:57:11Z", "headRefOid": "b"},
+        {"number": 200, "mergedAt": "2026-05-01T00:00:00Z", "headRefOid": "c"},
+    ]))
+
+    pr, checked = _REAL_MERGED_PR(str(tmp_path), "repo", "nova/x")
+
+    assert checked is True
+    assert pr["number"] == 316
