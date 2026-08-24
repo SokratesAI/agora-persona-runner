@@ -1435,3 +1435,163 @@ def test_a_remote_only_commit_squash_merged_into_main_is_still_reported(
     assert survey[0]["remote_only_failed"] is False
     assert [c.split(" ", 1)[1] for c in survey[0]["remote_only"]] \
         == ["add after.txt"]
+
+
+def test_being_behind_the_merged_head_is_answered_by_the_graph(squash_merged):
+    """The commits already know, and until Cycle 386 two clocks were asked.
+
+    A checkout that is an *ancestor* of the commit GitHub merged has nothing
+    sitting on top of that merge, by construction. `_tip_contains_merge` had
+    an answer for the tip itself and for a descendant of it, and fell through
+    to `_committed_after` for this one -- which is the ordinary shape of a
+    clone one commit stale, not a corner.
+    """
+    root, repo = squash_merged
+    _commit(repo, "after.txt", "part of the PR, merged with it\n")
+    merged_head = _git_out(repo, "rev-parse", "HEAD")
+    _git(repo, "reset", "--hard", "-q", "HEAD~1")
+
+    assert tidy_workspace._tip_contains_merge(
+        str(root), "repo", merged_head) is True
+
+
+def test_a_checkout_behind_its_merged_head_no_longer_rests_on_the_clock(
+        moved_on, monkeypatch):
+    """Same verdict as before this change, reached without a wall clock.
+
+    The `mergedAt` here is deliberately in the past, which is the reading that
+    would have said "committed after the merge" and called the branch
+    unfinished. The graph overrules it, so the timestamp is never consulted.
+    """
+    root, repo = moved_on
+    _commit(repo, "after.txt", "part of the PR, merged with it\n")
+    merged_head = _git_out(repo, "rev-parse", "HEAD")
+    _git(repo, "push", "-q", "origin", "nova/feature")
+    _git(repo, "reset", "--hard", "-q", "HEAD~1")
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316,
+                                          "headRefOid": merged_head,
+                                          "mergedAt": "1999-01-01T00:00:00Z"},
+                                         True))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "leftover"
+    assert survey[0]["rests_on_clock"] is False
+
+
+# --- a clean checkout is asked about its remote too --------------------------
+
+
+@pytest.fixture
+def clean_but_pushed(squash_merged):
+    """A clone reading `clean` while `origin/<branch>` carries a real commit.
+
+    The checkout has been reset onto the fetched base, which is what a cycle
+    that pulled after its own merge leaves behind: nothing here that the base
+    has not got, so every local instrument says there is nothing to finish.
+    The branch's own commit is on the remote and on no other ref.
+    """
+    root, repo = squash_merged
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "reset", "--hard", "-q", "origin/main")
+    return root, repo
+
+
+def test_a_clean_checkout_is_asked_about_its_remote(clean_but_pushed):
+    """The gap, stated as a test. `remote_only` ran for `leftover` and
+    `unfinished` only, and `clean` is the one verdict the sweep prints nothing
+    for -- so this commit was invisible in exactly the way the remote check
+    exists to stop."""
+    root, _ = clean_but_pushed
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "unfinished"
+    assert survey[0]["landed_locally"] is True
+    assert [c.split(" ", 1)[1] for c in survey[0]["remote_only"]] \
+        == ["add feature.txt"]
+
+
+def test_a_clean_checkout_behind_its_merged_head_stays_clean(clean_but_pushed,
+                                                             monkeypatch):
+    """The direction that stops this becoming noise on every clone.
+
+    A squash leaves the branch's original commits reachable from neither HEAD
+    nor main, so a merged branch whose remote ref was never deleted lists them
+    here and none of them are outstanding. The second pass excludes the head
+    GitHub says it merged, and the answer goes back to `clean`.
+    """
+    root, repo = clean_but_pushed
+    merged_head = _git_out(repo, "rev-parse", "origin/nova/feature")
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316,
+                                          "headRefOid": merged_head,
+                                          "mergedAt": "2099-01-01T00:00:00Z"},
+                                         True))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "clean"
+    assert survey[0]["remote_only"] == []
+
+
+def test_a_clean_checkout_on_the_base_branch_asks_nothing(squash_merged,
+                                                          monkeypatch):
+    """The cheap path stays cheap: the common clone is parked on `main`, and
+    it must reach neither `git log` for a remote ref that is the base nor
+    GitHub."""
+    root, repo = squash_merged
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "reset", "--hard", "-q", "origin/main")
+    asked = []
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: (asked.append(a) or (None, False)))
+    # Asserted on `git log` rather than only on the verdict, because the
+    # verdict is `clean` whether or not this path exists -- the reviewer
+    # caught the first version of this test agreeing with the author either
+    # way. `_remote_only_commits` returns before it spawns anything for a
+    # base branch, and that early return is the thing under test.
+    real = tidy_workspace._git
+    logged = []
+
+    def watched(root_, clone, *args, **kwargs):
+        if args and args[0] == "log" and "--not" in args:
+            logged.append(args)
+        return real(root_, clone, *args, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace, "_git", watched)
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "clean"
+    assert survey[0]["remote_only"] == []
+    assert asked == []
+    assert logged == []
+
+
+def test_a_clean_checkout_whose_remote_check_failed_says_so(clean_but_pushed,
+                                                            monkeypatch,
+                                                            capsys):
+    """`clean` is silent by design, and silence is the wrong answer when the
+    one check that could have contradicted it never ran. Same rule this file
+    already applies to `leftover`: a failure reported as success is the shape
+    that costs more than having no check."""
+    real = tidy_workspace._git
+
+    def broken(root_, clone, *args, **kwargs):
+        if args and args[0] == "log" and "--not" in args:
+            return types.SimpleNamespace(returncode=128, stdout="", stderr="")
+        return real(root_, clone, *args, **kwargs)
+
+    monkeypatch.setattr(tidy_workspace, "_git", broken)
+    root, _ = clean_but_pushed
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+    assert survey[0]["verdict"] == "clean"
+    assert survey[0]["remote_only_failed"] is True
+
+    tidy_workspace.main(["--root", str(root), "--no-fetch"])
+    out = capsys.readouterr().out
+    assert "could not list what origin/nova/feature carries" in out

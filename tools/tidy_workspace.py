@@ -390,6 +390,16 @@ def _tip_contains_merge(root, clone, head_oid):
     if _git(root, clone, "merge-base", "--is-ancestor", head_oid,
             "HEAD").returncode == 0:
         return False
+    # HEAD is an *ancestor* of the merged head: this checkout is simply behind
+    # its own merged branch, so there is nothing here sitting on top of the
+    # merge. The graph answers it outright, and until Cycle 386 this case fell
+    # through to `_committed_after` -- two wall clocks deciding a verdict that
+    # licenses deleting a branch, when the commits themselves already knew.
+    # It is the ordinary shape of a clone one commit stale, which is what the
+    # shared checkout was on 2026-08-24, so it is not a rare path.
+    if _git(root, clone, "merge-base", "--is-ancestor", "HEAD",
+            head_oid).returncode == 0:
+        return True
     # The merged head is not on this branch at all -- a rewritten or
     # unrelated history. Not an answer, and not a licence to guess.
     return None
@@ -591,7 +601,41 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
         remote_only = []
         remote_only_failed = False
         landed_locally = False
-        if verdict in ("leftover", "unfinished"):
+        if verdict == "clean":
+            # A `clean` clone was never asked about its remote at all, and
+            # `clean` is the one verdict `main` prints nothing for -- so a
+            # commit pushed to `origin/<branch>` and taken by nobody was
+            # invisible here in exactly the way the whole remote check exists
+            # to stop. `clean` means "nothing here the base has not got", and
+            # that is a statement about *here*.
+            #
+            # A clone parked on `main` -- the common one -- is filtered by
+            # `_remote_only_commits` itself, which returns before it spawns
+            # anything for a base branch. A second guard here read as caution
+            # and pinned nothing: the mutation that deletes it leaves all 88
+            # tests green, which is the file's own rule about a check whose
+            # negative result was guaranteed in advance.
+            #
+            # Asked without `merged_head` first, because that is local git
+            # only. An empty answer is the common case and it costs no GitHub
+            # call; a non-empty one is rare enough to be worth paying for,
+            # and it has to be paid, because a squash-merged branch whose
+            # remote ref was never deleted lists its own original commits
+            # here and none of them are outstanding.
+            remote_only, remote_only_failed = _remote_only_commits(
+                root, clone, branch, base)
+            if remote_only and ask_github:
+                merged_pr, merged_pr_checked = _merged_pr(root, clone, branch)
+                if not merged_pr_checked:
+                    ask_github = False
+                if merged_pr:
+                    remote_only, remote_only_failed = _remote_only_commits(
+                        root, clone, branch, base,
+                        merged_head=merged_pr.get("headRefOid"))
+            if remote_only:
+                verdict = "unfinished"
+                landed_locally = True
+        elif verdict in ("leftover", "unfinished"):
             remote_only, remote_only_failed = _remote_only_commits(
                 root, clone, branch, base,
                 merged_head=merged_pr.get("headRefOid") if merged_pr else None)
@@ -799,6 +843,17 @@ def _sweep_one(root, args):
             print("%s: could not fetch -- the verdict below is off the refs "
                   "already on disk and may be stale" % (entry["clone"],))
         if entry["verdict"] == "clean":
+            # `clean` is silent by design -- most clones are clean and a line
+            # each would bury the two that are not. But a `clean` reached
+            # while the remote check *failed* is the one thing this file has
+            # refused twice to report as success, so it gets its own line
+            # rather than the shared one below, which reads "nothing above
+            # rules it out" and would have nothing above it.
+            if entry["remote_only_failed"]:
+                print("%s: [clean] here, but could not list what origin/%s "
+                      "carries -- `git log` failed, so nothing rules out a "
+                      "commit sitting on the remote"
+                      % (entry["clone"], entry["branch"]))
             continue
         # The verdict word, printed. `prompt.md` step 1c describes this output
         # by the words `leftover` and `unfinished`, the tool printed only
@@ -814,12 +869,16 @@ def _sweep_one(root, args):
                   "the branch is litter" % (entry["clone"], entry["branch"],
                                             landed))
             if entry["rests_on_clock"]:
-                # The merged commit is not in this clone, so "nothing was
-                # added after the merge" was decided by comparing two clocks
-                # rather than by the commit graph. Say so before anyone
-                # deletes a branch on the strength of it.
-                print("    the merged commit is not in this clone, so that "
-                      "rests on the commit date being no later than the "
+                # "Nothing was added after the merge" was decided by comparing
+                # two clocks rather than by the commit graph. Say so before
+                # anyone deletes a branch on the strength of it. The cause is
+                # named as a pair rather than asserted, because there are two
+                # of them and this line used to claim only the first -- the
+                # ancestor case that used to land here is answered from the
+                # graph as of Cycle 386.
+                print("    the graph could not answer -- the merged commit is "
+                      "not in this clone, or this branch was rewritten -- so "
+                      "that rests on the commit date being no later than the "
                       "merge, not on the history")
         elif entry["verdict"] == "no-base":
             print("%s: [no-base] no origin/main or origin/master to compare "
