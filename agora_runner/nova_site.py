@@ -316,7 +316,7 @@ def journal_payload():
     # from either source -- so there is nothing to strip, and asking the
     # parser to look for one lets an entry that quotes `## Entries` in its
     # prose cut every newer entry off the front of the feed.
-    entries = parse_journal(markdown, stamps)
+    entries = parse_journal(markdown, stamps, written_by_cycle=times)
     # `times` is keyed by the cycle number in the *filename*, which is the
     # only reliable answer to "did this cycle write an entry": the heading
     # is written by hand and the filename is not, so the two disagree

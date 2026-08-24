@@ -818,7 +818,7 @@ def parse_journal_file(markdown, times_by_cycle=None):
     return parse_journal(entries_body(markdown), times_by_cycle)
 
 
-def parse_journal(markdown, times_by_cycle=None):
+def parse_journal(markdown, times_by_cycle=None, written_by_cycle=None):
     """An entries body -> a list of entries in the order they appear (newest first).
 
     An entries body is what every hourly path holds: the site's feed,
@@ -836,6 +836,17 @@ def parse_journal(markdown, times_by_cycle=None):
     when it expected to finish. The write time is measured, and a heading
     with no cycle number (his own messages, an addendum) keeps its typed
     stamp rather than borrowing someone else's.
+
+    `written_by_cycle` is the *unmodified* `entry_times` map, and it exists
+    because `times_by_cycle` no longer always is one. `with_start_times`
+    replaces the write time with the cycle's wake time for display, and
+    `lastWrittenAt` -- which `stall_notice` keys the "Nova has stopped
+    writing" alarm on -- must not move with it: a card reading 45 minutes
+    earlier would make a healthy loop look silent for 45 minutes longer
+    than it was, which is the false stall Cycle 376 spent its whole run
+    removing. So the display stamp and the written stamp are two fields
+    now. Omit it and `writtenDate`/`writtenTime` mirror `date`/`time`,
+    which is what every caller that passes one map still means.
     """
     if not markdown:
         return []
@@ -872,6 +883,11 @@ def parse_journal(markdown, times_by_cycle=None):
             seen_per_cycle[cycle] = nth + 1
             if nth < len(stamps):
                 entry["date"], entry["time"] = stamps[nth]
+            written = (written_by_cycle or {}).get(cycle) or []
+            if nth < len(written):
+                entry["writtenDate"], entry["writtenTime"] = written[nth]
+        entry.setdefault("writtenDate", entry["date"])
+        entry.setdefault("writtenTime", entry["time"])
         label, detail = split_outcome(outcome)
         raw_body, ask = split_ask(raw_body)
         entry["ask"] = ask
@@ -1538,11 +1554,18 @@ def _newest_written_at(entries):
         # it was supposed to raise. See `cycle_stub`.
         if entry.get("kind") == "silence":
             continue
-        if not entry.get("date") or not entry.get("time"):
+        # `writtenDate`/`writtenTime` and not `date`/`time`: since the card
+        # started showing when a cycle *woke*, the two differ by the length
+        # of the run and only one of them is what this function is named
+        # after. `parse_journal` mirrors them when there is nothing to
+        # separate, so this is the same read it always was for every caller
+        # that passes one map.
+        date = entry.get("writtenDate") or entry.get("date")
+        time_of_day = entry.get("writtenTime") or entry.get("time")
+        if not date or not time_of_day:
             continue
         try:
-            stamp = datetime.strptime(
-                entry["date"] + " " + entry["time"], "%Y-%m-%d %H:%M")
+            stamp = datetime.strptime(date + " " + time_of_day, "%Y-%m-%d %H:%M")
         except ValueError:
             continue
         return stamp.replace(tzinfo=OSLO)

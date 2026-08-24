@@ -3151,6 +3151,39 @@ def test_a_conversation_for_a_cycle_that_wrote_nothing_adds_no_entry():
     assert set(stamps) == {381}
 
 
+def test_the_stall_alarm_still_keys_on_the_write_time_not_the_wake_time():
+    """The card moved; `lastWrittenAt` must not.
+
+    `stall_notice.due` keys the "Nova has stopped writing" push on this
+    field, and `_running_now` measures silence against it. A wake time here
+    reads as up to 45 more minutes of silence than actually happened --
+    which is the false stall Cycle 376 spent a whole run removing, at a
+    cadence where two intervals is already shorter than one cycle.
+    """
+    from agora_runner.nova_journal import build_status, parse_journal
+
+    markdown = "### 2026-08-24 20:54 (Oslo) — Cycle 381 — A number of its own\n\nProse."
+    written = {381: [("2026-08-24", "20:54")]}
+    woke = {381: [("2026-08-24", "20:40")]}
+
+    entries = parse_journal(markdown, woke, written_by_cycle=written)
+    assert (entries[0]["date"], entries[0]["time"]) == ("2026-08-24", "20:40")
+    assert build_status(entries)["lastWrittenAt"].startswith("2026-08-24T20:54")
+
+
+def test_an_entry_with_only_one_stamp_map_reports_that_stamp_as_written():
+    """Every caller but `journal_payload` passes one map and means both
+    things by it -- `lint_entry`, the comment lookup, `parse_journal_file`.
+    Mirroring is what keeps this change confined to the page it is for."""
+    from agora_runner.nova_journal import build_status, parse_journal
+
+    entries = parse_journal(
+        "### 2026-08-24 20:54 (Oslo) — Cycle 381 — A number of its own\n\nProse.",
+        {381: [("2026-08-24", "20:40")]},
+    )
+    assert build_status(entries)["lastWrittenAt"].startswith("2026-08-24T20:40")
+
+
 def test_api_journal_serves_the_start_time_end_to_end():
     """The one test that pins the wiring rather than the arithmetic.
 
