@@ -3384,7 +3384,7 @@ def test_a_digest_asked_for_the_old_way_is_still_the_whole_digest(journal_md, di
 def test_the_handoff_section_survives_every_window(journal_md, digest_md):
     """`nextCycle` is the header, not the feed -- it is not part of what
     gets sliced, and it renders on every window the same way the status
-    header does. `needsthe owner` used to be asserted here too; the block was
+    header does. `needsEdvard` used to be asserted here too; the block was  (not-prose: an identifier)
     deleted from the page in #229 and its server half in #236."""
     with _both(journal_md, digest_md):
         _, _, windowed = _get("/api/digest?limit=1")

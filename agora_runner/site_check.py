@@ -54,7 +54,7 @@ ABSENT_PATH = "/__site_check_absent__"
 # valid JSON hides that completely.
 API_KEYS = {
     "/api/journal": ("entries", "status"),
-    # `needsthe owner` was here until #236. It stopped being served when the
+    # `needsEdvard` was here until #236. It stopped being served when the  (not-prose: an identifier)
     # Needs the owner block's server half was deleted, and a key listed here
     # that the payload no longer carries is a permanent false alarm on a
     # healthy site -- the exact failure this module exists to catch, aimed

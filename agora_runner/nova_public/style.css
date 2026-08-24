@@ -1328,7 +1328,7 @@ body.nav-open { overflow: hidden; }
  * Nova" -- on 08-17 every capture on the issues board was finished and
  * the whole section was still painted as outstanding work. */
 /* `.captures-done` styled the "Done, not yet cleared" section, removed
-   from `renderBoardthe owner` on 2026-08-20 at the owner's ask. No element
+   from `renderBoardEdvard` on 2026-08-20 at the owner's ask. No element  (not-prose: an identifier)
    carries the class any more, so these two rules were dead. */
 .capture-item-done { opacity: 0.75; }
 
