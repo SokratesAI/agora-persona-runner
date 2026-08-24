@@ -4154,6 +4154,9 @@
          * took this" looking identical. Found by review on #223. */
         status.textContent = "saving…";
         status.className = "capture-item-status";
+        // The row is hidden at rest, and this message exists precisely so
+        // an in-flight rating does not look like a tap that missed.
+        actions.hidden = false;
         var rest = capture.body || "";
         if (!rest) {
           /* A bullet that is nothing but a glyph rewrites to the empty
@@ -4338,9 +4341,16 @@
       if (!one.contains(body)) return;
       openActionSheet("Capture", sheetButtons, { swallowNextClick: fromGesture });
     });
-    body.setAttribute("role", "button");
+    /* Focusable, and deliberately not `role="button"`. This element is his
+     * sentence, with the rating control and any links inside it, and an
+     * `aria-label` on a `role="button"` replaces all of that as the
+     * accessible name -- so the capture text would stop being reachable
+     * to a screen reader in exchange for announcing a gesture it cannot
+     * make. `aria-keyshortcuts` says the same thing without eating the
+     * contents. Found reviewing the merged diff. */
+    body.classList.add("capture-hold");
     body.tabIndex = 0;
-    body.setAttribute("aria-label", "Actions for capture " + (index + 1));
+    body.setAttribute("aria-keyshortcuts", "Enter Space");
 
     return one;
   }
@@ -6194,6 +6204,10 @@
     function send(url, body) {
       status.textContent = "saving…";
       status.className = "capture-item-status";
+      // The board captures' `send` got this and this one did not -- a
+      // straight asymmetry, and "saving…" written into a hidden row is a
+      // tap with nothing to show for it.
+      actions.hidden = false;
       busy(true);
       return fetch(url, {
         method: "POST",
@@ -6262,11 +6276,22 @@
     var sheetButtons = [editBtn].concat(converts, [delBtn]);
     if (holdTarget) {
       bindHoldMenu(holdTarget, function (fromGesture) {
+        /* Not while the editor is open. A board capture gets this for free
+         * -- its editor *replaces* the held node -- but a note's editor is
+         * a sibling in `actions`, so the message stays right above the box
+         * and stays holdable. Reopening would call `actions.textContent =
+         * ""` and rebuild the box from `note.text`, throwing away
+         * everything typed, with no confirm. Found reviewing the merged
+         * diff. */
+        if (actions.querySelector(".capture-input")) return;
         openActionSheet("Note", sheetButtons, { swallowNextClick: fromGesture });
       });
-      holdTarget.setAttribute("role", "button");
+      // Same as a board capture, and the reason bites harder here: a
+       // `role="button"` with a label on every waiting message would make
+       // the transcript itself unreadable to a screen reader.
+      holdTarget.classList.add("capture-hold");
       holdTarget.tabIndex = 0;
-      holdTarget.setAttribute("aria-label", "Actions for this note");
+      holdTarget.setAttribute("aria-keyshortcuts", "Enter Space");
     }
     return actions;
   }
@@ -6948,6 +6973,18 @@
     // chart of the old page on top of the new one -- and the figure it
     // points at is gone, so nothing could close it.
     closeFullChart();
+    /* And the action sheet, for a sharper version of the same reason. Its
+     * buttons close over one board, one index and one capture's text, so a
+     * sheet stranded over the next page is a live Delete pointing at a row
+     * that is no longer on screen -- and `loadBoard` would early-return on
+     * the repaint, because the URL no longer matches, leaving the failure
+     * written into a status node `renderNotes` has already destroyed.
+     *
+     * An in-app link is safe by accident today: the delegated click
+     * handler runs after the sheet's own document-capture listener has
+     * closed it. `popstate` is not, and the phone back gesture is
+     * `popstate`. Found reviewing the merged diff. */
+    closeActionSheet();
     captureHome();
     stopScrollWatch();
     var here = route(window.location.pathname);
