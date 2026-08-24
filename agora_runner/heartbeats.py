@@ -537,6 +537,32 @@ def run_heartbeat(heartbeat):
     except Exception as e:
         result = f"failed: {e}"[:200]
         log(f"heartbeat {heartbeat['name']} failed: {e}")
+        # Sokrates' proposal on Edvard's `issues.md`, 2026-08-24: a run that
+        # dies leaves `lastResult` on the heartbeat and a line in a log
+        # nobody opens, and the feed -- the one place Edvard actually looks
+        # -- shows nothing at all. One marker, so the hole is visible where
+        # the entries are. `cycle_stub` says what it can and cannot cover
+        # and why it must not count as the loop writing.
+        #
+        # Nova's own cycle heartbeat only, through the same predicate
+        # `cycle_health` and `stall_notice` already share rather than a
+        # fourth copy of its three conditions: a monitoring heartbeat that
+        # fails writes no journal entry when it succeeds either, so a
+        # marker for it would be a card about a thing that has no cards.
+        # Wrapped, and `write_stub`'s own "never raises" is not enough for
+        # it. This block sits between the failure and the PATCH below that
+        # clears `forceRun` and sets `lastResult`, on a bare thread with no
+        # enclosing handler -- anything escaping here kills the thread, so
+        # the heartbeat stays `running` forever and never fires again. A
+        # marker is worth strictly less than that.
+        try:
+            from agora_runner.cycle_health import nova_cycle_heartbeats
+            from agora_runner.cycle_stub import write_stub
+
+            if nova_cycle_heartbeats([heartbeat]):
+                write_stub(result)
+        except Exception as marker_error:  # noqa: BLE001 -- see above
+            log(f"heartbeat {heartbeat['name']}: silence marker failed: {marker_error!r}")
 
     # 2026-08-05, Edvard: "it is hard for me to know when you are done. I just
     # assume you are done when you post the final response and the Journal."
