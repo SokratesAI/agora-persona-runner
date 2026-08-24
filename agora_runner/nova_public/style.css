@@ -2315,6 +2315,86 @@ body.has-full-chart { overflow: hidden; }
 .attach-btn:hover:not(:disabled) { border-color: var(--accent); }
 .attach-btn:disabled { color: var(--dim); cursor: default; }
 
+/* The tray of things picked and not yet sent (Cycle 377).
+ *
+ * The owner, ideas board 2026-08-24: *"Lets me preview a miniatyr version of
+ * the uploaded images in the Nova app instead of the text that shows up in
+ * the input box. Also let me upload multiple (at once) and cross them out if
+ * i want to not send them after upload."*
+ *
+ * `flex-wrap` and not a row that scrolls: at 360px three chips already
+ * overflow, and a sideways scroll inside a composer is a thing he has
+ * reported as a bug on this app twice. Wrapping costs vertical space in a
+ * place that has it — the tray is empty except in the seconds between
+ * picking and sending. */
+.attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0;
+}
+
+.attach-tray[hidden] { display: none; }
+
+/* Each chip is the thumbnail plus its ✕, sized by the picture rather than
+ * fixed: a portrait phone screenshot and a landscape desktop one both have
+ * to be recognisable at this size, and pinning either dimension crops or
+ * distorts half of them. 64px tall is what makes four of them fit on one
+ * row of a 360px screen. */
+.attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel, transparent);
+  max-width: 100%;
+}
+
+.attach-thumb {
+  display: block;
+  height: 64px;
+  width: auto;
+  max-width: 40vw;
+  object-fit: cover;
+  border-radius: 5px;
+  /* Set before the bytes arrive so a row of chips does not jump as each
+   * thumbnail loads -- same reason as `.attach-img`. */
+  background: var(--line);
+}
+
+/* Anything that is not a picture. `break-word` because a filename off a
+ * phone is often one long token with no space in it. */
+.attach-chip-name {
+  font-size: 0.85rem;
+  color: var(--text);
+  word-break: break-word;
+  max-width: 55vw;
+}
+
+/* 32px rather than the 44px the attach button gets. It is deliberately
+ * below the recommended touch target: it sits *on* the thing it destroys,
+ * so a generous one would be easy to hit by accident while trying to look
+ * at the picture, and the cost of a miss is asymmetric -- tapping the
+ * thumbnail does nothing, tapping the ✕ throws the upload away. */
+.attach-chip-remove {
+  flex: none;
+  min-width: 32px;
+  min-height: 32px;
+  background: none;
+  color: var(--dim);
+  border: none;
+  border-radius: 999px;
+  padding: 0;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.attach-chip-remove:hover { color: var(--accent); }
+
 /* `max-width: 100%` and not a fixed width: a phone screenshot is taller
  * than it is wide and a desktop one is the reverse, so anything that
  * pins one dimension distorts half of them. The height cap is what

@@ -5188,34 +5188,158 @@ describe("the attach button is on the page, not just in the source", () => {
   /* The insert side, which is what decides whether a `!` is written at all.
    * Cycle 309: the render tests above pin what happens to a line that
    * already exists, and would all stay green if `buildAttach` wrote `![...]`
-   * for a PDF -- which is the bug they look like they cover. */
-  async function pickFile(window, { name, type, isImage }) {
-    const input = window.document.querySelector("#capture-form .attach-input");
-    const box = window.document.querySelector("#capture-form textarea");
-    box.value = "";
+   * for a PDF -- which is the bug they look like they cover.
+   *
+   * Cycle 377 moved *where* it is written. The markdown no longer lands in
+   * the textarea; it lands in a tray as a chip and is composed at send
+   * time. So these read the send payload rather than `box.value` -- which
+   * is the stronger assertion of the two anyway, since the payload is what
+   * the owner's board actually receives. */
+  const CAPTURE_INPUT = "#capture-form .attach-input";
+  const CAPTURE_TRAY = "#capture-form .attach-tray";
+
+  /** Pick `files` (each `{name, type, isImage}`) on a composer's input, and
+   *  wait for every one of them to land in the tray. */
+  async function pick(window, inputSelector, traySelector, files) {
+    const input = window.document.querySelector(inputSelector);
+    const tray = window.document.querySelector(traySelector);
+    const before = tray.querySelectorAll(".attach-chip").length;
     Object.defineProperty(input, "files", {
       configurable: true,
-      value: [new window.File([new Uint8Array([1, 2, 3])], name, { type })],
+      value: files.map((f) => new window.File([new Uint8Array([1, 2, 3])], f.name, { type: f.type })),
     });
-    window.fetch = () => res({ ok: true, name: "x", url: "/api/upload/x." + name.split(".").pop(), bytes: 3, isImage });
+    // One response per file, in the order they are uploaded, so a batch can
+    // be told apart chip by chip rather than all sharing one URL.
+    let served = 0;
+    window.fetch = () => {
+      const file = files[Math.min(served, files.length - 1)];
+      served += 1;
+      return res({
+        ok: true,
+        name: "x" + served,
+        url: "/api/upload/x" + served + "." + file.name.split(".").pop(),
+        bytes: 3,
+        isImage: file.isImage,
+      });
+    };
     input.dispatchEvent(new window.Event("change"));
-    // `FileReader` resolves on a task, and the POST on a microtask after it.
-    for (let i = 0; i < 20 && !box.value; i++) await new Promise((r) => setTimeout(r, 5));
-    return box.value;
+    // `FileReader` resolves on a task and the POST on a microtask after it,
+    // and the batch runs them one after another -- so allow per file.
+    for (let i = 0; i < 40 * files.length; i++) {
+      if (tray.querySelectorAll(".attach-chip").length >= before + files.length) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return tray;
   }
 
-  test("picking a picture writes an image link", async () => {
+  /** What `send` would POST, by clicking a capture button with `fetch` stubbed. */
+  async function captureBody(window) {
+    let sent = null;
+    window.fetch = (url, options) => {
+      sent = JSON.parse(options.body);
+      return res({ ok: true });
+    };
+    const status = window.document.querySelector(".capture-status");
+    status.textContent = "";
+    window.document.querySelector('#capture-form [data-target="issues"]').click();
+    // Waiting on the *status line*, not on the tray, because one of the
+    // tests below asserts what happened to the tray -- and a wait that
+    // watches the thing it is about to assert can only ever pass.
+    for (let i = 0; i < 40 && !/^saved to /.test(status.textContent); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return sent;
+  }
+
+  test("picking a picture puts a thumbnail in the tray, not text in the box", async () => {
     const window = await loadSite("/");
-    assert.match(await pickFile(window, { name: "shot.jpg", type: "image/jpeg", isImage: true }),
-      /^!\[shot\.jpg\]\(\/api\/upload\/x\.jpg\)$/);
+    const box = window.document.querySelector("#capture-form textarea");
+    box.value = "look at this";
+    const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
+      [{ name: "shot.jpg", type: "image/jpeg", isImage: true }]);
+
+    // The ask itself: "preview a miniatyr version of the uploaded images
+    // ... instead of the text that shows up in the input box."
+    const thumb = tray.querySelector("img.attach-thumb");
+    assert.ok(thumb, "no thumbnail in the tray");
+    assert.equal(thumb.getAttribute("src"), "/api/upload/x1.jpg");
+    assert.equal(thumb.getAttribute("alt"), "shot.jpg",
+      "four screenshots in a tray are told apart by their alt text alone");
+    assert.equal(box.value, "look at this", "the markdown was written into the box after all");
+    assert.equal(tray.hidden, false, "a tray with a chip in it is hidden");
+
+    assert.equal((await captureBody(window)).text,
+      "look at this\n\n![shot.jpg](/api/upload/x1.jpg)");
   });
 
-  test("picking a file writes a plain link, with no bang", async () => {
+  test("picking a file gets a named chip and a plain link, with no bang", async () => {
     const window = await loadSite("/");
-    const written = await pickFile(window, { name: "runner.log", type: "", isImage: false });
-    assert.match(written, /^\[runner\.log\]\(\/api\/upload\/x\.log\)$/);
-    assert.equal(written.startsWith("!"), false,
+    window.document.querySelector("#capture-form textarea").value = "";
+    const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
+      [{ name: "runner.log", type: "", isImage: false }]);
+    assert.equal(tray.querySelector("img.attach-thumb"), null,
+      "a log file has nothing to show and must not paint a broken image");
+    assert.match(tray.querySelector(".attach-chip-name").textContent, /runner\.log/);
+
+    // A screenshot with no sentence under it is still worth filing, which
+    // is why this sends at all with an empty box.
+    const body = await captureBody(window);
+    assert.equal(body.text, "[runner.log](/api/upload/x1.log)");
+    assert.equal(body.text.startsWith("!"), false,
       "a `!` here paints a broken-image icon for a file that has nothing to show");
+  });
+
+  test("several files can be picked at once, and each gets its own chip", async () => {
+    const window = await loadSite("/");
+    window.document.querySelector("#capture-form textarea").value = "";
+    const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY, [
+      { name: "one.jpg", type: "image/jpeg", isImage: true },
+      { name: "two.jpg", type: "image/jpeg", isImage: true },
+      { name: "three.png", type: "image/png", isImage: true },
+    ]);
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 3,
+      "picking three files did not produce three chips");
+    assert.equal(
+      window.document.querySelector(CAPTURE_INPUT).multiple, true,
+      "the picker only lets him choose one file at a time",
+    );
+    assert.equal((await captureBody(window)).text,
+      "![one.jpg](/api/upload/x1.jpg)\n\n![two.jpg](/api/upload/x2.jpg)\n\n![three.png](/api/upload/x3.png)");
+  });
+
+  test("crossing one out drops it from what gets sent, and keeps the rest", async () => {
+    const window = await loadSite("/");
+    window.document.querySelector("#capture-form textarea").value = "";
+    const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY, [
+      { name: "keep.jpg", type: "image/jpeg", isImage: true },
+      { name: "drop.jpg", type: "image/jpeg", isImage: true },
+    ]);
+    const remove = tray.querySelectorAll(".attach-chip")[1].querySelector(".attach-chip-remove");
+    assert.ok(remove, "no way to cross an attachment out");
+    assert.equal(remove.getAttribute("aria-label"), "Remove drop.jpg",
+      "the ✕ is a glyph, so it needs a label that names what it destroys");
+    remove.click();
+
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 1);
+    assert.equal((await captureBody(window)).text, "![keep.jpg](/api/upload/x1.jpg)");
+  });
+
+  test("an empty tray is hidden, and sending clears it", async () => {
+    const window = await loadSite("/");
+    const tray = window.document.querySelector(CAPTURE_TRAY);
+    assert.ok(tray, "no tray on the capture form");
+    assert.equal(tray.hidden, true, "an empty tray takes up room under the box");
+
+    window.document.querySelector("#capture-form textarea").value = "";
+    await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
+      [{ name: "shot.jpg", type: "image/jpeg", isImage: true }]);
+    await captureBody(window);
+    // Cleared only on a confirmed write, the same rule the box follows: a
+    // tray that emptied itself on a failure would lose the upload it exists
+    // to hold on to.
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 0,
+      "the picture stayed in the tray after it was sent, so the next capture carries it too");
+    assert.equal(tray.hidden, true);
   });
 
   test("the comment drawer has one too", async () => {

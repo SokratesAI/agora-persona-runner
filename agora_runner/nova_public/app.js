@@ -171,16 +171,40 @@
    * The upload happens on *pick*, not on send. Two reasons, and the second
    * is the one that decided it: a 3MB POST from a phone takes long enough
    * that doing it inside send() would make the send button look hung, and
-   * the markdown line lands in the textarea where he can see it, edit it,
-   * or delete it before committing to anything. The composer stays a plain
-   * text box that happens to have been typed into for him.
+   * an attachment that is already stored can be shown back to him before he
+   * commits to anything.
+   *
+   * **Where it is shown back changed in Cycle 377, and that is this ask.**
+   * The owner, ideas board 2026-08-24: *"Lets me preview a miniatyr version
+   * of the uploaded images in the Nova app instead of the text that shows up
+   * in the input box. Also let me upload multiple (at once) and cross them
+   * out if i want to not send them after upload."* Until now the markdown
+   * line was appended into the textarea, which made three things awkward at
+   * once: he could not see what he had picked, a second pick pushed his own
+   * sentence further up a box he is reading on a 360px phone, and "delete
+   * it" meant selecting a 45-character URL by hand.
+   *
+   * So the attachments live in a tray beside the box instead — one chip per
+   * file, a thumbnail for a picture and its name for anything else, each
+   * with an ✕. The markdown is composed at send time by `markdown()` rather
+   * than typed into the box. That is a real trade and it is worth naming:
+   * he loses the ability to edit the alt text or move the line around inside
+   * his sentence, and he gains seeing it and being able to drop it. He asked
+   * for the second one.
    *
    * `FileReader.readAsDataURL` rather than an ArrayBuffer walk: the server
    * accepts a `data:` URL as-is (`store_upload` splits on the comma), so
    * this is one call with no manual base64 in JavaScript. */
   function buildAttach(opts) {
+    opts = opts || {};
     var input = el("input", "attach-input");
     input.type = "file";
+    // The second half of his ask. One `change` now carries a list, and the
+    // uploads run one after another rather than all at once: a phone
+    // picking four screenshots would otherwise open four simultaneous
+    // multi-megabyte POSTs, and the status line could only honestly
+    // describe one of them at a time anyway.
+    input.multiple = true;
     // No `accept` at all. It was `image/*`, and on Android that is not a
     // filter over a file browser -- it is what makes the picker open
     // Google Photos with no way out. The owner, 2026-08-21: "It seems i only
@@ -220,52 +244,167 @@
 
     button.addEventListener("click", function () { input.click(); });
 
-    input.addEventListener("change", function () {
-      var file = input.files && input.files[0];
-      if (!file) return;
-      busy(true);
-      status("uploading " + file.name + "…", false);
-      var reader = new FileReader();
-      reader.onerror = function () {
-        busy(false);
-        status("could not read that file", true);
-      };
-      reader.onload = function () {
-        fetch("/api/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            filename: file.name,
-            contentType: file.type,
-            data: String(reader.result || ""),
-          }),
-        })
-          .then(function (r) { return r.json().catch(function () { return {}; }); })
-          .then(function (result) {
-            if (!result || !result.ok) {
-              throw new Error((result && (result.message || result.error)) || "upload failed");
-            }
-            // `![…]` only for something that renders as a picture. The
-            // server decides that, not `file.type` -- Android reports `""`
-            // for plenty of files and the extension lookup happens server
-            // side. A `![pdf]` here would paint a broken image icon.
-            var bang = result.isImage === false ? "" : "!";
-            opts.onInsert(bang + "[" + (file.name || "file") + "](" + result.url + ")");
-            status("attached", false);
+    /* What has been uploaded and not yet sent: `{name, url, isImage}` each.
+     *
+     * This is the composer's state now, not the textarea's, which is the
+     * whole shape of the change. `onChange` is how a composer that has a
+     * draft store keeps it across a re-render — the journal drawer is
+     * rebuilt on every poll, and an attachment that survived only in this
+     * closure would disappear from under him while he was still typing. */
+    var pending = [];
+    var tray = el("div", "attach-tray");
+
+    function markdownFor(item) {
+      // `![…]` only for something that renders as a picture. The server
+      // decides that, not `file.type` -- Android reports `""` for plenty
+      // of files and the extension lookup happens server side. A `![pdf]`
+      // here would paint a broken image icon.
+      return (item.isImage ? "!" : "") + "[" + item.name + "](" + item.url + ")";
+    }
+
+    function render() {
+      tray.textContent = "";
+      tray.hidden = pending.length === 0;
+      pending.forEach(function (item, index) {
+        var chip = el("div", "attach-chip");
+        if (item.isImage) {
+          var thumb = el("img", "attach-thumb");
+          thumb.src = item.url;
+          // The filename, not "image": with four screenshots in the tray
+          // the alt text is the only thing that tells them apart to a
+          // screen reader, and it is what he named them.
+          thumb.alt = item.name;
+          chip.appendChild(thumb);
+        } else {
+          chip.appendChild(el("span", "attach-chip-name", "📎 " + item.name));
+        }
+        /* "cross them out if i want to not send them after upload."
+         *
+         * It drops the attachment from this send only. The bytes stay on
+         * the server, because `store_upload` already wrote them and there
+         * is no delete endpoint -- and inventing one to make an ✕ feel
+         * complete would be a second, destructive feature he did not ask
+         * for. An orphaned upload costs disk and nothing else. */
+        var remove = el("button", "attach-chip-remove", "✕");
+        remove.type = "button";
+        remove.title = "Remove " + item.name;
+        remove.setAttribute("aria-label", "Remove " + item.name);
+        remove.addEventListener("click", function () {
+          pending.splice(index, 1);
+          render();
+          changed();
+        });
+        chip.appendChild(remove);
+        tray.appendChild(chip);
+      });
+    }
+
+    function changed() {
+      if (opts.onChange) opts.onChange(pending.slice());
+    }
+
+    render();
+
+    /* One file, from picked to sitting in the tray. Rejects rather than
+     * reporting, so the loop below can count how many of a batch failed
+     * and say so once instead of overwriting the status line per file. */
+    function upload(file) {
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onerror = function () { reject(new Error("could not read " + file.name)); };
+        reader.onload = function () {
+          fetch("/api/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              filename: file.name,
+              contentType: file.type,
+              data: String(reader.result || ""),
+            }),
           })
-          .catch(function (err) { status(String(err.message || err), true); })
-          .then(function () {
-            busy(false);
-            // Cleared so picking the *same* file twice still fires
-            // `change` -- otherwise a failed upload cannot be retried
-            // without choosing a different image first.
-            input.value = "";
+            .then(function (r) { return r.json().catch(function () { return {}; }); })
+            .then(function (result) {
+              if (!result || !result.ok) {
+                throw new Error((result && (result.message || result.error)) || "upload failed");
+              }
+              pending.push({
+                name: file.name || "file",
+                url: result.url,
+                isImage: result.isImage !== false,
+              });
+              render();
+              changed();
+              resolve();
+            })
+            .catch(reject);
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    input.addEventListener("change", function () {
+      var files = Array.prototype.slice.call(input.files || []);
+      if (!files.length) return;
+      busy(true);
+      var attached = 0;
+      var lastError = "";
+      files
+        .reduce(function (chain, file, index) {
+          return chain.then(function () {
+            status(
+              files.length > 1
+                ? "uploading " + (index + 1) + " of " + files.length + " — " + file.name + "…"
+                : "uploading " + file.name + "…",
+              false,
+            );
+            return upload(file).then(
+              function () { attached += 1; },
+              // One bad file in a batch of four must not throw away the
+              // three good ones, so a rejection is recorded and the chain
+              // continues. The last failure is the one reported: a status
+              // line is one sentence and the most recent is the one he
+              // can still act on by picking that file again.
+              function (err) { lastError = String((err && (err.message || err)) || "upload failed"); },
+            );
           });
-      };
-      reader.readAsDataURL(file);
+        }, Promise.resolve())
+        .then(function () {
+          busy(false);
+          // Cleared so picking the *same* file twice still fires
+          // `change` -- otherwise a failed upload cannot be retried
+          // without choosing a different image first.
+          input.value = "";
+          if (lastError) {
+            status(attached ? lastError + " (" + attached + " attached)" : lastError, true);
+          } else {
+            status(attached === 1 ? "attached" : "attached " + attached + " files", false);
+          }
+        });
     });
 
-    return { button: button, input: input };
+    return {
+      button: button,
+      input: input,
+      tray: tray,
+      /** How many attachments are waiting. A composer with no typed text
+       *  but a full tray still has something to send. */
+      count: function () { return pending.length; },
+      /** The markdown for everything in the tray, joined by `separator`.
+       *  Board comments may not contain a line break, so that caller
+       *  passes a space; the others take the default blank line. */
+      markdown: function (separator) {
+        return pending
+          .map(markdownFor)
+          .join(separator === undefined ? "\n\n" : separator);
+      },
+      /** Emptied only once the server has confirmed the send, the same
+       *  rule the text boxes already follow. */
+      clear: function () { pending = []; render(); changed(); },
+      /** Repopulate from a draft store after a re-render. Deliberately
+       *  silent -- `onChange` reports what the reader did, and replaying
+       *  it here would write the draft back over itself. */
+      restore: function (list) { pending = (list || []).slice(); render(); },
+    };
   }
 
   /* Append `text` to `container` as paragraphs, rendering an attached
@@ -919,6 +1058,11 @@
   /* Unsent comment text, keyed by which box it was typed into, so it
    * survives the re-render that discards the box. See `renderComments`. */
   var drafts = {};
+  /* The same, for attachments picked and not yet sent. Separate from
+   * `drafts` because it holds objects rather than a string, and because
+   * the two are cleared by different things: text by `box.value = ""`,
+   * attachments by `attach.clear()`. */
+  var attachDrafts = {};
 
   /* There used to be an `expanded` map here, holding whether a folded thread
    * had been opened. It is gone with the "Show earlier replies" control it
@@ -1024,10 +1168,14 @@
     actions.appendChild(status);
     /* The attach button rides in the same row as Comment, before it, so
      * the primary action stays at the right edge where it already was.
-     * It writes into the box rather than into the request, which is what
-     * lets the draft-preserving `input` handler below see it: without the
-     * explicit `drafts` write, an image attached and then left unsent
-     * would vanish on the next poll while the typed text survived. */
+     *
+     * Its tray goes above the row and below the box, where the previews sit
+     * directly under the sentence they belong to.
+     *
+     * `attachDrafts` is the picture half of `drafts` and exists for the
+     * same reason: a render throws this whole drawer away and builds a new
+     * one, so an image attached and then left unsent while a poll fires
+     * would vanish while the typed text survived. */
     var attach = buildAttach({
       // Send is blocked while the image is going up, or the comment sends
       // without it -- see `busy` in `buildAttach`.
@@ -1036,12 +1184,15 @@
         status.textContent = text;
         status.className = isError ? "comment-status is-error" : "comment-status";
       },
-      onInsert: function (markdown) {
-        box.value = (box.value ? box.value.replace(/\s*$/, "") + "\n\n" : "") + markdown;
-        drafts[target.key] = box.value;
-        fit();
+      onChange: function (list) {
+        if (list.length) attachDrafts[target.key] = list;
+        else delete attachDrafts[target.key];
       },
     });
+    if (attachDrafts[target.key]) attach.restore(attachDrafts[target.key]);
+    // Appended, not inserted: `actions` is not a child of `drawer` yet at
+    // this point, so this lands between the box and the row that follows.
+    drawer.appendChild(attach.tray);
     actions.appendChild(attach.input);
     actions.appendChild(attach.button);
     var send = el("button", "comment-send", "Comment");
@@ -1251,17 +1402,23 @@
 
     function submit() {
       var text = box.value.trim();
-      if (!text) {
+      /* A tray with a screenshot in it and nothing typed is a comment. It
+       * used to be one by accident -- the markdown line was *in* the box,
+       * so `box.value` was non-empty -- and moving the attachments out
+       * would have made "send me just this picture" hit the empty-box
+       * guard and silently do nothing. */
+      if (!text && !attach.count()) {
         box.focus();
         return;
       }
+      var body = [text, attach.markdown()].filter(Boolean).join("\n\n");
       send.disabled = true;
       status.textContent = "saving…";
       status.className = "comment-status";
       fetch("/api/comment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(target.body(text)),
+        body: JSON.stringify(target.body(body)),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
@@ -1271,6 +1428,7 @@
           // wiped itself on a failure would lose what it exists to catch.
           box.value = "";
           delete drafts[target.key];
+          attach.clear();
           fit();
           status.textContent = "saved";
           // The save already succeeded; this only repaints the bubbles to
@@ -3396,18 +3554,22 @@
 
       send.addEventListener("click", function () {
         var text = box.value.trim().replace(/\s*\n\s*/g, " ");
-        if (!text) {
+        if (!text && !attach.count()) {
           status.textContent = "Nothing to send.";
           status.className = "item-comment-status is-error";
           return;
         }
+        // A space, not a blank line: a board comment may not contain a
+        // line break at all -- the server refuses one -- which is why the
+        // line above flattens his typing too.
+        var body = [text, attach.markdown(" ")].filter(Boolean).join(" ");
         busy(true);
         status.textContent = "sending…";
         status.className = "item-comment-status";
         fetch("/api/board/comment", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target: board, number: item.number, text: text }),
+          body: JSON.stringify({ target: board, number: item.number, text: body }),
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (result) {
@@ -3415,6 +3577,7 @@
               throw new Error((result && (result.message || result.error)) || "failed");
             }
             box.value = "";
+            attach.clear();
             // The write-up on screen is the one from before the comment.
             // Drop the cached copy so `fill` refetches it and he sees his
             // own sentence land, rather than being told it saved and
@@ -3438,17 +3601,18 @@
        * the third verb, and it is the same button the journal drawer and
        * the capture box already carry.
        *
-       * It writes markdown into the box rather than into the request, so
-       * he can see what he is about to send and delete it if he changed
-       * his mind -- and so the one thing that knows how to upload stays
-       * one function. `send` is disabled while the POST is in flight for
-       * the reason `buildAttach`'s `busy` gives: `submit` reads
-       * `box.value` synchronously, so a Comment tapped mid-upload files
-       * the text without the picture and the picture attaches to nothing.
+       * The picked files sit in a tray under the box rather than as
+       * markdown inside it (Cycle 377), so he can see what he is about to
+       * send and cross out the one he changed his mind about -- and the
+       * one thing that knows how to upload stays one function. `send` is
+       * disabled while the POST is in flight for the reason
+       * `buildAttach`'s `busy` gives: the click handler reads the tray
+       * synchronously, so a Comment tapped mid-upload files the text
+       * without the picture and the picture attaches to nothing.
        *
        * No draft store here, unlike the journal drawer. This composer has
        * none -- `fill()` rebuilds the panel on every poll and always has
-       * -- so an attach-then-wait loses the line exactly as a
+       * -- so an attach-then-wait loses the chip exactly as a
        * type-then-wait already loses the sentence. Giving the picture a
        * safety net the typing does not have would be the more confusing
        * of the two. Filed rather than smuggled in here. */
@@ -3460,11 +3624,8 @@
             ? "item-comment-status is-error"
             : "item-comment-status";
         },
-        onInsert: function (markdown) {
-          box.value =
-            (box.value ? box.value.replace(/\s*$/, "") + "\n\n" : "") + markdown;
-        },
       });
+      wrap.appendChild(attach.tray);
       foot.appendChild(attach.input);
       foot.appendChild(attach.button);
       foot.appendChild(send);
@@ -6726,13 +6887,12 @@
         buttons.forEach(function (b) { b.disabled = isBusy; });
       },
       onStatus: setStatus,
-      onInsert: function (markdown) {
-        textEl.value = (textEl.value ? textEl.value.replace(/\s*$/, "") + "\n\n" : "") + markdown;
-        fit();
-      },
     });
     var submitRow = document.querySelector(".capture-submit");
     form.appendChild(captureAttach.input);
+    // Directly under the box he typed in, above the row of destinations --
+    // the thumbnails belong to the sentence, not to the buttons.
+    textEl.parentNode.insertBefore(captureAttach.tray, textEl.nextSibling);
     submitRow.insertBefore(captureAttach.button, prioPicker.el);
 
 
@@ -6758,21 +6918,25 @@
 
     function send(target) {
       var text = textEl.value.trim();
-      if (!text) {
+      // A screenshot with no sentence under it is still a capture worth
+      // filing -- see the same guard in the journal drawer's `submit`.
+      if (!text && !captureAttach.count()) {
         textEl.focus();
         return;
       }
+      var body = [text, captureAttach.markdown()].filter(Boolean).join("\n\n");
       buttons.forEach(function (b) { b.disabled = true; });
       setStatus("saving…", false);
       fetch("/api/capture", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: target, text: text, priority: prioPicker.getValue() }),
+        body: JSON.stringify({ target: target, text: body, priority: prioPicker.getValue() }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
           if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
           textEl.value = "";
+          captureAttach.clear();
           prioPicker.setValue("");
           fit();
           setStatus("saved to " + target, false);
