@@ -1291,3 +1291,57 @@ def test_a_demoted_branch_carries_no_file_list_of_mains_own_work(
     assert survey[0]["landed_locally"] is True
     assert survey[0]["files"] == []
     assert "after.txt" in survey[0]["remote_only"][0]
+
+
+def test_a_checkout_behind_its_own_merged_head_is_still_litter(
+        moved_on, monkeypatch):
+    """The false positive that nearly shipped, stated as a test.
+
+    Measured Cycle 384: the shared checkout sat at `0e94630` while `origin/` the
+    same branch *and* PR #316's own `headRefOid` were both `b1958cb`. Nothing
+    was outstanding -- one clone was one commit stale -- and the first version
+    of this fix called that "the work is on the remote, not here". A sweep that
+    reports every checkout which has not caught up to its own merged branch is
+    noise, and noise on the first tool of every cycle is what stops being read.
+    """
+    root, repo = moved_on
+    _commit(repo, "after.txt", "part of the PR, merged with it\n")
+    _git(repo, "push", "-q", "origin", "nova/feature")
+    merged_head = _git_out(repo, "rev-parse", "HEAD")
+    _git(repo, "reset", "--hard", "-q", "HEAD~1")
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316,
+                                          "headRefOid": merged_head,
+                                          "mergedAt": "2099-01-01T00:00:00Z"},
+                                         True))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["remote_only"] == []
+    assert survey[0]["verdict"] == "leftover"
+
+
+def test_a_commit_pushed_past_the_merged_head_is_still_reported(
+        moved_on, monkeypatch):
+    """The other direction, so the exclusion above cannot launder real work.
+
+    Same shape, one commit further: GitHub's merged head is the older commit
+    and something was pushed on top of it afterwards. That is outstanding.
+    """
+    root, repo = moved_on
+    _commit(repo, "after.txt", "part of the PR\n")
+    merged_head = _git_out(repo, "rev-parse", "HEAD")
+    _commit(repo, "later.txt", "pushed after the merge\n")
+    _git(repo, "push", "-q", "origin", "nova/feature")
+    _git(repo, "reset", "--hard", "-q", "HEAD~2")
+    monkeypatch.setattr(tidy_workspace, "_merged_pr",
+                        lambda *a, **k: ({"number": 316,
+                                          "headRefOid": merged_head,
+                                          "mergedAt": "2099-01-01T00:00:00Z"},
+                                         True))
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    assert survey[0]["verdict"] == "unfinished"
+    assert [c.split(" ", 1)[1] for c in survey[0]["remote_only"]] \
+        == ["add later.txt"]

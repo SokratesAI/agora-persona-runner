@@ -395,8 +395,8 @@ def _tip_contains_merge(root, clone, head_oid):
     return None
 
 
-def _remote_only_commits(root, clone, branch, base):
-    """Commits on `origin/<branch>` that neither this checkout nor `base` has.
+def _remote_only_commits(root, clone, branch, base, merged_head=None):
+    """Commits on `origin/<branch>` that no one has taken and nothing has merged.
 
     Every other instrument in this file reads the local HEAD, and a branch does
     not live only in the checkout that happens to be parked on it. A cycle that
@@ -405,13 +405,24 @@ def _remote_only_commits(root, clone, branch, base):
     and nowhere else, and `git diff origin/main HEAD` cannot see any of it.
 
     Returns a list of `<short-oid> <subject>` lines, empty when the remote ref
-    holds nothing this checkout is missing, and `None` when there is no such
-    ref to ask -- which is the ordinary case for a branch never pushed, and is
-    deliberately not the same answer as "nothing there".
+    holds nothing outstanding, and `None` when there is no such ref to ask --
+    which is the ordinary case for a branch never pushed, and is deliberately
+    not the same answer as "nothing there".
 
-    `--not HEAD <base>` is what makes this narrow rather than noisy: the
-    commits of an ordinary squash-merged branch are all reachable from HEAD, so
-    a branch whose work really has landed answers with an empty list.
+    The `--not` list is what makes this narrow rather than noisy, and it has
+    three entries for three separate reasons:
+
+    - `HEAD`, because the commits of an ordinary merged branch are reachable
+      from it, so a branch whose work landed answers empty.
+    - `<base>`, because a commit that has since reached main is not
+      outstanding however it got there.
+    - `merged_head`, the `headRefOid` GitHub reports for the merged PR, because
+      **a checkout can simply be behind the head that merged.** Measured Cycle
+      384, and it is the case that nearly shipped a false positive here: the
+      shared checkout sat at `0e94630` while `origin/` the same branch and PR
+      #316's own merged head were both `b1958cb`. Nothing was outstanding; one
+      clone was one commit stale. Without this the sweep calls every checkout
+      that has not caught up to its own merged branch unfinished forever.
     """
     if not branch or branch in ("HEAD",) + _BASE_BRANCHES or base is None:
         return None
@@ -419,7 +430,11 @@ def _remote_only_commits(root, clone, branch, base):
     if _git(root, clone, "rev-parse", "--verify", "--quiet",
             ref).returncode != 0:
         return None
-    done = _git(root, clone, "log", "--oneline", ref, "--not", "HEAD", base)
+    excluded = ["HEAD", base]
+    if merged_head and _git(root, clone, "cat-file", "-e",
+                            merged_head + "^{commit}").returncode == 0:
+        excluded.append(merged_head)
+    done = _git(root, clone, "log", "--oneline", ref, "--not", *excluded)
     if done.returncode != 0:
         return None
     return [line for line in done.stdout.split("\n") if line.strip()]
@@ -564,7 +579,9 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
         remote_only = []
         landed_locally = False
         if verdict in ("leftover", "unfinished"):
-            found = _remote_only_commits(root, clone, branch, base)
+            found = _remote_only_commits(
+                root, clone, branch, base,
+                merged_head=merged_pr.get("headRefOid") if merged_pr else None)
             remote_only = found or []
             if remote_only and verdict == "leftover":
                 # Not litter. `unfinished` is the word that means "worth a
