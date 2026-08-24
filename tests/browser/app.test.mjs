@@ -6617,6 +6617,48 @@ describe("the notes page", () => {
     assert.equal(wider[wider.length - 1], "Note number 30", "revealing older ones lost the newest");
   });
 
+  test("scrolling up does not destroy the composer", async () => {
+    /* The bug the reviewer caught after this shipped, and the reason it
+     * is a separate test from the navigation one above: `captureHome()`
+     * in `load()` covers arriving and leaving, and `showOlderNotes`
+     * re-renders *in place* with the composer already inside the feed.
+     * `feed.textContent = ""` then detached the one composer the whole
+     * app has -- from every page, until a reload -- on the central
+     * interaction of this feature. */
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = () => {}; },
+    });
+    window.document.querySelector(".note-older").click();
+    const capture = window.document.getElementById("capture");
+    assert.ok(capture, "scrolling up destroyed the composer");
+    assert.equal(capture.parentNode, window.document.getElementById("feed"));
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+    // And it is still the last thing on the page, under the messages it
+    // just revealed.
+    assert.equal(window.document.getElementById("feed").lastElementChild, capture);
+  });
+
+  test("coming back to the page opens on the newest window again", async () => {
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = () => {}; },
+    });
+    window.document.querySelector(".note-older").click();
+    assert.equal(window.document.querySelectorAll(".note-msg-body").length, 24);
+    window.document.querySelector('.nav-tab[href="/issues"]').click();
+    await settle();
+    window.document.querySelector('.nav-tab[href="/notes"]').click();
+    await settle();
+    assert.equal(
+      window.document.querySelectorAll(".note-msg-body").length,
+      12,
+      "the page reopened on a stale, widened window",
+    );
+  });
+
   test("the top of the conversation says so instead of offering a pager", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
     assert.equal(window.document.querySelector(".note-older"), null);
