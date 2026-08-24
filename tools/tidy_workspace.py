@@ -885,11 +885,21 @@ def _content_landed(root, clone, base, branch):
         return None
     added = {}
     path = None
+    in_hunk = False
     for line in diff.stdout.split("\n"):
-        if line.startswith("+++ "):
+        # `+++ ` is a file header before the first `@@` of a file and *content*
+        # after it: an added line reading `++ x` is rendered `+++ x`, and this
+        # repo's own test fixtures hold diffs. Without the hunk flag that line
+        # is read as a header and the rest of the file is attributed to a path
+        # made of its own text. `diff --git` closes the previous file's hunks.
+        if line.startswith("diff --git "):
+            in_hunk, path = False, None
+        elif line.startswith("@@ "):
+            in_hunk = True
+        elif not in_hunk and line.startswith("+++ "):
             target = line[4:].strip()
             path = None if target == "/dev/null" else target[2:]
-        elif line.startswith("+") and path is not None:
+        elif in_hunk and line.startswith("+") and path is not None:
             text = line[1:].strip()
             if len(text) >= _MIN_MATCHABLE:
                 added.setdefault(path, []).append(text)

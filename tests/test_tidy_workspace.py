@@ -2202,3 +2202,25 @@ def test_a_diff_that_fails_is_not_a_branch_with_nothing_landed(monkeypatch,
 
     assert tidy_workspace._content_landed(str(root), clone, "main",
                                           "nova/landed") is None
+
+
+def test_an_added_line_that_looks_like_a_diff_header_is_not_one(content_repo):
+    """`++ x` renders as `+++ x` in a unified diff, and this repo's own test
+    fixtures hold diffs. Read as a file header it points the rest of the file
+    at a path made of its own text, and every line after it is attributed to
+    a file that does not exist -- so `git show` fails, nothing matches, and a
+    branch that has entirely landed reads as entirely outstanding."""
+    root, clone = content_repo
+    repo = pathlib.Path(root) / clone
+    _git(repo, "checkout", "-q", "-b", "nova/diff-in-a-fixture", "main")
+    (repo / "tool.py").write_text(
+        "def sweep():\n    return 1\n"
+        "++ a line that begins with two plus signs\n"
+        "@@ a line that begins with two at signs\n",
+        encoding="utf-8")
+    _git(repo, "commit", "-qam", "a fixture holding a diff")
+    _git(repo, "push", "-q", "origin", "nova/diff-in-a-fixture")
+
+    # Both lines are the branch's own content and neither is on main.
+    assert tidy_workspace._content_landed(str(root), clone, "main",
+                                          "nova/diff-in-a-fixture") == (0, 2)
