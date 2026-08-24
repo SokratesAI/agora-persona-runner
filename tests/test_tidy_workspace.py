@@ -612,3 +612,133 @@ def test_a_detached_head_at_the_base_tip_is_not_called_a_leftover_branch(
 
     assert survey[0]["branch"] == "HEAD"
     assert [e["verdict"] for e in survey] == ["clean"]
+
+
+# The fast-forward. These are the tests that matter most in this file, because
+# this is the one function here that writes to a clone a cycle did not create.
+# Four of the five assert what it must *not* move.
+
+def _head(repo):
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def _behind_on_main(squash_merged):
+    """The shared checkout, exactly as a cycle finds it: clean, on `main`, and
+    one squash commit behind the `origin/main` it just fetched."""
+    root, repo = squash_merged
+    _git(repo, "checkout", "-q", "main")
+    return root, repo
+
+
+def test_a_clean_clone_behind_its_base_is_fast_forwarded(squash_merged):
+    """The bug, stated as a test: nothing in this loop updates the shared
+    checkout, so under concurrency every worktree is cut from whatever commit
+    it stopped on."""
+    root, repo = _behind_on_main(squash_merged)
+    survey = tidy_workspace.survey_checkouts(str(root))
+    assert survey[0]["verdict"] == "clean" and survey[0]["behind"] == 1
+
+    moves = tidy_workspace.fast_forward_stale(str(root), survey)
+
+    assert [m["moved"] for m in moves] == [True]
+    assert _head(repo) == subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "origin/main"], check=True,
+        capture_output=True, text=True).stdout.strip()
+
+
+def test_uncommitted_work_is_never_fast_forwarded_over(squash_merged):
+    """The one that pays for the rest. A cycle killed mid-edit leaves work
+    that exists nowhere else; `unfinished` must be untouchable even though the
+    clone is on `main` and genuinely behind."""
+    root, repo = _behind_on_main(squash_merged)
+    (repo / "half-finished.txt").write_text("not pushed anywhere\n")
+    before = _head(repo)
+    survey = tidy_workspace.survey_checkouts(str(root))
+    assert survey[0]["verdict"] == "unfinished" and survey[0]["behind"] == 1
+
+    moves = tidy_workspace.fast_forward_stale(str(root), survey)
+
+    assert moves == []
+    assert _head(repo) == before
+    assert (repo / "half-finished.txt").exists()
+
+
+def test_a_feature_branch_that_is_behind_is_left_where_it_is(squash_merged):
+    """Being behind `main` is the normal condition of a branch somebody is
+    working on, not staleness. Moving it would be a merge nobody asked for.
+
+    The branch is parked at the old `main` on purpose. A branch with work on
+    it surveys as `leftover` or `unfinished`, so the verdict guard would skip
+    it whatever the branch was called and this test would pass with the
+    branch-name check deleted -- which is what the first version of it did.
+    Parked, it surveys `clean` and behind, and the branch name is the only
+    thing left standing between it and a fast-forward."""
+    root, repo = squash_merged
+    _git(repo, "checkout", "-q", "-b", "nova/parked", "main")
+    before = _head(repo)
+    survey = tidy_workspace.survey_checkouts(str(root))
+    assert survey[0]["verdict"] == "clean" and survey[0]["behind"] == 1
+    assert survey[0]["branch"] == "nova/parked"
+
+    tidy_workspace.fast_forward_stale(str(root), survey)
+
+    assert _head(repo) == before
+
+
+def test_a_detached_head_is_left_where_it_is(squash_merged):
+    """A concurrent cycle's own worktree is a detached HEAD, and it can be
+    behind the shared clone's `main` for a whole cycle quite legitimately. The
+    branch-name check is what skips it: `--abbrev-ref HEAD` answers `HEAD`."""
+    root, repo = _behind_on_main(squash_merged)
+    _git(repo, "checkout", "-q", "--detach", "HEAD")
+    before = _head(repo)
+    survey = tidy_workspace.survey_checkouts(str(root))
+    assert survey[0]["branch"] == "HEAD" and survey[0]["behind"] == 1
+
+    tidy_workspace.fast_forward_stale(str(root), survey)
+
+    assert _head(repo) == before
+
+
+def test_a_failed_fetch_never_fast_forwards(squash_merged):
+    """"Behind" read off refs that could not be refreshed is a reading from an
+    unknown time ago. The survey already warns the verdict may be stale; this
+    stops the tool acting on it.
+
+    The order matters and the first version of this test got it wrong. Fetch
+    first, so the clone really is one commit behind a ref it can see, and only
+    then break the remote. Without the pre-fetch the stale `origin/main` is
+    the clone's own HEAD, `behind` is 0, and nothing would have moved whether
+    the guard existed or not."""
+    root, repo = _behind_on_main(squash_merged)
+    _git(repo, "fetch", "-q", "origin")
+    _git(repo, "remote", "set-url", "origin", str(repo / "no-such-remote.git"))
+    before = _head(repo)
+    survey = tidy_workspace.survey_checkouts(str(root))
+    assert survey[0]["fetched"] is False and survey[0]["behind"] == 1
+
+    tidy_workspace.fast_forward_stale(str(root), survey)
+
+    assert _head(repo) == before
+
+
+def test_dry_run_reports_the_move_and_makes_none(squash_merged, capsys):
+    root, repo = _behind_on_main(squash_merged)
+    before = _head(repo)
+
+    tidy_workspace.main(["--root", str(root), "--dry-run"])
+
+    assert "would fast-forward repo to origin/main" in capsys.readouterr().out
+    assert _head(repo) == before
+
+
+def test_the_cli_names_the_commit_it_moved_off(squash_merged, capsys):
+    """The move is reversible in one command and this is the argument to it."""
+    root, repo = _behind_on_main(squash_merged)
+    before = _head(repo)
+
+    tidy_workspace.main(["--root", str(root)])
+
+    assert before[:7] in capsys.readouterr().out

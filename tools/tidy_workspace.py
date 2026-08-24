@@ -27,6 +27,14 @@ predicate away from deleting a checkout with uncommitted work in it. So:
 A directory it did not create, or a name it cannot parse, is not its business.
 That is the whole safety argument, and it is why there is no `--force`.
 
+One thing here does write to a checkout rather than to a name of its own:
+`fast_forward_stale` advances a clone that is clean and behind onto its base,
+because under concurrency nothing else ever updates the shared checkout every
+worktree is cut from. It carries its own safety argument at the function, and
+it is the same one -- a fast-forward of a clean tree loses nothing and is
+reversible in one command, and every other shape is skipped rather than
+merged.
+
 **Run it at the start of a cycle, not at the end**, and note that this is now
 advice rather than the only thing standing between a mistimed run and a
 reviewer's checkout vanishing mid-read. Found by running `--dry-run` while
@@ -272,10 +280,14 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
                       "HEAD").stdout.strip()
         dirty = bool(_git(root, clone, "status", "--porcelain").stdout.strip())
         ahead = 0
+        behind = 0
         if base is not None:
             counted = _git(root, clone, "rev-list", "--count",
                            base + "..HEAD").stdout.strip()
             ahead = int(counted) if counted.isdigit() else 0
+            counted = _git(root, clone, "rev-list", "--count",
+                           "HEAD.." + base).stdout.strip()
+            behind = int(counted) if counted.isdigit() else 0
         if base is None:
             verdict = "no-base"
         elif dirty:
@@ -349,10 +361,81 @@ def survey_checkouts(root=WORKSPACE, fetch=True):
                         found.add(path)
             files = sorted(found)
         out.append({"clone": clone, "branch": branch, "base": base,
-                    "dirty": dirty, "ahead": ahead, "verdict": verdict,
+                    "dirty": dirty, "ahead": ahead, "behind": behind,
+                    "verdict": verdict,
                     "fetched": fetched, "files": files,
                     "files_failed": files_failed})
     return out
+
+
+# Nothing in this loop was ever told to update `/data/workspace`. Step 3's
+# `git pull` runs in the *cycle's own* workspace, which under concurrency is a
+# private worktree, and `prompt.md` forbids a concurrent cycle from writing to
+# the shared checkout at all -- so the shared clone moves forward only when a
+# serialized cycle happens to run. At 72 minutes one always did. From 18:00 on
+# 2026-08-24 the cadence is 18 minutes and every cycle is concurrent, so the
+# shared clone can stand still indefinitely while every worktree cut from it
+# inherits that commit. Cycle 355 hit the sharp end of this: the running code
+# in its worktree was two commits behind the ledger format it had just written
+# to the vault, which reads new state as "held by cycle N forever". It
+# fast-forwarded by hand -- four commands nobody is instructed to run.
+#
+# So this is deliberately narrow, because a fast-forward of somebody else's
+# checkout is only obviously safe in one shape:
+#
+#   - the survey called it `clean`: no uncommitted files, nothing committed
+#     here that the base has not got, so there is no work to lose;
+#   - `HEAD` is the base's own branch by name, not a detached head and not a
+#     feature branch that merely happens to be behind -- those are somebody's
+#     position, not staleness;
+#   - the fetch that produced `base` actually succeeded, or "behind" is a
+#     reading off refs from an unknown time ago;
+#   - `--ff-only`, so git itself refuses anything that is not a straight
+#     replay. The tool never resolves a conflict and never merges.
+#
+# It is reversible in one command (`git reset --hard <the sha printed>`), and
+# the sha before the move is printed for exactly that reason.
+def fast_forward_stale(root, entries, dry_run=False):
+    """Fast-forward every clean-and-behind clone onto its base.
+
+    Takes the survey rather than re-running it: the survey has already
+    fetched, and a second fetch here would be a different, later answer than
+    the verdicts being acted on. Returns one dict per clone considered,
+    `{clone, base, behind, was, moved, error}`; `moved` is False with `error`
+    set when git refused.
+    """
+    moves = []
+    for entry in entries:
+        base = entry["base"]
+        if base is None or not entry["fetched"]:
+            continue
+        if entry["verdict"] != "clean" or entry["behind"] < 1:
+            continue
+        # `origin/main` -> `main`. A clone sitting on a detached HEAD reports
+        # the branch as `HEAD`, which matches no base and is skipped, which is
+        # what a concurrent cycle's own worktree looks like.
+        if entry["branch"] != base.split("/", 1)[-1]:
+            continue
+        was = _git(root, entry["clone"], "rev-parse", "HEAD").stdout.strip()
+        move = {"clone": entry["clone"], "base": base,
+                "behind": entry["behind"], "was": was, "moved": False,
+                "error": None}
+        if dry_run:
+            moves.append(move)
+            continue
+        done = _git(root, entry["clone"], "merge", "--ff-only", base)
+        if done.returncode == 0:
+            move["moved"] = True
+        else:
+            # Reported, not swallowed. The expected failure under concurrency
+            # is another cycle holding the index lock a few milliseconds
+            # earlier, which is harmless and self-correcting -- but a clone
+            # that silently never advances is the whole bug this function
+            # exists to remove, so the caller is told either way.
+            move["error"] = (done.stderr or done.stdout or "").strip().split(
+                "\n")[-1] or "git merge --ff-only failed"
+        moves.append(move)
+    return moves
 
 
 def _remove_worktree(root, name, clone_names):
@@ -449,7 +532,20 @@ def main(argv=None):
     # to tidy is exactly the cycle that most needs to be told a checkout is
     # holding unfinished work, and "nothing to tidy" above it reads like an
     # all-clear for the whole workspace.
-    for entry in survey_checkouts(args.root, fetch=not args.no_fetch):
+    survey = survey_checkouts(args.root, fetch=not args.no_fetch)
+    for move in fast_forward_stale(args.root, survey, dry_run=args.dry_run):
+        if args.dry_run:
+            print("would fast-forward %s to %s (%d commit(s) behind)"
+                  % (move["clone"], move["base"], move["behind"]))
+        elif move["moved"]:
+            print("fast-forwarded %s to %s (%d commit(s); was %s)"
+                  % (move["clone"], move["base"], move["behind"],
+                     move["was"][:7]))
+        else:
+            print("%s: %d commit(s) behind %s and could not fast-forward -- %s"
+                  % (move["clone"], move["behind"], move["base"],
+                     move["error"]))
+    for entry in survey:
         # Said even for a clone the survey then calls clean, because "clean"
         # off a ref that could not be refreshed is the reassuring answer with
         # nothing behind it -- the shape of failure this whole function was
