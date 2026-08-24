@@ -827,11 +827,22 @@ def survey_remote_branches(repos, prefixes=_MINE):
 
     A branch is reported when it carries commits the default branch does not
     have, **and** no open PR covers it, **and** it is not simply the branch a
-    merged PR left behind. Two shapes reach that:
+    merged PR left behind. Three shapes reach that:
 
     - `no-pr` -- no PR was ever opened from it. A cycle pushed and died.
     - `past-merged-head` -- a PR from this branch merged, and the branch has
       moved since. The merged part landed; whatever is on top did not.
+    - `closed-pr` -- a PR was opened from it and closed without merging. A
+      cycle already made a decision here; the branch is the residue of it.
+
+    That third one is why this asks GitHub for closed PRs, which cost one more
+    call. Cycle 390 read this sweep's own three findings as "a cycle pushed and
+    died" on all three, and two of them were finished work: PR #24 was closed
+    and the same change merged as #23, PR #321 was closed and the same change
+    merged as #322 from a re-pushed branch. Both are invisible to an open/merged
+    lookup keyed on head branch, because the work landed under a *different*
+    branch name. `no-pr` was literally true and read as false, which is the
+    expensive kind of accurate.
 
     Scoped to `prefixes` on purpose, and the count of what that skipped is in
     the entry rather than dropped silently. `platform-config` carries 42
@@ -842,8 +853,9 @@ def survey_remote_branches(repos, prefixes=_MINE):
     """
     out = []
     for repo in repos:
-        entry = {"repo": repo, "checked": True, "outstanding": [],
-                 "mine": 0, "skipped_prefix": 0, "base": None}
+        entry = {"repo": repo, "checked": True, "closed_checked": True,
+                 "outstanding": [], "mine": 0, "skipped_prefix": 0,
+                 "base": None}
         rows, checked = _gh_lines(
             ["api", "repos/%s/branches" % repo, "--paginate",
              "--jq", ".[] | [.name, .commit.sha] | @tsv"])
@@ -870,35 +882,60 @@ def survey_remote_branches(repos, prefixes=_MINE):
         opened, open_ok = _gh_json(
             ["pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
              "--json", "number,headRefName"])
+        closed, closed_ok = _gh_json(
+            ["pr", "list", "--repo", repo, "--state", "closed", "--limit",
+             "1000", "--json", "number,headRefName,closedAt"])
         if not merged_ok or not open_ok or merged is None or opened is None:
             entry["checked"] = False
             out.append(entry)
             continue
+        # A failed closed-PR lookup is not a failed sweep. It costs the
+        # `closed-pr` verdict and nothing else, so the branch falls back to
+        # `no-pr` -- wider than the truth, which is the direction this whole
+        # survey is allowed to fail in.
+        if not closed_ok or closed is None:
+            closed = []
+            entry["closed_checked"] = False
         open_heads = {row.get("headRefName") for row in opened
                       if isinstance(row, dict)}
-        newest = {}
-        for row in merged:
-            if not isinstance(row, dict):
-                continue
-            head = row.get("headRefName")
-            prev = newest.get(head)
-            # Same reason `_merged_pr` picks the newest rather than the first:
-            # this loop reuses branch names, and only the latest merge says
-            # anything about where the branch is now.
-            if prev is None or (row.get("mergedAt") or "") > (prev.get("mergedAt") or ""):
-                newest[head] = row
+        newest_closed = _newest_by_head(closed, "closedAt")
+        # Same reason `_merged_pr` picks the newest rather than the first: this
+        # loop reuses branch names, and only the latest event says anything
+        # about where the branch is now.
+        newest = _newest_by_head(merged, "mergedAt")
         for name, sha in branches:
             if name in open_heads:
                 continue
             pr = newest.get(name)
             if pr is not None and pr.get("headRefOid") == sha:
                 continue
+            shut = newest_closed.get(name)
+            # **The newest event wins, not the merged one.** A merged PR says
+            # where the branch's content went and a closed one only says
+            # somebody stopped, so merged reads like the stronger fact -- but
+            # this loop reuses branch names, and a merge from 2026-08-02
+            # followed by a PR closed today describes a branch whose latest
+            # decision was the closing. Reporting the stale merge and never
+            # naming the recent close is "wrong information reads as no
+            # information" recurring one layer inside its own fix. Reviewer
+            # finding on #342. Both loops above already pick per-branch
+            # newest for exactly this reason; this is the same rule applied
+            # across the two lists rather than only within each.
+            if pr is not None and shut is not None:
+                merged_wins = (pr.get("mergedAt") or "") >= (shut.get("closedAt") or "")
+            else:
+                merged_wins = pr is not None
+            if merged_wins:
+                kind, decided_by = "past-merged-head", pr.get("number")
+            elif shut is not None:
+                kind, decided_by = "closed-pr", shut.get("number")
+            else:
+                kind, decided_by = "no-pr", None
             found = _compare_branch(repo, entry["base"], name)
             if found is None:
                 entry["outstanding"].append(
                     {"branch": name, "sha": sha, "compared": False,
-                     "kind": "past-merged-head" if pr else "no-pr",
-                     "merged_pr": pr.get("number") if pr else None,
+                     "kind": kind, "merged_pr": decided_by,
                      "ahead": None, "date": "", "files": [],
                      "more_files": 0})
                 continue
@@ -909,13 +946,31 @@ def survey_remote_branches(repos, prefixes=_MINE):
                 continue
             entry["outstanding"].append(
                 {"branch": name, "sha": sha, "compared": True,
-                 "kind": "past-merged-head" if pr else "no-pr",
-                 "merged_pr": pr.get("number") if pr else None,
+                 "kind": kind, "merged_pr": decided_by,
                  "ahead": found["ahead"], "date": found["date"],
                  "files": found["files"],
                  "more_files": found["more_files"]})
         out.append(entry)
     return out
+
+
+def _newest_by_head(rows, stamp_key):
+    """The newest row per head branch, by `stamp_key`.
+
+    A missing or empty stamp sorts below every real one, so a row that carries
+    a date always beats one that does not, and an all-blank set keeps whichever
+    GitHub returned first rather than raising. Rows that are not dicts are
+    dropped, same as everywhere else `gh` JSON is read here.
+    """
+    newest = {}
+    for row in rows or ():
+        if not isinstance(row, dict):
+            continue
+        head = row.get("headRefName")
+        prev = newest.get(head)
+        if prev is None or (row.get(stamp_key) or "") > (prev.get(stamp_key) or ""):
+            newest[head] = row
+    return newest
 
 
 def _compare_branch(repo, base, branch, file_limit=8):
@@ -1056,21 +1111,40 @@ def _sweep_remote(roots):
               "and in no open PR"
               % (entry["repo"], len(entry["outstanding"]), entry["mine"],
                  "/".join(prefix.rstrip("/") for prefix in _MINE)))
+        if not entry.get("closed_checked", True):
+            print("    closed PRs could not be listed, so a branch below "
+                  "reading `no PR was ever opened` may have had one closed")
         for row in entry["outstanding"]:
             if not row["compared"]:
                 print("    %s: could not ask GitHub what it carries -- the "
                       "compare failed, so whether there is work on it is "
                       "unknown" % (row["branch"],))
                 continue
-            # "no PR was ever opened from it" is wider than the check: this
-            # asks GitHub for open and merged PRs, so a PR opened and closed
-            # without merging is invisible to it. Say what was actually
-            # looked at. `lint_entry` caught this on the journal entry that
-            # quoted the line, which is the guard working across a boundary
-            # it was not built for.
-            how = ("no open or merged PR covers it" if row["kind"] == "no-pr"
-                   else "#%d merged from it and it has moved since"
-                        % (row["merged_pr"],))
+            # `no-pr` now means what it says: open, merged *and* closed PRs
+            # were all asked about and none names this branch. Until Cycle 390
+            # the closed ones were not asked about, so a branch a cycle had
+            # already opened a PR from and closed printed as though nobody had
+            # ever looked at it -- and the reader's next move ("go finish it")
+            # is the wrong one for a decision that was already taken.
+            if row["kind"] == "no-pr":
+                # The row has to carry its own caveat rather than lean on the
+                # entry-level line above it. A row gets grepped, quoted into a
+                # commit message and read after the block has scrolled off, and
+                # "open, merged or closed" over a run where closed could not be
+                # listed is this change's own bug in the negative case.
+                # Reviewer finding on #342.
+                how = ("no PR was ever opened from it, open, merged or closed"
+                       if entry.get("closed_checked", True) else
+                       "no open or merged PR covers it, and closed PRs could "
+                       "not be listed")
+            elif row["kind"] == "closed-pr":
+                how = ("#%d was opened from it and closed without merging -- "
+                       "read that PR before finishing this, the work may have "
+                       "landed from another branch"
+                       % (row["merged_pr"],))
+            else:
+                how = ("#%d merged from it and it has moved since"
+                       % (row["merged_pr"],))
             # The date is GitHub's, and GitHub's is UTC. Saying so is one word
             # and beats either a silent UTC date -- which is a day early for
             # anything committed after 22:00 Oslo -- or a conversion that

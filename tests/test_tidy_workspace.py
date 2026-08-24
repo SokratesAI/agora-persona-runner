@@ -1606,8 +1606,9 @@ def test_a_clean_checkout_whose_remote_check_failed_says_so(clean_but_pushed,
 # rather than mocked past.
 
 
-def _gh_fake(branches, merged=(), opened=(), compares=None, broken=()):
-    """A `subprocess.run` that answers the four `gh` calls the sweep makes."""
+def _gh_fake(branches, merged=(), opened=(), closed=(), compares=None,
+             broken=()):
+    """A `subprocess.run` that answers the five `gh` calls the sweep makes."""
     compares = compares or {}
 
     def run(argv, **kwargs):
@@ -1632,6 +1633,9 @@ def _gh_fake(branches, merged=(), opened=(), compares=None, broken=()):
         if "--state open" in joined:
             return types.SimpleNamespace(returncode=0, stderr="",
                                          stdout=json.dumps(list(opened)))
+        if "--state closed" in joined:
+            return types.SimpleNamespace(returncode=0, stderr="",
+                                         stdout=json.dumps(list(closed)))
         if joined.startswith("gh api repos/"):
             return types.SimpleNamespace(returncode=0, stdout="main\n", stderr="")
         raise AssertionError("unexpected gh call: %s" % joined)
@@ -1661,6 +1665,92 @@ def test_a_pushed_branch_with_no_pr_is_reported(monkeypatch):
     row = survey[0]["outstanding"][0]
     assert row["kind"] == "no-pr" and row["ahead"] == 3
     assert row["date"] == "2026-08-24" and row["files"] == ["tools/x.py"]
+
+
+def test_a_branch_whose_pr_was_closed_says_so_instead_of_no_pr(monkeypatch):
+    """The shape that cost Cycle 390 five minutes and would have cost a PR.
+
+    `no-pr` reads as "a cycle pushed and died, go finish it". For a branch
+    whose PR was opened and closed, the next move is to read that PR -- twice
+    out of three on the real run, the same change had already merged from a
+    re-pushed branch."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/reopened-elsewhere", "bbb")],
+        closed=[{"number": 321, "headRefName": "nova/reopened-elsewhere",
+                 "closedAt": "2026-08-24T14:20:00Z"}],
+        compares={"nova/reopened-elsewhere": _compare(3)}))
+
+    row = tidy_workspace.survey_remote_branches(["o/r"])[0]["outstanding"][0]
+
+    assert row["kind"] == "closed-pr" and row["merged_pr"] == 321
+
+
+def test_the_newer_of_a_merge_and_a_close_decides_the_verdict(monkeypatch):
+    """This loop reuses branch names, so both lookups can name one branch.
+
+    Merged reads like the stronger fact and is only the stronger fact when it
+    is also the later one. A merge from three weeks ago under a name a cycle
+    has since reused, followed by a PR closed today, describes a branch whose
+    last decision was the closing -- and pointing the reader at the stale
+    merge is this change's own bug one layer down. Asserted both ways round
+    on the same two PRs, because a rule that only ever fires in one direction
+    is indistinguishable from `merged always wins`."""
+    def survey(merged_at, closed_at):
+        monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+            branches=[("nova/reused", "newer")],
+            merged=[{"number": 316, "headRefName": "nova/reused",
+                     "headRefOid": "older", "mergedAt": merged_at}],
+            closed=[{"number": 315, "headRefName": "nova/reused",
+                     "closedAt": closed_at}],
+            compares={"nova/reused": _compare(1)}))
+        return tidy_workspace.survey_remote_branches(["o/r"])[0]["outstanding"][0]
+
+    later_merge = survey("2026-08-24T10:46:35Z", "2026-08-02T09:00:00Z")
+    assert later_merge["kind"] == "past-merged-head"
+    assert later_merge["merged_pr"] == 316
+
+    later_close = survey("2026-08-02T10:46:35Z", "2026-08-24T09:00:00Z")
+    assert later_close["kind"] == "closed-pr"
+    assert later_close["merged_pr"] == 315
+
+
+def test_the_row_itself_says_closed_could_not_be_listed(monkeypatch, capsys):
+    """A row gets read on its own, away from the block it was printed in.
+
+    Leaning on the entry-level caveat one line above leaves the row asserting
+    `open, merged or closed` over a run where closed was never listed -- the
+    same "literally true, reads as false" line this whole change exists to
+    delete, reintroduced for the case where the lookup failed."""
+    monkeypatch.setattr(tidy_workspace, "origin_repos",
+                        lambda roots: (["o/r"], []))
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/killed-midway", "bbb")],
+        compares={"nova/killed-midway": _compare(3)},
+        broken=("--state closed",)))
+
+    tidy_workspace._sweep_remote(["/nowhere"])
+    out = capsys.readouterr().out
+
+    assert "closed PRs could not be listed" in out
+    assert "open, merged or closed" not in out
+
+
+def test_a_failed_closed_lookup_costs_the_verdict_not_the_sweep(monkeypatch):
+    """`closed` is the one lookup that must not turn a finding into silence.
+
+    A branch reported as `no-pr` when the closed list was unreadable is wider
+    than the truth, which is the only direction this survey may be wrong in --
+    but the run has to say so, or the reader takes `no PR was ever opened` at
+    face value."""
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/killed-midway", "bbb")],
+        compares={"nova/killed-midway": _compare(3)},
+        broken=("--state closed",)))
+
+    entry = tidy_workspace.survey_remote_branches(["o/r"])[0]
+
+    assert entry["checked"] is True and entry["closed_checked"] is False
+    assert entry["outstanding"][0]["kind"] == "no-pr"
 
 
 def test_a_branch_that_moved_past_its_merged_head_is_reported(monkeypatch):
@@ -1844,8 +1934,50 @@ def test_the_sweep_prints_the_branch_and_what_is_on_it(monkeypatch, capsys):
 
     assert "nova/killed-midway" in out
     assert "3 commit(s) past main" in out
-    assert "no open or merged PR covers it" in out
+    assert "no PR was ever opened from it, open, merged or closed" in out
     assert "tools/x.py, b.py" in out
+
+
+def test_the_closed_pr_line_tells_the_reader_to_go_read_that_pr(
+        monkeypatch, capsys):
+    """The line is the whole product, and this is the line that was wrong.
+
+    A cycle that reads `no open or merged PR covers it` over a branch whose
+    PR was closed goes and finishes work somebody already finished. Naming
+    the number is what makes the next move one call instead of five."""
+    monkeypatch.setattr(tidy_workspace, "origin_repos",
+                        lambda roots: (["o/r"], []))
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/reopened-elsewhere", "bbb")],
+        closed=[{"number": 321, "headRefName": "nova/reopened-elsewhere",
+                 "closedAt": "2026-08-24T14:20:00Z"}],
+        compares={"nova/reopened-elsewhere": _compare(3)}))
+
+    tidy_workspace._sweep_remote(["/nowhere"])
+    out = capsys.readouterr().out
+
+    assert "#321 was opened from it and closed without merging" in out
+    assert "the work may have landed from another branch" in out
+    assert "no PR was ever opened" not in out
+
+
+def test_an_unreadable_closed_list_is_said_out_loud(monkeypatch, capsys):
+    """Degrading to `no-pr` is the safe direction and a silent one.
+
+    Without this line the run reads identically to one where GitHub answered
+    and there genuinely was no PR -- the "a failure is not an empty answer"
+    rule this whole file is built on."""
+    monkeypatch.setattr(tidy_workspace, "origin_repos",
+                        lambda roots: (["o/r"], []))
+    monkeypatch.setattr(tidy_workspace.subprocess, "run", _gh_fake(
+        branches=[("nova/killed-midway", "bbb")],
+        compares={"nova/killed-midway": _compare(3)},
+        broken=("--state closed",)))
+
+    tidy_workspace._sweep_remote(["/nowhere"])
+    out = capsys.readouterr().out
+
+    assert "closed PRs could not be listed" in out
 
 
 def test_a_repo_the_sweep_could_not_reach_says_so(monkeypatch, capsys):
