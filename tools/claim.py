@@ -14,7 +14,19 @@ Take an item:
       --cycle 189 --note 'handoff item 1' \
       && python3 /app/bridge/vault_tool.py put "$C" claims.json --if-rev-file /tmp/claim.$$.rev
 
-Release it when you are done, the same way with `release`.
+Release it the same way, with `release` and **one of two words you have to
+type**:
+
+    python3 -m tools.claim release --ledger claims.json --item confirm-deploy-171 \
+      --cycle 189 --done --outcome 'merged #172'
+
+`--done` spends the slug forever: nobody can `take` it again. `--progress`
+gives it back -- the next cycle sees your `--outcome` beside a take command
+that still works. Neither is a default, because for eleven days the default
+was `--done` and three cycles used it for work that was still open (Cycle
+343 on Edvard's 20x capture, Cycle 347 on idea #63, Cycle 281 on a board
+bullet). The choice is the one thing this command knows that the ledger
+cannot infer, so it is the one thing it refuses to guess.
 
 Exit codes are the whole interface: **0 the item is yours, 2 somebody
 else has it or already did it, 1 something is wrong**. So the `&&` above
@@ -37,7 +49,16 @@ from zoneinfo import ZoneInfo
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_claims import ClaimError, dumps, load, release, summarise, take
+from agora_runner.nova_claims import (
+    DONE,
+    PROGRESSED,
+    ClaimError,
+    dumps,
+    load,
+    release,
+    summarise,
+    take,
+)
 
 OSLO = ZoneInfo("Europe/Oslo")
 
@@ -82,6 +103,18 @@ def main(argv=None):
     parser.add_argument("--cycle", type=int, help="the cycle number doing the work")
     parser.add_argument("--note", help="what the item is, in a few words")
     parser.add_argument("--outcome", help="on release: what happened")
+    # Deliberately not `default=DONE`. The whole bug is that stopping and
+    # finishing looked like one act, and a default would put them back
+    # together: the cycle that types nothing gets the answer that spends
+    # the slug, which is exactly what happened three times.
+    finished = parser.add_mutually_exclusive_group()
+    finished.add_argument("--done", dest="release_state", action="store_const",
+                          const=DONE,
+                          help="on release: the work is finished, spend the slug")
+    finished.add_argument("--progress", dest="release_state", action="store_const",
+                          const=PROGRESSED,
+                          help="on release: you stopped, the work did not -- "
+                               "the next cycle can take it and will see --outcome")
     args = parser.parse_args(argv)
 
     now = datetime.now(OSLO)
@@ -99,11 +132,21 @@ def main(argv=None):
         print(f"claim: {args.action} needs --item and --cycle", file=sys.stderr)
         return 1
 
+    if args.action == "release" and args.release_state is None:
+        # 1, not REFUSED_EXIT: 2 means "somebody else has this" and every
+        # cycle is told to accept a 2 without arguing, so a 2 here would
+        # be read as "already handled" and the claim would be left open.
+        print("claim: release needs --done or --progress. --done spends the slug "
+              "forever; --progress hands the item on with your --outcome beside "
+              "it. If the work is not finished, it is --progress.", file=sys.stderr)
+        return 1
+
     try:
         if args.action == "take":
             ok, message = take(ledger, args.item, args.cycle, now, note=args.note)
         else:
-            ok, message = release(ledger, args.item, args.cycle, now, outcome=args.outcome)
+            ok, message = release(ledger, args.item, args.cycle, now,
+                                  outcome=args.outcome, state=args.release_state)
     except ClaimError as exc:
         print(f"claim: {exc}", file=sys.stderr)
         return 1
