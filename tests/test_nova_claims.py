@@ -413,13 +413,50 @@ def test_finished_claims_older_than_a_day_are_dropped():
     assert ledger["claims"] == []
 
 
-def test_pruning_never_drops_an_open_claim_however_stale():
-    # A stale open claim is evidence a cycle died. Dropping it silently
-    # would delete the only record that anyone was ever working on it.
+def test_an_open_claim_survives_long_enough_to_be_taken_over():
+    # The 45-minute expiry is what lets a later cycle *take over* a dead
+    # claim and have the handover recorded, so pruning must not close that
+    # window. A day out it is still there and `take` still records it.
     ledger = empty()
     take(ledger, "confirm-deploy-171", 189, T0)
-    prune(ledger, at(90 * 24 * 60))
+    prune(ledger, at(23 * 60))
     assert len(ledger["claims"]) == 1
+    granted, message = take(ledger, "confirm-deploy-171", 190, at(23 * 60))
+    assert granted is True
+    assert "taken over from cycle 189" in message
+
+
+def test_an_open_claim_older_than_a_day_is_dropped_like_a_released_one():
+    # This reverses the old rule, which was "never drop an open claim
+    # however stale" on the grounds that it was the only record a cycle had
+    # been working on the item. `take` deletes that same row the moment
+    # anybody claims the slug again, so the record only ever survived in the
+    # case where nothing wanted the slug. Measured Cycle 355: four such rows
+    # from three separate days, permanent, in the file every claim rewrites.
+    ledger = empty()
+    take(ledger, "board-sweep-rest", 203, T0)
+    prune(ledger, at(25 * 60))
+    assert ledger["claims"] == []
+
+
+def test_a_dropped_open_claim_leaves_the_slug_freshly_claimable():
+    # Pruning is not a release: nothing about it says the work was finished,
+    # so the next cycle to want the slug gets it clean rather than refused.
+    ledger = empty()
+    take(ledger, "board-sweep-rest", 203, T0)
+    prune(ledger, at(25 * 60))
+    granted, message = take(ledger, "board-sweep-rest", 355, at(25 * 60))
+    assert granted is True
+    assert "taken over" not in message
+
+
+def test_pruning_leaves_an_open_claim_a_live_cycle_could_still_hold():
+    # The dangerous direction: a row dropped while its cycle is still
+    # running would let a second cycle claim the same item.
+    ledger = empty()
+    take(ledger, "confirm-deploy-171", 189, T0)
+    prune(ledger, at(30))
+    assert held_by(ledger, at(30)) == {"confirm-deploy-171": 189}
 
 
 # --- the summary a cycle actually reads ------------------------------------

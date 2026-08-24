@@ -158,16 +158,35 @@ def is_stale(row, now, ttl_minutes=CLAIM_TTL_MINUTES):
 
 
 def prune(ledger, now, keep_hours=DONE_KEEP_HOURS):
-    """Drop released claims nobody can still be racing. Mutates and returns.
+    """Drop claims nobody can still be racing or resuming. Mutates and returns.
 
     Both released states, not just `done`: a progressed row is a breadcrumb
     for whoever picks the item up next, and once no live cycle could still
     be reading it, it is a row in a file every claim rewrites.
+
+    And an `open` row on the same clock, which it was not until now. The
+    rule this replaces was "never drop an open claim however stale", on the
+    grounds that a stale open row is evidence a cycle died and dropping it
+    would delete the only record anyone was working on the item. Two things
+    make that wrong. `take` already deletes exactly that row the moment
+    anybody claims the slug again -- so the record survived only in the case
+    where nothing ever wanted the slug, which is the case where it is worth
+    least. And the loop no longer produces stale open rows on purpose:
+    runner#313 withdrew the advice to "leave the claim alone and let it go
+    stale" in favour of `release --progress`, so an open row past
+    `keep_hours` is now a cycle that was killed, not one that paused.
+
+    Measured Cycle 355: four such rows, from 15, 21 and 22 August, in a file
+    every claim in this loop reads and rewrites. At a 45-minute cap and a
+    cadence heading for 18 minutes with three cycles in flight, a killed
+    cycle is an ordinary event, so that is a leak with no ceiling. `keep_hours`
+    and not `CLAIM_TTL_MINUTES`: the 45-minute expiry exists so a later cycle
+    can *take over* a dead claim and have the handover recorded, and pruning
+    at 45 minutes would take that window away.
     """
     kept = []
     for row in ledger["claims"]:
-        if row.get("state") in RELEASE_STATES \
-                and _minutes_between(_parse_at(row), now) > keep_hours * 60:
+        if _minutes_between(_parse_at(row), now) > keep_hours * 60:
             continue
         kept.append(row)
     ledger["claims"] = kept
