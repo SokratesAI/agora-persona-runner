@@ -2883,24 +2883,91 @@ describe("the page notices new entries on its own", () => {
     assert.equal(cards(window).length, before + 1, "a restored page kept showing what it had");
   });
 
+  /** Count journal requests while serving a newer feed. */
+  function counting(window) {
+    const count = { n: 0 };
+    window.fetch = (url) => {
+      if (String(url).includes("/api/journal")) count.n += 1;
+      return res(
+        String(url).includes("/api/digest") ? payload.digest
+          : String(url).includes("/api/comments") ? payload.comments
+            : grown('W/"counted"'),
+      );
+    };
+    return count;
+  }
+
+  test("a window regaining focus asks, on its own", async () => {
+    /* Asserted alone rather than alongside `visibilitychange`: with both
+     * dispatched, the pre-existing visibility handler answers for one fetch
+     * and the assertion holds with the focus listener absent entirely. The
+     * reviewer caught that -- my first version of this test passed against a
+     * full revert. */
+    const { window } = await pollable();
+    const count = counting(window);
+    window.dispatchEvent(new window.Event("focus"));
+    await settle();
+    assert.equal(count.n, 1, "focus alone did not ask the server anything");
+  });
+
   test("two ways of coming back at once still make one request", async () => {
     /* Opening the app fires more than one of these, in separate tasks. Two
      * polls in flight render in completion order, so the older answer can
      * land last and put the stale header back. */
     const { window } = await pollable();
-    let journalFetches = 0;
-    window.fetch = (url) => {
-      if (String(url).includes("/api/journal")) journalFetches += 1;
-      return res(
-        String(url).includes("/api/digest") ? payload.digest
-          : String(url).includes("/api/comments") ? payload.comments
-            : grown('W/"both"'),
-      );
-    };
+    const count = counting(window);
     window.document.dispatchEvent(new window.Event("visibilitychange"));
     window.dispatchEvent(new window.Event("focus"));
     await settle();
-    assert.equal(journalFetches, 1, "both events fetched, so they can race each other");
+    assert.equal(count.n, 1, "both events fetched, so they can race each other");
+  });
+
+  test("a window regaining focus does not rebuild the box he is typing in", async () => {
+    /* `focus` fires on an ordinary window switch and `online` on a wifi
+     * blip, neither of which says he was ever away from the keyboard. Only
+     * the two events that mean the tab was gone skip the typing deferral. */
+    const { window } = await pollable();
+    const card = cards(window)[0];
+    const box = window.document.querySelector("textarea");
+    box.value = "mid sentence";
+    box.dispatchEvent(new window.Event("input"));
+    serve(window, grown('W/"focused"'));
+
+    window.dispatchEvent(new window.Event("focus"));
+    await settle();
+    assert.ok(window.document.contains(card), "focus rebuilt the feed while he was typing");
+
+    window.dispatchEvent(new window.Event("online"));
+    await settle();
+    assert.ok(window.document.contains(card), "online rebuilt the feed while he was typing");
+
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    await settle();
+    assert.ok(!window.document.contains(card), "coming back to a hidden tab should still catch up");
+  });
+
+  test("a resumed poll cancels the timer that was already armed", async () => {
+    /* Otherwise the background timer fires during a slow resumed fetch and
+     * starts a second one -- the race the in-flight guard exists to stop,
+     * on the one path it did not cover. */
+    const { window, timers } = await pollable();
+    assert.equal(timers.queuedPagePolls.length, 1, "one poll armed at load");
+    let resolveJournal;
+    window.fetch = (url) => {
+      if (String(url).includes("/api/digest")) return res(payload.digest);
+      if (String(url).includes("/api/comments")) return res(payload.comments);
+      return new Promise((r) => { resolveJournal = () => r(res(grown('W/"slow"'))); });
+    };
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    await settle();
+    assert.equal(
+      timers.queuedPagePolls.length,
+      0,
+      "the armed timer survived the resume, so it can fire into the fetch still in flight",
+    );
+    resolveJournal();
+    await settle();
+    assert.equal(timers.queuedPagePolls.length, 1, "the round did not re-arm the timer");
   });
 });
 
