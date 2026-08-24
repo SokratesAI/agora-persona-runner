@@ -774,7 +774,7 @@ describe("two entries for one cycle are one card", () => {
    * selector, present on `/cycle/<n>` and absent on the feed. Without the
    * page half this passes for a misspelled selector, which is how Cycle 202
    * shipped an assertion against markup that never rendered. */
-  test("the feed card carries no outcome pill, and /cycle/<n> still does", async () => {
+  test("a free-text outcome draws no pill on the feed card, and /cycle/<n> still does", async () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
     const parts = journal.entries.filter((e) => e.cycle === 57);
     parts.forEach((e) => {
@@ -791,6 +791,45 @@ describe("two entries for one cycle are one card", () => {
     const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(pageMeta.textContent, /backlog_brief/);
     assert.ok(pageMeta.querySelector(".badge"), "the page keeps the pill");
+  });
+
+  /* The other half of the rule, and the one Edvard asked for back on
+   * 2026-08-24: "i miss the status fields. Please bring them back." A word
+   * from the closed vocabulary is a badge, so it goes back on the card; the
+   * clause above is what stays cut. Of 411 outcomes in the live journal, 404
+   * are one of these seven words, so this is the case that decides whether
+   * he sees a status at all when he scrolls the feed.
+   *
+   * The free-text test above is this one's control: same selector, same
+   * fixture shape, opposite verdict, so neither can pass by accident. */
+  test("a one-word outcome is back on the feed card", async () => {
+    for (const [word, cls] of [["merged", "badge-good"], ["stuck", "badge-warn"], ["report", null]]) {
+      const journal = JSON.parse(JSON.stringify(payload.journal));
+      journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+        e.outcome = word;
+        e.outcomeDetail = "";
+      });
+      const w = await loadSite("/", { journal: () => journal });
+      const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+      const badge = meta.querySelector(".badge");
+      assert.ok(badge, `no pill for ${word}: ${meta.textContent}`);
+      assert.equal(badge.textContent, word);
+      if (cls) assert.ok(badge.classList.contains(cls), `${word} should be ${cls}`);
+    }
+  });
+
+  /* The qualifier stays off the card even when the word beside it is back --
+   * it is the prose half, and prose in a badge row is what #300 cut. */
+  test("a one-word outcome brings back the word, not its qualifier", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.outcome = "stuck";
+      e.outcomeDetail = "CI outage, merged nothing";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.ok(meta.querySelector(".badge"), "the word is drawn");
+    assert.equal(meta.querySelector(".outcome-detail"), null);
   });
 
   /* Cycle 340's own card is `PR: none | Outcome: <a whole clause>`. Cutting
@@ -7287,9 +7326,8 @@ describe("the status fields are one horizontal list, and they link down to the c
       journal: () => withStatus({ cycle: 57, lastOutcome: "merged", lastPr: "#289" }),
       comments: { byCycle: {}, needs: [] },
     });
-    // The PR, not the outcome: the header stopped drawing the outcome pill
-    // (see "the header carries no outcome pill" below). The field itself is
-    // unchanged -- same link, same scroll -- so this still pins that.
+    // Matched on the PR rather than the outcome: this test is about the
+    // field being a working link, and the field holds both halves.
     const badge = [...window.document.querySelectorAll("#status .status-subs .status-sub")]
       .find((f) => /#289/.test(f.textContent));
     assert.ok(badge, "expected a PR field in the header");
@@ -7329,7 +7367,7 @@ describe("the status fields are one horizontal list, and they link down to the c
    *
    * The control against a selector that matches nothing is the PR: the same
    * field, same fixture, one child present and the other absent. */
-  test("the header carries no outcome pill, and still names the PR", async () => {
+  test("a free-text outcome draws no header pill, and the PR is still named", async () => {
     const window = await loadSite("/", {
       journal: () => withStatus({
         cycle: 57,
@@ -7346,23 +7384,46 @@ describe("the status fields are one horizontal list, and they link down to the c
   });
 
   /* The footer is mandatory, so a cycle with nothing to show still writes
-   * `PR: none` -- and cycle 340, the one he complained about, is exactly
-   * that. With the pill gone the field would have been the word "none" on
-   * its own, linking to a cycle, which is the same noise in fewer letters. */
-  test("a last cycle with no PR gets no header field at all", async () => {
+   * `PR: none`, and the field must not become the word "none" linking to a
+   * cycle -- that is the noise #300 removed and it stays removed.
+   *
+   * What changed on 2026-08-24 is the other half. Edvard: "i miss the status
+   * fields. Please bring them back", written while a run of cycles was dying
+   * without shipping anything. So a cycle whose PR is `none` now gets a
+   * field again -- carrying its one-word status, never the `none`. */
+  test("a last cycle with no PR still gets a status word, and never says none", async () => {
     const window = await loadSite("/", {
       journal: () => withStatus({ cycle: 57, lastOutcome: "no-op", lastPr: "none" }),
       comments: { byCycle: {}, needs: [] },
     });
-    // Null rather than empty: the container is only drawn when it has a
-    // field to hold, so dropping the last one drops the row with it.
     const subs = window.document.querySelector("#status .status-subs");
-    assert.ok(!subs || !/none/.test(subs.textContent), subs && subs.textContent);
-    // The control: the same fixture with a real reference does draw one.
+    assert.ok(subs, "the field carrying the status word was not drawn");
+    assert.ok(!/none/.test(subs.textContent), subs.textContent);
+    assert.match(subs.textContent, /no-op/);
+    // The control: the same fixture with a real reference draws both halves.
     const w2 = await loadSite("/", {
       journal: () => withStatus({ cycle: 57, lastOutcome: "no-op", lastPr: "runner#289" }),
       comments: { byCycle: {}, needs: [] },
     });
-    assert.match(w2.document.querySelector("#status .status-subs").textContent, /runner#289/);
+    const subs2 = w2.document.querySelector("#status .status-subs").textContent;
+    assert.match(subs2, /runner#289/);
+    assert.match(subs2, /no-op/);
+  });
+
+  /* And the case that has no field to draw at all: a free-text outcome is
+   * refused by `shortOutcome` and the PR is `none`, so neither half has
+   * anything a badge can hold. This is cycle 340's exact shape -- the card
+   * he complained about -- and it must still render nothing. */
+  test("a free-text outcome with no PR still gets no header field", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({
+        cycle: 57,
+        lastOutcome: "goal review written, 8 board rows reprioritised",
+        lastPr: "none",
+      }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const subs = window.document.querySelector("#status .status-subs");
+    assert.ok(!subs || !/reprioritised|none/.test(subs.textContent), subs && subs.textContent);
   });
 });

@@ -494,6 +494,34 @@
     return "badge";
   }
 
+  /* The outcomes that are safe to draw as a badge, as a closed list rather
+   * than a length guess. Edvard, `issues.md` 2026-08-24, after a run of
+   * cycles died without writing anything: "Earlier we did have some mention
+   * about this in Nova but i said to take the statuses away. But now, i miss
+   * the status fields. Please bring them back."
+   *
+   * What he had cut (#300) was the pill rendering *free text*: the footer's
+   * Outcome field is unconstrained, cycle 340 wrote a whole clause into it,
+   * and the card drew 84 characters of uppercased grey where a word goes --
+   * a second title above the blue summary. Bringing the field back unchanged
+   * re-earns that complaint the next time a cycle writes a sentence there.
+   *
+   * Measured against the live journal this cycle: of 411 outcomes on record,
+   * 404 are exactly one of the seven words below and 7 are clauses. So the
+   * vocabulary is what the loop actually writes, and a value outside it is
+   * the shape that got the pill cut -- it stays off the card, exactly as it
+   * is today. `none` and the two below it are not in the archive yet; they
+   * are the words the footer's own instructions offer, and admitting them
+   * here costs nothing and stops the next honest short answer being dropped.
+   *
+   * Returns the value to draw, or "" for "not a status word". */
+  function shortOutcome(outcome) {
+    var value = String(outcome || "").trim();
+    return /^(merged|shipped|report|research|stuck|no-op|open|none|blocked|partial)$/i.test(value)
+      ? value
+      : "";
+  }
+
   function statusParts(status) {
     var parts = [];
     if (status.cycle !== null && status.cycle !== undefined) parts.push("Cycle " + status.cycle);
@@ -678,9 +706,21 @@
      * the noise this ask is about wearing a shorter word. It is the same
      * predicate `settledPart` uses, so the header and the card agree about
      * what counts as a PR. */
-    if (isRealPr(status.lastPr)) {
+    /* ...and it is back, narrowed. Edvard, `issues.md` 2026-08-24: "i miss
+     * the status fields. Please bring them back." Same rule as the card:
+     * `shortOutcome` only, so the field can hold a badge and can never hold
+     * the clause that got it cut. The field draws when either half has
+     * something to say -- a cycle that shipped nothing still has a status
+     * worth one word, and that is the case he is asking about. */
+    var headerOutcome = shortOutcome(status.lastOutcome);
+    if (headerOutcome || isRealPr(status.lastPr)) {
       var line = statusField(status.cycle);
-      line.appendChild(el("span", "status-pr", status.lastPr));
+      if (headerOutcome) {
+        line.appendChild(el("span", outcomeClass(headerOutcome), headerOutcome));
+      }
+      if (isRealPr(status.lastPr)) {
+        line.appendChild(el("span", "status-pr", status.lastPr));
+      }
       subs.appendChild(line);
     }
 
@@ -1773,8 +1813,14 @@
    * to stay scannable. */
   function appendOutcome(row, entry, opts) {
     var withOutcome = !opts || opts.withOutcome !== false;
-    if (withOutcome && entry.outcome) {
-      row.appendChild(el("span", outcomeClass(entry.outcome), entry.outcome));
+    /* On the card, only a recognised status word is drawn -- see
+     * `shortOutcome`. That is the half of the pill Edvard asked back on
+     * 2026-08-24; the half he cut, free text rendered as a badge, stays
+     * cut. Where the full pill is drawn (`/cycle/<n>`, a disagreeing
+     * part's own row) nothing changes: those are pages opened on purpose. */
+    var word = withOutcome ? entry.outcome : shortOutcome(entry.outcome);
+    if (word) {
+      row.appendChild(el("span", outcomeClass(word), word));
     }
     /* With the pill suppressed, `isRealPr` gates the PR too. "none" is only
      * ever readable as the object of the footer's sentence -- `PR: none |
