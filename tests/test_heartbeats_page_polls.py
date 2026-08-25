@@ -24,6 +24,11 @@ from pathlib import Path
 import pytest
 
 APP_JS = Path(__file__).resolve().parent.parent / "agora_runner" / "nova_public" / "app.js"
+# Read off the shipped file so the bound under test is the real one.
+ASK_POLL_MAX_VALUE = int(
+    [ln.strip() for ln in APP_JS.read_text(encoding="utf-8").splitlines()
+     if ln.strip().startswith("var ASK_POLL_MAX = ")][0].split("=")[1].strip(" ;")
+)
 
 
 def extract_function(source: str, name: str) -> str:
@@ -48,8 +53,24 @@ def extract_function(source: str, name: str) -> str:
     raise AssertionError("unbalanced braces reading " + name)
 
 
-def run_poll_harness(rows, fail_fetch=False, view="heartbeats"):
-    """Run `scheduleHeartbeatsPoll` (and, on failure, `loadHeartbeats`) once.
+def extract_var(source: str, name: str) -> str:
+    """The single-line `var <name> = <literal>;` declaration, verbatim."""
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("var " + name + " = ") and stripped.endswith(";"):
+            return stripped
+    raise AssertionError("app.js no longer declares " + name + " on one line")
+
+
+def run_poll_harness(rows, fail_fetch=False, view="heartbeats", seeded=(), ticks=1):
+    """`seeded` puts timers in `livePolls` before the code under test runs.
+
+    Without it the failure path cannot be tested at all: `livePolls` starts
+    empty, so a missing `stopPolling()` and a present one produce byte-identical
+    output. That was a real hole -- my reviewer found the missing
+    `stopPolling()` in the catch branch and proved this file could not see it.
+
+    Run `scheduleHeartbeatsPoll` (and, on failure, `loadHeartbeats`) once.
 
     The success cases go in through the real `renderHeartbeats`, not through
     `scheduleHeartbeatsPoll` directly: a first version of this file called the
@@ -66,17 +87,17 @@ def run_poll_harness(rows, fail_fetch=False, view="heartbeats"):
     source = APP_JS.read_text(encoding="utf-8")
     harness = textwrap.dedent(
         """
-        var ASK_POLL_MS = 4000;
-        var POLL_MS = 30000;
+__CONSTANTS__
         var delays = [];
-        var livePolls = [];
+        var livePolls = SEEDED.slice();
+        var cleared = 0;
         var view = VIEW;
         var painted = null;
         function setTimeout(fn, ms) { delays.push(ms); return delays.length; }
         function route() { return { view: view }; }
         var window = { location: { pathname: "/heartbeats" } };
         function markNav() {}
-        function stopPolling() { livePolls = []; }
+        function stopPolling() { cleared += livePolls.length; livePolls = []; }
         function fmtStamp(ms) { return "at " + ms; }
         function node(tag, cls, text) {
           return {
@@ -91,8 +112,16 @@ def run_poll_harness(rows, fail_fetch=False, view="heartbeats"):
         function fetchPage() { return FETCH; }
         __FUNCTIONS__
         __CALL__
-        console.log(JSON.stringify({ delays: delays, painted: painted }));
+        console.log(JSON.stringify({ delays: delays, painted: painted, live: livePolls.length, cleared: cleared }));
         """
+    )
+    # Read the cadence constants out of the shipped file rather than hardcoding
+    # them. My reviewer's second finding: a harness that declares its own
+    # `var ASK_POLL_MS = 4000` passes for ever after someone changes the real
+    # one, and the docstring above claiming "the source is the real source"
+    # would be false of exactly the numbers under test.
+    constants = "\n".join(
+        extract_var(source, name) for name in ("ASK_POLL_MS", "ASK_POLL_MAX", "POLL_MS")
     )
     functions = "\n".join(
         extract_function(source, name)
@@ -106,9 +135,14 @@ def run_poll_harness(rows, fail_fetch=False, view="heartbeats"):
         ).rstrip() + "\n});"
     else:
         call = ("var FETCH = Promise.resolve({});\n"
-                "renderHeartbeats({ heartbeats: " + json.dumps(rows) + " });")
+                "for (var t = 0; t < " + str(ticks) + "; t++) {\n"
+                "  renderHeartbeats({ heartbeats: " + json.dumps(rows) + " });\n"
+                "}")
 
+    harness = harness.replace("__CONSTANTS__", constants)
     script = ("var VIEW = " + json.dumps(view) + ";\n"
+              + "var SEEDED = " + json.dumps(seeded) + ";\n"
+              + "var hbFastTicks = 0;\n"
               + harness.replace("__FUNCTIONS__", functions).replace("__CALL__", call))
     out = subprocess.run(
         [node, "-e", script], capture_output=True, text=True, timeout=30, check=False
@@ -183,3 +217,36 @@ def test_a_failure_after_he_navigates_away_paints_nothing():
     result = run_poll_harness([], fail_fetch=True, view="journal")
     assert result["painted"] is None
     assert result["delays"] == []
+
+
+def test_a_failure_clears_the_pending_timer_before_scheduling_its_own():
+    """Two timers alive at once was reachable with two ordinary taps.
+
+    `loadHeartbeats` is called from `hbPost` as well as from the poll chain,
+    and `button.disabled` guards only the button that was tapped -- so "Turn
+    off" on one row and "Run now" on another put two requests in flight. If
+    the success settles first it schedules a timer; a failure settling after
+    it appends a second without clearing the first, and only a success ever
+    clears. My reviewer found this and proved the first version of this file
+    could not see it, because `livePolls` always started empty here.
+    """
+    result = run_poll_harness([], fail_fetch=True, seeded=[99])
+    assert result["cleared"] == 1, "the pending timer was not cleared"
+    assert result["live"] == 1, "exactly one timer should be alive afterwards"
+
+
+def test_the_fast_phase_stops_after_four_minutes():
+    """`forceRun` is not the few-seconds flag I first took it for.
+
+    `nova_heartbeats.run_now`'s own docstring: pressing it during a cycle
+    means the run happens when that cycle ends, "which can be most of an hour
+    later". `/api/heartbeats` is uncached and makes two upstream Agora calls
+    per request, so an uncapped fast phase is ~1,800 upstream calls an hour
+    from one open tab. The polling never stops; the 4-second phase does.
+    """
+    rows = [{"enabled": True, "forceRun": True}]
+    delays = run_poll_harness(rows, ticks=ASK_POLL_MAX_VALUE + 3)["delays"]
+    assert delays[:3] == [4000, 4000, 4000], "the first ticks should be fast"
+    assert delays[ASK_POLL_MAX_VALUE - 1] == 4000, "the last fast tick"
+    assert delays[ASK_POLL_MAX_VALUE] == 30000, "then it drops to the idle rate"
+    assert set(delays[ASK_POLL_MAX_VALUE:]) == {30000}, "and stays there"

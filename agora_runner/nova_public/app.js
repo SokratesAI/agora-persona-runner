@@ -8097,13 +8097,31 @@
    * this page he is standing there watching. Once a run is under way the
    * next thing that changes is minutes off and 30 seconds is not late.
    *
-   * No attempt cap: `pollConv` has one because it waits for a single answer
-   * and is finished when it arrives, and this waits for nothing in
-   * particular and should stay current while the page is open.
+   * The polling itself never stops while the page is open -- `pollConv` has
+   * an attempt cap because it waits for a single answer and is finished when
+   * it arrives, and this waits for nothing in particular. **The fast phase**
+   * is capped, and that number is measured rather than cautious. `run_now`'s
+   * own docstring in `nova_heartbeats.py` says pressing it during a cycle
+   * means the run happens when that cycle ends, "which can be most of an
+   * hour later" -- so `forceRun` is not the few-seconds flag I first took it
+   * for, and `/api/heartbeats` is uncached and makes two upstream Agora
+   * calls per request. An uncapped fast phase is therefore up to ~1,800
+   * upstream calls an hour from one open tab, for a row that changes once.
+   * After `ASK_POLL_MAX` fast ticks -- four minutes, the same bound the Ask
+   * page uses -- it drops to the idle rate and stays there. Four minutes is
+   * long enough to see a press get picked up; an hour is a leak.
    */
+  var hbFastTicks = 0;
+
   function scheduleHeartbeatsPoll(rows) {
     var queued = rows.some(function (r) { return r.forceRun; });
-    livePolls.push(setTimeout(loadHeartbeats, queued ? ASK_POLL_MS : POLL_MS));
+    var fast = queued && hbFastTicks < ASK_POLL_MAX;
+    // Reset only when nothing is queued -- not merely when this tick came out
+    // slow. My own first version reset on the slow tick, which meant the
+    // counter went 60 fast, one slow, 60 fast, for ever: a cap that read as a
+    // cap and bounded nothing. The test named for the four minutes caught it.
+    hbFastTicks = queued ? hbFastTicks + 1 : 0;
+    livePolls.push(setTimeout(loadHeartbeats, fast ? ASK_POLL_MS : POLL_MS));
   }
 
   function renderHeartbeats(payload) {
@@ -8204,6 +8222,15 @@
         // its failure paints "Could not load your heartbeats" over whatever
         // page he actually opened.
         if (route(window.location.pathname).view !== "heartbeats") return;
+        // `stopPolling()` first, exactly as `renderHeartbeats` does, and this
+        // line is the reviewer's finding on this PR rather than symmetry for
+        // its own sake. `loadHeartbeats` is also called from `hbPost`, and
+        // `button.disabled` guards only the button that was tapped -- so
+        // "Turn off" on one row and "Run now" on another put two requests in
+        // flight. If the success lands first it schedules a timer; a failure
+        // landing after it used to append a second one without clearing the
+        // first, and only a success ever clears. Two timers, then three.
+        stopPolling();
         markNav();
         feed.textContent = "";
         feed.appendChild(el("p", "empty", "Could not load your heartbeats: " + err));
