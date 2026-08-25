@@ -8619,3 +8619,156 @@ describe("the journal search box sits between the composer and the feed", () => 
     assert.equal(capture.nextElementSibling, box, "the composer and the search box swapped places");
   });
 });
+
+describe("a journal search answer that arrived too late", () => {
+  const all = payload.journal.entries;
+
+  /* Thirty entries. Three say "ingress"; three more say "ingredient", so
+   * "ingr" matches six and "ingress" matches three.
+   *
+   * That gap is the whole fixture, and the first version of this file did
+   * not have it: every title said "ingress", so the prefix he typed on the
+   * way there matched exactly the same rows, and a test named for a stale
+   * answer replacing a fresh one could not tell the two apart. It passed
+   * with the guard deliberately removed. A fixture in which the wrong
+   * answer and the right answer are identical proves nothing about which
+   * one is on screen. */
+  function corpus() {
+    const out = [];
+    for (let i = 0; i < 30; i += 1) {
+      const word = i >= 22 && i <= 24 ? " — the ingress"
+        : i >= 19 && i <= 21 ? " — the ingredient"
+          : " — a quiet one";
+      out.push({
+        ...JSON.parse(JSON.stringify(all[2])),
+        cycle: 30 - i,
+        title: "Cycle " + (30 - i) + word,
+      });
+    }
+    return out;
+  }
+
+  /** What the real endpoint answers for `q`, per `nova_site.journal_page`. */
+  function answer(rows, q, limit) {
+    const needle = (q || "").trim().toLowerCase();
+    if (!needle) {
+      return {
+        entries: rows.slice(0, limit), status: payload.journal.status,
+        total: rows.length, version: 'W/"plain"',
+      };
+    }
+    const matched = rows.filter((e) => e.title.toLowerCase().includes(needle));
+    return {
+      entries: matched.slice(0, limit), status: payload.journal.status,
+      total: matched.length, query: needle, version: 'W/"q-' + needle + '"',
+    };
+  }
+
+  async function type(window, text) {
+    const box = window.document.querySelector(".journal-search-input");
+    box.value = text;
+    box.dispatchEvent(new window.Event("input"));
+    await new Promise((resolve) => setTimeout(resolve, 260));
+  }
+
+  test("the results for a word he typed past never replace the ones he asked for", async () => {
+    /* Two searches in flight together are resolved in whatever order the
+     * server finishes them, and `nova_site` is a threading server where
+     * the broader, older query does more work -- so finishing last is the
+     * ordinary case. Without a guard the feed silently reverts to the
+     * shorter word's results, with a count line agreeing, and nothing
+     * anywhere says it happened.
+     *
+     * `window.fetch` is replaced rather than `loadSite`'s server used,
+     * because the ordering *is* the thing under test and the fixture
+     * server answers synchronously by construction.
+     */
+    const rows = corpus();
+    const window = await loadSite("/", { journal: (url) => answer(rows, null, 20) });
+
+    const held = [];
+    window.fetch = (url) => {
+      const s = String(url);
+      if (s.includes("/api/comments")) return res(payload.comments);
+      if (s.includes("/api/digest")) return res(payload.digest);
+      const params = new URL(s, "https://nova.example").searchParams;
+      const q = params.get("q") || "";
+      const body = answer(rows, q, Number(params.get("limit")) || 20);
+      if (q !== "ingr") return res(body);
+      // Held open until after the newer search has already rendered.
+      return new Promise((resolve) => {
+        held.push(() => resolve({ ok: true, status: 200, json: () => Promise.resolve(body) }));
+      });
+    };
+
+    await type(window, "ingr");
+    assert.equal(held.length, 1, "the first search never went out");
+    await type(window, "ingress");
+    assert.equal(cards(window).length, 3, "the newer search did not render");
+
+    held.forEach((release) => release());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Six is what "ingr" matches and three is what "ingress" matches, so
+    // the count of cards is the assertion: the label reads the box and
+    // would say "ingress" either way, which is a thing this test cannot
+    // use and the reason it asserts on the feed instead.
+    assert.equal(cards(window).length, 3, "the stale answer repainted the feed with its own six rows");
+    assert.match(
+      window.document.querySelector(".journal-search-count").textContent,
+      /^3 entries/,
+      "the count reverted to the total for the word he had already typed past",
+    );
+  });
+
+  test("the background poll does not fire a half-typed word", async () => {
+    /* The 200ms debounce exists so a word is searched once rather than
+     * seven times, and the 30-second poll reads the box directly through
+     * `journalUrl` -- so a timer landing between "ingr" and "ingress"
+     * would fetch and render the results for "ingr", the debounce
+     * defeated by an unrelated timer.
+     *
+     * `captureTimers` holds every timeout, so the debounce is queued and
+     * deliberately not fired here: this is exactly the window the poll
+     * must stay out of.
+     */
+    const rows = corpus();
+    let timers;
+    const window = await loadSite("/", {
+      journal: (url) => {
+        const params = new URL(String(url), "https://nova.example").searchParams;
+        return answer(rows, params.get("q"), Number(params.get("limit")) || 20);
+      },
+      install: (win) => { timers = captureTimers(win); },
+    });
+    assert.equal(cards(window).length, 20);
+
+    const box = window.document.querySelector(".journal-search-input");
+    box.value = "ingr";
+    box.dispatchEvent(new window.Event("input"));
+
+    await timers.firePagePoll();
+    assert.equal(cards(window).length, 20, "the poll searched a word he had not finished typing");
+    assert.ok(
+      window.document.querySelector(".journal-search-count").hidden,
+      "a count line appeared for a search he had not asked for yet",
+    );
+  });
+
+  test("the count line keeps his capitalisation, not the server's", async () => {
+    /* The query comes back lower-cased because that is what it was
+     * matched with. A line built from it tells him `TAILSCALE` found
+     * "tailscale", which reads like the box corrected him. */
+    const rows = corpus();
+    const window = await loadSite("/", {
+      journal: (url) => {
+        const params = new URL(String(url), "https://nova.example").searchParams;
+        return answer(rows, params.get("q"), Number(params.get("limit")) || 20);
+      },
+    });
+    await type(window, "Ingress");
+    const count = window.document.querySelector(".journal-search-count");
+    assert.match(count.textContent, /Ingress/);
+    assert.ok(!/ingress/.test(count.textContent.replace(/Ingress/g, "")), "showed the normalised copy too");
+  });
+});
