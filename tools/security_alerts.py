@@ -1,4 +1,4 @@
-"""Open Dependabot alerts across every repo this loop has a checkout of.
+"""Open Dependabot alerts across every repo in this loop's GitHub orgs.
 
 Cycle 397. GitHub had been reporting one high-severity vulnerability on
 `SokratesAI/agora`'s default branch, and the only place that fact ever
@@ -47,11 +47,25 @@ or an API call that fails all leave the alert exactly as actionable as it
 was. Suppressing a real vulnerability is the one failure here that costs
 more than the false alarm, so every uncertain path fails towards noise.
 
+**The sweep covers the org, not the checkouts -- Cycle 432.** It used to
+ask GitHub about the three or four repos this loop happens to have cloned,
+which is a different set from "the repos this platform owns" and is much
+smaller. On 2026-08-25 it printed "Nothing to act on" while
+`SokratesAI/sokrates-docs` carried six open Dependabot alerts, four of them
+high; the only cycle that ever saw them was one that pushed to that repo
+and read a `remote:` line in passing. That is the accidental-noticing this
+module was written to replace, reappearing one level up, in the module
+itself. The org list is derived from the checkouts' own owners rather than
+hardcoded, so the "no stale constant" property above survives, and the
+checkouts are unioned back in so nothing that was swept before stops being.
+
 Exit status: 0 when every repo answered and nothing needs acting on, 1
 when anything was unreadable or alerts are disabled somewhere, 2 when
 there is an open alert whose fix is not already on the default branch. So
 a cycle can read the status without parsing the text, and "I could not
-check" never reads as "nothing here".
+check" never reads as "nothing here". Failing to enumerate an org is a 1
+for the same reason a `disabled` repo is: the sweep was smaller than it
+claims, and a smaller sweep must never print as a clean one.
 """
 
 import argparse
@@ -74,6 +88,12 @@ ERROR = "error"
 # the message is how the two stay apart; if GitHub reworded it, the repo
 # would be reported as an error, which is the safe direction to be wrong in.
 _DISABLED_MARKER = "dependabot alerts are disabled"
+
+# `gh repo list` takes a limit and gives no "there were more" signal, so the
+# only way to notice a truncated org is that the count came back exactly at
+# the limit. Far above any real org here (27 today), and checked rather than
+# assumed, because a silent truncation is the one failure this module is for.
+_ORG_PAGE_LIMIT = 500
 
 
 def _gh(args):
@@ -324,14 +344,21 @@ def format_report(results):
             prefix = "No open security alerts. "
         lines.append(f"{prefix}Answered: " + ", ".join(checked))
 
+    # One line for all of them, with every name on it. Sweeping the whole
+    # org turned this from two repos into sixteen, and sixteen copies of
+    # the same sentence is a wall a cycle skims -- the names are the data
+    # and none of them may be dropped, so the fix is the layout, never a
+    # cap or a count. (Cycle 432; `personality.md`, "I don't limit myself
+    # to make things tidy".)
+    disabled = [repo for repo, state, _ in unreadable if state == DISABLED]
+    if disabled:
+        lines.append(
+            f"⚠ Dependabot alerts are DISABLED on {len(disabled)} repo(s) — "
+            "this is not zero alerts, it is no instrument. Nobody can see a "
+            "vulnerability in these: " + ", ".join(disabled)
+        )
     for repo, state, payload in unreadable:
-        if state == DISABLED:
-            lines.append(
-                f"⚠ {repo}: Dependabot alerts are DISABLED — this is not "
-                "zero alerts, it is no instrument. Nobody can see a "
-                "vulnerability in this repo."
-            )
-        else:
+        if state != DISABLED:
             lines.append(f"⚠ {repo}: COULD NOT READ — {payload}")
 
     if not results:
@@ -362,30 +389,129 @@ def _repos_from_workspace():
     return repos, unplaceable
 
 
+def repos_in_org(org, run=None):
+    """`(live, error, archived)` -- every repo in one GitHub org, split.
+
+    Archived repos are left out on purpose and counted by the caller: they
+    are read-only, so an alert on one cannot be fixed by a pull request and
+    would sit in the actionable list forever. That is a judgement, not a
+    measurement, so it is said out loud in the report rather than hidden.
+    """
+    code, out, err = (run or _gh)(
+        [
+            "repo",
+            "list",
+            org,
+            "--limit",
+            str(_ORG_PAGE_LIMIT),
+            "--json",
+            "nameWithOwner,isArchived",
+        ]
+    )
+    if code != 0:
+        blob = (err or out or "").strip()
+        return [], blob.splitlines()[0] if blob else f"gh exited {code}", []
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        return [], "gh returned something that is not JSON", []
+    if not isinstance(payload, list):
+        return [], "gh returned a JSON object where a list of repos was expected", []
+    if len(payload) >= _ORG_PAGE_LIMIT:
+        return (
+            [],
+            f"the org listing came back at the {_ORG_PAGE_LIMIT}-repo limit, "
+            "so it may be truncated and this sweep cannot claim to cover it",
+            [],
+        )
+    live, archived = [], []
+    for entry in payload:
+        name = (entry or {}).get("nameWithOwner")
+        if not name:
+            continue
+        (archived if entry.get("isArchived") else live).append(name)
+    return sorted(live), None, sorted(archived)
+
+
+def _repos_to_sweep(run=None):
+    """`(repos, unplaceable, notes, incomplete)` -- what this sweep covers.
+
+    **The blind spot this replaces cost four high-severity alerts.** Until
+    Cycle 432 the default was `_repos_from_workspace()` alone, so the sweep
+    saw the three or four repos this loop happens to clone and reported
+    "nothing to act on" for the org. `SokratesAI/sokrates-docs` had six open
+    Dependabot alerts at that moment, four of them high, and the only cycle
+    that ever saw them was one that pushed to the repo and read a `remote:`
+    line in passing -- which is the exact accidental-noticing this whole
+    module exists to replace, reappearing one level up.
+
+    The owners are still derived from the checkouts rather than hardcoded,
+    which keeps the property the docstring above argues for: nothing here
+    names an org, so a new org shows up the moment a clone of one does. The
+    workspace repos are then unioned back in, so a checkout of a repo
+    outside any of those orgs cannot stop being swept by this change.
+    """
+    checkouts, unplaceable = _repos_from_workspace()
+    orgs = sorted({r.split("/")[0] for r in checkouts if "/" in r})
+    repos, notes, incomplete = set(checkouts), [], False
+    for org in orgs:
+        found, error, archived = repos_in_org(org, run=run)
+        if error:
+            notes.append(
+                f"⚠ {org}: COULD NOT LIST THE ORG — {error}. Swept only the "
+                "repos with a checkout here, which is a smaller sweep than "
+                "this tool claims to do."
+            )
+            incomplete = True
+            continue
+        repos.update(found)
+        note = f"Swept {org}: {len(found)} repo(s) in the org"
+        if archived:
+            note += (
+                f", plus {len(archived)} archived one(s) left out — read-only, "
+                "so an alert there cannot be closed by a pull request"
+            )
+        notes.append(note + ".")
+    if not orgs:
+        notes.append(
+            "⚠ No org to enumerate — no checkout here named one, so this is "
+            "the workspace sweep only."
+        )
+        incomplete = True
+    return sorted(repos), unplaceable, notes, incomplete
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--repo",
         action="append",
         default=None,
-        help="owner/name; repeatable. Defaults to every repo checked out "
-        "in the workspace.",
+        help="owner/name; repeatable. Defaults to every non-archived repo in "
+        "every org this workspace has a checkout of.",
     )
     args = parser.parse_args(argv)
 
-    unplaceable = []
+    unplaceable, notes, incomplete = [], [], False
     if args.repo:
         repos = args.repo
     else:
-        repos, unplaceable = _repos_from_workspace()
+        repos, unplaceable, notes, incomplete = _repos_to_sweep()
 
     results = {repo: alerts_for(repo) for repo in repos}
     verify_landed(results)
     lines, code = format_report(results)
     for line in lines:
         print(line)
+    for note in notes:
+        print(note)
     for clone in unplaceable:
         print(f"⚠ {clone}: could not place this checkout on GitHub, not swept")
+    if incomplete:
+        # A sweep that could not build its own repo list is not a clean
+        # sweep, whatever the repos it did reach answered. Same rule as
+        # `disabled` above: no instrument never reads as no alerts.
+        code = max(code, 1)
     return code
 
 

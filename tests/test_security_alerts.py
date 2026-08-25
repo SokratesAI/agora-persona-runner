@@ -296,3 +296,135 @@ def test_a_landed_alert_does_not_hide_a_real_one_beside_it():
     # the total -- "2 across 1 repo(s)" over one real alert is the same
     # overstatement this whole change exists to stop.
     assert "OPEN SECURITY ALERTS — 1 across 1 repo(s):" in lines
+
+
+# --- the sweep's own repo list (Cycle 432) -------------------------------
+#
+# The failure these guard is one level above every test above it: the
+# alerts machinery worked perfectly and answered about the wrong set of
+# repos. A sweep of three repos out of twenty-three prints exactly what a
+# sweep of twenty-three clean ones prints, which is the one equation this
+# module keeps refusing to write.
+
+
+def _org_listing(*entries):
+    return json.dumps(
+        [{"nameWithOwner": name, "isArchived": archived} for name, archived in entries]
+    )
+
+
+def test_the_org_listing_drops_archived_repos_and_reports_them():
+    body = _org_listing(("o/live", False), ("o/old", True))
+    live, error, archived = security_alerts.repos_in_org("o", run=_runner(0, body))
+    assert live == ["o/live"]
+    assert archived == ["o/old"]
+    assert error is None
+
+
+def test_a_failed_org_listing_returns_an_error_and_no_repos():
+    live, error, archived = security_alerts.repos_in_org(
+        "o", run=_runner(1, "", "HTTP 404: Not Found")
+    )
+    assert live == [] and archived == []
+    assert "404" in error
+
+
+def test_the_sweep_reaches_repos_with_no_checkout_here(monkeypatch):
+    monkeypatch.setattr(
+        security_alerts, "_repos_from_workspace", lambda: (["o/cloned"], [])
+    )
+    body = _org_listing(("o/cloned", False), ("o/never-cloned", False))
+    repos, unplaceable, notes, incomplete = security_alerts._repos_to_sweep(
+        run=_runner(0, body)
+    )
+    assert repos == ["o/cloned", "o/never-cloned"]
+    assert incomplete is False
+    assert unplaceable == []
+    assert any("2 repo(s) in the org" in note for note in notes)
+
+
+def test_a_checkout_outside_the_org_is_still_swept(monkeypatch):
+    # Unioning the checkouts back in is what makes this change incapable of
+    # shrinking the sweep, whatever the org listing says.
+    monkeypatch.setattr(
+        security_alerts,
+        "_repos_from_workspace",
+        lambda: (["o/cloned", "elsewhere/thing"], []),
+    )
+
+    def run(args):
+        org = args[2]
+        if org == "o":
+            return 0, _org_listing(("o/cloned", False)), ""
+        return 0, _org_listing(("elsewhere/thing", False)), ""
+
+    repos, _, _, incomplete = security_alerts._repos_to_sweep(run=run)
+    assert repos == ["elsewhere/thing", "o/cloned"]
+    assert incomplete is False
+
+
+def test_an_unlistable_org_is_flagged_incomplete_rather_than_swept_quietly(monkeypatch):
+    monkeypatch.setattr(
+        security_alerts, "_repos_from_workspace", lambda: (["o/cloned"], [])
+    )
+    repos, _, notes, incomplete = security_alerts._repos_to_sweep(
+        run=_runner(1, "", "HTTP 403: Forbidden")
+    )
+    assert repos == ["o/cloned"]
+    assert incomplete is True
+    assert any("COULD NOT LIST THE ORG" in note for note in notes)
+
+
+def test_no_org_at_all_is_incomplete_rather_than_clean(monkeypatch):
+    monkeypatch.setattr(security_alerts, "_repos_from_workspace", lambda: ([], []))
+    repos, _, notes, incomplete = security_alerts._repos_to_sweep(run=_runner(0, "[]"))
+    assert repos == []
+    assert incomplete is True
+    assert any("No org to enumerate" in note for note in notes)
+
+
+def test_main_never_exits_clean_on_an_incomplete_sweep(monkeypatch, capsys):
+    # The whole point of the exit code: a sweep that could not build its own
+    # repo list must not print the same status as one that checked them all.
+    monkeypatch.setattr(
+        security_alerts,
+        "_repos_to_sweep",
+        lambda: (["o/clean"], [], ["⚠ o: COULD NOT LIST THE ORG — HTTP 403"], True),
+    )
+    monkeypatch.setattr(security_alerts, "alerts_for", lambda repo: (OK, []))
+    monkeypatch.setattr(security_alerts, "verify_landed", lambda results: None)
+    assert security_alerts.main([]) == 1
+    assert "COULD NOT LIST THE ORG" in capsys.readouterr().out
+
+
+def test_every_disabled_repo_is_named_on_the_one_collapsed_line():
+    # The layout collapses; the names must not. A count without the names
+    # would tell a cycle that something is blind and not which thing.
+    results = {
+        f"o/r{n}": (DISABLED, "Dependabot alerts are disabled") for n in range(16)
+    }
+    lines, code = format_report(results)
+    disabled_lines = [ln for ln in lines if "DISABLED" in ln]
+    assert len(disabled_lines) == 1
+    assert "16 repo(s)" in disabled_lines[0]
+    for repo in results:
+        assert repo in disabled_lines[0]
+    assert code == 1
+
+
+def test_a_repo_that_errored_still_gets_its_own_line():
+    lines, code = format_report(
+        {"o/off": (DISABLED, "disabled"), "o/broken": (ERROR, "HTTP 500")}
+    )
+    assert any(ln.startswith("⚠ o/broken: COULD NOT READ") for ln in lines)
+    assert not any("o/broken" in ln and "DISABLED" in ln for ln in lines)
+    assert code == 1
+
+
+def test_an_org_listing_at_the_limit_is_an_error_rather_than_a_short_sweep():
+    body = _org_listing(
+        *((f"o/r{n}", False) for n in range(security_alerts._ORG_PAGE_LIMIT))
+    )
+    live, error, archived = security_alerts.repos_in_org("o", run=_runner(0, body))
+    assert live == [] and archived == []
+    assert "truncated" in error
