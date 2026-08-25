@@ -2934,6 +2934,12 @@ body.has-full-chart { overflow: hidden; }
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
+/* `display: flex` above is an author rule and `[hidden]` is a UA one, so the
+ * attribute alone leaves the panel permanently on his screen -- author beats
+ * UA regardless of specificity. Found by asserting the computed style rather
+ * than the attribute; every attribute assertion in the suite passed. */
+.chat-dock[hidden] { display: none; }
+
 .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .chat-title { margin: 0; font-size: 0.82rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
 .chat-close {

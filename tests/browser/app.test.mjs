@@ -7985,6 +7985,21 @@ describe("the chat dock", () => {
       "the dock closed itself on a navigation");
   });
 
+  /* `hidden` is an attribute and `display: flex` is an author rule, and the
+   * author rule wins over the UA stylesheet's `[hidden] { display: none }`
+   * no matter what the specificity says. So the attribute assertions above
+   * would all pass on a dock that is permanently open on his screen. This
+   * is the one that looks at what the cascade actually resolves to. */
+  test("the dock is really invisible when it is shut, not just marked hidden", async () => {
+    const window = await loadSite("/", { install: withStyle, ask: answered });
+    const dock = window.document.getElementById("chat-dock");
+    assert.equal(window.getComputedStyle(dock).display, "none",
+      "the dock is on screen before he has opened it");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.getComputedStyle(dock).display, "flex", "opening it did not show it");
+  });
+
   test("tapping the launcher opens the thread and reads it", async () => {
     const window = await loadSite("/", { ask: answered });
     tap(window, "chat-btn");
