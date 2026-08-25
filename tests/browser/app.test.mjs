@@ -8249,6 +8249,42 @@ describe("the chat dock", () => {
       "the button stayed disabled, so he cannot retry");
   });
 
+  /* His capture, `ideas.md` 2026-08-25: *"now when i use the new chat i get
+   * alerted by agora whenever a new message arrives."* Agora's service worker
+   * cannot see a tab on this origin, so the page has to say it is watching.
+   * The ping rides the poll on purpose -- see `pingAskWatching` in app.js. */
+  test("a dock waiting for an answer tells Agora the thread is on his screen", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: answersOnPoll(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), [],
+      "presence was pinged before anything was waiting on an answer");
+
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), ["/api/ask/watching"],
+      "the poll that carries the answer did not say he was watching");
+  });
+
+  test("a backgrounded phone stops vouching, which is when the notification matters", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => {
+        timers = captureTimers(win);
+        Object.defineProperty(win.document, "hidden", { value: true, configurable: true });
+      },
+      ask: answersOnPoll(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), [],
+      "a hidden page said he was reading it");
+  });
+
   /* The one that costs an answer if it regresses. `stopPolling()` runs on
    * every render; a dock poll registered in `livePolls` is cleared by the
    * navigation and the answer never lands. */

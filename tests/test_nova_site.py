@@ -809,9 +809,31 @@ def test_the_only_write_verb_is_post():
 
 
 def test_post_to_anything_but_capture_is_404():
-    for path in ["/", "/api/journal", "/api/digest", "/app.js", "/api/capture/issues"]:
+    for path in ["/", "/api/journal", "/api/digest", "/app.js", "/api/capture/issues",
+                 "/api/ask/watch"]:
         status, _, _ = _post(path, {"target": "issues", "text": "x"})
         assert status == 404, path
+
+
+def test_the_watching_ping_reaches_agora_through_the_real_request_path():
+    """2026-08-25. His capture: *"now when i use the new chat i get alerted by
+    agora whenever a new message arrives."* The dock pings this every poll
+    tick so Agora withholds the buzz for a reply already on his screen."""
+    with patch.object(nova_site, "ask_watching", return_value=(True, "watching")) as ping:
+        status, _, body = _post("/api/ask/watching", {})
+    assert status == 200
+    assert json.loads(body)["watching"] is True
+    ping.assert_called_once_with()
+
+
+def test_a_dead_agora_never_makes_the_watching_ping_an_error_on_his_screen():
+    """The page fires this on a timer and paints nothing from it. The worst
+    case of a failure is a notification he was going to get anyway, so a 502
+    here would be a page-load error every four seconds for no gain."""
+    with patch.object(nova_site, "ask_watching", side_effect=RuntimeError("agora is down")):
+        status, _, body = _post("/api/ask/watching", {})
+    assert status == 200
+    assert json.loads(body)["watching"] is False
 
 
 def test_a_capture_reaches_the_vault_through_the_real_request_path():

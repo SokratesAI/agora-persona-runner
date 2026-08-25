@@ -7613,6 +7613,37 @@
   // phone battery with a question mark on it.
   var ASK_POLL_MAX = 60;
 
+  /* "He is reading this here, so do not buzz his phone about it."
+   *
+   * His capture, `ideas.md` 2026-08-25: *"The new chat is just a wrapper
+   * around agora ... now when i use the new chat i get alerted by agora
+   * whenever a new message arrives. This is not a huge problem, but its not
+   * high quality of a product."*
+   *
+   * This thread is an Agora conversation, and Agora's service worker already
+   * refuses to notify while its own app is visible — `clients.matchAll()`
+   * cannot see a tab on this origin, so it thought nobody was looking. This
+   * says so out loud, and Agora withholds the push for 30 seconds per ping.
+   *
+   * Deliberately not a timer of its own. It rides the poll that is already
+   * running, which is the exact window an answer can land in: nothing polls
+   * unless an answer is owed, and nothing is pushed unless one arrives. A
+   * separate interval would vouch for him during the hours he is asleep with
+   * the tab open, which is when he most wants the phone to ring.
+   *
+   * `document.hidden` is the other half — a backgrounded phone is not a
+   * screen he is reading, and that is precisely when the notification is the
+   * whole point. Fire-and-forget: a failed ping costs a notification he was
+   * getting anyway, so there is nothing here worth painting an error for. */
+  function pingAskWatching() {
+    if (document.hidden) return;
+    fetch("/api/ask/watching", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }).catch(function () {});
+  }
+
   /* The body goes through `appendRichText` rather than straight into a text
    * node, so a picture he attached is a picture here instead of the literal
    * `![shot.png](/api/upload/…)` he would otherwise read back. That is the
@@ -7656,6 +7687,7 @@
   function pollAsk(container, attempts) {
     if (attempts >= ASK_POLL_MAX) return;
     livePolls.push(setTimeout(function () {
+      pingAskWatching();
       fetchPage("/api/ask")
         .then(function (payload) {
           if (route(window.location.pathname).view !== "ask") return;
@@ -8787,6 +8819,7 @@
       if (attempts >= ASK_POLL_MAX) return;
       pollHandle = setTimeout(function () {
         pollHandle = null;
+        pingAskWatching();
         fetchPage("/api/ask")
           .then(function (payload) {
             paint(payload);

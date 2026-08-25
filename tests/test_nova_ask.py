@@ -190,3 +190,38 @@ def test_a_failed_create_is_reported_rather_than_posting_into_nowhere():
          patch.object(nova_ask, "agora_internal", side_effect=fake_internal):
         ok, message = nova_ask.ask("hello")
     assert not ok and "could not reach" in message
+
+
+# ---------------------------------------------------------------------------
+# `watching()` -- 2026-08-25. His capture: *"now when i use the new chat i get
+# alerted by agora whenever a new message arrives."* The push is Agora's to
+# withhold; all this side does is say the thread is on his screen here.
+# ---------------------------------------------------------------------------
+
+
+def test_presence_is_posted_against_the_existing_questions_thread():
+    (ok, reason), calls = _run(nova_ask.watching, TAGGED)
+    assert ok and reason == "watching"
+    assert ("POST", "/conversations/c-ask/presence", {}) in calls
+
+
+def test_presence_never_creates_a_conversation():
+    """A reader who has asked nothing has no thread to be present in, and a
+    presence ping is the last thing that should manufacture one -- the dock
+    is on every page, so this would fire for someone who never typed."""
+    (ok, reason), calls = _run(nova_ask.watching, [])
+    assert not ok and "no questions thread" in reason
+    assert not [c for c in calls if c[0] == "POST"]
+
+
+def test_a_refused_presence_ping_is_reported_rather_than_claimed():
+    def fake_get(path):
+        return 200, {"conversations": TAGGED}
+
+    def fake_internal(method, path, payload=None):
+        return 503, {}
+
+    with patch.object(nova_ask, "agora_get", side_effect=fake_get), \
+         patch.object(nova_ask, "agora_internal", side_effect=fake_internal):
+        ok, reason = nova_ask.watching()
+    assert not ok and "could not reach" in reason
