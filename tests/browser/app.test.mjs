@@ -8772,3 +8772,141 @@ describe("a journal search answer that arrived too late", () => {
     assert.ok(!/ingress/.test(count.textContent.replace(/Ingress/g, "")), "showed the normalised copy too");
   });
 });
+
+/* the owner, capture 2026-08-25: *"I want to have a status the Nova header if i
+ * have unread Journal comments. Journals should also show if i have some unread
+ * by highlightong the comment button somehow, maybe with the amount of unread
+ * messages."*
+ *
+ * Two surfaces, one definition of unread: a reply *I* wrote that he has not
+ * opened. The read marks live in `localStorage`, which is why every test here
+ * either seeds it through `install` or deliberately leaves it empty -- jsdom
+ * gives each window its own store, so "empty" is the honest first-load case.
+ */
+
+/** `install` hook that pre-seeds the read marks app.js keeps per card. */
+function withRepliesRead(marks) {
+  return (window) => {
+    window.localStorage.setItem("nova.repliesRead.v1", JSON.stringify(marks));
+  };
+}
+
+const unreadBadge = (window) => window.document.querySelector(".badge-unread");
+const unreadChip = (card) => card.querySelector(".comment-unread");
+
+describe("unread replies are counted on the card and in the header", () => {
+  /* Re-declared rather than shared: the two helpers of the same name live
+   * inside "commenting on a cycle"'s describe block and are not in scope
+   * here. */
+  const cardFor = (w, cycle) =>
+    cards(w).find((c) => c.querySelector("h2").textContent === "Cycle " + cycle);
+  const bubble = (card) => card.querySelector(".comment-toggle");
+
+  test("a first load claims nothing unread and seeds the marks instead", async () => {
+    /* The one that decides whether this feature is usable. There are three
+     * hundred-odd replies in the archive and no record of which he has read,
+     * so counting them all would print the absence of a measurement as a
+     * measurement -- and a badge reading "300" on day one teaches him to
+     * ignore the badge. */
+    const window = await loadSite("/");
+    assert.equal(unreadBadge(window), null, "a fresh device claimed unread replies it cannot know about");
+    assert.equal(bubble(cardFor(window, 55)).textContent, "💬 1");
+    assert.equal(unreadChip(cardFor(window, 55)), null);
+    const stored = JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"));
+    assert.equal(stored["55"], "2026-08-09 13:12", "the seed did not record the reply that was on screen");
+  });
+
+  test("a reply written after his last read shows on the card and in the header", async () => {
+    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const card = cardFor(window, 55);
+    assert.ok(bubble(card).classList.contains("has-unread"), "the 💬 button is not highlighted");
+    assert.equal(unreadChip(card).textContent, "1");
+    // The comment count survives beside it: a card he has caught up on must
+    // not look empty, which replacing the number would do.
+    assert.match(bubble(card).textContent, /^💬 1/);
+    const badge = unreadBadge(window);
+    assert.equal(badge.textContent, "1 new reply");
+    assert.equal(badge.closest("a").getAttribute("href"), "/cycle/55");
+  });
+
+  test("opening the drawer clears the card chip and the header badge together", async () => {
+    /* Both, in one tap. The header clearing a poll later would insist on a
+     * reply that is open on his screen. */
+    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const card = cardFor(window, 55);
+    click(window, bubble(card));
+    assert.equal(unreadChip(card), null, "the chip survived him reading the reply");
+    assert.equal(bubble(card).classList.contains("has-unread"), false);
+    assert.equal(unreadBadge(window), null, "the header still claims an unread reply he just opened");
+    assert.equal(
+      JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"))["55"],
+      "2026-08-09 13:12",
+      "the read mark did not move to the reply he opened",
+    );
+  });
+
+  test("the header names the oldest card when more than one is unread", async () => {
+    const comments = JSON.parse(JSON.stringify(payload.comments));
+    comments.byCycle["57"][1].replies = [
+      { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
+    ];
+    const window = await loadSite("/", {
+      comments,
+      install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
+    });
+    const badge = unreadBadge(window);
+    assert.equal(badge.textContent, "2 new replies");
+    assert.equal(badge.closest("a").getAttribute("href"), "/cycle/55");
+    assert.match(badge.parentElement.textContent, /oldest on cycle 55/);
+  });
+
+  test("his own comments never count as unread", async () => {
+    /* A comment he typed is not a notification that he typed it. Cycle 57
+     * holds two of his comments and no reply at all, so with every card
+     * marked unread-from-the-beginning it must still draw no chip -- while
+     * cycle 55, which holds one real reply, does. That pairing is the test:
+     * an empty seed makes both cards eligible and only one of them counts. */
+    const window = await loadSite("/", { install: withRepliesRead({}) });
+    assert.equal(unreadChip(cardFor(window, 57)), null, "his own comments were counted as unread");
+    assert.equal(unreadChip(cardFor(window, 55)).textContent, "1");
+    assert.equal(unreadBadge(window).textContent, "1 new reply");
+  });
+
+  test("a replayed page draws no badge", async () => {
+    /* The header already says it is showing a saved copy, and "you have
+     * something new" is a claim about right now. Same rule, and the same
+     * `status.replayed` flag, that the "waiting on you" pill follows. */
+    const window = await loadSite("/", {
+      replayed: true,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    assert.equal(unreadBadge(window), null, "the header counted unread replies out of a saved copy");
+  });
+
+  test("a browser with storage disabled still renders, without a badge", async () => {
+    /* Safari in private mode throws on the `localStorage` property itself,
+     * not on the call, so the guard has to wrap the lookup. Without it this
+     * page would not paint at all. */
+    const window = await loadSite("/", {
+      install: (w) => {
+        Object.defineProperty(w, "localStorage", {
+          configurable: true,
+          get() { throw new Error("storage is disabled"); },
+        });
+      },
+    });
+    assert.equal(cards(window).length > 0, true, "the feed did not render without localStorage");
+    assert.equal(unreadBadge(window), null);
+    assert.equal(unreadChip(cardFor(window, 55)), null);
+  });
+
+  test("the deep-linked card counts and clears the same way the feed card does", async () => {
+    /* `/cycle/N` builds its own card through a second `setCommentsOpen`, and
+     * the two are separate code paths that have drifted before. */
+    const window = await loadSite("/cycle/55", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const card = window.document.querySelector(".entry.is-page");
+    assert.equal(unreadChip(card).textContent, "1");
+    click(window, bubble(card));
+    assert.equal(unreadChip(card), null, "the deep-linked card kept its chip after he read the reply");
+  });
+});

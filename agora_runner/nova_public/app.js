@@ -156,6 +156,164 @@
     return folds[key];
   }
 
+  /* Which of my replies the owner has already seen, keyed by cycle number.
+   *
+   * the owner, capture 2026-08-25: *"I want to have a status the Nova header
+   * if i have unread Journal comments. Journals should also show if i have
+   * some unread by highlightong the comment button somehow, maybe with the
+   * amount of unread messages."*
+   *
+   * Unread means *my* replies and never his own comments. He wrote those, so
+   * counting them would raise a badge the moment he sends something and clear
+   * it only when he re-opens his own message -- a notification that he has
+   * spoken. The value stored per card is the newest reply stamp he has seen
+   * on it, so anything written after that is unread and opening the card
+   * clears the whole card at once.
+   *
+   * It lives in `localStorage` because it is the only state on this site that
+   * is about *him* rather than about the loop: the server has no session, no
+   * idea which device is his, and `comments.md` has nowhere to put a per-
+   * reader mark. The trade is that the badge is per-device, which is honest
+   * -- it is his phone that has or has not seen the reply.
+   *
+   * Every access is guarded and the page must keep working without it. A
+   * browser with storage disabled throws on the *property*, not just on the
+   * call, so the `try` has to wrap the lookup itself.
+   */
+  var READ_REPLIES_KEY = "nova.repliesRead.v1";
+
+  /* `null` means nothing has ever been stored, and it is deliberately a
+   * different state from `{}`, which means seeded and every card caught up.
+   * Only the first of those may seed, and only `null` suppresses the badge
+   * outright -- which is what a browser with no storage gets. */
+  var repliesRead = null;
+  var repliesReadLoaded = false;
+
+  function replyStore() {
+    try {
+      return window.localStorage;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function loadRepliesRead() {
+    if (repliesReadLoaded) return repliesRead;
+    repliesReadLoaded = true;
+    var store = replyStore();
+    if (!store) return repliesRead;
+    try {
+      var raw = store.getItem(READ_REPLIES_KEY);
+      if (raw === null || raw === undefined) return repliesRead;
+      var parsed = JSON.parse(raw);
+      // A corrupt value reads as never-stored rather than as an error: the
+      // next seed overwrites it and the badge starts again from today.
+      if (parsed && typeof parsed === "object") repliesRead = parsed;
+    } catch (err) { /* unreadable: treat as never stored */ }
+    return repliesRead;
+  }
+
+  function saveRepliesRead() {
+    var store = replyStore();
+    if (!store || !repliesRead) return;
+    try {
+      store.setItem(READ_REPLIES_KEY, JSON.stringify(repliesRead));
+    } catch (err) { /* quota or refused: the badge degrades, the page does not */ }
+  }
+
+  /* Every reply on one card's thread, with the stamp it is ordered by.
+   *
+   * A reply carrying no stamp of its own inherits its comment's, exactly as
+   * `paint` does. The two have to agree: if they did not, the badge would be
+   * counting a reply that the thread draws somewhere else. */
+  function replyStamps(items) {
+    var stamps = [];
+    (items || []).forEach(function (comment) {
+      var replies = comment.replies;
+      if (!(replies && replies.length) && comment.reply) {
+        replies = [{ stamp: comment.replyStamp }];
+      }
+      (replies || []).forEach(function (answer) {
+        stamps.push((answer && answer.stamp) || comment.stamp || "");
+      });
+    });
+    return stamps;
+  }
+
+  function newestReplyStamp(items) {
+    var stamps = replyStamps(items);
+    var newest = "";
+    for (var i = 0; i < stamps.length; i++) {
+      if (stamps[i] > newest) newest = stamps[i];
+    }
+    return newest;
+  }
+
+  function unreadReplies(cycle, items) {
+    var seen = loadRepliesRead();
+    if (!seen) return 0;
+    var mark = seen[String(cycle)] || "";
+    var stamps = replyStamps(items);
+    var count = 0;
+    for (var i = 0; i < stamps.length; i++) {
+      if (stamps[i] > mark) count++;
+    }
+    return count;
+  }
+
+  /* The first payload writes today's newest stamp for every card and shows
+   * nothing unread.
+   *
+   * This is the part worth being careful about. On the first load after this
+   * ships there are three hundred-odd replies in the archive and no record of
+   * which he has read, and "300 unread" is not something I know -- it is the
+   * absence of a measurement, printed as one. A badge that large on day one
+   * also teaches him to ignore the badge, which costs the feature. So the
+   * count starts from replies written after this existed. */
+  function seedRepliesRead(byCycle) {
+    if (loadRepliesRead()) return;
+    if (!replyStore()) return;
+    repliesRead = {};
+    Object.keys(byCycle || {}).forEach(function (cycle) {
+      var newest = newestReplyStamp(byCycle[cycle]);
+      if (newest) repliesRead[cycle] = newest;
+    });
+    saveRepliesRead();
+  }
+
+  function markRepliesRead(cycle, items) {
+    var seen = loadRepliesRead();
+    if (!seen) return false;
+    var newest = newestReplyStamp(items);
+    if (!newest) return false;
+    var key = String(cycle);
+    if ((seen[key] || "") >= newest) return false;
+    seen[key] = newest;
+    saveRepliesRead();
+    return true;
+  }
+
+  /* How many unread replies there are and which card holds the oldest.
+   *
+   * Oldest rather than newest, for the reason `oldestOpenAsk` picks the
+   * oldest ask: the newest card is the one at the top of the feed that he
+   * will see anyway, and the one worth pointing at is the one about to
+   * scroll out of the twenty-entry window. */
+  function unreadSummary(byCycle) {
+    var count = 0;
+    var cards = 0;
+    var oldest = null;
+    Object.keys(byCycle || {}).forEach(function (key) {
+      var n = unreadReplies(key, byCycle[key]);
+      if (!n) return;
+      count += n;
+      cards += 1;
+      var cycle = parseInt(key, 10);
+      if (!isNaN(cycle) && (oldest === null || cycle < oldest)) oldest = cycle;
+    });
+    return { count: count, cards: cards, cycle: oldest };
+  }
+
   function el(tag, className, text) {
     var node = document.createElement(tag);
     if (className) node.className = className;
@@ -839,6 +997,7 @@
     if (commentsByCycle) {
       lastCommentsByCycle = commentsByCycle;
       haveComments = true;
+      seedRepliesRead(commentsByCycle);
     }
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
@@ -890,6 +1049,38 @@
         var wait = askWaitLabel(open);
         if (wait) waiting.appendChild(el("span", "status-pr", wait));
         subs.appendChild(waiting);
+      }
+    }
+
+    /* Replies he has not opened yet, pointing at the card holding the oldest.
+     *
+     * the owner, capture 2026-08-25: *"I want to have a status the Nova header
+     * if i have unread Journal comments."* This is that status. It reads the
+     * same `lastCommentsByCycle` the ask pill above does, and it is the header
+     * half of a pair -- the card's 💬 button carries the per-card count.
+     *
+     * Suppressed on a replayed payload for the ask pill's reason: the page is
+     * showing a saved copy and already says so one line up, and a count of
+     * what is new is a claim about right now.
+     *
+     * That guard is `status.replayed` -- the *journal* came out of the
+     * worker's cache -- and not "the comments payload was replayed", which is
+     * a weaker case and deliberately not covered. A cached comments payload
+     * can only be missing replies, never carrying extra ones, so the count it
+     * yields is at worst too low; suppressing on it would trade a badge that
+     * under-reports for no badge at all, which is the same thing from the
+     * reader's side and costs a real notification when only that one route
+     * was stale. */
+    if (!replayed && haveComments) {
+      var unread = unreadSummary(lastCommentsByCycle);
+      if (unread.count) {
+        var mail = statusField(unread.cycle);
+        mail.appendChild(el("span", "badge badge-unread",
+          unread.count + (unread.count === 1 ? " new reply" : " new replies")));
+        mail.appendChild(el("span", "status-pr", unread.cards === 1
+          ? "cycle " + unread.cycle
+          : "oldest on cycle " + unread.cycle));
+        subs.appendChild(mail);
       }
     }
 
@@ -1377,6 +1568,30 @@
       // answer ever arriving on screen.
       var count = (lastItems || []).length;
       toggle.textContent = count ? "💬 " + count : "💬";
+      /* The unread chip.
+       *
+       * the owner, same capture: *"Journals should also show if i have some
+       * unread by highlightong the comment button somehow, maybe with the
+       * amount of unread messages."* So the count stays what it always was --
+       * how many comments the card has -- and the unread number arrives beside
+       * it rather than replacing it. Replacing it would make a card he has
+       * caught up on look empty.
+       *
+       * `target.cycle` and not a guard on it: both callers of this function
+       * are `cycleTarget`, so there is no drawer here without a cycle. A
+       * null-check would have looked like defence and been dead code -- I
+       * wrote one, mutated it away, and all eight tests stayed green. */
+      var unread = unreadReplies(target.cycle, lastItems);
+      if (unread) toggle.appendChild(el("span", "comment-unread", String(unread)));
+      // `classList.toggle` with a force argument, so a repaint that clears the
+      // chip clears the highlight with it.
+      toggle.classList.toggle("has-unread", !!unread);
+      // The chip is a number with no word next to it, which is the failure
+      // `personality.md` names for the priority glyphs: if the reader has to
+      // know the code to know what it says, it has not been said. Sighted
+      // readers get the colour and the position; this is that sentence.
+      toggle.setAttribute("aria-label",
+        unread ? target.ariaLabel + " — " + unread + " unread" : target.ariaLabel);
       list.hidden = !(items || []).length;
       watch((lastItems || []).some(function (c) { return c.replyPending; }));
     }
@@ -1502,13 +1717,27 @@
      * does not have on a phone keyboard. Consistency between the two boxes
      * would be consistency against what each is for. */
 
+    /* Opening the drawer is what marks this card's replies read -- he is
+     * looking at them. Repaints the toggle so the chip clears under his
+     * finger, and re-renders the header so its count does too; without the
+     * second one the badge would insist on a reply that is open on screen
+     * until the next poll, which is the "cycle 265 wrote no entry" complaint
+     * again in miniature. `renderStatus(lastStatus, null)` re-uses the held
+     * comments, so this costs no fetch. */
+    function seen() {
+      if (!markRepliesRead(target.cycle, lastItems)) return;
+      paint(lastItems);
+      if (lastStatus) renderStatus(lastStatus, null);
+    }
+
     container.appendChild(drawer);
-    return { toggle: toggle, drawer: drawer };
+    return { toggle: toggle, drawer: drawer, seen: seen };
   }
 
   function cycleTarget(cycle) {
     return {
       key: "cycle:" + cycle,
+      cycle: cycle,
       placeholder: "Say something about cycle " + cycle + "…",
       ariaLabel: "Comment on cycle " + cycle,
       body: function (text) { return { cycle: cycle, text: text }; },
@@ -1821,6 +2050,10 @@
       fold.comments = open;
       card.classList.toggle("is-commenting", open);
       commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      // Reading is what clears the unread chip, and this is the only place
+      // that knows he opened the drawer. Idempotent, so `setExpanded`
+      // re-asserting an already-open drawer on a poll costs nothing.
+      if (open) commenting.seen();
     }
     /* An ask opens its own card's drawer, once. `askSeen` rather than
      * opening on every render, so closing it stays closed through the
@@ -2396,6 +2629,7 @@
     function setCommentsOpen(open) {
       card.className = open ? "entry is-page is-commenting" : "entry is-page";
       commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) commenting.seen();   // same contract as the feed card's
     }
     setCommentsOpen(false);
 
