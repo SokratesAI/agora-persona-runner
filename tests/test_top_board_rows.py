@@ -1167,3 +1167,54 @@ def test_a_multi_line_outcome_cannot_split_the_row_it_is_printed_on():
     line = top_board_rows._line(rows[0])
     assert "\n" not in line
     assert "built it and broke the line" in line
+
+
+def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, capsys):
+    """The gap six handoffs filed: his bare bullets rank above every row and
+    nothing could answer one, because the comment API is keyed by a row
+    number a capture has not got. The address is `index` + the bullet, and
+    it is printed filled in rather than as a shape, because a cycle that has
+    to derive the index does what the last six did and answers in a journal
+    entry instead."""
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    notes.write_text(NOTES.format("a note he left"))
+
+    issues = tmp_path / "issues.md"
+    issues.write_text("- the first thing he typed\n- the second thing he typed\n- \n\n"
+                      + board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "/api/capture/comment" in out
+    assert "target issues, index 0  ->  the first thing he typed" in out
+    assert "target issues, index 1  ->  the second thing he typed" in out
+    # A note is a capture too, and the notes page is the one that already
+    # draws the reply properly -- it must carry an address as well.
+    assert "target notes, index 0  ->  a note he left" in out
+
+    # **The whole bullet, rating glyph and all, never the display text.**
+    # `text` is priority-stripped and was truncated at 60 chars; the route
+    # matches the bullet exactly, so anything shortened here comes back 409
+    # and the cycle answers in its journal instead -- which is the failure
+    # this block exists to stop. Reviewer finding on runner#374.
+    rated = tmp_path / "rated.md"
+    long_one = "🔴 Immediately: " + ("a capture he typed out in full on his phone " * 3).strip()
+    rated.write_text("- " + long_one + "\n- \n\n"
+                     + board((11, "another issue", BACKLOG, "08-02", HIGH)))
+    top_board_rows.main(["--issues", str(rated), "--ideas", str(ideas),
+                         "--notes", str(notes)])
+    rated_out = capsys.readouterr().out
+    assert len(long_one) > 60, "the fixture has to be past the old truncation"
+    assert f"target issues, index 0  ->  {long_one}" in rated_out
+
+    # The help belongs to the captures, so it must not print when there are none.
+    notes2 = tmp_path / "notes2.md"
+    notes2.write_text(NOTES.format(""))
+    issues2 = tmp_path / "issues2.md"
+    issues2.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    top_board_rows.main(["--issues", str(issues2), "--ideas", str(ideas),
+                         "--notes", str(notes2)])
+    assert "/api/capture/comment" not in capsys.readouterr().out
