@@ -3362,6 +3362,40 @@ def test_the_warm_does_not_hold_up_the_server_it_runs_behind(journal_md):
         server.server_close()
 
 
+def test_the_site_picks_up_the_replies_the_last_process_was_holding():
+    """The reply queue is one process's memory, so a roll loses whatever it
+    held -- and `nova-site` rolls on every merge to this repo. Off the
+    startup path for the same reason as the warm: it reads the vault, and a
+    pod that is listening to nobody fails its readiness probe.
+
+    Blocking inside the recovery is what makes this capable of failing.
+    Asserting the call happened would pass just as well if it ran inline,
+    which is the shape of check that lets a six-second vault read into the
+    startup path.
+    """
+    entered = threading.Event()
+    finished = threading.Event()
+    release = threading.Event()
+
+    def blocking_recover():
+        entered.set()
+        release.wait(10)
+        finished.set()
+
+    with patch.object(nova_site, "recover_replies", side_effect=blocking_recover), \
+            patch.object(nova_site, "warm_cache"), \
+            patch.object(nova_site, "NOVA_PORT", 0):
+        server = nova_site.start_nova_site()
+    try:
+        assert entered.wait(10), "start_nova_site never recovered the dropped replies"
+        assert not finished.is_set(), "the recovery ran on the startup path"
+        assert server.server_address[1] != 0, "and the socket was bound before it"
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+
+
 def test_a_warm_that_cannot_reach_the_vault_costs_only_the_warm():
     """CouchDB refusing at startup must not take down a daemon thread, and
     must not stop the payloads behind the failing one from being built."""

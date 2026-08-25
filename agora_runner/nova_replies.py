@@ -79,7 +79,7 @@ from agora_runner.config import (
 )
 from agora_runner.http_util import http_json
 from agora_runner.log import log
-from agora_runner.nova_comments import add_reply, comments_by_cycle
+from agora_runner.nova_comments import add_reply, comments_by_cycle, parse_comments
 from agora_runner.nova_journal import parse_journal
 from agora_runner.nova_sources import (
     comments_markdown,
@@ -462,3 +462,74 @@ def run_once():
 def _run():
     while True:
         run_once()
+
+
+# How many dropped replies one process start picks up, newest first. Each
+# one is a CLI turn against the same subscription a cycle draws on, and
+# `## New` has no ceiling -- a stretch where no cycle acknowledges anything
+# leaves every comment in it unanswered, so a crash-looping pod would fire
+# the whole pile again on every start. Ten is well clear of any real
+# backlog (`## New` held three comments on 2026-08-25, measured) and bounds
+# that case; anything past it is logged rather than dropped in silence, and
+# a cycle still reads it out of `## New` the way it always did.
+RECOVER_LIMIT = 10
+
+
+def recover():
+    """Re-queue the replies a previous process was still holding. -> count.
+
+    The queue above lives in this process's memory and nowhere else, and
+    the worker is a daemon thread, so a pod that goes down loses every
+    comment it had not answered yet. `_ensure_worker` says that is fine
+    because "the comment is still in `## New` and the next cycle reads
+    it" -- which is true of the *work* and false of the *conversation*.
+    What the owner sees is the "Nova is replying…" line disappear with no
+    reply under it and nothing saying one is not coming: `_pending` and
+    `_failed` are both empty in the new process, so `comments_payload`
+    reports neither `replyPending` nor `replyFailed`, which is exactly the
+    vanishing line `_failed` was added to stop.
+
+    That is not a rare shutdown. `nova-site` runs the same image as the
+    runner and rolls on every merge to it, which at a 20-minute cadence is
+    several times a day -- measured 2026-08-25, two rolls inside twenty
+    minutes. The owner commented on cycle 423's card at 14:43 and again at
+    14:45 ("No answer?"), the pod rolled at 14:48, and both comments were
+    still unanswered twenty minutes later with nothing on the card
+    admitting it.
+
+    A comment counts as dropped when it is in `## New` and carries no
+    reply at all. `## Acknowledged` is deliberately excluded: a cycle has
+    already dealt with those, and the owner is not waiting on the card.
+    Retrying one the worker had genuinely given up on is the right
+    outcome too -- it fails the same way again and lands back in
+    `_failed`, which puts the honest "not coming" on the card instead of
+    the blank.
+    """
+    if not CLAUDE_BRIDGE_URL:
+        return 0
+    try:
+        comments = parse_comments(comments_markdown())
+    except Exception as e:
+        # Never fatal: this runs at startup and the site is worth serving
+        # without it. Losing the recovery costs what today already costs.
+        log(f"nova-reply recovery could not read the comments: {e}")
+        return 0
+    # `parse_comments` preserves file order and `## New` is written
+    # newest-first, so the head of this list is the comment he is most
+    # likely to still be looking at. A `needs` comment has no cycle and
+    # cannot be keyed here.
+    dropped = [
+        c for c in comments
+        if not c.get("acknowledged")
+        and not c.get("replies")
+        and c.get("cycle") is not None
+        and c.get("stamp")
+    ]
+    queued = sum(1 for c in dropped[:RECOVER_LIMIT] if enqueue(c["cycle"], c["stamp"]))
+    if len(dropped) > RECOVER_LIMIT:
+        log(f"nova-reply recovery capped at {RECOVER_LIMIT}: "
+            f"{len(dropped) - RECOVER_LIMIT} older unanswered comment(s) left "
+            "in ## New for a cycle to answer")
+    log(f"nova-reply recovery queued {queued} of {len(dropped)} "
+        "unanswered comment(s) in ## New")
+    return queued
