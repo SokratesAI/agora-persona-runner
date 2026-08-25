@@ -8569,14 +8569,18 @@ describe("mermaid diagrams in the chat", () => {
   });
 
   test("an unfinished fence stays the text he typed", async () => {
+    // A finished block in the same message, deliberately: without it every
+    // assertion here is a negative, and a negative passes just as well with
+    // the whole feature deleted. The pair is what makes this a test of the
+    // declining rather than of the absence.
     const window = await loadSite("/ask", {
-      ask: threadWith("look:\n```mermaid\nflowchart TD\n  A --> B"),
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```\n\nlook:\n```mermaid\nflowchart TD\n  A --> B"),
       install: withMermaid,
     });
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(window.document.querySelector("#feed .mermaid-figure"), null,
+    await settle(window, "#feed .mermaid-drawn svg");
+    assert.equal(window.document.querySelectorAll("#feed .mermaid-figure").length, 1,
       "a half-typed message was treated as a diagram");
-    assert.deepEqual(window.__mermaid.calls, []);
+    assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [DIAGRAM]);
     assert.match(window.document.querySelector("#feed .ask-text").textContent, /```mermaid/);
   });
 
@@ -8598,14 +8602,44 @@ describe("mermaid diagrams in the chat", () => {
   });
 
   test("a fenced block that is not mermaid is left alone", async () => {
+    // Paired with a real diagram for the reason the test above is: on its
+    // own, "no diagram was drawn" is what a missing feature looks like.
     const window = await loadSite("/ask", {
-      ask: threadWith("```python\nprint(1)\n```"),
+      ask: threadWith("```python\nprint(1)\n```\n\n```mermaid\n" + DIAGRAM + "\n```"),
       install: withMermaid,
     });
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(window.document.querySelector("#feed .mermaid-figure"), null,
+    await settle(window, "#feed .mermaid-drawn svg");
+    assert.equal(window.document.querySelectorAll("#feed .mermaid-figure").length, 1,
       "a python block was handed to a diagram renderer");
-    assert.deepEqual(window.__mermaid.calls, []);
+    assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [DIAGRAM]);
+    assert.match(window.document.querySelector("#feed .ask-text").textContent, /print\(1\)/);
+  });
+
+  test("a drawn diagram survives the four-second poll instead of flickering", async () => {
+    /* `renderAskThread` empties the thread and rebuilds every message, and
+     * `pollAsk` calls it every four seconds while an answer is coming. Text
+     * and pictures survive that; a diagram is built asynchronously, so
+     * without a memo each rebuild drops every drawn diagram back to its
+     * code block and redraws it a moment later -- for as long as he waits.
+     * My reviewer found this, not me. */
+    let timers;
+    const window = await loadSite("/ask", {
+      install: (win) => { timers = captureTimers(win); withMermaid(win); },
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "```mermaid\n" + DIAGRAM + "\n```" }],
+      }),
+    });
+    await settle(window, "#feed .mermaid-drawn svg");
+
+    await timers.fire();
+    assert.ok(window.document.querySelector("#feed .mermaid-drawn svg"),
+      "the poll rebuilt the thread and the diagram was gone again");
+    assert.equal(window.document.querySelector("#feed .mermaid-source"), null,
+      "the diagram dropped back to its source on the poll");
+    assert.equal(window.__mermaid.calls.length, 1,
+      "every poll re-rendered a diagram that had not changed");
   });
 
   test("the diagram is capped to the width of the message, not the width mermaid measured", async () => {
