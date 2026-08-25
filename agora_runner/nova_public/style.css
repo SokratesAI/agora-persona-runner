@@ -2478,6 +2478,36 @@ body.has-full-chart { overflow: hidden; }
 .ask-text p { margin: 0 0 0.55rem; }
 .ask-text p:last-child { margin-bottom: 0; }
 
+/* A ```mermaid block, before and after it becomes a diagram.
+ *
+ * It starts as the code he typed and stays that way if the 3.5 MB library
+ * cannot be fetched or the diagram will not parse, so both states have to
+ * be readable. `white-space: pre` overrides the `pre-wrap` inherited from
+ * `.ask-text`: a flowchart's indentation is what makes it legible, and a
+ * message bubble is narrow enough that wrapping it turns the source into
+ * a paragraph. It scrolls sideways instead.
+ *
+ * `.mermaid-drawn` is the same figure with the SVG in it. The width and
+ * height mermaid measured are stripped in `app.js`, so `max-width: 100%`
+ * is what actually decides the size on a phone. */
+.mermaid-figure { margin: 0 0 0.55rem; }
+.mermaid-figure:last-child { margin-bottom: 0; }
+.mermaid-source {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+  white-space: pre;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.mermaid-drawn {
+  padding: 0.5rem 0;
+  overflow-x: auto;
+}
+.mermaid-drawn svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
 /* The paperclip on the two composers that write into the ask thread. Both
  * are ordinary block flow rather than the flex rows the board composers
  * use, so the button needs the same top margin its neighbour has to sit on

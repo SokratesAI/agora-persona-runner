@@ -8447,6 +8447,181 @@ describe("attachments in the ask thread and its dock", () => {
   });
 });
 
+/* Mermaid diagrams in the chat.
+ *
+ * the owner, issues.md 2026-08-25, the third of the three above: *"Make the
+ * new chat be able to display mermaid charts..."* Nothing on this site drew
+ * a mermaid diagram anywhere before this, so unlike the attachments it is
+ * not a reader being pointed at one more caller -- it is a 3.5 MB parser
+ * fetched only when a diagram turns up.
+ *
+ * These tests stub the library. That is not laziness about the real thing:
+ * mermaid measures text with `getBBox`, which jsdom does not implement, so
+ * a real render here would fail for a reason that says nothing about this
+ * code. What the stub pins is the wiring -- which source reaches `render`,
+ * what happens to the SVG it hands back, and what is on screen while it has
+ * not answered. The library itself was measured in headless Chromium off
+ * the vendored file: 14,617 bytes of SVG, 89 nodes, labels intact, no
+ * console errors, screenshotted at 390px. */
+describe("mermaid diagrams in the chat", () => {
+  const DIAGRAM = "flowchart TD\n  A[start] --> B[end]";
+
+  /** A mermaid that answers, and records what it was asked. */
+  function withMermaid(window) {
+    window.__mermaid = { init: null, calls: [] };
+    window.mermaid = {
+      initialize(options) { window.__mermaid.init = options; },
+      render(id, code) {
+        window.__mermaid.calls.push({ id, code });
+        return Promise.resolve({
+          svg: '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">'
+            + '<text>' + code.split("\n")[0] + '</text></svg>',
+        });
+      },
+    };
+  }
+
+  const threadWith = (text) => ({
+    conversationId: "c",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text }],
+  });
+
+  /** The figure only becomes a diagram a microtask or two after render
+   *  resolves, so every drawn-state assertion has to wait for it. */
+  async function settle(window, selector) {
+    for (let i = 0; i < 60; i++) {
+      if (window.document.querySelector(selector)) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return window.document.querySelector(selector);
+  }
+
+  test("a ```mermaid block is drawn as a diagram, not printed as its source", async () => {
+    const window = await loadSite("/ask", {
+      ask: threadWith("here is the shape:\n\n```mermaid\n" + DIAGRAM + "\n```\n\nmake sense?"),
+      install: withMermaid,
+    });
+    const svg = await settle(window, "#feed .mermaid-drawn svg");
+    assert.ok(svg, "the diagram never replaced the code block");
+    assert.equal(window.document.querySelector("#feed .mermaid-source"), null,
+      "the source stayed on screen underneath the diagram");
+
+    // The fences are the marker, not part of the diagram: passing them on
+    // would make mermaid reject every block on this site.
+    assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [DIAGRAM]);
+
+    // Mermaid sizes for the width it measured, which is not a phone's.
+    assert.equal(svg.getAttribute("width"), null, "the measured width survived onto the page");
+    assert.equal(svg.getAttribute("height"), null, "the measured height survived onto the page");
+
+    // The prose either side is still prose.
+    const paras = [...window.document.querySelectorAll("#feed .ask-text p")].map((p) => p.textContent);
+    assert.deepEqual(paras, ["here is the shape:", "make sense?"]);
+  });
+
+  test("it is initialised so it cannot sweep the page or trust a label", async () => {
+    const window = await loadSite("/ask", {
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
+      install: withMermaid,
+    });
+    await settle(window, "#feed .mermaid-drawn svg");
+    const init = window.__mermaid.init;
+    assert.ok(init, "mermaid was never initialised, so it runs on its own defaults");
+    // `startOnLoad` would have mermaid hunting the document for diagrams
+    // itself, which is a second renderer racing this one.
+    assert.equal(init.startOnLoad, false);
+    // `strict` is what puts a label through mermaid's own DOMPurify. The
+    // text in a chat message is whatever came back from a model.
+    assert.equal(init.securityLevel, "strict");
+    // Without this, an unparseable diagram paints mermaid's red bomb into
+    // the message instead of leaving the code block that says more.
+    assert.equal(init.suppressErrorRendering, true);
+  });
+
+  test("the code block is what is on screen until the diagram is ready", async () => {
+    // No stub at all, which is also the offline case: jsdom fetches no
+    // external script, so `ensureMermaid` never settles -- exactly the
+    // state a phone off the tailnet is in while the 3.5 MB is not coming.
+    const window = await loadSite("/ask", {
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
+    });
+    const source = window.document.querySelector("#feed .mermaid-source code");
+    assert.ok(source, "nothing was drawn and the source was not left behind either");
+    assert.equal(source.textContent, DIAGRAM);
+    assert.equal(window.document.querySelector("#feed .mermaid-drawn"), null);
+    // The fence lines are markers and must not be read back at him.
+    assert.equal(window.document.querySelector(".ask-thread").textContent.includes("```"), false,
+      "the fences are on screen");
+  });
+
+  test("a blank line inside a diagram does not tear it in half", async () => {
+    // `appendRichText` splits paragraphs on blank lines, so the block has to
+    // be lifted out before that happens. A sequence diagram with a gap in it
+    // is the ordinary case, not a contrived one.
+    const spaced = "sequenceDiagram\n  Edvard->>Nova: a question\n\n  Nova->>Edvard: an answer";
+    const window = await loadSite("/ask", {
+      ask: threadWith("```mermaid\n" + spaced + "\n```"),
+      install: withMermaid,
+    });
+    await settle(window, "#feed .mermaid-drawn svg");
+    assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [spaced]);
+  });
+
+  test("an unfinished fence stays the text he typed", async () => {
+    const window = await loadSite("/ask", {
+      ask: threadWith("look:\n```mermaid\nflowchart TD\n  A --> B"),
+      install: withMermaid,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(window.document.querySelector("#feed .mermaid-figure"), null,
+      "a half-typed message was treated as a diagram");
+    assert.deepEqual(window.__mermaid.calls, []);
+    assert.match(window.document.querySelector("#feed .ask-text").textContent, /```mermaid/);
+  });
+
+  test("two diagrams in one message are two diagrams", async () => {
+    const window = await loadSite("/ask", {
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```\n\nand\n\n```mermaid\npie title x\n  \"a\" : 1\n```"),
+      install: withMermaid,
+    });
+    for (let i = 0; i < 60; i++) {
+      if (window.document.querySelectorAll("#feed .mermaid-drawn").length >= 2) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.equal(window.document.querySelectorAll("#feed .mermaid-drawn svg").length, 2);
+    // Distinct ids: mermaid keys its own scratch element on the id it is
+    // given, and two blocks sharing one would have the second draw over the
+    // first.
+    const ids = window.__mermaid.calls.map((c) => c.id);
+    assert.equal(new Set(ids).size, 2, "both diagrams were rendered under the same id");
+  });
+
+  test("a fenced block that is not mermaid is left alone", async () => {
+    const window = await loadSite("/ask", {
+      ask: threadWith("```python\nprint(1)\n```"),
+      install: withMermaid,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(window.document.querySelector("#feed .mermaid-figure"), null,
+      "a python block was handed to a diagram renderer");
+    assert.deepEqual(window.__mermaid.calls, []);
+  });
+
+  test("the diagram is capped to the width of the message, not the width mermaid measured", async () => {
+    const window = await loadSite("/", { install: withStyle });
+    const rules = [...window.document.styleSheets[0].cssRules];
+    // `cssText`, not the typed property -- this CSSOM leaves several of
+    // those undefined, so a check on one passes for any rule at all.
+    assert.ok(rules.some((r) => r.selectorText === ".mermaid-drawn svg"
+      && /max-width:\s*100%/.test(r.style.cssText)),
+      "a wide diagram can push the chat sideways");
+    assert.ok(rules.some((r) => r.selectorText === ".mermaid-source"
+      && /white-space:\s*pre\b/.test(r.style.cssText)),
+      "the fallback source inherits pre-wrap and reads as a paragraph");
+  });
+});
+
 describe("the device page", () => {
   /* `/diag` exists because three cycles in a row shipped a fix for a
    * rendering fault on a phone none of them could look at -- an iPhone

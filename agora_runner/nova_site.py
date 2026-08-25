@@ -205,6 +205,13 @@ STATIC_ROUTES = {
     # phone is off the internet. `app.js` loads it lazily on the first
     # chart, so the 1.0 MB is not in the shell's critical path.
     "/vendor/echarts.min.js": os.path.join("vendor", "echarts.min.js"),
+    # Mermaid 11.17.2, MIT, vendored for the same reason ECharts is: a CDN
+    # script tag would make a diagram in the chat go blank the moment the
+    # phone is off the internet. It is 3.5 MB, three and a half times the
+    # chart library, so `app.js` loads it only when a ```mermaid block
+    # actually appears in a message and `sw.js` deliberately leaves it out
+    # of the install-time precache.
+    "/vendor/mermaid.min.js": os.path.join("vendor", "mermaid.min.js"),
 }
 
 # The page routes the server answers with the SPA shell. A module

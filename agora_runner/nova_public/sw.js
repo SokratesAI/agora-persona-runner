@@ -22,6 +22,16 @@ var CACHE = "nova-v1";
  * the costs page the one page whose first offline load is a blank box.
  * It is 1.0 MB and the install pays for it once.
  */
+/* `/vendor/mermaid.min.js` is deliberately NOT in this list, and that is a
+ * different answer to the same question the paragraph above settles for
+ * ECharts. It is 3.5 MB against ECharts' 1.0, and a chart page is a page
+ * the owner opens; a mermaid diagram only exists if a message happens to
+ * carry one, which most do not. Precaching it would put three and a half
+ * megabytes on every install for a feature many installs never reach. The
+ * fetch handler below caches it on first use like anything else, so a
+ * diagram he has already seen still draws offline, and one he has not
+ * falls back to the code block `app.js` leaves on screen.
+ */
 var SHELL = ["/", "/app.js", "/style.css", "/icon.svg", "/manifest.webmanifest",
              "/vendor/echarts.min.js"];
 
