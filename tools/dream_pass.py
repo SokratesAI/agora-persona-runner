@@ -34,10 +34,33 @@ Three signals, and the split between them is the point:
 
 `dead-path`
     The bullet cites a repo-relative code path in backticks that exists
-    in none of the `--repo` checkouts given. Evidence that the note
-    describes code that has been renamed or deleted; not proof the note
-    is worthless, because the *problem* may outlive the file. Advisory:
+    in none of the `--repo` checkouts given, **and whose top directory
+    one of those checkouts does have**. Evidence that the note describes
+    code that has been renamed or deleted; not proof the note is
+    worthless, because the *problem* may outlive the file. Advisory:
     reported, never moved.
+
+    What the path means when it is missing is not the same on both
+    files, and this signal used to claim it was. On `issues.md` a
+    missing path means the code moved. On `ideas.md` it usually means
+    the tool being proposed has not been built yet, which is a live idea
+    rather than rot -- Cycle 335 measured that and wrote it on the row,
+    and Cycle 417 re-measured it: **11 of the 15 flags on my ideas file
+    were `tools/<name>.py` proposals**, including the bullet describing
+    this very bug. So `--paths-mean` picks the sentence, defaulting off
+    the filename, and the count is the same either way; only the reading
+    changes.
+
+`cannot-check`
+    The bullet cites a path whose top directory is in none of the given
+    checkouts -- `deployments/agents/...`, `agora/public/app.js`,
+    `nova_public/app.js`. Reported separately because calling these dead
+    was a **positive result guaranteed in advance**: with no `agora`
+    checkout on the list, `agora/public/app.js` is missing whether or not
+    it exists, so the flag measured which repos I passed in and nothing
+    about the file. Four of the fifteen flags above were this. Being
+    unable to measure is itself the finding (`prompt.md`, "How to work"),
+    so the fix is to say so rather than to widen the claim.
 
 `duplicate`
     Two bullets whose normalised word sets overlap above `--similarity`.
@@ -190,18 +213,47 @@ def resolves(path, repos):
     and every one of the six that remained was this. So a first segment
     matching a checkout's own directory name is stripped and retried.
     """
+    return any(os.path.exists(os.path.join(root, rel))
+               for root, rel in _candidates(path, repos))
+
+
+def _candidates(path, repos):
+    """Every (checkout, path-relative-to-it) this citation could name.
+
+    The repo-name-stripping described in `resolves` lives here so that
+    `checkable` applies exactly the same rule; when the two disagreed,
+    one of them was answering about a different file.
+    """
     for root in repos:
-        if os.path.exists(os.path.join(root, path)):
-            return True
+        yield root, path
         head, _, rest = path.partition("/")
-        if rest and head == os.path.basename(os.path.normpath(root)) \
-                and os.path.exists(os.path.join(root, rest)):
+        if rest and head == os.path.basename(os.path.normpath(root)):
+            yield root, rest
+
+
+def checkable(path, repos):
+    """Can `repos` answer whether `path` exists, either way?
+
+    Only if some checkout holds the path's **top directory**. That is
+    the weakest test that still distinguishes the two cases, and the
+    weak version is the right one: seeing `tools/` is enough to say this
+    repo has no `tools/configmap_script.py`, while nothing on disk here
+    can speak about `deployments/agents/newspaper/configmaps.yaml`,
+    which lives in a repo I was not given.
+
+    Without it, `dead_paths` flagged the second kind too -- and would
+    have flagged it identically had the file been present, which is a
+    test whose result was decided before it ran.
+    """
+    for root, rel in _candidates(path, repos):
+        top = rel.partition("/")[0]
+        if top and os.path.isdir(os.path.join(root, top)):
             return True
     return False
 
 
 def dead_paths(bullets, repos):
-    """(bullet, [paths existing in none of `repos`]) for each bullet that has any.
+    """(bullet, [missing paths], [unanswerable paths]) for each bullet with either.
 
     With no repos given this returns nothing rather than flagging
     everything -- an unanswerable question is not a positive result.
@@ -210,9 +262,13 @@ def dead_paths(bullets, repos):
         return []
     out = []
     for b in bullets:
-        missing = [p for p in b.paths() if not resolves(p, repos)]
-        if missing:
-            out.append((b, missing))
+        missing, unknown = [], []
+        for p in b.paths():
+            if resolves(p, repos):
+                continue
+            (missing if checkable(p, repos) else unknown).append(p)
+        if missing or unknown:
+            out.append((b, missing, unknown))
     return out
 
 
@@ -328,7 +384,27 @@ def check(before, after, moved):
     return None
 
 
-def report(bullets, repos, threshold):
+#: What a missing path is evidence *of*, keyed by `--paths-mean`. Same
+#: bullets, same count -- only the sentence a cycle reads off them changes.
+PATHS_MEAN = {
+    "rot": "code that has been renamed or deleted",
+    "unbuilt": "a tool that has not been built yet — on an ideas file that is "
+               "the idea, not rot",
+}
+
+
+def paths_mean_for(filename):
+    """Default reading of a missing path, from the name of the file scanned.
+
+    `ideas.md` proposes things; `issues.md` reports them. Guessing off the
+    filename is a default and not a decision -- `--paths-mean` overrides it,
+    and a cycle scanning a file named neither gets `rot`, the stricter of
+    the two, so the flag stays worth reading.
+    """
+    return "unbuilt" if "idea" in os.path.basename(filename).lower() else "rot"
+
+
+def report(bullets, repos, threshold, paths_mean="rot"):
     out = []
     done = [b for b in bullets if b.done]
     cycles = [b.cycle for b in bullets if b.cycle is not None]
@@ -341,12 +417,23 @@ def report(bullets, repos, threshold):
     for b in done:
         out.append("  L%-5d %s" % (b.line_no, b.excerpt()))
 
-    dead = dead_paths(bullets, repos)
+    flagged = dead_paths(bullets, repos)
+    dead = [(b, missing) for b, missing, _ in flagged if missing]
+    unknown = [(b, paths) for b, _, paths in flagged if paths]
     out.append("")
-    out.append("DEAD PATH — cites code that is in none of the given checkouts, "
-               "advisory only (%d)" % len(dead))
+    out.append("DEAD PATH (%d) — a checkout I was given has the top directory "
+               "and not the file. Evidence of %s. Advisory only."
+               % (len(dead), PATHS_MEAN[paths_mean]))
     for b, missing in dead:
         out.append("  L%-5d %s" % (b.line_no, ", ".join(missing)))
+        out.append("        %s" % b.excerpt(110))
+
+    out.append("")
+    out.append("CANNOT CHECK (%d) — no checkout I was given has the top "
+               "directory, so absence here is not evidence either way."
+               % len(unknown))
+    for b, paths in unknown:
+        out.append("  L%-5d %s" % (b.line_no, ", ".join(paths)))
         out.append("        %s" % b.excerpt(110))
 
     dupes = duplicates(bullets, threshold)
@@ -370,7 +457,11 @@ def main(argv=None):
                     help="write the candidate rewrite here (never over --file)")
     ap.add_argument("--similarity", type=float, default=0.5,
                     help="word-overlap threshold for the duplicate signal")
+    ap.add_argument("--paths-mean", choices=sorted(PATHS_MEAN),
+                    help="what a missing path is evidence of; default is "
+                         "'unbuilt' for an ideas file, 'rot' otherwise")
     args = ap.parse_args(argv)
+    paths_mean = args.paths_mean or paths_mean_for(args.file)
 
     if args.proposal and os.path.abspath(args.proposal) == os.path.abspath(args.file):
         print("--proposal must not be --file: this tool never edits in place",
@@ -396,7 +487,7 @@ def main(argv=None):
     # moves them" would be a lie the second time this is run.
     cutoff = _retired_line(markdown)
     live = [b for b in parse(markdown) if cutoff is None or b.line_no < cutoff]
-    print(report(live, args.repo, args.similarity))
+    print(report(live, args.repo, args.similarity, paths_mean))
 
     if args.proposal:
         after, moved = propose(markdown)
