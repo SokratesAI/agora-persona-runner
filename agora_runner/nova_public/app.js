@@ -4720,8 +4720,74 @@
     }, 200);
   }
 
+  /* My own boarded rows, above my note stream (issue #97). Deliberately
+   * not `renderBoardItem`: that row carries a priority *picker* and a
+   * tap that fetches the write-up from `/api/board?item=N`, and neither
+   * belongs here. The rating on my own row is mine to set in the file
+   * rather than his to correct on the page, and the write-up already
+   * arrived with the payload as `novaDetails` -- so this is a read-only
+   * row that expands from data the page is holding. */
+  function renderNovaItem(item, details) {
+    var row = el("article", "item item-" + item.statusKey);
+    var head = el("div", "item-head");
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    var open = novaOpen === item.number;
+    head.setAttribute("aria-expanded", open ? "true" : "false");
+
+    var titleRow = el("div", "item-title-row");
+    titleRow.appendChild(el("span", "item-number", "#" + item.number));
+    titleRow.appendChild(el("span", "item-title", item.title));
+    head.appendChild(titleRow);
+
+    var metaRow = el("div", "item-meta-row");
+    metaRow.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
+    if (item.priority) {
+      metaRow.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
+    }
+    head.appendChild(metaRow);
+    if (item.updated) head.appendChild(el("div", "item-updated", item.updated));
+    row.appendChild(head);
+
+    var blocks = details[String(item.number)] || null;
+    var body = el("div", "item-body");
+    if (open) {
+      if (blocks) renderBlocks(body, blocks);
+      else body.appendChild(el("p", "empty", "No write-up yet — only the board row."));
+      row.appendChild(body);
+    }
+    function toggle() {
+      novaOpen = open ? null : item.number;
+      renderBoard(boardState.board, novaPayload);
+    }
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggle();
+      }
+    });
+    return row;
+  }
+
+  /* Which of my rows is expanded, and the payload to redraw from. Kept
+   * beside `boardState` rather than in it: `loadBoard` resets that object
+   * per board and these two are cleared there too. */
+  var novaOpen = null;
+  var novaPayload = null;
+
   function renderBoardNova(board, payload) {
     var wrap = el("div", "board");
+    novaPayload = payload;
+    var items = payload.novaItems || [];
+    if (items.length) {
+      var box = el("section", "nova-board");
+      box.appendChild(el("h2", "captures-title", "On my board"));
+      var details = payload.novaDetails || {};
+      items.forEach(function (item) { box.appendChild(renderNovaItem(item, details)); });
+      wrap.appendChild(box);
+      wrap.appendChild(el("h2", "captures-title", "Everything else I noticed"));
+    }
     var notes = payload.notes || [];
     if (!notes.length) wrap.appendChild(el("p", "empty", "No notes yet."));
     notes.forEach(function (note) {
@@ -4857,6 +4923,9 @@
       boardState.toggles = {};
       boardState.sort = "filed";
       boardState.desc = false;
+      // Same reason as `boardState.open`: my #3 on Issues is not my #3 on
+      // Ideas, so carrying the expanded row across opens the wrong one.
+      novaOpen = null;
     }
     fetchPage("/api/board?name=" + board + "&limit=" + boardState.notes)
       .then(function (payload) {
