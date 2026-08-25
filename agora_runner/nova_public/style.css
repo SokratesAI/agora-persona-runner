@@ -805,7 +805,16 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .comment-reply {
   border-left-color: var(--accent);
 }
-.comment-reply .comment-body { color: var(--dim); }
+/* The reply body is --text like the comment above it. It was --dim until
+ * 2026-08-25, on the same reasoning as the notes page's cycle replies and
+ * removed for the same reason -- he asked for the notes text to be white,
+ * and this is the identical colour on the identical role, one screen away,
+ * on the same phone. `.note-msg-body` carries the full argument. The rule
+ * of `.comment-reply` still says whose it is, and so does `.comment-who`.
+ *
+ * `.comment.is-acknowledged .comment-body` is deliberately left dim: that
+ * one marks a *state* rather than a speaker, and quietening something he
+ * has already dealt with is the affordance working. */
 
 .comment-who { color: var(--accent); }
 
@@ -1731,12 +1740,25 @@ body.nav-open { overflow: hidden; }
 .note-msg-nova .note-msg-name { color: var(--nova); }
 .note-msg-cycle { color: var(--nova); text-decoration: none; }
 
+/* Both halves of the conversation are --text, and that is the owner's
+ * correction rather than a preference of mine. `issues.md` 2026-08-25:
+ * *"The grey text for the notes in Nova is heard to read against a black
+ * background. Make it white."*
+ *
+ * What used to be here was `.note-msg-nova .note-msg-body { color:
+ * var(--dim) }`, reasoned as "a cycle's answer reads as the quieter half
+ * of the exchange -- his words are the ones the page is for." That is a
+ * fine thing to want and it was paid for in the wrong currency. --dim on
+ * --bg is 5.8:1, which clears WCAG AA for body text on paper and does not
+ * clear his phone in daylight, and it was applied to the half of the page
+ * that is *answers to his questions* -- the part he opened the page to
+ * read. Speaker is already carried three other ways on every message: the
+ * left rule's colour, the name in --good or --nova, and the "Cycle N"
+ * link. None of those cost legibility, so removing the fourth loses
+ * nothing. See `.comment-reply .comment-body`, which was the precedent
+ * this rule cited and is now fixed the same way. */
 .note-msg-body { color: var(--text); }
 .note-msg-body p { margin: 0.3rem 0; }
-/* A cycle's answer reads as the quieter half of the exchange, the same
- * way `.comment-reply .comment-body` does -- his words are the ones the
- * page is for. */
-.note-msg-nova .note-msg-body { color: var(--dim); }
 
 /* Waiting for a cycle to pick it up. The badge says it in a word; this
  * only makes it findable while scrolling. */
