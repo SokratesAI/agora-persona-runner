@@ -145,8 +145,16 @@ def watching():
     thread to be present in, and manufacturing a conversation for a presence
     ping would be the same mistake `thread()` avoids below.
 
-    (ok, reason). Failure is not worth surfacing to him -- the worst case is a
-    notification he would have got anyway -- so the caller logs and moves on.
+    (ok, reason). A refused ping means no suppression, so failing here can only
+    ever cost a notification he was going to get anyway and the caller logs and
+    moves on. The expensive direction is the other one -- vouching when he is
+    not there -- and nothing on this path can do that.
+
+    Costs a `GET /conversations` per call, since `conversation_id` resolves by
+    tag. That is one extra listing per four-second poll tick and it is filed
+    rather than cached: a module-level cache here would be a second place the
+    thread's id lives, and the id is the one thing this module already goes to
+    some trouble not to duplicate.
     """
     cid = conversation_id()
     if not cid:

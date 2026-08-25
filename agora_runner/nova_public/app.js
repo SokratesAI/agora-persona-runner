@@ -7631,12 +7631,20 @@
    * separate interval would vouch for him during the hours he is asleep with
    * the tab open, which is when he most wants the phone to ring.
    *
-   * `document.hidden` is the other half — a backgrounded phone is not a
-   * screen he is reading, and that is precisely when the notification is the
-   * whole point. Fire-and-forget: a failed ping costs a notification he was
-   * getting anyway, so there is nothing here worth painting an error for. */
-  function pingAskWatching() {
-    if (document.hidden) return;
+   * `document.hidden` is one guard and it is not enough on its own, which my
+   * reviewer caught: the dock keeps polling after he closes it, on purpose, so
+   * the dot on the launcher can light. A closed panel on a visible tab is not
+   * a thread on his screen, and vouching there would silence the push while
+   * the only signal left is a dot nobody is looking at. So the caller passes
+   * whether the thread is actually showing, and both have to be true.
+   *
+   * Fire-and-forget on the wire only. A failure here is not harmless in the
+   * other direction — a stale or wrong vouch drops a notification he wanted —
+   * which is why the guards are on this side and the TTL on Agora's is two and
+   * a half polls rather than a round thirty seconds. There is no way to revoke
+   * a ping, so the TTL is also the window a locked phone keeps vouching for. */
+  function pingAskWatching(onScreen) {
+    if (!onScreen || document.hidden) return;
     fetch("/api/ask/watching", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -7687,7 +7695,9 @@
   function pollAsk(container, attempts) {
     if (attempts >= ASK_POLL_MAX) return;
     livePolls.push(setTimeout(function () {
-      pingAskWatching();
+      // The /ask page: if this poll is still running, the route is still
+      // /ask, and the thread is the page.
+      pingAskWatching(route(window.location.pathname).view === "ask");
       fetchPage("/api/ask")
         .then(function (payload) {
           if (route(window.location.pathname).view !== "ask") return;
@@ -8819,7 +8829,7 @@
       if (attempts >= ASK_POLL_MAX) return;
       pollHandle = setTimeout(function () {
         pollHandle = null;
-        pingAskWatching();
+        pingAskWatching(isOpen);
         fetchPage("/api/ask")
           .then(function (payload) {
             paint(payload);

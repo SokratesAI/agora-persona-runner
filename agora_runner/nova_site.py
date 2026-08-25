@@ -2534,10 +2534,16 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stops the other app buzzing for a reply he is watching arrive here.
         See `nova_ask.watching`.
 
-        Deliberately never an error to him: the page pings this on a timer and
-        the worst failure is a notification that would have fired anyway, so a
-        dead Agora must not paint anything over the thread. Not audited for the
-        same reason -- one row every four seconds is not a record of anything.
+        Deliberately never an error to him: the page fires this on a timer and
+        paints nothing from it, so a dead Agora must not put "could not load"
+        over a thread he can read. Not audited for the same reason -- one row
+        every four seconds is not a record of anything.
+
+        That is not the same as saying a failure is harmless. My reviewer's
+        point, and it is right: the dangerous direction is a *stale or wrong*
+        vouch, which drops a notification he wanted. Nothing on this path can
+        cause that -- a refused ping means no suppression -- so the guards that
+        matter are the two in `pingAskWatching` and the TTL on Agora's side.
         """
         try:
             ok, reason = ask_watching()

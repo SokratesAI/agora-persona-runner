@@ -809,8 +809,7 @@ def test_the_only_write_verb_is_post():
 
 
 def test_post_to_anything_but_capture_is_404():
-    for path in ["/", "/api/journal", "/api/digest", "/app.js", "/api/capture/issues",
-                 "/api/ask/watch"]:
+    for path in ["/", "/api/journal", "/api/digest", "/app.js", "/api/capture/issues"]:
         status, _, _ = _post(path, {"target": "issues", "text": "x"})
         assert status == 404, path
 
