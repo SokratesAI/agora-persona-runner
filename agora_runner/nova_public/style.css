@@ -675,23 +675,25 @@ a.status-sub:hover .status-pr { color: var(--text); }
 }
 
 /* "2 new replies" -- the header's pointer at journal cards holding an answer
- * he has not opened. Green, and that is the deliberate part: `--good` is the
- * colour this page already uses for *his* side of a conversation (`.comment`
- * has a `--good` left border, the notes thread paints his bubbles with it),
- * so a green pill in the header reads as "there is something in the
- * conversation" rather than as a warning.
+ * he has not opened. Purple, and that is the deliberate part: this page has a
+ * colour code for *whose text is whose*, which the owner set himself -- his
+ * own comments green (`--good`), the instant commentator blue (`--accent`),
+ * a Nova cycle's reply purple (`--nova`, see `.comment-reply-cycle`). An
+ * unread reply is a cycle's reply, so it is purple, and the badge is the same
+ * colour as the bubble it points at.
  *
- * It must not be amber. `.badge-ask` directly above is amber and means the
- * opposite thing -- I am waiting on *him* -- and the two can be on screen at
- * once. Two different obligations that look identical is the confusion the
- * `.badge-warn` / `.badge-error` comments above spend their words avoiding.
+ * It was green for one merge and the reviewer caught it: green on this page
+ * already means "the owner wrote this", so a green pill announcing my answer
+ * said the opposite of what it meant. It must not be amber either --
+ * `.badge-ask` directly above is amber and means the other obligation, that I
+ * am waiting on *him*, and the two can be on screen at once.
  *
  * Link-shaped for `.badge-ask`'s reason: it is an anchor into a card, tapped
  * on a phone, so it carries the 44px target and loses the underline. */
 .badge-unread {
-  color: var(--good);
-  border-color: #2f6b42;
-  background: #17251c;
+  color: var(--nova);
+  border-color: #5b3f7d;
+  background: #221a2e;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
@@ -704,18 +706,19 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * maybe with the amount of unread messages."* Two things, so this is two
  * rules: the button itself stops being `--dim` and takes the same green as
  * the header pill, and the number rides beside the comment count as a filled
- * chip rather than replacing it.
+ * chip rather than replacing it. Purple for `.badge-unread`'s reason: it is
+ * the colour of the reply it is counting.
  *
  * Filled rather than outlined, unlike every `.badge` on this page. A chip
  * this small in a row of dim chrome has to survive being glanced at on a
  * phone in daylight, and an outline at 0.68rem does not. */
-.comment-toggle.has-unread { color: var(--good); }
+.comment-toggle.has-unread { color: var(--nova); }
 
 .comment-unread {
   margin-left: 0.35rem;
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
-  background: var(--good);
+  background: var(--nova);
   color: #12131a;
   font-size: 0.68rem;
   font-weight: 700;
