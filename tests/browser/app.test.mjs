@@ -8025,6 +8025,22 @@ describe("the chat dock", () => {
     assert.ok(window.document.getElementById("chat-dock").hasAttribute("hidden"), "close did not close it");
   });
 
+  /* His capture on `issues.md`, 2026-08-25: the dock used to focus the box
+   * as soon as it opened, so opening it to read an answer threw the phone
+   * keyboard over the answer. The keyboard on a *tap* is right and stays;
+   * this pins the one that happens without him asking. */
+  test("opening the dock does not put the cursor in the box", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = window.document.getElementById("chat-box");
+    assert.notEqual(window.document.activeElement, box,
+      "opening the dock focused the box, which opens his keyboard over the thread");
+    box.focus();
+    assert.equal(window.document.activeElement, box,
+      "the box cannot be focused at all, so he can never type");
+  });
+
   test("asking from the dock posts the text and paints the question before any poll", async () => {
     const window = await loadSite("/");
     tap(window, "chat-btn");
