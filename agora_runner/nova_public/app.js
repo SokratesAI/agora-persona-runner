@@ -6423,6 +6423,95 @@
     });
     feed.appendChild(ask);
     feed.appendChild(askNote);
+    feed.appendChild(renderPoolHistory());
+  }
+
+  /* What he already decided, and what he wrote when he decided it.
+   *
+   * The owner, capture 2026-08-25: *"I do not know if my comments on why or
+   * why not a pool idea is rejected or not. As in the comments i write. I
+   * can't even see what has been approved or rejected. Maybe give me a
+   * history overview."*
+   *
+   * A decided candidate leaves the pool by design, and until now that also
+   * meant it left the app: an approval became a board row among two hundred
+   * others and a rejection went into a `## Discarded` table nothing here has
+   * ever rendered. Behind a toggle rather than always drawn, because the
+   * fetch reads his 281KB ideas file and the deck is what the page is for.
+   */
+  function renderPoolHistory() {
+    var wrap = el("div", "pool-history");
+    var toggle = el("button", "pool-history-toggle", "What I already decided");
+    var body = el("div", "pool-history-body");
+    var open = false;
+    var loaded = false;
+    wrap.appendChild(toggle);
+    wrap.appendChild(body);
+
+    toggle.addEventListener("click", function () {
+      open = !open;
+      body.textContent = "";
+      toggle.textContent = open ? "Hide what I decided" : "What I already decided";
+      if (!open) return;
+      if (loaded) { paint(loaded); return; }
+      body.appendChild(el("p", "pool-note", "Reading…"));
+      fetch("/api/pool/history")
+        .then(json)
+        .then(function (payload) {
+          // The same in-flight guard the other fetches carry: he can be two
+          // pages away by the time a 281KB read comes back.
+          if (route(window.location.pathname).view !== "pool") return;
+          loaded = payload || { approved: [], rejected: [] };
+          if (open) paint(loaded);
+        })
+        .catch(function (err) {
+          body.textContent = "";
+          body.appendChild(el("p", "pool-note", "Could not read it: " + err));
+        });
+    });
+
+    function group(heading, items, className, render) {
+      var box = el("div", "pool-history-group");
+      box.appendChild(el("p", "pool-history-heading", heading));
+      items.forEach(function (item) {
+        var card = el("div", "pool-history-item " + className);
+        render(card, item);
+        box.appendChild(card);
+      });
+      return box;
+    }
+
+    function paint(payload) {
+      body.textContent = "";
+      var approved = payload.approved || [];
+      var rejected = payload.rejected || [];
+      if (!approved.length && !rejected.length) {
+        body.appendChild(el("p", "pool-note",
+          "Nothing decided yet — approve or reject one and it shows up here."));
+        return;
+      }
+      if (approved.length) {
+        body.appendChild(group("Approved", approved, "approved", function (card, item) {
+          card.appendChild(el("p", "pool-history-title", item.title));
+          if (item.comment) {
+            card.appendChild(el("p", "pool-history-said", "You said: " + item.comment));
+          }
+          card.appendChild(el("p", "pool-history-meta",
+            "Idea #" + item.number + (item.dated ? " · " + item.dated : "")));
+        }));
+      }
+      if (rejected.length) {
+        body.appendChild(group("Rejected", rejected, "rejected", function (card, item) {
+          card.appendChild(el("p", "pool-history-title", item.title));
+          // The reason column is his comment when he typed one and a bare
+          // "Rejected <date>" when he did not, so it is shown as written
+          // rather than labelled "You said" — some of these are mine.
+          if (item.why) card.appendChild(el("p", "pool-history-said", item.why));
+        }));
+      }
+    }
+
+    return wrap;
   }
 
   function loadPool() {

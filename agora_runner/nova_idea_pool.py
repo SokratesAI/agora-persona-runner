@@ -63,6 +63,24 @@ STALE_CANDIDATE = "no longer in the pool"
 _FRONTMATTER_FLAG = re.compile(r"^generate-requested:\s*(.*)$", re.MULTILINE)
 _FIELD = re.compile(r"^(project|priority):\s*(.*)$", re.IGNORECASE)
 
+# The one sentence that says a write-up came from the pool rather than from
+# something he typed, and the only thing `decision_history` can key on. It is
+# a constant because `insert_detail` writes it and the history parser reads
+# it: two hand-copies of one sentence is the duplication this loop keeps
+# shipping guards for instead of deleting.
+APPROVED_BYLINE = "Proposed by Nova and approved by you on {dated}."
+_APPROVED_BYLINE = re.compile(
+    r"^Proposed by Nova and approved by you on (.+?)\.\s*$")
+
+# `## 115 — Title`, which is what `insert_detail` writes, and `### #114 —
+# Title`, which is what his older hand-written write-ups look like. The
+# history has to read both or it reports pool approvals as missing on a file
+# whose older half simply predates the pool.
+_DETAIL_HEADING = re.compile(r"^#{2,4}\s+#?(\d+)\s*[—–-]\s*(.+?)\s*$")
+
+# What `decide` appends when he typed something into the comment box.
+_YOU_SAID = re.compile(r"^You said:\s*(.+?)\s*$")
+
 
 def _frontmatter_span(lines):
     """(start, end) of the frontmatter body, or (0, 0) if there is none."""
@@ -288,7 +306,7 @@ def insert_detail(markdown, number, title, body, dated):
                 "",
                 f"## {number} — {title}",
                 "",
-                f"Proposed by Nova and approved by you on {dated}.",
+                APPROVED_BYLINE.format(dated=dated),
                 "",
             ]
             if body:
@@ -416,6 +434,121 @@ def decide(index, title, decision, comment, dated):
 
     log(f"nova-pool {decision}: {candidate['title']!r} -> {landed}")
     return True, landed
+
+
+def parse_history(ideas_markdown):
+    """His ideas file -> `{"approved": [...], "rejected": [...]}`.
+
+    The owner, capture 2026-08-25: *"I do not know if my comments on why or
+    why not a pool idea is rejected or not. As in the comments i write. I
+    can't even see what has been approved or rejected. Maybe give me a
+    history overview."*
+
+    He is right and the pool was built that way on purpose -- a decided
+    candidate leaves the pool so the pool cannot silently accumulate -- but
+    "leaves the pool" was implemented as "leaves the app". An approval lands
+    as a board row he would have to recognise as his own, and a rejection
+    lands in a `## Discarded` table that **nothing in this site renders at
+    all**, so the reason he typed is readable only in Obsidian. One real
+    rejection had already gone in that way by the time he asked.
+
+    **Derived from his file rather than from a new ledger, and that is the
+    whole design decision.** A decisions document written beside the pool
+    would be a second copy of a fact his file already holds, needing its own
+    write path inside `decide`'s two-document dance -- and it would start
+    empty, which is the one thing this must not do: he asked to see history
+    that has *already happened*. Everything below is parsed back out of the
+    writes `insert_detail` and `insert_discarded` were making anyway.
+
+    What this cannot recover, said plainly rather than papered over: a
+    rejection carries no date, because `insert_discarded` writes the reason
+    *instead of* the date when he typed one, into a two-column table whose
+    shape is his. The rows come back in file order, which is newest first.
+    """
+    lines = (ideas_markdown or "").split("\n")
+    return {
+        "approved": _parse_approved(lines),
+        "rejected": _parse_rejected(lines),
+    }
+
+
+def _parse_approved(lines):
+    """Every `# Details` write-up carrying the pool's own byline."""
+    approved = []
+    number = title = None
+    dated = comment = ""
+    seen_byline = False
+
+    def flush():
+        if seen_byline and number is not None:
+            approved.append({
+                "number": number, "title": title,
+                "dated": dated, "comment": comment,
+            })
+
+    for line in lines:
+        heading = _DETAIL_HEADING.match(line)
+        if heading:
+            flush()
+            number, title = int(heading.group(1)), heading.group(2)
+            dated = comment = ""
+            seen_byline = False
+            continue
+        if number is None:
+            continue
+        byline = _APPROVED_BYLINE.match(line.strip())
+        if byline:
+            seen_byline = True
+            dated = byline.group(1)
+            continue
+        said = _YOU_SAID.match(line.strip())
+        if said and seen_byline:
+            comment = said.group(1)
+    flush()
+    return approved
+
+
+def _parse_rejected(lines):
+    """The rows of `## Discarded`, which no page has ever shown him."""
+    rejected = []
+    inside = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower() == "## discarded":
+            inside = True
+            continue
+        if not inside:
+            continue
+        if stripped.startswith("#"):
+            break
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        # The header row and the `|---|---|` separator under it. Matched by
+        # what they are rather than by position: the table in his file was
+        # hand-written and a later one need not have the same preamble.
+        if re.match(r"^[\s:-]+$", cells[0]) or cells[0].lower() == "idea":
+            continue
+        rejected.append({"title": cells[0], "why": cells[1]})
+    return rejected
+
+
+def history_payload():
+    """What `GET /api/pool/history` answers.
+
+    Its own endpoint rather than a field on `/api/pool`, because his ideas
+    file is 281KB and the pool document is 5KB. Folding this into the pool
+    payload would make opening the deck a 286KB read to paint a section he
+    has not asked to see; the page fetches this when he taps History.
+    """
+    markdown, _ = vault_read_path_rev(IDEAS_PATH)
+    if markdown is None:
+        return {"approved": [], "rejected": [], "missing": True}
+    payload = parse_history(markdown)
+    payload["missing"] = False
+    return payload
 
 
 def request_generate():
