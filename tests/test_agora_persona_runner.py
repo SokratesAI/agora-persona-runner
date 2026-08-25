@@ -3903,6 +3903,70 @@ def test_finished_runs_are_pruned_from_the_registry(runner):
     assert threads["hb1"] == [created[0]]
 
 
+def test_a_heartbeat_that_has_never_run_still_starts(runner):
+    """The bug that stopped all three weekly Nova heartbeats dead.
+
+    `lastRunAt` is None on a heartbeat that has never run, and
+    `_heartbeat_spawn_marks.get(id)` also returns None when no mark is
+    recorded. The guard compared the two and read "I already spawned this
+    slot" on the very first due tick -- so the run never started, so
+    `lastRunAt` stayed None, so every later tick matched too. Measured live
+    2026-08-25: created 08-24, `lastRunAt: null`, and the runner log showed
+    256 dropped ticks against `lastRunAt=None`.
+    """
+    heartbeat = _plain_hb(id="hb-new", name="Nova - ideas & research",
+                          schedule="cron@0 6 * * 2,4,6", lastRunAt=None)
+    marks = {}
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1, "a never-run heartbeat must start on its first due tick"
+
+
+def test_the_spawn_mark_still_guards_a_never_run_heartbeat(runner):
+    """The other half, so the fix above cannot be "delete the guard".
+
+    Once the first run is in flight and `lastRunAt` has not moved yet, a
+    second due tick must still be dropped -- that window is the whole
+    reason the mark exists, and None is a legitimate value inside it.
+    """
+    heartbeat = _plain_hb(id="hb-new", schedule="cron@0 6 * * 2,4,6",
+                          lastRunAt=None)
+    marks = {}
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads",
+                      {"hb-new": [_AliveStub()]}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        marks["hb-new"] = None  # this slot was already spawned against None
+        runner.run_due_heartbeats()
+
+    assert created == [], "an unclaimed in-flight slot must not spawn twice"
+
+
 def test_default_concurrency_is_one_unless_the_bridge_lane_is_open(monkeypatch):
     """The default has to preserve today's behaviour exactly: with the
     bridge lock shut, a second cycle would only queue behind the first
