@@ -8291,6 +8291,162 @@ describe("the chat dock", () => {
   });
 });
 
+/* His capture on `issues.md`, 2026-08-25: *"Make the new chat be able to
+ * display mermaid charts, images and also be able to upload files like all
+ * other input fields in the Nova app."* Two of the three, and they are the
+ * two the rest of the app already had an answer for -- the same
+ * `buildAttach` composer and the same `appendRichText` reader every other
+ * thread on this site uses. Mermaid is the third and is not here. */
+describe("attachments in the ask thread and its dock", () => {
+  const DOCK_INPUT = "#chat-form .attach-input";
+  const DOCK_TRAY = "#chat-form .attach-tray";
+
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+
+  /** Pick one file on a composer and wait for its chip. A local copy of the
+   *  capture-box helper deliberately -- it is four lines of stubbing, and
+   *  hoisting it into a shared helper would put the two composers' tests on
+   *  one fixture, which is the thing that makes a shared-code regression
+   *  invisible in both at once. */
+  async function pickOne(window, inputSelector, traySelector, file) {
+    const input = window.document.querySelector(inputSelector);
+    const tray = window.document.querySelector(traySelector);
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new window.File([new Uint8Array([1, 2, 3])], file.name, { type: file.type })],
+    });
+    window.fetch = () => res({
+      ok: true,
+      name: "x1",
+      url: "/api/upload/x1." + file.name.split(".").pop(),
+      bytes: 3,
+      isImage: file.isImage,
+    });
+    input.dispatchEvent(new window.Event("change"));
+    for (let i = 0; i < 60; i++) {
+      if (tray.querySelectorAll(".attach-chip").length >= 1) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return tray;
+  }
+
+  const withPicture = {
+    conversationId: "c",
+    waiting: false,
+    messages: [
+      { id: "1", sender: "Edvard", text: "what is this?\n\n![shot.jpg](/api/upload/ab12.jpg)" },
+      { id: "2", sender: "Nova Answers", text: "A chart. The log is [runner.log](/api/upload/cd34.log)" },
+    ],
+  };
+
+  test("a picture in the thread is a picture, not the markdown for one", async () => {
+    const window = await loadSite("/ask", { ask: withPicture });
+    const img = window.document.querySelector("#feed .ask-msg img.attach-img");
+    assert.ok(img, "the picture he attached came back as text");
+    assert.equal(img.getAttribute("src"), "/api/upload/ab12.jpg");
+    assert.equal(img.getAttribute("alt"), "shot.jpg");
+    assert.equal(window.document.querySelector(".ask-thread").textContent.includes("/api/upload/ab12"),
+      false, "the raw URL is still on screen beside the picture");
+  });
+
+  test("a non-image attachment is a named link rather than a broken image", async () => {
+    const window = await loadSite("/ask", { ask: withPicture });
+    const link = window.document.querySelector("#feed .ask-msg a.attach-file");
+    assert.ok(link, "the log came back as text");
+    assert.equal(link.getAttribute("href"), "/api/upload/cd34.log");
+    assert.match(link.textContent, /runner\.log/);
+  });
+
+  test("a plain answer still reads as it was written, line breaks and all", async () => {
+    const window = await loadSite("/ask", {
+      ask: { conversationId: "c", waiting: false, messages: [{ id: "1", sender: "Nova Answers", text: "one\ntwo\n\nthree" }] },
+    });
+    const text = window.document.querySelector("#feed .ask-text");
+    const paras = [...text.querySelectorAll("p")].map((p) => p.textContent);
+    // Two paragraphs, and the single newline inside the first one survives:
+    // `.ask-text` is `pre-wrap` and that inherits, so a list an answer wrote
+    // as one block of lines does not collapse onto one line.
+    assert.deepEqual(paras, ["one\ntwo", "three"]);
+  });
+
+  test("the dock has a paperclip, and what he picks goes with the question", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.querySelector("#chat-form .attach-btn"), "no paperclip in the dock");
+
+    await pickOne(window, DOCK_INPUT, DOCK_TRAY, { name: "shot.jpg", type: "image/jpeg", isImage: true });
+    window.document.getElementById("chat-box").value = "what is this?";
+
+    let sent = null;
+    window.fetch = (url, options) => { sent = JSON.parse(options.body); return res({ ok: true }); };
+    const thread = window.document.getElementById("chat-thread");
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    // On the echoed question, not on `sent` -- `sent` is set inside the stub
+    // before the `.then` chain that clears the tray has run, so a wait on it
+    // would assert the tray one tick too early and pass either way.
+    for (let i = 0; i < 40 && !thread.querySelector(".ask-mine"); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    assert.equal(sent.text, "what is this?\n\n![shot.jpg](/api/upload/x1.jpg)");
+    assert.equal(window.document.querySelector(`${DOCK_TRAY} .attach-chip`), null,
+      "the tray kept the picture after it was sent, so the next question carries it again");
+    assert.ok(window.document.querySelector("#chat-thread img.attach-img"),
+      "his own question painted the markdown back at him instead of the picture");
+  });
+
+  test("a picture with nothing typed under it is still a message", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await pickOne(window, DOCK_INPUT, DOCK_TRAY, { name: "shot.jpg", type: "image/jpeg", isImage: true });
+
+    let sent = null;
+    window.fetch = (url, options) => { sent = JSON.parse(options.body); return res({ ok: true }); };
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    for (let i = 0; i < 40 && !sent; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(sent, "a picture with no sentence under it was refused");
+    assert.equal(sent.text, "![shot.jpg](/api/upload/x1.jpg)");
+  });
+
+  /* The one that costs a duplicate message if it regresses. Send is held
+   * down by an upload and by a question in flight, and the two overlap: if
+   * the upload owns the button, its completion re-enables a Send whose
+   * question has not come back, and the next tap posts the same text twice. */
+  test("an upload finishing does not re-enable Send while a question is still out", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const send = window.document.getElementById("chat-send");
+    window.document.getElementById("chat-box").value = "first";
+
+    // A question that never answers, so `sending` stays true.
+    window.fetch = () => new Promise(() => {});
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(send.disabled, true, "Send was live while the question was in flight");
+
+    await pickOne(window, DOCK_INPUT, DOCK_TRAY, { name: "shot.jpg", type: "image/jpeg", isImage: true });
+    assert.equal(send.disabled, true,
+      "an upload finishing re-enabled Send, so the unanswered question can be sent again");
+  });
+
+  test("the paperclip is a 44px target and does not sit stranded mid-row", async () => {
+    const window = await loadSite("/", { install: withStyle });
+    const rules = [...window.document.styleSheets[0].cssRules];
+    assert.ok(rules.some((r) => r.selectorText === ".attach-btn" && /44px/.test(r.style.cssText)),
+      "the paperclip lost its touch target");
+    // `cssText`, not `r.style.marginLeft` -- this CSSOM leaves the typed
+    // property undefined, so a check on it passes for any rule at all.
+    assert.ok(rules.some((r) => r.selectorText === ".chat-actions .attach-btn"
+      && /margin-left:\s*auto/.test(r.style.cssText)),
+      "nothing pulls the dock's paperclip over to Send");
+  });
+});
+
 describe("the device page", () => {
   /* `/diag` exists because three cycles in a row shipped a fix for a
    * rendering fault on a phone none of them could look at -- an iPhone

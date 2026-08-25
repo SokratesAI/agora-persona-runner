@@ -2470,6 +2470,26 @@ body.has-full-chart { overflow: hidden; }
  * it wrote is the whole formatting story -- see nova_ask.thread(). */
 .ask-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* A message is paragraphs now rather than one text node, because an
+ * attached picture has to become an element and a text node cannot hold
+ * one. `white-space` and `overflow-wrap` inherit from `.ask-text`, so the
+ * wrapping is unchanged; only the default paragraph margins need undoing,
+ * which would otherwise put a blank line above every answer. */
+.ask-text p { margin: 0 0 0.55rem; }
+.ask-text p:last-child { margin-bottom: 0; }
+
+/* The paperclip on the two composers that write into the ask thread. Both
+ * are ordinary block flow rather than the flex rows the board composers
+ * use, so the button needs the same top margin its neighbour has to sit on
+ * the same line as it. */
+.ask-form .attach-btn { margin: 0.5rem 0.45rem 0 0; vertical-align: top; }
+/* `margin-left: auto` rather than a size change. The row is
+ * `space-between` with three children, which would strand the paperclip in
+ * the middle of the dock; the auto margin absorbs the free space so the
+ * status sits left and the paperclip sits against Send. It keeps the 44px
+ * target the rest of this file holds every button to. */
+.chat-actions .attach-btn { margin-left: auto; }
+
 .ask-pending { color: var(--dim); font-style: italic; }
 
 /* The roadmap's five as a ranked strip, above the argument for them.

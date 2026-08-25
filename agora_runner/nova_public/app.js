@@ -7372,11 +7372,23 @@
   // phone battery with a question mark on it.
   var ASK_POLL_MAX = 60;
 
+  /* The body goes through `appendRichText` rather than straight into a text
+   * node, so a picture he attached is a picture here instead of the literal
+   * `![shot.png](/api/upload/…)` he would otherwise read back. That is the
+   * same one reader the comment threads and the boards already use, which
+   * is the point: an attachment must not look like a thumbnail in one place
+   * and a URL in another.
+   *
+   * `.ask-text` keeps `white-space: pre-wrap`, and both that and
+   * `overflow-wrap` inherit into the paragraphs, so a plain answer wraps
+   * exactly as it did before. */
   function askMessage(message) {
     var mine = message.sender === "Edvard";
     var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs"));
     row.appendChild(el("div", "ask-who", mine ? "You" : message.sender || "Nova Answers"));
-    row.appendChild(el("div", "ask-text", message.text));
+    var body = el("div", "ask-text");
+    appendRichText(body, null, message.text);
+    row.appendChild(body);
     return row;
   }
 
@@ -7433,7 +7445,21 @@
     var send = el("button", "ask-send", "Ask");
     send.setAttribute("type", "submit");
     var status = el("p", "ask-status");
+    /* The same paperclip the dock has. The two composers write into one
+     * conversation, so a picture he can attach in the corner of the app and
+     * not on the page that shows the same thread would read as the page
+     * being broken. */
+    var uploading = false;
+    var sending = false;
+    function syncSend() { send.disabled = uploading || sending; }
+    var attach = buildAttach({
+      onBusy: function (isBusy) { uploading = isBusy; syncSend(); },
+      onStatus: function (text) { status.textContent = text; },
+    });
     form.appendChild(box);
+    form.appendChild(attach.tray);
+    form.appendChild(attach.input);
+    form.appendChild(attach.button);
     form.appendChild(send);
     form.appendChild(status);
     feed.appendChild(form);
@@ -7445,30 +7471,35 @@
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       var text = box.value.trim();
-      if (!text) return;
-      send.disabled = true;
+      if (!text && !attach.count()) return;
+      var body = [text, attach.markdown()].filter(Boolean).join("\n\n");
+      sending = true;
+      syncSend();
       status.textContent = "sending…";
       fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text }),
+        body: JSON.stringify({ text: body }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
           if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
           box.value = "";
+          attach.clear();
           status.textContent = "";
-          send.disabled = false;
+          sending = false;
+          syncSend();
           // Paint his question immediately rather than waiting a poll for
           // the server to echo it back: the send is the one moment the page
           // knows something happened, and four seconds of a box that has
           // gone blank with nothing to show for it reads as a lost message.
-          thread.appendChild(askMessage({ sender: "Edvard", text: text }));
+          thread.appendChild(askMessage({ sender: "Edvard", text: body }));
           thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
           pollAsk(thread, 0);
         })
         .catch(function (err) {
-          send.disabled = false;
+          sending = false;
+          syncSend();
           status.textContent = "could not send: " + err.message;
         });
     });
@@ -8447,6 +8478,31 @@
       // a one-line box is the thing `overflow-y: hidden` is avoiding.
       box.style.overflowY = wanted > cap ? "auto" : "hidden";
     }
+    /* The paperclip, his capture on `issues.md` 2026-08-25: *"Make the new
+     * chat be able to display mermaid charts, images and also be able to
+     * upload files like all other input fields in the Nova app."* This is
+     * the same `buildAttach` the comment drawer, the board composer and the
+     * capture box already use -- a tray of chips under the box rather than
+     * markdown typed into it -- so there is still exactly one thing on this
+     * site that knows how to upload a file.
+     *
+     * Send is disabled from two independent directions -- an upload in
+     * flight and a question in flight -- and they overlap. Two writers of
+     * `send.disabled` would race: an upload finishing while the question is
+     * still out re-enables the button, and the next tap sends the same text
+     * twice. So both set a flag and one function reads them. */
+    var uploading = false;
+    var sending = false;
+
+    function syncSend() { send.disabled = uploading || sending; }
+
+    var attach = buildAttach({
+      onBusy: function (isBusy) { uploading = isBusy; syncSend(); },
+      onStatus: function (text) { status.textContent = text; },
+    });
+    box.parentNode.insertBefore(attach.tray, box.nextSibling);
+    form.appendChild(attach.input);
+    send.parentNode.insertBefore(attach.button, send);
 
     function setDot(on) {
       if (on) dot.removeAttribute("hidden");
@@ -8564,13 +8620,17 @@
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       var text = box.value.trim();
-      if (!text) return;
-      send.disabled = true;
+      // A tray with a picture in it and nothing typed is still a real
+      // message -- he sends the screenshot and asks about it next.
+      if (!text && !attach.count()) return;
+      var body = [text, attach.markdown()].filter(Boolean).join("\n\n");
+      sending = true;
+      syncSend();
       status.textContent = "sending…";
       fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text }),
+        body: JSON.stringify({ text: body }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
@@ -8580,12 +8640,16 @@
           // unless the height is recomputed; `input` does not fire on a
           // programmatic assignment.
           growChatBox();
+          // Emptied only now, the same rule the box follows: a tray cleared
+          // on the tap loses the picture when the send is refused.
+          attach.clear();
           status.textContent = "";
-          send.disabled = false;
+          sending = false;
+          syncSend();
           // Paint his question straight away rather than waiting a poll for
           // the server to echo it, for `renderAsk`'s reason: a box that has
           // gone blank with nothing to show for it reads as a lost message.
-          thread.appendChild(askMessage({ sender: "Edvard", text: text }));
+          thread.appendChild(askMessage({ sender: "Edvard", text: body }));
           thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
           thread.scrollTop = thread.scrollHeight;
           // His own message is not an unread answer.
@@ -8593,7 +8657,8 @@
           pollChat(0);
         })
         .catch(function (err) {
-          send.disabled = false;
+          sending = false;
+          syncSend();
           status.textContent = "could not send: " + err.message;
         });
     });
