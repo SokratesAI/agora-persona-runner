@@ -40,6 +40,7 @@ visible rather than buried in the threshold.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import sys
 import urllib.error
@@ -57,20 +58,34 @@ def fetch_stats(url: str, timeout: float = 20.0) -> dict:
 def classify(stats: dict, min_runs: int = 4) -> tuple[list[dict], list[dict]]:
     """Split every (category, mode, host) entry into dead and quiet.
 
-    Dead: it has run at least `min_runs` times, every run errored, and it
-    has never written an article. Quiet: it has written nothing but its
-    fetches are not the reason.
+    Dead: it has run at least `min_runs` times, has never written an
+    article, and every fetch it has made has failed. Quiet: it has written
+    nothing but its fetches are not the reason.
+
+    **"Every fetch failed" is a proxy and it is worth naming.** The blob
+    counts runs and fetch errors but not fetches, and a run can fetch more
+    than once, so `errors >= runs` is where the two counters cross rather
+    than a proof that nothing ever succeeded. `last_fetch_ok` is the one
+    direct observation available and it covers only the most recent run, so
+    it is used to *rule out* a dead verdict and never to reach one: a
+    source whose last fetch worked is not dead however its counters read.
     """
     categories = (stats.get("source_stats") or {}).get("categories") or {}
     dead: list[dict] = []
     quiet: list[dict] = []
-    for category, modes in sorted(categories.items()):
-        for mode, hosts in sorted((modes or {}).items()):
-            for host, entry in sorted((hosts or {}).items()):
+    for category, modes in sorted((categories or {}).items()):
+        if not isinstance(modes, dict):
+            continue
+        for mode, hosts in sorted(modes.items()):
+            if not isinstance(hosts, dict):
+                continue
+            for host, entry in sorted(hosts.items()):
+                if not isinstance(entry, dict):
+                    continue
                 runs = entry.get("runs") or 0
                 written = entry.get("written") or 0
                 errors = entry.get("fetch_errors") or 0
-                if written or runs < min_runs:
+                if written:
                     continue
                 row = {
                     "category": category,
@@ -80,10 +95,16 @@ def classify(stats: dict, min_runs: int = 4) -> tuple[list[dict], list[dict]]:
                     "errors": errors,
                     "last_run_at": entry.get("last_run_at") or "",
                 }
-                if errors >= runs:
-                    dead.append(row)
-                else:
-                    quiet.append(row)
+                # The floor gates the *dead* verdict only. A source with no
+                # errors is unambiguous however few runs it has, and dropping
+                # it from both lists would hide it rather than judge it.
+                fetched_ok = entry.get("last_fetch_ok")
+                is_dead = (
+                    runs >= max(min_runs, 1)
+                    and errors >= runs
+                    and fetched_ok is not True
+                )
+                (dead if is_dead else quiet).append(row)
     dead.sort(key=lambda r: (-r["errors"], r["category"], r["host"]))
     quiet.sort(key=lambda r: (r["category"], r["host"]))
     return dead, quiet
@@ -133,12 +154,23 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         stats = fetch_stats(args.url)
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
+        dead, quiet = classify(stats, min_runs=args.min_runs)
+    except (
+        urllib.error.URLError,
+        http.client.HTTPException,
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        TimeoutError,
+    ) as exc:
+        # `classify` is inside the guard on purpose. A payload that arrived
+        # fine and is shaped wrong is still "I could not read this", and the
+        # sibling tools in this folder all funnel a deeper failure through
+        # one point rather than letting a traceback out of `main`.
         print(f"COULD NOT READ {args.url}: {exc}", file=sys.stderr)
         print("This is no instrument, not a clean sweep.", file=sys.stderr)
         return 1
-
-    dead, quiet = classify(stats, min_runs=args.min_runs)
     print(render(dead, quiet, args.min_runs))
     return 2 if dead else 0
 
