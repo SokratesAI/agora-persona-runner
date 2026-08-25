@@ -87,9 +87,23 @@ def test_the_headline_splits_into_the_claim_and_its_qualification():
     # `REPO_ONLY_KINDS` exists to make, and the reason the two halves of
     # this sentence are separate fields on the page.
     assert page["headline"] == "0 of 4 running services are composed by a claim."
-    assert page["detail"].startswith("1 of them have a *source repo*")
+    assert page["detail"].startswith("1 of them have a source repo")
     assert "**" not in page["headline"] and "**" not in page["detail"]
     assert page["incomplete"] is False
+
+
+def test_the_prose_arrives_without_its_markdown_markers():
+    """The page draws text, and the catalog's prose is written as markdown.
+
+    Found by opening the real page and looking at it: the qualification
+    rendered as `*source repo*` and a backticked `GitHubService`, with
+    the punctuation on screen. Every test above asserts on the string and
+    the string was right -- what was wrong was that nothing rendered it.
+    """
+    page = parse_catalog(_rendered())
+    assert "*" not in page["detail"] and "`" not in page["detail"]
+    assert "source repo that was ordered as one" in page["detail"]
+    assert "a GitHubService writes the" in page["detail"]
 
 
 def test_doors_are_read_as_their_own_list():
