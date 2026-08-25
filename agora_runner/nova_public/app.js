@@ -8525,6 +8525,11 @@
       else dock.setAttribute("hidden", "");
       dock.classList.toggle("open", isOpen);
       btn.classList.toggle("open", isOpen);
+      // The full-screen sheet has to hide the hamburger, and CSS cannot
+      // reach it from here -- `.menu-btn` is an earlier sibling. The class
+      // goes on `body` so the media query can do it; on a wide screen the
+      // dock is a small panel and the rule does not apply.
+      document.body.classList.toggle("chat-open", isOpen);
       // Closing deliberately leaves the poll running: the question is still
       // being answered and the dot is how he finds out it landed.
       if (!isOpen) return;

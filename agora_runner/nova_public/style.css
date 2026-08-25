@@ -2969,6 +2969,16 @@ body.has-full-chart { overflow: hidden; }
     padding-top: max(0.7rem, env(safe-area-inset-top));
     padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
   }
+
+  /* The hamburger has to go while the sheet is up, and it is the one thing
+   * the sheet cannot cover by painting over it: `.menu-btn` is `z-index:
+   * 30` against the dock's 14, fixed at roughly x 304-344, y 26-66 on a
+   * 360px screen -- which is on top of the dock's own close button. So the
+   * × would have been unreachable on his phone, tapped through to the menu
+   * instead. Found by my reviewer, not by me; no test sees it, because
+   * jsdom resolves no media queries. What a test *can* see is the class,
+   * and that is pinned below. */
+  body.chat-open .menu-btn { display: none; }
 }
 
 .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }

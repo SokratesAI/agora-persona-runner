@@ -8130,6 +8130,43 @@ describe("the chat dock", () => {
    * rule -- jsdom resolves no media queries at all, so a computed style
    * here is always the wide-screen one. I read that rule rather than
    * measured it, and it is not covered by any test. */
+  /* The full-screen sheet covers the launcher by painting over it, and it
+   * cannot cover the hamburger: `.menu-btn` is `z-index: 30` against the
+   * dock's 14, fixed in the top right, exactly where the sheet puts its own
+   * close button. So the × would be unreachable on his phone. The rule that
+   * hides it is inside the media query and no test can see it; the class it
+   * keys off is JavaScript and this is it. */
+  test("opening the dock marks the body, so the hamburger can get out of the way", async () => {
+    const window = await loadSite("/", { ask: answered });
+    assert.equal(window.document.body.classList.contains("chat-open"), false,
+      "the body is marked before he opened anything");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.body.classList.contains("chat-open"),
+      "nothing tells the page the sheet is up, so the hamburger sits on the close button");
+    tap(window, "chat-close");
+    assert.equal(window.document.body.classList.contains("chat-open"), false,
+      "closing the dock left the hamburger hidden");
+  });
+
+  /* The fallback line height, which is what runs when `line-height` does
+   * not compute to pixels. Chrome resolves the stylesheet's `1.4` to px, so
+   * the primary branch is the one his phone takes and this branch is
+   * otherwise never executed by anything. */
+  test("the composer still caps at ten lines when the line height is a keyword", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 900);
+    box.style.lineHeight = "normal";
+    box.style.fontSize = "20px";
+    box.value = new Array(40).fill("line").join("\n");
+    box.dispatchEvent(new window.Event("input"));
+    // 20px font * 1.4 = 28px a line, ten of them.
+    assert.equal(box.style.height, "280px",
+      "the fallback line height is not the one the stylesheet declares");
+  });
+
   test("the dock has a real height rather than shrinking to fit the thread", async () => {
     const window = await loadSite("/", { install: withStyle, ask: answered });
     const dock = window.getComputedStyle(window.document.getElementById("chat-dock"));
