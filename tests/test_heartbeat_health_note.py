@@ -167,7 +167,7 @@ def test_run_heartbeat_actually_puts_the_note_in_the_system_prompt(monkeypatch):
     class Stop(Exception):
         pass
 
-    def capture(persona, conversation, participants, heartbeat_extra=None):
+    def capture(persona, conversation, heartbeat_extra=None):
         captured["extra"] = heartbeat_extra
         raise Stop
 
