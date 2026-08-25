@@ -28,6 +28,17 @@ def test_a_source_that_fetches_and_writes_nothing_is_quiet_not_dead():
     assert [r["host"] for r in quiet] == ["example.com"]
 
 
+def test_a_source_that_errored_on_most_runs_but_not_all_is_quiet():
+    # espn.com on the live paper: 11 errors in 12 runs, nothing written. It
+    # fetched once, so the fetch is not what is stopping it and a config
+    # change would not help. Dead means *every* run errored.
+    dead, quiet = nds.classify(
+        _stats({"Sport": {"scrape": {"espn.com": {"runs": 12, "written": 0, "fetch_errors": 11}}}})
+    )
+    assert dead == []
+    assert [r["host"] for r in quiet] == ["espn.com"]
+
+
 def test_a_source_that_has_written_is_neither():
     dead, quiet = nds.classify(
         _stats({"Sport": {"scrape": {"skysports.com": {"runs": 12, "written": 28, "fetch_errors": 3}}}})
