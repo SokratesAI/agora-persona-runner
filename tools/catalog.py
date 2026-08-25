@@ -77,6 +77,7 @@ class Service:
     kind: str
     image: str
     ready: bool
+    wanted: int = 1
     url: str = ""
     repo_claim: str = ""
     argocd_app: str = ""
@@ -84,8 +85,7 @@ class Service:
     @property
     def repo(self) -> str:
         """`ghcr.io/sokratesai/agora@sha256:...` -> `agora`."""
-        base = self.image.split("@")[0].split(":")[0]
-        return base.rsplit("/", 1)[-1] if "/" in base else base
+        return self.image.split("@")[0].split(":")[0].rsplit("/", 1)[-1]
 
 
 def _kubectl(args: list[str]) -> Source:
@@ -107,13 +107,24 @@ def _kubectl(args: list[str]) -> Source:
 
 
 def read_workloads(namespaces=APP_NAMESPACES) -> Source:
+    """Rows from the namespaces that answered, plus the first error if any did not.
+
+    A `Source` carries both on purpose. Returning early on the first error threw
+    away every row already collected, and the catalog then printed every Ingress
+    in the cluster under "doors nothing accounts for" -- a confident,
+    security-shaped, false claim built out of a partial read. Keeping the rows
+    and the error together lets the table show what is known while `ok` stays
+    false, so the coverage number and the orphan section both stay suppressed.
+    """
     merged: list = []
+    errors = []
     for ns in namespaces:
         got = _kubectl(["get", "deployments,statefulsets", "-n", ns])
         if not got.ok:
-            return got
+            errors.append(f"{ns}: {got.error}")
+            continue
         merged.extend(got.rows)
-    return Source(rows=merged)
+    return Source(rows=merged, error="; ".join(errors))
 
 
 def read_ingresses() -> Source:
@@ -124,9 +135,41 @@ def read_argocd_apps() -> Source:
     return _kubectl(["get", "applications", "-n", "argocd"])
 
 
+def read_xr_kinds() -> Source:
+    """Every composite kind this cluster offers, read off the XRDs.
+
+    Hardcoding `githubservices` here is the bug the reviewer of runner#389
+    found: a query for one plural can only ever return one kind, so
+    `coverage`'s first number was 0 by construction rather than by
+    measurement, and would have stayed 0 after somebody shipped a claim that
+    genuinely composes a workload. The list has to come from the cluster.
+    """
+    got = _kubectl(["get", "xrd"])
+    if not got.ok:
+        return got
+    return Source(rows=[x.get("spec", {}).get("names", {}).get("plural", "") for x in got.rows if x])
+
+
 def read_claims() -> Source:
-    """Crossplane composite resources -- the things ordered through an API."""
-    return _kubectl(["get", "githubservices", "-A"])
+    """Every composite resource live on this cluster, of every offered kind."""
+    kinds = read_xr_kinds()
+    if not kinds.ok:
+        return kinds
+    merged: list = []
+    errors = []
+    for plural in kinds.rows:
+        if not plural:
+            continue
+        got = _kubectl(["get", plural, "-A"])
+        if not got.ok:
+            # Same partial-read contract as read_workloads: the bridge account is
+            # Forbidden on two of the three kinds this cluster offers today, so a
+            # kind that answers still gets to fill in its column, and every kind
+            # that did not is named rather than just the first.
+            errors.append(f"{plural}: {got.error.split(': ', 1)[-1]}")
+            continue
+        merged.extend(got.rows)
+    return Source(rows=merged, error="; ".join(errors))
 
 
 def services_from(workloads: list) -> list[Service]:
@@ -142,6 +185,7 @@ def services_from(workloads: list) -> list[Service]:
                 kind=item.get("kind", ""),
                 image=containers[0].get("image", "") if containers else "",
                 ready=bool(item.get("status", {}).get("readyReplicas")),
+                wanted=spec.get("replicas", 1),
             )
         )
     return sorted(out, key=lambda s: (s.namespace, s.name))
@@ -173,7 +217,8 @@ def attach_urls(services: list[Service], ingresses: list) -> list[str]:
         host = assigned or host
         target = by_name.get((ns, backend))
         if target is not None:
-            target.url = f"https://{host}" if host else ""
+            if host and not target.url:
+                target.url = f"https://{host}"
         else:
             orphans.append(f"{ns}/{meta.get('name', '')} -> {backend or '?'} ({host or 'no host'})")
     return sorted(orphans)
@@ -191,7 +236,7 @@ def attach_claims(services: list[Service], claims: list) -> None:
     the old value. Marking these rows "ordered as a claim" would read as
     self-service coverage this estate does not have.
     """
-    ordered = {c.get("metadata", {}).get("name", ""): c.get("kind", "claim") for c in claims}
+    ordered = {c.get("metadata", {}).get("name", ""): c.get("kind", "") for c in claims}
     for svc in services:
         svc.repo_claim = ordered.get(svc.name) or ordered.get(svc.repo) or ""
 
@@ -228,7 +273,11 @@ def coverage(services: list[Service]) -> tuple[int, int, int]:
 def render(services: list[Service], orphans: list[str], unread: list[str]) -> str:
     lines = ["# Service catalog", ""]
     if unread:
-        lines.append(f"**Incomplete.** {len(unread)} source(s) could not be read, so no coverage number is given below.")
+        lines.append(
+            f"**Incomplete — do not read the table below as a full picture.** {len(unread)} source(s) could not "
+            "be read. No coverage number is given, and the sections that depend on a source that failed are "
+            "omitted rather than rendered from what did answer."
+        )
         for u in unread:
             lines.append(f"- {u}")
         lines.append("")
@@ -247,10 +296,14 @@ def render(services: list[Service], orphans: list[str], unread: list[str]) -> st
         url = f"[{s.url.removeprefix('https://')}]({s.url})" if s.url else "—"
         lines.append(
             f"| {s.name} | {s.namespace} | {s.repo_claim or '—'} | {s.argocd_app or '—'} | {url} | "
-            f"{'yes' if s.ready else 'NO'} |"
+            f"{'yes' if s.ready else ('off' if s.wanted == 0 else 'NO')} |"
         )
     lines.append("")
-    if orphans:
+    # Suppressed on a partial read for the same reason the number is: if the
+    # workload list is short because a namespace was Forbidden, every Ingress in
+    # the cluster looks like an unaccounted-for door. That is a confident,
+    # security-shaped, false claim -- the worst thing this page could print.
+    if orphans and not unread:
         lines.append("## Doors nothing in the catalog accounts for")
         lines.append("")
         lines.append("Each of these is a live Ingress whose backend is not a workload above.")
