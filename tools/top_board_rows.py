@@ -683,8 +683,9 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     blocked = [r for r in ranked if r.get("statusKey") == _BLOCKED]
     if blocked:
         # "Nothing for a cycle to build on these" used to end this block, and
-        # five cycles filed it as a false positive over a ranking they had
-        # just been told to take from. It was never wrong -- "these" meant
+        # four cycles filed it as a false positive over a ranking they had
+        # just been told to take from -- 393, 395, 397 and 398, with 399 and
+        # 400 seeing it again. It was never wrong -- "these" meant
         # the blocked rows -- but the pronoun sat two lines under the
         # ranking, and the blocked rows are usually *not* in the printed
         # ranking, because being blocked is what sinks them below the
