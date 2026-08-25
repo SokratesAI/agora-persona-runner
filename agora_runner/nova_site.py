@@ -160,6 +160,12 @@ from agora_runner.nova_boards import (
     split_capture_priority,
 )
 from agora_runner.nova_ask import ask as ask_question, thread as ask_thread
+from agora_runner.nova_idea_pool import (
+    STALE_CANDIDATE,
+    decide as pool_decide,
+    pool_payload,
+    request_generate as pool_request_generate,
+)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_plan import plan_payload as shape_plan
@@ -212,6 +218,7 @@ PAGE_ROUTES = (
     "/issues",
     "/ideas",
     "/notes",
+    "/pool",
     "/costs",
     "/retro",
     "/plan",
@@ -1720,6 +1727,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # has already landed.
                 self._send_json(200, ask_thread())
                 return
+            if path == "/api/pool":
+                # Not cached, and for `/api/comments`' reason: the owner
+                # decides a candidate and the page re-fetches immediately,
+                # so a CACHE_FRESH_SECONDS window would show him the card
+                # he just approved. It is one small vault read.
+                self._send_json(200, pool_payload())
+                return
             if path == "/api/health":
                 # Never cached, and that is the entire point of it. The
                 # thing this answers -- "which database did you resolve,
@@ -2008,6 +2022,100 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         wrote_destination = message.startswith("copied to ")
         stale = not wrote_destination and STALE_CAPTURE in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
+    def _post_pool_decide(self, payload):
+        """`POST /api/pool/decide` -- the owner approving or rejecting a candidate.
+
+        Idea #92, phase 1. `index` alone is not an address: a refill that
+        ran while the page was open renumbers everything below it, so
+        `title` is sent back too and `nova_idea_pool.find_candidate`
+        refuses when the two disagree. That is the same guard `original`
+        gives `/api/capture/convert`, for the same failure -- deciding the
+        wrong idea is worse than refusing to decide.
+
+        Nothing here can reach a model, and nothing downstream of it can
+        either: approve and reject are both markdown writes into a file
+        that already exists. See `nova_idea_pool`'s module docstring for
+        why that boundary is permanent rather than a phase-1 shortcut.
+        """
+        index = payload.get("index")
+        title = payload.get("title")
+        decision = payload.get("decision")
+        comment = payload.get("comment") or ""
+        if decision not in ("approve", "reject"):
+            self._send_json(400, {"error": "decision must be approve or reject"})
+            return
+        if not isinstance(title, str) or not title.strip():
+            self._send_json(400, {"error": "title must be a non-empty string"})
+            return
+        # `True` is an int in Python and would silently address candidate 1.
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            self._send_json(400, {"error": "index must be a non-negative number"})
+            return
+        if not isinstance(comment, str):
+            self._send_json(400, {"error": "comment must be a string"})
+            return
+        if len(comment.encode("utf-8")) > MAX_BODY_BYTES:
+            self._send_json(400, {"error": "comment is too long"})
+            return
+
+        dated = datetime.now(OSLO).strftime("%m-%d")
+        try:
+            ok, message = pool_decide(index, title, decision, comment, dated)
+        except Exception as e:
+            _invalidate_capture_target("ideas")
+            log(f"nova-site pool decide failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        # An approve writes a row onto his ideas board, so the cached board
+        # payload is stale whether or not the pool write that followed it
+        # succeeded -- and the half-done case is exactly when a page still
+        # showing the old board would contradict the message.
+        _invalidate_capture_target("ideas")
+        audit(
+            "Nova",
+            "",
+            "nova_idea_pool",
+            f"Pool {decision} · {'ok' if ok else message}",
+            before=title[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        # 409 only when nothing was written. `STALE_CANDIDATE` is the one
+        # refusal that happens before either write, so it is the only one
+        # where "re-read and try again" is honest advice -- the half-done
+        # message names a row that really is on his board.
+        self._send_json(
+            409 if message == STALE_CANDIDATE else 502, {"ok": False, "message": message})
+
+    def _post_pool_generate(self, payload):
+        """`POST /api/pool/generate` -- the owner asking for more candidates.
+
+        It sets a flag and returns. It does **not** generate: this process
+        has no Claude access and must never get one (rule 9, production
+        never spends the metered API), so the button asks and the next
+        cycle to read the pool answers within twenty minutes. A page load
+        that could become a model call is out of scope permanently.
+        """
+        try:
+            ok, message = pool_request_generate()
+        except Exception as e:
+            log(f"nova-site pool generate failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_idea_pool",
+            f"Pool generate requested · {'ok' if ok else message}",
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
     def _post_priority(self, payload):
         """`POST /api/board/priority` -- the owner re-rating a row I rated.
@@ -2397,6 +2505,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/convert", "/api/comment",
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
             "/api/board/comment", "/api/ask",
+            "/api/pool/decide", "/api/pool/generate",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -2424,6 +2533,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/comment":
             self._post_board_comment(payload)
+            return
+        if path == "/api/pool/decide":
+            self._post_pool_decide(payload)
+            return
+        if path == "/api/pool/generate":
+            self._post_pool_generate(payload)
             return
         target = payload.get("target")
         text = payload.get("text")
