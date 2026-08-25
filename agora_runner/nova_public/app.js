@@ -4846,6 +4846,29 @@
     renderBlocks(body, capture.blocks || []);
     one.appendChild(body);
 
+    /* A cycle's answer to this capture, as its own purple bubble.
+     *
+     * It used to be glued onto the end of his own sentence, because the
+     * board payload folded the indented reply bullet into the capture
+     * text -- so the card read as one paragraph that started in his voice
+     * and finished in mine, and, worse, the *address* every write on this
+     * card sends was that same glued string. `nova_capture.replace_capture`
+     * matches on his sentence alone, so Edit, Delete and the priority chip
+     * all failed on an answered capture with "that capture is no longer in
+     * the list" (his `issues.md` capture, 2026-08-25, with the screenshot).
+     * The notes page has drawn this correctly all along; this is the same
+     * two colours and the same markup. */
+    (capture.replies || []).forEach(function (reply) {
+      var answer = el("article", "note-msg note-msg-nova capture-reply");
+      var head = el("p", "note-msg-who");
+      head.appendChild(el("span", "note-msg-name", "Nova"));
+      answer.appendChild(head);
+      var text = el("div", "note-msg-body");
+      renderBlocks(text, reply || []);
+      answer.appendChild(text);
+      one.appendChild(answer);
+    });
+
     var actions = el("div", "capture-edit");
     var status = el("span", "capture-item-status");
     var editBtn = el("button", "capture-act", "Edit");

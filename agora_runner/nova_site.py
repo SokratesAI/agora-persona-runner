@@ -469,6 +469,16 @@ def comments_payload():
     }
 
 
+def _capture_replies(board, index):
+    """The cycle replies under capture `index`, or `[]`.
+
+    Tolerant of a board dict that predates `captureReplies` -- the page
+    should lose the answers, never the owner's own bullets.
+    """
+    replies = (board.get("captureReplies") or [])
+    return replies[index] if index < len(replies) else []
+
+
 def _capture_parts(text):
     """One raw capture bullet -> `(done, priority, body)`.
 
@@ -546,6 +556,13 @@ def board_payload(name):
         # the marker out of `body` keeps it out of the card's prose; the
         # page paints it as a chip and sinks those cards below the open
         # ones.
+        # `replies` are the cycle answers written under his bullet, each
+        # rendered on its own so the page can draw them as separate
+        # bubbles the way the notes page already does. They are
+        # deliberately *not* part of `text`: `text` is the address an
+        # edit, a delete or a rating sends back, and gluing my answer
+        # onto it made every one of those writes fail with "no longer in
+        # the list" (his capture, 2026-08-25).
         "captures": [
             {
                 "text": text,
@@ -554,9 +571,16 @@ def board_payload(name):
                 "priorityKey": priority_key(priority),
                 "done": done,
                 "blocks": render_blocks(body),
+                "replies": [render_blocks(reply) for reply in replies],
             }
-            for text, (done, priority, body) in (
-                (bullet, _capture_parts(bullet)) for bullet in board["captures"]
+            # Indexed rather than `zip`ped: `zip` stops at the shorter of
+            # the two, so a board dict built without the replies list --
+            # any older caller, or a test fixture -- would drop every
+            # capture off the page instead of drawing them without
+            # answers.
+            for text, replies, (done, priority, body) in (
+                (bullet, _capture_replies(board, position), _capture_parts(bullet))
+                for position, bullet in enumerate(board["captures"])
             )
         ],
         "items": board["items"],

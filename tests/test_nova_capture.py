@@ -493,7 +493,7 @@ def test_the_writer_and_the_page_agree_on_a_capture_that_wrapped():
     markdown = ("---\nx: 1\n---\n\n- the first half of what he typed\n"
                 "  and the second half, wrapped.\n- \n\n## Board\n")
     joined = "the first half of what he typed and the second half, wrapped."
-    assert _captures(markdown) == [joined], "the page's own parser moved"
+    assert _captures(markdown)[0] == [joined], "the page's own parser moved"
     assert list_captures(markdown) == [joined]
 
     edited = replace_capture(markdown, 0, joined, ["one line now"])
@@ -855,16 +855,19 @@ def test_a_second_reply_goes_under_the_first(issues_md):
 def test_the_board_page_address_answers_the_same_capture(issues_md):
     """Two pages, two spellings of the same bullet, and both must resolve.
 
-    The notes page draws a reply as its own bubble and sends his sentence
-    alone; the board page folds the reply into the capture card and sends
-    the two joined. A route that took only one of them would have a dead
-    button on the other page.
+    Both pages now send his sentence alone -- the board page stopped
+    folding a reply into the capture text on 2026-08-25. The folded
+    spelling is still accepted here because a reply written by hand, or by
+    a tool that built the address off an older payload, is a comment
+    nobody loses anything by accepting: unlike an edit it adds a bullet
+    rather than rewriting his line.
     """
     markdown = insert_captures(issues_md, ["his line"])
     once = reply_under_capture(markdown, 0, "his line", "first answer")
-    joined = _captures(once)[0]
-    assert joined == "his line first answer", "the board page's parser moved"
-    assert reply_under_capture(once, 0, joined, "second answer") is not None
+    assert _captures(once)[0] == ["his line"], "the board page's parser moved"
+    assert _captures(once)[1] == [["first answer"]]
+    assert reply_under_capture(once, 0, "his line", "second answer") is not None
+    assert reply_under_capture(once, 0, "his line first answer", "third") is not None
 
 
 def test_a_reply_to_a_capture_that_moved_is_refused(issues_md):
@@ -925,8 +928,10 @@ def test_the_board_pages_folded_address_never_rewrites_a_capture(issues_md):
     """
     markdown = insert_captures(issues_md, ["his line"])
     answered = reply_under_capture(markdown, 0, "his line", "my answer")
-    folded = _captures(answered)[0]
-    assert folded == "his line my answer", "the board page's parser moved"
+    # The page no longer builds this string -- see
+    # `test_the_payloads_capture_address_still_resolves_when_answered` --
+    # but the refusal is what makes that safe, so it stays pinned.
+    folded = "his line my answer"
     assert replace_capture(answered, 0, folded, ["Rated: his line my answer"]) is None
     assert replace_capture(answered, 0, folded, []) is None
     # And the address the page actually resolves still works.
@@ -946,7 +951,7 @@ def test_convert_never_deletes_the_source_when_addressed_by_the_folded_form(issu
     """
     markdown = insert_captures(issues_md, ["his line"])
     answered = reply_under_capture(markdown, 0, "his line", "my answer")
-    folded = _captures(answered)[0]
+    folded = "his line my answer"
     writes = []
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(answered, "1-x")), \
             patch.object(nova_capture, "vault_write_path",

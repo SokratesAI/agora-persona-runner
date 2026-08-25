@@ -621,7 +621,11 @@ def test_a_reply_indented_under_a_capture_is_not_a_capture_of_its_own():
         "- \n\n"
         "## Board\n"
     )
-    assert board["captures"] == [
-        "the notes text is grey and hard to read "
-        "Fixed in runner#360 — say the word and the byline goes white too."
+    assert board["captures"] == ["the notes text is grey and hard to read"]
+    # And it is not welded onto his sentence either. It used to be, and
+    # that is what made every write on an answered capture fail: the page
+    # sent the folded string back as the address and no capture reads
+    # that way (his `issues.md` capture, 2026-08-25).
+    assert board["captureReplies"] == [
+        ["Fixed in runner#360 — say the word and the byline goes white too."]
     ]

@@ -322,6 +322,19 @@
               }
             ]
           }
+        ],
+        "replies": [
+          [
+            {
+              "type": "p",
+              "spans": [
+                {
+                  "kind": "text",
+                  "text": "Cycle 401, 09:12 — Done, the timestamp says the time and nothing else now."
+                }
+              ]
+            }
+          ]
         ]
       }
     ],

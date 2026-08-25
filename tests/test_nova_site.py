@@ -4880,3 +4880,54 @@ def test_a_capture_reply_that_could_address_the_wrong_line_is_rejected(payload):
         status, _, _ = _post("/api/capture/comment", payload)
     assert status == 400
     rep.assert_not_called()
+
+
+# --- an answered capture is still addressable (his capture, 2026-08-25) ---
+
+
+def test_the_payloads_capture_address_still_resolves_when_answered():
+    """His `issues.md` capture, 🟠 High, with a screenshot of the failure:
+
+    *"When i edit not boarded yet ideas, i can't save and it gives me a
+    message that its not there anymore."*
+
+    The board payload's `text` is the address every write on that card
+    sends back -- Edit, Delete and the priority chip all post it to
+    `/api/capture/edit`. It used to be `_captures`' folded string, his
+    sentence with a cycle's reply welded onto the end, and
+    `replace_capture` matches his sentence alone, so the moment a cycle
+    answered a capture every one of those buttons started answering "that
+    capture is no longer in the list" -- with the edit he had just typed
+    still in the box.
+
+    So this asserts the round trip rather than either half of it: whatever
+    the payload calls the address, the writer has to accept it.
+    """
+    markdown = (
+        "---\ntype: board\n---\n\n"
+        "- when i edit not boarded yet ideas, i can't save\n"
+        "  - Cycle 430, 17:38 — I did not take this one.\n"
+        "- \n\n"
+        "## Board\n\n| # | Issue | Status | Updated | Priority |\n"
+        "|---|---|---|---|---|\n"
+    )
+    with patch.object(nova_site, "board_markdown", return_value=(markdown, "", "")):
+        payload = nova_site.board_payload("issues")
+    capture = payload["captures"][0]
+    assert capture["text"] == "when i edit not boarded yet ideas, i can't save"
+    assert nova_capture.replace_capture(
+        markdown, 0, capture["text"], ["reworded"]
+    ) is not None, "the page's own address is one the writer refuses"
+    # The answer is still on the card, just not inside his sentence.
+    assert len(capture["replies"]) == 1
+    assert "Cycle 430" in json.dumps(capture["replies"][0])
+    assert "Cycle 430" not in capture["body"]
+
+
+def test_a_capture_survives_a_board_dict_with_no_replies_list():
+    """`captureReplies` is newer than `captures`, and the page losing his
+    own bullets would be far worse than losing the answers under them."""
+    board = {"captures": ["his line"], "items": [], "details": {}}
+    assert nova_site._capture_replies(board, 0) == []
+    assert nova_site._capture_replies({"captures": [], "items": [], "details": {},
+                                       "captureReplies": [["a"]]}, 3) == []

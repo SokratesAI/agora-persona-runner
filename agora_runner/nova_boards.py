@@ -977,57 +977,88 @@ def _sections(markdown):
     return found
 
 
-def _captures(markdown):
-    """The bare bullets above the first heading -- the owner writing directly.
+def _frontmatter_end(lines):
+    """Index of the first line *after* the closing `---`, or 0."""
+    if not lines or lines[0].strip() != "---":
+        return 0
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return i + 1
+    return 0
 
-    Found structurally, the same way `nova_capture.insert_captures` finds
-    the list it writes into: everything before the first heading, minus
-    the frontmatter and minus the empty bullet that is his cursor. These
-    are the strongest signal a cycle gets and the page should show them
-    as unboarded rather than hiding them until a cycle files them.
+
+def capture_entries(markdown):
+    """`[(start_line, end_line, text, replies)]` for the capture list.
+
+    The one parser for "what is a capture", and it lives here rather than
+    in `nova_capture` because that module already imports this one and the
+    reverse would be a cycle. It used to live in both: `nova_capture`
+    split the owner's sentence from the replies written under it, `_captures`
+    below folded them into one string, and the page was built from the
+    folding while the write was checked against the split. That is what
+    made Edit fail on an answered capture -- the address the page sent was
+    his line with my answer welded on, which matches no capture, so the
+    route answered "no longer in the list" and he lost the edit he had
+    just typed (his `issues.md` capture, 2026-08-25, with a screenshot).
+
+    `text` is his words alone. `replies` are the indented bullets under
+    it, in order, each one a cycle answering him. A span rather than a
+    line number because one capture can be several lines: a continuation
+    line is folded into whatever it continues, since the same files are
+    edited in Obsidian on a phone and half a sentence going missing is
+    the worst failure this page has.
     """
     lines = (markdown or "").split("\n")
-    start = 0
-    if lines and lines[0].strip() == "---":
-        for index in range(1, len(lines)):
-            if lines[index].strip() == "---":
-                start = index + 1
-                break
-    bullets = []
-    for line in lines[start:]:
-        stripped = line.strip()
+    start = _frontmatter_end(lines)
+    entries = []
+    for i in range(start, len(lines)):
+        stripped = lines[i].strip()
         if stripped.startswith("#"):
             break
         if stripped.startswith("- ") and stripped[2:].strip():
-            if bullets and line[:1].isspace():
+            if entries and lines[i][:1].isspace():
                 # An *indented* bullet is a reply written under the capture
                 # above it, not something the owner just typed. Reading it
                 # as its own capture is what put a cycle's own closing note
                 # at the top of his `issues.md` and ranked it first on every
                 # cycle's board ranking -- see `roll_done_captures.plan`,
                 # which had the same blind spot and orphaned it there.
-                bullets[-1] = bullets[-1] + " " + stripped[2:].strip()
+                begin, _, text, replies = entries[-1]
+                entries[-1] = (begin, i + 1, text, replies + [stripped[2:].strip()])
             else:
-                bullets.append(stripped[2:].strip())
-        elif stripped and bullets and not stripped.startswith(("-", "*", "|")):
-            # A capture that wrapped. `nova_capture.clean_capture_text`
-            # splits a paste on newlines so this should not happen from
-            # the box, but the same file is edited in Obsidian on a phone,
-            # and half of the owner's sentence going missing with no error is
-            # the worst failure this page has.
-            bullets[-1] = bullets[-1] + " " + stripped
-    return bullets
+                entries.append((i, i + 1, stripped[2:].strip(), []))
+        elif stripped and entries and not stripped.startswith(("-", "*", "|")):
+            begin, _, text, replies = entries[-1]
+            if replies:
+                entries[-1] = (begin, i + 1, text, replies[:-1] + [replies[-1] + " " + stripped])
+            else:
+                entries[-1] = (begin, i + 1, text + " " + stripped, replies)
+    return entries
+
+
+def _captures(markdown):
+    """The bare bullets above the first heading -- the owner writing directly.
+
+    `([text], [[reply]])`, the two lists parallel and the same length.
+    These are the strongest signal a cycle gets and the page should show
+    them as unboarded rather than hiding them until a cycle files them.
+    """
+    entries = capture_entries(markdown)
+    return [text for _, _, text, _ in entries], [replies for _, _, _, replies in entries]
 
 
 def parse_board(markdown):
     """One of the owner's board files -> its captures, rows and detail bodies.
 
-    Returns `{"captures": [...], "items": [...], "details": {n: markdown}}`.
+    Returns `{"captures": [...], "captureReplies": [[...]], "items": [...],
+    "details": {n: markdown}}`. `captures` is the owner's own text and
+    `captureReplies` is parallel to it, holding the cycle replies written
+    under each bullet.
     An item is `{number, title, status, statusKey, updated, where, done}`;
     `where` is only ever set from the `## Done` table's fourth column,
     which names the PRs a thing landed in.
     """
-    captures = _captures(markdown)
+    captures, capture_replies = _captures(markdown)
     items = []
     details = {}
     seen = set()
@@ -1080,7 +1111,17 @@ def parse_board(markdown):
     lines = (markdown or "").split("\n")
     for number, (_, body_start, end) in _detail_spans(markdown).items():
         details[number] = "\n".join(lines[body_start:end]).strip()
-    return {"captures": captures, "items": items, "details": details}
+    return {
+        "captures": captures,
+        # Parallel to `captures`, one list of my answers per bullet of
+        # his. Kept apart from his text on purpose: everything that
+        # *writes* to a capture addresses it by his sentence, so a
+        # payload that hands the page the two glued together hands it
+        # an address that cannot match.
+        "captureReplies": capture_replies,
+        "items": items,
+        "details": details,
+    }
 
 
 def parse_notes(markdown):

@@ -252,10 +252,15 @@ def unboarded_captures(markdown, board):
         priority, text = split_capture_priority(rest)
         captures.append({"board": board, "priority": priority, "text": text,
                          # The two halves of the reply address: which bullet,
-                         # and proof it has not moved. `original` is the whole
-                         # bullet as the board page draws it -- rating prefix
-                         # and any earlier reply folded in -- which is what
-                         # `reply_under_capture` matches on.
+                         # and proof it has not moved. `original` is his own
+                         # sentence, rating prefix and all, and *not* any
+                         # reply written under it -- the board page stopped
+                         # folding those in on 2026-08-25, because the folded
+                         # spelling is an address no write can resolve.
+                         # `reply_under_capture` still accepts it for anything
+                         # built off an older payload; nothing here makes one.
+                         # It also means `slug` below no longer moves when a
+                         # cycle answers a capture, which it used to.
                          "index": index, "original": bullet,
                          # Hashed off the bullet the owner typed, not off the
                          # rating or the DONE marker a cycle may prepend
