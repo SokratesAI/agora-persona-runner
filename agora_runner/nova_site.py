@@ -1016,7 +1016,8 @@ def _refresh(name, build):
     return payload, body, etag
 
 
-def journal_page(payload, limit=None, offset=0, cycle=None, now=None, record_age=None):
+def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
+                 record_age=None, search=None):
     """One window of the journal, plus how many entries there are in all.
 
     The cold load is the half the 304 poll of #84 did not touch: 109
@@ -1035,8 +1036,46 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None, record_age
     served out of a service worker's cache from before this shipped still
     renders a whole feed instead of silently losing everything past the
     first page.
+
+    `search` is the owner's capture, issues.md 2026-08-25: *"I want to be
+    able to search through journals. Give me a button or a input field
+    somewhere."* It is matched here rather than in the page for the same
+    reason the board's write-up search is: the text he would actually
+    search for is the entry prose, and the prose is the part the feed
+    never sends -- twenty entries arrive on a cold load out of 400-odd, so
+    a client-side filter could only ever search the fifth of the archive
+    already on screen, which is the fifth he can already see. `body` is
+    the raw markdown and stays behind in the cached entry (`_rendered`
+    drops it), so this is a substring scan over text the process is
+    holding anyway.
+
+    A search ignores `cycle` and `offset` and treats `limit` as a cap on
+    how many matches come back, because "the newest N entries containing
+    X" is the only window a search box asks for. `total` stays the number
+    of matches, so the page can say how many there were even when it was
+    handed fewer.
     """
     entries = payload.get("entries") or []
+    if search is not None and search.strip():
+        needle = search.strip().lower()
+        matched = [
+            entry for entry in entries
+            if needle in (entry.get("title") or "").lower()
+            or needle in (entry.get("body") or "").lower()
+        ]
+        picked = matched if limit is None else matched[:limit]
+        return {
+            "entries": [_rendered(entry) for entry in picked],
+            "status": _with_silence(
+                payload.get("status", {}), now, record_age=record_age
+            ),
+            "total": len(matched),
+            # Echoed back so a slow answer for "cycle" cannot be shown as
+            # the result for "cycle number" -- the same guard the board
+            # search carries, and for the same reason: this is typed into,
+            # so every keystroke has a request in flight behind it.
+            "query": needle,
+        }
     if cycle is not None:
         picked = [entry for entry in entries if entry.get("cycle") == cycle]
     elif limit is None:
@@ -1510,7 +1549,7 @@ def board_descriptor(args):
     return "&".join(f"{name}={args[name]!r}" for name in sorted(args))
 
 
-def journal_descriptor(page, limit, offset, cycle):
+def journal_descriptor(page, limit, offset, cycle, search=None):
     """What `/api/journal`'s etag must vary by, beyond the payload itself.
 
     The window, obviously -- a client that just asked for forty entries
@@ -1546,6 +1585,13 @@ def journal_descriptor(page, limit, offset, cycle):
     """
     status = page.get("status") or {}
     window = f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}"
+    # Two different queries against the same journal build the same base
+    # etag, so without this the second one is answered 304 with the
+    # first one's rows still on screen -- a wrong answer that looks like
+    # a right one, which is the trade the docstring above settles in
+    # favour of over-varying.
+    if search is not None:
+        window += f"|q={search!r}"
     return (f"{window}|silent={status.get('silentIntervals')}"
             f"|stale={bool(status.get('recordStale'))}"
             f"|running={bool(status.get('running'))}")
@@ -1628,10 +1674,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         cycle = _int_param(query, "cycle", None)
         limit = _int_param(query, "limit", None)
         offset = _int_param(query, "offset", 0)
+        search = (query.get("q") or [None])[0]
         page = journal_page(
             payload, limit=limit, offset=offset, cycle=cycle, record_age=age,
+            search=search,
         )
-        etag = page_etag(base, journal_descriptor(page, limit, offset, cycle))
+        etag = page_etag(
+            base, journal_descriptor(page, limit, offset, cycle, search)
+        )
         # The version travels inside the document as well as in the header,
         # for the reason `_versioned` puts it in both: a response served out
         # of the service worker's cache has no headers the page can read.

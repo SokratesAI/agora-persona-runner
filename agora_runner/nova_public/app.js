@@ -74,6 +74,7 @@
 
   function markNav() {
     var here = route(window.location.pathname);
+    setJournalSearchVisible(here.view === "journal" && here.cycle === null);
     // Every view but the journal is named after its own path, so the two
     // single-page views need no branch of their own -- which is what a
     // third one turning the chain into a nested ternary made worth doing.
@@ -2432,6 +2433,25 @@
 
     var wanted = routedCycle(window.location.pathname);
     var entries = journal.entries || [];
+    /* The query the answer on screen was actually built from, not the one
+     * in the box. He types faster than the round trip, so the two differ
+     * for a couple of hundred milliseconds on every keystroke, and the
+     * count is the one thing on this page that would be a lie rather than
+     * merely stale if it read the box: "3 entries mention 'billing'"
+     * under the results for "billin". The server echoes `query` back for
+     * exactly this. */
+    var answered = journal.query || null;
+    if (journalSearchCount) {
+      journalSearchCount.hidden = !answered;
+      if (answered) {
+        var found = typeof journal.total === "number" ? journal.total : entries.length;
+        journalSearchCount.textContent = found === 0
+          ? "No entry mentions “" + answered + "”"
+          : found === 1
+            ? "1 entry mentions “" + answered + "”"
+            : found + " entries mention “" + answered + "”";
+      }
+    }
     if (wanted !== null) {
       entries = entries.filter(function (entry) {
         return entry.cycle === wanted;
@@ -2554,7 +2574,11 @@
      * never appears at all on a server that does not paginate. */
     var total = journal.total;
     if (wanted === null && typeof total === "number" && entries.length < total) {
-      var more = el("button", "more", "Show older entries");
+      // A search is not a window onto the newest entries, so "older" is
+      // the wrong word for what the next twenty are -- they are the next
+      // twenty matches, and they can be from any month.
+      var more = el("button", "more",
+        answered ? "Show more matches" : "Show older entries");
       more.type = "button";
       more.addEventListener("click", function () {
         more.disabled = true;
@@ -2764,13 +2788,117 @@
     });
   }
 
+  /* ---- Searching the journal -----------------------------------------
+   *
+   * The owner, issues.md 2026-08-25: "I want to be able to search through
+   * journals. Give me a button or a input field somewhere."
+   *
+   * An input field rather than a button, and the same shape as the one
+   * already on the two board pages, because that is the control he has
+   * been using there for a week -- a second idiom for the same act would
+   * be a thing to learn rather than a thing to use.
+   *
+   * The box lives *outside* `<main id="feed">`, next to the capture
+   * composer, and is built once and never rebuilt. `render` empties the
+   * feed on every paint -- the 30-second poll, a new entry arriving, a
+   * tap on the pager -- so a box inside it would lose the caret and the
+   * keyboard mid-word, which is the same failure the `drafts` and `folds`
+   * stores above exist to prevent for the cards.
+   *
+   * Matching happens on the server (`nova_site.journal_page`): a cold
+   * load holds twenty of 400-odd entries and none of their prose, so a
+   * filter in the page could only ever search what is already on screen.
+   */
+  var journalQuery = "";
+  var journalSearchTimer = null;
+  var journalSearchNode = null;
+  var journalSearchInput = null;
+  var journalSearchCount = null;
+
+  function buildJournalSearch() {
+    var box = el("section", "journal-search");
+    box.id = "journal-search";
+    var row = el("div", "journal-search-row");
+    var input = document.createElement("input");
+    input.type = "search";
+    input.className = "journal-search-input";
+    input.placeholder = "Search the journal";
+    input.setAttribute("aria-label", "Search the journal");
+    row.appendChild(input);
+
+    // Built whether or not there is anything to clear and hidden rather
+    // than absent, for the reason the board's clear button carries:
+    // removing it on the last keystroke moves the caret's own neighbour
+    // out from under his thumb mid-edit.
+    var clear = el("button", "journal-search-clear", "×");
+    clear.type = "button";
+    clear.hidden = true;
+    clear.setAttribute("aria-label", "Clear the search");
+    clear.addEventListener("click", function () {
+      journalQuery = "";
+      input.value = "";
+      clear.hidden = true;
+      if (journalSearchTimer) clearTimeout(journalSearchTimer);
+      windowSize = PAGE;
+      load();
+      // Synchronous, inside the tap, so the keyboard stays up.
+      input.focus();
+    });
+    row.appendChild(clear);
+    box.appendChild(row);
+
+    // `role="status"` so the count is announced when it changes rather
+    // than only being visible -- the result of a search is a number, and
+    // the number is the whole answer when it is zero.
+    var count = el("p", "journal-search-count");
+    count.setAttribute("role", "status");
+    count.hidden = true;
+    box.appendChild(count);
+
+    input.addEventListener("input", function () {
+      journalQuery = input.value;
+      clear.hidden = !input.value;
+      if (journalSearchTimer) clearTimeout(journalSearchTimer);
+      // The same 200ms the board search waits, and for the same reason:
+      // a request per keystroke against a 400-entry substring scan, from
+      // a phone, is a queue of answers he has already typed past.
+      journalSearchTimer = setTimeout(function () {
+        journalSearchTimer = null;
+        windowSize = PAGE;
+        load();
+      }, 200);
+    });
+
+    journalSearchInput = input;
+    journalSearchCount = count;
+    return box;
+  }
+
+  /* Shown on the journal feed and nowhere else. Called from `markNav`,
+   * which every view's renderer already calls, so a page that knows
+   * nothing about this box still hides it -- adding a line to each of the
+   * eleven renderers would have meant the twelfth one forgetting. A deep
+   * link (`/cycle/49`) hides it too: that URL asks the server for one
+   * entry by number, so there is no window for a query to narrow. */
+  function setJournalSearchVisible(on) {
+    if (!journalSearchNode) {
+      if (!on) return;
+      journalSearchNode = buildJournalSearch();
+      feed.parentNode.insertBefore(journalSearchNode, feed);
+    }
+    journalSearchNode.hidden = !on;
+  }
+
   /* A deep link asks for its own cycle by number rather than for a window,
    * because the entry it wants is usually older than the first page and the
    * page has no way to know how far back that is. */
   function journalUrl() {
     var wanted = routedCycle(window.location.pathname);
     if (wanted !== null) return "/api/journal?cycle=" + wanted;
-    return "/api/journal?limit=" + windowSize;
+    var url = "/api/journal?limit=" + windowSize;
+    var q = journalQuery.trim();
+    if (q) url += "&q=" + encodeURIComponent(q);
+    return url;
   }
 
   /* The digest takes the same window as the feed, so the summaries that
@@ -2786,9 +2914,22 @@
   }
 
   function fetchAll() {
+    /* No digest while a search is running, and this is a real decision
+     * rather than an omission. `/api/digest?limit=N` resolves its window
+     * out of the *newest* N cycles, and a search answers with whichever
+     * cycles matched -- so asking for both would hand the summaries of
+     * cycles 405-424 to a result set from August 9th, and `render` keys
+     * them by cycle number, so most cards would get no summary and the
+     * odd one would get somebody else's. Sending none means every
+     * matching card renders its own prose directly, which is what a
+     * search result should show anyway: he is looking for the entry, not
+     * for the one-line version of it. */
+    var searching = !!journalQuery.trim() && routedCycle(window.location.pathname) === null;
     return Promise.all([
       fetchVersioned(journalUrl(), "journal"),
-      fetchVersioned(digestUrl(), "digest").catch(function () { return null; }),
+      searching
+        ? Promise.resolve(null)
+        : fetchVersioned(digestUrl(), "digest").catch(function () { return null; }),
       // Tolerated the same way the digest is: the journal is the page, and
       // a comments read that fails should cost the bubbles, not the feed.
       // Not conditional: it is uncached and unversioned on purpose, because
