@@ -2372,7 +2372,6 @@ body.has-full-chart { overflow: hidden; }
  * and ruled off so it does not read as a second list of live work. */
 .rank-done-title { margin-top: 0.9rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
 .rank-done-list .rank-card { opacity: 0.6; }
-.rank-done-list .rank-claim, .rank-done-list .rank-board { display: none; }
 
 /* The attach button and what it puts on the page.
  *
