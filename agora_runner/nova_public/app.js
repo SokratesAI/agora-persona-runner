@@ -8068,6 +8068,62 @@
       });
   }
 
+  /* This page draws things that change without him touching anything -- a
+   * run starting, a run finishing, `lastResult` going from nothing to an
+   * answer -- and until now it drew them exactly once. Press "Run now" and
+   * the row reads "On · run queued" until he reloads the app. My reviewer
+   * found that on runner#387's own diff and I filed it instead of fixing
+   * it; it has been the top line of the handoff for two cycles since.
+   *
+   * `pollConv`'s shape, with the reschedule at the end of the render rather
+   * than in a loop of its own, so exactly one timer is ever alive: every
+   * path that repaints this page goes through `renderHeartbeats`, whose own
+   * `stopPolling()` clears the pending one first. Leaving the page clears it
+   * too, for free -- that is what `stopPolling` is for and every other view
+   * calls it on the way in.
+   *
+   * Two cadences, both of them numbers already in this file: `ASK_POLL_MS`
+   * for the seconds after he presses "Run now", and `POLL_MS` otherwise,
+   * which is the journal feed's idle rate.
+   *
+   * The fast one keys on `forceRun` alone, and my first version had
+   * `running || forceRun` until I looked at what the live endpoint actually
+   * answers. `running` is `lastResult === "running"`, and the Nova row is
+   * running for roughly eighteen of every twenty minutes -- so keying on it
+   * makes the fast rate the permanent rate, ~900 requests an hour per open
+   * tab against Agora's list API, for a row that changes twice. `forceRun`
+   * is the flag Agora sets between his tap and the runner picking the run
+   * up: it is his own action, it lasts seconds, and it is the only state on
+   * this page he is standing there watching. Once a run is under way the
+   * next thing that changes is minutes off and 30 seconds is not late.
+   *
+   * The polling itself never stops while the page is open -- `pollConv` has
+   * an attempt cap because it waits for a single answer and is finished when
+   * it arrives, and this waits for nothing in particular. **The fast phase**
+   * is capped, and that number is measured rather than cautious. `run_now`'s
+   * own docstring in `nova_heartbeats.py` says pressing it during a cycle
+   * means the run happens when that cycle ends, "which can be most of an
+   * hour later" -- so `forceRun` is not the few-seconds flag I first took it
+   * for, and `/api/heartbeats` is uncached and makes two upstream Agora
+   * calls per request. An uncapped fast phase is therefore up to ~1,800
+   * upstream calls an hour from one open tab, for a row that changes once.
+   * After `ASK_POLL_MAX` fast ticks -- four minutes, the same bound the Ask
+   * page uses -- it drops to the idle rate and stays there. Four minutes is
+   * long enough to see a press get picked up; an hour is a leak.
+   */
+  var hbFastTicks = 0;
+
+  function scheduleHeartbeatsPoll(rows) {
+    var queued = rows.some(function (r) { return r.forceRun; });
+    var fast = queued && hbFastTicks < ASK_POLL_MAX;
+    // Reset only when nothing is queued -- not merely when this tick came out
+    // slow. My own first version reset on the slow tick, which meant the
+    // counter went 60 fast, one slow, 60 fast, for ever: a cap that read as a
+    // cap and bounded nothing. The test named for the four minutes caught it.
+    hbFastTicks = queued ? hbFastTicks + 1 : 0;
+    livePolls.push(setTimeout(loadHeartbeats, fast ? ASK_POLL_MS : POLL_MS));
+  }
+
   function renderHeartbeats(payload) {
     stopPolling();
     markNav();
@@ -8078,6 +8134,9 @@
     statusEl.appendChild(el("p", "status-line",
       rows.length + (rows.length === 1 ? " heartbeat" : " heartbeats") + " · " + on + " on"));
     feed.textContent = "";
+    // Before the empty-list return, not after it: a first heartbeat created
+    // from Agora's side should appear here without a reload as well.
+    scheduleHeartbeatsPoll(rows);
 
     if (!rows.length) {
       feed.appendChild(el("p", "empty", "No heartbeats yet."));
@@ -8156,9 +8215,29 @@
         renderHeartbeats(payload);
       })
       .catch(function (err) {
+        // The route guard belongs on this path too, and it belongs here now
+        // rather than as a tidy-up: before this page polled, a failed fetch
+        // could only be the one he triggered by opening it. Now a timer can
+        // have a request in flight when he taps away, and without the guard
+        // its failure paints "Could not load your heartbeats" over whatever
+        // page he actually opened.
+        if (route(window.location.pathname).view !== "heartbeats") return;
+        // `stopPolling()` first, exactly as `renderHeartbeats` does, and this
+        // line is the reviewer's finding on this PR rather than symmetry for
+        // its own sake. `loadHeartbeats` is also called from `hbPost`, and
+        // `button.disabled` guards only the button that was tapped -- so
+        // "Turn off" on one row and "Run now" on another put two requests in
+        // flight. If the success lands first it schedules a timer; a failure
+        // landing after it used to append a second one without clearing the
+        // first, and only a success ever clears. Two timers, then three.
+        stopPolling();
         markNav();
         feed.textContent = "";
         feed.appendChild(el("p", "empty", "Could not load your heartbeats: " + err));
+        // And keep trying. Without this, one dropped request on a phone
+        // leaves the page frozen for good, which is the bug this cycle is
+        // fixing wearing a different hat.
+        scheduleHeartbeatsPoll([]);
       });
   }
 
