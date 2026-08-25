@@ -196,3 +196,66 @@ def test_a_bracket_with_no_cycle_number_is_left_where_he_typed_it():
     assert moved == 0
     assert "DONE (nearly, I think): the cascading model fallback" in \
         parse_board(after)["captures"]
+
+
+REPLIED = """---
+type: board
+---
+
+- DONE (Cycle 413): the notes text is grey and hard to read
+  - Fixed in runner#360 — say the word and the byline goes white too.
+- 🟠 High: the search bar closes my keyboard
+-
+
+## Board
+
+| # | Item | Status | Updated | Priority |
+|---|------|--------|---------|---|
+| #2 | The search bar closes my keyboard | ⚪ Backlog | 08-20 | 🟠 High |
+
+# Details
+
+### #2 — The search bar closes my keyboard
+Every letter dismisses it.
+"""
+
+
+def test_a_reply_written_under_a_capture_leaves_with_it():
+    """The failure that put a cycle's own note at the top of his `issues.md`.
+
+    A reply is written as an indented bullet under the capture it answers.
+    `plan` used to start a new block on it, because it looked at the
+    stripped line and an indented `- ` is still a `- `. The owner's bullet
+    was `DONE` and moved; the reply under it was not and stayed -- alone
+    above `## Board`, in the slot his contract reserves for him, where
+    `top_board_rows` ranked it first as an unprocessed capture from him on
+    every cycle after that.
+    """
+    kept, moved = plan(REPLIED)
+    assert len(moved) == 1
+    assert moved[0] == [
+        "- DONE (Cycle 413): the notes text is grey and hard to read",
+        "  - Fixed in runner#360 — say the word and the byline goes white too.",
+    ]
+    assert [b[0] for b in kept] == ["- 🟠 High: the search bar closes my keyboard", "-"]
+
+    out, count = rewrite(REPLIED)
+    assert count == 1
+    assert "runner#360" not in out.split("## Board")[0]
+    assert "runner#360" in out.split(PROCESSED_HEADING)[1]
+    assert check(REPLIED, out, count) == []
+
+
+def test_an_indented_bullet_with_nothing_above_it_is_still_his():
+    """No preceding capture to attach to: keep it rather than lose it.
+
+    An indented bullet only means "a reply to the line above" when there
+    is a line above. Dropping it otherwise would delete text out of his
+    file to satisfy a rule about a shape that is not there.
+    """
+    stray = BOARD.replace(
+        "- DONE (Cycle 4): shipped it — the header is bold now",
+        "  - a stray indented line\n- DONE (Cycle 4): shipped it — the header is bold now",
+    )
+    kept, _ = plan(stray)
+    assert "  - a stray indented line" in [b[0] for b in kept]

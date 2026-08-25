@@ -999,7 +999,16 @@ def _captures(markdown):
         if stripped.startswith("#"):
             break
         if stripped.startswith("- ") and stripped[2:].strip():
-            bullets.append(stripped[2:].strip())
+            if bullets and line[:1].isspace():
+                # An *indented* bullet is a reply written under the capture
+                # above it, not something the owner just typed. Reading it
+                # as its own capture is what put a cycle's own closing note
+                # at the top of his `issues.md` and ranked it first on every
+                # cycle's board ranking -- see `roll_done_captures.plan`,
+                # which had the same blind spot and orphaned it there.
+                bullets[-1] = bullets[-1] + " " + stripped[2:].strip()
+            else:
+                bullets.append(stripped[2:].strip())
         elif stripped and bullets and not stripped.startswith(("-", "*", "|")):
             # A capture that wrapped. `nova_capture.clean_capture_text`
             # splits a paste on newlines so this should not happen from

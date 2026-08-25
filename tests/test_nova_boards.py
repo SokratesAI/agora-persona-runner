@@ -603,3 +603,25 @@ def test_unanswered_comments_is_the_numbers_of_the_same_answer():
     body = "**Edvard, 08-15:** q"
     assert unanswered_comments(_UC_BOARD.format(body=body)) == \
         sorted(_ucb(body), reverse=True)
+
+
+def test_a_reply_indented_under_a_capture_is_not_a_capture_of_its_own():
+    """A cycle's reply is written as an indented bullet under the capture.
+
+    Read as its own bullet it becomes a capture from him that he never
+    typed, and `top_board_rows` ranks it above every board row for as
+    long as it sits there. That happened on his `issues.md` on
+    2026-08-25: `roll_done_captures` moved the owner's `DONE` bullet and
+    left the reply alone at the top of the file.
+    """
+    board = parse_board(
+        "---\ntype: board\n---\n\n"
+        "- the notes text is grey and hard to read\n"
+        "  - Fixed in runner#360 — say the word and the byline goes white too.\n"
+        "- \n\n"
+        "## Board\n"
+    )
+    assert board["captures"] == [
+        "the notes text is grey and hard to read "
+        "Fixed in runner#360 — say the word and the byline goes white too."
+    ]
