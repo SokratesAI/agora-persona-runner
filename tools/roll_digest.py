@@ -59,7 +59,24 @@ KEEP = 12
 
 MARKER = "\n## Digest\n"
 ARCHIVE_TITLE = "# Journal — Digest Archive"
-_LINE_RE = re.compile(r"^\*\*Cycle ")
+# A digest line opens with a bolded name, and for everything a weekly
+# heartbeat writes that name is not "Cycle N" -- `**Ideas & research**
+# (2026-08-25 13:29) — ...` is a real line in his file, written by the
+# Tue/Thu/Sat run, which has its own conversation and therefore no cycle
+# number at all. The old matcher took only `**Cycle `, so one weekly line
+# in the section refused every roll after it: the digest sat at 15 lines
+# for eight handoffs, growing, while the tool that trims it reported
+# itself working correctly by refusing.
+#
+# The guard still means what it meant -- a paragraph nothing can date
+# makes the split point guesswork -- so the second alternative requires
+# the stamp rather than accepting any bold opening. `**Cycle ` stays as
+# its own alternative because the addendum shape `**Cycle 94
+# (addendum)**` puts the number inside the bold and does not always
+# carry a stamp after it.
+_LINE_RE = re.compile(
+    r"^\*\*Cycle |^\*\*[^*\n]+\*\*[ \t]+\(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\)"
+)
 
 ARCHIVE_FRONTMATTER = (
     "---\n"
