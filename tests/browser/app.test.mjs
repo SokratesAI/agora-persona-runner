@@ -129,7 +129,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convPersonas, convStatus = 200, hbList, hbStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convPersonas, convStatus = 200, hbList, hbStatus = 200, catalog, catalogStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -201,6 +201,11 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
      * `serve` is ever reached. */
     if (url.includes("/api/heartbeats")) {
       return res(hbList || { heartbeats: [] }, hbStatus);
+    }
+    if (url.includes("/api/catalog")) {
+      // No default fixture beyond the empty shape, for retro and plan's
+      // reason: a vault with no catalog written yet is a real state.
+      return res(catalog || { services: [], doors: [], missing: true }, catalogStatus);
     }
     if (url.includes("/api/ask")) {
       // A function, because the point of most of these tests is that the
@@ -4169,7 +4174,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/costs", "/retro", "/plan", "/ask", "/conversations", "/heartbeats", "/diag"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/costs", "/retro", "/plan", "/ask", "/conversations", "/heartbeats", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -10031,5 +10036,93 @@ describe("the heartbeats page", () => {
     assert.match(window.document.querySelector("#feed").textContent,
       /Could not load your heartbeats/);
     assert.equal(window.document.querySelectorAll(".hb-row").length, 0);
+  });
+});
+
+
+/* The catalog page.
+ *
+ * What these guard is the pair of distinctions the markdown makes and a
+ * careless rendering would lose: a service scaled to zero on purpose is
+ * not a service that is down, and a catalog built from a partial read of
+ * the cluster is not a catalog. Both would look completely normal on
+ * screen if they were drawn wrong -- which is what makes them worth a
+ * test rather than a look.
+ */
+describe("the catalog page", () => {
+  const CATALOG = {
+    headline: "0 of 3 running services are composed by a claim.",
+    detail: "1 of them have a source repo that was ordered as one.",
+    incomplete: false,
+    unreadable: [],
+    services: [
+      { name: "agora", namespace: "agents", claim: "GitHubRepoPolicy",
+        deployedBy: "agora-config", host: "agora.tailc83eb3.ts.net",
+        url: "https://agora.tailc83eb3.ts.net", status: "up" },
+      { name: "ollama", namespace: "infra", claim: null, deployedBy: null,
+        host: null, url: null, status: "off" },
+      { name: "whatsapp-bridge", namespace: "infra", claim: null, deployedBy: null,
+        host: "whatsapp-bridge.tailc83eb3.ts.net",
+        url: "https://whatsapp-bridge.tailc83eb3.ts.net", status: "down" },
+    ],
+    doors: ["argocd/argocd-tailscale -> argocd-server (argocd.tailc83eb3.ts.net)"],
+    cycle: 448,
+    regenerated: "2026-08-26 00:48 Oslo",
+    missing: false,
+    total: 3, down: 1, off: 1,
+  };
+
+  test("every service is a card, grouped under its namespace", async () => {
+    const window = await loadSite("/catalog", { catalog: CATALOG });
+    const names = [...window.document.querySelectorAll(".cat-name")].map((n) => n.textContent);
+    assert.deepEqual(names, ["agora", "ollama", "whatsapp-bridge"]);
+    const groups = [...window.document.querySelectorAll(".cat-ns")].map((n) => n.textContent);
+    assert.equal(groups[0], "agents");
+    assert.equal(groups[1], "infra");
+  });
+
+  test("off on purpose and down are two different words, not two colours", async () => {
+    const window = await loadSite("/catalog", { catalog: CATALOG });
+    const states = [...window.document.querySelectorAll(".cat-state")].map((s) => s.textContent);
+    assert.deepEqual(states, ["Up", "Off on purpose", "DOWN"]);
+  });
+
+  test("a service with a URL is a link and one without is not", async () => {
+    const window = await loadSite("/catalog", { catalog: CATALOG });
+    const cards = [...window.document.querySelectorAll(".cat-row")];
+    assert.equal(cards[0].querySelector("a.cat-name").getAttribute("href"),
+      "https://agora.tailc83eb3.ts.net");
+    assert.equal(cards[1].querySelector("a.cat-name"), null);
+  });
+
+  test("the page says when the catalog was last read off the cluster", async () => {
+    const window = await loadSite("/catalog", { catalog: CATALOG });
+    assert.match(window.document.querySelector(".cat-when").textContent,
+      /2026-08-26 00:48 Oslo/);
+    assert.match(window.document.querySelector(".cat-when").textContent, /cycle 448/);
+  });
+
+  test("an incomplete catalog is marked, and names what could not be read", async () => {
+    const partial = Object.assign({}, CATALOG, {
+      incomplete: true,
+      headline: "Incomplete — do not read the table below as a full picture.",
+      unreadable: ["namespaces: Forbidden"],
+      doors: [],
+    });
+    const window = await loadSite("/catalog", { catalog: partial });
+    const lead = window.document.querySelector(".cat-headline");
+    assert.ok(lead.classList.contains("cat-warn"));
+    assert.match(lead.textContent, /namespaces: Forbidden/);
+  });
+
+  test("no catalog written yet says so instead of showing an empty table", async () => {
+    const window = await loadSite("/catalog");
+    assert.match(window.document.querySelector(".empty").textContent, /No catalog/);
+    assert.equal(window.document.querySelectorAll(".cat-row").length, 0);
+  });
+
+  test("a failed fetch says so rather than leaving the page blank", async () => {
+    const window = await loadSite("/catalog", { catalogStatus: 500 });
+    assert.match(window.document.querySelector(".empty").textContent, /Could not load the catalog/);
   });
 });
