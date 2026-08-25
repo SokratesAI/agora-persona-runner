@@ -148,6 +148,7 @@ from agora_runner.nova_replies import (
     enqueue as enqueue_reply,
     failed as failed_replies,
     pending_since,
+    recover as recover_replies,
 )
 from agora_runner.nova_boards import (
     BOARD_PATHS,
@@ -2759,4 +2760,10 @@ def start_nova_site():
     # must be answerable while this runs, or a warm that takes six seconds
     # is six seconds of the pod looking dead rather than six seconds saved.
     threading.Thread(target=warm_cache, name="nova-site-warm", daemon=True).start()
+    # Same reasoning as the warm above -- off the startup path, because it
+    # reads the vault -- and for the same reason it belongs at start at
+    # all: the previous process's reply queue died with it, and until this
+    # runs, a comment it was holding shows the owner nothing. See
+    # `nova_replies.recover`.
+    threading.Thread(target=recover_replies, name="nova-site-recover", daemon=True).start()
     return server

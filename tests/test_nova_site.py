@@ -1139,7 +1139,8 @@ def test_start_nova_site_binds_and_serves_the_real_handler():
     in the bridge all called `_run()` directly and left `start()` covered by
     nothing; this is the same seam, so it gets the real function."""
     with patch.object(nova_site, "NOVA_PORT", 0), \
-            patch.object(nova_site, "warm_cache"):
+            patch.object(nova_site, "warm_cache"), \
+            patch.object(nova_site, "recover_replies"):
         server = nova_site.start_nova_site()
     try:
         assert server.RequestHandlerClass is nova_site.NovaSiteHandler
@@ -1185,7 +1186,8 @@ def test_site_main_serves_until_sigterm_then_releases_the_port(site_main):
 
     def capture_server():
         with patch.object(nova_site, "NOVA_PORT", 0), \
-                patch.object(nova_site, "warm_cache"):
+                patch.object(nova_site, "warm_cache"), \
+                patch.object(nova_site, "recover_replies"):
             server = nova_site.start_nova_site()
         served.append(server)
         return server
@@ -1213,7 +1215,8 @@ def test_site_main_closes_the_port_even_if_the_loop_raises(site_main):
 
     def capture_server():
         with patch.object(nova_site, "NOVA_PORT", 0), \
-                patch.object(nova_site, "warm_cache"):
+                patch.object(nova_site, "warm_cache"), \
+                patch.object(nova_site, "recover_replies"):
             server = nova_site.start_nova_site()
         served.append(server)
         return server
@@ -3350,11 +3353,46 @@ def test_the_warm_does_not_hold_up_the_server_it_runs_behind(journal_md):
         finished.set()
 
     with patch.object(nova_site, "warm_cache", side_effect=blocking_warm), \
+            patch.object(nova_site, "recover_replies"), \
             patch.object(nova_site, "NOVA_PORT", 0):
         server = nova_site.start_nova_site()
     try:
         assert entered.wait(10), "start_nova_site never warmed the cache"
         assert not finished.is_set(), "the warm ran on the startup path"
+        assert server.server_address[1] != 0, "and the socket was bound before it"
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_site_picks_up_the_replies_the_last_process_was_holding():
+    """The reply queue is one process's memory, so a roll loses whatever it
+    held -- and `nova-site` rolls on every merge to this repo. Off the
+    startup path for the same reason as the warm: it reads the vault, and a
+    pod that is listening to nobody fails its readiness probe.
+
+    Blocking inside the recovery is what makes this capable of failing.
+    Asserting the call happened would pass just as well if it ran inline,
+    which is the shape of check that lets a six-second vault read into the
+    startup path.
+    """
+    entered = threading.Event()
+    finished = threading.Event()
+    release = threading.Event()
+
+    def blocking_recover():
+        entered.set()
+        release.wait(10)
+        finished.set()
+
+    with patch.object(nova_site, "recover_replies", side_effect=blocking_recover), \
+            patch.object(nova_site, "warm_cache"), \
+            patch.object(nova_site, "NOVA_PORT", 0):
+        server = nova_site.start_nova_site()
+    try:
+        assert entered.wait(10), "start_nova_site never recovered the dropped replies"
+        assert not finished.is_set(), "the recovery ran on the startup path"
         assert server.server_address[1] != 0, "and the socket was bound before it"
     finally:
         release.set()

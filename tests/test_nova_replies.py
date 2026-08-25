@@ -612,3 +612,129 @@ def test_the_timings_are_logged_even_when_the_reply_fails():
     line = next(l for l in logged if l.startswith("nova-reply timings"))
     assert "entry=" in line and "total=" in line
     assert "store=" not in line, "a phase that never ran should not be timed"
+
+
+# --- picking up what a dead process was still holding -----------------------
+#
+# The queue is module state in one process, so a pod that rolls loses every
+# comment it had not answered. That is not rare: `nova-site` runs the same
+# image as the runner and rolls on every merge to it. What the owner sees is
+# the "Nova is replying…" line vanish with nothing under it, because
+# `_pending` and `_failed` are both empty in the new process -- the blank
+# `_failed` was added to stop, back again by another route.
+
+RECOVERY_MD = """---
+type: log
+---
+
+# Comments
+
+## New
+
+### Cycle 423 · 2026-08-25 14:45
+
+No answer?
+
+### Cycle 423 · 2026-08-25 14:43
+
+Is this related to the v1 vs v2 version of crossplane?
+
+### Cycle 423 · 2026-08-25 14:42
+
+What was the issue then?
+
+#### Nova · 2026-08-25 14:42
+
+The repo kept reverting to private on its own.
+
+## Acknowledged
+
+### Cycle 80 · 2026-08-10 13:54
+
+instant replies would be cool
+"""
+
+
+def _recover_with(markdown=RECOVERY_MD):
+    logged = []
+    with patch.object(nova_replies, "_ensure_worker"), \
+            patch.object(nova_replies, "comments_markdown", return_value=markdown), \
+            patch.object(nova_replies, "log", side_effect=logged.append):
+        queued = nova_replies.recover(delay=0)
+    return queued, logged
+
+
+def test_a_comment_the_dead_process_never_answered_is_queued_again():
+    queued, _ = _recover_with()
+    assert queued == 2
+    assert nova_replies.pending() == {
+        (423, "2026-08-25 14:45"),
+        (423, "2026-08-25 14:43"),
+    }
+
+
+def test_a_comment_that_already_has_a_reply_is_not_answered_twice():
+    """The expensive mistake, not the cheap one: every recovered comment is
+    a CLI turn, and a second reply under one he has already read is worse
+    than no recovery at all."""
+    _recover_with()
+    assert (423, "2026-08-25 14:42") not in nova_replies.pending()
+
+
+def test_an_acknowledged_comment_is_left_alone():
+    """A cycle has already dealt with it and he is not waiting on the card.
+    Without this the whole archive -- 142 comments on 2026-08-25 -- would
+    queue on every pod start."""
+    _recover_with()
+    assert not any(cycle == 80 for cycle, _ in nova_replies.pending())
+
+
+def test_recovery_is_capped_and_says_what_it_left_behind():
+    """A crash-looping pod would otherwise fire the whole of `## New` on
+    every start. The cap is a real limit, so it has to be visible in the
+    log rather than silently truncating -- "capped at 10" and "no backlog"
+    must never look the same."""
+    heads = "\n".join(
+        f"### Cycle 400 · 2026-08-25 10:{minute:02d}\n\nsomething\n"
+        for minute in range(12)
+    )
+    queued, logged = _recover_with("# Comments\n\n## New\n\n" + heads)
+    assert queued == nova_replies.RECOVER_LIMIT == 10
+    assert any("capped at 10" in line and "2 older" in line for line in logged), logged
+
+
+def test_recovery_never_takes_the_site_down_with_it():
+    """It runs at startup. A vault that will not answer must cost the
+    recovery and nothing else -- the site is worth serving without it."""
+    logged = []
+    with patch.object(nova_replies, "_ensure_worker"), \
+            patch.object(nova_replies, "comments_markdown",
+                         side_effect=RuntimeError("couchdb down")), \
+            patch.object(nova_replies, "log", side_effect=logged.append):
+        assert nova_replies.recover(delay=0) == 0
+    assert nova_replies.pending() == set()
+    assert any("couchdb down" in line for line in logged), logged
+
+
+def test_recovery_waits_out_the_pod_it_is_replacing_before_it_looks():
+    """`nova-site` rolls with maxSurge 1 and maxUnavailable 0, so this
+    process is alive and ready while the one it replaces is still
+    answering. Scanning immediately re-queues a comment that other process
+    is mid-reply to, and the owner reads his own question answered twice.
+
+    Asserting the sleep happened is not enough -- it has to happen *before*
+    the read, or the scan is stale and the duplicate arrives anyway. So
+    this records the order of the two calls rather than the fact of them.
+    """
+    order = []
+    with patch.object(nova_replies, "_ensure_worker"), \
+            patch.object(nova_replies, "time") as clock, \
+            patch.object(nova_replies, "comments_markdown",
+                         side_effect=lambda: order.append("read") or RECOVERY_MD), \
+            patch.object(nova_replies, "log"):
+        clock.sleep.side_effect = lambda s: order.append(("slept", s))
+        nova_replies.recover()
+    assert order[0] == ("slept", nova_replies.RECOVER_DELAY_SECONDS), order
+    assert order[1] == "read", order
+    # The grace period it is covering, measured on the live deployment.
+    assert nova_replies.RECOVER_DELAY_SECONDS > 30
