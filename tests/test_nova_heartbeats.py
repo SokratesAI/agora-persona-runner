@@ -153,3 +153,12 @@ def test_a_missing_id_or_a_non_boolean_flag_never_reaches_agora():
         (ok, _), calls = _write(bad)
         assert ok is False
         assert calls == []
+
+
+def test_two_runs_in_the_same_second_sort_by_the_microseconds():
+    """`isoformat()` drops the microseconds when they are exactly zero, so
+    two stamps in one second can be different lengths. The first sort key
+    inverted the string per character and read the shorter one as newer."""
+    whole = dict(ROW, id="whole", lastRunAt="2026-08-25T20:40:06+00:00")
+    later = dict(ROW, id="later", lastRunAt="2026-08-25T20:40:06.089807+00:00")
+    assert [r["id"] for r in _list([whole, later])["heartbeats"]] == ["later", "whole"]

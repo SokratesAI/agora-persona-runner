@@ -96,22 +96,23 @@ def heartbeats():
     # Enabled first, then newest run first inside each group. A disabled
     # heartbeat is history and an enabled one is the machine he is looking
     # at; sorting them together buries the live ones among the retired.
+    #
+    # Two stable passes rather than one composite key, because the two
+    # halves sort in opposite directions and Python has one `reverse`.
+    # The first version inverted the timestamp per character instead --
+    # which is wrong on the one pair it looked right on: `isoformat()`
+    # omits the microseconds when they are exactly zero, so a run landing
+    # on a whole second is `...T20:40:06+00:00` against a neighbour's
+    # `...T20:40:06.089807+00:00`, and `-ord('+')` beats `-ord('.')`, so
+    # the earlier of the two sorted first. Reviewer found it.
+    #
     # An ISO-8601 string from Agora, so a plain reverse sort is
-    # chronological, and a row that has never run sorts last within its
-    # group rather than first.
-    rows.sort(key=lambda r: (not r["enabled"], r["lastRunAt"] == "",
-                             _reverse_key(r["lastRunAt"])))
+    # chronological, and `""` -- a heartbeat that has never run -- is
+    # less than every real stamp, so it lands last under `reverse=True`
+    # without a flag of its own.
+    rows.sort(key=lambda r: r["lastRunAt"], reverse=True)
+    rows.sort(key=lambda r: not r["enabled"])
     return {"heartbeats": rows}
-
-
-def _reverse_key(stamp):
-    """Sort key that puts the newest ISO stamp first inside a tuple sort.
-
-    `sort(reverse=True)` is not available here because the enabled flag
-    ahead of it sorts the other way, so the timestamp is inverted instead
-    of the whole key.
-    """
-    return tuple(-ord(c) for c in stamp)
 
 
 def set_enabled(heartbeat_id, enabled):
