@@ -682,10 +682,28 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     # the row.
     blocked = [r for r in ranked if r.get("statusKey") == _BLOCKED]
     if blocked:
-        out.append(f"  {len(blocked)} row(s) ranked down as blocked on Edvard: "
-                   + ", ".join(f"{r['board']} #{r['number']}" for r in blocked))
-        out.append("  Nothing for a cycle to build on these. If one is "
-                   "actually actionable now, set its status back.")
+        # "Nothing for a cycle to build on these" used to end this block, and
+        # four cycles filed it as a false positive over a ranking they had
+        # just been told to take from -- 393, 395, 397 and 398, with 399 and
+        # 400 seeing it again. It was never wrong -- "these" meant
+        # the blocked rows -- but the pronoun sat two lines under the
+        # ranking, and the blocked rows are usually *not* in the printed
+        # ranking, because being blocked is what sinks them below the
+        # runners-up window. So the only rows the sentence was about were
+        # the ones the reader could not see, and the only rows the reader
+        # could see were the ones it was not about. Cycle 400 read it as a
+        # verdict on four ranked rows while it was talking about `issue #94`
+        # -- with `idea #94`, a different board and a different row, sitting
+        # second in the ranking directly above it.
+        #
+        # So: no pronoun, and the rows are printed in full rather than as
+        # bare numbers, because a bare number is ambiguous across two boards
+        # that share a numbering space.
+        out.append(f"  {len(blocked)} row(s) ranked down as blocked on Edvard. "
+                   "Nothing for a cycle to build on the row(s) listed here — "
+                   "this is not a verdict on the ranking above:")
+        out.extend("     " + _line(r) for r in blocked)
+        out.append("  If one is actually actionable now, set its status back.")
     out.extend(_claim_footer(ranked, captures, claims_readable))
     return "\n".join(out)
 

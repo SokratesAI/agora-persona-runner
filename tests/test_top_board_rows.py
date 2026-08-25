@@ -527,7 +527,43 @@ def test_render_names_the_blocked_rows_rather_than_hiding_them():
                  (99, "actionable", BACKLOG, "08-20", LOW))
     out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
     assert "issue #99" in out.splitlines()[1]
-    assert "blocked on Edvard: issue #94" in out
+    assert "blocked on Edvard" in out
+    # The row itself, in full, on its own line -- not a bare number folded
+    # into the sentence. `#94` alone does not say which board.
+    assert any(line.strip().startswith("issue #94") and "needs his click" in line
+               for line in out.splitlines())
+
+
+def test_the_nothing_to_build_line_cannot_be_read_as_a_verdict_on_the_ranking():
+    """Cycle 400's exact shape, and the sixth time a cycle filed this line.
+
+    Four cycles reported "Nothing for a cycle to build on these" as a false
+    positive over a ranking they had just been told to take from. The verdict
+    was never wrong -- "these" meant the blocked rows -- but the blocked rows
+    are the ones sunk out of the printed ranking, so the sentence was only
+    ever about rows the reader could not see. Cycle 400 hit the worst version:
+    the blocked row was `issue #94` and `idea #94` was ranked directly above
+    it, a different board sharing a number.
+
+    So the assertion is about scope, not wording: the sentence must name what
+    it applies to, and the ranked rows must not be inside it.
+    """
+    text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
+                 (7, "a real build", BACKLOG, "08-20", HIGH))
+    out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
+    assert "on these" not in out, "the dangling pronoun is what misread"
+    # The claim is scoped to the rows printed under it...
+    verdict = next(line for line in out.splitlines()
+                   if "Nothing for a cycle to build" in line)
+    assert verdict.rstrip().endswith(":"), "a scoped claim introduces its rows"
+    # ...and says out loud that it is not about the ranking, because the
+    # ranking is what four cycles read it against.
+    assert "not a verdict on the ranking above" in verdict
+    # The actionable row is the pick above the block, never inside it.
+    lines = out.splitlines()
+    assert lines[1].startswith("  -> issue #7")
+    assert lines.index(verdict) > 1
+    assert "#7" not in verdict
 
 
 # --- A comment on a row already closed, which the read discarded ---
