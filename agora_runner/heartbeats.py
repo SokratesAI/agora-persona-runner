@@ -637,6 +637,16 @@ _heartbeat_threads = {}
 # heartbeat never runs again. See the comment at the drop site.
 _heartbeat_spawn_marks = {}
 
+# "No mark recorded" — deliberately not None, because `lastRunAt` IS None on a
+# heartbeat that has never run, and `dict.get` returning None for a missing key
+# made those two states indistinguishable. A brand-new heartbeat therefore
+# matched its own absent mark on its very first due tick and was dropped, which
+# left `lastRunAt` None, which made the next tick match again: it could never
+# start at all. Measured live 2026-08-25 — all three weekly Nova heartbeats had
+# `lastRunAt: null` since they were created on 08-24, and the runner log showed
+# `256 due tick(s) dropped ... (claim for lastRunAt=None not visible yet)`.
+_NO_MARK = object()
+
 # Ticks this heartbeat was due for and did not run, since its last spawn.
 #
 # Every reason `run_due_heartbeats` declines a due tick used to be a
@@ -940,7 +950,7 @@ def run_due_heartbeats(heartbeats_list=None):
                 # because it is the owner pressing "run now" — that is a new
                 # request, not the same slot read twice.
                 mark = heartbeat.get("lastRunAt")
-                if _heartbeat_spawn_marks.get(hb_id) == mark:
+                if _heartbeat_spawn_marks.get(hb_id, _NO_MARK) == mark:
                     _drop_tick(hb_id, name,
                                f"claim for lastRunAt={mark} not visible yet")
                     continue
