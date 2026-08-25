@@ -175,6 +175,31 @@ def test_one_bullet_can_carry_both_kinds(tmp_path):
     assert unknown_names(flagged) == [["agora/public/app.js"]]
 
 
+def test_a_repo_prefixed_path_is_answerable_even_when_its_directory_is_gone(tmp_path):
+    """The checkout is *named* `platform-config`, so a citation starting
+    `platform-config/` is unambiguously about it — dead, not unanswerable,
+    even though `deployments/` is exactly what was renamed away. Reviewer
+    on runner#364: this is the primary rot case, not an edge one."""
+    repo = tmp_path / "platform-config"
+    os.makedirs(repo)
+    bullets = dream_pass.parse(doc(
+        "- a note about `platform-config/deployments/app.yaml`"))
+    flagged = dream_pass.dead_paths(bullets, [str(repo)])
+    assert dead_names(flagged) == [["platform-config/deployments/app.yaml"]]
+    assert unknown_names(flagged) == []
+
+
+def test_a_repo_prefixed_bare_filename_is_answerable(tmp_path):
+    """`tools/gone.py` against a checkout literally named `tools` has no
+    second directory segment to test, and is still answerable."""
+    repo = tmp_path / "tools"
+    os.makedirs(repo)
+    bullets = dream_pass.parse(doc("- a note about `tools/gone.py`"))
+    flagged = dream_pass.dead_paths(bullets, [str(repo)])
+    assert dead_names(flagged) == [["tools/gone.py"]]
+    assert unknown_names(flagged) == []
+
+
 def test_a_missing_file_under_a_directory_i_have_is_still_dead(tmp_path):
     """The check is on the *top* directory, deliberately: seeing `tools/`
     is enough to say this checkout has no `tools/sub/gone.py`."""

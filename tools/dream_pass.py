@@ -244,9 +244,22 @@ def checkable(path, repos):
     Without it, `dead_paths` flagged the second kind too -- and would
     have flagged it identically had the file been present, which is a
     test whose result was decided before it ran.
+
+    Two ways a checkout can answer, and the first is the one my reviewer
+    caught missing. **A citation that names a checkout by its own directory
+    name is about that checkout**, and that is the whole reason `resolves`
+    strips the prefix -- so `platform-config/deployments/app.yaml` against
+    the `platform-config` checkout is answerable even when `deployments/`
+    is exactly the directory that got renamed away, which is the *primary*
+    rot case rather than an edge one. My first version re-tested the
+    stripped remainder's own top directory and filed those as unanswerable,
+    which is the opposite of what this split is for.
     """
-    for root, rel in _candidates(path, repos):
-        top = rel.partition("/")[0]
+    for root in repos:
+        head, _, rest = path.partition("/")
+        if rest and head == os.path.basename(os.path.normpath(root)):
+            return True
+        top = path.partition("/")[0]
         if top and os.path.isdir(os.path.join(root, top)):
             return True
     return False
@@ -421,16 +434,16 @@ def report(bullets, repos, threshold, paths_mean="rot"):
     dead = [(b, missing) for b, missing, _ in flagged if missing]
     unknown = [(b, paths) for b, _, paths in flagged if paths]
     out.append("")
-    out.append("DEAD PATH (%d) — a checkout I was given has the top directory "
-               "and not the file. Evidence of %s. Advisory only."
+    out.append("DEAD PATH (%d) — a checkout I was given covers this path and "
+               "does not hold it. Evidence of %s. Advisory only."
                % (len(dead), PATHS_MEAN[paths_mean]))
     for b, missing in dead:
         out.append("  L%-5d %s" % (b.line_no, ", ".join(missing)))
         out.append("        %s" % b.excerpt(110))
 
     out.append("")
-    out.append("CANNOT CHECK (%d) — no checkout I was given has the top "
-               "directory, so absence here is not evidence either way."
+    out.append("CANNOT CHECK (%d) — no checkout I was given covers this path, "
+               "so absence here is not evidence either way."
                % len(unknown))
     for b, paths in unknown:
         out.append("  L%-5d %s" % (b.line_no, ", ".join(paths)))
