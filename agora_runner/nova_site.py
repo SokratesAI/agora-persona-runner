@@ -790,6 +790,48 @@ CACHE_FRESH_SECONDS = 15
 #: reading this feature can least afford.
 DEMO_PROXY_TIMEOUT = 10
 
+#: The most a proxied response may buffer. This pod has a 256Mi limit and
+#: the whole body is read before a byte goes out, so an unbounded read is
+#: not a slow demo -- it is the entire site dying on someone's screen
+#: recording. 32MB is well past any page asset and well under the limit.
+DEMO_MAX_BYTES = 32 * 1024 * 1024
+
+#: How long a read of the demo registry is reused. The registry is one
+#: CouchDB round trip and a demo page is forty assets, so uncached this
+#: costs forty vault fetches per page load -- each with `vault.py`'s 60s
+#: timeout, which is six times the upstream timeout chosen right above to
+#: stop a demo reading as broken. Two seconds because the thing it goes
+#: stale against is a cycle running `tools.demo start`, which is a human
+#: waiting at a terminal, not a page being loaded.
+DEMO_REGISTRY_TTL = 2
+
+#: Response headers worth carrying across. `Content-Encoding` is the one
+#: that actually bites: an upstream serving a precompressed asset without
+#: it renders as binary in the browser. The rest are cheap and correct.
+DEMO_PASS_HEADERS = ("Content-Encoding", "Content-Disposition",
+                     "Accept-Ranges", "Vary", "Content-Language")
+
+#: Request headers worth carrying to the demo. `Range` is what lets a
+#: `<video>` in a demo seek at all; `Accept` and `Accept-Language` are
+#: what a content-negotiating dev server reads.
+DEMO_FORWARD_HEADERS = ("Range", "Accept", "Accept-Language")
+
+_demo_registry_cache = {"at": 0.0, "text": None}
+_demo_registry_lock = threading.Lock()
+
+
+def _demo_registry():
+    """The registry text, reused for `DEMO_REGISTRY_TTL` seconds."""
+    now = time.time()
+    with _demo_registry_lock:
+        if _demo_registry_cache["text"] is not None and \
+                now - _demo_registry_cache["at"] < DEMO_REGISTRY_TTL:
+            return _demo_registry_cache["text"]
+    text = vault_read_path(DEMOS_PATH)
+    with _demo_registry_lock:
+        _demo_registry_cache.update(at=now, text=text)
+    return text
+
 
 def _demo_opener():
     """A urllib opener that does not follow redirects. See `_serve_demo`."""
@@ -2053,7 +2095,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         try:
-            demo = lookup_demo(load_demos(vault_read_path(DEMOS_PATH)), slug)
+            demo = lookup_demo(load_demos(_demo_registry()), slug)
         except Exception as e:
             log(f"nova-site /demo/{slug} registry read failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
@@ -2061,21 +2103,40 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if demo is None:
             self._send_json(404, {"error": f"no demo named {slug!r} is running"})
             return
-        target = f"http://{demo['host']}:{demo['port']}/{upstream_path}"
+        # `.get`, not `[...]`, because this route is dispatched above
+        # `do_GET`'s `try` -- a hand-edited registry row missing either
+        # field would be a traceback and a dropped connection rather than
+        # the readable failure the docstring above promises.
+        host, port = demo.get("host"), demo.get("port")
+        if not host or not port:
+            self._send_json(502, {
+                "error": f"the registry row for {slug!r} has no host or port"})
+            return
+        origin = f"http://{host}:{port}"
+        target = f"{origin}/{upstream_path}"
         if raw_query:
             target += f"?{raw_query}"
+        request = urllib.request.Request(target)
+        for name in DEMO_FORWARD_HEADERS:
+            if self.headers.get(name):
+                request.add_header(name, self.headers[name])
         try:
-            with _demo_opener().open(target, timeout=DEMO_PROXY_TIMEOUT) as up:
-                status, headers, body = up.status, up.headers, up.read()
+            with _demo_opener().open(request, timeout=DEMO_PROXY_TIMEOUT) as up:
+                status, headers, body = up.status, up.headers, up.read(DEMO_MAX_BYTES + 1)
         except urllib.error.HTTPError as e:
             # A 404 from the dev server is the demo's answer, not a fault
             # here, so it is passed through rather than replaced.
-            status, headers, body = e.code, e.headers, e.read()
+            status, headers, body = e.code, e.headers, e.read(DEMO_MAX_BYTES + 1)
         except Exception as e:
             log(f"nova-site /demo/{slug} upstream failed: {e}")
             self._send_json(502, {
                 "error": f"demo {slug!r} is registered on "
                          f"{demo['host']}:{demo['port']} but did not answer: {e}"[:300]})
+            return
+        if len(body) > DEMO_MAX_BYTES:
+            self._send_json(502, {
+                "error": f"{target} is larger than the {DEMO_MAX_BYTES}-byte "
+                         "cap the demo proxy buffers; this pod has 256Mi"})
             return
         content_type = headers.get("Content-Type", "application/octet-stream")
         self.send_response(status)
@@ -2089,7 +2150,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # path, so a demo redirecting off-site still goes off-site.
         location = headers.get("Location")
         if location:
-            if location.startswith("/"):
+            # Two forms mean "somewhere else inside this demo" and both have
+            # to come back under the prefix. A framework that has never
+            # heard of a reverse proxy writes the second one, and sending it
+            # unrewritten points his phone at a pod IP it cannot route to.
+            # `//host/x` is deliberately not rewritten: it is protocol-
+            # relative and genuinely off-site.
+            if location.startswith(origin):
+                location = f"/demo/{slug}" + (location[len(origin):] or "/")
+            elif location.startswith("/") and not location.startswith("//"):
                 location = f"/demo/{slug}{location}"
             self.send_header("Location", location)
         self.send_header("Content-Length", str(len(body)))
@@ -2098,6 +2167,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # which reads as "the demo is broken" and is the one failure this
         # feature cannot afford.
         self.send_header("Cache-Control", "no-store")
+        for name in DEMO_PASS_HEADERS:
+            if headers.get(name):
+                self.send_header(name, headers[name])
         self.end_headers()
         self.wfile.write(body)
 

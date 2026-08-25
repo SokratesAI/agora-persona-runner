@@ -37,6 +37,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 
 # Repo root on sys.path so `python3 tools/demo.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
@@ -56,6 +57,12 @@ from agora_runner.nova_demos import (  # noqa: E402
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
+#: How long to wait before deciding a dev server started. A bind failure
+#: and an import error both happen in well under a second; a slow compile
+#: happens after the socket is listening, so this does not have to cover
+#: it.
+SPAWN_CHECK_SECONDS = 1.0
+
 #: Where the owner opens it. One hostname, path-routed, rather than a tailnet
 #: device per demo that would outlive the demo it was minted for.
 PUBLIC_BASE = "https://nova.tailc83eb3.ts.net/demo"
@@ -65,20 +72,43 @@ def _run(argv, **kw):
     return subprocess.run(argv, capture_output=True, text=True, **kw)
 
 
+_TEMPS = []
+
+
+def _temp(**kw):
+    """A temp path this process removes on the way out.
+
+    `delete=False` is required -- the vault client opens these by name --
+    so nothing removes them unless something remembers to. Three per
+    invocation, forever, in a module whose whole subject is not leaking.
+    """
+    fh = tempfile.NamedTemporaryFile(delete=False, **kw)
+    fh.close()
+    _TEMPS.append(fh.name)
+    return fh.name
+
+
+def _cleanup_temps():
+    for path in _TEMPS:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def _read_registry():
     """Registry text plus the rev file guarding the write-back."""
-    rev = tempfile.NamedTemporaryFile(prefix="demos.", suffix=".rev", delete=False)
-    rev.close()
-    got = _run(["python3", VAULT_TOOL, "get", DEMOS_PATH, "--rev-file", rev.name])
+    rev = _temp(prefix="demos.", suffix=".rev")
+    got = _run(["python3", VAULT_TOOL, "get", DEMOS_PATH, "--rev-file", rev])
     if got.returncode != 0:
         raise DemoError(f"could not read {DEMOS_PATH}: {got.stderr.strip()[:300]}")
-    return load(got.stdout), rev.name
+    return load(got.stdout), rev
 
 
 def _write_registry(registry, rev_path):
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+    body = _temp(suffix=".json")
+    with open(body, "w") as fh:
         fh.write(dumps(registry))
-        body = fh.name
     put = _run(["python3", VAULT_TOOL, "put", DEMOS_PATH, body, "--if-rev-file", rev_path])
     if put.returncode == 3:
         raise DemoError(
@@ -121,11 +151,24 @@ def cmd_start(args):
     if not os.path.isdir(directory):
         print(f"no such directory: {directory}", file=sys.stderr)
         return 2
+    # **Reserve the port before spawning anything.** The first version
+    # spawned first and wrote the registry after, and the compare-and-swap
+    # then picked a winner independently of who won the *bind*: two
+    # concurrent starts both allocate 5174, one server binds and the other
+    # dies with EADDRINUSE, and the loser can win the swap. It would print
+    # a URL, exit 0, and have a dead process -- while the winner, losing
+    # the swap, killed the only live server. The swap has to decide the
+    # port before a process exists to be wrong about.
     registry, rev = _read_registry()
     port = register(registry, args.slug, pod_ip(), directory,
                     command=args.cmd or None)
     command = args.cmd or default_command(directory, port)
     log_path = os.path.join(tempfile.gettempdir(), f"demo-{args.slug}.log")
+    entry = lookup(registry, args.slug)
+    entry["command"] = command
+    entry["log"] = log_path
+    _write_registry(registry, rev)
+
     with open(log_path, "ab") as logfh:
         # `start_new_session` is the point of the whole line: this command
         # exits in a second and the dev server has to outlive it, including
@@ -136,17 +179,30 @@ def cmd_start(args):
             start_new_session=True,
             env={**os.environ, "PORT": str(port)},
         )
-    entry = lookup(registry, args.slug)
-    entry["pid"] = proc.pid
-    entry["command"] = command
-    entry["log"] = log_path
-    try:
+    # A dev server that died on startup is the case this command must never
+    # report as success: the URL would 502 and the only evidence is a temp
+    # log nobody knows to open.
+    time.sleep(SPAWN_CHECK_SECONDS)
+    if proc.poll() is not None:
+        registry, rev = _read_registry()
+        unregister(registry, args.slug)
         _write_registry(registry, rev)
-    except DemoError:
-        # The registry is the only thing that makes this process reachable.
-        # A server nothing can route to is not a demo, it is a port leak.
+        tail = ""
+        try:
+            with open(log_path) as fh:
+                tail = "".join(fh.readlines()[-8:])
+        except OSError:
+            pass
+        print(f"{command!r} exited {proc.returncode} immediately; "
+              f"{args.slug} was not registered\n{tail}", file=sys.stderr)
+        return 1
+    registry, rev = _read_registry()
+    live = lookup(registry, args.slug)
+    if live is None:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        raise
+        raise DemoError(f"{args.slug} vanished from the registry while starting")
+    live["pid"] = proc.pid
+    _write_registry(registry, rev)
     print(f"{PUBLIC_BASE}/{args.slug}/")
     print(f"  serving {directory} on {entry['host']}:{port} (pid {proc.pid})")
     print(f"  command: {command}")
@@ -166,10 +222,20 @@ def cmd_stop(args):
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
             killed = f"stopped pid {pid}"
-        except (ProcessLookupError, PermissionError) as e:
-            # Deregister anyway. A registry row pointing at a dead process
-            # holds a port forever and answers 502 to whoever opens it.
-            killed = f"pid {pid} was already gone ({e.__class__.__name__})"
+        except ProcessLookupError:
+            # Deregister. A registry row pointing at a dead process holds a
+            # port forever and answers 502 to whoever opens it.
+            killed = f"pid {pid} was already gone"
+        except PermissionError as e:
+            # The opposite case, and it must not deregister: the process is
+            # *alive* and this account cannot signal it. Freeing the port in
+            # the registry while something still holds it is exactly the
+            # silent cross-serve `nova_demos` exists to prevent -- the next
+            # start would allocate it, fail to bind, and serve this demo's
+            # page under the new slug.
+            print(f"{args.slug}: pid {pid} is alive and could not be signalled "
+                  f"({e}); port {entry['port']} stays registered", file=sys.stderr)
+            return 1
     unregister(registry, args.slug)
     _write_registry(registry, rev)
     print(f"{args.slug}: {killed}, port {entry['port']} released")
@@ -215,6 +281,8 @@ def main(argv=None):
     except DemoError as e:
         print(str(e), file=sys.stderr)
         return 2
+    finally:
+        _cleanup_temps()
 
 
 if __name__ == "__main__":

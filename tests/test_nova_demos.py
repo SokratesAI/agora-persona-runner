@@ -49,7 +49,13 @@ def test_a_registry_that_is_not_json_is_refused_rather_than_reset():
         load('{"demos": "one"}')
 
 
-def test_two_demos_never_share_a_port():
+def test_the_allocator_hands_out_a_different_port_each_time():
+    # Named for what it checks. It does *not* prove two concurrent
+    # `tools.demo start` calls cannot collide -- that rests on the
+    # compare-and-swap in `_write_registry` and on reserving the port
+    # before spawning, which `test_a_dev_server_that_dies_on_startup...`
+    # below is about. A reviewer called the old name a claim this test
+    # cannot support and was right.
     registry = load("")
     first = register(registry, "alpha", "10.42.0.84", "/tmp/a")
     second = register(registry, "beta", "10.42.0.84", "/tmp/b")
@@ -108,12 +114,35 @@ def test_the_registry_survives_a_round_trip_through_the_vault():
 
 # --- the proxy ---------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _no_registry_cache():
+    """The proxy reuses a registry read for `DEMO_REGISTRY_TTL` seconds.
+
+    That is right in production -- a demo page is forty assets and the
+    registry is a CouchDB round trip -- and it is process-global, so
+    without this the second test in this file reads the first one's
+    registry. Caught by three tests going 404 at once.
+    """
+    nova_site._demo_registry_cache.update(at=0.0, text=None)
+    yield
+    nova_site._demo_registry_cache.update(at=0.0, text=None)
+
+
 def _registry(*demos):
     return json.dumps({"demos": list(demos)})
 
 
 ALPHA = {"slug": "alpha", "host": "10.42.0.84", "port": 5174,
          "dir": "/tmp/a", "started_at": "2026-08-26T01:30:00"}
+
+
+class _Headers(dict):
+    """`HTTPError.headers` is an email.Message in real life; `.read` on the
+    error body takes a limit now, and a plain dict has no `.get` semantics
+    problem -- this exists only so `read(n)` and `get(name)` both work."""
+
+    def read(self, limit=None):
+        return b""
 
 
 class _Opener:
@@ -129,7 +158,11 @@ class _Opener:
     def __init__(self, fn):
         self._fn = fn
 
-    def open(self, url, timeout=None):
+    def open(self, request, timeout=None):
+        # The handler passes a `Request` now, because it forwards `Range`
+        # and `Accept`. Tests assert on the URL, so unwrap it here.
+        url = getattr(request, "full_url", request)
+        self.headers = getattr(request, "headers", {})
         return self._fn(url, timeout=timeout)
 
 
@@ -138,7 +171,7 @@ class _FakeUpstream:
         self.body, self.status = body, status
         self.headers = {"Content-Type": content_type}
 
-    def read(self):
+    def read(self, limit=None):
         return self.body
 
     def __enter__(self):
@@ -207,7 +240,7 @@ def test_a_dead_dev_server_says_where_it_was_looking():
 def test_an_upstream_404_is_the_demos_answer_and_is_passed_through():
     def _http_error(url, timeout=None):
         raise urllib.error.HTTPError(url, 404, "Not Found",
-                                     {"Content-Type": "text/plain"}, None)
+                                     _Headers({"Content-Type": "text/plain"}), None)
 
     with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
          patch.object(nova_site, "_demo_opener", lambda: _Opener(_http_error)):
@@ -233,7 +266,7 @@ def test_a_redirect_is_handed_to_the_browser_under_the_demo_prefix():
     def _redirect(url, timeout=None):
         raise urllib.error.HTTPError(
             url, 301, "Moved Permanently",
-            {"Content-Type": "text/html", "Location": "/sub/"}, None)
+            _Headers({"Content-Type": "text/html", "Location": "/sub/"}), None)
 
     with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
          patch.object(nova_site, "_demo_opener", lambda: _Opener(_redirect)):
@@ -246,9 +279,85 @@ def test_an_off_site_redirect_is_not_rewritten_under_the_demo():
     def _redirect(url, timeout=None):
         raise urllib.error.HTTPError(
             url, 302, "Found",
-            {"Content-Type": "text/html", "Location": "https://example.com/x"}, None)
+            _Headers({"Content-Type": "text/html",
+                      "Location": "https://example.com/x"}), None)
 
     with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
          patch.object(nova_site, "_demo_opener", lambda: _Opener(_redirect)):
         _, head, _ = _get("/demo/alpha/away.html")
     assert "Location: https://example.com/x" in head
+
+
+# --- tools.demo -------------------------------------------------------
+
+def test_a_dev_server_that_dies_on_startup_is_not_reported_as_a_running_demo(
+        tmp_path, capsys):
+    """The failure `start` must never dress up as success.
+
+    Two concurrent starts both allocate the same port, one binds and the
+    other dies with EADDRINUSE. If the loser prints a URL and exits 0, the
+    owner opens a link that 502s and the only evidence is a temp log
+    nobody knows about. So a dead process deregisters and exits non-zero.
+    """
+    from tools import demo as demo_cli
+
+    written = []
+    state = {"registry": {"demos": []}}
+
+    def _read():
+        return json.loads(json.dumps(state["registry"])), "/tmp/fake.rev"
+
+    def _write(registry, rev):
+        state["registry"] = json.loads(json.dumps(registry))
+        written.append(state["registry"])
+
+    args = type("A", (), {"slug": "alpha", "directory": str(tmp_path),
+                          "cmd": "python3 -c 'raise SystemExit(3)'"})()
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.84"), \
+         patch.object(demo_cli, "SPAWN_CHECK_SECONDS", 0.6):
+        code = demo_cli.cmd_start(args)
+    assert code == 1
+    # The port is back, and no URL was printed for a demo that is not there.
+    assert state["registry"]["demos"] == []
+    assert "/demo/alpha/" not in capsys.readouterr().out
+
+
+def test_the_port_is_registered_before_the_dev_server_is_spawned(tmp_path):
+    """The ordering is the fix, so the ordering is what is pinned.
+
+    Reserving after spawning lets the compare-and-swap pick a winner
+    independently of who won the bind.
+    """
+    from tools import demo as demo_cli
+
+    order = []
+    state = {"registry": {"demos": []}}
+
+    def _read():
+        return json.loads(json.dumps(state["registry"])), "/tmp/fake.rev"
+
+    def _write(registry, rev):
+        state["registry"] = json.loads(json.dumps(registry))
+        order.append("registered")
+
+    real_popen = demo_cli.subprocess.Popen
+
+    def _popen(*a, **kw):
+        order.append("spawned")
+        return real_popen(*a, **kw)
+
+    args = type("A", (), {"slug": "alpha", "directory": str(tmp_path),
+                          "cmd": "python3 -c 'import time; time.sleep(5)'"})()
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.84"), \
+         patch.object(demo_cli.subprocess, "Popen", _popen), \
+         patch.object(demo_cli, "SPAWN_CHECK_SECONDS", 0.3):
+        assert demo_cli.cmd_start(args) == 0
+    assert order[0] == "registered"
+    assert "spawned" in order
+    demo_cli.os.killpg(
+        demo_cli.os.getpgid(state["registry"]["demos"][0]["pid"]),
+        demo_cli.signal.SIGTERM)
