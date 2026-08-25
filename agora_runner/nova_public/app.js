@@ -63,6 +63,7 @@
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
     if (path === "/ask") return { view: "ask", cycle: null, board: null };
+    if (path === "/conversations") return { view: "conversations", cycle: null, board: null };
     if (path === "/diag") return { view: "diag", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
@@ -7788,6 +7789,245 @@
     });
   }
 
+  /* The Conversations page.
+   *
+   * His capture, `ideas.md` 2026-08-25: *"its basicly a chat app with
+   * multiple conversations history and i can start new ones etc."* The
+   * chat dock in the corner talks to one thread; this is every thread.
+   *
+   * Two views on one route rather than two routes, and `convOpenId` is
+   * what says which. A conversation id in the URL would be a nicer link,
+   * but it would also mean `PAGE_ROUTE_PREFIXES` grows a second member and
+   * the server starts pattern-matching a uuid -- and nothing links at a
+   * single thread yet, so that is machinery with no reader. If something
+   * ever does link at one, this is the place it changes.
+   */
+  var convOpenId = null;
+  var convOpenName = "";
+
+  function renderConvThread(container, payload) {
+    container.textContent = "";
+    var messages = payload.messages || [];
+    if (!messages.length) {
+      container.appendChild(el("p", "empty", "Nothing said here yet."));
+      return;
+    }
+    messages.forEach(function (message) {
+      container.appendChild(askMessage(message));
+    });
+    if (payload.waiting) container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+  }
+
+  /* `pollAsk`'s shape against a conversation id. The route guard lives in
+   * the `.then` and nowhere else for the reason written above `pollAsk`:
+   * a second copy in the timer body cannot be independently tested, so a
+   * mutation pass pins neither. The extra guard here is `convOpenId` --
+   * he can tap back to the list and open a different thread without the
+   * route changing, and a poll from the old thread must not paint over
+   * the new one. */
+  function pollConv(container, conversationId, attempts) {
+    if (attempts >= ASK_POLL_MAX) return;
+    livePolls.push(setTimeout(function () {
+      fetchPage("/api/conversations/thread?id=" + encodeURIComponent(conversationId))
+        .then(function (payload) {
+          if (route(window.location.pathname).view !== "conversations") return;
+          if (convOpenId !== conversationId) return;
+          renderConvThread(container, payload);
+          if (payload.waiting) pollConv(container, conversationId, attempts + 1);
+        })
+        .catch(function () { pollConv(container, conversationId, attempts + 1); });
+    }, ASK_POLL_MS));
+  }
+
+  function openConversation(id, name) {
+    convOpenId = id;
+    convOpenName = name || "";
+    stopPolling();
+    markNav();
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el("p", "status-line", convOpenName));
+    feed.textContent = "";
+
+    var back = el("button", "conv-back", "← All conversations");
+    back.setAttribute("type", "button");
+    back.addEventListener("click", function () {
+      convOpenId = null;
+      loadConversations();
+    });
+    feed.appendChild(back);
+
+    var thread = el("div", "ask-thread");
+    var form = el("form", "ask-form");
+    var box = el("textarea", "ask-box");
+    box.setAttribute("rows", "3");
+    box.setAttribute("placeholder", "Say something…");
+    box.setAttribute("aria-label", "Your message");
+    var send = el("button", "ask-send", "Send");
+    send.setAttribute("type", "submit");
+    var status = el("p", "ask-status");
+    var uploading = false;
+    var sending = false;
+    function syncSend() { send.disabled = uploading || sending; }
+    var attach = buildAttach({
+      onBusy: function (isBusy) { uploading = isBusy; syncSend(); },
+      onStatus: function (text) { status.textContent = text; },
+    });
+    form.appendChild(box);
+    form.appendChild(attach.tray);
+    form.appendChild(attach.input);
+    form.appendChild(attach.button);
+    form.appendChild(send);
+    form.appendChild(status);
+    feed.appendChild(form);
+    feed.appendChild(thread);
+
+    thread.appendChild(el("p", "empty", "loading…"));
+    fetchPage("/api/conversations/thread?id=" + encodeURIComponent(id))
+      .then(function (payload) {
+        if (convOpenId !== id) return;
+        renderConvThread(thread, payload);
+        if (payload.waiting) pollConv(thread, id, 0);
+      })
+      .catch(function (err) {
+        if (convOpenId !== id) return;
+        thread.textContent = "";
+        thread.appendChild(el("p", "empty", "Could not load this conversation: " + err));
+      });
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var text = box.value.trim();
+      if (!text && !attach.count()) return;
+      var body = [text, attach.markdown()].filter(Boolean).join("\n\n");
+      sending = true;
+      syncSend();
+      status.textContent = "sending…";
+      fetch("/api/conversations/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: id, text: body }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+          box.value = "";
+          attach.clear();
+          status.textContent = "";
+          sending = false;
+          syncSend();
+          // Paint it immediately, `renderAsk`'s reason: the send is the one
+          // moment the page knows something happened, and four seconds of a
+          // box that has gone blank reads as a lost message.
+          thread.appendChild(askMessage({ sender: "Edvard", text: body }));
+          thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+          pollConv(thread, id, 0);
+        })
+        .catch(function (err) {
+          sending = false;
+          syncSend();
+          status.textContent = "could not send: " + err.message;
+        });
+    });
+  }
+
+  function renderConvNew(host) {
+    var form = el("form", "conv-new");
+    var name = el("input", "conv-new-name");
+    name.setAttribute("type", "text");
+    name.setAttribute("placeholder", "What is it about?");
+    name.setAttribute("aria-label", "Conversation name");
+    var who = el("select", "conv-new-who");
+    who.setAttribute("aria-label", "Who you are talking to");
+    var go = el("button", "ask-send", "Start");
+    go.setAttribute("type", "submit");
+    var status = el("p", "ask-status");
+    form.appendChild(name);
+    form.appendChild(who);
+    form.appendChild(go);
+    form.appendChild(status);
+    host.appendChild(form);
+
+    fetchPage("/api/conversations/personas")
+      .then(function (payload) {
+        (payload.personas || []).forEach(function (p) {
+          var opt = el("option", "", p.name + (p.metered ? " (metered API)" : ""));
+          opt.value = p.id;
+          who.appendChild(opt);
+        });
+      })
+      .catch(function () { status.textContent = "could not load the personas"; });
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (!name.value.trim() || !who.value) return;
+      go.disabled = true;
+      status.textContent = "starting…";
+      fetch("/api/conversations/new", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.value.trim(), personaId: who.value }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+          openConversation(result.conversationId, name.value.trim());
+        })
+        .catch(function (err) {
+          go.disabled = false;
+          status.textContent = "could not start: " + err.message;
+        });
+    });
+  }
+
+  function renderConversations(payload) {
+    stopPolling();
+    markNav();
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    var rows = payload.conversations || [];
+    statusEl.appendChild(el("p", "status-line",
+      rows.length === 1 ? "1 conversation" : rows.length + " conversations"));
+    feed.textContent = "";
+
+    renderConvNew(feed);
+
+    if (!rows.length) {
+      feed.appendChild(el("p", "empty", "No conversations yet."));
+      return;
+    }
+    var list = el("div", "conv-list");
+    rows.forEach(function (row) {
+      var card = el("button", "conv-row" + (row.cycleThread ? " conv-cycle" : ""));
+      card.setAttribute("type", "button");
+      card.appendChild(el("div", "conv-name", row.name));
+      var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
+      if (meta) card.appendChild(el("div", "conv-meta", meta));
+      // `fmtStamp` takes milliseconds and lives further down the file; an
+      // unparseable timestamp yields NaN, which renders as "Invalid Date",
+      // so the row simply drops the line instead.
+      var when = row.updatedAt ? Date.parse(row.updatedAt) : NaN;
+      if (!isNaN(when)) card.appendChild(el("div", "conv-when", fmtStamp(when)));
+      card.addEventListener("click", function () { openConversation(row.id, row.name); });
+      list.appendChild(card);
+    });
+    feed.appendChild(list);
+  }
+
+  function loadConversations() {
+    convOpenId = null;
+    fetchPage("/api/conversations")
+      .then(function (payload) {
+        if (route(window.location.pathname).view !== "conversations") return;
+        renderConversations(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load your conversations: " + err));
+      });
+  }
+
   function loadAsk() {
     fetchPage("/api/ask")
       .then(function (payload) {
@@ -8236,6 +8476,10 @@
     }
     if (here.view === "ask") {
       loadAsk();
+      return;
+    }
+    if (here.view === "conversations") {
+      loadConversations();
       return;
     }
     // No `loadDiag` -- this is the one view with no payload behind it, so

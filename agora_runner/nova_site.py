@@ -161,6 +161,13 @@ from agora_runner.nova_boards import (
     split_capture_done,
     split_capture_priority,
 )
+from agora_runner.nova_conversations import (
+    conversations as conversation_list,
+    create as conversation_create,
+    personas as conversation_personas,
+    send as conversation_send,
+    thread as conversation_thread,
+)
 from agora_runner.nova_ask import (
     ask as ask_question, thread as ask_thread, watching as ask_watching,
 )
@@ -235,6 +242,7 @@ PAGE_ROUTES = (
     "/retro",
     "/plan",
     "/ask",
+    "/conversations",
     "/diag",
 )
 PAGE_ROUTE_PREFIXES = ("/cycle/",)
@@ -1914,6 +1922,25 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # has already landed.
                 self._send_json(200, ask_thread())
                 return
+            if path == "/api/conversations":
+                # Not cached, for `/api/ask`'s reason: this is the list he
+                # opens to see whether anything has answered, so a
+                # CACHE_FRESH_SECONDS window would show him a thread that
+                # is still where it was before the reply landed.
+                self._send_json(200, conversation_list())
+                return
+            if path == "/api/conversations/thread":
+                # `id` rather than a path segment so the route table stays a
+                # set of exact strings -- `PAGE_ROUTE_PREFIXES` exists for
+                # the one case that genuinely needed a prefix and adding a
+                # second kind of matching for a query parameter would be a
+                # cost with no reader.
+                wanted = (query.get("id") or [""])[0]
+                self._send_json(200, conversation_thread(wanted))
+                return
+            if path == "/api/conversations/personas":
+                self._send_json(200, conversation_personas())
+                return
             if path == "/api/pool":
                 # Not cached, and for `/api/comments`' reason: the owner
                 # decides a candidate and the page re-fetches immediately,
@@ -2589,6 +2616,71 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(200 if ok else (400 if bad_text else 502),
                         {"ok": ok, "message": message})
 
+    def _post_conversation_send(self, payload):
+        """`/api/conversations/send` -- a message into an existing thread.
+
+        `_post_ask`'s shape, one conversation id wider. Nothing here touches
+        the vault, so there is no cache to invalidate: the page re-reads the
+        thread from Agora, which is the only copy.
+        """
+        conversation_id = payload.get("conversationId")
+        text = payload.get("text")
+        if not isinstance(conversation_id, str) or not isinstance(text, str):
+            self._send_json(400, {"error": "conversationId and text must be strings"})
+            return
+        try:
+            ok, message = conversation_send(conversation_id, text)
+        except Exception as e:
+            log(f"nova-site conversations/send failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Message sent · {'ok' if ok else message}",
+            after=text.strip()[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        # A refusal on the text itself cannot succeed on a retry, so it is a
+        # 400 rather than a 502 -- `_post_ask`'s split, same reasoning.
+        bad_text = not ok and message.startswith(
+            ("a message needs", "that is longer", "which conversation"))
+        self._send_json(200 if ok else (400 if bad_text else 502),
+                        {"ok": ok, "message": message})
+
+    def _post_conversation_new(self, payload):
+        """`/api/conversations/new` -- start a thread with a chosen persona.
+
+        Answers with the new id so the page can open it without re-listing.
+        """
+        name = payload.get("name")
+        persona_id = payload.get("personaId")
+        if not isinstance(name, str) or not isinstance(persona_id, str):
+            self._send_json(400, {"error": "name and personaId must be strings"})
+            return
+        try:
+            ok, message = conversation_create(name, persona_id)
+        except Exception as e:
+            log(f"nova-site conversations/new failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Conversation started · {'ok' if ok else message}",
+            after=name.strip()[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        bad_input = not ok and message.startswith(
+            ("a conversation needs", "that name is longer", "pick who"))
+        self._send_json(200 if ok else (400 if bad_input else 502),
+                        {"ok": ok, "conversationId": message if ok else None,
+                         "message": message})
+
     def _post_board_amend(self, payload, delete):
         """`/api/board/edit` and `/api/board/delete` -- issue #84.
 
@@ -2813,6 +2905,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/ask/watching":
             self._post_ask_watching()
+            return
+        if path == "/api/conversations/send":
+            self._post_conversation_send(payload)
+            return
+        if path == "/api/conversations/new":
+            self._post_conversation_new(payload)
             return
         if path == "/api/comment":
             self._post_comment(payload)
