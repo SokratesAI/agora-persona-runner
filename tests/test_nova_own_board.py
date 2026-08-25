@@ -193,3 +193,89 @@ def test_asking_for_one_of_my_rows_returns_its_write_up():
     his = board_page(payload, item=1)
     assert his["item"]["title"] == "his"
     assert his["item"]["blocks"][0]["text"] == "his body"
+
+
+def test_my_rows_get_a_search_blob_of_their_own(monkeypatch):
+    """`novaSearchText`, built the same way his `searchText` is.
+
+    The page holds my row titles and, since runner#355 windowed
+    `novaDetails` away on every list request, none of my write-ups -- so
+    the write-up half of a search has to be answered here, exactly as it
+    is for him.
+    """
+    from agora_runner import nova_sources
+    from agora_runner.nova_boards import BOARD_PATHS
+    from agora_runner.nova_site import board_payload
+
+    def read(path):
+        return MINE if path == BOARD_PATHS["issues"]["nova"] else ""
+
+    monkeypatch.setattr(nova_sources, "vault_read_path", read)
+    blobs = board_payload("issues")["novaSearchText"]
+
+    assert set(blobs) == {"1", "2"}
+    # Title and write-up, lowercased -- the write-up is the half the page
+    # cannot search for itself.
+    assert "dead newspaper feeds" in blobs["1"]
+    assert "82 consecutive nights" in blobs["1"]
+
+
+def test_searching_my_board_answers_from_my_rows_not_his():
+    """Both boards number from 1, so a search that ignored `mine` would
+    answer the Nova tab with his row numbers -- the same collision the
+    `item=` branch already refuses."""
+    from agora_runner.nova_site import board_page
+
+    payload = {
+        "name": "issues",
+        "items": [{"number": 7, "title": "his row"}],
+        "searchText": {"7": "his row\nsomething about badges"},
+        "novaItems": [{"number": 3, "title": "my row"}],
+        "novaSearchText": {"3": "my row\nsomething about badges"},
+        "notes": [],
+    }
+    assert board_page(payload, search="badges", mine=True)["matches"] == [3]
+    assert board_page(payload, search="badges")["matches"] == [7]
+
+
+def test_my_search_blob_never_goes_out_with_a_page():
+    """It is every write-up on my board again, lowercased -- the exact
+    payload `novaDetails` is windowed to avoid."""
+    from agora_runner.nova_site import board_page
+
+    payload = {
+        "name": "issues",
+        "items": [],
+        "details": {},
+        "novaItems": [{"number": 1}],
+        "novaDetails": {"1": [{"type": "p"}]},
+        "novaSearchText": {"1": "my row"},
+        "notes": [],
+    }
+    for page in (board_page(dict(payload), limit=10), board_page(dict(payload))):
+        assert "novaSearchText" not in page
+
+
+def test_the_same_query_on_the_two_tabs_does_not_share_one_etag():
+    """Without `mine` in the cache variant the second tab is served a 304
+    against the first tab's row numbers."""
+    import json
+    from unittest.mock import patch
+
+    from agora_runner import nova_site, nova_sources
+    from agora_runner.nova_boards import BOARD_PATHS
+    from tests.test_nova_site import _get
+
+    def read(path):
+        return MINE if path == BOARD_PATHS["issues"]["nova"] else ""
+
+    nova_site.reset_cache()
+    try:
+        with patch.object(nova_sources, "vault_read_path", side_effect=read):
+            _, _, his = _get("/api/board?name=issues&q=feeds")
+            _, _, mine = _get("/api/board?name=issues&q=feeds&mine=1")
+    finally:
+        nova_site.reset_cache()
+    assert json.loads(his)["matches"] == []
+    assert json.loads(mine)["matches"] == [1]
+    assert json.loads(his)["version"] != json.loads(mine)["version"]

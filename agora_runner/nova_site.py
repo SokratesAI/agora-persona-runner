@@ -572,6 +572,21 @@ def board_payload(name):
         "notes": notes,
         "novaItems": mine["items"],
         "novaDetails": nova_details,
+        # The same blob, for my own rows. Built here rather than left out
+        # because `board_page` windows `novaDetails` away on every list
+        # request (runner#355), so from Cycle 407 onward the page holds my
+        # row *titles* and none of my write-ups -- which is exactly the
+        # position his rows have always been in, and the reason his search
+        # happens on this side. Two dicts rather than one keyed by
+        # `mine:<n>`, because his #1 and my #1 are both real rows and a
+        # shared key space is the collision `board_page`'s `item` branch
+        # already refuses.
+        "novaSearchText": {
+            str(item["number"]): (
+                item["title"] + "\n" + mine["details"].get(item["number"], "")
+            ).lower()
+            for item in mine["items"]
+        },
     }
 
 
@@ -671,7 +686,11 @@ def board_page(payload, limit=None, item=None, search=None, mine=False):
         }
     if search is not None:
         needle = search.strip().lower()
-        blobs = payload.get("searchText") or {}
+        # `mine=1` searches my board instead of his, for the same reason
+        # the `item` branch above takes the flag: the answer is a list of
+        # row numbers and the two boards share a number space, so a search
+        # that ignored the flag would answer the Nova tab with his #38.
+        blobs = payload.get("novaSearchText" if mine else "searchText") or {}
         # An empty query matches nothing rather than everything. The page
         # only asks when the owner has typed something, so "" here is a bug
         # somewhere above, and answering it with all 71 rows would look
@@ -690,6 +709,7 @@ def board_page(payload, limit=None, item=None, search=None, mine=False):
     # avoid. Dropped unconditionally rather than under `if limit`, because
     # the no-argument shape is the pre-#85 client and it has no use for it.
     page.pop("searchText", None)
+    page.pop("novaSearchText", None)
     if limit is not None:
         page["details"] = {}
         # Mine goes out on the same terms as his. Reviewer finding on
@@ -1619,7 +1639,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         mine = (query.get("mine") or ["0"])[0] == "1"
         page = board_page(payload, limit=limit, item=item, search=search, mine=mine)
         if search is not None:
-            variant = f"q={search}"
+            # `mine` is in the variant for the same reason it is in the
+            # `item` one below: without it, "board" on his tab and "board"
+            # on mine hash to one cache entry and the second reader is
+            # served the first one's row numbers.
+            variant = f"q={search}&mine={int(mine)}"
         elif item is not None:
             # In the variant, or his #1 and my #1 share a cache entry and
             # the second reader gets the first one's write-up.

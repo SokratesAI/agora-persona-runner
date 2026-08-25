@@ -4420,6 +4420,36 @@
     shown.forEach(function (item) { boardRows.appendChild(renderBoardItem(board, item)); });
   }
 
+  /* My own rows, cut by the search and by nothing else. `visibleItems`
+   * is not reused here on purpose: it applies the status filter and the
+   * toggles, and those live on the strip above *his* rows, which my tab
+   * does not draw. Filtering by a control the reader cannot see would
+   * hide rows with no way to get them back. */
+  function visibleNovaItems(items) {
+    var query = boardState.query.trim().toLowerCase();
+    if (!query) return items;
+    var matched = boardState.matchedQuery === query && boardState.matches
+      ? boardState.matches
+      : [];
+    return items.filter(function (i) {
+      return (i.title || "").toLowerCase().indexOf(query) !== -1
+        || matched.indexOf(i.number) !== -1;
+    });
+  }
+
+  function renderNovaRows(board, items) {
+    boardRows.textContent = "";
+    var shown = visibleNovaItems(items);
+    if (!shown.length) {
+      boardRows.appendChild(el(
+        "p", "empty",
+        boardState.query.trim() ? "Nothing matches “" + boardState.query.trim() + "”."
+          : "Nothing here."
+      ));
+    }
+    shown.forEach(function (item) { boardRows.appendChild(renderNovaItem(board, item)); });
+  }
+
   /* Redraw only what a search changed. The owner, issues.md, 2026-08-15:
    * "When i use the search bar in Nova, my keyboard is closed on every
    * letter input so i have to open the keyboard each letter."
@@ -4450,7 +4480,8 @@
       renderBoard(board, payload);
       return;
     }
-    renderBoardRows(board, payload.items || []);
+    if (boardState.tab === "nova") renderNovaRows(board, payload.novaItems || []);
+    else renderBoardRows(board, payload.items || []);
   }
 
   /* The search box, the filter chips and the sort control, in that order
@@ -4565,9 +4596,16 @@
     document.addEventListener("keydown", onKeydown, true);
   }
 
-  function renderBoardControls(board, payload, items) {
-    var bar = el("div", "board-controls");
-
+  /* The search box on its own, because both tabs now have one and they
+   * are the same control. Extracted rather than copied: two things in
+   * here were each learned once and would have to be relearned on a
+   * second copy -- the clear button is hidden rather than removed so it
+   * cannot move the caret's neighbour mid-edit, and the focus after a
+   * clear happens synchronously inside the tap, which is the only way a
+   * phone keeps the keyboard up. Everything else on the strip -- the
+   * status chips, the toggles, the sort control -- is deliberately not
+   * in here, because my tab does not draw them. */
+  function renderSearchBox(board, payload) {
     var search = el("div", "board-search");
     var input = document.createElement("input");
     input.type = "search";
@@ -4603,7 +4641,12 @@
       runBoardSearch(board, payload);
       refreshBoardRows(board, payload);
     });
-    bar.appendChild(search);
+    return search;
+  }
+
+  function renderBoardControls(board, payload, items) {
+    var bar = el("div", "board-controls");
+    bar.appendChild(renderSearchBox(board, payload));
 
     /* "on each option, on a horisontal line, a description of the option
      * ('priority') and on the right side of it a button with a
@@ -4688,6 +4731,7 @@
 
   function runBoardSearch(board, payload) {
     var query = boardState.query.trim().toLowerCase();
+    var tab = boardState.tab;
     if (searchTimer) clearTimeout(searchTimer);
     if (!query) {
       boardState.matches = null;
@@ -4695,9 +4739,16 @@
       return;
     }
     searchTimer = setTimeout(function () {
-      fetch("/api/board?name=" + board + "&q=" + encodeURIComponent(query))
+      // `mine=1` asks my board rather than his. The answer is a list of
+      // row numbers and both boards number from 1, so the flag is what
+      // makes the reply addressable at all -- and `tab` is captured above
+      // rather than read here, for the same reason `board` is: switching
+      // tabs mid-flight must not let his numbers land on my rows.
+      fetch("/api/board?name=" + board + "&q=" + encodeURIComponent(query)
+        + (tab === "nova" ? "&mine=1" : ""))
         .then(json)
         .then(function (result) {
+          if (boardState.tab !== tab) return;
           // The same guard every other loader in this file carries, and
           // for the same reason: a debounce plus a round trip is long
           // enough to tap the nav, and without this the answer repaints
@@ -4806,7 +4857,20 @@
     if (items.length) {
       var box = el("section", "nova-board");
       box.appendChild(el("h2", "captures-title", "On my board"));
-      items.forEach(function (item) { box.appendChild(renderNovaItem(board, item)); });
+      /* The same search his rows have had since ideas.md #71, over the
+       * same two things: my row titles, which the page is holding, and
+       * my write-ups, which it is not -- `board_page` windows
+       * `novaDetails` away on every list request, so the write-up half
+       * is answered by the server exactly as his is.
+       *
+       * It cuts the rows above and not the note stream below. The stream
+       * is 660 bullets fetched a page at a time, so searching it means
+       * searching what has not been fetched, which is a different piece
+       * of work and not this one. */
+      box.appendChild(renderSearchBox(board, payload));
+      boardRows = el("div", "board-rows");
+      renderNovaRows(board, items);
+      box.appendChild(boardRows);
       wrap.appendChild(box);
       wrap.appendChild(el("h2", "captures-title", "Everything else I noticed"));
     }
@@ -4867,6 +4931,14 @@
       button.addEventListener("click", function () {
         if (boardState.tab === tab.key) return;
         boardState.tab = tab.key;
+        // Same reasoning as switching board in `loadBoard`, and now the
+        // same consequence: `matches` is a list of row numbers answered
+        // for one tab, and both tabs number from 1, so carrying it over
+        // would apply my #3 to his #3. The box is cleared with it rather
+        // than left standing over rows it never searched.
+        boardState.query = "";
+        boardState.matches = null;
+        boardState.matchedQuery = null;
         renderBoard(board, payload);
       });
       tabs.appendChild(button);
