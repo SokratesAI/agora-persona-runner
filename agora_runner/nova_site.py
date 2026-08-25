@@ -487,6 +487,28 @@ def board_payload(name):
     details = {
         str(number): render_blocks(body) for number, body in board["details"].items()
     }
+    # My own two files get parsed as a board as well as a note stream --
+    # issue #97, the half of it the owner kept: *"making your board like
+    # mine and giving yourself more tidiness is an improvement"*. Until
+    # now `parse_board` was only ever pointed at his file, so my side of
+    # the page could only ever be a flat bullet list and there was no way
+    # to say a thing I filed was open, rated, or finished.
+    #
+    # The notes stream is untouched and stays underneath. That is the
+    # design rather than a step on the way to migrating it: 654 issue
+    # bullets and 221 idea bullets are a log, and a board built out of all
+    # of them would be a worse board than none. A cycle boards the few
+    # that are real work; the rest stay history.
+    mine = parse_board(nova_markdown)
+    # Rendered inline rather than fetched per row, which is the opposite
+    # of what `details` above does and is deliberate. His `# Details` is
+    # ~60KB and is stripped from the list for that reason; mine is 0 bytes
+    # today and every row on it will have been put there by a cycle that
+    # judged it worth tracking. When it grows past a page it takes the
+    # same treatment -- `board_page` is where that would go.
+    nova_details = {
+        str(number): render_blocks(body) for number, body in mine["details"].items()
+    }
     # Live first, then the rolled-off older half -- both files are
     # newest-first and the archive holds only what is older than the live
     # file's oldest, so appending preserves the order rather than
@@ -548,6 +570,8 @@ def board_payload(name):
             for item in board["items"]
         },
         "notes": notes,
+        "novaItems": mine["items"],
+        "novaDetails": nova_details,
     }
 
 
