@@ -100,7 +100,9 @@ import mimetypes
 import os
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -183,6 +185,8 @@ from agora_runner.nova_idea_pool import (
     pool_payload,
     request_generate as pool_request_generate,
 )
+from agora_runner.nova_demos import DEMOS_PATH, load as load_demos, lookup as lookup_demo
+from agora_runner.vault import vault_read_path
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_plan import plan_payload as shape_plan
@@ -778,6 +782,13 @@ def board_page(payload, limit=None, item=None, search=None, mine=False):
 # -- it is how often an *active* reader makes the site rebuild. At 15s a
 # session polling every 30s rebuilds once per poll and never waits for one.
 CACHE_FRESH_SECONDS = 15
+
+#: How long the demo proxy waits on a dev server before giving up. Ten
+#: seconds because a cold `npm run dev` compiles on the first request and
+#: the browser's own patience is the only thing this is racing -- shorter
+#: would turn a slow first paint into "the demo is broken", which is the
+#: reading this feature can least afford.
+DEMO_PROXY_TIMEOUT = 10
 
 # How old the served payload may be before "there is no newer entry in it"
 # stops being evidence about the loop and becomes evidence about this
@@ -1867,6 +1878,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path, _, raw_query = self.path.partition("?")
+        # Before the `rstrip` below, deliberately. `/demo/foo/` and
+        # `/demo/foo` are different URLs to a browser resolving a relative
+        # asset -- `style.css` under the first is `/demo/foo/style.css` and
+        # under the second is `/demo/style.css` -- so this route has to see
+        # the trailing slash the rest of the site is happy to throw away.
+        if path == "/demo" or path.startswith("/demo/"):
+            self._serve_demo(path, raw_query)
+            return
         path = path.rstrip("/") or "/"
         query = urllib.parse.parse_qs(raw_query)
 
@@ -1987,6 +2006,80 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(502, {"error": str(e)[:300]})
             return
         self._send_json(404, {"error": "not found"})
+
+    def _serve_demo(self, path, raw_query):
+        """`/demo/<slug>/...` -- reverse-proxy to a demo's dev server.
+
+        Idea #135. The owner asked to be handed a link in a meeting and open
+        it; the link is a path on the hostname he already has installed,
+        rather than a tailnet device per demo that would outlive the demo by
+        weeks. `nova_demos` holds slug -> pod IP and port; the hop from this
+        pod to the bridge pod's IP is the one Cycle 442 measured rather than
+        assumed.
+
+        Three things this deliberately does not do, so nobody has to
+        rediscover them from a blank page:
+
+        * **GET only.** A dev server's HTML, JS, CSS and images are all GETs,
+          which is the whole first slice. A demo that posts a form gets a 405
+          that says so, which is a readable failure rather than a hang.
+        * **No websockets.** `BaseHTTPRequestHandler` cannot upgrade a
+          connection, so Vite's hot reload will not connect. The page still
+          loads; it just does not live-reload.
+        * **No rewriting of the body.** An asset referenced as `/style.css`
+          resolves against Nova, not the demo, and 404s. Relative URLs work.
+          Rewriting HTML to fix that is a guess about someone else's markup,
+          and the redirect below removes the common cause.
+        """
+        rest = path[len("/demo"):]
+        slug, _, upstream_path = rest.lstrip("/").partition("/")
+        if not slug:
+            self._send_json(404, {"error": "no demo named in the path"})
+            return
+        # `/demo/foo` -> `/demo/foo/`, so the browser resolves the page's
+        # relative assets under the demo rather than under the site root.
+        if "/" not in rest.lstrip("/"):
+            self.send_response(302)
+            self.send_header("Location", f"/demo/{slug}/" + (f"?{raw_query}" if raw_query else ""))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        try:
+            demo = lookup_demo(load_demos(vault_read_path(DEMOS_PATH)), slug)
+        except Exception as e:
+            log(f"nova-site /demo/{slug} registry read failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        if demo is None:
+            self._send_json(404, {"error": f"no demo named {slug!r} is running"})
+            return
+        target = f"http://{demo['host']}:{demo['port']}/{upstream_path}"
+        if raw_query:
+            target += f"?{raw_query}"
+        try:
+            with urllib.request.urlopen(target, timeout=DEMO_PROXY_TIMEOUT) as up:
+                status, headers, body = up.status, up.headers, up.read()
+        except urllib.error.HTTPError as e:
+            # A 404 from the dev server is the demo's answer, not a fault
+            # here, so it is passed through rather than replaced.
+            status, headers, body = e.code, e.headers, e.read()
+        except Exception as e:
+            log(f"nova-site /demo/{slug} upstream failed: {e}")
+            self._send_json(502, {
+                "error": f"demo {slug!r} is registered on "
+                         f"{demo['host']}:{demo['port']} but did not answer: {e}"[:300]})
+            return
+        content_type = headers.get("Content-Type", "application/octet-stream")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        # A demo is a thing being edited while it is looked at. Anything
+        # cached here is the owner reloading and seeing the previous build,
+        # which reads as "the demo is broken" and is the one failure this
+        # feature cannot afford.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_upload(self, name):
         """Serve one stored image. `name` is validated in `read_upload`.
@@ -2958,6 +3051,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # reader with its own cap -- see `_post_upload`.
         if path == "/api/upload":
             self._post_upload()
+            return
+        if path == "/demo" or path.startswith("/demo/"):
+            # The generic 404 below would read as "that demo is not
+            # running", which is a different and much more confusing
+            # problem than "this proxy does not carry POSTs yet".
+            self._send_json(405, {"error": "the demo proxy serves GET only"})
             return
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete",
