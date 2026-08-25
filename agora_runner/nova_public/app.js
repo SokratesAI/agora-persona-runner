@@ -8416,13 +8416,17 @@
        * die: the reply takes about a minute, and a minute is long enough
        * to navigate away and forget it was coming.
        *
-       * There is no first-paint guard here and there was one until a
-       * mutation check showed it could not fire. Nothing polls before the
-       * dock has been opened once, and opening it sets `isOpen` before the
-       * read, so every paint with the dock shut is by definition a paint
-       * after he has already seen the thread. A guard that cannot fire
-       * reads as care and is really just an untested branch. */
-      if (!isOpen && messages.length > lastCount) setDot(true);
+       * `loaded` is the first-paint guard, and it is here because my
+       * reviewer disproved the comment that used to sit in its place. I had
+       * deleted it after a mutation check showed no test could see it, and
+       * wrote that it could not fire: opening sets `isOpen` before the read,
+       * so a shut dock must have been read already. That reasoning assumes
+       * the read finishes before he can act again. Open the dock and close
+       * it before the fetch lands -- one tap on a slow phone -- and the
+       * first paint of the session runs shut, with `lastCount` still 0, so
+       * a thread he has read a hundred times lights the dot. A mutation
+       * check only ever tests the mutation I thought of. */
+      if (!isOpen && loaded && messages.length > lastCount) setDot(true);
       lastCount = messages.length;
       renderAskThread(thread, payload);
       loaded = true;

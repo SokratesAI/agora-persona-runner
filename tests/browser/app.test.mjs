@@ -8000,6 +8000,20 @@ describe("the chat dock", () => {
     assert.equal(window.getComputedStyle(dock).display, "flex", "opening it did not show it");
   });
 
+  /* The reviewer's finding, and it killed a comment I had just written
+   * saying this could not happen. Opening starts a fetch; closing before it
+   * lands means the first paint of the session runs with the dock shut and
+   * `lastCount` still 0, so an old thread he has read a hundred times reads
+   * as unread. The first-paint guard is back because of this test. */
+  test("closing before the first read lands does not invent an unread answer", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    tap(window, "chat-close");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.getElementById("chat-dot").hasAttribute("hidden"),
+      "a thread he had already read came back as an unread answer");
+  });
+
   test("tapping the launcher opens the thread and reads it", async () => {
     const window = await loadSite("/", { ask: answered });
     tap(window, "chat-btn");
@@ -8066,7 +8080,7 @@ describe("the chat dock", () => {
     // this test passed with the poll registered in `livePolls`, which is
     // the one thing it exists to catch.
     for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(timers.queued.length, 1, "the navigation cancelled the dock's poll");
+    assert.equal(timers.queued.length, 1, "the navigation cancelled the dock's poll -- it should have survived");
 
     await timers.fire();
 
