@@ -1180,6 +1180,71 @@ body.nav-open { overflow: hidden; }
   cursor: pointer;
 }
 
+/* Searching the journal. Deliberately the board search's own measurements
+ * -- 44px tap targets, the same radius, the same accent-on-focus -- rather
+ * than a second set: it sits one nav tap away from the board box and the
+ * two do the same job, so anything that made them look different would be
+ * a difference to explain.
+ *
+ * It is not a copy of those rules, because the two are not the same
+ * control: this one is a section holding a row and a count line, and the
+ * board's is the row itself. Sharing a class between them would mean the
+ * next change to either having to be true of both. */
+.journal-search { margin: 0 0 1rem; }
+
+.journal-search-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.journal-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+.journal-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Kept for the reason `.board-search-clear[hidden]` is kept, one screen
+ * up: this button declares no `display`, so the UA rule wins today and
+ * would stop winning the moment someone centres the × with flex. */
+.journal-search-clear[hidden] { display: none; }
+
+.journal-search-clear {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  background: var(--card);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.journal-search-count[hidden] { display: none; }
+
+/* `--text`, not `--dim`. This is the answer to what he typed -- when it
+ * says no entry matched, that sentence is the entire result -- and he has
+ * twice reported grey text on this page as unreadable on a phone in
+ * daylight. */
+.journal-search-count {
+  margin: 0.5rem 0 0;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
 .filter-extra {
   flex: 0 1 auto;
   font-size: 0.82rem;

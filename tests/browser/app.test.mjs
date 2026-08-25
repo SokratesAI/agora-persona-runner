@@ -8450,3 +8450,154 @@ describe("searching my own board rows", () => {
     assert.deepEqual(rows(window), ["#1", "#2"]);
   });
 });
+
+describe("searching the journal", () => {
+  const all = payload.journal.entries;
+
+  /* A server that honours `?q=` the way `nova_site.journal_page` does:
+   * matches ignore the window, `total` is the number of matches, and the
+   * query comes back with the answer. Written against that contract
+   * rather than against a fixed answer, so a change to the real one that
+   * this page could not survive shows up here as a failing test rather
+   * than as a fixture that no longer describes anything.
+   */
+  function searchable() {
+    const corpus = [];
+    for (let i = 0; i < 30; i += 1) {
+      corpus.push({
+        ...JSON.parse(JSON.stringify(all[2])),
+        cycle: 30 - i,
+        // Three of the thirty carry the word, and all three sit past the
+        // twenty-entry window on purpose: a filter over what was already
+        // on screen would find none of them.
+        title: "Cycle " + (30 - i) + (i >= 22 && i <= 24 ? " — the ingress" : " — a quiet one"),
+      });
+    }
+    const asked = [];
+    const serve = (url) => {
+      asked.push(url);
+      const params = new URL(url, "https://nova.example").searchParams;
+      const q = (params.get("q") || "").trim().toLowerCase();
+      const limit = Number(params.get("limit")) || corpus.length;
+      if (!q) {
+        return {
+          entries: corpus.slice(0, limit),
+          status: payload.journal.status,
+          total: corpus.length,
+          version: 'W/"plain-' + limit + '"',
+        };
+      }
+      const matched = corpus.filter((entry) => entry.title.toLowerCase().includes(q));
+      return {
+        entries: matched.slice(0, limit),
+        status: payload.journal.status,
+        total: matched.length,
+        query: q,
+        version: 'W/"q-' + q + '-' + limit + '"',
+      };
+    };
+    return { serve, asked };
+  }
+
+  /** Type into the box and wait past the 200ms debounce. */
+  async function search(window, text) {
+    const box = window.document.querySelector(".journal-search-input");
+    box.value = text;
+    box.dispatchEvent(new window.Event("input"));
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    return box;
+  }
+
+  test("the journal feed carries a search box", async () => {
+    const window = await loadSite("/", { journal: searchable().serve });
+    const box = window.document.querySelector(".journal-search-input");
+    assert.ok(box, "no way to search the journal");
+    assert.equal(box.getAttribute("aria-label"), "Search the journal");
+  });
+
+  test("it is not on the board pages, and not on a deep-linked cycle", async () => {
+    /* One box, on the page it searches. The boards have their own and a
+     * deep link asks the server for a single entry by number, so there is
+     * no window there for a query to narrow. */
+    const board = await loadSite("/issues");
+    const onBoard = board.document.querySelector("#journal-search");
+    assert.ok(!onBoard || onBoard.hidden, "the journal search box followed the reader onto the board");
+
+    const deep = await loadSite("/cycle/7", { journal: searchable().serve });
+    const onDeep = deep.document.querySelector("#journal-search");
+    assert.ok(!onDeep || onDeep.hidden, "a single-entry page offered a search over one entry");
+  });
+
+  test("typing asks the server and shows what came back", async () => {
+    const server = searchable();
+    const window = await loadSite("/", { journal: server.serve });
+    assert.equal(cards(window).length, 20, "the plain feed should be one window");
+
+    await search(window, "ingress");
+    assert.match(server.asked[server.asked.length - 1], /q=ingress/);
+    // Three matches, all of them past the first window -- so this is the
+    // whole journal being searched and not the page being filtered.
+    assert.equal(cards(window).length, 3);
+    assert.equal(window.document.querySelector("button.more"), null);
+  });
+
+  test("the count names the query the answer was built from", async () => {
+    const window = await loadSite("/", { journal: searchable().serve });
+    await search(window, "ingress");
+    const count = window.document.querySelector(".journal-search-count");
+    assert.ok(!count.hidden);
+    assert.match(count.textContent, /3 entries mention/);
+    assert.match(count.textContent, /ingress/);
+  });
+
+  test("a search nothing matches says so rather than looking empty", async () => {
+    /* A feed that simply went blank is the one outcome that reads as a
+     * broken page rather than as an answer. */
+    const window = await loadSite("/", { journal: searchable().serve });
+    await search(window, "kubernetes");
+    assert.equal(cards(window).length, 0);
+    const count = window.document.querySelector(".journal-search-count");
+    assert.ok(!count.hidden);
+    assert.match(count.textContent, /No entry mentions/);
+  });
+
+  test("clearing the box brings the feed back", async () => {
+    const server = searchable();
+    const window = await loadSite("/", { journal: server.serve });
+    await search(window, "ingress");
+    click(window, window.document.querySelector(".journal-search-clear"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(cards(window).length, 20);
+    assert.ok(!/q=/.test(server.asked[server.asked.length - 1]), "still searching after a clear");
+    assert.ok(window.document.querySelector(".journal-search-count").hidden);
+  });
+
+  test("a repaint of the feed does not take the box away mid-word", async () => {
+    /* The reason the box is outside `<main id="feed">`. `render` empties
+     * that element on every paint -- the 30-second poll, a new entry
+     * arriving, a tap on the pager -- so a box inside it would lose the
+     * caret and the keyboard on the first poll after he started typing.
+     * Asserting the node survives is not enough: it has to be the same
+     * node, still holding what he typed. */
+    const server = searchable();
+    const window = await loadSite("/", { journal: server.serve });
+    const box = await search(window, "ingress");
+    assert.ok(window.document.contains(box), "the search box was rebuilt out from under the caret");
+    assert.equal(box.value, "ingress");
+    assert.equal(window.document.querySelectorAll(".journal-search-input").length, 1);
+  });
+
+  test("no digest is asked for while a search is running", async () => {
+    /* `/api/digest?limit=N` resolves its window out of the newest N
+     * cycles, so its summaries belong to the feed's window and not to
+     * whatever the search matched. Asked for anyway, the page would hand
+     * cycle 30's summary to a card from cycle 6. */
+    const server = searchable();
+    const digest = { asked: [], serve: null };
+    digest.serve = (url) => { digest.asked.push(url); return payload.digest; };
+    const window = await loadSite("/", { journal: server.serve, digest: digest.serve });
+    const before = digest.asked.length;
+    await search(window, "ingress");
+    assert.equal(digest.asked.length, before, "the digest was fetched for a window the search is not in");
+  });
+});

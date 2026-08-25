@@ -4656,3 +4656,138 @@ def test_service_worker_precaches_the_chart_library():
     served, _, library = _get("/vendor/echarts.min.js")
     assert served == 200
     assert len(library) > 500_000
+
+
+# --- Searching the journal (his capture, issues.md 2026-08-25) ------------
+#
+# "I want to be able to search through journals. Give me a button or a
+# input field somewhere."
+
+
+def _searchable():
+    """Four entries whose distinguishing words are only in the prose.
+
+    Deliberately not the sample fixture: the point of every test below is
+    which entries come back for a given word, and a fixture that exists to
+    exercise the parser would make that an assertion about somebody else's
+    prose. `title` and `body` are the only two fields the search reads.
+    """
+    return {
+        "entries": [
+            {"cycle": 4, "title": "Cycle 4 — the pod came back", "body": "Restarted it."},
+            {"cycle": 3, "title": "Cycle 3 — a quiet one", "body": "Read about Tailscale."},
+            {"cycle": 2, "title": "Cycle 2 — TAILSCALE, at last", "body": "Nothing else."},
+            {"cycle": 1, "title": "Cycle 1 — the first", "body": "Wrote the runner."},
+        ],
+        "status": {"silentIntervals": 0},
+    }
+
+
+def test_a_search_matches_prose_the_feed_never_sends():
+    """The reason this is on the server and not in app.js.
+
+    A cold load holds twenty entries and `_rendered` drops `body` from
+    every one of them, so "Tailscale" written in the prose of entry 3 is a
+    word no client-side filter could ever see. If this ever passes only on
+    the title, the feature has quietly become a filter over what is
+    already on screen.
+    """
+    page = nova_site.journal_page(_searchable(), search="tailscale")
+    cycles = [entry["cycle"] for entry in page["entries"]]
+    assert cycles == [3, 2], "cycle 3 matches in the body, cycle 2 in the title"
+    assert page["query"] == "tailscale"
+    assert page["total"] == 2
+
+
+def test_a_search_is_case_and_whitespace_insensitive():
+    """He types on a phone with autocapitalise on, and a search box that
+    misses `TAILSCALE` because he typed `tailscale` reads as no results
+    rather than as a bug."""
+    page = nova_site.journal_page(_searchable(), search="  TailScale  ")
+    assert [entry["cycle"] for entry in page["entries"]] == [3, 2]
+    # Normalised in the answer too: the page compares this against what it
+    # has in the box to decide whether the count on screen is stale, and a
+    # comparison against the raw string would never match.
+    assert page["query"] == "tailscale"
+
+
+def test_a_search_ignores_the_window_and_reads_the_whole_journal():
+    """A window is the newest N entries; a search is not. Asked with the
+    limit the feed always sends, the match three entries down still comes
+    back -- otherwise searching would only ever look at the page he can
+    already see, which is the one place he does not need it."""
+    page = nova_site.journal_page(_searchable(), limit=1, offset=0, search="runner")
+    assert [entry["cycle"] for entry in page["entries"]] == [1]
+
+
+def test_the_limit_caps_the_matches_and_total_counts_them_all():
+    """`total` drives the pager, so it has to be the number of matches and
+    not the number returned -- equal to `len(entries)` and the button never
+    appears, so the second page of a search would be unreachable."""
+    page = nova_site.journal_page(_searchable(), limit=1, search="cycle")
+    assert len(page["entries"]) == 1
+    assert page["total"] == 4
+
+
+def test_an_empty_search_is_not_a_search():
+    """A cleared box sends no `q` at all, but a box holding only spaces
+    sends one. Treated as a search it would match every entry and quietly
+    replace the feed's window with the whole journal."""
+    for empty in (None, "", "   "):
+        page = nova_site.journal_page(_searchable(), limit=2, search=empty)
+        assert [entry["cycle"] for entry in page["entries"]] == [4, 3], empty
+        assert "query" not in page, empty
+        assert page["total"] == 4, empty
+
+
+def test_a_search_still_carries_the_status_header():
+    """The header renders on every page and is computed over the whole
+    corpus, not the window -- a search that dropped it would blank the
+    stall warning and the running badge for as long as he was typing."""
+    page = nova_site.journal_page(_searchable(), search="tailscale")
+    assert "status" in page
+
+
+def test_two_queries_against_one_journal_get_different_etags():
+    """The base etag is the journal build, which is identical for both, so
+    without the query in the descriptor the second search is answered 304
+    and the page keeps showing the first one's rows -- a wrong answer that
+    looks like a right one."""
+    payload = _searchable()
+    first = nova_site.journal_page(payload, limit=20, search="tailscale")
+    second = nova_site.journal_page(payload, limit=20, search="runner")
+    assert nova_site.journal_descriptor(first, 20, 0, None, "tailscale") \
+        != nova_site.journal_descriptor(second, 20, 0, None, "runner")
+    # And a search is not the same request as the plain window it shares a
+    # limit with, which is the other half of the same 304.
+    plain = nova_site.journal_page(payload, limit=20)
+    assert nova_site.journal_descriptor(plain, 20, 0, None, None) \
+        != nova_site.journal_descriptor(first, 20, 0, None, "tailscale")
+
+
+def test_the_endpoint_actually_reads_q_off_the_query_string():
+    """Everything above tests `journal_page` directly, and every one of
+    those tests would still pass if `_send_journal` never passed `q` down
+    -- the handler would just answer the plain window and look fine. So
+    ask over the socket, which is the only place the wiring exists.
+    """
+    nova_site.reset_cache()
+    payload = {
+        "entries": [
+            {"cycle": 2, "title": "Cycle 2", "body": "Nothing here."},
+            {"cycle": 1, "title": "Cycle 1", "body": "Fixed the ingress."},
+        ],
+        "status": {},
+    }
+    with patch.object(nova_site, "journal_payload", lambda: payload):
+        status, _, body = _get("/api/journal?limit=20&q=ingress")
+        assert status == 200
+        page = json.loads(body)
+        assert page["query"] == "ingress"
+        assert [entry["cycle"] for entry in page["entries"]] == [1]
+
+        # And the etag really does move with the query, over the wire --
+        # the descriptor test above proves the two strings differ, not
+        # that the handler puts either of them in the header.
+        _, _, plain = _get("/api/journal?limit=20")
+        assert json.loads(plain)["version"] != page["version"]
