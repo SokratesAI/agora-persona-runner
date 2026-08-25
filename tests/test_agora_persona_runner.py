@@ -1930,7 +1930,7 @@ def test_anthropic_generate_sends_real_image_content_end_to_end(runner):
 # Covers: on_text fires per round with the right is_final; the Gemini
 # fallback note lands on only the first streamed chunk; turn-taking stays
 # correct once one "turn" can be several messages (activity chips invisible
-# to visible/consecutive_ai_turns, turn-counted by run not by message); and
+# to the `visible` filter decide_turn builds); and
 # a turn that fails partway through rolls its own preamble back out.
 # ---------------------------------------------------------------------------
 
@@ -2415,8 +2415,14 @@ def test_decide_turn_speaks_for_a_lone_persona_that_is_not_a_curator(runner):
 
 
 def test_decide_turn_does_not_reply_to_a_persona(runner):
-    """No persona-to-persona chain exists any more: the last visible message
-    being a persona's is the end of the turn, @mention or not."""
+    """The last visible message being a persona's is the end of the turn.
+
+    Note what this does and does not pin: the old code also returned [] here,
+    because it filtered a self-mention out before looking for a chain. What it
+    pins is that the rule is now the sender check alone -- mutate that check
+    away and this test is the one that fails. Proving the *chain* is gone would
+    need a fixture with a second persona in the thread, which Agora refuses to
+    create (agora#67), so there is no honest way to write it."""
     personas = [{"name": "Gemini", "role": "curator"}]
     thread = [
         {"sender": "Edvard", "text": "go"},

@@ -720,19 +720,20 @@ def join_running_heartbeats():
 
 def workflow_bound_conversation_ids(heartbeats_list):
     """Conversation ids driven by an enabled, workflow-mode heartbeat.
-    poll_once (2026-07-30) skips ordinary curator/@mention turn-taking
-    for these entirely: a workflow step's own personaIds already decides
-    who acts and when, so decide_turn's @mention-chain logic has nothing
-    legitimate to do there -- and worse, can crash outright. Found live:
-    a workflow persona's reply naturally included "@OtherPersona", the
-    ordinary poll loop picked that up as a real mention and tried to
-    continue the exchange via speak(), but a workflow-only conversation
-    may never have a real the owner message to anchor on (unlike one the owner
-    started himself) -- merge_history pops every leading non-user turn,
-    so the history came back empty, speak() raised, and three such
-    crashes auto-paused the conversation via what is now FAILURE_BACKOFF_CAP. The
-    workflow engine's own turns are unaffected either way (run_workflow_steps
-    already appends its own synthetic user turn every round)."""
+    poll_once (2026-07-30) skips ordinary turn-taking for these
+    entirely: a workflow step's own personaIds already decides who acts
+    and when, so decide_turn has nothing legitimate to do there.
+
+    The @mention chain that used to make this dangerous rather than
+    merely redundant is gone (agora#67 -- one persona per conversation).
+    It is worth keeping the record of what it did, because it is why this
+    function exists: a workflow persona's reply naturally included
+    "@OtherPersona", the ordinary poll loop read that as a real mention
+    and tried to continue the exchange via speak(), but a workflow-only
+    conversation may never have a real owner message to anchor on --
+    merge_history pops every leading non-user turn, so the history came
+    back empty, speak() raised, and three such crashes auto-paused the
+    conversation via what is now FAILURE_BACKOFF_CAP."""
     return {
         hb["conversationId"] for hb in heartbeats_list
         if hb.get("enabled") and hb.get("workflowId") and hb.get("conversationId")

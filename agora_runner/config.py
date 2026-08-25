@@ -176,10 +176,6 @@ ANTHROPIC_NO_THINKING_TOGGLE = {"claude-haiku-4-5-20251001", "claude-fable-5"}
 
 MAX_HISTORY = 20          # messages included in a generation context
 FETCH_LIMIT = 40          # ?limit for detail fetches (critique #5)
-AI_TURN_CAP = 6           # consecutive automated turns before a persona-to-
-                          # persona @mention chain stops (it no longer pauses
-                          # the conversation -- see conversations.py)
-
 # Nothing auto-pauses a conversation any more. The owner, 2026-08-05: *"Please
 # turn off the auto pause of conversations as they are just blocking now.
 # They belong to the previous architecture, outdated."* A pause needs a manual

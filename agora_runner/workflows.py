@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from agora_runner.config import AI_TURN_CAP, FETCH_LIMIT, HEARTBEAT_NO_REPORT_SENTINEL
+from agora_runner.config import FETCH_LIMIT, HEARTBEAT_NO_REPORT_SENTINEL
 from agora_runner.log import log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
@@ -16,8 +16,8 @@ from agora_runner.conversation_rotation import rotate_cycle_conversation
 
 WORKFLOW_MAX_DEPTH = 5  # defense in depth — Agora already rejects a
                          # cyclic workflowRef at save time (Decisions/0009);
-                         # this is the runtime backstop, same "deterministic
-                         # rule + hard cap" shape as AI_TURN_CAP.
+                         # this is the runtime backstop: a deterministic
+                         # rule with a hard cap behind it.
 
 
 def run_workflow_steps(steps, conversation_id, detail, participants,
