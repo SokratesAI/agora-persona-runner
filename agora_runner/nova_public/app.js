@@ -65,6 +65,7 @@
     if (path === "/ask") return { view: "ask", cycle: null, board: null };
     if (path === "/conversations") return { view: "conversations", cycle: null, board: null };
     if (path === "/heartbeats") return { view: "heartbeats", cycle: null, board: null };
+    if (path === "/catalog") return { view: "catalog", cycle: null, board: null };
     if (path === "/diag") return { view: "diag", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
@@ -8241,6 +8242,127 @@
       });
   }
 
+  /* The service catalog -- every workload running in the cluster, what
+   * ordered it, and whether it is up.
+   *
+   * Step 2 of the IDP roadmap. `tools.catalog` reads the cluster and
+   * writes `nova/catalog.md`; until this page existed the only way to
+   * read it was to open Obsidian on a laptop. Nothing here talks to
+   * Kubernetes: the server parses that one vault document, for the
+   * reason written at the top of `nova_catalog.py`.
+   *
+   * No polling. The file changes when a cycle runs the tool, which is
+   * once an hour at the most, so a timer here would be 900 requests a
+   * day to re-read a document that had not moved -- and the page says
+   * out loud when it was last regenerated, which is the honest answer to
+   * "is this current" rather than a refresh that hides the question.
+   */
+  function catalogCard(row) {
+    var card = el("div", "cat-row" + (row.status === "off" ? " cat-dim" : ""));
+    var head = el("div", "cat-head");
+    if (row.url) {
+      var link = el("a", "cat-name", row.name);
+      link.href = row.url;
+      link.rel = "noopener";
+      head.appendChild(link);
+    } else {
+      head.appendChild(el("span", "cat-name", row.name));
+    }
+    // The word, never a bare colour -- his ask about the priority symbols,
+    // and "off" and "down" are the pair that most needs it: one is a
+    // deliberate scale-to-zero and the other is something broken.
+    var label = row.status === "up" ? "Up"
+      : row.status === "off" ? "Off on purpose"
+      : row.status === "down" ? "DOWN" : "Unknown";
+    head.appendChild(el("span", "cat-state cat-state-" + row.status, label));
+    card.appendChild(head);
+    card.appendChild(el("div", "cat-meta", row.host || row.namespace));
+    var ordered = row.claim
+      ? "Source repo ordered by " + row.claim
+      : "Nothing here was ordered by a claim";
+    card.appendChild(el("div", "cat-meta", ordered));
+    if (row.deployedBy) {
+      card.appendChild(el("div", "cat-meta", "Deployed by " + row.deployedBy));
+    }
+    return card;
+  }
+
+  function renderCatalog(payload) {
+    stopPolling();
+    markNav();
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    var rows = payload.services || [];
+    var parts = [rows.length + (rows.length === 1 ? " service" : " services")];
+    if (payload.down) parts.push(payload.down + " down");
+    if (payload.off) parts.push(payload.off + " off on purpose");
+    statusEl.appendChild(el("p", "status-line", parts.join(" · ")));
+    feed.textContent = "";
+
+    if (payload.missing) {
+      feed.appendChild(el("p", "empty",
+        "No catalog has been written yet. A cycle builds it with tools.catalog."));
+      return;
+    }
+
+    if (payload.headline) {
+      var lead = el("div", "cat-headline" + (payload.incomplete ? " cat-warn" : ""));
+      lead.appendChild(el("p", "cat-lead", payload.headline));
+      if (payload.detail) lead.appendChild(el("p", "cat-detail", payload.detail));
+      (payload.unreadable || []).forEach(function (u) {
+        lead.appendChild(el("p", "cat-detail", u));
+      });
+      feed.appendChild(lead);
+    }
+
+    // Grouped by namespace, in the order the file lists them, because the
+    // tool already sorts by namespace and re-sorting here would be a
+    // second opinion about an order that has one owner.
+    var list = el("div", "cat-list");
+    var current = null;
+    rows.forEach(function (row) {
+      if (row.namespace !== current) {
+        current = row.namespace;
+        list.appendChild(el("h2", "cat-ns", current));
+      }
+      list.appendChild(catalogCard(row));
+    });
+    feed.appendChild(list);
+
+    if ((payload.doors || []).length) {
+      feed.appendChild(el("h2", "cat-ns", "Doors nothing in the catalog accounts for"));
+      var doors = el("div", "cat-list");
+      payload.doors.forEach(function (door) {
+        doors.appendChild(el("div", "cat-row cat-dim", door));
+      });
+      feed.appendChild(doors);
+    }
+
+    var when = payload.regenerated
+      ? "Read from the cluster " + payload.regenerated
+        + (payload.cycle ? " by cycle " + payload.cycle : "")
+      : "This catalog carries no timestamp.";
+    feed.appendChild(el("p", "cat-when", when));
+  }
+
+  function loadCatalog() {
+    fetchPage("/api/catalog")
+      .then(function (payload) {
+        if (route(window.location.pathname).view !== "catalog") return;
+        renderCatalog(payload);
+      })
+      .catch(function (err) {
+        // The same route guard as the heartbeats page, for the same
+        // reason: a fetch in flight when he taps away must not paint its
+        // failure over the page he actually opened.
+        if (route(window.location.pathname).view !== "catalog") return;
+        stopPolling();
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the catalog: " + err));
+      });
+  }
+
   function loadAsk() {
     fetchPage("/api/ask")
       .then(function (payload) {
@@ -8697,6 +8819,10 @@
     }
     if (here.view === "heartbeats") {
       loadHeartbeats();
+      return;
+    }
+    if (here.view === "catalog") {
+      loadCatalog();
       return;
     }
     // No `loadDiag` -- this is the one view with no payload behind it, so

@@ -14,6 +14,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_capture import CAPTURE_TARGETS
+from agora_runner.nova_catalog import CATALOG_PATH
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_costs import COST_LEDGER_PATH
 from agora_runner.nova_plan import PLAN_DOCUMENTS
@@ -295,3 +296,14 @@ def plan_markdown():
     these two genuinely not existing is a state a fresh vault is in.
     """
     return {key: vault_read_path(path) or "" for key, _label, path in PLAN_DOCUMENTS}
+
+
+def catalog_markdown():
+    """`nova/catalog.md`, raw -- the service catalog `tools.catalog` writes.
+
+    `""` if it is missing, for `plan_markdown`'s reason: a vault with no
+    catalog in it yet is a state this system is legitimately in, and the
+    page says so rather than erroring. The path comes from
+    `nova_catalog` rather than being written here a second time.
+    """
+    return vault_read_path(CATALOG_PATH) or ""
