@@ -690,7 +690,14 @@
         startOnLoad: false,
         securityLevel: "strict",
         suppressErrorRendering: true,
-        theme: "default",
+        // Dark, because this app is. `--bg` is `#12131a` and there is no
+        // light mode to fall back to -- no `prefers-color-scheme` rule
+        // anywhere in `style.css` -- so mermaid's default theme puts a
+        // white card in the middle of a dark message bubble. I only found
+        // that by driving the deployed page in a real browser and looking
+        // at the screenshot; the diagram was correct and it was the one
+        // bright rectangle on the page.
+        theme: "dark",
       });
       return mermaid;
     });

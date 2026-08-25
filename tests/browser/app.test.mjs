@@ -8537,6 +8537,10 @@ describe("mermaid diagrams in the chat", () => {
     // Without this, an unparseable diagram paints mermaid's red bomb into
     // the message instead of leaving the code block that says more.
     assert.equal(init.suppressErrorRendering, true);
+    // This app has one theme and it is dark -- `--bg` is `#12131a` and
+    // there is no `prefers-color-scheme` rule in the stylesheet at all --
+    // so mermaid's default puts a white card inside a dark bubble.
+    assert.equal(init.theme, "dark");
   });
 
   test("the code block is what is on screen until the diagram is ready", async () => {
