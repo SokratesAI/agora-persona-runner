@@ -1,10 +1,10 @@
 """Is the Claude Code CLI pin in the bridge Dockerfile still current?
 
-Cycle 427, on Edvard's idea #124. The bridge pins
+Cycle 427, on the owner's idea #124. The bridge pins
 `ARG CLAUDE_CODE_VERSION` and the loop runs *inside* that binary, so the
 pin is the one dependency in this system whose staleness degrades the
 loop itself. It sat at 2.1.226 from 8 August to 25 August -- nineteen
-releases, seventeen days -- and his note on the row is precise about why
+releases, seventeen days -- and the note on the row is precise about why
 that rated Immediately: *"The reason it is Immediately is not the size of
 the change, it is that the pin drifted nineteen releases without anyone
 noticing, including me."*
