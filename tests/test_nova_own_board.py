@@ -95,22 +95,101 @@ def test_the_note_stream_is_untouched_by_the_new_sections():
     assert all("Dead newspaper feeds" not in note["text"] for note in notes)
 
 
-def test_the_payload_the_server_sends_carries_my_rows():
+def test_board_payload_puts_my_rows_on_the_page(monkeypatch):
     """The parse tests above would pass with `board_payload` untouched.
 
-    `parse_board` is not new; pointing it at my file is. The committed
-    browser fixture is what `nova_site.board_payload` actually produced,
-    so asserting the two keys exist there is an assertion about the
-    server rather than about the parser.
-    """
-    import json
-    import os
+    `parse_board` is not new; pointing it at my own file is, and that is
+    one line in `nova_site`. The first version of this test read the
+    committed browser fixture and asserted the two keys were in it --
+    which the reviewer on runner#354 correctly called a no-op, because
+    the fixture is a file on disk and reverting the server change plus
+    re-running `regen.py` would leave it passing. It was a guard
+    reporting itself working while guarding nothing, which is the one
+    failure shape this loop keeps paying for.
 
-    fixture = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "browser", "fixtures", "payload.json"
-    )
-    with open(fixture, encoding="utf-8") as handle:
-        payload = json.load(handle)
-    board = payload["board"]
-    assert "novaItems" in board
-    assert "novaDetails" in board
+    So this calls the real `board_payload` over real markdown, through
+    the read the server actually makes.
+    """
+    from agora_runner import nova_sources
+    from agora_runner.nova_boards import BOARD_PATHS
+    from agora_runner.nova_site import board_payload
+
+    def read(path):
+        if path == BOARD_PATHS["issues"]["nova"]:
+            return MINE
+        return ""
+
+    monkeypatch.setattr(nova_sources, "vault_read_path", read)
+    payload = board_payload("issues")
+
+    assert [item["number"] for item in payload["novaItems"]] == [1, 2]
+    assert payload["novaItems"][0]["priority"] == "\U0001f7e0 High"
+    # Rendered blocks, not raw markdown -- the page draws these directly.
+    assert payload["novaDetails"]["1"][0]["type"] == "p"
+    # And his side is untouched by mine: an empty file for him means no
+    # rows, not my rows leaking across the tab.
+    assert payload["items"] == []
+    assert payload["details"] == {}
+    # The note stream still arrives beside the rows rather than instead
+    # of them.
+    assert len(payload["notes"]) == 2
+
+
+def test_my_write_ups_are_windowed_like_his_on_a_list_request():
+    """`board_page(limit=...)` strips his `details` and must strip mine.
+
+    Reviewer finding on runner#354, and it is right on the substance even
+    though the comment it quoted was a plan rather than a claim: at eight
+    rows my write-ups are ~4KB and riding along is free, but nothing was
+    going to notice at eighty. The client asks for the bodies of the row
+    it opens, the same way his tab does.
+    """
+    from agora_runner.nova_site import board_page
+
+    payload = {
+        "name": "issues",
+        "items": [],
+        "details": {"9": [{"type": "p"}]},
+        "novaItems": [{"number": 1}],
+        "novaDetails": {"1": [{"type": "p"}]},
+        "notes": [],
+    }
+    listed = board_page(dict(payload), limit=10)
+    assert listed["details"] == {}
+    assert listed["novaDetails"] == {}
+    # The rows themselves stay -- they are one line each, and dropping
+    # them would empty the tab rather than window it.
+    assert listed["novaItems"] == [{"number": 1}]
+
+    # No limit is the pre-#354 client asking for everything; it still gets
+    # everything, which is what that shape is for.
+    whole = board_page(dict(payload))
+    assert whole["novaDetails"] == {"1": [{"type": "p"}]}
+
+
+def test_asking_for_one_of_my_rows_returns_its_write_up():
+    """`?item=N&mine=1` -- the fetch the expanded row makes now.
+
+    Deliberately a separate flag rather than reusing `item=`: his #1 and
+    my #1 are different rows on the same page, and answering one query
+    with whichever dict happened to have the key is the collision this
+    keeps out.
+    """
+    from agora_runner.nova_site import board_page
+
+    payload = {
+        "name": "issues",
+        "items": [{"number": 1, "title": "his"}],
+        "details": {"1": [{"type": "p", "text": "his body"}]},
+        "novaItems": [{"number": 1, "title": "mine"}],
+        "novaDetails": {"1": [{"type": "p", "text": "my body"}]},
+        "notes": [],
+    }
+    mine = board_page(payload, item=1, mine=True)
+    assert mine["found"] is True
+    assert mine["item"]["title"] == "mine"
+    assert mine["item"]["blocks"][0]["text"] == "my body"
+
+    his = board_page(payload, item=1)
+    assert his["item"]["title"] == "his"
+    assert his["item"]["blocks"][0]["text"] == "his body"

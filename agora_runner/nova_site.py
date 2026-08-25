@@ -631,12 +631,13 @@ def plans_payload():
     return shape_plan(plan_markdown(), goal_history_json())
 
 
-def board_page(payload, limit=None, item=None, search=None):
+def board_page(payload, limit=None, item=None, search=None, mine=False):
     """One board, as the page actually asks for it.
 
     Four shapes, and the split is the whole point of this endpoint:
 
     - `item=57` -- one detail body. This is what a tap on a row fetches.
+      `mine=True` asks the same question of my own board instead of his.
     - `search="badge"` -- just the numbers of the rows whose title or
       write-up contains that text (ideas.md #71). Nothing else: the page
       already holds every row, so the answer it is missing is only which
@@ -654,10 +655,15 @@ def board_page(payload, limit=None, item=None, search=None):
     things the owner has ever filed.
     """
     if item is not None:
-        blocks = (payload.get("details") or {}).get(str(item))
-        row = next(
-            (i for i in payload.get("items") or [] if i.get("number") == item), None
-        )
+        # `mine=1` addresses my own board rather than his. A separate flag
+        # rather than a wider number space, because his #1 and my #1 are
+        # both real rows on the same page and answering one query with
+        # whichever dict happened to hold the key is a collision waiting
+        # for the first row I board.
+        rows = payload.get("novaItems") if mine else payload.get("items")
+        bodies = payload.get("novaDetails") if mine else payload.get("details")
+        blocks = (bodies or {}).get(str(item))
+        row = next((i for i in rows or [] if i.get("number") == item), None)
         return {
             "name": payload.get("name"),
             "item": dict(row or {"number": item}, blocks=blocks or []),
@@ -686,6 +692,13 @@ def board_page(payload, limit=None, item=None, search=None):
     page.pop("searchText", None)
     if limit is not None:
         page["details"] = {}
+        # Mine goes out on the same terms as his. Reviewer finding on
+        # runner#354: that PR shipped my write-ups inline on every load
+        # with a comment saying they would take this treatment once they
+        # grew, which is a decision nobody was ever going to come back
+        # to. The rows stay -- they are one line each, and dropping those
+        # would empty the tab rather than window it.
+        page["novaDetails"] = {}
     return page
 
 
@@ -1603,11 +1616,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         item = _int_param(query, "item", None)
         limit = _int_param(query, "limit", None)
         search = (query.get("q") or [None])[0]
-        page = board_page(payload, limit=limit, item=item, search=search)
+        mine = (query.get("mine") or ["0"])[0] == "1"
+        page = board_page(payload, limit=limit, item=item, search=search, mine=mine)
         if search is not None:
             variant = f"q={search}"
         elif item is not None:
-            variant = f"item={item}"
+            # In the variant, or his #1 and my #1 share a cache entry and
+            # the second reader gets the first one's write-up.
+            variant = f"item={item}&mine={int(mine)}"
         else:
             variant = f"limit={limit}"
         etag = page_etag(base, variant)
