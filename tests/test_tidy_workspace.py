@@ -444,6 +444,45 @@ def test_unfinished_names_the_files_that_differ(squash_merged):
     assert survey[0]["files"] == ["manifest.yaml"]
 
 
+def test_the_file_list_never_names_a_file_the_branch_did_not_touch(squash_merged):
+    """A branch that is both ahead and behind used to have main's own later
+    work read back to it as its own.
+
+    `git diff base HEAD` compares tips, so every file main gained since the
+    branch point appears in a list headed "work not on origin/main". Measured
+    on the shared checkout twice -- Cycle 372 (14 files) and Cycle 417 (136,
+    essentially the whole repository) -- and both times the instrument that
+    exists to stop a cycle re-doing merged work argued loudly the other way.
+
+    `base...HEAD` diffs from the merge base instead, so the list can only ever
+    contain files this branch touched. The unguarded assertion below is what
+    makes this test capable of failing: without it, a two-dot diff would pass
+    on a fixture where main happened not to move.
+    """
+    root, repo = squash_merged
+    merger = root.parent / "merger"
+
+    # Main moves on, the way it does while a branch sits in a checkout.
+    _commit(merger, "somebody-elses-work.txt", "not mine\n")
+    _git(merger, "push", "-q", "origin", "main")
+
+    # ...and this branch has one real thing on it that never landed.
+    _commit(repo, "outstanding.txt", "half a feature\n")
+
+    survey = tidy_workspace.survey_checkouts(str(root))
+
+    # After the survey, because the survey is what fetches: before it runs this
+    # clone's `origin/main` predates both commits and the two-dot diff would
+    # not name the other file either, which would make the guard vacuous.
+    two_dot = tidy_workspace._git(str(root), repo.name, "diff", "--name-only",
+                                  "origin/main", "HEAD").stdout.split()
+    assert "somebody-elses-work.txt" in two_dot, "fixture no longer exercises the bug"
+
+    assert survey[0]["verdict"] == "unfinished"
+    assert "outstanding.txt" in survey[0]["files"]
+    assert "somebody-elses-work.txt" not in survey[0]["files"]
+
+
 def test_a_clone_that_is_only_behind_carries_no_file_list(squash_merged):
     """The list answers "what is unfinished here", so a clone with nothing
     unfinished must not carry one. A clone that is merely *behind* is the case
