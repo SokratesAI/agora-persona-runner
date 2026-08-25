@@ -8900,6 +8900,43 @@ describe("unread replies are counted on the card and in the header", () => {
     assert.equal(unreadChip(cardFor(window, 55)), null);
   });
 
+  test("an unrelated ask auto-opening the drawer does not consume the reply", async () => {
+    /* Reviewer finding, reproduced before it was fixed. A card carrying an
+     * open ask force-opens its own drawer on the first render of the session,
+     * and that used to run the same mark-read path a tap runs -- so a reply he
+     * had not seen was consumed before anything painted, and neither the chip
+     * nor the header badge ever appeared. Opening is not reading. */
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const entry = journal.entries.find((e) => e.cycle === 55);
+    entry.askSpans = [{ kind: "text", text: "Yes or no, should this stay?" }];
+    const window = await loadSite("/", {
+      journal: () => journal,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    const card = cardFor(window, 55);
+    assert.ok(card.classList.contains("is-commenting"), "the ask did not auto-open the drawer, so this test proves nothing");
+    assert.equal(unreadChip(card).textContent, "1", "the auto-opened drawer ate the unread reply");
+    assert.equal(unreadBadge(window).textContent, "1 new reply");
+  });
+
+  test("only a tap on the bubble marks read, not the app re-asserting the drawer", async () => {
+    /* The other half of the same reviewer finding. `fold.comments` survives a
+     * card collapsing and the feed being rebuilt, so every repaint re-asserts
+     * the drawer through `setCommentsOpen` -- and that used to mark whatever
+     * had arrived read. Expanding the card is the cheapest re-assertion to
+     * reach from a test and runs the identical path. Open is a state, not a
+     * sightline. */
+    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const card = cardFor(window, 55);
+    click(window, card.querySelector("h2"));           // expand: re-asserts the drawer
+    assert.equal(unreadChip(card).textContent, "1", "expanding the card consumed the unread reply");
+    assert.equal(
+      JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"))["55"],
+      "2026-08-09 13:00",
+      "the read mark moved without him opening the thread",
+    );
+  });
+
   test("the deep-linked card counts and clears the same way the feed card does", async () => {
     /* `/cycle/N` builds its own card through a second `setCommentsOpen`, and
      * the two are separate code paths that have drifted before. */

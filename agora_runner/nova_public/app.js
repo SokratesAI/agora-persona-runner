@@ -2045,15 +2045,26 @@
      * through one of these whether it came from the card's own listener or
      * from `setExpanded` re-asserting a drawer. See `folds`. */
 
-    function setCommentsOpen(open) {
+    /* `byTap` is the whole difference between "he opened this" and "the app
+     * did", and marking replies read may only ever follow the first.
+     *
+     * Three of the five callers here are the app re-asserting a drawer, not
+     * him touching one, and each of them would silently eat an unread reply:
+     * the ask auto-open two blocks down force-opens the drawer on the first
+     * render of a card carrying a question, `setExpanded` re-asserts it on
+     * every repaint, and `fold.comments` survives the card being collapsed
+     * and the feed being rebuilt. So a reply landing on a thread he happens
+     * to have left open -- which is the case this feature is most for --
+     * would be marked read by the 30-second poll before it ever painted.
+     * Both found by the reviewer; my own comment here previously argued the
+     * opposite, on the grounds that an open drawer is on his screen. It is
+     * not: open is a state, not a sightline. */
+    function setCommentsOpen(open, byTap) {
       if (!commenting) return;
       fold.comments = open;
       card.classList.toggle("is-commenting", open);
       commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
-      // Reading is what clears the unread chip, and this is the only place
-      // that knows he opened the drawer. Idempotent, so `setExpanded`
-      // re-asserting an already-open drawer on a poll costs nothing.
-      if (open) commenting.seen();
+      if (open && byTap) commenting.seen();
     }
     /* An ask opens its own card's drawer, once. `askSeen` rather than
      * opening on every render, so closing it stays closed through the
@@ -2128,7 +2139,7 @@
        * this and the drawer below return before the collapse at the end,
        * for the same reason the journal toggle does. */
       if (commenting && event.target.closest(".comment-toggle")) {
-        setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true");
+        setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true", true);
         return;
       }
       // A tap in the box, on Comment, or on an existing comment is not a
@@ -2626,10 +2637,10 @@
     var commenting = renderComments(card, cycleTarget(cycleNumber), comments);
     foot.appendChild(commenting.toggle);
 
-    function setCommentsOpen(open) {
+    function setCommentsOpen(open, byTap) {   // `byTap` as on the feed card
       card.className = open ? "entry is-page is-commenting" : "entry is-page";
       commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
-      if (open) commenting.seen();   // same contract as the feed card's
+      if (open && byTap) commenting.seen();   // same contract as the feed card's
     }
     setCommentsOpen(false);
 
@@ -2640,7 +2651,7 @@
       if (event.target.closest("a")) return;
       if (event.target.closest(".comment-drawer")) return;
       if (event.target.closest(".comment-toggle")) {
-        setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true");
+        setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true", true);
       }
     });
     return card;
