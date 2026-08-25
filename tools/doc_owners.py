@@ -4,7 +4,7 @@ those has a job that refreshes them?
 Cycle 401, from a gap Cycle 394 measured and nothing reported. The Plan
 page opens with a numbered strip headed *"What I would do next, in
 order"*, drawn from `roadmap.md`. That file sat nine days stale on
-Edvard's phone, because the word "roadmap" appeared in none of the three
+the owner's phone, because the word "roadmap" appeared in none of the three
 weekly prompts and nothing in the hourly one either. Its sibling
 `goals.md` is refreshed every Monday. Both are rendered identically, and
 nothing anywhere could tell the two situations apart.
@@ -68,6 +68,11 @@ import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from agora_runner import nova_idea_pool, nova_journal, nova_plan
 
 OSLO = ZoneInfo("Europe/Oslo")
@@ -105,7 +110,7 @@ PROMPT_PREFIX = "projects/sokrates/projects/agora/nova/resources/"
 
 # Documents the site presents as a statement about *now*. Membership here
 # is a judgement and it is the only judgement in this file: a board is
-# Edvard's own writing, so an old row on it is a fact about him rather
+# the owner's own writing, so an old row on it is a fact about him rather
 # than a claim of mine going stale, and a ledger is appended by machine
 # where "out of date" means nothing. These four are the ones where the
 # page speaks in my voice about the present, and a stale one is the page
@@ -156,7 +161,7 @@ def owners(path, prompt_texts):
     prompts refer to these documents by name in prose far more often than
     by path -- `roadmap.md` appears in `weekly-reprioritise.md` without a
     folder in front of it. That makes basename collisions load-bearing:
-    two vault documents called `issues.md` exist (mine and Edvard's) and
+    two vault documents called `issues.md` exist (mine and the owner's) and
     neither is registered here for exactly that reason. `check_registry`
     refuses a registry that reintroduces the ambiguity.
     """

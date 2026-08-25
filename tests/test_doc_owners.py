@@ -165,7 +165,7 @@ class TestRegistry:
         check_registry()
 
     def test_two_documents_sharing_a_basename_are_refused(self):
-        # `issues.md` exists twice in the vault -- Edvard's and mine -- and
+        # `issues.md` exists twice in the vault -- the owner's and mine -- and
         # basename matching would credit one with the other's owner.
         with pytest.raises(ValueError, match="basename"):
             check_registry(
