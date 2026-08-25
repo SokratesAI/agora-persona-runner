@@ -1462,6 +1462,44 @@ def page_etag(base_etag, descriptor):
     return 'W/"' + digest + '"'
 
 
+def board_descriptor(args):
+    """What `/api/board`'s etag must vary by, beyond the payload itself.
+
+    Every argument `board_page` was called with, and it takes the same
+    dict that call took rather than a copy of it -- which is the whole
+    point, and the reason this is a function rather than three f-strings
+    in `_send_board`.
+
+    It used to be three: one per branch, each naming by hand the
+    parameters that branch happened to read. That is a rule nothing
+    enforces, so it was wrong within a week of being written. `q=`
+    shipped without `mine`, so the Nova tab's search and his search --
+    two lists of row numbers over two boards that share a number space
+    -- hashed to one cache entry, and the second reader was answered
+    304 against the first one's matches. The `item=` branch three lines
+    above had it right. Nothing could have told you which was which
+    except reading both.
+
+    Deriving it from the arguments makes the class impossible rather
+    than making the fourth instance of it detectable: a parameter that
+    reaches `board_page` reaches the etag by construction, whether or
+    not the branch that consumes it is the one you were thinking about
+    when you added it. `test_board_etag_descriptor.py` pins the other
+    half -- that this dict really is `board_page`'s full signature --
+    because the failure this replaces is not a typo, it is an argument
+    somebody adds later and does not think about here.
+
+    Over-varying is the safe direction and is what this deliberately
+    does. `limit=None` alone decides the list branch's answer today --
+    `mine` is read only by `item=` and `search=` -- so folding `mine`
+    into the list's etag turns it over on a tab switch that changes
+    nothing, costing one re-fetch of a payload the client already had.
+    Under-varying costs a wrong answer that looks like a right one, and
+    the two are not comparable.
+    """
+    return "&".join(f"{name}={args[name]!r}" for name in sorted(args))
+
+
 def journal_descriptor(page, limit, offset, cycle):
     """What `/api/journal`'s etag must vary by, beyond the payload itself.
 
@@ -1633,24 +1671,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         payload, _, base = cached_payload(
             "board:" + name, lambda: board_payload(name)
         )
-        item = _int_param(query, "item", None)
-        limit = _int_param(query, "limit", None)
-        search = (query.get("q") or [None])[0]
-        mine = (query.get("mine") or ["0"])[0] == "1"
-        page = board_page(payload, limit=limit, item=item, search=search, mine=mine)
-        if search is not None:
-            # `mine` is in the variant for the same reason it is in the
-            # `item` one below: without it, "board" on his tab and "board"
-            # on mine hash to one cache entry and the second reader is
-            # served the first one's row numbers.
-            variant = f"q={search}&mine={int(mine)}"
-        elif item is not None:
-            # In the variant, or his #1 and my #1 share a cache entry and
-            # the second reader gets the first one's write-up.
-            variant = f"item={item}&mine={int(mine)}"
-        else:
-            variant = f"limit={limit}"
-        etag = page_etag(base, variant)
+        args = {
+            "item": _int_param(query, "item", None),
+            "limit": _int_param(query, "limit", None),
+            "search": (query.get("q") or [None])[0],
+            "mine": (query.get("mine") or ["0"])[0] == "1",
+        }
+        page = board_page(payload, **args)
+        etag = page_etag(base, board_descriptor(args))
         page["version"] = etag
         self._send_json_or_304(json.dumps(page), etag)
 
