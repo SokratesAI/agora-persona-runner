@@ -1,0 +1,435 @@
+"""The demo registry and the `/demo/<slug>/` proxy (idea #135).
+
+Two things are worth testing here and they are not the obvious one. The
+registry's job is that **two callers never get the same port**, so the
+allocation tests go at collisions rather than at the happy path. The
+proxy's job is that a link the owner opens either shows the demo or says
+plainly why it cannot, so its tests go at the three ways it can fail --
+unknown slug, dead upstream, missing trailing slash -- rather than at a
+200 that a static file server would also have produced.
+"""
+
+import json
+import urllib.error
+from datetime import datetime
+from unittest.mock import patch
+
+import pytest
+
+from agora_runner import nova_site
+from agora_runner.nova_demos import (
+    DemoError,
+    PORT_MAX,
+    PORT_MIN,
+    dumps,
+    entries,
+    load,
+    lookup,
+    register,
+    unregister,
+)
+
+from tests.test_nova_site import _get, _post
+
+
+def test_absent_document_is_an_empty_registry_not_an_error():
+    # `vault_tool.py get` exits 0 and prints this for a path with no
+    # document, so the first caller ever to start a demo is handed a
+    # sentence rather than an empty file.
+    assert load("[not found: projects/.../demos.json]") == {"demos": []}
+    assert load("") == {"demos": []}
+    assert load(None) == {"demos": []}
+
+
+def test_a_registry_that_is_not_json_is_refused_rather_than_reset():
+    # Resetting would silently orphan every running demo's port.
+    with pytest.raises(DemoError):
+        load("demos: []")
+    with pytest.raises(DemoError):
+        load('{"demos": "one"}')
+
+
+def test_the_allocator_hands_out_a_different_port_each_time():
+    # Named for what it checks. It does *not* prove two concurrent
+    # `tools.demo start` calls cannot collide -- that rests on the
+    # compare-and-swap in `_write_registry` and on reserving the port
+    # before spawning, which `test_a_dev_server_that_dies_on_startup...`
+    # below is about. A reviewer called the old name a claim this test
+    # cannot support and was right.
+    registry = load("")
+    first = register(registry, "alpha", "10.42.0.84", "/tmp/a")
+    second = register(registry, "beta", "10.42.0.84", "/tmp/b")
+    assert first != second
+    assert first == PORT_MIN and second == PORT_MIN + 1
+
+
+def test_a_released_port_is_reused_before_a_fresh_one():
+    registry = load("")
+    register(registry, "alpha", "10.42.0.84", "/tmp/a")
+    register(registry, "beta", "10.42.0.84", "/tmp/b")
+    unregister(registry, "alpha")
+    assert register(registry, "gamma", "10.42.0.84", "/tmp/c") == PORT_MIN
+
+
+def test_registering_a_live_slug_is_refused_rather_than_replacing_it():
+    # A silent replace leaves the old dev server running on a port nothing
+    # points at any more, which nobody would ever notice.
+    registry = load("")
+    register(registry, "alpha", "10.42.0.84", "/tmp/a")
+    with pytest.raises(DemoError):
+        register(registry, "alpha", "10.42.0.84", "/tmp/other")
+
+
+def test_the_allocator_refuses_rather_than_handing_out_a_held_port():
+    registry = load("")
+    for i in range(PORT_MAX - PORT_MIN + 1):
+        register(registry, f"demo-{i}", "10.42.0.84", "/tmp/x")
+    with pytest.raises(DemoError):
+        register(registry, "one-too-many", "10.42.0.84", "/tmp/x")
+
+
+@pytest.mark.parametrize("slug", ["", "A", "has space", "has/slash", "-lead", "x"])
+def test_a_slug_that_would_break_string_equality_or_a_url_is_refused(slug):
+    with pytest.raises(DemoError):
+        register(load(""), slug, "10.42.0.84", "/tmp/a")
+
+
+def test_a_demo_with_no_host_is_refused():
+    # A registry row with no host proxies to nothing and answers 502 to
+    # whoever opens the link.
+    with pytest.raises(DemoError):
+        register(load(""), "alpha", "", "/tmp/a")
+
+
+def test_the_registry_survives_a_round_trip_through_the_vault():
+    registry = load("")
+    register(registry, "alpha", "10.42.0.84", "/tmp/a",
+             now=datetime(2026, 8, 26, 1, 30))
+    again = load(dumps(registry))
+    assert lookup(again, "alpha")["port"] == PORT_MIN
+    assert lookup(again, "alpha")["started_at"] == "2026-08-26T01:30:00"
+    assert lookup(again, "nobody") is None
+    assert [d["slug"] for d in entries(again)] == ["alpha"]
+
+
+# --- the proxy ---------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _no_registry_cache():
+    """The proxy reuses a registry read for `DEMO_REGISTRY_TTL` seconds.
+
+    That is right in production -- a demo page is forty assets and the
+    registry is a CouchDB round trip -- and it is process-global, so
+    without this the second test in this file reads the first one's
+    registry. Caught by three tests going 404 at once.
+    """
+    nova_site._demo_registry_cache.update(at=0.0, text=None)
+    yield
+    nova_site._demo_registry_cache.update(at=0.0, text=None)
+
+
+def _registry(*demos):
+    return json.dumps({"demos": list(demos)})
+
+
+ALPHA = {"slug": "alpha", "host": "10.42.0.84", "port": 5174,
+         "dir": "/tmp/a", "started_at": "2026-08-26T01:30:00"}
+
+
+class _Headers(dict):
+    """`HTTPError.headers` is an email.Message in real life; `.read` on the
+    error body takes a limit now, and a plain dict has no `.get` semantics
+    problem -- this exists only so `read(n)` and `get(name)` both work."""
+
+    def read(self, limit=None):
+        return b""
+
+
+class _Opener:
+    """Stands in for `nova_site._demo_opener()`.
+
+    The tests patch the opener rather than `urllib.request.urlopen` because
+    the handler no longer calls `urlopen` -- it uses an opener with redirect
+    following removed. `conftest.py` blocks real sockets, so patching the
+    wrong reference fails loudly rather than quietly reaching the network,
+    which is how this got caught.
+    """
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def open(self, request, timeout=None):
+        # The handler passes a `Request` now, because it forwards `Range`
+        # and `Accept`. Tests assert on the URL, so unwrap it here.
+        url = getattr(request, "full_url", request)
+        self.headers = getattr(request, "headers", {})
+        return self._fn(url, timeout=timeout)
+
+
+class _FakeUpstream:
+    def __init__(self, body, content_type="text/html", status=200):
+        self.body, self.status = body, status
+        self.headers = {"Content-Type": content_type}
+
+    def read(self, limit=None):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_an_unknown_slug_says_so_rather_than_serving_the_nova_shell():
+    # The shell is what every other unmatched path gets, and it would read
+    # as "the demo loaded and is blank".
+    with patch.object(nova_site, "vault_read_path", return_value=_registry()):
+        status, _, body = _get("/demo/nosuch/")
+    assert status == 404
+    assert b"nosuch" in body
+
+
+def test_a_registered_demo_is_proxied_body_and_content_type():
+    seen = {}
+
+    def _open(url, timeout=None):
+        seen["url"] = url
+        return _FakeUpstream(b"<h1>the demo</h1>")
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_open)):
+        status, head, body = _get("/demo/alpha/index.html?x=1")
+    assert status == 200
+    assert body == b"<h1>the demo</h1>"
+    assert "text/html" in head
+    # The slug is stripped: the dev server knows nothing about `/demo/`.
+    assert seen["url"] == "http://10.42.0.84:5174/index.html?x=1"
+
+
+def test_the_demo_is_never_cached():
+    # A demo is edited while it is looked at; a cached reload showing the
+    # previous build reads as "the demo is broken".
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener",
+                      lambda: _Opener(lambda url, timeout=None: _FakeUpstream(b"x"))):
+        _, head, _ = _get("/demo/alpha/")
+    assert "no-store" in head
+
+
+def test_a_bare_slug_redirects_so_relative_assets_resolve_under_the_demo():
+    # `style.css` on a page served at `/demo/alpha` resolves to
+    # `/demo/style.css`, which is Nova's 404 rather than the demo's asset.
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)):
+        status, head, _ = _get("/demo/alpha")
+    assert status == 302
+    assert "Location: /demo/alpha/" in head
+
+
+def test_a_dead_dev_server_says_where_it_was_looking():
+    def _boom(url, timeout=None):
+        raise OSError("Connection refused")
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_boom)):
+        status, _, body = _get("/demo/alpha/")
+    assert status == 502
+    assert b"10.42.0.84:5174" in body
+
+
+def test_an_upstream_404_is_the_demos_answer_and_is_passed_through():
+    def _http_error(url, timeout=None):
+        raise urllib.error.HTTPError(url, 404, "Not Found",
+                                     _Headers({"Content-Type": "text/plain"}), None)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_http_error)):
+        status, _, _ = _get("/demo/alpha/missing.css")
+    assert status == 404
+
+
+def test_posting_to_a_demo_says_the_proxy_is_get_only():
+    # Not the generic allowlist 404, which would read as "that demo is not
+    # running" -- a different and much more confusing problem.
+    status, _, body = _post("/demo/alpha/submit", {"a": 1})
+    assert status == 405
+    assert b"GET only" in body
+
+
+def test_a_redirect_is_handed_to_the_browser_under_the_demo_prefix():
+    """A static server answers `/sub` with a 301 to `/sub/`.
+
+    Followed here, the browser never learns the URL moved and resolves that
+    page's relative links one directory too high. Passed through with the
+    prefix restored, the browser asks again at the right address.
+    """
+    def _redirect(url, timeout=None):
+        raise urllib.error.HTTPError(
+            url, 301, "Moved Permanently",
+            _Headers({"Content-Type": "text/html", "Location": "/sub/"}), None)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_redirect)):
+        status, head, _ = _get("/demo/alpha/sub")
+    assert status == 301
+    assert "Location: /demo/alpha/sub/" in head
+
+
+def test_an_off_site_redirect_is_not_rewritten_under_the_demo():
+    def _redirect(url, timeout=None):
+        raise urllib.error.HTTPError(
+            url, 302, "Found",
+            _Headers({"Content-Type": "text/html",
+                      "Location": "https://example.com/x"}), None)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_redirect)):
+        _, head, _ = _get("/demo/alpha/away.html")
+    assert "Location: https://example.com/x" in head
+
+
+def test_the_demos_own_absolute_redirect_comes_back_under_the_prefix():
+    """A framework that has never heard of a reverse proxy writes this.
+
+    Unrewritten it points his phone at a cluster pod IP it cannot route to,
+    and leaks the topology into the address bar.
+    """
+    def _redirect(url, timeout=None):
+        raise urllib.error.HTTPError(
+            url, 302, "Found",
+            _Headers({"Content-Type": "text/html",
+                      "Location": "http://10.42.0.84:5174/dir/"}), None)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_redirect)):
+        _, head, _ = _get("/demo/alpha/dir")
+    assert "Location: /demo/alpha/dir/" in head
+
+
+def test_a_body_past_the_cap_is_refused_rather_than_buffered():
+    """This pod has a 256Mi limit and reads the whole body before sending.
+
+    An unbounded read is not a slow demo, it is the whole site dying on
+    someone's screen recording.
+    """
+    big = b"x" * (nova_site.DEMO_MAX_BYTES + 1)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener",
+                      lambda: _Opener(lambda url, timeout=None:
+                                      _FakeUpstream(big, "video/mp4"))):
+        status, _, body = _get("/demo/alpha/big.mp4")
+    assert status == 502
+    assert b"larger than" in body
+
+
+def test_content_encoding_survives_the_proxy():
+    """An upstream serving a precompressed asset without this header has
+    its gzip bytes rendered as CSS."""
+    def _gzipped(url, timeout=None):
+        up = _FakeUpstream(b"\x1f\x8b garbage", "text/css")
+        up.headers["Content-Encoding"] = "gzip"
+        return up
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_gzipped)):
+        _, head, _ = _get("/demo/alpha/style.css")
+    assert "Content-Encoding: gzip" in head
+
+
+def test_a_registry_row_with_no_host_is_a_502_and_not_a_traceback():
+    """This route is dispatched above `do_GET`'s `try`, so an unguarded
+    subscript here drops the connection with no answer at all."""
+    broken = {"slug": "alpha", "port": 5174, "started_at": "2026-08-26T01:30:00"}
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(broken)):
+        status, _, body = _get("/demo/alpha/")
+    assert status == 502
+    assert b"no host or port" in body
+
+
+def test_a_range_header_reaches_the_demo_so_video_can_seek():
+    seen = {}
+
+    def _open(url, timeout=None):
+        return _FakeUpstream(b"bytes")
+
+    opener = _Opener(_open)
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: opener):
+        _get("/demo/alpha/clip.mp4", headers="Range: bytes=0-99\r\n")
+    assert opener.headers.get("Range") == "bytes=0-99"
+
+
+# --- tools.demo -------------------------------------------------------
+
+def test_a_dev_server_that_dies_on_startup_is_not_reported_as_a_running_demo(
+        tmp_path, capsys):
+    """The failure `start` must never dress up as success.
+
+    Two concurrent starts both allocate the same port, one binds and the
+    other dies with EADDRINUSE. If the loser prints a URL and exits 0, the
+    owner opens a link that 502s and the only evidence is a temp log
+    nobody knows about. So a dead process deregisters and exits non-zero.
+    """
+    from tools import demo as demo_cli
+
+    written = []
+    state = {"registry": {"demos": []}}
+
+    def _read():
+        return json.loads(json.dumps(state["registry"])), "/tmp/fake.rev"
+
+    def _write(registry, rev):
+        state["registry"] = json.loads(json.dumps(registry))
+        written.append(state["registry"])
+
+    args = type("A", (), {"slug": "alpha", "directory": str(tmp_path),
+                          "cmd": "python3 -c 'raise SystemExit(3)'"})()
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.84"), \
+         patch.object(demo_cli, "SPAWN_CHECK_SECONDS", 0.6):
+        code = demo_cli.cmd_start(args)
+    assert code == 1
+    # The port is back, and no URL was printed for a demo that is not there.
+    assert state["registry"]["demos"] == []
+    assert "/demo/alpha/" not in capsys.readouterr().out
+
+
+def test_the_port_is_registered_before_the_dev_server_is_spawned(tmp_path):
+    """The ordering is the fix, so the ordering is what is pinned.
+
+    Reserving after spawning lets the compare-and-swap pick a winner
+    independently of who won the bind.
+    """
+    from tools import demo as demo_cli
+
+    order = []
+    state = {"registry": {"demos": []}}
+
+    def _read():
+        return json.loads(json.dumps(state["registry"])), "/tmp/fake.rev"
+
+    def _write(registry, rev):
+        state["registry"] = json.loads(json.dumps(registry))
+        order.append("registered")
+
+    real_popen = demo_cli.subprocess.Popen
+
+    def _popen(*a, **kw):
+        order.append("spawned")
+        return real_popen(*a, **kw)
+
+    args = type("A", (), {"slug": "alpha", "directory": str(tmp_path),
+                          "cmd": "python3 -c 'import time; time.sleep(5)'"})()
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.84"), \
+         patch.object(demo_cli.subprocess, "Popen", _popen), \
+         patch.object(demo_cli, "SPAWN_CHECK_SECONDS", 0.3):
+        assert demo_cli.cmd_start(args) == 0
+    assert order[0] == "registered"
+    assert "spawned" in order
+    demo_cli.os.killpg(
+        demo_cli.os.getpgid(state["registry"]["demos"][0]["pid"]),
+        demo_cli.signal.SIGTERM)

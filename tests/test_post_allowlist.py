@@ -84,7 +84,13 @@ def test_every_dispatched_post_route_is_reachable():
     # `_post_upload` reads its own body past MAX_BODY_BYTES, and `/mcp` is
     # a different protocol. Both are `path ==` arms that legitimately are
     # not allowlisted.
-    dispatched -= {"/api/upload", "/mcp"}
+    # `/demo` is the third, and the reason is the same shape: the demo
+    # proxy answers a POST with a 405 that says it serves GET only, and
+    # the gate's generic 404 would read as "that demo is not running" --
+    # a different and much more confusing problem. It is reachable, which
+    # is what this test is actually about; `test_nova_demos.py` drives a
+    # real POST at it and asserts the 405.
+    dispatched -= {"/api/upload", "/mcp", "/demo"}
     assert dispatched == set(), (
         "these POST routes are dispatched but answered 404 before the "
         "dispatch is reached, so the feature behind each is unreachable: "
