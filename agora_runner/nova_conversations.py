@@ -22,7 +22,7 @@ parameter rather than a constant found by tag. That is what "multiple
 conversations history" means, and it is why `thread` here takes an id and
 `nova_ask.thread` does not.
 
-**`send` posts as `Edvard`** for `nova_ask.ask`'s reason and not as a
+**`send` posts as the owner** for `nova_ask.ask`'s reason and not as a
 convention: `decide_turn` speaks only when the last visible message came
 from him, so any other sender writes a message nothing ever answers.
 """

@@ -228,12 +228,18 @@ def test_attach_button_is_wired_into_every_composer():
     calls: the dock's controls are static markup in `index.html` and the
     page's are built by `renderAsk`, so there is no single node both could
     hang a shared one off.
+
+    Sixth is the Conversations page's thread composer, added Cycle 441 on
+    *"its basicly a chat app with multiple conversations history"*. Same
+    argument as the fifth: it writes into whichever conversation is open
+    rather than into the ask thread, and it is built by
+    `openConversation`, so it has no node to share one with either.
     """
     source = _app_js()
     # The definition matches `buildAttach(` too, so it is subtracted rather
-    # than pattern-dodged -- this counts call sites, and there are five.
+    # than pattern-dodged -- this counts call sites, and there are six.
     calls = source.count("buildAttach(") - source.count("function buildAttach(")
-    assert calls == 5, f"expected every composer to build one, found {calls}"
+    assert calls == 6, f"expected every composer to build one, found {calls}"
 
     # Defined once, and the returned button actually reaches the DOM.
     assert source.count("function buildAttach(") == 1
