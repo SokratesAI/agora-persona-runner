@@ -8357,3 +8357,96 @@ describe("the status fields are one horizontal list, and they link down to the c
     assert.ok(!subs || !/reprioritised|none/.test(subs.textContent), subs && subs.textContent);
   });
 });
+
+/* My own board rows got a search of their own (Cycle 408). His rows have
+ * had one since ideas.md #71 -- "Ability to search through issues or
+ * ideas" -- and the Nova tab shipped with no box at all, so the two
+ * halves of one page answered the same question differently. */
+describe("searching my own board rows", () => {
+  const MINE = {
+    ...payload.board,
+    novaItems: [
+      {
+        number: 1,
+        title: "Dead newspaper feeds",
+        status: "\u{1F7E1} In progress",
+        statusKey: "progress",
+        priority: "\u{1F7E0} High",
+        priorityKey: "high",
+        updated: "08-25",
+      },
+      {
+        number: 2,
+        title: "A title that says nothing useful",
+        status: "⚪ Backlog",
+        statusKey: "backlog",
+        updated: "08-25",
+      },
+    ],
+  };
+  const rows = (window) =>
+    [...window.document.querySelectorAll(".nova-board .item-number")].map((n) => n.textContent);
+  const novaTab = (window) =>
+    [...window.document.querySelectorAll(".tabs .tab")].find((b) => b.textContent.startsWith("Nova"));
+  const searchBox = (window) => window.document.querySelector(".nova-board .board-search-input");
+  const typeSearch = (window, text) => {
+    const input = searchBox(window);
+    input.value = text;
+    input.dispatchEvent(new window.Event("input"));
+    return input;
+  };
+  const settle = () => new Promise((r) => setTimeout(r, 260));
+
+  test("my tab has a search box, over my rows", async () => {
+    const window = await loadSite("/issues", { board: (url) => (url.includes("q=") ? null : MINE) });
+    click(window, novaTab(window));
+    assert.ok(searchBox(window), "the Nova tab should have a search box");
+    assert.deepEqual(rows(window), ["#1", "#2"]);
+  });
+
+  test("typing narrows my rows on the title without waiting for the server", async () => {
+    const window = await loadSite("/issues", { board: (url) => (url.includes("q=") ? null : MINE) });
+    click(window, novaTab(window));
+    typeSearch(window, "newspaper");
+    assert.deepEqual(rows(window), ["#1"]);
+  });
+
+  test("a write-up match asks the server for my board, not his", async () => {
+    /* The half the page cannot do itself: `board_page` windows
+     * `novaDetails` away on every list request, so my write-ups are not
+     * on the page any more than his are. `mine=1` is what makes the
+     * answer addressable -- both boards number from 1. */
+    const asked = [];
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        if (!url.includes("q=")) return MINE;
+        asked.push(url);
+        return url.includes("mine=1") ? { query: "asknature", matches: [2] } : { query: "asknature", matches: [] };
+      },
+    });
+    click(window, novaTab(window));
+    typeSearch(window, "asknature");
+    // No title holds it, so the tab is empty until the answer lands.
+    assert.deepEqual(rows(window), []);
+    await settle();
+    assert.equal(asked.length, 1);
+    assert.ok(asked[0].includes("mine=1"), "the Nova tab's search should carry mine=1");
+    assert.deepEqual(rows(window), ["#2"]);
+  });
+
+  test("switching tabs clears the query rather than carrying his numbers over", async () => {
+    /* `matches` is a list of row numbers answered for one tab and both
+     * tabs number from 1, so carrying it across would apply his #1 to
+     * mine. */
+    const window = await loadSite("/issues", { board: (url) => (url.includes("q=") ? null : MINE) });
+    click(window, novaTab(window));
+    typeSearch(window, "newspaper");
+    assert.deepEqual(rows(window), ["#1"]);
+    const his = [...window.document.querySelectorAll(".tabs .tab")].find((b) => !b.textContent.startsWith("Nova"));
+    click(window, his);
+    assert.equal(window.document.querySelector(".board-search-input").value, "");
+    click(window, novaTab(window));
+    assert.equal(searchBox(window).value, "");
+    assert.deepEqual(rows(window), ["#1", "#2"]);
+  });
+});
