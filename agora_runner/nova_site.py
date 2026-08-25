@@ -2892,6 +2892,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
+            "/api/conversations/send", "/api/conversations/new",
             "/api/pool/decide", "/api/pool/generate",
         ):
             self._send_json(404, {"error": "not found"})
