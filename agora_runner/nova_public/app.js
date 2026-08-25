@@ -8403,6 +8403,51 @@
     var lastCount = 0;
     var isOpen = false;
 
+    /* The composer grows with what he types. His capture, issues.md
+     * 2026-08-25: *"make the input field start at one line, then when the
+     * content is two lines it gets tall enough to fit two lines and
+     * dynamicly scales up to 10 lines tall which is the cap."*
+     *
+     * Measure rather than assume: `line-height` computes to a pixel value
+     * in every browser that has one set, and this one is set in the
+     * stylesheet, but `getComputedStyle` returns the string "normal" when
+     * it is not -- so a missing stylesheet must not make the cap NaN and
+     * blank the box. `1.4 * font-size` is the same ratio the rule uses.
+     *
+     * The height is set from `scrollHeight`, which under `box-sizing:
+     * border-box` measures content plus padding and never the border, so
+     * the two border widths are added back. Setting `height` to "auto"
+     * first is what lets the box *shrink* again when he deletes a line:
+     * `scrollHeight` can never report less than the current height. */
+    var CHAT_BOX_MAX_ROWS = 10;
+
+    function growChatBox() {
+      if (!box) return;
+      var css = window.getComputedStyle(box);
+      // Only a px value is a line height I can multiply. A browser resolves
+      // `line-height: 1.4` to px here, but the keyword `normal` and a bare
+      // ratio both come back unresolved in some engines, and `parseFloat`
+      // would read "1.4" as 1.4 pixels and cap the box at fourteen.
+      var line = /px$/.test(css.lineHeight) ? parseFloat(css.lineHeight) : NaN;
+      if (!(line > 0)) line = parseFloat(css.fontSize) * 1.4;
+      if (!(line > 0)) return;
+      var frame =
+        (parseFloat(css.paddingTop) || 0) +
+        (parseFloat(css.paddingBottom) || 0) +
+        (parseFloat(css.borderTopWidth) || 0) +
+        (parseFloat(css.borderBottomWidth) || 0);
+      var cap = line * CHAT_BOX_MAX_ROWS + frame;
+      box.style.height = "auto";
+      var wanted = box.scrollHeight +
+        (parseFloat(css.borderTopWidth) || 0) +
+        (parseFloat(css.borderBottomWidth) || 0);
+      var next = Math.min(wanted, cap);
+      box.style.height = next + "px";
+      // Past the cap it has to scroll, and only past the cap -- a gutter on
+      // a one-line box is the thing `overflow-y: hidden` is avoiding.
+      box.style.overflowY = wanted > cap ? "auto" : "hidden";
+    }
+
     function setDot(on) {
       if (on) dot.removeAttribute("hidden");
       else dot.setAttribute("hidden", "");
@@ -8497,9 +8542,14 @@
        * the keyboard, which is the half he says is right. The `/ask` page
        * has never focused its box on render; this makes the dock agree
        * with it. */
+      // After the panel is on screen, never before: `scrollHeight` on a
+      // `display: none` element is 0, and a box measured shut collapses to
+      // its padding.
+      growChatBox();
       loadThread();
     }
 
+    if (box) box.addEventListener("input", growChatBox);
     btn.addEventListener("click", function () { setOpen(!isOpen); });
     if (closeBtn) closeBtn.addEventListener("click", function () { setOpen(false); });
     document.addEventListener("keydown", function (event) {
@@ -8521,6 +8571,10 @@
         .then(function (result) {
           if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
           box.value = "";
+          // A sent ten-line question leaves a ten-line empty box behind
+          // unless the height is recomputed; `input` does not fire on a
+          // programmatic assignment.
+          growChatBox();
           status.textContent = "";
           send.disabled = false;
           // Paint his question straight away rather than waiting a poll for
