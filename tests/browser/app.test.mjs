@@ -5897,6 +5897,39 @@ describe("rating a capture that is not boarded yet", () => {
     assert.equal(posted.body.text, "🔴 Immediately: " + payload.board.captures[0].body);
   });
 
+  test("a cycle's answer is its own bubble, and the write still addresses his line", async () => {
+    /* His `issues.md` capture, 2026-08-25, 🟠 High, with a screenshot:
+     * *"When i edit not boarded yet ideas, i can't save and it gives me a
+     * message that its not there anymore."*
+     *
+     * The board payload used to fold the reply into the capture text, so
+     * the card read as one paragraph that started in his voice and ended
+     * in mine -- and the string every write on the card sends as its
+     * address was that same glued one, which `replace_capture` matches
+     * against his sentence alone and refuses. The fixture's capture now
+     * carries a reply, so this asserts both halves at once: the answer is
+     * drawn separately, and the address is still his line. */
+    const window = await loadSite("/issues");
+    const item = window.document.querySelector(".capture-item");
+    const reply = item.querySelector(".capture-reply");
+    assert.ok(reply, "a cycle's answer is not drawn under the capture");
+    assert.equal(reply.querySelector(".note-msg-name").textContent, "Nova");
+    assert.match(reply.textContent, /the timestamp says the time/);
+    assert.ok(!item.querySelector(".capture-body").textContent.includes("Cycle 401"),
+      "the answer is welded into his own sentence again");
+
+    click(window, item.querySelector(".chip.prio"));
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "🔴 Immediately"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.ok(posted, "no write reached /api/capture/edit");
+    assert.ok(!posted.body.original.includes("Cycle 401"),
+      "the write addressed the capture by his line plus my answer, which matches nothing");
+    assert.ok(!posted.body.text.includes("Cycle 401"),
+      "the replacement text carried my answer into his bullet");
+  });
+
   test("re-rating an already-rated capture swaps the rating rather than stacking a second one", async () => {
     // `capture.body` is the server's glyph-stripped text, and using
     // `capture.text` here instead would send "⚪ Low: 🟠 High: make the picker...".
@@ -7157,7 +7190,12 @@ describe("the notes page", () => {
     await settle();
     const feed = window.document.getElementById("feed");
     assert.equal(
-      feed.querySelectorAll(".note-msg").length,
+      // `:not(.capture-reply)` because a cycle's answer under one of his
+      // unboarded captures reuses this markup deliberately -- same two
+      // colours, same shape as the notes page -- and one of those is on
+      // the issues page legitimately. Without it this counts the board's
+      // own reply bubble and reports the notes conversation as repainted.
+      feed.querySelectorAll(".note-msg:not(.capture-reply)").length,
       0,
       "the notes conversation was repainted over another page",
     );

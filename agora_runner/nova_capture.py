@@ -55,7 +55,9 @@ from agora_runner.nova_boards import (
     PRIORITY_LABELS,
     canonical_priority,
     append_detail_note,
+    capture_entries,
     delete_row,
+    _frontmatter_end,
     extract_row,
     set_row_priority,
     set_row_title,
@@ -129,16 +131,6 @@ contract: Written by agora_runner/nova_capture.py when Edvard deletes a boarded 
 """
 
 
-def _frontmatter_end(lines):
-    """Index of the first line *after* the closing `---`, or 0."""
-    if not lines or lines[0].strip() != "---":
-        return 0
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            return i + 1
-    return 0
-
-
 def _capture_span(lines):
     """`(start, first, end)` for the capture list, or `(start, None, start)`.
 
@@ -166,47 +158,6 @@ def _capture_span(lines):
             end = i + 1
         i += 1
     return start, first, end
-
-
-def capture_entries(markdown):
-    """`[(start_line, end_line, text)]` for the capture list, in file order.
-
-    **`text` is exactly what `nova_boards._captures` puts on the page**,
-    joining rule included: a continuation line is folded into the bullet
-    above it, because the same files are edited in Obsidian on a phone and
-    a capture that wrapped would otherwise show the owner half a sentence.
-    That joining is why this returns a *span* rather than a line number --
-    one capture can be two lines in the file, and replacing only the first
-    would leave its second half orphaned as a stray paragraph.
-
-    The two functions must agree about what a capture is, and the first
-    version of this file got that exactly backwards: it deliberately did
-    *not* join, reasoning that a joined address would match no single line
-    and so fail safely. It does fail -- but the page is what supplies the
-    address, and the page joins, so Edit and Delete were permanently dead
-    on any wrapped capture and said "no longer in the list", which is
-    false. Found by review, reproduced against the live parser.
-    """
-    lines = (markdown or "").split("\n")
-    start = _frontmatter_end(lines)
-    entries = []
-    for i in range(start, len(lines)):
-        stripped = lines[i].strip()
-        if stripped.startswith("#"):
-            break
-        if stripped.startswith("- ") and stripped[2:].strip():
-            if entries and lines[i][:1].isspace():
-                begin, _, text, replies = entries[-1]
-                entries[-1] = (begin, i + 1, text, replies + [stripped[2:].strip()])
-            else:
-                entries.append((i, i + 1, stripped[2:].strip(), []))
-        elif stripped and entries and not stripped.startswith(("-", "*", "|")):
-            begin, _, text, replies = entries[-1]
-            if replies:
-                entries[-1] = (begin, i + 1, text, replies[:-1] + [replies[-1] + " " + stripped])
-            else:
-                entries[-1] = (begin, i + 1, text + " " + stripped, replies)
-    return entries
 
 
 def list_captures(markdown):

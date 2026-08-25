@@ -7,6 +7,7 @@ contract: Edvard writes in the bare bullet list at the top — no heading, he re
 ---
 
 - Small pickings on Nova ui - low priority - remove "Oslo" text from Journal timestamp.
+  - Cycle 401, 09:12 — Done, the timestamp says the time and nothing else now.
 - 
 
 ## Board
