@@ -288,6 +288,78 @@ def test_an_off_site_redirect_is_not_rewritten_under_the_demo():
     assert "Location: https://example.com/x" in head
 
 
+def test_the_demos_own_absolute_redirect_comes_back_under_the_prefix():
+    """A framework that has never heard of a reverse proxy writes this.
+
+    Unrewritten it points his phone at a cluster pod IP it cannot route to,
+    and leaks the topology into the address bar.
+    """
+    def _redirect(url, timeout=None):
+        raise urllib.error.HTTPError(
+            url, 302, "Found",
+            _Headers({"Content-Type": "text/html",
+                      "Location": "http://10.42.0.84:5174/dir/"}), None)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_redirect)):
+        _, head, _ = _get("/demo/alpha/dir")
+    assert "Location: /demo/alpha/dir/" in head
+
+
+def test_a_body_past_the_cap_is_refused_rather_than_buffered():
+    """This pod has a 256Mi limit and reads the whole body before sending.
+
+    An unbounded read is not a slow demo, it is the whole site dying on
+    someone's screen recording.
+    """
+    big = b"x" * (nova_site.DEMO_MAX_BYTES + 1)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener",
+                      lambda: _Opener(lambda url, timeout=None:
+                                      _FakeUpstream(big, "video/mp4"))):
+        status, _, body = _get("/demo/alpha/big.mp4")
+    assert status == 502
+    assert b"larger than" in body
+
+
+def test_content_encoding_survives_the_proxy():
+    """An upstream serving a precompressed asset without this header has
+    its gzip bytes rendered as CSS."""
+    def _gzipped(url, timeout=None):
+        up = _FakeUpstream(b"\x1f\x8b garbage", "text/css")
+        up.headers["Content-Encoding"] = "gzip"
+        return up
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_gzipped)):
+        _, head, _ = _get("/demo/alpha/style.css")
+    assert "Content-Encoding: gzip" in head
+
+
+def test_a_registry_row_with_no_host_is_a_502_and_not_a_traceback():
+    """This route is dispatched above `do_GET`'s `try`, so an unguarded
+    subscript here drops the connection with no answer at all."""
+    broken = {"slug": "alpha", "port": 5174, "started_at": "2026-08-26T01:30:00"}
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(broken)):
+        status, _, body = _get("/demo/alpha/")
+    assert status == 502
+    assert b"no host or port" in body
+
+
+def test_a_range_header_reaches_the_demo_so_video_can_seek():
+    seen = {}
+
+    def _open(url, timeout=None):
+        return _FakeUpstream(b"bytes")
+
+    opener = _Opener(_open)
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: opener):
+        _get("/demo/alpha/clip.mp4", headers="Range: bytes=0-99\r\n")
+    assert opener.headers.get("Range") == "bytes=0-99"
+
+
 # --- tools.demo -------------------------------------------------------
 
 def test_a_dev_server_that_dies_on_startup_is_not_reported_as_a_running_demo(
