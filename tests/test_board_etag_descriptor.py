@@ -16,7 +16,7 @@ tabs, two boards that share a number space, one cache entry.
 
 import inspect
 
-from agora_runner.nova_site import board_descriptor, board_page
+from agora_runner.nova_site import NovaSiteHandler, board_descriptor, board_page
 
 # The arguments `_send_board` builds, with the defaults it builds them
 # from. Kept here rather than imported so that a change to the endpoint
@@ -25,7 +25,18 @@ CALL = {"item": None, "limit": None, "search": None, "mine": False}
 
 
 def test_descriptor_covers_every_parameter_board_page_takes():
-    """The coupling. Add a parameter to `board_page` and this fails."""
+    """The coupling. Add a parameter to `board_page` and this fails.
+
+    This one is a *forward* guard and not a regression test, and saying
+    so is the honest label: it compares `board_page`'s signature against
+    `CALL` and would pass just as happily against the three hand-written
+    variants this change replaces, because that signature is not what the
+    change touched. The regression half is
+    `test_send_board_builds_that_dict_and_derives_from_it` below. Both
+    are needed and neither substitutes for the other -- this one catches
+    the parameter added in six months, that one catches the endpoint
+    being written back the old way.
+    """
     taken = [
         name
         for name, param in inspect.signature(board_page).parameters.items()
@@ -38,18 +49,25 @@ def test_descriptor_covers_every_parameter_board_page_takes():
     )
 
 
-def test_send_board_passes_exactly_that_dict():
-    """The other half: `_send_board` must build the keys named above.
+def test_send_board_builds_that_dict_and_derives_from_it():
+    """The regression half: revert the endpoint and this fails.
 
     Read off the source rather than by calling it, because calling it
     needs a live handler, a socket and a payload cache. The assertion is
     narrow on purpose -- it is that the endpoint hands `board_page` a
     `**`-expanded dict and hands `board_descriptor` the same name.
+
+    `inspect.getsource` on the **method**, not on the module split at a
+    substring. The first version of this test did the latter, and a
+    reviewer took it apart: `source.split("def _send_board", 1)` matches
+    a prefix rather than a name, so a future `_send_board_summary`
+    defined earlier in the file would be silently inspected instead, and
+    a rename would surface as an `IndexError` rather than as a failure
+    that says what is wrong. Asking for the attribute gets an
+    `AttributeError` naming the method that went missing, which is the
+    thing a reader needs to know.
     """
-    source = inspect.getsource(
-        inspect.getmodule(board_page)
-    )
-    body = source.split("def _send_board", 1)[1].split("\n    def ", 1)[0]
+    body = inspect.getsource(NovaSiteHandler._send_board)
     assert "board_page(payload, **args)" in body
     assert "board_descriptor(args)" in body
     for name in CALL:

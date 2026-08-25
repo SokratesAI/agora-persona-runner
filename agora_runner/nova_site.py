@@ -1470,15 +1470,15 @@ def board_descriptor(args):
     point, and the reason this is a function rather than three f-strings
     in `_send_board`.
 
-    It used to be three: one per branch, each naming by hand the
-    parameters that branch happened to read. That is a rule nothing
-    enforces, so it was wrong within a week of being written. `q=`
-    shipped without `mine`, so the Nova tab's search and his search --
-    two lists of row numbers over two boards that share a number space
-    -- hashed to one cache entry, and the second reader was answered
-    304 against the first one's matches. The `item=` branch three lines
-    above had it right. Nothing could have told you which was which
-    except reading both.
+    It used to be three: one per branch of `board_page`, each naming by
+    hand the parameters that branch happened to read. That is a rule
+    nothing enforces, so it was wrong within a week of being written.
+    `q=` shipped without `mine`, so the Nova tab's search and his search
+    -- two lists of row numbers over two boards that share a number
+    space -- hashed to one cache entry, and the second reader was
+    answered 304 against the first one's matches. The `item=` variant,
+    three lines from it in the endpoint, had `mine` and was right.
+    Nothing could have told you which was which except reading both.
 
     Deriving it from the arguments makes the class impossible rather
     than making the fourth instance of it detectable: a parameter that
@@ -1490,12 +1490,21 @@ def board_descriptor(args):
     somebody adds later and does not think about here.
 
     Over-varying is the safe direction and is what this deliberately
-    does. `limit=None` alone decides the list branch's answer today --
-    `mine` is read only by `item=` and `search=` -- so folding `mine`
-    into the list's etag turns it over on a tab switch that changes
-    nothing, costing one re-fetch of a payload the client already had.
-    Under-varying costs a wrong answer that looks like a right one, and
-    the two are not comparable.
+    does, in **all three** branches rather than the one it is tempting
+    to describe. Each branch reads a subset: `item=` ignores `limit` and
+    `search`, `search=` ignores `limit` and `item`, and the list ignores
+    `item`, `search` and `mine`. Hashing all four means any request
+    carrying a parameter its own branch does not read gets a fresh etag
+    for a byte-identical body -- one wasted re-fetch of a payload the
+    client already had.
+
+    Dormant today: `app.js` sends exactly one of `item[&mine]`,
+    `q[&mine]` or `limit` per URL and never combines them, so no live
+    request has a spare parameter to be charged for. It would wake up
+    for a client that carried stray query parameters across a
+    navigation, and the cost then is still one re-fetch. Under-varying
+    costs a wrong answer that looks like a right one. The two are not
+    comparable, and that is the whole trade being made here.
     """
     return "&".join(f"{name}={args[name]!r}" for name in sorted(args))
 
