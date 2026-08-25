@@ -185,6 +185,7 @@ from agora_runner.nova_idea_pool import (
     pool_payload,
     request_generate as pool_request_generate,
 )
+from agora_runner.nova_catalog import catalog_page, parse_catalog
 from agora_runner.nova_demos import DEMOS_PATH, load as load_demos, lookup as lookup_demo
 from agora_runner.vault import vault_read_path
 from agora_runner.nova_notes import notes_payload
@@ -194,6 +195,7 @@ from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_runtimes import attach_runtimes
 from agora_runner.nova_sources import (
     board_markdown,
+    catalog_markdown,
     comments_markdown,
     cost_ledger_json,
     digest_markdown,
@@ -253,6 +255,7 @@ PAGE_ROUTES = (
     "/ask",
     "/conversations",
     "/heartbeats",
+    "/catalog",
     "/diag",
 )
 PAGE_ROUTE_PREFIXES = ("/cycle/",)
@@ -426,6 +429,10 @@ def _rendered(entry):
 
 def digest_payload():
     return parse_digest(digest_markdown())
+
+
+def catalog_payload():
+    return catalog_page(parse_catalog(catalog_markdown()))
 
 
 def comments_payload():
@@ -1970,6 +1977,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # the site -- 11KB of markdown -- so nothing here wants
                 # a window.
                 self._send_cached_json("notes", notes_payload)
+                return
+            if path == "/api/catalog":
+                # Cached like the boards, and this one changes even less
+                # often: `nova/catalog.md` is rewritten when a cycle runs
+                # `tools.catalog`, not when anybody taps. 2.3KB of
+                # markdown, so no window and no partial read.
+                self._send_cached_json("catalog", catalog_payload)
                 return
             if path == "/api/costs":
                 self._send_cached_json("costs", costs_payload)

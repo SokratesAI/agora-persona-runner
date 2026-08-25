@@ -3225,3 +3225,57 @@ body.has-full-chart { overflow: hidden; }
   color: var(--dim);
   margin: 0.4rem 0 0;
 }
+
+
+/* The service catalog (/catalog). Cards rather than the markdown table
+ * the vault file holds: seven columns is a laptop layout, and this page is
+ * opened on a phone. Same card shape as the heartbeats list beside it. */
+.cat-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.cat-row {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+}
+
+/* Scaled to zero on purpose, and the unaccounted-for doors: present, and
+ * not what the eye should land on first. */
+.cat-dim { opacity: 0.62; }
+
+.cat-head { display: flex; align-items: baseline; gap: 0.5rem; justify-content: space-between; }
+.cat-name { font-weight: 600; color: var(--text); }
+a.cat-name { color: var(--accent); text-decoration: none; }
+.cat-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
+
+/* The word beside the state, never a bare colour -- and "off on purpose"
+ * spelled out rather than shortened, because the whole point of the
+ * distinction is that one of these is fine and the other is not. */
+.cat-state { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+.cat-state-up { color: var(--good); }
+.cat-state-off { color: var(--dim); }
+.cat-state-down { color: var(--danger); }
+.cat-state-unknown { color: var(--warn); }
+
+.cat-ns {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin: 1.1rem 0 0.5rem;
+}
+
+.cat-headline {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+}
+
+/* An incomplete catalog is a different claim from a complete one and has
+ * to read as one -- the table below it is a partial picture. */
+.cat-warn { border-color: var(--warn); }
+
+.cat-lead { font-weight: 600; margin: 0; }
+.cat-detail { color: var(--dim); font-size: 0.82rem; margin: 0.4rem 0 0; }
+.cat-when { color: var(--dim); font-size: 0.78rem; margin-top: 1rem; }
