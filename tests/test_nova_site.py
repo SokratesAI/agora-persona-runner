@@ -1139,7 +1139,8 @@ def test_start_nova_site_binds_and_serves_the_real_handler():
     in the bridge all called `_run()` directly and left `start()` covered by
     nothing; this is the same seam, so it gets the real function."""
     with patch.object(nova_site, "NOVA_PORT", 0), \
-            patch.object(nova_site, "warm_cache"):
+            patch.object(nova_site, "warm_cache"), \
+            patch.object(nova_site, "recover_replies"):
         server = nova_site.start_nova_site()
     try:
         assert server.RequestHandlerClass is nova_site.NovaSiteHandler
@@ -1185,7 +1186,8 @@ def test_site_main_serves_until_sigterm_then_releases_the_port(site_main):
 
     def capture_server():
         with patch.object(nova_site, "NOVA_PORT", 0), \
-                patch.object(nova_site, "warm_cache"):
+                patch.object(nova_site, "warm_cache"), \
+                patch.object(nova_site, "recover_replies"):
             server = nova_site.start_nova_site()
         served.append(server)
         return server
@@ -1213,7 +1215,8 @@ def test_site_main_closes_the_port_even_if_the_loop_raises(site_main):
 
     def capture_server():
         with patch.object(nova_site, "NOVA_PORT", 0), \
-                patch.object(nova_site, "warm_cache"):
+                patch.object(nova_site, "warm_cache"), \
+                patch.object(nova_site, "recover_replies"):
             server = nova_site.start_nova_site()
         served.append(server)
         return server
@@ -3350,6 +3353,7 @@ def test_the_warm_does_not_hold_up_the_server_it_runs_behind(journal_md):
         finished.set()
 
     with patch.object(nova_site, "warm_cache", side_effect=blocking_warm), \
+            patch.object(nova_site, "recover_replies"), \
             patch.object(nova_site, "NOVA_PORT", 0):
         server = nova_site.start_nova_site()
     try:

@@ -660,7 +660,7 @@ def _recover_with(markdown=RECOVERY_MD):
     with patch.object(nova_replies, "_ensure_worker"), \
             patch.object(nova_replies, "comments_markdown", return_value=markdown), \
             patch.object(nova_replies, "log", side_effect=logged.append):
-        queued = nova_replies.recover()
+        queued = nova_replies.recover(delay=0)
     return queued, logged
 
 
@@ -711,6 +711,30 @@ def test_recovery_never_takes_the_site_down_with_it():
             patch.object(nova_replies, "comments_markdown",
                          side_effect=RuntimeError("couchdb down")), \
             patch.object(nova_replies, "log", side_effect=logged.append):
-        assert nova_replies.recover() == 0
+        assert nova_replies.recover(delay=0) == 0
     assert nova_replies.pending() == set()
     assert any("couchdb down" in line for line in logged), logged
+
+
+def test_recovery_waits_out_the_pod_it_is_replacing_before_it_looks():
+    """`nova-site` rolls with maxSurge 1 and maxUnavailable 0, so this
+    process is alive and ready while the one it replaces is still
+    answering. Scanning immediately re-queues a comment that other process
+    is mid-reply to, and the owner reads his own question answered twice.
+
+    Asserting the sleep happened is not enough -- it has to happen *before*
+    the read, or the scan is stale and the duplicate arrives anyway. So
+    this records the order of the two calls rather than the fact of them.
+    """
+    order = []
+    with patch.object(nova_replies, "_ensure_worker"), \
+            patch.object(nova_replies, "time") as clock, \
+            patch.object(nova_replies, "comments_markdown",
+                         side_effect=lambda: order.append("read") or RECOVERY_MD), \
+            patch.object(nova_replies, "log"):
+        clock.sleep.side_effect = lambda s: order.append(("slept", s))
+        nova_replies.recover()
+    assert order[0] == ("slept", nova_replies.RECOVER_DELAY_SECONDS), order
+    assert order[1] == "read", order
+    # The grace period it is covering, measured on the live deployment.
+    assert nova_replies.RECOVER_DELAY_SECONDS > 30

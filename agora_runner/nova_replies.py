@@ -474,8 +474,24 @@ def _run():
 # a cycle still reads it out of `## New` the way it always did.
 RECOVER_LIMIT = 10
 
+# How long a starting process waits before looking, and it is not a
+# courtesy. `nova-site` rolls `RollingUpdate` with `maxSurge: 1` and
+# `maxUnavailable: 0`, so the new pod is started and made ready *while the
+# old one is still alive* -- it only receives SIGTERM once the new one
+# passes its probe, and then has `terminationGracePeriodSeconds: 30` to go
+# (both measured live 2026-08-25). Recovering the instant this process
+# starts therefore re-queues a comment the dying process is still in the
+# middle of answering, and the owner gets the same question answered
+# twice. Waiting past that grace period means the old worker has either
+# written its reply into the vault -- where the scan below sees it and
+# skips it -- or died without one, which is exactly the case worth
+# recovering. 45 rather than 30 so the margin is visible rather than
+# exact. Nothing is lost by waiting: every comment this finds has already
+# been unanswered for minutes.
+RECOVER_DELAY_SECONDS = 45
 
-def recover():
+
+def recover(delay=RECOVER_DELAY_SECONDS):
     """Re-queue the replies a previous process was still holding. -> count.
 
     The queue above lives in this process's memory and nowhere else, and
@@ -507,6 +523,11 @@ def recover():
     """
     if not CLAUDE_BRIDGE_URL:
         return 0
+    # Before the read, not after: the point is to let the outgoing process
+    # finish writing, and a scan taken early and acted on late is the same
+    # duplicate with a longer fuse.
+    if delay:
+        time.sleep(delay)
     try:
         comments = parse_comments(comments_markdown())
     except Exception as e:
