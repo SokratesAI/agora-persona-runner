@@ -336,8 +336,26 @@ def insert_discarded(markdown, title, why):
         break
     if head is None:
         return markdown, "could not find the ## Discarded table"
-    lines.insert(head, f"| {title} | {why} |")
+    lines.insert(head, f"| {_table_cell(title)} | {_table_cell(why)} |")
     return "\n".join(lines), ""
+
+
+def _table_cell(text):
+    """One markdown table cell out of whatever he typed into a textarea.
+
+    **This is a write into his vault, so getting it wrong is not recoverable
+    by editing code.** The comment box is a `<textarea>`, so a reason can
+    contain newlines and pipes; a raw newline ends the table mid-row and a
+    raw `|` opens a third cell against a two-column header. Both leave a
+    permanently malformed table in a file he reads in Obsidian, and the
+    history view then shows him the fragment before the break as if it were
+    the whole thing -- which is the precise opposite of what he asked for.
+
+    Whitespace collapses rather than becoming `<br>`: a "why not" cell is a
+    sentence by construction, every word survives, and nothing about the
+    round trip depends on a renderer honouring an HTML tag inside a table.
+    """
+    return re.sub(r"\s+", " ", (text or "").strip()).replace("|", r"\|")
 
 
 def _write_with_retry(path, mutate):
@@ -478,6 +496,7 @@ def _parse_approved(lines):
     number = title = None
     dated = comment = ""
     seen_byline = False
+    in_comment = False
 
     def flush():
         if seen_byline and number is not None:
@@ -493,6 +512,7 @@ def _parse_approved(lines):
             number, title = int(heading.group(1)), heading.group(2)
             dated = comment = ""
             seen_byline = False
+            in_comment = False
             continue
         if number is None:
             continue
@@ -504,6 +524,21 @@ def _parse_approved(lines):
         said = _YOU_SAID.match(line.strip())
         if said and seen_byline:
             comment = said.group(1)
+            in_comment = True
+            continue
+        # **A comment can be more than one line and the box he types into is
+        # a textarea.** `decide` writes `You said: <whatever he typed>`
+        # verbatim into the write-up, so a two-paragraph comment is a
+        # `You said:` line followed by more lines -- and reading only the
+        # first one shows him less than he wrote, silently, which is the
+        # failure this whole view exists to end. The write-up's own prose
+        # ends at the blank line before the next heading, so that is where
+        # the comment ends too.
+        if in_comment:
+            if not line.strip():
+                in_comment = False
+            else:
+                comment = (comment + "\n" + line.strip()).strip()
     flush()
     return approved
 
@@ -523,7 +558,10 @@ def _parse_rejected(lines):
             break
         if not stripped.startswith("|"):
             continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        # Split on unescaped pipes only, then put the escaped ones back as
+        # the character he typed. `_table_cell` is the other half of this.
+        cells = [c.replace(r"\|", "|").strip()
+                 for c in re.split(r"(?<!\\)\|", stripped.strip("|"))]
         if len(cells) < 2:
             continue
         # The header row and the `|---|---|` separator under it. Matched by

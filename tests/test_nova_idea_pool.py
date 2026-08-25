@@ -71,7 +71,7 @@ Kept so neither of us re-proposes them.
 
 | Idea | Why not |
 |---|---|
-| Local model fallback | The box can't afford a resident model |
+| Local model fallback (Ollama/LocalAI) | The box can't afford a resident model — see 3 |
 
 ---
 
@@ -426,8 +426,8 @@ def test_history_shows_a_discarded_row_that_predates_the_pool():
     no page has ever rendered any of them. They are still decisions."""
     history = parse_history(LIVE_IDEAS)
     assert history["rejected"] == [
-        {"title": "Local model fallback",
-         "why": "The box can't afford a resident model"},
+        {"title": "Local model fallback (Ollama/LocalAI)",
+         "why": "The box can't afford a resident model — see 3"},
     ]
 
 
@@ -448,10 +448,68 @@ def test_history_does_not_read_past_the_discarded_table():
     wikilinks. A parser that keeps going swallows write-ups as rejections."""
     history = parse_history(LIVE_IDEAS + "\n## 92 — A project dashboard\n\n"
                             "| not | a rejection |\n")
-    assert [r["title"] for r in history["rejected"]] == ["Local model fallback"]
+    assert [r["title"] for r in history["rejected"]] == [
+        "Local model fallback (Ollama/LocalAI)"]
 
 
 def test_history_reports_a_missing_ideas_file_rather_than_failing():
     with patch.object(nova_idea_pool, "vault_read_path_rev", return_value=(None, None)):
         payload = nova_idea_pool.history_payload()
     assert payload == {"approved": [], "rejected": [], "missing": True}
+
+
+def test_a_reason_with_a_pipe_in_it_does_not_break_his_table():
+    """He types into a `<textarea>`, so a reason can carry anything.
+
+    A raw `|` opens a third cell against a two-column header and leaves a
+    permanently malformed table in a file he reads in Obsidian, and the
+    history then shows him the fragment before the pipe as the whole reason.
+    Reviewer finding on this PR, reproduced before it was fixed.
+    """
+    candidates = parse_pool(LIVE_POOL)["candidates"]
+    vault = _Vault()
+    _run(vault, lambda: decide(
+        0, candidates[0]["title"], "reject", "No good | too expensive", "08-25"))
+    written = vault.docs[nova_idea_pool.IDEAS_PATH]
+
+    row = [l for l in written.split("\n") if candidates[0]["title"] in l
+           and l.startswith("|")][0]
+    assert len(row.strip("|").split("|")) == 2 + row.count(r"\|")
+    assert row.count("|") - row.count(r"\|") == 3  # two cells, three delimiters
+
+    rejected = parse_history(written)["rejected"]
+    assert [r["why"] for r in rejected if r["title"] == candidates[0]["title"]] == [
+        "No good | too expensive",
+    ]
+
+
+def test_a_reason_written_over_several_lines_survives_whole():
+    """A newline inside a table cell ends the row. Every word he typed has to
+    come back, and the table has to stay a table."""
+    candidates = parse_pool(LIVE_POOL)["candidates"]
+    vault = _Vault()
+    _run(vault, lambda: decide(
+        0, candidates[0]["title"], "reject",
+        "No.\nI do not care about the cost per journal.", "08-25"))
+    written = vault.docs[nova_idea_pool.IDEAS_PATH]
+
+    assert "|\nI do not care" not in written
+    rejected = parse_history(written)["rejected"]
+    assert [r["why"] for r in rejected if r["title"] == candidates[0]["title"]] == [
+        "No. I do not care about the cost per journal.",
+    ]
+
+
+def test_a_multi_line_approval_comment_is_not_cut_at_the_first_line():
+    """`decide` writes `You said: <everything he typed>` into the write-up, so
+    a two-paragraph comment is a `You said:` line followed by more lines.
+    Reading only the first shows him less than he wrote, silently."""
+    candidates = parse_pool(LIVE_POOL)["candidates"]
+    vault = _Vault()
+    _run(vault, lambda: decide(
+        0, candidates[0]["title"], "approve",
+        "This is worth doing.\nPlease raise the priority too.", "08-25"))
+    approved = parse_history(vault.docs[nova_idea_pool.IDEAS_PATH])["approved"]
+    assert [a["comment"] for a in approved] == [
+        "This is worth doing.\nPlease raise the priority too.",
+    ]

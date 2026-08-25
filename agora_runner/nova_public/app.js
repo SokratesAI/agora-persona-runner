@@ -6277,6 +6277,15 @@
    * lack of a third answer. */
   var poolAt = 0;
 
+  /* Whether the History panel is open, hoisted out of `renderPoolHistory`'s
+   * closure for the same reason `poolAt` is hoisted out of `renderPool`'s:
+   * every decision re-runs `renderPool`, which clears `feed` and rebuilds the
+   * whole subtree, so anything kept in the closure is thrown away at the one
+   * moment he is most likely to want it -- straight after tapping Approve.
+   * Reviewer finding on this PR.
+   */
+  var poolHistoryOpen = false;
+
   function poolChip(text, className) {
     return el("span", "pool-chip " + (className || ""), text);
   }
@@ -6443,16 +6452,25 @@
     var wrap = el("div", "pool-history");
     var toggle = el("button", "pool-history-toggle", "What I already decided");
     var body = el("div", "pool-history-body");
-    var open = false;
+    // Deliberately not cached across a re-render: he has just decided
+    // something, so the previous answer is the stale one.
     var loaded = false;
     wrap.appendChild(toggle);
     wrap.appendChild(body);
+    toggle.textContent = poolHistoryOpen
+      ? "Hide what I decided" : "What I already decided";
 
     toggle.addEventListener("click", function () {
-      open = !open;
+      poolHistoryOpen = !poolHistoryOpen;
+      toggle.textContent = poolHistoryOpen
+        ? "Hide what I decided" : "What I already decided";
+      open();
+    });
+    if (poolHistoryOpen) open();
+
+    function open() {
       body.textContent = "";
-      toggle.textContent = open ? "Hide what I decided" : "What I already decided";
-      if (!open) return;
+      if (!poolHistoryOpen) return;
       if (loaded) { paint(loaded); return; }
       body.appendChild(el("p", "pool-note", "Reading…"));
       fetch("/api/pool/history")
@@ -6462,13 +6480,18 @@
           // pages away by the time a 281KB read comes back.
           if (route(window.location.pathname).view !== "pool") return;
           loaded = payload || { approved: [], rejected: [] };
-          if (open) paint(loaded);
+          if (poolHistoryOpen) paint(loaded);
         })
         .catch(function (err) {
+          // The same guard as the success path above, and it was missing
+          // here: he can close the panel while a 281KB read is in flight,
+          // and an error landing afterwards would repaint a closed panel
+          // with no tap from him. Reviewer finding on this PR.
+          if (!poolHistoryOpen) return;
           body.textContent = "";
           body.appendChild(el("p", "pool-note", "Could not read it: " + err));
         });
-    });
+    }
 
     function group(heading, items, className, render) {
       var box = el("div", "pool-history-group");
