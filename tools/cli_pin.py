@@ -187,6 +187,39 @@ def releases_between(pinned, latest, versions):
     return count
 
 
+def older_of(pinned, running):
+    """Which version the staleness verdict is actually about.
+
+    Returns (version, human label).
+
+    **The reviewer's finding, and it was live in the sandbox when it was
+    made.** The first version of this printed a warning when the running
+    binary disagreed with the pin and then computed the exit status from
+    the pin alone. So on the cycle that bumps the pin, the tool says
+    `pinned 2.1.245, latest 2.1.245` and exits 0 -- "nothing to do" --
+    while the binary the loop is executing inside is 2.1.226 and
+    seventeen days old. That is the one state this tool exists to catch,
+    reported as clean, by the field the docstring promises a cycle can
+    read without parsing the text.
+
+    So the verdict is taken on whichever of the two is older. A pin that
+    has moved and an image that has not rolled are still two different
+    problems and the ⚠ line still says which one you are looking at; they
+    just no longer have two different exit codes, because from the loop's
+    point of view "the CLI I am running is stale" is one fact.
+
+    A running binary that is *newer* than the pin (a hand-installed CLI,
+    a pod that outlived a revert) is not the tool's business and does not
+    change the subject: the pin is what the next build installs.
+    """
+    if running is None:
+        return pinned, "the pinned version"
+    pin_key, run_key = version_key(pinned), version_key(running)
+    if pin_key is None or run_key is None or run_key >= pin_key:
+        return pinned, "the pinned version"
+    return running, "the running binary"
+
+
 def parse_time(stamp):
     if not stamp:
         return None
@@ -227,31 +260,34 @@ def main(argv=None, now=None):
     else:
         print(f"  running binary agrees: {running}")
 
-    if pinned == latest:
-        print("The pin is current. Nothing to do.")
+    subject, label = older_of(pinned, running)
+    if subject == latest:
+        print("The pin is current and it is what is running. Nothing to do.")
         return 0
 
-    behind = releases_between(pinned, latest, versions)
-    published = parse_time(times.get(pinned))
+    behind = releases_between(subject, latest, versions)
+    published = parse_time(times.get(subject))
     age_days = (now - published).total_seconds() / 86400 if published else None
 
     gap = f"{behind} release(s) behind" if behind is not None \
         else "behind by an uncountable number of releases (non-numeric version)"
-    age = f", pinned version published {age_days:.1f} day(s) ago" \
+    age = f", {label} published {age_days:.1f} day(s) ago" \
         if age_days is not None else ", publish date unknown"
     print(f"  {gap}{age}")
 
     if age_days is None:
-        print("STALE, ASSUMED — the registry has no publish date for the "
-              "pinned version, so the age check could not run and this "
-              "fails towards noise rather than towards silence.")
+        print(f"STALE, ASSUMED — the registry has no publish date for {subject}, "
+              "so the age check could not run and this fails towards noise "
+              "rather than towards silence.")
         return 2
     if age_days > args.max_age_days:
-        print(f"STALE — the pin has been behind for longer than "
+        print(f"STALE — {label} ({subject}) has been behind for longer than "
               f"{args.max_age_days:g} day(s), which is the slowest recurring "
               "job in this loop. Bump ARG CLAUDE_CODE_VERSION in "
               f"{REPO}'s Dockerfile, and run the stream-json contract check "
-              "the comment above that line prescribes before merging.")
+              "the comment above that line prescribes before merging. If the "
+              "pin is already current, the image has not rolled and that is "
+              "where to look.")
         return 2
 
     print("Behind, but inside the window — the CLI publishes most weekdays "

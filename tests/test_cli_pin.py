@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import pytest
 
 from tools import cli_pin
+from tools.cli_pin import older_of
 
 
 NOW = datetime(2026, 8, 25, 13, 0, tzinfo=timezone.utc)
@@ -177,3 +178,44 @@ def test_version_key_refuses_to_guess_at_a_prerelease():
     assert cli_pin.version_key("2.1.245") == (2, 1, 245)
     assert cli_pin.version_key("2.1.245-rc.1") is None
     assert cli_pin.releases_between("2.1.245-rc.1", "2.1.245", {"2.1.245": {}}) is None
+
+
+def test_a_stale_running_binary_exits_two_even_when_the_pin_is_current(
+    dockerfile, monkeypatch, capsys
+):
+    """The reviewer's finding, and it was the live state when it was made.
+
+    Bump the pin, and until the image rolls the loop is still executing
+    the old binary. Reporting that as exit 0 is the one state this tool
+    exists to catch, reported as clean.
+    """
+    dockerfile("2.1.245")
+    code = run(
+        monkeypatch, "2.1.245", ["2.1.226", "2.1.245"],
+        {"2.1.226": "2026-08-08T01:53:22.182Z",
+         "2.1.245": "2026-08-25T04:45:52.102Z"},
+        running="2.1.226",
+    )
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "the running binary (2.1.226) has been behind" in out, out
+    assert "the image has not rolled" in out, out
+
+
+def test_a_running_binary_newer_than_the_pin_does_not_move_the_verdict(
+    dockerfile, monkeypatch, capsys
+):
+    """A hand-installed CLI is not the tool's business; the pin is."""
+    dockerfile("2.1.245")
+    code = run(
+        monkeypatch, "2.1.245", ["2.1.245", "2.1.250"], {},
+        running="2.1.250",
+    )
+    assert code == 0
+    assert "Nothing to do" in capsys.readouterr().out
+
+
+def test_older_of_falls_back_to_the_pin_when_a_version_is_unorderable():
+    assert older_of("2.1.245", None) == ("2.1.245", "the pinned version")
+    assert older_of("2.1.245", "2.1.226-rc.1")[0] == "2.1.245"
+    assert older_of("2.1.245", "2.1.226")[0] == "2.1.226"
