@@ -605,7 +605,12 @@ def _capture_reply_help(captures):
            "  with {\"target\": \"issues\"|\"ideas\"|\"notes\", \"index\": N, \"original\": \"<his bullet, verbatim>\", \"text\": \"...\"}."]
     for capture in captures:
         board = "notes" if capture["board"] == "note" else capture["board"] + "s"
-        out.append(f"     target {board}, index {capture['index']}  ->  {capture['text'][:60]}")
+        # `original`, whole -- not `text`. `text` is stripped of the rating
+        # glyph and of a `DONE (Cycle N):` marker for display, and a
+        # truncation would be worse still: the route matches the bullet
+        # exactly, so anything shortened here comes back 409 and the cycle
+        # does what the last six did and answers in its journal instead.
+        out.append(f"     target {board}, index {capture['index']}  ->  {capture['original']}")
     out.append("  No line break in `text` — it is one indented bullet under his. "
                "Replying is not taking it: claim the row separately if you work it.")
     return out

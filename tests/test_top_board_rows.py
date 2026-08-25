@@ -1195,6 +1195,21 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
     # draws the reply properly -- it must carry an address as well.
     assert "target notes, index 0  ->  a note he left" in out
 
+    # **The whole bullet, rating glyph and all, never the display text.**
+    # `text` is priority-stripped and was truncated at 60 chars; the route
+    # matches the bullet exactly, so anything shortened here comes back 409
+    # and the cycle answers in its journal instead -- which is the failure
+    # this block exists to stop. Reviewer finding on runner#374.
+    rated = tmp_path / "rated.md"
+    long_one = "🔴 Immediately: " + ("a capture he typed out in full on his phone " * 3).strip()
+    rated.write_text("- " + long_one + "\n- \n\n"
+                     + board((11, "another issue", BACKLOG, "08-02", HIGH)))
+    top_board_rows.main(["--issues", str(rated), "--ideas", str(ideas),
+                         "--notes", str(notes)])
+    rated_out = capsys.readouterr().out
+    assert len(long_one) > 60, "the fixture has to be past the old truncation"
+    assert f"target issues, index 0  ->  {long_one}" in rated_out
+
     # The help belongs to the captures, so it must not print when there are none.
     notes2 = tmp_path / "notes2.md"
     notes2.write_text(NOTES.format(""))

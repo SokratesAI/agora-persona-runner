@@ -241,14 +241,18 @@ def replace_capture(markdown, index, original, bullets):
     if not wanted or not isinstance(index, int) or not 0 <= index < len(entries):
         return None
     begin, end, text, replies = entries[index]
-    # **Two pages address the same bullet with two different strings, and
-    # both are right.** The notes page draws a cycle's reply as its own
-    # bubble, so what it sends back as `original` is his sentence alone;
-    # the board page folds the reply into the capture card, so what it
-    # sends back is the two joined. Refusing either would be the dead
-    # button this function's own docstring is about, so both forms of the
-    # address resolve to the same span.
-    if wanted not in (text, " ".join([text] + replies)):
+    # **His sentence alone, never the board page's folded spelling** --
+    # and the reviewer is the reason this is one form rather than two.
+    # Accepting the joined string looked like the fix for a dead Edit
+    # button, and it is worse than the dead button: `app.js` builds the
+    # *replacement* text out of the same folded string, so one tap on the
+    # priority chip writes `- Rated: his line my answer` with the reply
+    # still underneath it, and the next tap folds that in and doubles it
+    # again. Convert does the same thing across two files. A refusal
+    # leaves the board page exactly where it was before this change --
+    # a button that does nothing on an answered capture, which is a
+    # separate fix and belongs in the payload, not here.
+    if wanted != text:
         return None
     lines = (markdown or "").split("\n")
     # A delete takes the replies with it -- an answer to a bullet that is
