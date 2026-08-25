@@ -129,7 +129,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convPersonas, convStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -179,6 +179,22 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // empty, and "nothing supplied" must mean that rather than a body
       // no live server has ever sent.
       return res(notes || { notes: [], waitingTotal: 0, readTotal: 0 }, notesStatus);
+    }
+    /* Three routes off one prefix, told apart most-specific first. A
+     * `/api/conversations` branch that matched before its own two children
+     * would answer the thread fetch with the listing, and the page would
+     * render an empty conversation rather than fail -- the kind of wrong
+     * that looks like "he has not said anything yet". */
+    if (url.includes("/api/conversations/thread")) {
+      const body = typeof convThread === "function" ? convThread(url) : convThread;
+      if (body && typeof body.then === "function") return body;
+      return res(body || { conversationId: null, messages: [], waiting: false }, convStatus);
+    }
+    if (url.includes("/api/conversations/personas")) {
+      return res(convPersonas || { personas: [] }, convStatus);
+    }
+    if (url.includes("/api/conversations")) {
+      return res(convList || { conversations: [] }, convStatus);
     }
     if (url.includes("/api/ask")) {
       // A function, because the point of most of these tests is that the
@@ -4147,7 +4163,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/costs", "/retro", "/plan", "/ask", "/diag"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/costs", "/retro", "/plan", "/ask", "/conversations", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -9790,5 +9806,137 @@ describe("unread replies are counted on the card and in the header", () => {
     assert.equal(unreadChip(card).textContent, "1");
     click(window, bubble(card));
     assert.equal(unreadChip(card), null, "the deep-linked card kept its chip after he read the reply");
+  });
+});
+
+/* ---- The Conversations page --------------------------------------------
+ *
+ * His capture, ideas.md 2026-08-25: *"its basicly a chat app with multiple
+ * conversations history and i can start new ones etc."* The chat dock talks
+ * to one thread; this page is every thread, which means the failures worth
+ * pinning are the ones a single-thread page cannot have: opening the wrong
+ * conversation, sending into the wrong one, and a poll from a thread he has
+ * navigated away from painting over the one he is reading.
+ */
+describe("the conversations page", () => {
+  const TWO = {
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude",
+        model: "claude-cli:claude-sonnet-5", tags: [],
+        updatedAt: "2026-08-25T20:00:00.000Z", cycleThread: false },
+      { id: "c-2", name: "Nova — Cycle 439", personaName: "Nova",
+        model: "claude-cli:claude-opus-5", tags: ["evolve-cycle:abc"],
+        updatedAt: "2026-08-25T19:00:00.000Z", cycleThread: true },
+    ],
+  };
+
+  test("every conversation is a row, and a cycle's own thread is marked not dropped", async () => {
+    const window = await loadSite("/conversations", { convList: TWO });
+    const rows = [...window.document.querySelectorAll(".conv-row")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".conv-name").textContent),
+      ["Roofing", "Nova — Cycle 439"]);
+    // He asked for the history. Dimming a machine thread is a label; not
+    // listing it would be deciding for him.
+    assert.equal(rows[0].classList.contains("conv-cycle"), false);
+    assert.ok(rows[1].classList.contains("conv-cycle"));
+    assert.match(rows[0].querySelector(".conv-meta").textContent, /Claude/);
+  });
+
+  test("tapping a row opens that conversation and no other", async () => {
+    const asked = [];
+    const window = await loadSite("/conversations", {
+      convList: TWO,
+      convThread: (url) => {
+        asked.push(url);
+        return { conversationId: "c-2", waiting: false, messages: [
+          { id: "m", sender: "Nova", text: "the entry is written" },
+        ] };
+      },
+    });
+    click(window, window.document.querySelectorAll(".conv-row")[1]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(asked.length, 1);
+    assert.match(asked[0], /id=c-2/);
+    assert.match(window.document.querySelector(".ask-text").textContent,
+      /the entry is written/);
+  });
+
+  test("sending names the open conversation on the wire", async () => {
+    const window = await loadSite("/conversations", {
+      convList: TWO,
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    click(window, window.document.querySelectorAll(".conv-row")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    window.document.querySelector(".ask-box").value = "  when is it done?  ";
+    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The id is the whole difference from the /ask page: a send that
+    // dropped it would post his message into whichever thread the server
+    // guessed at, and the page would look like it had worked.
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/send",
+        { conversationId: "c-1", text: "when is it done?" }]]);
+    assert.ok(window.document.querySelector(".ask-pending"),
+      "nothing says an answer is coming");
+  });
+
+  test("going back to the list stops the open thread from painting over it", async () => {
+    let answer = { conversationId: "c-1", waiting: false, messages: [] };
+    const window = await loadSite("/conversations", {
+      convList: TWO,
+      convThread: () => answer,
+    });
+    click(window, window.document.querySelectorAll(".conv-row")[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.querySelector(".conv-list"), null);
+
+    click(window, window.document.querySelector(".conv-back"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.querySelector(".conv-list"),
+      "back should return to the list of conversations");
+    assert.equal(window.document.querySelector(".ask-form"), null);
+  });
+
+  test("starting a conversation posts the name and the persona, then opens it", async () => {
+    const window = await loadSite("/conversations", {
+      convList: TWO,
+      convPersonas: { personas: [
+        { id: "p-1", name: "Claude", model: "claude-cli:claude-sonnet-5", metered: false },
+        { id: "p-2", name: "Zed", model: "anthropic:claude-opus-5", metered: true },
+      ] },
+      convThread: () => ({ conversationId: "c-new", waiting: false, messages: [] }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const options = [...window.document.querySelectorAll(".conv-new-who option")];
+    // identity.md rule 9 is about not *defaulting* onto the prepaid API.
+    // The metered persona is offered and says so; the first option -- the
+    // one a thumb lands on -- is a subscription one.
+    assert.deepEqual(options.map((o) => o.textContent),
+      ["Claude", "Zed (metered API)"]);
+
+    window.document.querySelector(".conv-new-name").value = "Roofing quote";
+    window.document.querySelector(".conv-new-who").value = "p-1";
+    window.postReply = { ok: true, conversationId: "c-new" };
+    window.document.querySelector(".conv-new").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/new", { name: "Roofing quote", personaId: "p-1" }]]);
+    assert.ok(window.document.querySelector(".ask-form"),
+      "a new conversation should open straight into its thread");
+  });
+
+  test("an unreachable store says so rather than showing an empty list", async () => {
+    // An empty list and a dead Agora render identically and mean opposite
+    // things -- the server raises for this reason and the page must not
+    // swallow it back into "no conversations yet".
+    const window = await loadSite("/conversations", { convStatus: 502 });
+    assert.match(window.document.querySelector(".empty").textContent,
+      /Could not load your conversations/);
   });
 });
