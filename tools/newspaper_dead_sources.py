@@ -1,4 +1,4 @@
-"""Sources the Sokrates Post scrapes every night that have never once worked.
+"""Sources the Sokrates Post is configured to read that have never worked.
 
 Cycle 405. The curated desk came back on 2026-08-22 -- the generator runs
 on a hosted model now and writes real articles against the configured
@@ -9,9 +9,12 @@ noticing that some of the sources it is told to read do not exist.
 runs happened, how many candidates were found, how many articles were
 written and how many fetches errored. Everything below is read off that
 blob; nothing new is measured. What was missing is that nobody reads it.
-Four RSS feeds have failed on **82 consecutive runs** and eighteen more
-hosts have failed every run they have ever had, and the only place that
-fact appears is a 43KB JSON document behind a stats page.
+Four RSS feeds have failed on **82 consecutive runs** and seventeen
+scrape hosts have failed every run their counters record, and the only
+place that fact appears is a 43KB JSON document behind a stats page. The
+counters are the whole evidence here: this reads them, it does not know
+whether one was ever reset, and "never" means "not in what the paper
+kept".
 
     python3 -m tools.newspaper_dead_sources
 
@@ -35,6 +38,14 @@ every run for eleven weeks is config. The floor is `--min-runs` (default
 4) so that a source added yesterday cannot be called dead on one bad
 night, and the report prints `runs` beside `errors` so the judgement is
 visible rather than buried in the threshold.
+
+**The floor gates the verdict, never the listing**, and getting that
+wrong hid four real sources on the first version of this file. A source
+below the floor with no errors at all is not ambiguous -- there is
+nothing for the floor to protect it from -- so it belongs in the quiet
+list rather than nowhere. A filter that silently drops a row prints
+exactly what a clean sweep prints, which is the one equation the tools in
+this folder keep having to refuse to write.
 """
 
 from __future__ import annotations
