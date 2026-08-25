@@ -1,53 +1,22 @@
 """Pure turn-taking/scheduling logic and system-prompt construction -- no I/O of its own."""
 
-import re
 from datetime import datetime, timedelta, timezone
 
-from agora_runner.config import AI_TURN_CAP, MAX_HISTORY, OSLO
-
-
-def parse_mentions(text, names):
-    """Ordered, de-duplicated persona names @mentioned in text.
-    Case-insensitive; longest names matched first so '@Marcus-2' can't be
-    swallowed by a persona named 'Marcus'."""
-    found = []
-    lowered = text.lower()
-    for name in sorted(names, key=len, reverse=True):
-        pattern = re.compile(r"@" + re.escape(name.lower()) + r"(?![\w-])")
-        for match in pattern.finditer(lowered):
-            found.append((match.start(), name))
-    found.sort()
-    ordered = []
-    for _pos, name in found:
-        if name not in ordered:
-            ordered.append(name)
-    return ordered
-
-
-def consecutive_ai_turns(thread):
-    """Counts TURNS, not messages -- a run of consecutive same-sender
-    messages is one turn. 2026-07-24: a single logical turn now lands as
-    several messages (one per streamed text block), so counting raw
-    messages would trip AI_TURN_CAP many times faster than intended and
-    auto-pause a chain that's really only had 1-2 real handoffs."""
-    count = 0
-    last_sender = None
-    for message in reversed(thread):
-        sender = message.get("sender")
-        if sender == "Edvard":
-            break
-        if sender != last_sender:
-            count += 1
-            last_sender = sender
-    return count
-
-
-PAUSE_SENTINEL = "__PAUSE__"
+from agora_runner.config import MAX_HISTORY, OSLO
 
 
 def decide_turn(thread, personas):
-    """Architecture §3. Returns ordered speaker names, [] for nothing, or
-    [PAUSE_SENTINEL] when a chain hit the cap and must auto-pause.
+    """Who speaks next. Returns [name] or [] for nothing.
+
+    A conversation holds exactly one persona as of agora#67 (Agora
+    refuses a second one), so the only question left is whether it is
+    that persona's turn, and it is whenever the owner spoke last. The
+    @mention speaker selection this used to run -- `parse_mentions`, the
+    persona-to-persona chain rule, `consecutive_ai_turns`/`AI_TURN_CAP`
+    and `PAUSE_SENTINEL` -- was all reachable only with two or more
+    personas in one thread and went with them. Measured 2026-08-25 before
+    deleting it: 405 conversations, every one holding exactly one
+    persona, every one of those a curator.
 
     `activity` messages (2026-07-24 inline Activity chips) are excluded
     from `visible` same as `forgotten` -- they're not conversation
@@ -68,25 +37,17 @@ def decide_turn(thread, personas):
     visible = [m for m in thread if not m.get("forgotten") and not m.get("activity") and not m.get("thinking")]
     if not visible:
         return []
-    names = [p["name"] for p in personas]
-    curator = next((p["name"] for p in personas if p.get("role") == "curator"), None)
-    last = visible[-1]
-
-    if last.get("sender") == "Edvard":
-        mentioned = parse_mentions(last.get("text", ""), names)
-        if mentioned:
-            return mentioned
-        return [curator] if curator else []
-
-    # Last message from a persona — chains continue only via @mention.
-    mentioned = [
-        n for n in parse_mentions(last.get("text", ""), names) if n != last.get("sender")
-    ]
-    if not mentioned:
+    if visible[-1].get("sender") != "Edvard":
         return []
-    if consecutive_ai_turns(visible) >= AI_TURN_CAP:
-        return [PAUSE_SENTINEL]
-    return mentioned[:1]
+    if not personas:
+        return []
+    # The curator preference is kept because that is what all 405 live
+    # conversations carry. The fallback to the first participant is not
+    # cosmetic: the old code answered a lone non-curator persona only when
+    # the owner @mentioned it by name, so dropping the @mention path without
+    # this would have made such a conversation silently never reply.
+    curator = next((p["name"] for p in personas if p.get("role") == "curator"), None)
+    return [curator or personas[0]["name"]]
 
 
 def parse_iso(value):
@@ -362,7 +323,7 @@ def pending_user_turn(history):
     return None
 
 
-def build_system(persona, conversation=None, participants=None, heartbeat_extra=None):
+def build_system(persona, conversation=None, heartbeat_extra=None):
     parts = [persona.get("personality") or "You are a helpful assistant."]
     shared = (persona.get("sharedMemory") or "").strip()
     if shared:
@@ -371,17 +332,11 @@ def build_system(persona, conversation=None, participants=None, heartbeat_extra=
         memory = (conversation.get("memory") or "").strip()
         if memory:
             parts.append(f"## Conversation notes\n{memory}")
-    if participants and len(participants) > 1:
-        roster = ", ".join(
-            f"{p['name']} (curator)" if p.get("role") == "curator" else p["name"]
-            for p in participants
-        )
-        parts.append(
-            f"## Participants\nEdvard plus personas: {roster}. You are {persona.get('name')}. "
-            "Address another persona by writing @TheirName — only personas that are "
-            "@mentioned may reply. Do not @mention anyone unless you genuinely want "
-            "them to answer next."
-        )
+    # A "## Participants" roster naming the other personas and teaching the
+    # @mention convention used to be built here when `participants` held
+    # more than one name. Agora refuses a second persona (agora#67), so it
+    # never fired again -- and if it somehow did, it would be telling a
+    # persona to @mention names that can no longer be in the thread.
     caps = persona.get("capabilities") or {}
     if caps.get("vaultRead") or caps.get("vaultWrite"):
         vault = [

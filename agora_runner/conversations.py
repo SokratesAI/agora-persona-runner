@@ -10,7 +10,7 @@ from agora_runner.config import (
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.agora_api import fetch_persona
-from agora_runner.turns import build_system, decide_turn, merge_history, PAUSE_SENTINEL
+from agora_runner.turns import build_system, decide_turn, merge_history
 from agora_runner.reply import generate_reply
 
 
@@ -90,7 +90,7 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
         }
     caps = persona.get("capabilities") or dict(NO_CAPS)
     multi = len(participants) > 1
-    system = build_system(persona, detail, participants)
+    system = build_system(persona, detail)
     history = merge_history(thread, persona["name"], multi)
     sticky = bool(detail.get("stickyFallback", False))
 
@@ -218,15 +218,7 @@ def poll_conversation(summary):
     ]
     speakers = decide_turn(thread, personas)
     if not speakers:
-        debug_log(f"[{name}] no turn needed (last sender not Edvard, or no @mention match)")
-        return
-    if speakers == [PAUSE_SENTINEL]:
-        # The chain stops here; the conversation stays active. Pausing it
-        # was the old multi-persona architecture's backstop, and the owner
-        # asked for it gone (2026-08-05) -- the cap's actual job is to stop
-        # personas @mentioning each other forever, and returning does that
-        # on its own. His next message starts a fresh chain, no menu.
-        debug_log(f"[{name}] AI turn cap reached: chain stopped, conversation left active")
+        debug_log(f"[{name}] no turn needed (last sender not Edvard)")
         return
     debug_log(f"[{name}] turn decided: speakers={speakers}")
 

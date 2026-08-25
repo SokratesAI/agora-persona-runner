@@ -1739,14 +1739,16 @@ def test_backoff_delay_doubles_and_is_capped(runner):
     runner._conversation_backoff.clear()
 
 
-def test_turn_cap_stops_the_chain_without_pausing(runner):
-    """PAUSE_SENTINEL used to PATCH status=paused. The owner asked for that gone;
-    the chain must just stop."""
+def test_no_turn_owed_neither_speaks_nor_patches(runner):
+    """decide_turn returning [] must end the tick silently -- no speak, and no
+    PATCH. Auto-pause used to live on this path via PAUSE_SENTINEL; the owner
+    asked for pausing gone (2026-08-05) and the sentinel went with the
+    persona-to-persona chain it capped (agora#67)."""
     summary, detail, calls, fake_agora_get, fake_agora_internal, _ = _make_poll_fixtures(runner)
 
     with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
-         patch.object(runner.conversations, "decide_turn", return_value=[runner.PAUSE_SENTINEL]), \
+         patch.object(runner.conversations, "decide_turn", return_value=[]), \
          patch.object(runner.conversations, "speak", side_effect=AssertionError("must not speak")):
         runner.poll_conversation(summary)
 
@@ -2396,44 +2398,42 @@ def test_generate_reply_dispatches_claude_cli_provider(runner):
     mock_gen.assert_called_once()
 
 
-def test_consecutive_ai_turns_counts_runs_not_messages(runner):
-    """A single logical turn now streams as several messages -- the
-    AI_TURN_CAP must still count actual persona handoffs, not chunks."""
-    thread = [
-        {"sender": "Edvard", "text": "go"},
-        {"sender": "Gemini", "text": "chunk one"},
-        {"sender": "Gemini", "text": "chunk two"},
-        {"sender": "Gemini", "text": "chunk three"},
-    ]
-    assert runner.consecutive_ai_turns(thread) == 1
-
-    thread.append({"sender": "Haiku", "text": "handoff reply"})
-    assert runner.consecutive_ai_turns(thread) == 2
+def test_decide_turn_speaks_without_being_mentioned(runner):
+    """A conversation holds one persona, so the owner never has to name it.
+    The @mention requirement went with the second persona (agora#67)."""
+    personas = [{"name": "Gemini", "role": "curator"}]
+    thread = [{"sender": "Edvard", "text": "no name in this message at all"}]
+    assert runner.decide_turn(thread, personas) == ["Gemini"]
 
 
-def test_decide_turn_ignores_activity_messages_for_last_sender(runner):
-    """An activity chip trailing a persona's real text must not look like
-    'the persona already replied to a fresh @mention' -- and must not
-    itself satisfy an @mention (it's not a real speaker turn)."""
-    personas = [{"name": "Gemini", "role": "curator"}, {"name": "Haiku", "role": "listener"}]
-    thread = [
-        {"sender": "Edvard", "text": "@Haiku are you there?"},
-        {"sender": "Gemini", "text": "vault_read: notes.md", "activity": {"capability": "vault_read", "detail": "notes.md"}},
-    ]
+def test_decide_turn_speaks_for_a_lone_persona_that_is_not_a_curator(runner):
+    """The old code answered a non-curator only when @mentioned by name, so
+    a lone listener would have gone silent once the @mention path went."""
+    personas = [{"name": "Haiku", "role": "listener"}]
+    thread = [{"sender": "Edvard", "text": "hello"}]
     assert runner.decide_turn(thread, personas) == ["Haiku"]
 
 
-def test_decide_turn_stops_chain_at_cap_counting_handoffs_not_activity_chips(runner):
-    """Each handoff below carries an activity chip right after its text
-    (matching how a real streamed turn looks) -- the cap must trip based on
-    the AI_TURN_CAP-th real handoff, not be thrown off by the chips."""
-    personas = [{"name": f"P{i}", "role": "listener"} for i in range(runner.AI_TURN_CAP + 1)]
-    thread = [{"sender": "Edvard", "text": "@P0 go"}]
-    for i in range(runner.AI_TURN_CAP):
-        thread.append({"sender": f"P{i}", "text": f"@P{i + 1} your turn"})
-        thread.append({"sender": f"P{i}", "text": f"vault_read: x",
-                        "activity": {"capability": "vault_read", "detail": "x"}})
-    assert runner.decide_turn(thread, personas) == [runner.PAUSE_SENTINEL]
+def test_decide_turn_does_not_reply_to_a_persona(runner):
+    """No persona-to-persona chain exists any more: the last visible message
+    being a persona's is the end of the turn, @mention or not."""
+    personas = [{"name": "Gemini", "role": "curator"}]
+    thread = [
+        {"sender": "Edvard", "text": "go"},
+        {"sender": "Gemini", "text": "done, over to @Gemini"},
+    ]
+    assert runner.decide_turn(thread, personas) == []
+
+
+def test_decide_turn_ignores_activity_messages_for_last_sender(runner):
+    """An activity chip trailing the owner's message is a UI event, not a
+    reply -- the persona's turn is still owed."""
+    personas = [{"name": "Gemini", "role": "curator"}]
+    thread = [
+        {"sender": "Edvard", "text": "are you there?"},
+        {"sender": "Gemini", "text": "vault_read: notes.md", "activity": {"capability": "vault_read", "detail": "notes.md"}},
+    ]
+    assert runner.decide_turn(thread, personas) == ["Gemini"]
 
 
 def test_merge_history_excludes_activity_messages(runner):
@@ -2464,15 +2464,15 @@ def test_merge_history_excludes_thinking_messages(runner):
 
 
 def test_decide_turn_ignores_thinking_messages_for_last_sender(runner):
-    """A thinking chunk trailing a persona's real text must not look like
-    'the persona already replied to a fresh @mention', same reasoning as
+    """A thinking chunk is not something a persona said to anyone, so it
+    must not stand in for the reply that is still owed -- same reasoning as
     the activity-chip exclusion right above."""
-    personas = [{"name": "Gemini", "role": "curator"}, {"name": "Haiku", "role": "listener"}]
+    personas = [{"name": "Gemini", "role": "curator"}]
     thread = [
-        {"sender": "Edvard", "text": "@Haiku are you there?"},
+        {"sender": "Edvard", "text": "are you there?"},
         {"sender": "Gemini", "text": "let me think about that", "thinking": True},
     ]
-    assert runner.decide_turn(thread, personas) == ["Haiku"]
+    assert runner.decide_turn(thread, personas) == ["Gemini"]
 
 
 def test_notify_sends_push_field_defaulting_true(runner):
@@ -3036,7 +3036,7 @@ def _heartbeat_run(runner, heartbeat, reply="did a thing", raises=None, system_e
     with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
          patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
          patch.object(runner.heartbeats, "build_system",
-                      side_effect=lambda p, d, parts, extra: extra + system_extra), \
+                      side_effect=lambda p, d, extra: extra + system_extra), \
          patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.heartbeats, "notify", return_value=(200, "m1")), \
          patch.object(runner.heartbeats, "audit") as mock_audit, \

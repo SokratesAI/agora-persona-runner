@@ -98,7 +98,7 @@ def run_workflow_steps(steps, conversation_id, detail, participants,
                 log(f"workflow: persona {link.get('personaId')!r} not found, skipping this round")
                 continue
             caps = capabilities_for_step(persona, step)
-            system = build_system(persona, detail, participants, extra)
+            system = build_system(persona, detail, extra)
             status, msgs_body = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
             thread = msgs_body.get("messages", []) if status == 200 else []
             # Explicit synthetic trigger, same pattern as run_heartbeat —

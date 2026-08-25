@@ -420,7 +420,7 @@ def run_heartbeat(heartbeat):
 
     caps = persona.get("capabilities") or dict(NO_CAPS)
     participants = detail.get("personas") or []
-    system = build_system(persona, detail, participants, heartbeat_extra)
+    system = build_system(persona, detail, heartbeat_extra)
     history = merge_history(detail.get("messages", []), persona["name"],
                             len(participants) > 1)
     # A heartbeat may fire into an empty/assistant-ended thread — providers
