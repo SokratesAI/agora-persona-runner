@@ -7619,10 +7619,10 @@ describe("the plan page", () => {
   /* The roadmap's ranked strip (issue #96, design item 2). The DOM is the
    * only place that can answer whether the status reaches him as a word
    * rather than as a coloured circle he cannot tell apart. */
-  const ranked = (rows) => ({
+  const ranked = (rows, done) => ({
     documents: [{
       key: "roadmap", label: "Roadmap", title: "Roadmap", updated: "2026-08-21",
-      missing: false, scoreboard: [], ranked: rows,
+      missing: false, scoreboard: [], ranked: rows, rankedDone: done,
       sections: [{ level: 2, heading: "The five I would do next, in order", blocks: [
         { type: "p", spans: [{ kind: "text", text: "The argument." }] },
       ] }],
@@ -7665,6 +7665,50 @@ describe("the plan page", () => {
     const window = await loadSite("/plan", { plan: twoDocuments });
     assert.equal(window.document.querySelector(".rank-strip"), null);
     assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
+  });
+
+  /* The two lists (2026-08-25). The heading is a claim about every card
+   * under it, and on that morning three of the five cards under "What I
+   * would do next, in order" were finished. Only the DOM can say whether
+   * a reader can tell which list a card is in. */
+  const DONE3 = {
+    rank: "3", title: "Fix my vault write path",
+    claim: "It was garbage collection, not a write bug.",
+    board: "idea #61", statusSymbol: "✅", statusLabel: "Done",
+  };
+
+  test("a finished card sits under its own heading, not under the one saying it is next", async () => {
+    const window = await loadSite("/plan", { plan: ranked([R1], [DONE3]) });
+    const lists = window.document.querySelectorAll(".rank-list");
+    assert.equal(lists.length, 2);
+    assert.match(lists[0].textContent, /Get CI back/);
+    assert.doesNotMatch(lists[0].textContent, /vault write path/,
+      "a done card under 'what I would do next' is the whole bug");
+    assert.match(lists[1].textContent, /vault write path/);
+    assert.ok(lists[1].classList.contains("rank-done-list"));
+    const titles = [...window.document.querySelectorAll(".rank-strip-title")].map((h) => h.textContent);
+    assert.deepEqual(titles, ["What I would do next, in order", "Already finished"]);
+    // The rank number travels with the card. The file numbers an item once
+    // and never renumbers, so a finished 3 has to still read as 3.
+    assert.equal(lists[1].querySelector(".rank-num").textContent, "3");
+  });
+
+  test("a roadmap whose every item is finished says so instead of promising five next steps", async () => {
+    const window = await loadSite("/plan", { plan: ranked([], [DONE3]) });
+    assert.match(window.document.querySelector(".rank-strip").textContent,
+      /Nothing on this list is still open/);
+    assert.equal(window.document.querySelectorAll(".rank-list").length, 1,
+      "no empty list under the heading that says what is next");
+    assert.match(window.document.querySelector(".rank-done-list").textContent,
+      /vault write path/);
+  });
+
+  test("with nothing finished the strip is exactly what it was", async () => {
+    const window = await loadSite("/plan", { plan: ranked([R1], []) });
+    assert.equal(window.document.querySelectorAll(".rank-list").length, 1);
+    assert.equal(window.document.querySelector(".rank-done-title"), null);
+    assert.match(window.document.querySelector(".rank-strip-note").textContent,
+      /The argument for each one is below/);
   });
 });
 

@@ -2367,6 +2367,12 @@ body.has-full-chart { overflow: hidden; }
 .rank-claim { margin: 0.25rem 0 0 1.8rem; font-size: 0.8rem; line-height: 1.45; }
 .rank-board { margin: 0.2rem 0 0 1.8rem; font-size: 0.74rem; color: var(--dim); }
 
+/* The finished half of the ranked strip. It is on the page so the rank
+ * numbers do not read as though items had gone missing, and it is dimmed
+ * and ruled off so it does not read as a second list of live work. */
+.rank-done-title { margin-top: 0.9rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
+.rank-done-list .rank-card { opacity: 0.6; }
+
 /* The attach button and what it puts on the page.
  *
  * the owner, comments board 2026-08-21: *"How do i send a screenshot?"* —
