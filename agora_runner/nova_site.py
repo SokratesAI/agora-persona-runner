@@ -163,6 +163,7 @@ from agora_runner.nova_ask import ask as ask_question, thread as ask_thread
 from agora_runner.nova_idea_pool import (
     STALE_CANDIDATE,
     decide as pool_decide,
+    history_payload as pool_history,
     pool_payload,
     request_generate as pool_request_generate,
 )
@@ -1834,6 +1835,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # so a CACHE_FRESH_SECONDS window would show him the card
                 # he just approved. It is one small vault read.
                 self._send_json(200, pool_payload())
+                return
+            if path == "/api/pool/history":
+                # What he decided and what he wrote when he decided it. Not
+                # cached for the same reason `/api/pool` is not: he taps
+                # Approve and the very next thing he may do is open History
+                # to check it landed.
+                self._send_json(200, pool_history())
                 return
             if path == "/api/health":
                 # Never cached, and that is the entire point of it. The
