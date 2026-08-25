@@ -2413,6 +2413,31 @@
   }
 
   function render(journal, digest, comments) {
+    /* Drop an answer to a query he has already typed past.
+     *
+     * `load()` guards against having navigated to a different *view* and
+     * against nothing else, so two searches in flight together are
+     * resolved in whatever order the server finishes them -- and it is a
+     * threading server, where the broader, older query is the one doing
+     * more work, so finishing last is the ordinary case rather than the
+     * unlucky one. Without this the feed silently reverts to the results
+     * for the shorter word, with a count line to match, and nothing
+     * anywhere says it happened.
+     *
+     * The board search has carried the same guard since it shipped
+     * (`result.query !== query` in `runBoardSearch`) and I did not copy
+     * it, because the count line reads `journal.query` and I mistook
+     * *displaying* the answered query for *checking* it. Those are
+     * different things and only one of them protects anything.
+     *
+     * Before `stopPolling`, deliberately: a stale answer must cost
+     * nothing, and bailing out below that line would leave the tab with
+     * no poll timer at all. Every path that changes `journalQuery` also
+     * starts a fresh `load`, so dropping this one never leaves the page
+     * waiting on an answer that will not come. */
+    var live = journalQuery.trim().toLowerCase() || null;
+    if (routedCycle(window.location.pathname) === null
+        && (journal.query || null) !== live) return;
     stopPolling();
     markNav();
     // What the page is now showing, so the poll below can tell "nothing
@@ -2444,12 +2469,19 @@
     if (journalSearchCount) {
       journalSearchCount.hidden = !answered;
       if (answered) {
+        /* His own capitalisation, not the server's. The query comes back
+         * lower-cased because that is what it was matched with, so a line
+         * built from it tells him `TAILSCALE` found "tailscale" -- and the
+         * guard at the top of this function has already established that
+         * the box and the answer are the same word, so there is nothing
+         * left for the echoed copy to decide. */
+        var typed = (journalSearchInput && journalSearchInput.value.trim()) || answered;
         var found = typeof journal.total === "number" ? journal.total : entries.length;
         journalSearchCount.textContent = found === 0
-          ? "No entry mentions “" + answered + "”"
+          ? "No entry mentions “" + typed + "”"
           : found === 1
-            ? "1 entry mentions “" + answered + "”"
-            : found + " entries mention “" + answered + "”";
+            ? "1 entry mentions “" + typed + "”"
+            : found + " entries mention “" + typed + "”";
       }
     }
     if (wanted !== null) {
@@ -7716,6 +7748,19 @@
   var polling = false;
 
   function typing() {
+    /* A keystroke in the search box whose request has not gone out yet.
+     * The 200ms debounce exists so a word is searched once rather than
+     * seven times, and the 30-second poll runs straight through it: it
+     * asks `journalUrl()`, which reads the box, so a timer landing between
+     * "ingr" and "ingress" fetches the results for "ingr" and renders
+     * them -- the debounce defeated by an unrelated timer, and the feed
+     * repainted around a word he had not finished.
+     *
+     * The pending timer is the signal rather than the box's contents: a
+     * search that has already been asked for and answered is a perfectly
+     * good thing to poll, and blocking on any text at all would freeze the
+     * feed for as long as the box was non-empty. */
+    if (journalSearchTimer !== null) return true;
     var boxes = document.querySelectorAll("textarea");
     for (var i = 0; i < boxes.length; i++) {
       if (boxes[i].value.trim()) return true;
