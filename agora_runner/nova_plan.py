@@ -40,6 +40,10 @@ optional fenced ```goal block per goal and `roadmap.md` a ```next block per
 item of its ranked five, and this module draws a scoreboard and a ranked
 strip from them. The blocks are data a cycle writes for this page; every
 other word in both documents is still prose nothing parses. See `_fenced`.
+
+The ranked strip leaves here as two lists, not one -- what is still ahead
+and what has closed. `_split_ranked` has the reason and the day it was
+wrong.
 """
 
 import re
@@ -239,6 +243,11 @@ _STATUSES = {
     "outdated": ("⚫", "Outdated"),
 }
 
+# The statuses that mean an item is no longer something anybody would do
+# next. `_split_ranked` uses this to keep the strip's headline true; see
+# there for why that is worth a set of its own.
+_FINISHED_STATUSES = frozenset({"done", "outdated"})
+
 # Every field a ```next block understands, same rule as `_FIELDS`: a key
 # outside this set is dropped rather than passed through.
 _NEXT_FIELDS = ("rank", "title", "status", "claim", "board")
@@ -265,7 +274,8 @@ def _next(lines):
     if not row.get("title"):
         return None
 
-    symbol, label = _STATUSES.get(row.get("status", "").strip().lower(), ("", ""))
+    status = row.get("status", "").strip().lower()
+    symbol, label = _STATUSES.get(status, ("", ""))
     return {
         "rank": row.get("rank", ""),
         "title": row["title"],
@@ -273,7 +283,42 @@ def _next(lines):
         "board": row.get("board", ""),
         "statusSymbol": symbol,
         "statusLabel": label,
+        "finished": status in _FINISHED_STATUSES,
     }
+
+
+def _split_ranked(items):
+    """`(open_items, finished_items)`, document order preserved in both.
+
+    **The strip's headline was false for three of its five cards.** It is
+    titled *"What I would do next, in order"*, and on 2026-08-25 it read:
+    `1 Get CI back` (in progress), `2 Fix the Enter key` (done), `3 Fix my
+    vault write path` (done), `4 Build the weekly goal review` (in
+    progress), `5 The two board-editing gaps` (done). Three finished items
+    sitting under a heading that says they are what happens next, at the
+    top of the page the owner filed issue #96 about.
+
+    `_next`'s docstring already explains why the rank number survives an
+    item being finished -- the file strikes an item through without
+    renumbering the rest, so item 3 stays 3 -- and that is right. The
+    mistake was reading "keep the number" as "keep it in the same list".
+    A ✅ chip is a label on a card; the heading above the card is a claim
+    about every card under it, and a label does not retract a claim.
+
+    So the split is here rather than in the renderer: what a card *means*
+    is this module's job, and a payload that carries the two lists
+    separately can be checked by a test that does not need a browser.
+
+    Outdated counts as finished. It is not done, but nobody is going to do
+    it either, and this list answers one question -- is this still ahead of
+    us. An item whose status this module has never seen is treated as open:
+    the page declining to guess is the same call `_next` makes about the
+    chip, and guessing wrong in this direction shows the owner one card too
+    many rather than hiding one.
+    """
+    open_items = [item for item in items if not item["finished"]]
+    finished = [item for item in items if item["finished"]]
+    return open_items, finished
 
 
 def _updated(text):
@@ -401,6 +446,7 @@ def _document(key, label, text, history=None):
             "missing": True,
             "scoreboard": [],
             "ranked": [],
+            "rankedDone": [],
             "sections": [],
         }
 
@@ -408,7 +454,8 @@ def _document(key, label, text, history=None):
     # be found twice, and after the emptiness check, so a missing document
     # is still one branch.
     blocks, text = _fenced(text, {"goal": _goal, "next": _next})
-    scoreboard, ranked = _attach_history(blocks["goal"], history), blocks["next"]
+    scoreboard = _attach_history(blocks["goal"], history)
+    ranked, ranked_done = _split_ranked(blocks["next"])
 
     title = label
     sections = []
@@ -434,6 +481,7 @@ def _document(key, label, text, history=None):
         "missing": False,
         "scoreboard": scoreboard,
         "ranked": ranked,
+        "rankedDone": ranked_done,
         "sections": sections,
     }
 

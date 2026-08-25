@@ -5958,15 +5958,46 @@
     return card;
   }
 
-  function renderRanked(items) {
+  /* The ranked strip, in two lists: what is still ahead, then what is not.
+   *
+   * The server splits them (`nova_plan._split_ranked`) because the heading
+   * "What I would do next, in order" is a claim about every card under it,
+   * and a ✅ chip on the card does not retract it. On 2026-08-25 three of
+   * the five cards were finished and the strip said all five were next.
+   *
+   * The finished list is kept on the page rather than dropped. The file
+   * numbers these items once and never renumbers, so a strip that showed
+   * only 1 and 4 would read as though 2, 3 and 5 had gone missing -- and
+   * seeing what has closed is half of why the owner asked for the page.
+   *
+   * When nothing is open the empty list is the whole message: the document
+   * has been overtaken and needs rewriting, which is exactly what a stale
+   * `roadmap.md` looks like from the outside. */
+  function renderRanked(items, done) {
     var box = el("section", "rank-strip");
+    var open = items || [];
+    var closed = done || [];
     box.appendChild(el("h3", "rank-strip-title", "What I would do next, in order"));
-    var list = el("ol", "rank-list");
-    items.forEach(function (item) {
-      list.appendChild(rankedCard(item));
-    });
-    box.appendChild(list);
-    box.appendChild(el("p", "rank-strip-note", "The argument for each one is below."));
+    if (open.length) {
+      var list = el("ol", "rank-list");
+      open.forEach(function (item) {
+        list.appendChild(rankedCard(item));
+      });
+      box.appendChild(list);
+      box.appendChild(el("p", "rank-strip-note", "The argument for each one is below."));
+    } else {
+      box.appendChild(
+        el("p", "empty", "Nothing on this list is still open — it needs rewriting.")
+      );
+    }
+    if (closed.length) {
+      box.appendChild(el("h3", "rank-strip-title rank-done-title", "Already finished"));
+      var doneList = el("ol", "rank-list rank-done-list");
+      closed.forEach(function (item) {
+        doneList.appendChild(rankedCard(item));
+      });
+      box.appendChild(doneList);
+    }
     return box;
   }
 
@@ -6022,7 +6053,9 @@
     // argument for it. A document with no `goal` blocks gets nothing here
     // and renders exactly as it did before this existed.
     if ((doc.scoreboard || []).length) card.appendChild(renderScoreboard(doc.scoreboard));
-    if ((doc.ranked || []).length) card.appendChild(renderRanked(doc.ranked));
+    if ((doc.ranked || []).length || (doc.rankedDone || []).length) {
+      card.appendChild(renderRanked(doc.ranked, doc.rankedDone));
+    }
     (doc.sections || []).forEach(function (section) {
       card.appendChild(planSection(section));
     });

@@ -348,9 +348,19 @@ board: idea #61
 """
 
 
+def _all_ranked(doc):
+    """Both halves of the strip, in document order.
+
+    The parsing tests below are about the fence and want every card the
+    document produced; which of the two lists a card lands in is
+    `test_a_finished_item_leaves_the_list_that_says_it_is_next`'s job.
+    """
+    return list(doc["ranked"]) + list(doc["rankedDone"])
+
+
 def test_ranked_cards_come_off_the_fenced_blocks():
     roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
-    assert [r["title"] for r in roadmap["ranked"]] == [
+    assert [r["title"] for r in _all_ranked(roadmap)] == [
         "Get CI back",
         "Fix my vault write path",
     ]
@@ -360,10 +370,11 @@ def test_ranked_cards_come_off_the_fenced_blocks():
 
 def test_a_status_always_carries_its_word_and_an_unknown_one_carries_neither():
     roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
-    assert roadmap["ranked"][0]["statusLabel"] == "In progress"
-    assert roadmap["ranked"][0]["statusSymbol"] == "\U0001f7e1"
-    assert roadmap["ranked"][1]["statusLabel"] == "Done"
-    assert roadmap["ranked"][1]["statusSymbol"] == "\u2705"
+    cards = _all_ranked(roadmap)
+    assert cards[0]["statusLabel"] == "In progress"
+    assert cards[0]["statusSymbol"] == "\U0001f7e1"
+    assert cards[1]["statusLabel"] == "Done"
+    assert cards[1]["statusSymbol"] == "\u2705"
 
     # A word this page has never seen gets no chip rather than a guessed one:
     # rendering `Backlog` for something a cycle called `blocked` would be the
@@ -376,7 +387,7 @@ def test_a_status_always_carries_its_word_and_an_unknown_one_carries_neither():
 def test_the_rank_is_the_files_number_and_not_the_cards_position():
     # The file strikes item 3 through without renumbering 4 and 5, so the
     # second card really is rank 3. Counting positions would print "2".
-    ranks = [r["rank"] for r in _doc(plan_payload({"roadmap": RANKED}), "roadmap")["ranked"]]
+    ranks = [r["rank"] for r in _all_ranked(_doc(plan_payload({"roadmap": RANKED}), "roadmap"))]
     assert ranks == ["1", "3"]
 
 
@@ -389,13 +400,13 @@ def test_a_next_block_does_not_also_render_as_a_code_block():
 
 def test_a_titleless_next_block_is_not_a_card():
     untitled = RANKED.replace("title: Get CI back\n", "", 1)
-    assert len(_doc(plan_payload({"roadmap": untitled}), "roadmap")["ranked"]) == 1
+    assert len(_all_ranked(_doc(plan_payload({"roadmap": untitled}), "roadmap"))) == 1
 
 
 def test_goal_and_next_blocks_do_not_eat_each_other():
     both = RANKED + SCORED.split("---", 2)[-1]
     doc = _doc(plan_payload({"roadmap": both}), "roadmap")
-    assert len(doc["ranked"]) == 2
+    assert len(_all_ranked(doc)) == 2
     assert len(doc["scoreboard"]) == 2
     body = " ".join(_text(s) for s in doc["sections"])
     assert "Some prose about G1 that must survive." in body
@@ -426,7 +437,7 @@ Trailing prose that must survive.
 
 def test_a_forgotten_closing_fence_does_not_swallow_the_next_block():
     doc = _doc(plan_payload({"roadmap": EATEN}), "roadmap")
-    assert [r["title"] for r in doc["ranked"]] == ["Get CI back"]
+    assert [r["title"] for r in _all_ranked(doc)] == ["Get CI back"]
     assert doc["scoreboard"] == [], "a half-written goal block is not a row"
     body = " ".join(_text(s) for s in doc["sections"])
     assert "Trailing prose that must survive." in body
@@ -437,7 +448,7 @@ def test_a_forgotten_closing_fence_survives_in_the_other_direction_too():
     swapped = swapped.replace("```next\nrank: 1", "```goal\nname: G1")
     doc = _doc(plan_payload({"roadmap": swapped}), "roadmap")
     assert [r["name"] for r in doc["scoreboard"]] == ["G1"]
-    assert doc["ranked"] == []
+    assert _all_ranked(doc) == []
     # The well-formed block on the other side of the mistake still parses,
     # and no text is lost -- which is what `abandon` promises and all it
     # promises. It does *not* promise the prose stays prose: the fence line
@@ -571,3 +582,54 @@ Body.
         ("2026-08-17 — the newest", True, True),
         ("2026-08-16 — the older", False, True),
     ]
+
+
+# The split (issue #96, 2026-08-25). The strip is headed "What I would do
+# next, in order" and on that morning three of its five cards were finished
+# — the page told the owner that work closed nine days earlier was what
+# happened next. A chip on a card does not retract the heading above it.
+def test_a_finished_item_leaves_the_list_that_says_it_is_next():
+    doc = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
+    assert [r["title"] for r in doc["ranked"]] == ["Get CI back"]
+    assert [r["title"] for r in doc["rankedDone"]] == ["Fix my vault write path"]
+    # The rank survives the move. The file numbers an item once and never
+    # renumbers, so the finished card is still 3 and the strip is still
+    # readable against the prose underneath it.
+    assert doc["rankedDone"][0]["rank"] == "3"
+
+
+def test_outdated_counts_as_finished_and_an_unknown_status_does_not():
+    outdated = RANKED.replace("status: done", "status: outdated", 1)
+    doc = _doc(plan_payload({"roadmap": outdated}), "roadmap")
+    assert [r["title"] for r in doc["rankedDone"]] == ["Fix my vault write path"]
+
+    # A status this module has never seen stays in the open list. The card
+    # already declines to guess at a chip for it; putting it in the finished
+    # half would be the same guess with worse consequences, because a
+    # finished card is one the owner stops reading.
+    unknown = RANKED.replace("status: done", "status: shipped-ish", 1)
+    doc = _doc(plan_payload({"roadmap": unknown}), "roadmap")
+    assert [r["title"] for r in doc["ranked"]] == [
+        "Get CI back",
+        "Fix my vault write path",
+    ]
+    assert doc["rankedDone"] == []
+
+
+def test_a_document_whose_every_item_is_finished_has_an_empty_open_list():
+    # This is what a `roadmap.md` nobody has rewritten looks like from the
+    # outside, and it is the case the old page could not show at all: five
+    # ✅ cards under a heading promising five next steps.
+    everything = RANKED.replace("status: in progress", "status: done", 1)
+    doc = _doc(plan_payload({"roadmap": everything}), "roadmap")
+    assert doc["ranked"] == []
+    assert len(doc["rankedDone"]) == 2
+
+
+def test_a_missing_document_carries_both_ranked_lists():
+    # Same call the rest of this payload makes: every key the renderer reads
+    # is present whether or not the fetch found anything, so the page has one
+    # branch instead of two.
+    doc = _doc(plan_payload({}), "roadmap")
+    assert doc["missing"] is True
+    assert doc["ranked"] == [] and doc["rankedDone"] == []
