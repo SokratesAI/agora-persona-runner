@@ -265,6 +265,24 @@ def test_a_package_missing_from_the_manifest_is_not_read_as_fixed():
     assert results["o/r"][1][0]["landed"] is False
 
 
+def _section_of(lines, package):
+    """Which heading `package` is printed under, or None if it is absent.
+
+    Asserting only that both packages appear somewhere is what the first
+    version of this test did, and the reviewer proved it passed against
+    the pre-diff code -- which prints every alert under one heading and
+    never reads the `landed` flag. Membership of the right *section* is
+    the property this test is named for, so it has to be what it checks.
+    """
+    heading = None
+    for line in lines:
+        if line.startswith(("OPEN SECURITY ALERTS", "ALREADY FIXED")):
+            heading = line.split(" — ")[0]
+        elif package in line and heading is not None and line.startswith("  "):
+            return heading
+    return None
+
+
 def test_a_landed_alert_does_not_hide_a_real_one_beside_it():
     fixed = security_alerts._summarise(_alert("high", "brace-expansion", patched="2.1.4"))
     fixed["landed"], fixed["landed_note"] = True, "default branch resolves 2.1.4"
@@ -272,5 +290,9 @@ def test_a_landed_alert_does_not_hide_a_real_one_beside_it():
     real["landed"], real["landed_note"] = False, "still vulnerable"
     lines, code = format_report({"o/r": (OK, [fixed, real])})
     assert code == 2
-    assert any("left-pad" in line for line in lines)
-    assert any("brace-expansion" in line for line in lines)
+    assert _section_of(lines, "left-pad") == "OPEN SECURITY ALERTS"
+    assert _section_of(lines, "brace-expansion") == "ALREADY FIXED ON THE DEFAULT BRANCH"
+    # The count in the actionable heading must be the actionable count, not
+    # the total -- "2 across 1 repo(s)" over one real alert is the same
+    # overstatement this whole change exists to stop.
+    assert "OPEN SECURITY ALERTS — 1 across 1 repo(s):" in lines
