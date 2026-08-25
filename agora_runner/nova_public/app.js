@@ -8068,6 +8068,32 @@
       });
   }
 
+  /* This page draws things that change without him touching anything -- a
+   * run starting, a run finishing, `lastResult` going from nothing to an
+   * answer -- and until now it drew them exactly once. Press "Run now" and
+   * the row reads "On · run queued" until he reloads the app. My reviewer
+   * found that on runner#387's own diff and I filed it instead of fixing
+   * it; it has been the top line of the handoff for two cycles since.
+   *
+   * `pollConv`'s shape, with the reschedule at the end of the render rather
+   * than in a loop of its own, so exactly one timer is ever alive: every
+   * path that repaints this page goes through `renderHeartbeats`, whose own
+   * `stopPolling()` clears the pending one first. Leaving the page clears it
+   * too, for free -- that is what `stopPolling` is for and every other view
+   * calls it on the way in.
+   *
+   * Two cadences, both of them numbers already in this file. `ASK_POLL_MS`
+   * while a run is queued or in flight, because that is the state he is
+   * standing there watching, and `POLL_MS` otherwise, which is the journal
+   * feed's idle rate. No attempt cap: `pollConv` has one because it waits
+   * for a single answer and is finished when it arrives, and this waits for
+   * nothing in particular and should stay current while the page is open.
+   */
+  function scheduleHeartbeatsPoll(rows) {
+    var live = rows.some(function (r) { return r.running || r.forceRun; });
+    livePolls.push(setTimeout(loadHeartbeats, live ? ASK_POLL_MS : POLL_MS));
+  }
+
   function renderHeartbeats(payload) {
     stopPolling();
     markNav();
@@ -8078,6 +8104,9 @@
     statusEl.appendChild(el("p", "status-line",
       rows.length + (rows.length === 1 ? " heartbeat" : " heartbeats") + " · " + on + " on"));
     feed.textContent = "";
+    // Before the empty-list return, not after it: a first heartbeat created
+    // from Agora's side should appear here without a reload as well.
+    scheduleHeartbeatsPoll(rows);
 
     if (!rows.length) {
       feed.appendChild(el("p", "empty", "No heartbeats yet."));
@@ -8156,9 +8185,20 @@
         renderHeartbeats(payload);
       })
       .catch(function (err) {
+        // The route guard belongs on this path too, and it belongs here now
+        // rather than as a tidy-up: before this page polled, a failed fetch
+        // could only be the one he triggered by opening it. Now a timer can
+        // have a request in flight when he taps away, and without the guard
+        // its failure paints "Could not load your heartbeats" over whatever
+        // page he actually opened.
+        if (route(window.location.pathname).view !== "heartbeats") return;
         markNav();
         feed.textContent = "";
         feed.appendChild(el("p", "empty", "Could not load your heartbeats: " + err));
+        // And keep trying. Without this, one dropped request on a phone
+        // leaves the page frozen for good, which is the bug this cycle is
+        // fixing wearing a different hat.
+        scheduleHeartbeatsPoll([]);
       });
   }
 
