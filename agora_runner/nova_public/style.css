@@ -2883,7 +2883,12 @@ body.has-full-chart { overflow: hidden; }
   position: fixed;
   bottom: max(1rem, env(safe-area-inset-bottom));
   right: max(1rem, calc(50% - 23rem + 1rem));
-  z-index: 40;
+  /* Under the scrim (15) and the drawer (20), deliberately. The first
+   * version sat at 40 and floated over an open menu, which is a button
+   * hovering on top of the thing that is supposed to have taken over the
+   * screen. The scrim is `visibility: hidden` while closed rather than
+   * transparent, so sitting below it costs no tap. */
+  z-index: 14;
   width: 3.1rem;
   height: 3.1rem;
   display: flex;
@@ -2917,7 +2922,7 @@ body.has-full-chart { overflow: hidden; }
   position: fixed;
   bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 3.7rem);
   right: max(1rem, calc(50% - 23rem + 1rem));
-  z-index: 40;
+  z-index: 14;
   width: min(23rem, calc(100vw - 2rem));
   max-height: min(32rem, calc(100vh - 8rem));
   display: flex;
