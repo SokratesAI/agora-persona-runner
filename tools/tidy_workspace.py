@@ -672,8 +672,31 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
             # `dirty` branch of the verdict above does not require `ahead > 0`
             # at all -- so a committed-only file list is empty for exactly the
             # clone that most needs one. Reviewer finding on #238.
+            # Two diffs, intersected, because each one alone is wrong in its
+            # own direction and the heading -- "work not on origin/main" --
+            # needs both halves to be true of a file.
+            #
+            # `git diff base HEAD` compares the two *tips*, so a branch that is
+            # one ahead and forty-six behind reports everything main gained
+            # since the branch point as though this branch had changed it.
+            # Measured on the shared checkout twice: 14 files (Cycle 372) and
+            # 136, essentially the repository (Cycle 417).
+            #
+            # `git diff base...HEAD` diffs from the merge base, which fixes
+            # that and breaks the other end: after a squash merge the merge
+            # base is still the pre-branch commit, so the branch's own landed
+            # files are named as outstanding. Both existing file-list tests
+            # caught that immediately.
+            #
+            # A file is outstanding only if this branch touched it (three dots)
+            # *and* it still differs from the base (two dots). Nothing else
+            # separates main's later work from this branch's landed work, and
+            # both are things a reader would go and look for.
             names = (_git(root, clone, "diff", "--name-only", base, "HEAD")
                      if ahead else None)
+            touched = (_git(root, clone, "diff", "--name-only",
+                            base + "...HEAD")
+                       if ahead else None)
             if names is None:
                 # `ahead == 0` and dirty: there is nothing committed here that
                 # the base has not got, so `git diff base HEAD` lists the
@@ -681,7 +704,7 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
                 # them would narrate main's work as work somebody left, which
                 # is the bug the `clean` verdict exists to avoid.
                 pass
-            elif names.returncode != 0:
+            elif names.returncode != 0 or touched.returncode != 0:
                 # Not folded into the empty list. On this code path a
                 # difference has already been proven to exist, so "no files"
                 # cannot legitimately happen -- reporting the failure as an
@@ -690,8 +713,10 @@ def survey_checkouts(root=WORKSPACE, fetch=True, ask_github=True):
                 # else. Reviewer finding on #238.
                 files_failed = True
             else:
+                branch_touched = {line for line in touched.stdout.split("\n")
+                                  if line.strip()}
                 found.update(line for line in names.stdout.split("\n")
-                             if line.strip())
+                             if line.strip() and line in branch_touched)
             if dirty:
                 # `--porcelain` is `XY <path>`, and a rename is `XY <old> -> <new>`.
                 # Only the path is wanted, and only the current name of it.
