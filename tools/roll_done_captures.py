@@ -118,7 +118,18 @@ def plan(markdown):
     for index in range(first, end):
         stripped = lines[index].strip()
         if stripped == "-" or stripped.startswith("- "):
-            blocks.append([lines[index]])
+            if blocks and lines[index][:1].isspace():
+                # An indented bullet is a reply written under the capture
+                # above it, so it travels with that capture. Starting a new
+                # block here is what orphaned a cycle's own closing note at
+                # the top of `issues.md` on 2026-08-25: the owner's bullet
+                # was `DONE` and moved, the reply under it was not and
+                # stayed, and `top_board_rows` then ranked it first as an
+                # unprocessed capture from him. `nova_boards._captures`
+                # folds the same shape, which is what keeps `check` honest.
+                blocks[-1].append(lines[index])
+            else:
+                blocks.append([lines[index]])
         elif blocks and stripped and not stripped.startswith(("-", "*", "|")):
             blocks[-1].append(lines[index])
         else:
@@ -211,12 +222,30 @@ def check(before, after, moved):
         if cycle:
             problems.append(f"a DONE capture stayed: {capture[:60]}")
 
-    # Nothing may be lost, only relocated. Comparing the whole text rather
-    # than the parsed halves catches a bullet dropped between the two
-    # sections, which `parse_board` would report as a clean removal.
-    for capture in gone:
-        if capture.split("\n")[0][:80] not in after:
-            problems.append(f"a moved capture is not in the new file: {capture[:60]}")
+    # Nothing may be lost, only relocated, and this asks it of the raw
+    # lines rather than of `parse_board`'s output -- which catches a bullet
+    # dropped between the two sections, where `parse_board` sees a clean
+    # removal. It used to substring-test the first 80 characters of the
+    # parsed capture, and that cannot work on a capture with a reply folded
+    # into it: the folded string is two lines in the file and exists
+    # nowhere as one, so a correct rewrite reported a lost capture.
+    def _span_lines(text):
+        lines = (text or "").split("\n")
+        _, first, end = _capture_span(lines)
+        return [] if first is None else lines[first:end]
+
+    still_here = set(_span_lines(after))
+    archived = set()
+    if _has_processed_heading(after):
+        archived = set(after.split(PROCESSED_HEADING)[-1].split("\n"))
+    for line in _span_lines(before):
+        # The bare cursor bullet is re-laid as `- ` by `rewrite`, on purpose,
+        # so it is the one line that legitimately does not come back byte for
+        # byte. It carries none of his text.
+        if line.strip() in ("", "-"):
+            continue
+        if line not in still_here and line not in archived:
+            problems.append(f"a capture line is in neither list: {line.strip()[:60]}")
     return problems
 
 
