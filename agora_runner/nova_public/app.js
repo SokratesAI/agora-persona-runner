@@ -4727,13 +4727,12 @@
    * rather than his to correct on the page, and the write-up already
    * arrived with the payload as `novaDetails` -- so this is a read-only
    * row that expands from data the page is holding. */
-  function renderNovaItem(item, details) {
+  function renderNovaItem(board, item) {
     var row = el("article", "item item-" + item.statusKey);
     var head = el("div", "item-head");
     head.setAttribute("role", "button");
     head.setAttribute("tabindex", "0");
-    var open = novaOpen === item.number;
-    head.setAttribute("aria-expanded", open ? "true" : "false");
+    head.setAttribute("aria-expanded", "false");
 
     var titleRow = el("div", "item-title-row");
     titleRow.appendChild(el("span", "item-number", "#" + item.number));
@@ -4749,16 +4748,47 @@
     if (item.updated) head.appendChild(el("div", "item-updated", item.updated));
     row.appendChild(head);
 
-    var blocks = details[String(item.number)] || null;
+    /* The body is filled and emptied in place rather than by redrawing
+     * the tab. The first version of this called `renderBoard` on every
+     * toggle, which tears down the very element that was just clicked --
+     * so keyboard focus fell to <body> and the role="button" and Enter /
+     * Space handling right above became decoration. Reviewer finding on
+     * runner#354. His rows have never had this problem because they
+     * mutate their own body; mine do it the same way now. */
     var body = el("div", "item-body");
-    if (open) {
-      if (blocks) renderBlocks(body, blocks);
-      else body.appendChild(el("p", "empty", "No write-up yet — only the board row."));
-      row.appendChild(body);
+    row.appendChild(body);
+    var open = false;
+
+    var key = board + ":mine:" + item.number;
+    function fill() {
+      body.textContent = "";
+      var blocks = boardState.details[key];
+      if (!blocks) {
+        body.appendChild(el("p", "empty", "Loading…"));
+        fetch("/api/board?name=" + board + "&item=" + item.number + "&mine=1")
+          .then(json)
+          .then(function (payload) {
+            boardState.details[key] = ((payload && payload.item) || {}).blocks || [];
+            if (open) fill();
+          })
+          .catch(function (err) {
+            body.textContent = "";
+            body.appendChild(el("p", "empty", "Could not load #" + item.number + ": " + err));
+          });
+        return;
+      }
+      if (!blocks.length) {
+        body.appendChild(el("p", "empty", "No write-up yet — only the board row."));
+        return;
+      }
+      renderBlocks(body, blocks);
     }
+
     function toggle() {
-      novaOpen = open ? null : item.number;
-      renderBoard(boardState.board, novaPayload);
+      open = !open;
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) fill();
+      else body.textContent = "";
     }
     head.addEventListener("click", toggle);
     head.addEventListener("keydown", function (event) {
@@ -4770,21 +4800,13 @@
     return row;
   }
 
-  /* Which of my rows is expanded, and the payload to redraw from. Kept
-   * beside `boardState` rather than in it: `loadBoard` resets that object
-   * per board and these two are cleared there too. */
-  var novaOpen = null;
-  var novaPayload = null;
-
   function renderBoardNova(board, payload) {
     var wrap = el("div", "board");
-    novaPayload = payload;
     var items = payload.novaItems || [];
     if (items.length) {
       var box = el("section", "nova-board");
       box.appendChild(el("h2", "captures-title", "On my board"));
-      var details = payload.novaDetails || {};
-      items.forEach(function (item) { box.appendChild(renderNovaItem(item, details)); });
+      items.forEach(function (item) { box.appendChild(renderNovaItem(board, item)); });
       wrap.appendChild(box);
       wrap.appendChild(el("h2", "captures-title", "Everything else I noticed"));
     }
@@ -4923,9 +4945,6 @@
       boardState.toggles = {};
       boardState.sort = "filed";
       boardState.desc = false;
-      // Same reason as `boardState.open`: my #3 on Issues is not my #3 on
-      // Ideas, so carrying the expanded row across opens the wrong one.
-      novaOpen = null;
     }
     fetchPage("/api/board?name=" + board + "&limit=" + boardState.notes)
       .then(function (payload) {
