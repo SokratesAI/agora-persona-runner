@@ -683,7 +683,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * colour as the bubble it points at.
  *
  * It was green for one merge and the reviewer caught it: green on this page
- * already means "Edvard wrote this", so a green pill announcing my answer
+ * already means "the owner wrote this", so a green pill announcing my answer
  * said the opposite of what it meant. It must not be amber either --
  * `.badge-ask` directly above is amber and means the other obligation, that I
  * am waiting on *him*, and the two can be on screen at once.
