@@ -201,8 +201,14 @@ def unread_notes(markdown):
     that a note does not have and never will.
     """
     return [{"board": "note", "priority": "", "text": text,
+             # The same two-part reply address the boards get. A note is
+             # the one capture target where the reply already renders
+             # properly -- the notes page draws an indented bullet as a
+             # cycle's own bubble -- so leaving it off here would have
+             # withheld the address from the page that reads it best.
+             "index": index, "original": text,
              "slug": slug_for_capture(text)}
-            for text in parse_board(markdown or "")["captures"]]
+            for index, text in enumerate(parse_board(markdown or "")["captures"])]
 
 
 def unboarded_captures(markdown, board):
@@ -235,12 +241,22 @@ def unboarded_captures(markdown, board):
     exists to fix, coming back inverted.
     """
     captures = []
-    for bullet in parse_board(markdown or "")["captures"]:
+    # `index` counts every bullet in the list, including the finished ones
+    # skipped below, because it is the address `/api/capture/comment`
+    # resolves against and that route reads the same list unfiltered. A
+    # position taken after filtering would answer the wrong bullet.
+    for index, bullet in enumerate(parse_board(markdown or "")["captures"]):
         done, rest = split_capture_done(bullet)
         if done:
             continue
         priority, text = split_capture_priority(rest)
         captures.append({"board": board, "priority": priority, "text": text,
+                         # The two halves of the reply address: which bullet,
+                         # and proof it has not moved. `original` is the whole
+                         # bullet as the board page draws it -- rating prefix
+                         # and any earlier reply folded in -- which is what
+                         # `reply_under_capture` matches on.
+                         "index": index, "original": bullet,
                          # Hashed off the bullet the owner typed, not off the
                          # rating or the DONE marker a cycle may prepend
                          # later -- so the slug survives him re-rating it.
@@ -571,6 +587,30 @@ def _capture_line(capture):
     return f"{capture['board']}s.md  {held}{rating}  {text}{claim}"
 
 
+def _capture_reply_help(captures):
+    """How to answer a capture where he wrote it, with the address filled in.
+
+    Six consecutive handoffs filed *"there is no way to reply on an
+    unboarded capture"* -- this tool ranks his bare bullets above every
+    boarded row, and `/api/board/comment` is keyed by a row number that a
+    capture does not have. `POST /api/capture/comment` is that route
+    (Cycle 430), and it takes `index` + `original` instead, which are
+    exactly the two fields the page uses for Edit and Delete.
+
+    Printed with the real values rather than as a shape to fill in,
+    because a cycle that has to derive the index will do what the last six
+    did and write the answer into its journal entry instead.
+    """
+    out = ["  Answer one where he wrote it — POST http://nova-site.agents.svc.cluster.local:8083/api/capture/comment",
+           "  with {\"target\": \"issues\"|\"ideas\"|\"notes\", \"index\": N, \"original\": \"<his bullet, verbatim>\", \"text\": \"...\"}."]
+    for capture in captures:
+        board = "notes" if capture["board"] == "note" else capture["board"] + "s"
+        out.append(f"     target {board}, index {capture['index']}  ->  {capture['text'][:60]}")
+    out.append("  No line break in `text` — it is one indented bullet under his. "
+               "Replying is not taking it: claim the row separately if you work it.")
+    return out
+
+
 def _claim_footer(rows, captures, claims_readable):
     """What to type to take what this tool just named, and who has what.
 
@@ -621,6 +661,8 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         out.append(f"UNPROCESSED CAPTURES FROM EDVARD ({len(captures)}) — "
                    "these outrank every row below. Take one, or say why not:")
         out.extend("  -> " + _capture_line(c) for c in captures)
+        out.append("")
+        out.extend(_capture_reply_help(captures))
         out.append("")
     ranked = rank(rows)
     if not ranked:

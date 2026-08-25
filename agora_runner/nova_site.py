@@ -121,6 +121,7 @@ from agora_runner.nova_capture import (
     amend,
     capture,
     clean_capture_text,
+    comment_on_capture,
     comment_on_row,
     convert_capture,
     edit_row,
@@ -2105,6 +2106,80 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "no longer" in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
+    def _post_capture_comment(self, payload):
+        """`POST /api/capture/comment` -- answer an unboarded capture in place.
+
+        The gap this closes is the top of the ranking. `top_board_rows`
+        puts his bare bullets above every boarded row, and until now the
+        only comment route was `/api/board/comment`, which addresses a row
+        by its number. A capture has no number, so the highest-ranked
+        class of item on either board was the one class with nowhere to
+        put an answer -- filed in six consecutive handoffs and fixed in
+        none of them.
+
+        Addressing is `_post_amend`'s, not `_post_board_comment`'s:
+        `target` keys into `CAPTURE_TARGETS`, `index` says which bullet and
+        `original` says it has not moved. Same 409 for a capture that was
+        boarded while the page was open -- nothing failed, the address
+        moved.
+
+        The line-break rule is `_post_board_comment`'s and for the same
+        reason: a reply is one indented bullet, and a break in it would
+        split into a bullet and a stray paragraph that the next parser
+        reads as a continuation of something else.
+
+        There is no `author`. On these files a bare bullet is his and an
+        indented one is a cycle's -- that is the contract every parser of
+        them already reads, so a name in the payload could only ever
+        disagree with the shape of the line it writes.
+        """
+        target = payload.get("target")
+        index = payload.get("index")
+        original = payload.get("original")
+        text = payload.get("text")
+        if target not in CAPTURE_TARGETS:
+            self._send_json(400, {"error": f"target must be one of {sorted(CAPTURE_TARGETS)}"})
+            return
+        # `True` is an int in Python and would silently address capture 1.
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            self._send_json(400, {"error": "index must be a non-negative number"})
+            return
+        if not isinstance(original, str) or not original.strip():
+            self._send_json(400, {"error": "original must be a non-empty string"})
+            return
+        if not isinstance(text, str) or not text.strip():
+            self._send_json(400, {"error": "text must be a non-empty string"})
+            return
+        if "\n" in text or "\r" in text:
+            self._send_json(400, {"error": "a reply cannot contain a line break"})
+            return
+
+        try:
+            ok, message = comment_on_capture(target, index, original, text)
+        except Exception as e:
+            log(f"nova-site capture comment failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            _invalidate_capture_target(target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Reply under a capture in {target} · {'ok' if ok else message}",
+            before=original[:MAX_BODY_BYTES],
+            after=text[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        stale = "no longer" in message
+        self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
     def _post_convert(self, payload):
         """`POST /api/capture/convert` -- move one capture to another file.
 
@@ -2664,6 +2739,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture", "/api/capture/edit", "/api/capture/delete",
             "/api/capture/convert", "/api/comment",
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
+            "/api/capture/comment",
             "/api/board/comment", "/api/ask",
             "/api/pool/decide", "/api/pool/generate",
         ):
@@ -2681,6 +2757,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path in ("/api/capture/edit", "/api/capture/delete"):
             self._post_amend(payload, delete=path.endswith("delete"))
+            return
+        if path == "/api/capture/comment":
+            self._post_capture_comment(payload)
             return
         if path == "/api/capture/convert":
             self._post_convert(payload)

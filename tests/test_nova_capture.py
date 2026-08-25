@@ -24,11 +24,14 @@ from agora_runner.nova_capture import (
     amend,
     capture,
     clean_capture_text,
+    STALE_CAPTURE,
     capture_entries,
+    comment_on_capture,
     convert_capture,
     insert_captures,
     list_captures,
     replace_capture,
+    reply_under_capture,
 )
 from agora_runner import vault
 from tests.couch_fake import FakeCouch
@@ -817,3 +820,90 @@ def test_a_second_convert_of_the_same_line_does_not_claim_it_is_in_both(notes_md
         "the source really is clean, so the message must not point him at it"
     assert couch.text(CAPTURE_TARGETS["ideas"]).count("- actually an idea") == 2, \
         "the fixture must actually have produced the duplicate this is about"
+
+
+# --- answering a capture in place -----------------------------------------
+
+
+def test_a_reply_lands_as_an_indented_bullet_under_his_capture(issues_md):
+    """The write half of the top of the ranking.
+
+    `top_board_rows` puts his bare bullets above every boarded row, and
+    until this there was no route that could answer one -- the comment API
+    is keyed by a row number and a capture has none. Six handoffs in a row
+    filed it.
+    """
+    markdown = insert_captures(issues_md, ["the thing he typed"])
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(markdown, "1-x")), \
+            patch.object(nova_capture, "vault_write_path", return_value="written") as write:
+        ok, message = comment_on_capture("issues", 0, "the thing he typed", "Answered, cycle 430.")
+    assert ok, message
+    path, content = write.call_args[0]
+    assert path == CAPTURE_TARGETS["issues"]
+    assert "- the thing he typed\n  - Answered, cycle 430." in content
+    # And the reply is not a second capture: his list still reads the same.
+    assert list_captures(content) == list_captures(markdown)
+
+
+def test_a_second_reply_goes_under_the_first(issues_md):
+    markdown = insert_captures(issues_md, ["his line"])
+    once = reply_under_capture(markdown, 0, "his line", "first answer")
+    twice = reply_under_capture(once, 0, "his line", "second answer")
+    assert "- his line\n  - first answer\n  - second answer" in twice
+
+
+def test_the_board_page_address_answers_the_same_capture(issues_md):
+    """Two pages, two spellings of the same bullet, and both must resolve.
+
+    The notes page draws a reply as its own bubble and sends his sentence
+    alone; the board page folds the reply into the capture card and sends
+    the two joined. A route that took only one of them would have a dead
+    button on the other page.
+    """
+    markdown = insert_captures(issues_md, ["his line"])
+    once = reply_under_capture(markdown, 0, "his line", "first answer")
+    joined = _captures(once)[0]
+    assert joined == "his line first answer", "the board page's parser moved"
+    assert reply_under_capture(once, 0, joined, "second answer") is not None
+
+
+def test_a_reply_to_a_capture_that_moved_is_refused(issues_md):
+    """A cycle boarded it while the reply was being written: no write."""
+    markdown = insert_captures(issues_md, ["his line"])
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(markdown, "1-x")), \
+            patch.object(nova_capture, "vault_write_path") as write:
+        ok, message = comment_on_capture("issues", 0, "something he never typed", "hi")
+    assert not ok
+    assert STALE_CAPTURE in message
+    write.assert_not_called()
+
+
+def test_a_reply_with_a_line_break_never_reaches_the_vault(issues_md):
+    """One indented bullet. A break in it splits into a bullet and a stray
+    paragraph, which the next parser reads as a continuation of something
+    else -- the same rule `comment_on_row` has for the same reason."""
+    with patch.object(nova_capture, "vault_write_path") as write:
+        ok, message = comment_on_capture("issues", 0, "his line", "one\ntwo")
+    assert not ok
+    assert "line break" in message
+    write.assert_not_called()
+
+
+def test_an_unknown_target_never_reaches_the_vault_on_a_reply():
+    with patch.object(nova_capture, "vault_write_path") as write:
+        ok, message = comment_on_capture("../../etc/passwd", 0, "x", "y")
+    assert not ok
+    assert "unknown target" in message
+    write.assert_not_called()
+
+
+def test_editing_a_capture_keeps_the_reply_and_deleting_it_does_not(issues_md):
+    """His edit is a rewording of his own sentence; a cycle's answer under
+    it is not his to lose. A delete is the other way round -- an answer to
+    a bullet that is gone is orphaned text in his file."""
+    markdown = insert_captures(issues_md, ["his line"])
+    answered = reply_under_capture(markdown, 0, "his line", "my answer")
+    edited = replace_capture(answered, 0, "his line", ["his line, reworded"])
+    assert "- his line, reworded\n  - my answer" in edited
+    deleted = replace_capture(answered, 0, "his line", [])
+    assert "my answer" not in deleted

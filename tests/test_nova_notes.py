@@ -212,39 +212,63 @@ def test_a_note_already_read_has_no_index():
         == [None] * payload["readTotal"]
 
 
-def test_a_waiting_note_with_an_indented_bullet_under_it_gets_no_controls():
-    """A real divergence between the two parsers, with nothing mocked.
+def test_a_waiting_note_a_cycle_has_answered_keeps_its_controls():
+    """The indented bullet is a reply, and both parsers now say so.
 
-    `_bullets` reads an indented bullet as a *cycle's reply* to the note
-    above it; `capture_entries` strips the line first, sees `- `, and reads
-    it as its own capture. So a waiting note somebody has already scribbled
-    under shifts every capture index after it, and the naive
-    position-for-position mapping would hand the edit/delete endpoints an
-    address one line off. The guard notices and draws nothing.
+    This test used to assert the opposite, and the opposite was the bug.
+    `_bullets` read an indented bullet as a cycle's reply while
+    `capture_entries` stripped the line, saw `- `, and counted it as its
+    own capture -- so answering a waiting note shifted every capture index
+    after it, and the guard below dropped the edit/delete controls on the
+    answered note and on everything under it. That was a safe failure and
+    still a failure: the reply is the whole point of the notes page, and
+    writing one took his buttons away.
 
-    Reviewer finding on this change: the test that used to sit here asserted
-    `addresses[note["index"]] == note["text"]`, which is what the guard's own
-    `if` had just established, on a fixture where the two parsers agreed
-    anyway. It passed with the guard deleted.
+    `capture_entries` folds the reply out of the text and into the span
+    now, so the two agree and the controls stay. The guard is still
+    exercised by the test underneath this one.
     """
     from agora_runner.nova_capture import list_captures
 
     markdown = LIVE_SHAPE.replace(
         "- A note nobody has picked up yet.",
-        "- A note nobody has picked up yet.\n  - a stray indented line\n- and a later one",
+        "- A note nobody has picked up yet.\n  - Read Cycle 430. Answered it.\n- and a later one",
     )
-    # The precondition, asserted rather than assumed: the two parsers really
-    # do disagree here, or the negative below proves nothing.
     parsed = parse_notes_page(markdown)
-    assert len(list_captures(markdown)) != len(parsed["waiting"]), \
-        "the parsers agree on this fixture, so the guard is never reached"
+    assert len(list_captures(markdown)) == len(parsed["waiting"]), \
+        "the two parsers have drifted apart again"
 
     payload = _payload(markdown)
     waiting = [n for n in payload["notes"] if n["waiting"]]
     assert [n["text"] for n in waiting] == [
         "A note nobody has picked up yet.", "and a later one"]
-    assert [n["index"] for n in waiting] == [0, None], \
-        "the note after the divergence must lose its controls, not get a wrong address"
+    assert [n["index"] for n in waiting] == [0, 1], \
+        "an answered note keeps its controls, and so does the one after it"
+    answered = [n for n in waiting if n["index"] == 0][0]
+    assert [r["cycle"] for r in answered["responses"]] == [430]
+
+
+def test_the_guard_still_fires_when_the_two_parsers_really_do_disagree():
+    """Not mocked, and the divergence is a real one that survives the fix.
+
+    A `*` bullet at column zero is a continuation to `_bullets` and a line
+    `capture_entries` ignores outright, so the two disagree about the
+    note's *text* while agreeing about the count. The page must draw no
+    controls rather than hand `/api/capture/delete` an address for a line
+    that reads something else.
+    """
+    from agora_runner.nova_capture import list_captures
+
+    markdown = LIVE_SHAPE.replace(
+        "- A note nobody has picked up yet.",
+        "- A note nobody has picked up yet.\n* a star bullet he pasted in",
+    )
+    parsed = parse_notes_page(markdown)
+    assert list_captures(markdown)[0] != parsed["waiting"][0]["text"], \
+        "the parsers agree on this fixture, so the guard is never reached"
+
+    payload = _payload(markdown)
+    assert [n["index"] for n in payload["notes"] if n["waiting"]] == [None]
 
 
 def test_a_note_the_capture_parser_disagrees_about_gets_no_controls():

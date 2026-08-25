@@ -1167,3 +1167,32 @@ def test_a_multi_line_outcome_cannot_split_the_row_it_is_printed_on():
     line = top_board_rows._line(rows[0])
     assert "\n" not in line
     assert "built it and broke the line" in line
+
+
+def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, capsys):
+    """The gap six handoffs filed: his bare bullets rank above every row and
+    nothing could answer one, because the comment API is keyed by a row
+    number a capture has not got. The address is `index` + the bullet, and
+    it is printed filled in rather than as a shape, because a cycle that has
+    to derive the index does what the last six did and answers in a journal
+    entry instead."""
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    issues.write_text(
+        "---\nx: 1\n---\n\n- the first thing he typed\n- the second thing he typed\n- \n\n"
+        + board((10, "a high issue", BACKLOG, "08-01", HIGH)).split("\n", 1)[1].split("## Board", 1)[0]
+        + "## Board\n\n| # | Issue | Status | Updated | Priority |\n|---|---|---|---|---|\n")
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "/api/capture/comment" in out
+    assert "target issues, index 0  ->  the first thing he typed" in out
+    assert "target issues, index 1  ->  the second thing he typed" in out
+    # The help belongs to the captures, so it must not print when there are none.
+    ideas2 = tmp_path / "ideas2.md"
+    issues2 = tmp_path / "issues2.md"
+    issues2.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    ideas2.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    top_board_rows.main(["--issues", str(issues2), "--ideas", str(ideas2)])
+    assert "/api/capture/comment" not in capsys.readouterr().out

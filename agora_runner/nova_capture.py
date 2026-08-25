@@ -195,16 +195,23 @@ def capture_entries(markdown):
         if stripped.startswith("#"):
             break
         if stripped.startswith("- ") and stripped[2:].strip():
-            entries.append((i, i + 1, stripped[2:].strip()))
+            if entries and lines[i][:1].isspace():
+                begin, _, text, replies = entries[-1]
+                entries[-1] = (begin, i + 1, text, replies + [stripped[2:].strip()])
+            else:
+                entries.append((i, i + 1, stripped[2:].strip(), []))
         elif stripped and entries and not stripped.startswith(("-", "*", "|")):
-            begin, _, text = entries[-1]
-            entries[-1] = (begin, i + 1, text + " " + stripped)
+            begin, _, text, replies = entries[-1]
+            if replies:
+                entries[-1] = (begin, i + 1, text, replies[:-1] + [replies[-1] + " " + stripped])
+            else:
+                entries[-1] = (begin, i + 1, text + " " + stripped, replies)
     return entries
 
 
 def list_captures(markdown):
-    """The capture list's texts, exactly as the board page shows them."""
-    return [text for _, _, text in capture_entries(markdown)]
+    """The capture list's texts -- his words alone, without any reply."""
+    return [text for _, _, text, _ in capture_entries(markdown)]
 
 
 def replace_capture(markdown, index, original, bullets):
@@ -233,11 +240,33 @@ def replace_capture(markdown, index, original, bullets):
     wanted = (original or "").strip()
     if not wanted or not isinstance(index, int) or not 0 <= index < len(entries):
         return None
-    begin, end, text = entries[index]
-    if text != wanted:
+    begin, end, text, replies = entries[index]
+    # **Two pages address the same bullet with two different strings, and
+    # both are right.** The notes page draws a cycle's reply as its own
+    # bubble, so what it sends back as `original` is his sentence alone;
+    # the board page folds the reply into the capture card, so what it
+    # sends back is the two joined. Refusing either would be the dead
+    # button this function's own docstring is about, so both forms of the
+    # address resolve to the same span.
+    if wanted not in (text, " ".join([text] + replies)):
         return None
     lines = (markdown or "").split("\n")
-    return "\n".join(lines[:begin] + [f"- {b}" for b in bullets] + lines[end:])
+    # A delete takes the replies with it -- an answer to a bullet that is
+    # gone is orphaned text in his file, which is exactly what Cycle 415
+    # spent itself cleaning up. An *edit* keeps them: he is rewording his
+    # own sentence, and a cycle's answer underneath is not his to lose.
+    kept = []
+    if bullets:
+        # From the first indented *bullet* to the end of the span -- a
+        # reply and everything under it. Not "every indented line": the
+        # capture's own wrapped second line is indented too, and keeping
+        # that would put half his old sentence back under his new one.
+        for i in range(begin, end):
+            body = lines[i].strip()
+            if lines[i][:1].isspace() and body.startswith("- ") and body[2:].strip():
+                kept = lines[i:end]
+                break
+    return "\n".join(lines[:begin] + [f"- {b}" for b in bullets] + kept + lines[end:])
 
 
 def amend(target, index, original, text):
@@ -280,6 +309,83 @@ def amend(target, index, original, text):
         if "409" not in result:
             break
     log(f"nova-capture failed amending {target}: {result}")
+    return False, f"could not write to {target}: {result}"
+
+
+def reply_under_capture(markdown, index, original, text):
+    """Write `text` as a cycle's reply under capture `index`. `None` if it moved.
+
+    Same two-part address as `replace_capture` and for the same reasons:
+    the index says which bullet, the text says it has not moved, and a
+    disagreement is refused rather than resolved.
+
+    The reply is an indented bullet, which is not a format invented here
+    -- it is what all three parsers of these files already assume an
+    indented bullet means, and what the notes page has been drawing as a
+    purple bubble since Cycle 369. What was missing was any way to *write*
+    one other than by hand.
+
+    A second reply goes under the first, in file order, because `end` is
+    the end of the whole span rather than of his own line.
+    """
+    entries = capture_entries(markdown)
+    wanted = (original or "").strip()
+    body = (text or "").strip()
+    if not wanted or not body or not isinstance(index, int) or not 0 <= index < len(entries):
+        return None
+    begin, end, capture_text, replies = entries[index]
+    if wanted not in (capture_text, " ".join([capture_text] + replies)):
+        return None
+    lines = (markdown or "").split("\n")
+    return "\n".join(lines[:end] + [f"  - {body}"] + lines[end:])
+
+
+def comment_on_capture(target, index, original, text):
+    """Answer one unboarded capture in place. Returns (ok, message).
+
+    **The one class of item `tools.top_board_rows` ranks above everything
+    else was the one class a cycle could not answer.** His bare bullets
+    outrank every boarded row, `/api/board/comment` is keyed by a row
+    number, and a capture has no number -- so six handoffs in a row filed
+    "no way to reply on a capture" and each one wrote its answer into a
+    journal entry instead, where it is not next to the thing it answers.
+
+    There is deliberately no `author` argument. On these three files a
+    bare bullet is his and an indented one is a cycle's; that is the
+    contract every parser here already reads, so an author field would be
+    a second way of saying the same thing and a way for the two to
+    disagree.
+
+    Same read-modify-write and same 409 retry as `amend`, because the
+    concurrent writer is the same one: a cycle boarding these files while
+    the reply is being written.
+    """
+    path = CAPTURE_TARGETS.get(target)
+    if path is None:
+        return False, f"unknown target: {target!r}"
+    if not (original or "").strip():
+        return False, "nothing to answer"
+    body = (text or "").strip()
+    if not body:
+        return False, "nothing to say"
+    if "\n" in body or "\r" in body:
+        return False, "a reply cannot contain a line break"
+
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(path)
+        if current is None:
+            return False, f"{path} not found"
+        amended = reply_under_capture(current, index, original, body)
+        if amended is None:
+            return False, f"that capture is {STALE_CAPTURE}"
+        result = vault_write_path(path, amended, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture replied under a capture in {target}")
+            return True, f"replied in {target}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed replying in {target}: {result}")
     return False, f"could not write to {target}: {result}"
 
 

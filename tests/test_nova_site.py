@@ -4829,3 +4829,54 @@ def test_the_endpoint_actually_reads_q_off_the_query_string():
         # that the handler puts either of them in the header.
         _, _, plain = _get("/api/journal?limit=20")
         assert json.loads(plain)["version"] != page["version"]
+
+
+def test_replying_to_a_capture_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "comment_on_capture",
+                      return_value=(True, "replied in issues")) as rep:
+        status, _, body = _post(
+            "/api/capture/comment",
+            {"target": "issues", "index": 2, "original": "his line", "text": "Answered."},
+        )
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    rep.assert_called_once_with("issues", 2, "his line", "Answered.")
+
+
+def test_a_reply_to_a_capture_that_moved_is_a_409_not_a_502():
+    """Nothing failed -- a cycle boarded the bullet while the reply was
+    being written. The page should re-read, not retry."""
+    with patch.object(nova_site, "comment_on_capture",
+                      return_value=(False, f"that capture is {nova_site.STALE_CAPTURE}")):
+        status, _, body = _post(
+            "/api/capture/comment",
+            {"target": "issues", "index": 0, "original": "gone", "text": "Answered."},
+        )
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+@pytest.mark.parametrize("payload", [
+    {"target": "../../etc/passwd", "index": 0, "original": "x", "text": "y"},
+    {"target": "projects/sokrates/projects/nova/issues.md", "index": 0, "original": "x", "text": "y"},
+    {"index": 0, "original": "x", "text": "y"},
+    {"target": "issues", "index": 0, "text": "y"},
+    {"target": "issues", "index": 0, "original": "  ", "text": "y"},
+    {"target": "issues", "index": 0, "original": "x"},
+    {"target": "issues", "index": 0, "original": "x", "text": "   "},
+    {"target": "issues", "index": 0, "original": "x", "text": 42},
+    # One indented bullet: a break in it splits into a bullet and a stray
+    # paragraph the next parser reads as a continuation of something else.
+    {"target": "issues", "index": 0, "original": "x", "text": "one\ntwo"},
+    {"target": "issues", "index": 0, "original": "x", "text": "one\rtwo"},
+    # `True` is an int in Python and would silently address capture 1.
+    {"target": "issues", "index": True, "original": "x", "text": "y"},
+    {"target": "issues", "index": -1, "original": "x", "text": "y"},
+    {"target": "issues", "index": "0", "original": "x", "text": "y"},
+    {"target": "issues", "original": "x", "text": "y"},
+])
+def test_a_capture_reply_that_could_address_the_wrong_line_is_rejected(payload):
+    with patch.object(nova_site, "comment_on_capture") as rep:
+        status, _, _ = _post("/api/capture/comment", payload)
+    assert status == 400
+    rep.assert_not_called()
