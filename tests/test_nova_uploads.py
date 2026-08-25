@@ -220,12 +220,20 @@ def test_attach_button_is_wired_into_every_composer():
     a genuinely different composer from the journal drawer -- a board
     comment is appended to the row's write-up rather than stored in its
     own file -- so it needed its own call rather than inheriting one.
+
+    Fourth and fifth are the two that write into the ask thread -- the
+    `/ask` page and the chat dock -- added Cycle 436 on *"Make the new chat
+    be able to ... upload files like all other input fields in the Nova
+    app."* They are one conversation seen twice, and they still need two
+    calls: the dock's controls are static markup in `index.html` and the
+    page's are built by `renderAsk`, so there is no single node both could
+    hang a shared one off.
     """
     source = _app_js()
     # The definition matches `buildAttach(` too, so it is subtracted rather
-    # than pattern-dodged -- this counts call sites, and there are three.
+    # than pattern-dodged -- this counts call sites, and there are five.
     calls = source.count("buildAttach(") - source.count("function buildAttach(")
-    assert calls == 3, f"expected every composer to build one, found {calls}"
+    assert calls == 5, f"expected every composer to build one, found {calls}"
 
     # Defined once, and the returned button actually reaches the DOM.
     assert source.count("function buildAttach(") == 1
@@ -242,6 +250,11 @@ def test_attach_button_is_wired_into_every_composer():
     # and its hidden input goes into the same row. `foot` is that node.
     assert "foot.appendChild(attach.button)" in source
     assert "foot.appendChild(attach.input)" in source
+
+    # The dock's Send button lives in static markup, so its paperclip is
+    # placed relative to that rather than appended to a node this file made.
+    assert "send.parentNode.insertBefore(attach.button, send)" in source
+    assert "box.parentNode.insertBefore(attach.tray, box.nextSibling)" in source
 
 
 def test_an_attached_image_is_rendered_back_in_the_comment_thread():
@@ -272,7 +285,10 @@ def test_the_attach_button_has_styles_and_a_touch_target():
         css = handle.read()
     for selector in (".attach-btn", ".attach-img", ".attach-link"):
         assert selector + " {" in css, f"{selector} is used by app.js and unstyled"
-    rule = css.split(".attach-btn {", 1)[1].split("}", 1)[0]
+    # Anchored on the newline: `.ask-form .attach-btn {` is a positioning
+    # tweak that contains this selector as a substring and sits above it, so
+    # an unanchored split reads the wrong rule and asserts nothing.
+    rule = css.split("\n.attach-btn {", 1)[1].split("}", 1)[0]
     # 44px is the touch-target minimum the rest of this stylesheet holds to.
     assert "min-height: 44px" in rule and "min-width: 44px" in rule
 
