@@ -2871,3 +2871,114 @@ body.has-full-chart { overflow: hidden; }
   font-size: 0.78rem;
   color: var(--dim);
 }
+
+/* The chat dock -- his capture, ideas.md 2026-08-25: a chat "in the bottom
+ * right of my page in Nova that i can talk to about anything".
+ *
+ * Right-edge arithmetic is copied from `.menu-btn` on purpose rather than
+ * invented: the feed is centred and capped, so `right: 1rem` alone would
+ * park the launcher against the window on a wide desktop instead of
+ * against the column he is reading. */
+.chat-btn {
+  position: fixed;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  right: max(1rem, calc(50% - 23rem + 1rem));
+  z-index: 40;
+  width: 3.1rem;
+  height: 3.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chat-btn.open { border-color: var(--accent); }
+.chat-btn-glyph { font-size: 1.35rem; line-height: 1; }
+
+/* Purple, and a dot rather than a count -- the same signal the journal
+ * cards use for a reply he has not opened. */
+.chat-dot {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--accent);
+  border: 1px solid var(--bg);
+}
+
+.chat-dock {
+  position: fixed;
+  bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 3.7rem);
+  right: max(1rem, calc(50% - 23rem + 1rem));
+  z-index: 40;
+  width: min(23rem, calc(100vw - 2rem));
+  max-height: min(32rem, calc(100vh - 8rem));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.7rem 0.8rem 0.8rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.chat-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.chat-title { margin: 0; font-size: 0.82rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.chat-close {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 1.3rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+  cursor: pointer;
+}
+
+/* The thread is the only part that scrolls, so the composer stays on
+ * screen while he reads back -- `.capture textarea`'s finding, that a box
+ * free to grow pushes the way to submit off the bottom of a phone. */
+.chat-thread {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  margin: 0.6rem 0;
+  padding-right: 0.15rem;
+}
+
+.chat-form { flex: none; }
+
+.chat-box {
+  width: 100%;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+  resize: vertical;
+  max-height: 30vh;
+}
+
+.chat-box:focus { outline: none; border-color: var(--accent); }
+
+.chat-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.45rem; }
+.chat-status { margin: 0; font-size: 0.76rem; color: var(--dim); }
+.chat-send {
+  flex: none;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.chat-send:disabled { opacity: 0.55; cursor: default; }

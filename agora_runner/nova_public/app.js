@@ -8364,6 +8364,165 @@
     navigator.serviceWorker.register("/sw.js").catch(function () {});
   }
 
+  /* The chat dock -- the owner's capture on `ideas.md`, 2026-08-25, rated
+   * High: *"A great idea is to have a chat-bot that covers in the bottom
+   * right of my page in Nova that i can talk to about anything. Not sure if
+   * it should be the same as a commentator on a journal or just a long
+   * running session. I see this as maybe a replacement for 'merge' agora
+   * into Nova and also the 'ask' page as this gives me a quick way to ask
+   * questions or discuss ideas and implementations."*
+   *
+   * It is the `/ask` thread, reachable from every page instead of only from
+   * one tab. Same endpoint, same Agora conversation, same answers -- so a
+   * question typed here appears on `/ask` and the other way round, and
+   * nothing had to be added to the server at all. `/ask` stays where it is:
+   * he said *maybe* a replacement, and deleting a page on a maybe is the
+   * one direction that is not one sentence to reverse.
+   *
+   * The one thing this may not do is put its timer in `livePolls`.
+   * `stopPolling()` runs on every navigation and clears that array, so a
+   * dock polling out of it goes silent the moment he taps a tab while
+   * waiting -- which is the exact minute the answer lands in. It keeps a
+   * single handle of its own and clears it before every reschedule, so
+   * there is never more than one dock poller alive.
+   */
+  (function () {
+    var btn = document.getElementById("chat-btn");
+    var dock = document.getElementById("chat-dock");
+    if (!btn || !dock) return;
+    var closeBtn = document.getElementById("chat-close");
+    var thread = document.getElementById("chat-thread");
+    var form = document.getElementById("chat-form");
+    var box = document.getElementById("chat-box");
+    var send = document.getElementById("chat-send");
+    var status = document.getElementById("chat-status");
+    var dot = document.getElementById("chat-dot");
+
+    var pollHandle = null;
+    var loaded = false;
+    var lastCount = 0;
+    var isOpen = false;
+
+    function setDot(on) {
+      if (on) dot.removeAttribute("hidden");
+      else dot.setAttribute("hidden", "");
+      btn.classList.toggle("chat-btn-unread", !!on);
+    }
+
+    function paint(payload) {
+      var messages = (payload && payload.messages) || [];
+      /* An answer that arrives while the dock is shut puts a dot on the
+       * launcher. Without it a closed dock is where his answer goes to
+       * die: the reply takes about a minute, and a minute is long enough
+       * to navigate away and forget it was coming.
+       *
+       * There is no first-paint guard here and there was one until a
+       * mutation check showed it could not fire. Nothing polls before the
+       * dock has been opened once, and opening it sets `isOpen` before the
+       * read, so every paint with the dock shut is by definition a paint
+       * after he has already seen the thread. A guard that cannot fire
+       * reads as care and is really just an untested branch. */
+      if (!isOpen && messages.length > lastCount) setDot(true);
+      lastCount = messages.length;
+      renderAskThread(thread, payload);
+      loaded = true;
+      if (isOpen) thread.scrollTop = thread.scrollHeight;
+    }
+
+    function stopChatPoll() {
+      if (pollHandle !== null) {
+        clearTimeout(pollHandle);
+        pollHandle = null;
+      }
+    }
+
+    function pollChat(attempts) {
+      stopChatPoll();
+      if (attempts >= ASK_POLL_MAX) return;
+      pollHandle = setTimeout(function () {
+        pollHandle = null;
+        fetchPage("/api/ask")
+          .then(function (payload) {
+            paint(payload);
+            if (payload.waiting) pollChat(attempts + 1);
+          })
+          // A failed poll is not a failed answer, same as `pollAsk`.
+          .catch(function () { pollChat(attempts + 1); });
+      }, ASK_POLL_MS);
+    }
+
+    function loadThread() {
+      return fetchPage("/api/ask")
+        .then(function (payload) {
+          paint(payload);
+          if (payload.waiting) pollChat(0);
+        })
+        .catch(function (err) {
+          // Only paint an error over an empty dock. Overwriting a thread he
+          // can already read with "could not load" would be the wrong
+          // report -- the messages on screen are still true.
+          if (!loaded) {
+            thread.textContent = "";
+            thread.appendChild(el("p", "empty", "Could not load the thread: " + err));
+          }
+        });
+    }
+
+    function setOpen(next) {
+      isOpen = !!next;
+      btn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      dock.setAttribute("aria-hidden", isOpen ? "false" : "true");
+      if (isOpen) dock.removeAttribute("hidden");
+      else dock.setAttribute("hidden", "");
+      dock.classList.toggle("open", isOpen);
+      btn.classList.toggle("open", isOpen);
+      // Closing deliberately leaves the poll running: the question is still
+      // being answered and the dot is how he finds out it landed.
+      if (!isOpen) return;
+      setDot(false);
+      loadThread().then(function () { box.focus(); });
+    }
+
+    btn.addEventListener("click", function () { setOpen(!isOpen); });
+    if (closeBtn) closeBtn.addEventListener("click", function () { setOpen(false); });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && isOpen) setOpen(false);
+    });
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var text = box.value.trim();
+      if (!text) return;
+      send.disabled = true;
+      status.textContent = "sending…";
+      fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+          box.value = "";
+          status.textContent = "";
+          send.disabled = false;
+          // Paint his question straight away rather than waiting a poll for
+          // the server to echo it, for `renderAsk`'s reason: a box that has
+          // gone blank with nothing to show for it reads as a lost message.
+          thread.appendChild(askMessage({ sender: "Edvard", text: text }));
+          thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+          thread.scrollTop = thread.scrollHeight;
+          // His own message is not an unread answer.
+          lastCount += 1;
+          pollChat(0);
+        })
+        .catch(function (err) {
+          send.disabled = false;
+          status.textContent = "could not send: " + err.message;
+        });
+    });
+  })();
+
   load();
   schedulePoll();
 })();
