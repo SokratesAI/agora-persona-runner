@@ -2924,7 +2924,13 @@ body.has-full-chart { overflow: hidden; }
   right: max(1rem, calc(50% - 23rem + 1rem));
   z-index: 14;
   width: min(23rem, calc(100vw - 2rem));
-  max-height: min(32rem, calc(100vh - 8rem));
+  /* `height`, not `max-height`. His capture, issues.md 2026-08-25: *"Make
+   * the new chat modal full height, atleast for mobile. It feels so
+   * small."* Under `max-height` the panel was only ever as tall as the
+   * messages in it, so a two-line thread drew a two-line box -- the "small"
+   * he is describing is a short thread, not a small cap. A real height
+   * makes it the same panel whatever is in it. */
+  height: min(40rem, calc(100vh - 8rem));
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -2939,6 +2945,41 @@ body.has-full-chart { overflow: hidden; }
  * UA regardless of specificity. Found by asserting the computed style rather
  * than the attribute; every attribute assertion in the suite passed. */
 .chat-dock[hidden] { display: none; }
+
+/* Full screen on a phone -- the "atleast for mobile" half of the same
+ * capture. This is the stylesheet's first width media query; everything
+ * else here is fluid, and a fluid rule cannot express this one, because
+ * "full height" is a different panel rather than a wider one.
+ *
+ * `inset: 0` rather than `height: 100vh` on purpose: `100vh` on mobile
+ * Chrome is the viewport *without* the URL bar, so a 100vh sheet is taller
+ * than the screen and its composer sits below the fold until he scrolls.
+ * A fixed element pinned to all four edges has no such gap. It also covers
+ * the launcher button, which is why nothing hides it -- the sheet paints
+ * over it at the same z-index by document order. */
+@media (max-width: 30rem) {
+  .chat-dock {
+    inset: 0;
+    width: auto;
+    height: auto;
+    border-radius: 0;
+    /* All four borders, not just the sides: with `inset: 0` a top or bottom
+     * border is a hairline drawn along the edge of the screen. */
+    border: none;
+    padding-top: max(0.7rem, env(safe-area-inset-top));
+    padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
+  }
+
+  /* The hamburger has to go while the sheet is up, and it is the one thing
+   * the sheet cannot cover by painting over it: `.menu-btn` is `z-index:
+   * 30` against the dock's 14, fixed at roughly x 304-344, y 26-66 on a
+   * 360px screen -- which is on top of the dock's own close button. So the
+   * × would have been unreachable on his phone, tapped through to the menu
+   * instead. Found by my reviewer, not by me; no test sees it, because
+   * jsdom resolves no media queries. What a test *can* see is the class,
+   * and that is pinned below. */
+  body.chat-open .menu-btn { display: none; }
+}
 
 .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .chat-title { margin: 0; font-size: 0.82rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
@@ -2973,8 +3014,14 @@ body.has-full-chart { overflow: hidden; }
   border-radius: 10px;
   padding: 0.55rem 0.65rem;
   font: inherit;
-  resize: vertical;
-  max-height: 30vh;
+  /* The height is JavaScript's now -- one line at rest, growing with the
+   * text to a ten-line cap (`growChatBox`). A drag handle would fight it:
+   * the next keystroke overwrites whatever he dragged to. `overflow-y` is
+   * hidden until the cap, so a one-line box has no scrollbar gutter in it,
+   * and `growChatBox` turns it back on at the cap. */
+  resize: none;
+  overflow-y: hidden;
+  line-height: 1.4;
 }
 
 .chat-box:focus { outline: none; border-color: var(--accent); }

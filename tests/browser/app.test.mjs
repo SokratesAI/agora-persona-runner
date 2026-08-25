@@ -8041,6 +8041,144 @@ describe("the chat dock", () => {
       "the box cannot be focused at all, so he can never type");
   });
 
+  /* The growing composer -- his capture, issues.md 2026-08-25: *"make the
+   * input field start at one line, then when the content is two lines it
+   * gets tall enough to fit two lines and dynamicly scales up to 10 lines
+   * tall which is the cap."*
+   *
+   * jsdom has no layout, so `scrollHeight` is 0 on every element and no
+   * amount of typing moves it. These tests hand the box a `scrollHeight`
+   * and a line height in pixels, which is what a browser would have
+   * measured, and assert on the height `growChatBox` computes from them --
+   * the arithmetic and the cap are the parts that can be wrong. What they
+   * cannot check is whether a browser's own measurement is the one I think
+   * it is; that half is `box-sizing: border-box`, asserted in the
+   * stylesheet test below. */
+  function measurable(box, scrollHeight) {
+    box.style.lineHeight = "20px";
+    box.style.paddingTop = "0px";
+    box.style.paddingBottom = "0px";
+    box.style.borderTopWidth = "0px";
+    box.style.borderBottomWidth = "0px";
+    Object.defineProperty(box, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    return box;
+  }
+
+  test("the composer starts at one line", async () => {
+    const window = await loadSite("/", { ask: answered });
+    assert.equal(window.document.getElementById("chat-box").getAttribute("rows"), "1",
+      "the box opens taller than the one line he asked for");
+  });
+
+  test("the composer grows to fit what he typed", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 60);
+    box.value = "one\ntwo\nthree";
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(box.style.height, "60px", "the box did not grow with the text");
+    assert.equal(box.style.overflowY, "hidden",
+      "a box that fits its text should have no scrollbar in it");
+  });
+
+  test("the composer stops growing at ten lines and scrolls after that", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 400);
+    box.value = new Array(20).fill("line").join("\n");
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(box.style.height, "200px", "ten 20px lines is 200px; the cap did not hold");
+    assert.equal(box.style.overflowY, "auto",
+      "past the cap the rest of the text is unreachable without a scrollbar");
+  });
+
+  test("a sent question leaves a one-line box behind, not the tall one", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 400);
+    box.value = new Array(20).fill("line").join("\n");
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(box.style.height, "200px");
+
+    // The box is empty after a send, so a browser would measure one line.
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => 20 });
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(box.value, "");
+    assert.equal(box.style.height, "20px",
+      "the box kept its ten-line height with nothing in it");
+  });
+
+  /* The other half of his capture: *"Make the new chat modal full height,
+   * atleast for mobile. It feels so small."* The panel was capped with
+   * `max-height`, which means it was only ever as tall as the thread in it
+   * -- three messages drew a three-message box. A `height` makes it the
+   * same panel however empty it is, and the absence of a `max-height` is
+   * the part that can silently come back.
+   *
+   * `box-sizing` is asserted here because `growChatBox` depends on it: a
+   * `content-box` textarea reports `scrollHeight` without its padding, and
+   * every height the composer sets would then be a padding short.
+   *
+   * What this cannot see is the `@media (max-width: 30rem)` full-screen
+   * rule -- jsdom resolves no media queries at all, so a computed style
+   * here is always the wide-screen one. I read that rule rather than
+   * measured it, and it is not covered by any test. */
+  /* The full-screen sheet covers the launcher by painting over it, and it
+   * cannot cover the hamburger: `.menu-btn` is `z-index: 30` against the
+   * dock's 14, fixed in the top right, exactly where the sheet puts its own
+   * close button. So the × would be unreachable on his phone. The rule that
+   * hides it is inside the media query and no test can see it; the class it
+   * keys off is JavaScript and this is it. */
+  test("opening the dock marks the body, so the hamburger can get out of the way", async () => {
+    const window = await loadSite("/", { ask: answered });
+    assert.equal(window.document.body.classList.contains("chat-open"), false,
+      "the body is marked before he opened anything");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.body.classList.contains("chat-open"),
+      "nothing tells the page the sheet is up, so the hamburger sits on the close button");
+    tap(window, "chat-close");
+    assert.equal(window.document.body.classList.contains("chat-open"), false,
+      "closing the dock left the hamburger hidden");
+  });
+
+  /* The fallback line height, which is what runs when `line-height` does
+   * not compute to pixels. Chrome resolves the stylesheet's `1.4` to px, so
+   * the primary branch is the one his phone takes and this branch is
+   * otherwise never executed by anything. */
+  test("the composer still caps at ten lines when the line height is a keyword", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 900);
+    box.style.lineHeight = "normal";
+    box.style.fontSize = "20px";
+    box.value = new Array(40).fill("line").join("\n");
+    box.dispatchEvent(new window.Event("input"));
+    // 20px font * 1.4 = 28px a line, ten of them.
+    assert.equal(box.style.height, "280px",
+      "the fallback line height is not the one the stylesheet declares");
+  });
+
+  test("the dock has a real height rather than shrinking to fit the thread", async () => {
+    const window = await loadSite("/", { install: withStyle, ask: answered });
+    const dock = window.getComputedStyle(window.document.getElementById("chat-dock"));
+    assert.notEqual(dock.height, "", "the dock has no height, so a short thread draws a short panel");
+    assert.match(dock.height, /40rem/, "the dock's height is not the one the stylesheet means");
+    assert.equal(dock.maxHeight, "", "a max-height is back, which is what made it feel small");
+
+    const box = window.getComputedStyle(window.document.getElementById("chat-box"));
+    assert.equal(box.boxSizing, "border-box", "growChatBox measures padding it would not be given");
+    assert.equal(box.resize, "none", "a drag handle fights the auto-grow; the next keystroke undoes it");
+  });
+
   test("asking from the dock posts the text and paints the question before any poll", async () => {
     const window = await loadSite("/");
     tap(window, "chat-btn");
