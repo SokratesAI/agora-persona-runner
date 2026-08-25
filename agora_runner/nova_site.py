@@ -168,6 +168,11 @@ from agora_runner.nova_conversations import (
     send as conversation_send,
     thread as conversation_thread,
 )
+from agora_runner.nova_heartbeats import (
+    heartbeats as heartbeat_list,
+    run_now as heartbeat_run_now,
+    set_enabled as heartbeat_set_enabled,
+)
 from agora_runner.nova_ask import (
     ask as ask_question, thread as ask_thread, watching as ask_watching,
 )
@@ -243,6 +248,7 @@ PAGE_ROUTES = (
     "/plan",
     "/ask",
     "/conversations",
+    "/heartbeats",
     "/diag",
 )
 PAGE_ROUTE_PREFIXES = ("/cycle/",)
@@ -1941,6 +1947,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             if path == "/api/conversations/personas":
                 self._send_json(200, conversation_personas())
                 return
+            if path == "/api/heartbeats":
+                # Not cached, for `/api/conversations`' reason: this is the
+                # list he opens to see whether the loop is still running, so
+                # a CACHE_FRESH_SECONDS window would show him a `lastRunAt`
+                # from before the run he is asking about.
+                self._send_json(200, heartbeat_list())
+                return
             if path == "/api/pool":
                 # Not cached, and for `/api/comments`' reason: the owner
                 # decides a candidate and the page re-fetches immediately,
@@ -2681,6 +2694,66 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                         {"ok": ok, "conversationId": message if ok else None,
                          "message": message})
 
+    def _post_heartbeat_enabled(self, payload):
+        """`/api/heartbeats/enabled` -- switch one heartbeat on or off.
+
+        The one write on this page that changes what the machine does, so
+        it is audited like the capture writes are: `lastRunAt` tells him
+        *that* a heartbeat stopped running and nothing else would tell him
+        *why*.
+        """
+        heartbeat_id = payload.get("heartbeatId")
+        enabled = payload.get("enabled")
+        if not isinstance(heartbeat_id, str) or not isinstance(enabled, bool):
+            self._send_json(400, {"error": "heartbeatId must be a string and enabled a boolean"})
+            return
+        try:
+            ok, message = heartbeat_set_enabled(heartbeat_id, enabled)
+        except Exception as e:
+            log(f"nova-site heartbeats/enabled failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Heartbeat {'enabled' if enabled else 'disabled'} · {'ok' if ok else message}",
+            after=heartbeat_id,
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        # A refusal about the id or the flag cannot succeed on a retry, so
+        # it is a 400 rather than a 502 -- `_post_conversation_send`'s split.
+        bad_input = not ok and message.startswith(
+            ("which heartbeat", "enabled must", "no heartbeat with"))
+        self._send_json(200 if ok else (400 if bad_input else 502),
+                        {"ok": ok, "message": message})
+
+    def _post_heartbeat_run(self, payload):
+        """`/api/heartbeats/run` -- ask for a run at the next poll."""
+        heartbeat_id = payload.get("heartbeatId")
+        if not isinstance(heartbeat_id, str):
+            self._send_json(400, {"error": "heartbeatId must be a string"})
+            return
+        try:
+            ok, message = heartbeat_run_now(heartbeat_id)
+        except Exception as e:
+            log(f"nova-site heartbeats/run failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Heartbeat run requested · {'ok' if ok else message}",
+            after=heartbeat_id,
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        bad_input = not ok and message.startswith(("which heartbeat", "no heartbeat with"))
+        self._send_json(200 if ok else (400 if bad_input else 502),
+                        {"ok": ok, "message": message})
+
     def _post_board_amend(self, payload, delete):
         """`/api/board/edit` and `/api/board/delete` -- issue #84.
 
@@ -2893,6 +2966,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
             "/api/conversations/send", "/api/conversations/new",
+            "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/pool/decide", "/api/pool/generate",
         ):
             self._send_json(404, {"error": "not found"})
@@ -2912,6 +2986,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/new":
             self._post_conversation_new(payload)
+            return
+        if path == "/api/heartbeats/enabled":
+            self._post_heartbeat_enabled(payload)
+            return
+        if path == "/api/heartbeats/run":
+            self._post_heartbeat_run(payload)
             return
         if path == "/api/comment":
             self._post_comment(payload)

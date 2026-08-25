@@ -64,6 +64,7 @@
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
     if (path === "/ask") return { view: "ask", cycle: null, board: null };
     if (path === "/conversations") return { view: "conversations", cycle: null, board: null };
+    if (path === "/heartbeats") return { view: "heartbeats", cycle: null, board: null };
     if (path === "/diag") return { view: "diag", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
@@ -8028,6 +8029,139 @@
       });
   }
 
+  /* The Heartbeats page.
+   *
+   * His capture: *"Then Agora can just be purely for heartbeats."* Cycle 441
+   * built the Chats half of that; this is the other half, and after it there
+   * is nothing on Agora's own app he opens day to day.
+   *
+   * Read plus two writes. Switching one off and pressing run are the things
+   * he does from his phone; creating, deleting and editing a schedule are
+   * not, and they are the four that can quietly take this loop off the air,
+   * so they stay on Agora's page -- see `nova_heartbeats.py`.
+   */
+  function hbStateLine(row) {
+    if (row.running) return { text: "Running now", cls: "hb-state hb-state-running" };
+    if (!row.enabled) return { text: "Off", cls: "hb-state hb-state-off" };
+    if (row.forceRun) return { text: "On · run queued", cls: "hb-state hb-state-running" };
+    return { text: "On", cls: "hb-state hb-state-on" };
+  }
+
+  /* Both writes answer with `{ok, message}` and neither returns the changed
+   * row, so the page re-lists rather than patching what it drew. A local
+   * flip would show "Off" for a PATCH that never landed. */
+  function hbPost(path, body, button) {
+    button.disabled = true;
+    fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (result) {
+        if (!result.ok) window.alert(result.message || result.error || "that did not work");
+        loadHeartbeats();
+      })
+      .catch(function (err) {
+        button.disabled = false;
+        window.alert("could not reach Nova: " + err);
+      });
+  }
+
+  function renderHeartbeats(payload) {
+    stopPolling();
+    markNav();
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    var rows = payload.heartbeats || [];
+    var on = rows.filter(function (r) { return r.enabled; }).length;
+    statusEl.appendChild(el("p", "status-line",
+      rows.length + (rows.length === 1 ? " heartbeat" : " heartbeats") + " · " + on + " on"));
+    feed.textContent = "";
+
+    if (!rows.length) {
+      feed.appendChild(el("p", "empty", "No heartbeats yet."));
+      return;
+    }
+
+    var list = el("div", "hb-list");
+    rows.forEach(function (row) {
+      var card = el("div", "hb-row" + (row.enabled ? "" : " hb-off"));
+      card.appendChild(el("div", "hb-name", row.name));
+      var meta = [row.personaName, row.schedule].filter(Boolean).join(" · ");
+      if (meta) card.appendChild(el("div", "hb-meta", meta));
+
+      var state = hbStateLine(row);
+      card.appendChild(el("div", state.cls, state.text));
+
+      // `fmtStamp` takes milliseconds; an unparseable timestamp yields NaN,
+      // which renders as "Invalid Date", so the line is dropped instead.
+      // A heartbeat that has never run says so rather than saying nothing:
+      // a missing line and "never ran" look identical and are not.
+      var when = row.lastRunAt ? Date.parse(row.lastRunAt) : NaN;
+      var lastLine = isNaN(when) ? "Never run" : "Last run " + fmtStamp(when);
+      if (row.lastResult && !isNaN(when)) lastLine += " · " + row.lastResult;
+      card.appendChild(el("div", "hb-when", lastLine));
+
+      var actions = el("div", "hb-actions");
+      var toggle = el("button", "hb-btn", row.enabled ? "Turn off" : "Turn on");
+      toggle.setAttribute("type", "button");
+      toggle.addEventListener("click", function () {
+        hbPost("/api/heartbeats/enabled",
+          { heartbeatId: row.id, enabled: !row.enabled }, toggle);
+      });
+      actions.appendChild(toggle);
+
+      var run = el("button", "hb-btn", "Run now");
+      run.setAttribute("type", "button");
+      run.addEventListener("click", function () {
+        hbPost("/api/heartbeats/run", { heartbeatId: row.id }, run);
+      });
+      actions.appendChild(run);
+
+      if (row.conversationId) {
+        var open = el("button", "hb-btn", "Open thread");
+        open.setAttribute("type", "button");
+        open.addEventListener("click", function () {
+          // The URL has to move first. `openConversation` renders into the
+          // same feed either way, but its poller and its back button both
+          // guard on `route(location.pathname).view === "conversations"` --
+          // opened from `/heartbeats` the thread would paint once, never
+          // refresh, and the back button would draw the conversation list
+          // under a Beats tab. Two views on one route, and this is the
+          // route saying which.
+          history.pushState(null, "", "/conversations");
+          openConversation(row.conversationId, row.name);
+        });
+        actions.appendChild(open);
+      }
+      card.appendChild(actions);
+
+      if (row.task) {
+        var task = el("details", "hb-task");
+        var summary = el("summary", "", "Task");
+        task.appendChild(summary);
+        task.appendChild(el("pre", "", row.task));
+        card.appendChild(task);
+      }
+      list.appendChild(card);
+    });
+    feed.appendChild(list);
+  }
+
+  function loadHeartbeats() {
+    fetchPage("/api/heartbeats")
+      .then(function (payload) {
+        if (route(window.location.pathname).view !== "heartbeats") return;
+        renderHeartbeats(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load your heartbeats: " + err));
+      });
+  }
+
   function loadAsk() {
     fetchPage("/api/ask")
       .then(function (payload) {
@@ -8480,6 +8614,10 @@
     }
     if (here.view === "conversations") {
       loadConversations();
+      return;
+    }
+    if (here.view === "heartbeats") {
+      loadHeartbeats();
       return;
     }
     // No `loadDiag` -- this is the one view with no payload behind it, so

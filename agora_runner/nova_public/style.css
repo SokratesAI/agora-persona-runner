@@ -3165,3 +3165,63 @@ body.has-full-chart { overflow: hidden; }
 
 .conv-new .ask-send { margin-top: 0; flex: 0 0 auto; }
 .conv-new .ask-status { flex: 1 1 100%; margin-top: 0; }
+
+/* ---- The Heartbeats page ------------------------------------------------
+ *
+ * *"Then Agora can just be purely for heartbeats."* -- his capture, and
+ * this is what takes that last reason to open the other app away. The rows
+ * borrow `.conv-row`'s card shape because they are the same object on the
+ * same page furniture; what is new is the state line and the two buttons.
+ */
+.hb-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.hb-row {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+}
+
+/* A switched-off heartbeat is history rather than machinery. Dimmed, not
+ * hidden -- the same call as a cycle thread on the Chats page. */
+.hb-off { opacity: 0.62; }
+
+.hb-name { font-weight: 600; }
+.hb-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
+.hb-when { color: var(--dim); font-size: 0.78rem; margin-top: 0.1rem; }
+
+/* The word beside the state, never a bare colour -- his ask about the
+ * priority symbols, and the same reason: a reader who has to know a colour
+ * code to know what was said has not been told. */
+.hb-state { font-size: 0.78rem; margin-top: 0.35rem; font-weight: 600; }
+.hb-state-on { color: var(--good, #5ec27a); }
+.hb-state-off { color: var(--dim); }
+.hb-state-running { color: var(--accent, #a98bff); }
+
+.hb-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+
+.hb-btn {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  /* 44px is the tap target the rest of this file uses. */
+  min-height: 44px;
+  padding: 0.4rem 0.9rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.hb-btn[disabled] { opacity: 0.5; cursor: default; }
+
+/* The task is the prompt the heartbeat actually sends, and some of them are
+ * 1,500 characters. Folded behind a tap rather than truncated: the whole
+ * thing is kept and the interface decides what is on screen. */
+.hb-task { margin-top: 0.5rem; }
+.hb-task summary { color: var(--dim); font-size: 0.8rem; cursor: pointer; }
+.hb-task pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.78rem;
+  color: var(--dim);
+  margin: 0.4rem 0 0;
+}

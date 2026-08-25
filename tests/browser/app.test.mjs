@@ -129,7 +129,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convPersonas, convStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convPersonas, convStatus = 200, hbList, hbStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -195,6 +195,12 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
     }
     if (url.includes("/api/conversations")) {
       return res(convList || { conversations: [] }, convStatus);
+    }
+    /* Only the listing needs a branch: the two writes are POSTs, and
+     * `window.fetch` answers every POST from `window.postReply` before
+     * `serve` is ever reached. */
+    if (url.includes("/api/heartbeats")) {
+      return res(hbList || { heartbeats: [] }, hbStatus);
     }
     if (url.includes("/api/ask")) {
       // A function, because the point of most of these tests is that the
@@ -4163,7 +4169,7 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/costs", "/retro", "/plan", "/ask", "/conversations", "/diag"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/costs", "/retro", "/plan", "/ask", "/conversations", "/heartbeats", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -9938,5 +9944,92 @@ describe("the conversations page", () => {
     const window = await loadSite("/conversations", { convStatus: 502 });
     assert.match(window.document.querySelector(".empty").textContent,
       /Could not load your conversations/);
+  });
+});
+
+/* The heartbeats page.
+ *
+ * His capture: *"Make a page for heartbeats ... Then Agora can just be
+ * purely for heartbeats."* What is worth pinning here is the same thing as
+ * on the conversations page -- the ways this renders something plausible
+ * while being wrong. A row that says "On" for a disabled heartbeat, a run
+ * button that posts nothing, a never-run heartbeat drawn as if it ran at
+ * the epoch: none of those looks like a fault on screen.
+ */
+describe("the heartbeats page", () => {
+  const TWO = {
+    heartbeats: [
+      { id: "hb-1", name: "Nova", personaName: "Nova", personaId: "p-1",
+        conversationId: "c-1", schedule: "every@20m@16:20", task: "Follow prompt.md.",
+        enabled: true, forceRun: false,
+        lastRunAt: "2026-08-25T20:40:00.000Z", lastResult: "running", running: true },
+      { id: "hb-2", name: "K3s Sentinel", personaName: "Sentinel", personaId: "p-2",
+        conversationId: "", schedule: "daily@12:00", task: "Scan the cluster.",
+        enabled: false, forceRun: false,
+        lastRunAt: "", lastResult: "", running: false },
+    ],
+  };
+
+  test("every heartbeat is a row, and a switched-off one is marked not dropped", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".hb-name").textContent),
+      ["Nova", "K3s Sentinel"]);
+    assert.equal(rows[0].classList.contains("hb-off"), false);
+    assert.ok(rows[1].classList.contains("hb-off"));
+    assert.match(rows[0].querySelector(".hb-meta").textContent, /every@20m/);
+  });
+
+  test("the state line carries the word, never a colour on its own", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const states = [...window.document.querySelectorAll(".hb-state")].map((s) => s.textContent);
+    assert.deepEqual(states, ["Running now", "Off"]);
+  });
+
+  test("a heartbeat that has never run says so rather than showing nothing", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const whens = [...window.document.querySelectorAll(".hb-when")].map((s) => s.textContent);
+    assert.match(whens[0], /^Last run /);
+    assert.equal(whens[1], "Never run");
+  });
+
+  test("turning one off posts the opposite of what it is now", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    click(window, [...rows[0].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Turn off"));
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/heartbeats/enabled", { heartbeatId: "hb-1", enabled: false }]]);
+    // The off row offers the other direction, on the same button.
+    assert.ok([...rows[1].querySelectorAll(".hb-btn")].some((b) => b.textContent === "Turn on"));
+  });
+
+  test("run now posts the id and nothing else", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    click(window, [...rows[1].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Run now"));
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/heartbeats/run", { heartbeatId: "hb-2" }]]);
+  });
+
+  /* The thread lives on the conversations route, and `openConversation`'s
+   * poller and back button both read the location. Opened from here without
+   * moving the URL, the thread paints once and never refreshes. */
+  test("opening a heartbeat's thread moves to the conversations route", async () => {
+    const window = await loadSite("/heartbeats", {
+      hbList: TWO,
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    click(window, [...rows[0].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Open thread"));
+    assert.equal(window.location.pathname, "/conversations");
+    // A heartbeat with no conversation has nothing to open.
+    assert.equal([...rows[1].querySelectorAll(".hb-btn")].some((b) => b.textContent === "Open thread"), false);
+  });
+
+  test("an unreachable store says so rather than showing an empty list", async () => {
+    const window = await loadSite("/heartbeats", { hbStatus: 502 });
+    assert.match(window.document.querySelector("#feed").textContent,
+      /Could not load your heartbeats/);
+    assert.equal(window.document.querySelectorAll(".hb-row").length, 0);
   });
 });
