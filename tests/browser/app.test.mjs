@@ -8601,3 +8601,21 @@ describe("searching the journal", () => {
     assert.equal(digest.asked.length, before, "the digest was fetched for a window the search is not in");
   });
 });
+
+describe("the journal search box sits between the composer and the feed", () => {
+  test("the capture composer stays at the top and the box sits under it", async () => {
+    /* `captureHome` moves the composer back above the feed on every
+     * `load`, and this box is inserted immediately above the feed once.
+     * The order that produces is composer, search, feed -- so the search
+     * is next to the thing it searches, and the box he types captures
+     * into has not moved from where it has always been. Pinned because
+     * nothing else would notice the two swapping: both are above the
+     * feed either way and both still work. */
+    const window = await loadSite("/");
+    const feed = window.document.getElementById("feed");
+    const box = window.document.getElementById("journal-search");
+    const capture = window.document.getElementById("capture");
+    assert.equal(box.nextElementSibling, feed, "the search box is not directly above the feed");
+    assert.equal(capture.nextElementSibling, box, "the composer and the search box swapped places");
+  });
+});
