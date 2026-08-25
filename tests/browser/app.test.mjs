@@ -7926,6 +7926,217 @@ describe("the questions page", () => {
   });
 });
 
+/* The chat dock -- his capture on `ideas.md`, 2026-08-25, rated High: a
+ * chat "in the bottom right of my page in Nova that i can talk to about
+ * anything".
+ *
+ * It is the same `/ask` thread and the same endpoint, so most of what it
+ * does is already pinned by "the questions page" above. What is new, and
+ * what these tests are for, is that it lives *outside* the page: it must
+ * survive a navigation, because the whole point is asking a question from
+ * wherever he happens to be. The ask page's own poll is deliberately
+ * cancelled on navigation (`stopPolling`, and the test directly above);
+ * a dock that shared that timer would go silent in the exact minute the
+ * answer arrives in.
+ */
+describe("the chat dock", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+
+  const waiting = { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] };
+  const answered = {
+    conversationId: "c",
+    waiting: false,
+    messages: [
+      { id: "1", sender: "Edvard", text: "q" },
+      { id: "2", sender: "Nova Answers", text: "Seven." },
+    ],
+  };
+  /** Waiting on the first read, answered on every one after it. */
+  function answersOnPoll() {
+    let turn = 0;
+    return () => {
+      turn += 1;
+      return turn === 1 ? waiting : answered;
+    };
+  }
+
+  test("the launcher is on a page that is not /ask, and the dock starts shut", async () => {
+    const window = await loadSite("/");
+    assert.ok(window.document.getElementById("chat-btn"), "no launcher");
+    const dock = window.document.getElementById("chat-dock");
+    assert.ok(dock, "no dock");
+    assert.ok(dock.hasAttribute("hidden"), "the dock opened itself");
+    assert.equal(dock.getAttribute("aria-hidden"), "true");
+    assert.equal(window.document.querySelector("#chat-thread .ask-msg"), null,
+      "the dock read the thread before he asked for it");
+  });
+
+  test("the launcher and the dock survive a navigation, which is the whole point", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new window.Event("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.getElementById("chat-btn"), "the launcher was rendered away");
+    assert.equal(window.document.getElementById("chat-dock").hasAttribute("hidden"), false,
+      "the dock closed itself on a navigation");
+  });
+
+  /* `hidden` is an attribute and `display: flex` is an author rule, and the
+   * author rule wins over the UA stylesheet's `[hidden] { display: none }`
+   * no matter what the specificity says. So the attribute assertions above
+   * would all pass on a dock that is permanently open on his screen. This
+   * is the one that looks at what the cascade actually resolves to. */
+  test("the dock is really invisible when it is shut, not just marked hidden", async () => {
+    const window = await loadSite("/", { install: withStyle, ask: answered });
+    const dock = window.document.getElementById("chat-dock");
+    assert.equal(window.getComputedStyle(dock).display, "none",
+      "the dock is on screen before he has opened it");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.getComputedStyle(dock).display, "flex", "opening it did not show it");
+  });
+
+  /* The reviewer's finding, and it killed a comment I had just written
+   * saying this could not happen. Opening starts a fetch; closing before it
+   * lands means the first paint of the session runs with the dock shut and
+   * `lastCount` still 0, so an old thread he has read a hundred times reads
+   * as unread. The first-paint guard is back because of this test. */
+  test("closing before the first read lands does not invent an unread answer", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    tap(window, "chat-close");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.getElementById("chat-dot").hasAttribute("hidden"),
+      "a thread he had already read came back as an unread answer");
+  });
+
+  test("tapping the launcher opens the thread and reads it", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")].map((n) => n.textContent),
+      ["q", "Seven."]);
+    assert.equal(window.document.getElementById("chat-btn").getAttribute("aria-expanded"), "true");
+    tap(window, "chat-close");
+    assert.ok(window.document.getElementById("chat-dock").hasAttribute("hidden"), "close did not close it");
+  });
+
+  test("asking from the dock posts the text and paints the question before any poll", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = window.document.getElementById("chat-box");
+    box.value = "  why is the loop slow?  ";
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/ask", { text: "why is the loop slow?" }]]);
+    assert.equal(box.value, "", "the box should clear once the question is away");
+    assert.match(window.document.querySelector("#chat-thread .ask-msg").textContent, /why is the loop slow\?/);
+    assert.ok(window.document.querySelector("#chat-thread .ask-pending"), "nothing says an answer is coming");
+  });
+
+  test("a refused question keeps the text and says why", async () => {
+    const window = await loadSite("/");
+    window.postReply = { ok: false, message: "that is longer than 4000 characters" };
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = window.document.getElementById("chat-box");
+    box.value = "a very long question";
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.match(window.document.getElementById("chat-status").textContent, /longer than 4000/);
+    assert.equal(box.value, "a very long question", "his text was thrown away on a failure");
+    assert.equal(window.document.getElementById("chat-send").disabled, false,
+      "the button stayed disabled, so he cannot retry");
+  });
+
+  /* The one that costs an answer if it regresses. `stopPolling()` runs on
+   * every render; a dock poll registered in `livePolls` is cleared by the
+   * navigation and the answer never lands. */
+  test("the dock keeps polling across a navigation, and the answer still arrives", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: answersOnPoll(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.ok(window.document.querySelector("#chat-thread .ask-pending"), "a thread owed an answer should say so");
+    assert.equal(timers.queued.length, 1, "nothing is polling for the answer");
+
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new window.Event("popstate"));
+    // A real drain, not `timers.fire()`. `fire()` collects what is due
+    // before it drains, so firing straight after the navigation runs the
+    // dock poll *before* the journal has re-rendered and called
+    // `stopPolling` -- and the answer lands either way. That version of
+    // this test passed with the poll registered in `livePolls`, which is
+    // the one thing it exists to catch.
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(timers.queued.length, 1, "the navigation cancelled the dock's poll -- it should have survived");
+
+    await timers.fire();
+
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")].map((n) => n.textContent),
+      ["q", "Seven."]);
+    assert.equal(window.document.querySelector("#chat-thread .ask-pending"), null);
+    assert.equal(timers.queued.length, 0, "still polling after the answer landed");
+  });
+
+  test("an answer that lands while the dock is shut lights the launcher, and opening clears it", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: answersOnPoll(),
+    });
+    const dot = window.document.getElementById("chat-dot");
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.ok(dot.hasAttribute("hidden"), "an open dock does not need a dot");
+
+    tap(window, "chat-close");
+    await timers.fire();
+    assert.equal(dot.hasAttribute("hidden"), false, "the answer arrived unannounced");
+    assert.ok(window.document.getElementById("chat-btn").classList.contains("chat-btn-unread"));
+
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.ok(dot.hasAttribute("hidden"), "the dot outlived him reading it");
+  });
+
+  /* His own question is not an unread answer. The dot counts messages, and
+   * the send paints his question locally before the server has echoed it,
+   * so the next read comes back one longer than the dock last counted --
+   * which is indistinguishable from an answer unless the send says so. */
+  test("sending from the dock and then closing it does not light the dot on his own message", async () => {
+    let timers;
+    let asked = false;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      // Empty until he asks, then his own question comes back echoed --
+      // which is the only shape in which this can go wrong.
+      ask: () => (asked ? waiting : { conversationId: "c", waiting: false, messages: [] }),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    asked = true;
+    window.document.getElementById("chat-box").value = "q";
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await timers.fire();
+    tap(window, "chat-close");
+    await timers.fire();
+    assert.ok(window.document.getElementById("chat-dot").hasAttribute("hidden"),
+      "his own question came back as an unread answer");
+  });
+});
+
 describe("the device page", () => {
   /* `/diag` exists because three cycles in a row shipped a fix for a
    * rendering fault on a phone none of them could look at -- an iPhone
