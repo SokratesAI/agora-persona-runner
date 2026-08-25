@@ -161,7 +161,9 @@ from agora_runner.nova_boards import (
     split_capture_done,
     split_capture_priority,
 )
-from agora_runner.nova_ask import ask as ask_question, thread as ask_thread
+from agora_runner.nova_ask import (
+    ask as ask_question, thread as ask_thread, watching as ask_watching,
+)
 from agora_runner.nova_idea_pool import (
     STALE_CANDIDATE,
     decide as pool_decide,
@@ -2525,6 +2527,32 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "is not a row" in message
         self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
 
+    def _post_ask_watching(self):
+        """`POST /api/ask/watching` -- the questions thread is on his screen.
+
+        Agora withholds the phone push while this stays fresh, which is what
+        stops the other app buzzing for a reply he is watching arrive here.
+        See `nova_ask.watching`.
+
+        Deliberately never an error to him: the page fires this on a timer and
+        paints nothing from it, so a dead Agora must not put "could not load"
+        over a thread he can read. Not audited for the same reason -- one row
+        every four seconds is not a record of anything.
+
+        That is not the same as saying a failure is harmless. My reviewer's
+        point, and it is right: the dangerous direction is a *stale or wrong*
+        vouch, which drops a notification he wanted. Nothing on this path can
+        cause that -- a refused ping means no suppression -- so the guards that
+        matter are the two in `pingAskWatching` and the TTL on Agora's side.
+        """
+        try:
+            ok, reason = ask_watching()
+        except Exception as e:
+            log(f"nova-site ask/watching failed: {e}")
+            self._send_json(200, {"watching": False, "reason": str(e)[:200]})
+            return
+        self._send_json(200, {"watching": ok, "reason": reason})
+
     def _post_ask(self, payload):
         """`/api/ask` -- the owner's question goes into the questions
         conversation and the Sonnet persona answers it on the next poll
@@ -2771,7 +2799,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/convert", "/api/comment",
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
             "/api/capture/comment",
-            "/api/board/comment", "/api/ask",
+            "/api/board/comment", "/api/ask", "/api/ask/watching",
             "/api/pool/decide", "/api/pool/generate",
         ):
             self._send_json(404, {"error": "not found"})
@@ -2782,6 +2810,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/ask":
             self._post_ask(payload)
+            return
+        if path == "/api/ask/watching":
+            self._post_ask_watching()
             return
         if path == "/api/comment":
             self._post_comment(payload)

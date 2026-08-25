@@ -131,6 +131,41 @@ def ask(text):
     return True, message_id
 
 
+def watching():
+    """Tell Agora this thread is on his screen here, so it holds the buzz.
+
+    His capture, `ideas.md` 2026-08-25: *"now when i use the new chat i get
+    alerted by agora whenever a new message arrives. This is not a huge
+    problem, but its not high quality of a product."* Agora's service worker
+    already refuses to notify while its own app is visible; it cannot see a
+    tab on this origin, so the page says so instead and `notify` withholds the
+    push for `WATCHING_TTL_MS` (30s at the time of writing).
+
+    `create=False` on purpose: a reader who has never asked anything has no
+    thread to be present in, and manufacturing a conversation for a presence
+    ping would be the same mistake `thread()` avoids below.
+
+    (ok, reason). A refused ping means no suppression, so failing here can only
+    ever cost a notification he was going to get anyway and the caller logs and
+    moves on. The expensive direction is the other one -- vouching when he is
+    not there -- and nothing on this path can do that.
+
+    Costs a `GET /conversations` per call, since `conversation_id` resolves by
+    tag. That is one extra listing per four-second poll tick and it is filed
+    rather than cached: a module-level cache here would be a second place the
+    thread's id lives, and the id is the one thing this module already goes to
+    some trouble not to duplicate.
+    """
+    cid = conversation_id()
+    if not cid:
+        return False, "no questions thread yet"
+    status, _body = agora_internal("POST", f"/conversations/{cid}/presence", {})
+    if status not in (200, 201):
+        log(f"nova_ask: presence ping failed HTTP {status}")
+        return False, "could not reach the conversation store"
+    return True, "watching"
+
+
 def thread():
     """What the page renders: the visible tail of the questions thread.
 
