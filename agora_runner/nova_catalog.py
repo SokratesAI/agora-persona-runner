@@ -52,6 +52,26 @@ def _cells(line):
     return [c.strip() for c in inner.group(1).split("|")]
 
 
+# `*source repo*` and `` `GitHubService` `` are how the catalog's prose
+# reads in Obsidian, and the page draws text rather than markdown -- so on
+# the screen they were an asterisk and a backtick, literally. Caught by
+# opening the real page and looking at it, which is the only check that
+# could have caught it: every test I wrote asserts on the string, and the
+# string was correct.
+_EMPHASIS = re.compile(r"[*`_]{1,2}(?=\S)|(?<=\S)[*`_]{1,2}")
+
+
+def _plain(text):
+    """Markdown emphasis stripped, the words kept.
+
+    Deliberately only the three inline markers `tools.catalog` actually
+    writes. A general markdown renderer here would be a second one on
+    this site -- `app.js` already has the journal's -- and this is one
+    paragraph of prose, not a document.
+    """
+    return _EMPHASIS.sub("", text)
+
+
 def _split_lead(paragraph):
     """`**bold sentence** the rest` -> `(bold sentence, the rest)`.
 
@@ -66,8 +86,8 @@ def _split_lead(paragraph):
     body = paragraph[2:]
     close = body.find("**")
     if close == -1:
-        return body.strip(), ""
-    return body[:close].strip(), body[close + 2:].strip()
+        return _plain(body.strip()), ""
+    return _plain(body[:close].strip()), _plain(body[close + 2:].strip())
 
 
 def _service(cells):
