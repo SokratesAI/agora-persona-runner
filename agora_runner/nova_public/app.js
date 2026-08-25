@@ -776,8 +776,56 @@
    * mermaid's DOMPurify under `securityLevel: "strict"`. The invariant the
    * header is protecting is that text off the wire cannot become markup;
    * that still holds. */
+  /* Every diagram this session has already drawn, keyed by its source.
+   *
+   * This is not a speed optimisation, it is the fix for a visible fault my
+   * reviewer found on the first version. `renderAskThread` empties the
+   * thread and rebuilds every message from scratch, and `pollAsk` calls it
+   * every four seconds for up to four minutes while an answer is on its
+   * way. Text and pictures survive that -- a picture is the same URL and
+   * comes straight back out of the browser's cache -- but a diagram is
+   * built asynchronously, so every rebuild would drop each already-drawn
+   * diagram back to its code block and redraw it a moment later. Every four
+   * seconds, for as long as he waits for an answer.
+   *
+   * Keyed on the source rather than on a message id because that is what
+   * decides whether two figures are the same picture, and it is what makes
+   * the second draw a synchronous one -- the cached SVG goes in during the
+   * same rebuild, so there is no frame where the diagram is missing. It
+   * holds one entry per distinct diagram in a session and is dropped when
+   * the tab is; a cap would be a number I invented. */
+  var mermaidDrawn = Object.create(null);
+
+  /** The parsed <svg> for one render, or null if the string was not one.
+   *  A parse error document is itself an element called `parsererror`, so
+   *  this is the shape that has to be checked rather than trusted --
+   *  importing it would put the browser's error text on the page where the
+   *  diagram goes. */
+  function mermaidSvg(markup) {
+    var parsed = new DOMParser().parseFromString(markup, "image/svg+xml");
+    var svg = parsed.documentElement;
+    if (!svg || String(svg.nodeName).toLowerCase() !== "svg") return null;
+    // Mermaid sizes the SVG for the width it measured, which is not the
+    // width of a phone. Let CSS own the box.
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+    return svg;
+  }
+
   function mermaidNode(code) {
     var figure = el("figure", "mermaid-figure");
+
+    function draw(markup) {
+      var svg = mermaidSvg(markup);
+      if (!svg) return false;
+      figure.textContent = "";
+      figure.appendChild(document.importNode(svg, true));
+      figure.className = "mermaid-figure mermaid-drawn";
+      return true;
+    }
+
+    if (mermaidDrawn[code] && draw(mermaidDrawn[code])) return figure;
+
     var source = el("pre", "mermaid-source");
     source.appendChild(el("code", null, code));
     figure.appendChild(source);
@@ -786,20 +834,10 @@
       mermaidSeq += 1;
       return mermaid.render("mermaid-svg-" + mermaidSeq, code);
     }).then(function (result) {
-      var parsed = new DOMParser().parseFromString(result.svg, "image/svg+xml");
-      var svg = parsed.documentElement;
-      // A parse error document is itself an element called `parsererror`,
-      // so this is the one shape that has to be checked rather than
-      // trusted -- importing it would put the browser's error text on the
-      // page where the diagram goes.
-      if (!svg || String(svg.nodeName).toLowerCase() !== "svg") return;
-      // Mermaid sizes the SVG for the width it measured, which is not the
-      // width of a phone. Let CSS own the box.
-      svg.removeAttribute("width");
-      svg.removeAttribute("height");
-      figure.textContent = "";
-      figure.appendChild(document.importNode(svg, true));
-      figure.className = "mermaid-figure mermaid-drawn";
+      // Remembered only once it has actually parsed into an <svg>: caching
+      // a string that does not is a permanent wrong answer for that
+      // diagram, since nothing ever re-renders it.
+      if (draw(result.svg)) mermaidDrawn[code] = result.svg;
     }).catch(function () {
       /* Offline, or a diagram mermaid cannot parse. The code block stays,
        * which is exactly what was there before. */
@@ -1655,8 +1693,12 @@
         item.appendChild(head);
         // The text is the owner's own prose and the server sends it as plain
         // text, so each blank-line-separated paragraph becomes its own <p>.
-        // Nothing here interprets it as markdown *except* the one attach
-        // line this site writes for him -- see `appendRichText`.
+        // Nothing here interprets it as markdown *except* the two things
+        // `appendRichText` knows about: the attach line this site writes on
+        // his behalf, and a fenced ```mermaid block. The second one arrived
+        // for the chat and reaches here because the reader is shared, which
+        // is deliberate -- a diagram that drew in one thread and printed as
+        // source in another would read as a bug in whichever he saw second.
         appendRichText(item, "comment-body", comment.text);
         /* Nova's answer to this comment, or the fact that one is coming.
          * The bridge serialises every CLI call, so a reply posted while a
