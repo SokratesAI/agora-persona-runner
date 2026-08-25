@@ -1448,15 +1448,6 @@ body.nav-open { overflow: hidden; }
 
 .capture-item p { margin: 0.3rem 0; }
 
-/* A cycle's answer under one of his captures, drawn as the notes page
- * draws the same thing -- purple left rule, "Nova" above it -- so the two
- * pages read alike. It reuses `.note-msg`; this rule only insets it under
- * his bullet and takes the bottom margin back, since the capture list
- * already separates its items with a top border. */
-.capture-reply {
-  margin: 0.4rem 0 0.2rem 0.6rem;
-}
-
 /* A capture a cycle has closed. The block keeps the same shape as the
  * open one so the two read as the same kind of thing, but drops the
  * amber border and title colour that mean "this is waiting on nobody but
@@ -1852,6 +1843,22 @@ body.nav-open { overflow: hidden; }
 
 .note-msg-mine { border-left-color: var(--good); }
 .note-msg-nova { border-left-color: var(--nova); }
+
+/* A cycle's answer under one of his captures, drawn as the notes page
+ * draws the same thing -- purple left rule, "Nova" above it -- so the two
+ * pages read alike. It reuses `.note-msg`; this rule only insets it under
+ * his bullet and takes the bottom margin back, since the capture list
+ * already separates its items with a top border.
+ *
+ * **It has to sit after `.note-msg`, not up beside `.capture-item`.**
+ * Both selectors are one class, so they tie on specificity and the later
+ * declaration wins per property -- with this rule written earlier,
+ * `.note-msg`'s `margin-bottom: 0.9rem` quietly overrode the `0.2rem` in
+ * this shorthand and the comment above was describing something that did
+ * not happen. Found by review. */
+.capture-reply {
+  margin: 0.4rem 0 0.2rem 0.6rem;
+}
 
 .note-msg-who {
   margin: 0 0 0.25rem;
