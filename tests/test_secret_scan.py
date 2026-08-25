@@ -115,3 +115,38 @@ def test_excused_findings_are_counted_not_silently_dropped(tmp_path, monkeypatch
     )
     assert skipped == 1
     assert [f["RuleID"] for f in kept] == ["aws-access-token"]
+
+
+def test_a_reviewer_worktree_is_not_a_checkout(tmp_path):
+    """The half of the predicate I re-derived and got wrong.
+
+    A `_review-*` directory is a reviewer's scratch worktree, so `.git` is a
+    file there too. My own version of this discovery excluded nothing and
+    would have scanned them as repos — which is why the tool now asks
+    `tidy_workspace`, which learned that rule the expensive way, instead of
+    asking a copy of it that only knows what bit me.
+    """
+    for name in ("agora", "_review-c411"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / ".git").write_text("gitdir: /elsewhere\n")
+
+    found = {os.path.basename(p) for p in secret_scan.workspace_repos(str(tmp_path))}
+    assert found == {"agora"}
+
+
+def test_both_workspace_roots_are_swept(tmp_path, monkeypatch):
+    """A concurrent cycle has a private root and a shared one.
+
+    Sweeping only `NOVA_WORKSPACE` scanned four checkouts and printed
+    "clean" without a word about the four it never opened.
+    """
+    private, shared = tmp_path / "mine", tmp_path / "shared"
+    for root, name in ((private, "agora"), (shared, "platform-config")):
+        (root / name).mkdir(parents=True)
+        (root / name / ".git").write_text("gitdir: /elsewhere\n")
+    monkeypatch.setattr(
+        secret_scan.tidy_workspace, "workspace_roots", lambda: [str(private), str(shared)]
+    )
+
+    found = {os.path.basename(p) for p in secret_scan.workspace_repos()}
+    assert found == {"agora", "platform-config"}

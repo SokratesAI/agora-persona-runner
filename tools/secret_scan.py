@@ -64,6 +64,14 @@ import sys
 import tempfile
 import urllib.request
 
+from tools import tidy_workspace
+
+# Every subprocess call is bounded, the same way `tidy_workspace` bounds
+# its git and gh calls. A hung scanner is the one failure that produces no
+# output at all, which is worse than either answer it could have given.
+SCAN_TIMEOUT_SECONDS = 300
+GIT_TIMEOUT_SECONDS = 30
+
 # Where a previous cycle's download is likely to be, in the order worth
 # trying. `PATH` is consulted first and separately; these are the paths a
 # `command -v` cannot see, which is the whole reason this list exists.
@@ -132,6 +140,7 @@ def _download(target):
             ["tar", "-xzf", archive, "-C", work, "gitleaks"],
             check=True,
             capture_output=True,
+            timeout=SCAN_TIMEOUT_SECONDS,
         )
         shutil.move(os.path.join(work, "gitleaks"), target)
     os.chmod(target, os.stat(target).st_mode | stat.S_IXUSR)
@@ -156,7 +165,16 @@ def scan_dir(scanner, path):
                 "json",
                 "--report-path",
                 report,
+                # The report is a temporary file and the findings are
+                # printed, so without this a live credential is written to
+                # disk and then to stdout -- and stdout here gets pasted
+                # into handoffs. A tool for stopping secrets spreading must
+                # not be the thing that spreads one. Rule ids and locations
+                # survive redaction, and those are the whole of what a
+                # reader needs to go and look.
+                "--redact",
             ],
+            timeout=SCAN_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
         )
@@ -167,8 +185,16 @@ def scan_dir(scanner, path):
             raise RuntimeError(
                 (result.stderr or result.stdout or "no output").strip()[:400]
             )
-        with open(report, encoding="utf-8") as handle:
-            return json.load(handle) or []
+        try:
+            with open(report, encoding="utf-8") as handle:
+                return json.load(handle) or []
+        except (OSError, ValueError) as exc:
+            # A truncated or unparseable report is exactly as much of a
+            # non-answer as no report at all, and it must not arrive as a
+            # traceback -- the docstring promises that "I could not check"
+            # never reads as "nothing here", and a stack trace reads as
+            # neither.
+            raise RuntimeError("report was not readable JSON: %s" % exc)
 
 
 def prove_scanner(scanner):
@@ -183,20 +209,33 @@ def prove_scanner(scanner):
         return {finding.get("RuleID") for finding in scan_dir(scanner, work)}
 
 
-def workspace_repos(workspace):
-    """Every git checkout directly under `workspace`, sorted."""
-    if not os.path.isdir(workspace):
-        return []
+def workspace_repos(workspace=None):
+    """Every git checkout worth scanning, across every workspace root.
+
+    Both halves of this are borrowed rather than re-derived, and the
+    borrowing is the point. `tidy_workspace.workspace_roots` knows that a
+    concurrent cycle has **two** roots -- its own private worktree and the
+    shared `/data/workspace` -- and the first version of this function
+    walked only `NOVA_WORKSPACE`, so it would have scanned four checkouts,
+    printed "clean", and said nothing about the dozen it never opened.
+    `tidy_workspace.clones` knows that `.git` is a file in a linked
+    worktree *and* that a `_review-*` directory is a reviewer's scratch
+    copy rather than a repo. I had rediscovered the first of those and not
+    the second, which is what re-deriving a predicate looks like from the
+    inside: the half that bit me today, and none of the halves that bit
+    somebody else.
+
+    `workspace` overrides the roots when given, for `--workspace`.
+    """
+    roots = [workspace] if workspace else tidy_workspace.workspace_roots()
     found = []
-    for name in sorted(os.listdir(workspace)):
-        path = os.path.join(workspace, name)
-        # `exists`, not `isdir`. Every cycle now runs in a `git worktree`,
-        # where `.git` is a *file* holding a `gitdir:` pointer rather than a
-        # directory, so the obvious test finds nothing at all in the one
-        # workspace this actually runs in -- and prints it as "no checkouts",
-        # which reads like an empty box rather than a wrong predicate.
-        if os.path.exists(os.path.join(path, ".git")):
-            found.append(path)
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for name in tidy_workspace.clones(root):
+            path = os.path.join(root, name)
+            if path not in found:
+                found.append(path)
     return found
 
 
@@ -217,6 +256,7 @@ def git_ignored(repo, paths):
         input="\n".join(paths),
         capture_output=True,
         text=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     # Exit 0 = some ignored, 1 = none ignored, 128 = not a repo or git is
     # unhappy. Only the first two are answers; on anything else nothing is
@@ -269,6 +309,12 @@ def filter_findings(repo, findings):
     return kept, len(findings) - len(kept)
 
 
+def _label(repo):
+    """`<workspace>/<repo>` -- enough to tell two checkouts of one repo apart."""
+    parent, name = os.path.split(repo.rstrip("/"))
+    return os.path.join(os.path.basename(parent), name)
+
+
 def _describe(finding):
     where = finding.get("File") or "?"
     line = finding.get("StartLine")
@@ -291,8 +337,8 @@ def main(argv=None):
     )
     parser.add_argument(
         "--workspace",
-        default=os.environ.get("NOVA_WORKSPACE", "/data/workspace"),
-        help="where to look for checkouts when --repo is not given",
+        default=None,
+        help="one root to look in; defaults to every workspace root tidy_workspace knows",
     )
     parser.add_argument(
         "--no-download",
@@ -324,8 +370,13 @@ def main(argv=None):
     print("canary: both planted credentials detected — the scanner can fail")
 
     repos = args.repo or workspace_repos(args.workspace)
+    roots = [args.workspace] if args.workspace else tidy_workspace.workspace_roots()
     if not repos:
-        print("NO INSTRUMENT — no checkouts to scan under %s" % args.workspace)
+        # Deliberately not "NO INSTRUMENT": the scanner was established and
+        # proved a moment ago. Reusing that phrase would make a grep for
+        # scanner trouble return a case where the scanner was fine and the
+        # path was wrong, which are different problems with different fixes.
+        print("NOTHING SCANNED — no checkouts found under %s" % ", ".join(roots))
         return 1
 
     status = 0
@@ -345,7 +396,11 @@ def main(argv=None):
                 print("    " + _describe(finding))
             status = 2
         else:
-            clean.append(os.path.basename(repo) + note)
+            # The basename alone is ambiguous now that both workspace roots
+            # are swept: the same four repo names appear twice, and a reader
+            # counting eight entries and four names cannot tell a duplicate
+            # from a second checkout.
+            clean.append(_label(repo) + note)
     if clean:
         print("clean: %s" % ", ".join(clean))
     if status == 0:
