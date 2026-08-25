@@ -86,7 +86,9 @@ class TestOwners:
         assert owners("x/roadmap.md", {}) == []
 
     def test_the_full_path_is_not_required(self):
-        assert owners("a/b/goals.md", _texts(**{"prompt.md": "see goals.md"}))
+        assert owners("a/b/goals.md", _texts(**{"prompt.md": "see goals.md"})) == [
+            ("prompt.md", "the hourly cycle", (0, 1, 2, 3, 4, 5, 6))
+        ]
 
 
 class TestVerdict:
@@ -100,6 +102,18 @@ class TestVerdict:
         # The roadmap case. A document nobody refreshes is the finding
         # even on the day it was written, because nothing will stop it.
         assert verdict(True, 0.1, []) == "no owner"
+
+    def test_an_unread_prompt_is_unknown_owner_not_no_owner(self):
+        # The reviewer's finding, proved against the live registry: drop
+        # `weekly-reprioritise.md` alone and both /plan documents printed
+        # "nothing refreshes it and waiting will not help", which is false.
+        # An owner that failed to load and an owner that does not exist are
+        # opposite findings.
+        assert verdict(True, 0.1, [], blind=True) == "unknown owner"
+        assert verdict(True, 0.1, [], blind=False) == "no owner"
+
+    def test_a_document_that_does_have_an_owner_is_unaffected_by_a_blind_read(self):
+        assert verdict(True, 0.1, [MONDAY], blind=True) == "fresh"
 
     def test_missing_beats_no_owner(self):
         assert verdict(False, None, []) == "missing"
@@ -207,6 +221,22 @@ class TestReport:
         assert by_name["Roadmap"]["verdict"] == "stale"
         assert by_name["Roadmap"]["limit"] == 8
 
+    def test_one_unread_prompt_does_not_invent_a_missing_owner(self):
+        # Same shape end to end: the Monday prompt failed to fetch, so the
+        # roadmap has no readable owner, and the report must say it could
+        # not tell rather than that nobody refreshes it.
+        rows = report(
+            DOCS,
+            _texts(**{"prompt.md": "journal-digest.md"}),
+            {path: NOW - timedelta(days=9) for _, path, _, _ in DOCS},
+            {path for _, path, _, _ in DOCS},
+            NOW,
+            blind=True,
+        )
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["Roadmap"]["verdict"] == "unknown owner"
+        assert by_name["Digest"]["verdict"] == "stale"
+
     def test_a_document_absent_from_the_vault_is_missing(self):
         rows = self._rows(
             _texts(**{"weekly-reprioritise.md": "roadmap.md"}),
@@ -245,6 +275,15 @@ class TestRender:
         text = render([self._row(verdict="no owner", owners=[], limit=None)], [])
         assert "NO OWNER" in text
         assert "Nothing to act on" not in text
+
+    def test_an_unknown_owner_row_does_not_claim_nothing_refreshes_it(self):
+        text = render(
+            [self._row(verdict="unknown owner", owners=[], limit=None)],
+            ["weekly-reprioritise.md"],
+        )
+        assert "UNKNOWN" in text
+        assert "waiting will not help" not in text
+        assert "NO OWNER" not in text
 
     def test_a_stale_row_says_the_job_exists(self):
         text = render([self._row(verdict="stale", age=30.0)], [])

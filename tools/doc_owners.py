@@ -65,7 +65,7 @@ no findings, and it says which.
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
@@ -197,8 +197,19 @@ def age_days(written, now):
     return (now - written).total_seconds() / 86400
 
 
-def verdict(found, age, owner_list):
-    """One of `missing`, `no owner`, `stale`, `fresh`.
+def verdict(found, age, owner_list, blind=False):
+    """One of `missing`, `unknown owner`, `no owner`, `stale`, `fresh`.
+
+    `blind` says at least one prompt could not be fetched. It only ever
+    matters when nothing readable named the document, and then it is the
+    whole answer: **an owner that failed to load looks exactly like an
+    owner that does not exist**, and those are opposite findings. The
+    reviewer proved this against the live registry -- drop
+    `weekly-reprioritise.md` alone and both `/plan` documents printed
+    "no cycle prompt names roadmap.md, so nothing refreshes it and
+    waiting will not help", which is false and is this tool's own most
+    alarming sentence. That is the roadmap failure re-created one layer
+    down, inside the check written to report it.
 
     Order matters. A document that is not in the vault at all is reported
     as missing rather than as stale, because "the page renders nothing"
@@ -214,14 +225,14 @@ def verdict(found, age, owner_list):
     if not found:
         return "missing"
     if not owner_list:
-        return "no owner"
+        return "unknown owner" if blind else "no owner"
     if age is None:
         return "stale"
     limit = min(window_days(weekdays) for _, _, weekdays in owner_list)
     return "stale" if age > limit else "fresh"
 
 
-def report(documents, prompt_texts, written, present, now):
+def report(documents, prompt_texts, written, present, now, blind=False):
     """One row per registered document: `(name, page, claim, verdict,
     age, owners, limit)`. Pure -- every read this needs has already
     happened, which is what makes the whole judgement testable without a
@@ -242,7 +253,7 @@ def report(documents, prompt_texts, written, present, now):
                 "path": path,
                 "page": page,
                 "claim": claim,
-                "verdict": verdict(path in present, age, owner_list),
+                "verdict": verdict(path in present, age, owner_list, blind),
                 "age": age,
                 "owners": owner_list,
                 "limit": limit,
@@ -275,6 +286,13 @@ def render(rows, unreadable):
                 f"{row['path'].rsplit('/', 1)[-1]}, so nothing refreshes it and "
                 f"waiting will not help. It is {_age_text(row['age'])} and the page "
                 f"presents it as {row['claim']}."
+            )
+        elif row["verdict"] == "unknown owner":
+            lines.append(
+                f"UNKNOWN   {row['name']} ({row['page']}) — no prompt that loaded "
+                f"names {row['path'].rsplit('/', 1)[-1]}, and at least one prompt "
+                f"did not load, so I cannot tell an absent owner from an unread "
+                f"one. Fix the read below and run this again."
             )
         elif row["verdict"] == "missing":
             lines.append(
@@ -414,7 +432,10 @@ def main(argv=None):
         )
         return 1
 
-    rows = report(DOCUMENTS, prompt_texts, written, present, datetime.now(tz=OSLO))
+    rows = report(
+        DOCUMENTS, prompt_texts, written, present, datetime.now(tz=OSLO),
+        blind=any(f in unreadable for f, _, _ in PROMPTS),
+    )
     print(render(rows, unreadable))
 
     # A prompt this could not read is a document whose owner is unknown
