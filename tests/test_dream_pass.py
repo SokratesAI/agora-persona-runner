@@ -111,6 +111,7 @@ def test_paths_only_come_from_backticked_file_shaped_spans():
 
 
 def test_dead_paths_needs_a_checkout_to_answer(tmp_path):
+    os.makedirs(tmp_path / "tools")
     bullets = dream_pass.parse(doc("- a note about `tools/gone.py`"))
     assert dead_names(dream_pass.dead_paths(bullets, [])) == []
     assert dead_names(dream_pass.dead_paths(bullets, [str(tmp_path)])) == \
@@ -118,7 +119,11 @@ def test_dead_paths_needs_a_checkout_to_answer(tmp_path):
 
 
 def dead_names(flagged):
-    return [missing for _bullet, missing in flagged]
+    return [missing for _bullet, missing, _unknown in flagged if missing]
+
+
+def unknown_names(flagged):
+    return [unknown for _bullet, _missing, unknown in flagged if unknown]
 
 
 def test_a_live_path_is_not_flagged(tmp_path):
@@ -138,13 +143,104 @@ def test_a_path_prefixed_with_its_own_repo_name_resolves(tmp_path):
 
 
 def test_the_repo_name_strip_does_not_match_a_different_repo(tmp_path):
+    """A citation into `agora/` is unanswerable from a `platform-config`
+    checkout — not dead. It would read as missing whether or not the file
+    exists, which is the guaranteed positive this split exists to stop."""
     repo = tmp_path / "platform-config"
     os.makedirs(repo / "deployments")
     (repo / "deployments" / "app.yaml").write_text("")
     bullets = dream_pass.parse(doc(
         "- a note about `agora/deployments/app.yaml`"))
-    assert dead_names(dream_pass.dead_paths(bullets, [str(repo)])) == \
-        [["agora/deployments/app.yaml"]]
+    flagged = dream_pass.dead_paths(bullets, [str(repo)])
+    assert dead_names(flagged) == []
+    assert unknown_names(flagged) == [["agora/deployments/app.yaml"]]
+
+
+def test_a_path_whose_top_directory_is_absent_is_unanswerable(tmp_path):
+    os.makedirs(tmp_path / "tools")
+    bullets = dream_pass.parse(doc(
+        "- a note about `deployments/agents/newspaper/configmaps.yaml`"))
+    flagged = dream_pass.dead_paths(bullets, [str(tmp_path)])
+    assert dead_names(flagged) == []
+    assert unknown_names(flagged) == \
+        [["deployments/agents/newspaper/configmaps.yaml"]]
+
+
+def test_one_bullet_can_carry_both_kinds(tmp_path):
+    os.makedirs(tmp_path / "tools")
+    bullets = dream_pass.parse(doc(
+        "- cites `tools/gone.py` and `agora/public/app.js`"))
+    flagged = dream_pass.dead_paths(bullets, [str(tmp_path)])
+    assert dead_names(flagged) == [["tools/gone.py"]]
+    assert unknown_names(flagged) == [["agora/public/app.js"]]
+
+
+def test_a_repo_prefixed_path_is_answerable_even_when_its_directory_is_gone(tmp_path):
+    """The checkout is *named* `platform-config`, so a citation starting
+    `platform-config/` is unambiguously about it — dead, not unanswerable,
+    even though `deployments/` is exactly what was renamed away. Reviewer
+    on runner#364: this is the primary rot case, not an edge one."""
+    repo = tmp_path / "platform-config"
+    os.makedirs(repo)
+    bullets = dream_pass.parse(doc(
+        "- a note about `platform-config/deployments/app.yaml`"))
+    flagged = dream_pass.dead_paths(bullets, [str(repo)])
+    assert dead_names(flagged) == [["platform-config/deployments/app.yaml"]]
+    assert unknown_names(flagged) == []
+
+
+def test_a_repo_prefixed_bare_filename_is_answerable(tmp_path):
+    """`tools/gone.py` against a checkout literally named `tools` has no
+    second directory segment to test, and is still answerable."""
+    repo = tmp_path / "tools"
+    os.makedirs(repo)
+    bullets = dream_pass.parse(doc("- a note about `tools/gone.py`"))
+    flagged = dream_pass.dead_paths(bullets, [str(repo)])
+    assert dead_names(flagged) == [["tools/gone.py"]]
+    assert unknown_names(flagged) == []
+
+
+def test_a_missing_file_under_a_directory_i_have_is_still_dead(tmp_path):
+    """The check is on the *top* directory, deliberately: seeing `tools/`
+    is enough to say this checkout has no `tools/sub/gone.py`."""
+    os.makedirs(tmp_path / "tools")
+    bullets = dream_pass.parse(doc("- a note about `tools/sub/gone.py`"))
+    assert dead_names(dream_pass.dead_paths(bullets, [str(tmp_path)])) == \
+        [["tools/sub/gone.py"]]
+
+
+def test_paths_mean_defaults_off_the_filename():
+    assert dream_pass.paths_mean_for("/tmp/my-ideas.md") == "unbuilt"
+    assert dream_pass.paths_mean_for("/tmp/issues.md") == "rot"
+    assert dream_pass.paths_mean_for("/tmp/notes.md") == "rot"
+
+
+def test_the_report_says_which_reading_it_used(tmp_path):
+    os.makedirs(tmp_path / "tools")
+    bullets = dream_pass.parse(doc("- a note about `tools/gone.py`"))
+    rot = dream_pass.report(bullets, [str(tmp_path)], 0.5, "rot")
+    unbuilt = dream_pass.report(bullets, [str(tmp_path)], 0.5, "unbuilt")
+    assert "renamed or deleted" in rot
+    assert "not been built yet" in unbuilt
+    # Same evidence either way — only the sentence changes.
+    assert "tools/gone.py" in rot and "tools/gone.py" in unbuilt
+
+
+def test_the_report_keeps_the_two_headings_apart(tmp_path):
+    os.makedirs(tmp_path / "tools")
+    bullets = dream_pass.parse(doc(
+        "- cites `tools/gone.py` and `agora/public/app.js`"))
+    body = dream_pass.report(bullets, [str(tmp_path)], 0.5)
+    dead = body.index("DEAD PATH")
+    cannot = body.index("CANNOT CHECK")
+    assert dead < cannot
+    # The excerpt under each flag quotes the whole bullet, so assert on the
+    # line that lists the flagged paths — that is what claims anything.
+    def listed(section):
+        return [l.split(None, 1)[1] for l in section.split("\n")
+                if l.startswith("  L")]
+    assert listed(body[dead:cannot]) == ["tools/gone.py"]
+    assert listed(body[cannot:body.index("DUPLICATE")]) == ["agora/public/app.js"]
 
 
 def test_duplicates_cluster_two_reports_of_the_same_bug():
