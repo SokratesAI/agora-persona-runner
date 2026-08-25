@@ -1176,23 +1176,30 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
     it is printed filled in rather than as a shape, because a cycle that has
     to derive the index does what the last six did and answers in a journal
     entry instead."""
-    issues = tmp_path / "issues.md"
     ideas = tmp_path / "ideas.md"
-    issues.write_text(
-        "---\nx: 1\n---\n\n- the first thing he typed\n- the second thing he typed\n- \n\n"
-        + board((10, "a high issue", BACKLOG, "08-01", HIGH)).split("\n", 1)[1].split("## Board", 1)[0]
-        + "## Board\n\n| # | Issue | Status | Updated | Priority |\n|---|---|---|---|---|\n")
+    notes = tmp_path / "notes.md"
     ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+    notes.write_text(NOTES.format("a note he left"))
+
+    issues = tmp_path / "issues.md"
+    issues.write_text("- the first thing he typed\n- the second thing he typed\n- \n\n"
+                      + board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
     out = capsys.readouterr().out
-    assert code == 0
+    assert code == 0, out
     assert "/api/capture/comment" in out
     assert "target issues, index 0  ->  the first thing he typed" in out
     assert "target issues, index 1  ->  the second thing he typed" in out
+    # A note is a capture too, and the notes page is the one that already
+    # draws the reply properly -- it must carry an address as well.
+    assert "target notes, index 0  ->  a note he left" in out
+
     # The help belongs to the captures, so it must not print when there are none.
-    ideas2 = tmp_path / "ideas2.md"
+    notes2 = tmp_path / "notes2.md"
+    notes2.write_text(NOTES.format(""))
     issues2 = tmp_path / "issues2.md"
     issues2.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
-    ideas2.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
-    top_board_rows.main(["--issues", str(issues2), "--ideas", str(ideas2)])
+    top_board_rows.main(["--issues", str(issues2), "--ideas", str(ideas),
+                         "--notes", str(notes2)])
     assert "/api/capture/comment" not in capsys.readouterr().out
