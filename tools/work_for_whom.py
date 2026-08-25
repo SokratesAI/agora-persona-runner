@@ -39,13 +39,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 
 DEFAULT_REPO = "SokratesAI/agora-persona-runner"
-SITE = "http://nova-site.agents.svc.cluster.local:8083"
+SITE = os.environ.get(
+    "NOVA_SITE_SELF_URL", "http://nova-site.agents.svc.cluster.local:8083"
+)
+
+# A card the runner writes for a cycle that woke and never wrote anything, and
+# a periodic report, are not a cycle's own work. Neither can carry a `board`
+# or a `pr` field, so counting them would put entries in the denominator that
+# can never appear in the numerator -- a quietly deflated percentage rather
+# than an error. `nova_journal.cycle_entries` draws the same line.
+NOT_A_CYCLES_OWN_ENTRY = ("report", "silence")
 
 HIS = "his"
 MINE = "mine"
@@ -157,6 +167,18 @@ def board_report(entries):
     }
 
 
+def _short(got, asked):
+    """Say so when fewer answered than were asked for.
+
+    The header used to print the requested limit whichever way the fetch
+    went, so a run that read twelve PRs still said "last 60" -- a wrong
+    number printed by the tool whose entire job is honest numbers.
+    """
+    if got >= asked:
+        return ""
+    return f"  (asked for {asked}, this is all there were)"
+
+
 def _pct(part, whole):
     if not whole:
         return "  -- "
@@ -167,7 +189,10 @@ def render(counts, labelled, board, repo, pr_limit, entry_limit, problems):
     lines = []
     total = sum(counts.values())
 
-    lines.append(f"WHO THE WORK WAS FOR — last {pr_limit} merged PRs on {repo}")
+    lines.append(
+        f"WHO THE WORK WAS FOR — {total} merged PRs on {repo}"
+        f"{_short(total, pr_limit)}"
+    )
     if total:
         lines.append(
             f"  his surface only     {counts[HIS]:4d}  {_pct(counts[HIS], total)}"
@@ -188,10 +213,11 @@ def render(counts, labelled, board, repo, pr_limit, entry_limit, problems):
         lines.append("  no merged PRs answered — see WHAT THIS CANNOT SEE")
 
     lines.append("")
-    lines.append(
-        f"WHOSE IDEA IT WAS — last {entry_limit} journal entries"
-    )
     n = board["entries"]
+    lines.append(
+        f"WHOSE IDEA IT WAS — {n} journal entries a cycle wrote itself"
+        f"{_short(n, entry_limit)}"
+    )
     if n:
         lines.append(
             f"  named a row off his board  {board['named_a_board_row']:4d}"
@@ -224,6 +250,10 @@ def render(counts, labelled, board, repo, pr_limit, entry_limit, problems):
     lines.append(f"  One repo ({repo}). Work in the other repos is invisible here.")
     lines.append("  A PR counts once whether it is one line or a thousand.")
     lines.append(
+        "  A PR's file list is whatever `gh` returned; I have not checked"
+        " whether it truncates a very large one."
+    )
+    lines.append(
         "  An entry with no board row may still have been asked for in a note,"
         " a comment or a capture — this cannot tell that from work I invented."
     )
@@ -250,16 +280,19 @@ def render_rules():
 
 def fetch_prs(repo, limit):
     """Merged PRs with their file lists, newest first."""
-    done = subprocess.run(
-        [
-            "gh", "pr", "list",
-            "--repo", repo,
-            "--state", "merged",
-            "--limit", str(limit),
-            "--json", "number,title,files",
-        ],
-        capture_output=True, text=True, timeout=120,
-    )
+    try:
+        done = subprocess.run(
+            [
+                "gh", "pr", "list",
+                "--repo", repo,
+                "--state", "merged",
+                "--limit", str(limit),
+                "--json", "number,title,files",
+            ],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return [], f"gh pr list could not run on {repo}: {exc}"
     if done.returncode != 0:
         return [], f"gh pr list failed on {repo}: {done.stderr.strip()[:200]}"
     try:
@@ -277,11 +310,11 @@ def fetch_entries(limit, site=SITE):
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         return [], f"could not read {url}: {exc}"
     entries = payload.get("entries") or []
-    return [e for e in entries if e.get("kind") != "report"], None
+    return [e for e in entries if e.get("kind") not in NOT_A_CYCLES_OWN_ENTRY], None
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(description=" ".join(__doc__.split("\n\n")[0].split()))
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--prs", type=int, default=60,
                         help="how many merged PRs to read (default 60)")
