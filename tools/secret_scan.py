@@ -2,7 +2,7 @@
 
 Cycle 411. `platform-config`'s only CI check is a Secret scan, and it has
 failed in 2-4 seconds on every run since 2026-08-23 -- a GitHub billing
-problem Edvard has parked until 2026-09-01. The handoff's answer was "run
+problem the owner has parked until 2026-09-01. The handoff's answer was "run
 `gitleaks` by hand in the meantime", which is a reasonable answer and was
 never a reliable one, because nothing said where `gitleaks` is.
 
