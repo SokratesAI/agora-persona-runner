@@ -94,7 +94,11 @@ def render(dead: list[dict], quiet: list[dict], min_runs: int) -> str:
     if dead:
         lines.append(
             f"DEAD SOURCES — {len(dead)} configured source(s) have errored on every "
-            f"run and never written an article. Each one is scraped again tonight."
+            f"run and never written an article."
+        )
+        lines.append(
+            "  Read `last run` before assuming one is still being retried: a source "
+            "whose job is suspended stops being attempted and its counter freezes."
         )
         for row in dead:
             lines.append(
