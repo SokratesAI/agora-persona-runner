@@ -6114,7 +6114,16 @@
     box.setAttribute("rows", "2");
     card.appendChild(box);
 
+    // Every other mutating trigger on this page disables itself while its
+    // write is outstanding, and this one did not until a reviewer said so.
+    // It is not cosmetic: two taps are two requests on two threads, both
+    // pass the server's staleness check before either has emptied the
+    // pool, and the loser of the compare-and-swap re-reads and boards the
+    // same idea under a second number. The server is idempotent about that
+    // now; this stops the second request being sent at all.
+    var buttons = [];
     function decide(decision) {
+      buttons.forEach(function (b) { b.disabled = true; });
       note.textContent = decision === "approve" ? "Boarding…" : "Discarding…";
       fetch("/api/pool/decide", {
         method: "POST",
@@ -6139,6 +6148,11 @@
           loadPool();
         })
         .catch(function (err) {
+          // Re-enabled on failure only: on success the page is about to be
+          // repainted with the next candidate, and re-enabling a button on
+          // a card that is being replaced is a live Approve pointing at an
+          // idea he has already decided.
+          buttons.forEach(function (b) { b.disabled = false; });
           note.textContent = "Could not save: " + err;
         });
     }
@@ -6153,6 +6167,7 @@
       poolAt += 1;
       renderPool(payload);
     });
+    buttons = [approve, reject, skip];
     actions.appendChild(approve);
     actions.appendChild(reject);
     actions.appendChild(skip);

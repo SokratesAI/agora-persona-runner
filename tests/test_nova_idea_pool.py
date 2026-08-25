@@ -306,6 +306,53 @@ def test_a_reject_with_no_reason_still_carries_the_date():
     assert "| Rejected 08-25 |" in vault.docs[nova_idea_pool.IDEAS_PATH]
 
 
+def test_a_second_approve_of_the_same_idea_does_not_board_it_twice():
+    """Reviewer finding: two taps are two threads, and both pass the
+    staleness check before either has emptied the pool. The loser of the
+    compare-and-swap re-reads, recomputes the next number, and boards the
+    same idea again -- and both requests report success, so nothing says he
+    now has two identical rows.
+
+    Simulated by decoding the retry rather than by driving two threads: the
+    fake refuses the first `ideas.md` write with a 409 exactly once, which
+    is the state the losing request sees, and the board it re-reads already
+    carries the winner's row.
+    """
+    from agora_runner.nova_boards import parse_board
+
+    candidate = parse_pool(LIVE_POOL)["candidates"][0]
+    winner = _Vault()
+    _run(winner, lambda: decide(0, candidate["title"], "approve", "", "08-25"))
+    landed = winner.docs[nova_idea_pool.IDEAS_PATH]
+    assert sum(1 for i in parse_board(landed)["items"]
+               if i["title"] == candidate["title"]) == 1
+
+    # The loser: the pool still holds the candidate (it read before the
+    # winner's removal) and his board already has the row.
+    loser = _Vault(pool=LIVE_POOL, ideas=landed)
+    ok, _ = _run(loser, lambda: decide(0, candidate["title"], "approve", "", "08-25"))
+    assert ok
+    rows = [i for i in parse_board(loser.docs[nova_idea_pool.IDEAS_PATH])["items"]
+            if i["title"] == candidate["title"]]
+    assert len(rows) == 1, f"boarded {len(rows)} times, not once"
+    # And it still cleared the pool, so the candidate does not linger.
+    assert candidate["title"] not in [
+        c["title"] for c in parse_pool(loser.docs[nova_idea_pool.POOL_PATH])["candidates"]]
+
+
+def test_a_different_idea_with_a_different_title_still_boards():
+    """The guard is a title match, so it has to not swallow real work."""
+    from agora_runner.nova_boards import parse_board
+
+    candidates = parse_pool(LIVE_POOL)["candidates"]
+    vault = _Vault()
+    _run(vault, lambda: decide(0, candidates[0]["title"], "approve", "", "08-25"))
+    _run(vault, lambda: decide(0, candidates[1]["title"], "approve", "", "08-25"))
+    titles = [i["title"] for i in parse_board(vault.docs[nova_idea_pool.IDEAS_PATH])["items"]]
+    assert candidates[0]["title"] in titles
+    assert candidates[1]["title"] in titles
+
+
 def test_a_stale_decision_writes_nothing_at_all():
     vault = _Vault()
     ok, message = _run(vault, lambda: decide(0, "a title that moved", "approve", "", "08-25"))

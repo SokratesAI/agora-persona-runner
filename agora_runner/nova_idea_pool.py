@@ -218,6 +218,25 @@ def next_number(ideas_markdown):
     return (max(numbers) + 1) if numbers else 1
 
 
+def _already_boarded(ideas_markdown, title):
+    """Is a row with exactly this title already on his ideas board?
+
+    The de-duplication guard for a decision that arrives twice. Matched on
+    the title because that is what the candidate carries -- the number does
+    not exist yet on the second write, which is the whole problem.
+    `## Done` counts too: an idea approved, finished and moved is still one
+    he already said yes to, and re-boarding it would hand him a duplicate
+    of something he has already closed.
+    """
+    want = (title or "").strip()
+    if not want:
+        return False
+    return any(
+        (item.get("title") or "").strip() == want
+        for item in parse_board(ideas_markdown or "").get("items", [])
+    )
+
+
 def _board_table_head(lines):
     """Index just past the `## Board` table's header separator, or None.
 
@@ -350,6 +369,18 @@ def decide(index, title, decision, comment, dated):
         priority = candidate["priority"] or "🔵 Medium"
 
         def mutate(current):
+            # **Idempotent, because `_write_with_retry` is a retry loop and
+            # a retry here is not the only way this runs twice.** Two taps
+            # on a phone are two requests on two threads, and both pass
+            # `find_candidate` before either has emptied the pool. The
+            # first lands #115; the second loses the compare-and-swap,
+            # re-reads, recomputes `next_number()` as 116 and boards the
+            # same idea again -- and both report success, so nothing
+            # anywhere says he now has two identical rows. Reviewer finding
+            # on this PR. Checking the title before inserting turns the
+            # second write into a no-op instead.
+            if _already_boarded(current, candidate["title"]):
+                return current, ""
             number = next_number(current)
             updated, error = insert_board_row(
                 current, number, candidate["title"], priority, dated)
