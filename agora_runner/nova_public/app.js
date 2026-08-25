@@ -8484,7 +8484,20 @@
       // being answered and the dot is how he finds out it landed.
       if (!isOpen) return;
       setDot(false);
-      loadThread().then(function () { box.focus(); });
+      /* Opening the dock deliberately does not focus the box. It used to,
+       * and his capture on `issues.md`, 2026-08-25: *"The new chat bubble
+       * autoselects the input box which makes my mobile keyboard open up
+       * and push everything up immediately. It should push everything up,
+       * but not when i just want to read a new message."*
+       *
+       * The dot on the launcher means an answer has landed, so the common
+       * reason to open this is to read, not to type -- and on a phone the
+       * focus took half the screen for a keyboard he had not asked for,
+       * over the message he opened it to see. Tapping the box still opens
+       * the keyboard, which is the half he says is right. The `/ask` page
+       * has never focused its box on render; this makes the dock agree
+       * with it. */
+      loadThread();
     }
 
     btn.addEventListener("click", function () { setOpen(!isOpen); });
