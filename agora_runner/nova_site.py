@@ -790,6 +790,14 @@ CACHE_FRESH_SECONDS = 15
 #: reading this feature can least afford.
 DEMO_PROXY_TIMEOUT = 10
 
+
+def _demo_opener():
+    """A urllib opener that does not follow redirects. See `_serve_demo`."""
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **kw):
+            return None
+    return urllib.request.build_opener(_NoRedirect)
+
 # How old the served payload may be before "there is no newer entry in it"
 # stops being evidence about the loop and becomes evidence about this
 # process. `_with_silence` measures a live `now` against a `lastWrittenAt`
@@ -2057,7 +2065,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if raw_query:
             target += f"?{raw_query}"
         try:
-            with urllib.request.urlopen(target, timeout=DEMO_PROXY_TIMEOUT) as up:
+            with _demo_opener().open(target, timeout=DEMO_PROXY_TIMEOUT) as up:
                 status, headers, body = up.status, up.headers, up.read()
         except urllib.error.HTTPError as e:
             # A 404 from the dev server is the demo's answer, not a fault
@@ -2072,6 +2080,18 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         content_type = headers.get("Content-Type", "application/octet-stream")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        # A redirect is passed to the browser rather than followed here,
+        # with its target moved back under `/demo/<slug>/`. Following it
+        # server-side returns the right bytes at the wrong URL: a static
+        # server answers `/sub` with a 301 to `/sub/`, and a browser that
+        # never saw the redirect resolves that page's relative links one
+        # directory too high. The rewrite is only applied to a same-origin
+        # path, so a demo redirecting off-site still goes off-site.
+        location = headers.get("Location")
+        if location:
+            if location.startswith("/"):
+                location = f"/demo/{slug}{location}"
+            self.send_header("Location", location)
         self.send_header("Content-Length", str(len(body)))
         # A demo is a thing being edited while it is looked at. Anything
         # cached here is the owner reloading and seeing the previous build,

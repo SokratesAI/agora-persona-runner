@@ -116,6 +116,23 @@ ALPHA = {"slug": "alpha", "host": "10.42.0.84", "port": 5174,
          "dir": "/tmp/a", "started_at": "2026-08-26T01:30:00"}
 
 
+class _Opener:
+    """Stands in for `nova_site._demo_opener()`.
+
+    The tests patch the opener rather than `urllib.request.urlopen` because
+    the handler no longer calls `urlopen` -- it uses an opener with redirect
+    following removed. `conftest.py` blocks real sockets, so patching the
+    wrong reference fails loudly rather than quietly reaching the network,
+    which is how this got caught.
+    """
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def open(self, url, timeout=None):
+        return self._fn(url, timeout=timeout)
+
+
 class _FakeUpstream:
     def __init__(self, body, content_type="text/html", status=200):
         self.body, self.status = body, status
@@ -148,7 +165,7 @@ def test_a_registered_demo_is_proxied_body_and_content_type():
         return _FakeUpstream(b"<h1>the demo</h1>")
 
     with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
-         patch("urllib.request.urlopen", _open):
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_open)):
         status, head, body = _get("/demo/alpha/index.html?x=1")
     assert status == 200
     assert body == b"<h1>the demo</h1>"
@@ -161,7 +178,8 @@ def test_the_demo_is_never_cached():
     # A demo is edited while it is looked at; a cached reload showing the
     # previous build reads as "the demo is broken".
     with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
-         patch("urllib.request.urlopen", lambda url, timeout=None: _FakeUpstream(b"x")):
+         patch.object(nova_site, "_demo_opener",
+                      lambda: _Opener(lambda url, timeout=None: _FakeUpstream(b"x"))):
         _, head, _ = _get("/demo/alpha/")
     assert "no-store" in head
 
@@ -180,7 +198,7 @@ def test_a_dead_dev_server_says_where_it_was_looking():
         raise OSError("Connection refused")
 
     with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
-         patch("urllib.request.urlopen", _boom):
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_boom)):
         status, _, body = _get("/demo/alpha/")
     assert status == 502
     assert b"10.42.0.84:5174" in body
@@ -192,7 +210,7 @@ def test_an_upstream_404_is_the_demos_answer_and_is_passed_through():
                                      {"Content-Type": "text/plain"}, None)
 
     with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
-         patch("urllib.request.urlopen", _http_error):
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_http_error)):
         status, _, _ = _get("/demo/alpha/missing.css")
     assert status == 404
 
@@ -203,3 +221,34 @@ def test_posting_to_a_demo_says_the_proxy_is_get_only():
     status, _, body = _post("/demo/alpha/submit", {"a": 1})
     assert status == 405
     assert b"GET only" in body
+
+
+def test_a_redirect_is_handed_to_the_browser_under_the_demo_prefix():
+    """A static server answers `/sub` with a 301 to `/sub/`.
+
+    Followed here, the browser never learns the URL moved and resolves that
+    page's relative links one directory too high. Passed through with the
+    prefix restored, the browser asks again at the right address.
+    """
+    def _redirect(url, timeout=None):
+        raise urllib.error.HTTPError(
+            url, 301, "Moved Permanently",
+            {"Content-Type": "text/html", "Location": "/sub/"}, None)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_redirect)):
+        status, head, _ = _get("/demo/alpha/sub")
+    assert status == 301
+    assert "Location: /demo/alpha/sub/" in head
+
+
+def test_an_off_site_redirect_is_not_rewritten_under_the_demo():
+    def _redirect(url, timeout=None):
+        raise urllib.error.HTTPError(
+            url, 302, "Found",
+            {"Content-Type": "text/html", "Location": "https://example.com/x"}, None)
+
+    with patch.object(nova_site, "vault_read_path", return_value=_registry(ALPHA)), \
+         patch.object(nova_site, "_demo_opener", lambda: _Opener(_redirect)):
+        _, head, _ = _get("/demo/alpha/away.html")
+    assert "Location: https://example.com/x" in head
