@@ -8082,16 +8082,28 @@
    * too, for free -- that is what `stopPolling` is for and every other view
    * calls it on the way in.
    *
-   * Two cadences, both of them numbers already in this file. `ASK_POLL_MS`
-   * while a run is queued or in flight, because that is the state he is
-   * standing there watching, and `POLL_MS` otherwise, which is the journal
-   * feed's idle rate. No attempt cap: `pollConv` has one because it waits
-   * for a single answer and is finished when it arrives, and this waits for
-   * nothing in particular and should stay current while the page is open.
+   * Two cadences, both of them numbers already in this file: `ASK_POLL_MS`
+   * for the seconds after he presses "Run now", and `POLL_MS` otherwise,
+   * which is the journal feed's idle rate.
+   *
+   * The fast one keys on `forceRun` alone, and my first version had
+   * `running || forceRun` until I looked at what the live endpoint actually
+   * answers. `running` is `lastResult === "running"`, and the Nova row is
+   * running for roughly eighteen of every twenty minutes -- so keying on it
+   * makes the fast rate the permanent rate, ~900 requests an hour per open
+   * tab against Agora's list API, for a row that changes twice. `forceRun`
+   * is the flag Agora sets between his tap and the runner picking the run
+   * up: it is his own action, it lasts seconds, and it is the only state on
+   * this page he is standing there watching. Once a run is under way the
+   * next thing that changes is minutes off and 30 seconds is not late.
+   *
+   * No attempt cap: `pollConv` has one because it waits for a single answer
+   * and is finished when it arrives, and this waits for nothing in
+   * particular and should stay current while the page is open.
    */
   function scheduleHeartbeatsPoll(rows) {
-    var live = rows.some(function (r) { return r.running || r.forceRun; });
-    livePolls.push(setTimeout(loadHeartbeats, live ? ASK_POLL_MS : POLL_MS));
+    var queued = rows.some(function (r) { return r.forceRun; });
+    livePolls.push(setTimeout(loadHeartbeats, queued ? ASK_POLL_MS : POLL_MS));
   }
 
   function renderHeartbeats(payload) {

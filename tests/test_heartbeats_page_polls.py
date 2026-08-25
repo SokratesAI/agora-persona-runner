@@ -128,8 +128,22 @@ def test_a_queued_run_is_polled_at_the_fast_cadence():
     assert run_poll_harness([{"enabled": True, "forceRun": True}])["delays"] == [4000]
 
 
-def test_a_running_heartbeat_is_polled_at_the_fast_cadence():
-    assert run_poll_harness([{"enabled": True, "running": True}])["delays"] == [4000]
+def test_a_queued_run_wins_over_idle_rows():
+    """One queued row among many idle ones still gets the fast rate."""
+    rows = [{"running": True}, {"enabled": False}, {"enabled": True, "forceRun": True}]
+    assert run_poll_harness(rows)["delays"] == [4000]
+
+
+def test_a_run_already_under_way_uses_the_idle_cadence():
+    """`running` deliberately does not trigger the fast rate.
+
+    It is `lastResult === "running"`, and the Nova row is running for about
+    eighteen of every twenty minutes -- so keying the fast cadence on it makes
+    the fast cadence permanent, ~900 requests an hour per open tab, for a row
+    that changes twice. Measured against the live endpoint while writing this:
+    of the seven heartbeats, the one running was Nova's own.
+    """
+    assert run_poll_harness([{"enabled": True, "running": True}])["delays"] == [30000]
 
 
 def test_an_idle_page_falls_back_to_the_journal_feed_rate():
@@ -138,7 +152,7 @@ def test_an_idle_page_falls_back_to_the_journal_feed_rate():
     A cycle runs every 20 minutes; a page left open on the idle rate asks
     twice a minute, which is what the journal feed already does.
     """
-    rows = [{"enabled": True}, {"enabled": False}, {"enabled": True, "running": False}]
+    rows = [{"enabled": True}, {"enabled": False}, {"enabled": True, "forceRun": False}]
     assert run_poll_harness(rows)["delays"] == [30000]
 
 
