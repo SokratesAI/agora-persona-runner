@@ -26,14 +26,37 @@ clean sweep prints, which is the one equation this repo keeps having to
 refuse to write (`tidy_workspace.origin_repos` refuses it too, and for
 the same reason).
 
-Exit status: 0 when every repo answered and none had an alert, 1 when
-anything was unreadable or alerts are disabled somewhere, 2 when there is
-a real open alert to act on. So a cycle can read the status without
-parsing the text, and "I could not check" never reads as "nothing here".
+**An alert stays open after its fix merges, and that is not something to
+act on.** GitHub closes a Dependabot alert on its own re-scan schedule,
+not on the push that fixes it, so between the merge and the re-scan the
+API reports an open high-severity alert over a default branch that is
+already patched. Three cycles in a row hit that window on the same
+`brace-expansion` alert: Cycle 397 merged the bump and filed the lag as a
+one-line note, Cycle 398 re-confirmed the fix by hand, and Cycle 399 --
+which is writing this -- read exit 2, ranked it above the board, and
+spent four tool calls proving the same thing a third time. Each of us was
+right and each of us paid full price, because the knowledge lived in a
+backlog bullet rather than in the instrument.
+
+So every open alert is now checked against the manifest on the repo's
+default branch, and one whose fix has demonstrably landed is printed
+under its own heading and does **not** raise the exit status. The check
+only ever downgrades an alert on a positive measurement -- a manifest it
+cannot parse, an ecosystem it does not know, a version it cannot compare,
+or an API call that fails all leave the alert exactly as actionable as it
+was. Suppressing a real vulnerability is the one failure here that costs
+more than the false alarm, so every uncertain path fails towards noise.
+
+Exit status: 0 when every repo answered and nothing needs acting on, 1
+when anything was unreadable or alerts are disabled somewhere, 2 when
+there is an open alert whose fix is not already on the default branch. So
+a cycle can read the status without parsing the text, and "I could not
+check" never reads as "nothing here".
 """
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 
@@ -114,6 +137,118 @@ def _summarise(alert):
     }
 
 
+# The only manifests this can read a resolved version out of. A lockfile
+# is the right thing to check rather than `package.json`, because the
+# alert is raised against what is actually resolved, not against the range
+# that was asked for. Anything not in here is left actionable.
+_LOCKFILES = {"package-lock.json"}
+
+_PLAIN_VERSION = re.compile(r"\d+(?:\.\d+)*")
+
+
+def _version_tuple(text):
+    """A comparable tuple, or `None` when comparison would be a guess.
+
+    Deliberately refuses anything that is not plain dotted digits --
+    `1.2.3-rc1` sorts *below* `1.2.3` under semver and *above* it under a
+    naive string compare, and getting that backwards would mark a
+    vulnerable branch as patched. There is no partial credit here: an
+    unparseable version means the alert stays actionable.
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip().lstrip("v")
+    if not _PLAIN_VERSION.fullmatch(stripped):
+        return None
+    return tuple(int(part) for part in stripped.split("."))
+
+
+def lockfile_versions(blob, package):
+    """Every version of `package` recorded in an npm lockfile, or `None`.
+
+    `None` means "could not establish", which is a different answer from
+    `[]` ("the lockfile does not contain this package") and both leave the
+    alert actionable. Only lockfile v2/v3 `packages` maps are read; a v1
+    file has no `packages` key and returns `None` rather than a wrong
+    answer from the older `dependencies` tree.
+
+    Every path is collected, not the first one -- npm records a package
+    once per place it is resolved, and a nested copy can sit at an older
+    version than the top-level one.
+    """
+    try:
+        parsed = json.loads(blob)
+    except (ValueError, TypeError):
+        return None
+    packages = parsed.get("packages") if isinstance(parsed, dict) else None
+    if not isinstance(packages, dict):
+        return None
+    found = []
+    for path, entry in packages.items():
+        if not isinstance(path, str) or "node_modules/" not in path:
+            continue
+        if path.split("node_modules/")[-1] != package:
+            continue
+        found.append(entry.get("version") if isinstance(entry, dict) else None)
+    return found
+
+
+def fix_landed(repo, alert, run=None):
+    """`(landed, note)` -- whether the default branch is already patched.
+
+    `landed` is True only on a positive measurement. Every other path --
+    an ecosystem with no reader here, no published patch, a failed API
+    call, an unparseable version -- returns False with a note saying which
+    one, so the alert keeps its full weight and the report can say why it
+    was not verified rather than staying silent about it.
+    """
+    manifest = alert.get("manifest") or ""
+    if manifest.rsplit("/", 1)[-1] not in _LOCKFILES:
+        return False, f"no reader for {manifest or 'a missing manifest'}"
+    patched_text = alert.get("patched")
+    patched = _version_tuple(patched_text)
+    if patched is None:
+        return False, "no comparable patched version published"
+
+    # No `?ref=`: the contents API serves the default branch by default,
+    # which is the branch the alert is raised against.
+    code, out, err = (run or _gh)(
+        [
+            "api",
+            f"repos/{repo}/contents/{manifest}",
+            "-H",
+            "Accept: application/vnd.github.raw",
+        ]
+    )
+    if code != 0:
+        return False, "could not read the manifest on the default branch"
+
+    versions = lockfile_versions(out, alert.get("package") or "")
+    if versions is None:
+        return False, "could not parse the manifest"
+    if not versions:
+        return False, "the manifest no longer records this package"
+    comparable = [_version_tuple(v) for v in versions]
+    if any(v is None for v in comparable):
+        return False, "the manifest records a version I cannot compare"
+    if not all(v >= patched for v in comparable):
+        return False, "the default branch still resolves a vulnerable version"
+    resolved = ", ".join(sorted(set(versions)))
+    return True, f"default branch resolves {resolved}, patched at {patched_text}"
+
+
+def verify_landed(results, run=None):
+    """Annotate every open alert in `results` in place with the check above."""
+    for repo in results:
+        state, payload = results[repo]
+        if state != OK:
+            continue
+        for alert in payload:
+            landed, note = fix_landed(repo, alert, run=run)
+            alert["landed"] = landed
+            alert["landed_note"] = note
+
+
 def _rank(alert):
     severity = alert["severity"]
     index = (
@@ -138,28 +273,55 @@ def format_report(results):
         else:
             unreadable.append((repo, state, payload))
 
-    if open_alerts:
-        open_alerts.sort(key=lambda pair: _rank(pair[1]))
+    open_alerts.sort(key=lambda pair: _rank(pair[1]))
+    actionable = [pair for pair in open_alerts if not pair[1].get("landed")]
+    landed = [pair for pair in open_alerts if pair[1].get("landed")]
+
+    def _describe(repo, alert, detail):
         lines.append(
-            f"OPEN SECURITY ALERTS — {len(open_alerts)} across "
-            f"{len({repo for repo, _ in open_alerts})} repo(s):"
+            f"  {alert['severity'].upper():9} {repo}  "
+            f"{alert['ecosystem']}/{alert['package']} "
+            f"-> {alert['patched']}  ({alert['manifest']})"
         )
-        for repo, alert in open_alerts:
-            lines.append(
-                f"  {alert['severity'].upper():9} {repo}  "
-                f"{alert['ecosystem']}/{alert['package']} "
-                f"-> {alert['patched']}  ({alert['manifest']})"
-            )
-            lines.append(f"      {alert['summary']}")
-            if alert["url"]:
-                lines.append(f"      {alert['url']}")
+        lines.append(f"      {detail}")
+        if alert["url"]:
+            lines.append(f"      {alert['url']}")
+
+    if actionable:
+        lines.append(
+            f"OPEN SECURITY ALERTS — {len(actionable)} across "
+            f"{len({repo for repo, _ in actionable})} repo(s):"
+        )
+        for repo, alert in actionable:
+            _describe(repo, alert, alert["summary"])
+            # Only worth saying when something was tried and did not
+            # settle it. "no reader for X" here is the honest reason this
+            # alert is still in the actionable list rather than an
+            # unexplained one.
+            note = alert.get("landed_note")
+            if note:
+                lines.append(f"      not verified as fixed: {note}")
+
+    if landed:
+        lines.append(
+            f"ALREADY FIXED ON THE DEFAULT BRANCH — {len(landed)} alert(s) "
+            "GitHub has not re-scanned yet. Nothing to do; the record "
+            "clears itself."
+        )
+        for repo, alert in landed:
+            _describe(repo, alert, alert.get("landed_note", ""))
     # Printed whether or not anything was found. Without it, a report with
     # one alert on one repo says nothing about whether the other four were
     # swept at all, and "checked and clean" would be indistinguishable from
     # "never looked" -- the same equation the DISABLED line exists to refuse.
     checked = [r for r in sorted(results) if results[r][0] == OK]
     if checked:
-        prefix = "" if open_alerts else "No open security alerts. "
+        if actionable:
+            prefix = ""
+        elif landed:
+            prefix = "Nothing to act on. "
+        else:
+            prefix = "No open security alerts. "
         lines.append(f"{prefix}Answered: " + ", ".join(checked))
 
     for repo, state, payload in unreadable:
@@ -179,7 +341,7 @@ def format_report(results):
         )
         return lines, 1
 
-    if open_alerts:
+    if actionable:
         return lines, 2
     if unreadable:
         return lines, 1
@@ -218,6 +380,7 @@ def main(argv=None):
         repos, unplaceable = _repos_from_workspace()
 
     results = {repo: alerts_for(repo) for repo in repos}
+    verify_landed(results)
     lines, code = format_report(results)
     for line in lines:
         print(line)

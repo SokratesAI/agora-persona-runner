@@ -148,3 +148,129 @@ def test_main_prints_the_report_and_returns_its_code(monkeypatch, capsys):
     assert code == 2
     assert "brace-expansion" in out
     assert "HIGH" in out
+
+
+# --- an alert whose fix has already merged -------------------------------
+#
+# The window these cover is real and was paid for three times: GitHub
+# closes an alert on its own re-scan schedule, so between the fixing merge
+# and that re-scan the API reports an open high-severity alert over a
+# patched default branch. The direction that matters is asymmetric --
+# marking a vulnerable branch as fixed is far worse than one more false
+# alarm -- so most of these assert that an *uncertain* answer stays
+# actionable.
+
+
+def _lockfile(**versions):
+    packages = {"": {"name": "root"}}
+    for name, version in versions.items():
+        packages[f"node_modules/{name}"] = {"version": version}
+    return json.dumps({"lockfileVersion": 3, "packages": packages})
+
+
+def test_a_patched_default_branch_is_not_something_to_act_on():
+    alert = _alert("high", "brace-expansion", patched="2.1.4")
+    results = {"o/r": (OK, [security_alerts._summarise(alert)])}
+    security_alerts.verify_landed(
+        results, run=_runner(0, _lockfile(**{"brace-expansion": "2.1.4"}))
+    )
+    lines, code = format_report(results)
+    assert code == 0
+    assert any("ALREADY FIXED ON THE DEFAULT BRANCH" in line for line in lines)
+    assert not any(line.startswith("OPEN SECURITY ALERTS") for line in lines)
+
+
+def test_a_version_above_the_patch_counts_as_patched():
+    alert = _alert("high", "brace-expansion", patched="2.1.4")
+    results = {"o/r": (OK, [security_alerts._summarise(alert)])}
+    security_alerts.verify_landed(
+        results, run=_runner(0, _lockfile(**{"brace-expansion": "2.2.0"}))
+    )
+    assert results["o/r"][1][0]["landed"] is True
+
+
+def test_a_still_vulnerable_default_branch_stays_actionable():
+    alert = _alert("high", "brace-expansion", patched="2.1.4")
+    results = {"o/r": (OK, [security_alerts._summarise(alert)])}
+    security_alerts.verify_landed(
+        results, run=_runner(0, _lockfile(**{"brace-expansion": "2.1.3"}))
+    )
+    lines, code = format_report(results)
+    assert code == 2
+    assert any(line.startswith("OPEN SECURITY ALERTS") for line in lines)
+
+
+def test_one_nested_copy_left_behind_keeps_the_whole_alert_actionable():
+    # npm records a package once per resolution path. A top-level bump
+    # that leaves an older nested copy is exactly the half-fix that must
+    # not read as clean.
+    alert = _alert("high", "brace-expansion", patched="2.1.4")
+    body = json.dumps(
+        {
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/brace-expansion": {"version": "2.1.4"},
+                "node_modules/glob/node_modules/brace-expansion": {"version": "2.0.1"},
+            },
+        }
+    )
+    results = {"o/r": (OK, [security_alerts._summarise(alert)])}
+    security_alerts.verify_landed(results, run=_runner(0, body))
+    assert results["o/r"][1][0]["landed"] is False
+    assert format_report(results)[1] == 2
+
+
+def test_a_failed_manifest_read_leaves_the_alert_at_full_weight():
+    alert = _alert("high", "brace-expansion", patched="2.1.4")
+    results = {"o/r": (OK, [security_alerts._summarise(alert)])}
+    security_alerts.verify_landed(results, run=_runner(1, "", "not found"))
+    assert results["o/r"][1][0]["landed"] is False
+    assert format_report(results)[1] == 2
+
+
+def test_an_ecosystem_with_no_reader_stays_actionable_and_says_so():
+    alert = _alert("critical", "django", patched="4.2.1")
+    alert["dependency"]["manifest_path"] = "requirements.txt"
+    results = {"o/r": (OK, [security_alerts._summarise(alert)])}
+    security_alerts.verify_landed(results, run=_runner(0, "django==4.2.1"))
+    lines, code = format_report(results)
+    assert code == 2
+    assert any("not verified as fixed: no reader for" in line for line in lines)
+
+
+def test_a_prerelease_is_never_compared_by_guesswork():
+    # `1.2.3-rc1` sorts below `1.2.3` under semver and above it under a
+    # string compare. Refusing is the only safe answer.
+    assert security_alerts._version_tuple("2.1.4-rc1") is None
+    assert security_alerts._version_tuple("2.1.4") == (2, 1, 4)
+    assert security_alerts._version_tuple("v2.1.4") == (2, 1, 4)
+    assert security_alerts._version_tuple("none published") is None
+
+
+def test_a_v1_lockfile_is_refused_rather_than_read_wrongly():
+    # v1 has no `packages` map; reading its `dependencies` tree would be a
+    # second parser, and a wrong answer here is a suppressed vulnerability.
+    body = json.dumps(
+        {"lockfileVersion": 1, "dependencies": {"brace-expansion": {"version": "2.1.4"}}}
+    )
+    assert security_alerts.lockfile_versions(body, "brace-expansion") is None
+
+
+def test_a_package_missing_from_the_manifest_is_not_read_as_fixed():
+    body = _lockfile(**{"something-else": "1.0.0"})
+    assert security_alerts.lockfile_versions(body, "brace-expansion") == []
+    alert = _alert("high", "brace-expansion", patched="2.1.4")
+    results = {"o/r": (OK, [security_alerts._summarise(alert)])}
+    security_alerts.verify_landed(results, run=_runner(0, body))
+    assert results["o/r"][1][0]["landed"] is False
+
+
+def test_a_landed_alert_does_not_hide_a_real_one_beside_it():
+    fixed = security_alerts._summarise(_alert("high", "brace-expansion", patched="2.1.4"))
+    fixed["landed"], fixed["landed_note"] = True, "default branch resolves 2.1.4"
+    real = security_alerts._summarise(_alert("critical", "left-pad", patched="1.0.0"))
+    real["landed"], real["landed_note"] = False, "still vulnerable"
+    lines, code = format_report({"o/r": (OK, [fixed, real])})
+    assert code == 2
+    assert any("left-pad" in line for line in lines)
+    assert any("brace-expansion" in line for line in lines)
