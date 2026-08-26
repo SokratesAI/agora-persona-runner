@@ -1,6 +1,6 @@
 """Board comments drawn as bubbles instead of as more write-up prose.
 
-Edvard, `issues.md` capture 2026-08-26: *"i see that boarded issues does
+The owner, `issues.md` capture 2026-08-26: *"i see that boarded issues does
 not have those nice colored comments like there are now in the 'not
 boarded yet' box, so take the best from both worlds here."*
 
