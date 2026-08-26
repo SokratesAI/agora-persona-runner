@@ -334,6 +334,72 @@ def _check_digest_roll_reads_the_whole_document() -> Optional[str]:
     return None
 
 
+def _check_ci_health_ignores_an_abandoned_run() -> Optional[str]:
+    """A queued run that later runs have overtaken must not read as a live stall.
+
+    Measured Cycle 495, 2026-08-26 20:04 Oslo: run 32984347949 was created four
+    seconds into that afternoon's Actions outage and was still `queued` with
+    zero jobs three hours later — three minutes after githubstatus resolved the
+    incident, with its own pull request merged and eight later runs in the same
+    repo finished. `ci_health` read `operational` off the status page and still
+    said a merge could not complete, off that orphan alone. Nothing removes an
+    abandoned run from a queue, so that verdict had no end date.
+    """
+    import json
+    import subprocess
+    from tools import ci_health
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body.encode()
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def opener(request, timeout=None):
+        return _Resp(json.dumps({
+            "components": [{"name": "Actions", "status": "operational"}],
+            "incidents": []}))
+
+    def gh_with_completed_at(stamp):
+        def gh(cmd, **kwargs):
+            path = cmd[2]
+            if "/jobs" in path:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
+            if "status=completed" in path:
+                body = [] if stamp is None else [{"id": 2, "created_at": stamp}]
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(body), stderr="")
+            if "/commits" in path:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([]), stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([{
+                "id": 1, "name": "build", "status": "queued", "head_branch": "b",
+                "created_at": "2000-01-01T00:00:00Z"}]), stderr="")
+        return gh
+
+    status, lines = ci_health.check(opener=opener,
+                                    run=gh_with_completed_at("2000-01-01T01:00:00Z"),
+                                    repos=["Org/repo"])
+    if status != 0 or not any(l.startswith("ABANDONED") for l in lines):
+        return ("ci_health called a merge impossible on a queued run that a later run had "
+                f"already overtaken (exit {status}) -- an orphan from an outage that has since "
+                "resolved would have refused every merge after it, forever")
+
+    # Two-sided: with nothing completed after it, the stall must still stand,
+    # or the check above only proves the tool stopped reporting stalls at all.
+    status, lines = ci_health.check(opener=opener, run=gh_with_completed_at(None),
+                                    repos=["Org/repo"])
+    if status != 2 or not any(l.startswith("STALLED") for l in lines):
+        return ("ci_health quietened a zero-job run with no completed run after it to "
+                f"compare against (exit {status}) -- nothing measured, nothing to quieten")
+    return None
+
+
 def _check_ci_health_separates_the_two_causes() -> Optional[str]:
     """A GitHub-side outage and a run of ours creating no jobs must stay two lines.
 
@@ -463,6 +529,21 @@ CORPUS = [
                  "`## Digest` section alone. The site rendered the last section of each "
                  "name and hid it; Obsidian, which the owner reads, showed both."),
         check=_check_digest_roll_reads_the_whole_document,
+    ),
+    Regression(
+        slug="an-abandoned-run-read-as-a-live-stall",
+        cycle="495",
+        date="2026-08-26",
+        surface="drove the code",
+        failure=("A run created four seconds into an Actions outage was still `queued` with "
+                 "zero jobs three minutes after that incident resolved, with its pull "
+                 "request merged and eight later runs finished. `ci_health` read "
+                 "`operational` off the status page and still printed \"a merge cannot "
+                 "complete right now\" off that one orphan — and nothing removes an "
+                 "abandoned run from a queue, so the verdict had no end date. A queued run "
+                 "outlives the thing that queued it; the queue alone cannot tell a scar "
+                 "from a symptom."),
+        check=_check_ci_health_ignores_an_abandoned_run,
     ),
     Regression(
         slug="a-queued-run-read-as-a-billing-block",

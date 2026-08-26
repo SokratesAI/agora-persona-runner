@@ -43,6 +43,23 @@ runs": a repo nobody has pushed to today has none, whether Actions is up
 or on fire. That is why the sweep names the repos that had nothing in
 flight rather than counting them as evidence.
 
+**And a queued run outlives the thing that queued it.** Run 32984347949 was
+created four seconds into the 2026-08-26 Actions outage and was still
+`queued` with zero jobs at 20:04 Oslo — three hours later, three minutes
+after githubstatus resolved that incident, with its own pull request merged
+and eight later runs in the same repo finished. Measured Cycle 495: this
+tool read `operational` off the status page, read that one orphan off the
+queue, and printed "a merge cannot complete right now" anyway. A run that
+has been abandoned is a scar, not a symptom, and the two are identical from
+the queue alone — so that verdict would have stood every cycle from then on,
+because nothing ever takes an abandoned run out of a queue.
+
+So a zero-job run is quietened — printed as `ABANDONED`, status deliberately
+not raised — only on a positive measurement: **a run in the same repo
+created after it that has since completed**, which is proof GitHub has been
+starting jobs in the interval this one has been sitting. No completed run to
+compare against quietens nothing.
+
 **The grace is five minutes and it is measured, not chosen.** Every
 complete build in `agora-persona-runner` on 2026-08-26 finished inside
 2m54s, wall clock, queue included. A run that has not created a *single*
@@ -136,14 +153,48 @@ def _gh_json(args, run):
         return None, f"gh returned something that is not JSON: {exc}"
 
 
+def newest_completed_run(repo, run=subprocess.run):
+    """`(run_dict_or_None, None)` or `(None, why)` for the repo's newest completed run.
+
+    The one measurement that tells an abandoned run from a live stall. See
+    `stalled_runs` below for why it exists.
+    """
+    body, why = _gh_json(
+        [f"repos/{repo}/actions/runs?status=completed&per_page=1", "-q",
+         '[.workflow_runs[] | {id, created_at}]'],
+        run)
+    if body is None:
+        return None, why
+    return (body[0] if body else None), None
+
+
 def stalled_runs(repo, grace_minutes=DEFAULT_GRACE_MINUTES, run=subprocess.run, now=None):
     """`(verdicts, None)` or `(None, why)` for one repo's in-flight runs.
 
-    A verdict is `(state, text)` where state is `"stalled"`, `"slow"` or
-    `"clear"`. `now` is an aware datetime for the test; production reads the
-    clock. Timestamps from `gh` are UTC and are compared as UTC — this loop
-    writes Oslo everywhere else and that arithmetic is where Cycle 446 invented
-    a 100-minute stall out of the summer offset.
+    A verdict is `(state, text)` where state is `"stalled"`, `"abandoned"`,
+    `"slow"` or `"clear"`. `now` is an aware datetime for the test; production
+    reads the clock. Timestamps from `gh` are UTC and are compared as UTC — this
+    loop writes Oslo everywhere else and that arithmetic is where Cycle 446
+    invented a 100-minute stall out of the summer offset.
+
+    **`abandoned` is Cycle 495's correction and it is the difference between a
+    symptom and a scar.** A queued run with zero jobs is a fact; "therefore a
+    merge cannot complete right now" is an inference, and it stops being true
+    the moment Actions recovers while the orphaned run stays in the queue
+    forever. Measured 2026-08-26 20:04 Oslo: run 32984347949 was created four
+    seconds into that afternoon's outage and was still `queued` with zero jobs
+    three hours later — three minutes after githubstatus resolved the incident,
+    with its own pull request merged and eight later runs in the same repo
+    finished. This tool read `operational` off the status page and still said a
+    merge could not complete, off that orphan alone, and would have gone on
+    saying it indefinitely: nothing removes an abandoned run from a queue.
+
+    So the quietening measurement is the same shape `security_alerts` uses for
+    an already-patched advisory — **only ever a positive**: has GitHub created
+    and *completed* any run in this repo since this one was created? If yes,
+    Actions has been starting jobs since, so this queued run says nothing about
+    now. If there is no completed run to compare against, nothing is quietened
+    and the stall stands.
     """
     from datetime import datetime, timezone
 
@@ -175,6 +226,25 @@ def stalled_runs(repo, grace_minutes=DEFAULT_GRACE_MINUTES, run=subprocess.run, 
         if count is None:
             return None, f"{where}: {count_why}"
         if count == 0:
+            newer, newer_why = newest_completed_run(repo, run)
+            if newer_why is not None:
+                return None, f"{where}: {newer_why}"
+            later = None
+            if newer:
+                try:
+                    later = datetime.fromisoformat(
+                        (newer.get("created_at") or "").replace("Z", "+00:00"))
+                except ValueError:
+                    later = None
+            if later is not None and later > started:
+                gap = (later - started).total_seconds() / 60.0
+                verdicts.append((
+                    "abandoned",
+                    f"ABANDONED  {where}: queued {waited:.0f}m with 0 jobs, but run "
+                    f"{newer.get('id')} was created {gap:.0f}m after it and has "
+                    f"completed — GitHub has started jobs since, so this one is a "
+                    f"leftover from an earlier incident, not a symptom of now"))
+                continue
             verdicts.append((
                 "stalled",
                 f"STALLED  {where}: queued {waited:.0f}m and GitHub has created "
