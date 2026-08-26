@@ -14,7 +14,7 @@
  * against a payload generated from the real server functions
  * (tests/browser/regen.py), and click on things.
  */
-import { test, before, describe, after } from "node:test";
+import { test, before, beforeEach, afterEach, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,26 @@ const payload = JSON.parse(readFileSync(join(here, "fixtures", "payload.json"), 
  * `openWindow` as the single door: a raw `new JSDOM` in this file is a leak,
  * and the last test in this file is what says so. */
 const openWindows = [];
+
+/* The registry used to hold every window until the file was done, and 562 live
+ * jsdom windows do not fit in a default V8 heap: the run died of SIGABRT after
+ * roughly 545 tests, at a different one each time, so every journal entry that
+ * said "551 browser tests green" was reading a run that never reached the end.
+ *
+ * `mark` is what makes the sweep safe. It is where the current test's own
+ * windows start, so a window opened inside a test body is closed the moment
+ * that test ends, and a window opened in a `before` hook -- which the suites
+ * below share across their tests -- sits under the mark and survives to the
+ * `after` at the bottom. A plain `afterEach` closes both and cost 45 failures
+ * when cycle 92 tried it; that is the distinction this counter is for, and it
+ * is why the answer here is not `--max-old-space-size`. */
+let mark = 0;
+beforeEach(() => {
+  mark = openWindows.length;
+});
+afterEach(() => {
+  for (const window of openWindows.splice(mark)) window.close();
+});
 after(() => {
   for (const window of openWindows.splice(0)) window.close();
 });
@@ -3232,10 +3252,18 @@ describe("no window escapes the registry", () => {
     );
   });
 
-  test("the registry is emptied after the file, not after each test", () => {
-    /* Five suites below open one window in `before` and share it. An
-     * `afterEach` closed it after the first test in each and cost 45
-     * failures; this is the line that would have to change again. */
+  test("the registry is swept from the mark, not from zero, after each test", () => {
+    /* Five suites below open one window in `before` and share it across their
+     * tests. A bare `afterEach` closed it after the first of them and cost 45
+     * failures (cycle 92); sweeping from `mark` leaves it alone. If this
+     * assertion is what is failing, the sweep was widened back to zero. */
+    assert.match(source, /\nafterEach\(\(\) => \{\n\s+for \(const window of openWindows\.splice\(mark\)\)/);
+  });
+
+  test("whatever the per-test sweep leaves is still closed after the file", () => {
+    /* The windows opened in a `before` hook are under every mark, so nothing
+     * per-test ever reaches them. This is the hook that does, and without it
+     * `node --test` hangs after the last test passes rather than failing. */
     assert.match(source, /\nafter\(\(\) => \{\n\s+for \(const window of openWindows\.splice\(0\)\)/);
   });
 });
@@ -9301,6 +9329,12 @@ describe("the status fields are one horizontal list, and they link down to the c
     field.dispatchEvent(ev);
     assert.ok(scrolled, "clicking the field did not scroll to the card");
     assert.ok(ev.defaultPrevented, "the click also followed the permalink");
+    /* The click starts a re-render in `app.js` that outlives the assertion
+     * above. The window used to stay open until the whole file finished, so
+     * that late callback always found a live `document` and nobody saw it;
+     * now that the window closes with the test, letting it land first is
+     * what the test always meant. Two heartbeat tests below do the same. */
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   test("a field that references no cycle is not a link", async () => {
@@ -10449,6 +10483,9 @@ describe("the heartbeats page", () => {
       [["/api/heartbeats/enabled", { heartbeatId: "hb-1", enabled: false }]]);
     // The off row offers the other direction, on the same button.
     assert.ok([...rows[1].querySelectorAll(".hb-btn")].some((b) => b.textContent === "Turn on"));
+    // The POST's continuation touches the page after this assertion. Let it
+    // land while the window is still open -- see the status-fields suite.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   test("run now posts the id and nothing else", async () => {
@@ -10457,6 +10494,9 @@ describe("the heartbeats page", () => {
     click(window, [...rows[1].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Run now"));
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
       [["/api/heartbeats/run", { heartbeatId: "hb-2" }]]);
+    // The POST's continuation touches the page after this assertion. Let it
+    // land while the window is still open -- see the status-fields suite.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   /* The thread lives on the conversations route, and `openConversation`'s
