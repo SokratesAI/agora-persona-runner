@@ -17,7 +17,11 @@ write-up and a lost thread.
 
 import json
 
-from agora_runner.nova_boards import append_detail_note, split_detail_conversation
+from agora_runner.nova_boards import (
+    append_detail_note,
+    split_detail_conversation,
+    unanswered_comments,
+)
 from agora_runner import nova_site
 
 
@@ -63,6 +67,42 @@ def test_a_write_up_with_no_notes_is_all_prose():
     prose, messages = split_detail_conversation("Just a write-up.\n")
     assert prose == "Just a write-up."
     assert messages == []
+
+
+def test_a_stamp_with_the_year_in_it_is_still_a_note():
+    """7 of the 83 notes in the live `issues.md` are `2026-08-15`, not `08-15`.
+
+    `dated` is whatever the caller passed and both shapes are in the file.
+    A bare `\\d{2}-\\d{2}` fails at a fixed offset on the long one -- it eats
+    `20`, then wants `-` and finds `2` -- so four whole board rows (#81,
+    #87, #90, #91) were read as prose end to end. Found by review, and the
+    fixtures could not have caught it because every stamp in them was the
+    short shape.
+    """
+    prose, messages = split_detail_conversation(
+        "The problem.\n\n"
+        "**Edvard, 2026-08-20:** long-form stamp.\n\n"
+        "**Nova, 08-20 (Cycle 269):** short-form stamp."
+    )
+    assert prose == "The problem."
+    assert [(m["author"], m["stamp"]) for m in messages] == [
+        ("Edvard", "2026-08-20"),
+        ("Nova", "08-20 (Cycle 269)"),
+    ]
+
+
+def test_the_waiting_flag_reads_the_same_notes_the_page_draws():
+    """One definition of a note, checked rather than asserted in a comment.
+
+    `unanswered_comment_bodies` and `split_detail_conversation` share
+    `_NOTE_STAMP` now; before the review that found the missing year they
+    shared a copy of the date pattern, and the copy is where it went wrong.
+    """
+    body = "The problem.\n\n**Nova, 2026-08-20:** answered.\n\n**Edvard, 2026-08-21:** not yet."
+    board = BOARD.replace("Just a write-up.", body)
+    assert unanswered_comments(board) == [59]
+    _, messages = split_detail_conversation(body)
+    assert [m["author"] for m in messages] == ["Nova", "Edvard"]
 
 
 def test_a_multi_line_note_keeps_its_own_lines_and_stops_at_the_next_author():
