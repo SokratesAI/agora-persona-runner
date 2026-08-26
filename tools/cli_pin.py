@@ -17,6 +17,13 @@ occasionally noticed.
 
     python3 -m tools.cli_pin
 
+**Three sources, and only one of them is the answer.** The pin is read
+from the bridge repo's *default branch*, because that is what the next
+image build compiles. A bridge checkout on this pod is read afterwards
+and only to report that the workspace is behind -- Cycle 470 found this
+the other way round, trusting a nineteen-day-old checkout over the
+branch and printing STALE for a bump that had already merged.
+
 **Two versions, and they are not the same question.** The Dockerfile pin
 is what the next image build will install. `claude --version` is what
 this pod is running right now. They disagree whenever an image has not
@@ -73,12 +80,10 @@ def dockerfile_candidates():
     return out
 
 
-def read_pin(runner=subprocess.run):
-    """Return (version, where) or (None, why-not).
+def read_local_pin():
+    """The pin in whatever bridge checkout is on this pod, or (None, why).
 
-    Falls back to GitHub when no checkout is on disk, because a cycle
-    that cannot find the file locally is the case where guessing is
-    worst.
+    Never the verdict, only ever a second opinion -- see `read_pin`.
     """
     for path in dockerfile_candidates():
         try:
@@ -90,7 +95,11 @@ def read_pin(runner=subprocess.run):
         if match:
             return match.group(1), path
         return None, f"{path} has no `ARG CLAUDE_CODE_VERSION=` line"
+    return None, "no bridge checkout on this pod"
 
+
+def read_remote_pin(runner=subprocess.run):
+    """The pin on the bridge repo's default branch, or (None, why)."""
     try:
         proc = runner(
             ["gh", "api", f"repos/{REPO}/contents/Dockerfile",
@@ -98,9 +107,9 @@ def read_pin(runner=subprocess.run):
             capture_output=True, text=True, timeout=60,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"no checkout on disk and gh failed: {exc}"
+        return None, f"gh failed: {exc}"
     if proc.returncode != 0:
-        return None, f"no checkout on disk and gh failed: {proc.stderr.strip()}"
+        return None, f"gh failed: {proc.stderr.strip()}"
     import base64
     try:
         text = base64.b64decode(proc.stdout).decode("utf-8")
@@ -109,7 +118,42 @@ def read_pin(runner=subprocess.run):
     match = PIN_RE.search(text)
     if not match:
         return None, f"{REPO}'s Dockerfile has no `ARG CLAUDE_CODE_VERSION=` line"
-    return match.group(1), f"{REPO}@HEAD"
+    return match.group(1), f"{REPO}@default branch"
+
+
+def read_pin(runner=subprocess.run):
+    """Return (version, where) or (None, why-not).
+
+    **GitHub is the authority and the local checkout is not**, which is
+    the reverse of how this read until Cycle 470. It preferred a local
+    file and fell back to GitHub only when no checkout existed at all --
+    so a checkout that existed and was *stale* never reached the
+    fallback. That is not a hypothetical: on 2026-08-26 this printed
+    `pinned 2.1.226 ... 18 release(s) behind ... STALE` off a
+    `/data/workspace/agora-claude-bridge` that had not been fetched in
+    nineteen days, while the default branch had said 2.1.245 since the
+    previous evening. The instruction that verdict carries is "go and
+    bump the Dockerfile", and the bump was already merged.
+
+    The question the tool asks is what the *next image build* will
+    install, and that build runs against the default branch, never
+    against a scratch checkout on the pod that happened to run the
+    check. So the remote answer is the verdict whenever it can be had,
+    and the local file is read afterwards only to say when the workspace
+    is behind -- which is worth knowing at the start of a cycle in its
+    own right.
+
+    When `gh` cannot answer, the local file is still better than
+    nothing, and `where` says so plainly so the reader can discount it.
+    """
+    version, where = read_remote_pin(runner)
+    if version is not None:
+        return version, where
+    remote_why = where
+    version, where = read_local_pin()
+    if version is not None:
+        return version, f"{where} — local checkout, possibly stale; {remote_why}"
+    return None, f"{remote_why}; and {where}"
 
 
 def running_version(runner=subprocess.run):
@@ -252,6 +296,11 @@ def main(argv=None, now=None):
 
     running = running_version()
     print(f"{PACKAGE}: pinned {pinned} (from {where}), latest {latest}")
+    local, local_where = read_local_pin()
+    if local is not None and where.startswith(REPO) and local != pinned:
+        print(f"  ⚠ the checkout at {local_where} says {local} — your "
+              "workspace is behind the default branch, and the verdict "
+              "below is the branch's")
     if running is None:
         print("  running binary: not on this PATH (normal off the bridge pod)")
     elif running != pinned:
