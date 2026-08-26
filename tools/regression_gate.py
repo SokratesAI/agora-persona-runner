@@ -298,7 +298,82 @@ def _check_prompt_does_not_hardcode_the_shared_checkout() -> Optional[str]:
     return None
 
 
+def _check_ci_health_separates_the_two_causes() -> Optional[str]:
+    """A GitHub-side outage and a run of ours creating no jobs must stay two lines.
+
+    Cycle 487 read a run queued fourteen minutes with zero jobs as the Actions
+    billing block, because that is the failure this loop remembers. It was a
+    GitHub-side outage opened four seconds after the run was created, and the
+    two have opposite conclusions -- "wait, then merge" against "nothing merges
+    until September and the owner has to act".
+    """
+    import json
+    import subprocess
+    import urllib.error
+    from tools import ci_health
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body.encode()
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def opener_for(actions):
+        def opener(request, timeout=None):
+            return _Resp(json.dumps({
+                "components": [{"name": "Actions", "status": actions}],
+                "incidents": [{"name": "Incident with Actions"}] if actions != "operational" else [],
+            }))
+        return opener
+
+    def gh(cmd, **kwargs):
+        path = cmd[2]
+        if "/jobs" in path:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([{
+            "id": 1, "name": "build", "status": "queued", "head_branch": "b",
+            "created_at": "2000-01-01T00:00:00Z"}]), stderr="")
+
+    status, lines = ci_health.check(opener=opener_for("major_outage"), run=gh,
+                                    repos=["Org/repo"])
+    github_side = [l for l in lines if l.startswith("GITHUB-SIDE")]
+    stalled = [l for l in lines if l.startswith("STALLED")]
+    if status != 2 or len(github_side) != 1 or len(stalled) != 1:
+        return ("ci_health merged the GitHub-side outage and the zero-job run into one "
+                f"verdict (exit {status}, {len(github_side)} outage line(s), "
+                f"{len(stalled)} stalled line(s)) -- Cycle 487 chased the wrong cause")
+
+    # Two-sided: with GitHub healthy the stalled line must survive on its own,
+    # or the check above is only reading the status page.
+    status, lines = ci_health.check(opener=opener_for("operational"), run=gh,
+                                    repos=["Org/repo"])
+    if status != 2 or not any(l.startswith("STALLED") for l in lines):
+        return ("ci_health stopped reporting a run of ours that created zero jobs once "
+                f"githubstatus said Actions was operational (exit {status}) -- that is the "
+                "billing-block shape, which githubstatus never reports")
+    return None
+
+
 CORPUS = [
+    Regression(
+        slug="a-queued-run-read-as-a-billing-block",
+        cycle="487",
+        date="2026-08-26",
+        surface="drove the code",
+        failure=("A build sat queued fourteen minutes having created zero jobs, and I wrote "
+                 "into the handoff that it looked like the Actions billing block. It was a "
+                 "GitHub-side Actions outage opened four seconds after the run was created. "
+                 "The two causes have opposite conclusions and one verdict line cannot carry "
+                 "both."),
+        check=_check_ci_health_separates_the_two_causes,
+    ),
     Regression(
         slug="unattended-metered-provider",
         cycle="78",
