@@ -454,6 +454,46 @@ def comment_index(markdown):
 COMPARED_FIELDS = ("text", "acknowledged", "reply", "replyStamp", "replies")
 
 
+LANDMARKS = ("# Comments", NEW_HEADING, ACKNOWLEDGED_HEADING)
+
+
+def landmark_counts(text):
+    """How many times each of the document's three landmark headings appears.
+
+    A healthy `comments.md` has exactly one of each. This exists because
+    both halves of `verify_write` are structurally blind to a *duplicated*
+    document, and on 2026-08-26 one got written: a complete second copy --
+    frontmatter, `## New`, both unread comments, `## Acknowledged` -- was
+    spliced into the first copy's frontmatter, at the point where the
+    `contract:` line quotes the literal `## Acknowledged`.
+
+    Neither existing check can see that. `frontmatter()` reads the first
+    block and the first block was untouched. `comment_index()` is a dict
+    keyed on `(cycle, stamp)`, so a doubled comment comes back under the
+    key it already had and the set comparison finds nothing lost and
+    nothing gained. The damage was found by accident, by a cycle running
+    `tools.ack_comment` for an unrelated reason -- the same way the
+    2026-08-13 one was found, which is the failure `verify_write`'s own
+    docstring says it exists to end.
+
+    Counting is enough because no legitimate write moves these. Every
+    writer here adds a comment, adds a reply, or moves a comment between
+    two sections that must already exist.
+
+    **The frontmatter is excluded, and the reason is a real document
+    shape rather than caution.** A YAML block scalar puts bare `## New`
+    and `## Acknowledged` lines *inside* the header -- that is what
+    `tests/test_ack_comment.py`'s `BLOCK_SCALAR` fixture is, and the
+    first version of this counted them, so a healthy file read as
+    doubled and every acknowledgement was refused. The body is where a
+    landmark means what it says.
+    """
+    text = text or ""
+    body = text[len(frontmatter(text)):]
+    lines = [line.strip() for line in body.split("\n")]
+    return {name: lines.count(name) for name in LANDMARKS}
+
+
 def verify_write(original, updated, exempt=()):
     """Refuse unless the frontmatter and every comment outside `exempt` survived.
 
@@ -473,6 +513,21 @@ def verify_write(original, updated, exempt=()):
             "the frontmatter changed -- this is the 2026-08-13 bug and the "
             "write is refused; nothing written"
         )
+
+    before_marks, after_marks = landmark_counts(original), landmark_counts(updated)
+    for name in LANDMARKS:
+        was, now = before_marks[name], after_marks[name]
+        if now > 1:
+            raise WriteRefused(
+                f"`{name}` appears {now} times in the result -- the document "
+                "has been duplicated or spliced into itself; nothing written"
+            )
+        # `was == 0` is the first-comment-ever case, where `_store` builds
+        # the document and every count legitimately goes 0 -> 1.
+        if was and now != was:
+            raise WriteRefused(
+                f"`{name}` went from {was} to {now} -- nothing written"
+            )
 
     before = comment_index(original)
     after = comment_index(updated)
