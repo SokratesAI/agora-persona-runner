@@ -24,11 +24,22 @@ contract `tools.roll_done_captures` and `tools.roll_captures` hold, so
 the caller owns the compare-and-swap. `prompt.md` step 6 carries the
 `get --rev-file` / `put --if-rev-file` wrapper.
 
-It refuses rather than guesses: no `## Board` table in the file, a title
-with a `|` or a newline in it, or a priority that is not one of the four
-all exit 1 with the reason. A blank rating is the state that means nobody
-has looked (`ideas.md` #69), so `--priority` is required here even though
-`add_row` would accept an empty one for the owner's board.
+It refuses rather than guesses, and every refusal is a way this could
+have written a corrupt document: no `## Board` table in the file; a title
+or a `--dated` carrying a `|` or a newline, either of which shifts every
+cell right of it so `parse_board` reads a date as a rating; a write-up
+carrying a markdown heading line, which ends the block early and drops
+the rest off the page; and a priority that is not one of the four. A
+blank rating is the state that means nobody has looked (`ideas.md` #69),
+so `--priority` is required here even though `add_row` would accept an
+empty one for the owner's board.
+
+The first three of those are reviewer findings on this tool's own PR, and
+they share one shape worth naming: `check` re-parses the whole document
+afterwards and compares it to the document before, so it catches damage
+to what was *already there* and is structurally blind to a new row that
+was malformed from the start. A guard on the way out does not replace a
+guard on the way in.
 """
 
 import argparse
@@ -39,12 +50,23 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+import re
+
 from agora_runner.nova_boards import (
     PRIORITY_LABELS,
     add_row,
     canonical_priority,
     parse_board,
+    parse_notes,
 )
+
+# A line that would end the new write-up early. `_detail_spans` closes a
+# `### #N` block at the next heading, so a write-up carrying one is
+# truncated on the page while the raw file still holds every word --
+# `append_detail_note` refuses an embedded newline outright for exactly
+# this reason and `add_row`'s write-up is deliberately multi-line, so the
+# check has to live here. Reviewer finding on runner#422.
+_HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}\s", re.MULTILINE)
 
 
 def _priority_choices():
@@ -57,11 +79,22 @@ def _priority_choices():
 def check(before, after, number, title):
     """Refuse the write unless the row is really there and nothing else moved.
 
-    Same guard as `roll_done_captures.check` and for the same reason: this
+    Same shape as `roll_done_captures.check` and for the same reason: this
     edits a document the site parses, so the test that matters is what
     `parse_board` says afterwards, not what the string looks like. Every
     row that was on the board stays on it with the same title and status,
     and the new number is present exactly once.
+
+    **The bullet stream is checked with `parse_notes`, not with
+    `parse_board`'s `captures`, and the difference is the whole guard.**
+    This asked whether `captures` had changed, copied from
+    `roll_done_captures` where it is correct. `capture_entries` stops at
+    the first `#` line, and my two files open `# Nova — Issues` before
+    they reach a single bullet -- so on every real invocation `captures`
+    is `[]` before *and* after, and the branch could never fire. Measured
+    against the live `resources/issues.md`: `captures` is `[]`,
+    `parse_notes` is 764. Reviewer finding on runner#422, and it is the
+    one that was dead rather than merely narrow.
     """
     problems = []
     old = parse_board(before)
@@ -87,8 +120,13 @@ def check(before, after, number, title):
         elif now["title"] != was["title"] or now["status"] != was["status"]:
             problems.append(f"#{was['number']} changed underneath the new row")
 
-    if old["captures"] != new["captures"]:
-        problems.append("the capture bullets above the board changed")
+    old_notes = [note["text"] for note in parse_notes(before)]
+    new_notes = [note["text"] for note in parse_notes(after)]
+    if old_notes != new_notes:
+        problems.append(
+            f"the '## Entries' bullet stream changed: "
+            f"{len(old_notes)} -> {len(new_notes)} note(s)"
+        )
     for old_number, body in old["details"].items():
         if new["details"].get(old_number) != body:
             problems.append(f"the write-up for #{old_number} changed")
@@ -118,9 +156,31 @@ def main(argv=None):
         )
         return 1
 
+    # `add_row` drops `dated` straight into a table cell. Every sibling
+    # that writes that cell refuses a pipe and a newline -- `set_row_status`
+    # and `append_detail_note` both say so in as many words -- and this
+    # path never inherited it, so a stray `|` shifts every column right of
+    # it and `parse_board` reads the tail of the date as the rating.
+    # Reviewer finding on runner#422.
+    if "|" in args.dated or "\n" in args.dated or not args.dated.strip():
+        print(
+            "REFUSED: --dated goes straight into a table cell, so it may not "
+            "be blank or carry a '|' or a newline",
+            file=sys.stderr,
+        )
+        return 1
+
     write_up = ""
     if args.write_up_file:
         write_up = open(args.write_up_file, encoding="utf-8").read()
+        if _HEADING_LINE_RE.search(write_up):
+            print(
+                "REFUSED: the write-up carries a markdown heading line, which "
+                "would end the block early and drop everything after it from "
+                "the page",
+                file=sys.stderr,
+            )
+            return 1
 
     before = open(args.file, encoding="utf-8").read()
     after, number = add_row(
