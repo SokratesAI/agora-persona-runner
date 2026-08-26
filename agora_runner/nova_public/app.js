@@ -8160,6 +8160,30 @@
     }).catch(function () {});
   }
 
+  /* The same vouch, for a thread that is not the ask thread.
+   *
+   * `pingAskWatching` above resolves its conversation server-side by tag, so
+   * it can only ever speak for one thread. The dock grew a switcher and now
+   * paints any conversation, and the poll tick therefore vouched only while
+   * the ask thread was showing -- correctly, because vouching for the wrong
+   * id drops a notification he wanted. The cost of that correctness is that
+   * his complaint stayed live for every other thread: read a heartbeat's
+   * conversation here and the other app still buzzes about a message already
+   * on his screen. Naming the id is what fixes it.
+   *
+   * Same two guards, deliberately duplicated rather than shared: `onScreen`
+   * is the caller's answer to "is this thread actually showing", which is
+   * narrower than "the panel is polling", and `document.hidden` sends a
+   * backgrounded phone back to being notified. */
+  function pingConvWatching(onScreen, conversationId) {
+    if (!onScreen || !conversationId || document.hidden) return;
+    fetch("/api/conversations/watching", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: conversationId }),
+    }).catch(function () {});
+  }
+
   /* The body goes through `appendRichText` rather than straight into a text
    * node, so a picture he attached is a picture here instead of the literal
    * `![shot.png](/api/upload/…)` he would otherwise read back. That is the
@@ -10057,12 +10081,13 @@
       var token = sourceToken;
       pollHandle = setTimeout(function () {
         pollHandle = null;
-        // Presence is about the `/ask` thread specifically -- it is what
-        // tells Agora to withhold the push because he is already looking at
-        // the answer. Reading a different conversation is not looking at
-        // that one, so vouching from here would drop a notification he
-        // wanted.
+        // Vouch for whichever thread is painted, not for the ask thread
+        // regardless. Presence is per conversation on Agora's side and always
+        // was; until `/api/conversations/watching` existed this could only
+        // name the tagged one, so a switched-to thread got no vouch at all
+        // and buzzed his phone about a message he was watching arrive.
         pingAskWatching(isOpen && source.kind === "ask");
+        pingConvWatching(isOpen && source.kind === "conv", source.id);
         fetchPage(threadUrl())
           .then(function (payload) {
             if (token !== sourceToken) return;

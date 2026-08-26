@@ -217,3 +217,35 @@ def test_a_metered_persona_is_labelled_rather_than_hidden():
     rows = payload["personas"]
     assert [r["name"] for r in rows] == ["Nova Answers", "Zed"]
     assert [r["metered"] for r in rows] == [False, True]
+
+
+# `watching(id)` -- 2026-08-26. The switcher half of his 2026-08-25 capture:
+# the vouch next door in `nova_ask` resolves the tagged thread itself, so it
+# could only ever speak for that one and every other thread in the dock went
+# on buzzing his phone.
+
+def test_a_watched_conversation_is_marked_by_its_own_id():
+    (ok, reason), calls = _run(lambda: convs.watching("c-7"))
+    assert (ok, reason) == (True, "watching")
+    assert ("POST", "/conversations/c-7/presence", {}) in calls
+
+
+def test_no_conversation_id_never_marks_a_thread_blind():
+    """The dangerous direction is vouching for a thread he is not reading --
+    that drops a notification he wanted. An empty id must refuse rather than
+    fall back to some default conversation."""
+    (ok, _reason), calls = _run(lambda: convs.watching(""))
+    assert ok is False
+    assert not [c for c in calls if "presence" in c[1]]
+
+
+def test_a_store_that_refuses_the_ping_is_reported_as_not_watching():
+    """Agora validates the id rather than marking blind, so a refusal is how
+    a wrong id surfaces at all. Reading it as success would suppress nothing
+    while claiming it had."""
+    def refuse(method, path, payload=None):
+        return 404, {}
+
+    with patch.object(convs, "agora_internal", side_effect=refuse):
+        ok, _reason = convs.watching("c-gone")
+    assert ok is False
