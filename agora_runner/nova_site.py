@@ -162,6 +162,7 @@ from agora_runner.nova_boards import (
     priority_key,
     split_capture_done,
     split_capture_priority,
+    split_detail_conversation,
 )
 from agora_runner.nova_conversations import (
     conversations as conversation_list,
@@ -519,6 +520,34 @@ def _capture_parts(text):
     return done, priority, body
 
 
+def _split_details(bodies):
+    """`{number: body}` -> the rendered write-ups and their conversations.
+
+    Two dicts rather than one nested payload, because `board_page` windows
+    them on different terms: a list request drops both, an `item=` request
+    sends the one row's worth of each. Keyed by string, as `details`
+    already was -- the page addresses a row by `board + ":" + number`.
+
+    A row with no comments gets no key at all, so `detailComments` is
+    empty for almost every board and costs nothing to carry.
+    """
+    prose = {}
+    comments = {}
+    for number, body in bodies.items():
+        written, messages = split_detail_conversation(body)
+        prose[str(number)] = render_blocks(written)
+        if messages:
+            comments[str(number)] = [
+                {
+                    "author": message["author"],
+                    "stamp": message["stamp"],
+                    "blocks": render_blocks(message["text"]),
+                }
+                for message in messages
+            ]
+    return prose, comments
+
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -531,9 +560,14 @@ def board_payload(name):
     """
     edvard_markdown, nova_markdown, nova_archive_markdown = board_markdown(name)
     board = parse_board(edvard_markdown)
-    details = {
-        str(number): render_blocks(body) for number, body in board["details"].items()
-    }
+    # The write-up and the conversation appended under it, told apart
+    # here rather than on the page: `render_blocks` flattens both into the
+    # same list of paragraphs, and once that has happened nothing
+    # downstream can tell his question from my answer from the problem
+    # statement above them both. His capture, 2026-08-26: *"boarded issues
+    # does not have those nice colored comments like there are now in the
+    # 'not boarded yet' box"*.
+    details, detail_comments = _split_details(board["details"])
     # My own two files get parsed as a board as well as a note stream --
     # issue #97, the half of it the owner kept: *"making your board like
     # mine and giving yourself more tidiness is an improvement"*. Until
@@ -553,9 +587,7 @@ def board_payload(name):
     # today and every row on it will have been put there by a cycle that
     # judged it worth tracking. When it grows past a page it takes the
     # same treatment -- `board_page` is where that would go.
-    nova_details = {
-        str(number): render_blocks(body) for number, body in mine["details"].items()
-    }
+    nova_details, nova_detail_comments = _split_details(mine["details"])
     # Live first, then the rolled-off older half -- both files are
     # newest-first and the archive holds only what is older than the live
     # file's oldest, so appending preserves the order rather than
@@ -612,6 +644,7 @@ def board_payload(name):
         ],
         "items": board["items"],
         "details": details,
+        "detailComments": detail_comments,
         # One lowercased blob per row: its title plus its whole write-up,
         # in raw markdown. The owner, ideas.md #71: "Ability to search
         # through issues or ideas" -- and the first of the six kinds I
@@ -633,6 +666,7 @@ def board_payload(name):
         "notes": notes,
         "novaItems": mine["items"],
         "novaDetails": nova_details,
+        "novaDetailComments": nova_detail_comments,
         # The same blob, for my own rows. Built here rather than left out
         # because `board_page` windows `novaDetails` away on every list
         # request (runner#355), so from Cycle 407 onward the page holds my
@@ -738,11 +772,24 @@ def board_page(payload, limit=None, item=None, search=None, mine=False):
         # for the first row I board.
         rows = payload.get("novaItems") if mine else payload.get("items")
         bodies = payload.get("novaDetails") if mine else payload.get("details")
+        threads = (
+            payload.get("novaDetailComments") if mine else payload.get("detailComments")
+        )
         blocks = (bodies or {}).get(str(item))
         row = next((i for i in rows or [] if i.get("number") == item), None)
         return {
             "name": payload.get("name"),
-            "item": dict(row or {"number": item}, blocks=blocks or []),
+            # `comments` is the exchange appended under the write-up, drawn
+            # as bubbles rather than as more prose. A row nobody has
+            # commented on has no key here, so this is `[]` for most rows
+            # and `found` deliberately does not consult it -- a row can be
+            # real with an empty thread, and a thread cannot exist without
+            # a row.
+            "item": dict(
+                row or {"number": item},
+                blocks=blocks or [],
+                comments=(threads or {}).get(str(item)) or [],
+            ),
             "found": blocks is not None or row is not None,
         }
     if search is not None:
@@ -780,6 +827,11 @@ def board_page(payload, limit=None, item=None, search=None, mine=False):
         # to. The rows stay -- they are one line each, and dropping those
         # would empty the tab rather than window it.
         page["novaDetails"] = {}
+        # The conversations go out on the same terms as the write-ups they
+        # were split out of: the list request is the one that must not
+        # carry ~60KB of bodies, and a thread is part of that body.
+        page["detailComments"] = {}
+        page["novaDetailComments"] = {}
     return page
 
 

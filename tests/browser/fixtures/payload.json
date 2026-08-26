@@ -385,6 +385,7 @@
       }
     ],
     "details": {},
+    "detailComments": {},
     "notes": [
       {
         "date": "2026-08-09",
@@ -427,6 +428,7 @@
     ],
     "novaItems": [],
     "novaDetails": {},
+    "novaDetailComments": {},
     "notesTotal": 4
   },
   "boardItem": {
@@ -479,6 +481,38 @@
             {
               "kind": "text",
               "text": " — his explicit ask."
+            }
+          ]
+        }
+      ],
+      "comments": [
+        {
+          "author": "Edvard",
+          "stamp": "08-12",
+          "blocks": [
+            {
+              "type": "p",
+              "spans": [
+                {
+                  "kind": "text",
+                  "text": "any of these built yet?"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "author": "Nova",
+          "stamp": "08-12 (Cycle 120)",
+          "blocks": [
+            {
+              "type": "p",
+              "spans": [
+                {
+                  "kind": "text",
+                  "text": "two of the five, and the analytics page is next."
+                }
+              ]
             }
           ]
         }

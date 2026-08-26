@@ -6756,15 +6756,93 @@ describe("holding a board row opens edit mode", () => {
  * that discuss each idea."* Rated 🔴 Immediately and open since 08-12 --
  * skipped by every cycle since, which is what he filed.
  *
- * There is no thread widget to test, and that is the design: the comment
- * is appended to the row's own write-up, which the open row already
- * fetches and renders. So what is worth pinning is the composer, what it
- * posts, and the one thing a "saved" message can lie about -- whether the
- * body he is looking at afterwards actually contains his sentence.
+ * The comment is appended to the row's own write-up, which the open row
+ * already fetches -- so for a long time there was no thread widget and
+ * that was called the design. He overruled it on 2026-08-26: *"boarded
+ * issues does not have those nice colored comments like there are now in
+ * the 'not boarded yet' box, so take the best from both worlds here."* So
+ * there is a thread now, drawn from the same body, and what is worth
+ * pinning is that the split holds on the page -- his words above the first
+ * note stay write-up, the notes below it become bubbles with the right
+ * speaker -- plus the composer, what it posts, and the one thing a "saved"
+ * message can lie about: whether the body he is looking at afterwards
+ * actually contains his sentence.
  */
 describe("commenting on a boarded row", () => {
   const composer = (window) =>
     window.document.getElementById("item-57").querySelector(".item-comment");
+
+  test("the exchange under the write-up is drawn as green and purple bubbles", async () => {
+    const window = await loadSite("/issues#57");
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    const messages = [...body.querySelectorAll(".note-msg")];
+    assert.equal(messages.length, 2, "the row's two notes did not become bubbles");
+    assert.deepEqual(
+      messages.map((m) => m.querySelector(".note-msg-name").textContent),
+      ["Edvard", "Nova"],
+    );
+    // His green, mine purple -- the same two classes the notes page and the
+    // capture box use, which is the whole of what he asked for.
+    assert.ok(messages[0].className.includes("note-msg-mine"));
+    assert.ok(messages[1].className.includes("note-msg-nova"));
+    assert.match(messages[0].querySelector(".note-msg-body").textContent, /any of these built yet/);
+    // The stamp as the author wrote it, cycle marker and all.
+    assert.equal(messages[1].querySelector(".note-msg-when").textContent, "08-12 (Cycle 120)");
+  });
+
+  test("a row whose whole body is a conversation still shows it", async () => {
+    /* The write-up is `[]` here because everything under the heading was a
+     * dated note. That branch used to `return` before the composer, so a
+     * row he had commented on and nothing else would have shown "No
+     * write-up yet" with his own words and the reply box hidden behind it. */
+    const window = await loadSite("/issues#57", {
+      board: (url) =>
+        url.includes("item=")
+          ? {
+              name: "issues",
+              item: {
+                number: 57,
+                title: "Talked about, never written up",
+                status: "🟡 In progress",
+                statusKey: "in-progress",
+                updated: "08-26",
+                where: "",
+                priority: "",
+                priorityKey: "",
+                done: false,
+                blocks: [],
+                comments: [
+                  {
+                    author: "Edvard",
+                    stamp: "08-26",
+                    blocks: [{ type: "p", spans: [{ kind: "text", text: "is this one live?" }] }],
+                  },
+                ],
+              },
+              found: true,
+            }
+          : null,
+    });
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    assert.equal(body.querySelectorAll(".note-msg").length, 1, "the only content was dropped");
+    assert.match(body.querySelector(".note-msg-body").textContent, /is this one live/);
+    assert.ok(body.querySelector(".item-comment"), "no way to answer him on this row");
+  });
+
+  test("the write-up above the first note stays write-up", async () => {
+    /* The failure this guards is the split running too far: the notes are
+     * appended into the same body, so a looser rule pulls his statement of
+     * the problem into a bubble attributed to whoever spoke first. */
+    const window = await loadSite("/issues#57");
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    const prose = [...body.children]
+      .filter((node) => !node.classList.contains("note-msg"))
+      .map((node) => node.textContent)
+      .join(" ");
+    assert.match(prose, /I need more visualisations/);
+    assert.match(prose, /Five pages, in the order I would build them/);
+    assert.doesNotMatch(prose, /any of these built yet/);
+  });
 
   test("an open row offers a comment box under its write-up", async () => {
     const window = await loadSite("/issues#57");

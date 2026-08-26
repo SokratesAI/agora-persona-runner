@@ -692,10 +692,90 @@ def _touch_row_updated(markdown, number, dated):
 # forever, since no reply of mine can clear a note that was never a note.
 # `append_detail_note` refuses an empty `dated`, so every real note has one
 # and requiring it costs nothing.
+#
+# **The year is optional because the live files have both shapes.** `dated`
+# is whatever the caller passed, and 7 of the 83 notes in the live
+# `issues.md` are `2026-08-15` rather than `08-15` -- so a bare `\d{2}-\d{2}`
+# fails at a fixed offset on those (it eats `20`, then wants `-` and finds
+# `2`) and reads a real note as prose. Rows #81, #87, #90 and #91 are
+# written that way throughout, which means this matcher has been blind to
+# their entire threads. Found by review on runner#402, measured against the
+# vault before the pattern was widened.
+_NOTE_STAMP = r"(?:\d{4}-)?\d{2}-\d{2}"
+
 _COMMENT_NOTE_RE = re.compile(
-    r"^\*\*(" + "|".join(sorted(NOTE_AUTHORS.values())) + r"), \d{2}-\d{2}[^:*]*:\*\*",
+    r"^\*\*(" + "|".join(sorted(NOTE_AUTHORS.values())) + r"), " + _NOTE_STAMP + r"[^:*]*:\*\*",
     re.MULTILINE,
 )
+
+
+# The same shape as `_COMMENT_NOTE_RE` above, with the stamp captured so the
+# page can print it. One `_NOTE_STAMP` between them rather than two copies of
+# the date pattern: they are one definition of what a note is, and the review
+# that found the missing year found it in the copy, which is the argument.
+_COMMENT_SPLIT_RE = re.compile(
+    r"^\*\*(" + "|".join(sorted(NOTE_AUTHORS.values()))
+    + r"), (" + _NOTE_STAMP + r"[^:*]*):\*\*[ \t]?",
+    re.MULTILINE,
+)
+
+
+def split_detail_conversation(body):
+    """One write-up -> `(prose, [{"author", "stamp", "text"}])`.
+
+    The owner, `issues.md` capture 2026-08-26: *"i see that boarded issues
+    does not have those nice colored comments like there are now in the 'not
+    boarded yet' box, so take the best from both worlds here."*
+
+    A board comment is appended into the row's own write-up as a
+    `**<author>, 08-26:**` line (`append_detail_note`), so the page has been
+    drawing his question and my answer as two more paragraphs of the same
+    prose block -- indistinguishable from the problem statement above them
+    and from each other. The capture box and the notes page both draw the
+    identical exchange as green and purple bubbles. This is the split that
+    lets a boarded row do the same, and it changes nothing in the file: the
+    markdown he reads in Obsidian is untouched, this is only how the page
+    reads it back.
+
+    Everything before the first note marker is the write-up proper. From
+    that marker on, every marker starts a message that runs to the next one.
+    That is deliberately the same positional rule
+    `unanswered_comment_bodies` uses to decide whether a row is waiting on
+    me -- one reading of what a note is, not two -- and it means a marker
+    written *inside* the problem statement pulls the rest of the statement
+    into a bubble. That is one honest failure: such a line is a note by
+    every other definition in this module, and inventing a second, looser
+    one here is how the two halves drift apart.
+
+    **The other one is measured rather than hypothetical, and it is not
+    fixed here.** Two hand-written shapes in the live `issues.md` are real
+    notes that neither this nor `_COMMENT_NOTE_RE` reads as one: a stamp
+    that does not open with the date (`**<author>, capture 2026-08-20:**`,
+    row 96) and a headline note whose bold run carries the whole sentence
+    and ends in a full stop rather than a colon (`**<author>, 08-20 (Cycle
+    269) - closed on your word.**`, rows 4, 59 and 95). Five lines across
+    four rows, counted against the file. Loosening the terminator to catch
+    them means letting a bold run end anywhere, which is exactly the prose
+    that `[^:*]*` is here to keep out -- so it is a boundary to move
+    deliberately with its own measurement, not a character to add at the
+    end of the cycle that widened the year.
+    """
+    text = body or ""
+    found = list(_COMMENT_SPLIT_RE.finditer(text))
+    if not found:
+        return text.strip(), []
+    prose = text[: found[0].start()].strip()
+    messages = []
+    for position, match in enumerate(found):
+        end = found[position + 1].start() if position + 1 < len(found) else len(text)
+        messages.append({
+            "author": match.group(1),
+            # `08-26` or `08-26 (Cycle 462)` -- whatever the author wrote,
+            # not re-derived. `append_detail_note` owns that shape.
+            "stamp": match.group(2).strip(),
+            "text": text[match.end():end].strip(),
+        })
+    return prose, messages
 
 
 def unanswered_comments(markdown):

@@ -38,6 +38,10 @@ Five pages, in the order I would build them.
 
 - **1. Issues and Ideas, as their own pages** — his explicit ask.
 
+**Edvard, 08-12:** any of these built yet?
+
+**Nova, 08-12 (Cycle 120):** two of the five, and the analytics page is next.
+
 ## 51 — The Sokrates inbox should be one way
 
 **Status: ✅ Done 08-10 — `inbox.md` 75KB → 25KB.**
