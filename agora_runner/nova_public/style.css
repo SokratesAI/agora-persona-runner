@@ -1062,6 +1062,28 @@ a.status-sub:hover .status-pr { color: var(--text); }
   color: var(--accent);
   border-color: var(--accent);
 }
+/* The category headings inside the drawer.
+ *
+ * A real `<h2>` rather than a styled `<div>`: the drawer is now a list of
+ * lists, and a heading is the only thing that lets a screen reader jump
+ * between the groups the way a sighted reader jumps between them by eye.
+ *
+ * `margin-top` on top of the flex `gap` is what makes a group read as a
+ * group -- the gap is uniform by definition, so with it alone the heading
+ * sits exactly as far from the link above it as from the link below, and
+ * the grouping is carried by the words alone. `:first-child` would not
+ * help here because the first heading is never first; the pinned three
+ * are. The heading is not a link, so it needs no tap target and no
+ * min-height. */
+.nav-group {
+  margin: 0.75rem 0 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  opacity: 0.75;
+}
 
 /* Dims the page behind the drawer, and is the large tap target that
  * closes it -- on a phone, reaching back up to the button is the worse
