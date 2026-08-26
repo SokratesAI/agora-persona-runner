@@ -78,12 +78,20 @@ def test_a_multi_line_note_keeps_its_own_lines_and_stops_at_the_next_author():
 def test_bold_that_is_not_a_dated_note_is_not_a_speaker():
     """The same bar `_COMMENT_NOTE_RE` sets, so the two readings agree.
 
-    Without the date requirement a write-up that opens `**Edvard wants:**`
-    loses its entire body into a bubble attributed to him.
+    The case is the one that module's own comment names -- a write-up
+    opening `**<author>, in his own words:**`, which is prose. Without the
+    date requirement the whole body goes into a bubble attributed to him,
+    and the *first* draft of this test could not see that: it used a form
+    with no comma at all, which no plausible loosening of the pattern would
+    have matched either. It survived the mutation it was written for.
     """
-    prose, messages = split_detail_conversation("**Edvard:** not a dated note.")
-    assert messages == []
-    assert prose == "**Edvard:** not a dated note."
+    for prose_line in (
+        "**Edvard, in his own words:** the write-up starts here.",
+        "**Nova:** not a note at all.",
+    ):
+        prose, messages = split_detail_conversation(prose_line)
+        assert messages == [], prose_line
+        assert prose == prose_line
 
 
 def test_a_note_the_page_can_read_back_is_the_one_the_writer_wrote():
