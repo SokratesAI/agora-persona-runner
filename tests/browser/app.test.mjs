@@ -7787,6 +7787,74 @@ describe("the plan page", () => {
     assert.ok(row.querySelector(".goal-verdict").classList.contains("off"));
   });
 
+  /* Approve / Strike on a goal (idea #38's last half). `goals.md` has told
+   * him since it was written that nothing in it is settled until he edits
+   * it, and editing it meant Obsidian on a phone -- so in ten days he
+   * settled nothing and the row stayed "In progress".
+   *
+   * What only the DOM can answer: whether the state is readable without a
+   * colour, whether the way back exists, and whether a double-tap can race
+   * two writes at one goal. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("a goal awaiting his call says so in words, and offers both taps", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "proposed" }]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.querySelector(".goal-state").textContent, /Awaiting your call/);
+    assert.deepEqual([...row.querySelectorAll(".goal-state-btn")].map((b) => b.textContent),
+      ["Approve", "Strike"]);
+    // Nothing pressed yet, so neither button claims to be the current one.
+    assert.deepEqual([...row.querySelectorAll(".goal-state-btn")].map((b) => b.getAttribute("aria-pressed")),
+      ["false", "false"]);
+  });
+
+  test("an approved goal reads as approved in text, not only in colour", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "approved" }]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.querySelector(".goal-state").textContent, /Approved/);
+    assert.ok(row.querySelector(".goal-state").classList.contains("approved"));
+    assert.equal(row.querySelector(".goal-state-btn[data-goal-status='approved']").getAttribute("aria-pressed"), "true");
+  });
+
+  test("a struck goal still offers the way back, because that is the point", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "declined" }]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.querySelector(".goal-state").textContent, /Struck/);
+    // Approve is still there. Hiding it would make a struck goal a
+    // decision he could not take back without the app this replaces.
+    assert.ok(row.querySelector(".goal-state-btn[data-goal-status='approved']"));
+  });
+
+  test("tapping Approve sends the goal name and the status, and nothing else", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "proposed" }]) });
+    window.document.querySelector(".goal-state-btn[data-goal-status='approved']").click();
+    await settle();
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/goal/status");
+    assert.deepEqual(window.posted[0].body, { name: G1.name, status: "approved" });
+    assert.match(window.document.querySelector(".goal-state").textContent, /Approved/);
+  });
+
+  test("both buttons go disabled while the write is in flight", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "proposed" }]) });
+    const buttons = [...window.document.querySelectorAll(".goal-state-btn")];
+    buttons[0].click();
+    // Before the microtasks drain: a second tap here would race two writes
+    // at one goal, which is the failure the disable exists for.
+    assert.deepEqual(buttons.map((b) => b.disabled), [true, true]);
+    await settle();
+    assert.deepEqual(buttons.map((b) => b.disabled), [false, false]);
+  });
+
+  test("a refused write snaps back rather than showing a tick nobody wrote", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "proposed" }]) });
+    window.postReply = { ok: false, message: "that goal is no longer where the page thought it was" };
+    window.document.querySelector(".goal-state-btn[data-goal-status='approved']").click();
+    await settle();
+    assert.match(window.document.querySelector(".goal-state").textContent, /Awaiting your call/);
+    assert.match(window.document.querySelector(".goal-state-note").textContent, /Could not save/);
+  });
+
   test("the bar puts now and target on one shared scale", async () => {
     const window = await loadSite("/plan", { plan: scored([G1]) });
     const row = window.document.querySelector(".goal-row");

@@ -2449,6 +2449,20 @@ body.has-full-chart { overflow: hidden; }
 .goal-verdict.on { color: var(--good); border-color: rgba(123, 216, 143, 0.45); }
 .goal-verdict.off { color: var(--warn); border-color: rgba(232, 183, 92, 0.45); }
 
+/* What the owner has said about this goal, and the two taps that say it.
+ * Wraps rather than scrolls: at his 360px the state word and both buttons
+ * do not fit on one line, and a control that needs a sideways scroll to
+ * reach is one he will not use. Touch targets are 44px tall (his own
+ * device report is 360x697 CSS px at DPR 3). */
+.goal-verdict-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.goal-state { font-size: 0.75rem; }
+.goal-state.approved { color: var(--good); }
+.goal-state.declined { color: var(--dim); }
+.goal-state-btn { min-height: 44px; padding: 0 0.7rem; font: inherit; font-size: 0.78rem; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text); }
+.goal-state-btn.current { border-color: var(--accent); color: var(--accent); }
+.goal-state-btn[disabled] { opacity: 0.5; cursor: default; }
+.goal-state-note { font-size: 0.72rem; color: var(--dim); }
+
 .goal-measure { margin: 0.2rem 0 0; font-size: 0.78rem; color: var(--dim); line-height: 1.4; }
 .goal-figures { margin: 0.3rem 0 0; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
 .goal-now { font-size: 1.05rem; font-weight: 600; }

@@ -691,3 +691,108 @@ def test_a_missing_document_carries_both_ranked_lists():
     doc = _doc(plan_payload({}), "roadmap")
     assert doc["missing"] is True
     assert doc["ranked"] == [] and doc["rankedDone"] == []
+
+
+# --- The owner ticking a goal (idea #38's remaining half) ---------------
+
+
+GOALS_WITH_BLOCKS = """---
+type: note
+---
+
+# Goals
+
+## The slate
+
+**G1 — one.**
+
+```goal
+name: G1 — one
+measure: things per week
+now: 3
+target: 1
+direction: down
+```
+
+Prose under G1 that nothing parses.
+
+**G2 — two.**
+
+```goal
+name: G2 — two
+now: 5
+status: declined
+```
+
+Prose under G2.
+"""
+
+
+def test_a_goal_with_no_status_line_reads_as_proposed():
+    """The compatibility case, and it is every block in the live file.
+
+    `goals.md` was written on 2026-08-16 with no `status:` anywhere, so a
+    default of anything but "proposed" would misreport five real goals as
+    settled the moment this ships.
+    """
+    payload = plan_payload({"goals": GOALS_WITH_BLOCKS})
+    goals = [d for d in payload["documents"] if d["key"] == "goals"][0]
+    rows = {row["name"]: row for row in goals["scoreboard"]}
+    assert rows["G1 — one"]["status"] == "proposed"
+    assert rows["G2 — two"]["status"] == "declined"
+
+
+def test_an_unreadable_status_reads_as_proposed_not_as_a_fourth_state():
+    """The row is a control he taps. A value nothing understands has to
+    render as the one state whose next tap writes a value that is."""
+    payload = plan_payload({"goals": GOALS_WITH_BLOCKS.replace("status: declined", "status: maybe")})
+    goals = [d for d in payload["documents"] if d["key"] == "goals"][0]
+    rows = {row["name"]: row for row in goals["scoreboard"]}
+    assert rows["G2 — two"]["status"] == "proposed"
+
+
+def test_setting_a_status_inserts_the_line_and_touches_nothing_else():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    out = set_status_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "approved")
+    assert "status: approved" in out
+    # Every other line of his document survives, in order.
+    before = [line for line in GOALS_WITH_BLOCKS.split("\n")]
+    after = [line for line in out.split("\n")]
+    assert [line for line in after if line != "status: approved"] == before
+    assert after.index("status: approved") < after.index("```", after.index("direction: down"))
+
+
+def test_setting_a_status_replaces_an_existing_one_in_place():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    out = set_status_in_goals(GOALS_WITH_BLOCKS, "G2 — two", "approved")
+    assert "status: declined" not in out
+    assert out.count("status: approved") == 1
+    assert len(out.split("\n")) == len(GOALS_WITH_BLOCKS.split("\n"))
+
+
+def test_a_goal_that_is_not_there_is_a_moved_address_not_a_write():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    assert set_status_in_goals(GOALS_WITH_BLOCKS, "G9 — renamed", "approved") is None
+    assert set_status_in_goals(GOALS_WITH_BLOCKS, "", "approved") is None
+    assert set_status_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "settled") is None
+
+
+def test_an_unterminated_fence_is_never_edited():
+    """`_fenced` deliberately puts an unterminated block's lines back as
+    prose, because it is a half-written edit. Writing inside one would move
+    the owner's own text into a block he is still typing."""
+    from agora_runner.nova_plan import set_status_in_goals
+
+    broken = "```goal\nname: G1 — one\nnow: 3\n\n**G2**\n"
+    assert set_status_in_goals(broken, "G1 — one", "approved") is None
+
+
+def test_the_status_line_matches_the_indent_of_the_block_it_joins():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    indented = "  ```goal\n  name: G1\n  now: 3\n  ```\n"
+    out = set_status_in_goals(indented, "G1", "approved")
+    assert "  status: approved" in out

@@ -4952,3 +4952,43 @@ def test_a_capture_survives_a_board_dict_with_no_replies_list():
     assert nova_site._capture_replies(board, 0) == []
     assert nova_site._capture_replies({"captures": [], "items": [], "details": {},
                                        "captureReplies": [["a"]]}, 3) == []
+
+
+# --- the owner ticking a goal (idea #38's remaining half) ---------------
+
+
+def test_approving_a_goal_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "set_goal_status", return_value=(True, "approved")) as put:
+        status, _, body = _post("/api/goal/status", {"name": "G1 — one", "status": "approved"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    put.assert_called_once_with("G1 — one", "approved")
+
+
+def test_a_goal_that_was_renamed_under_the_page_is_a_409_not_a_502():
+    """Nothing failed -- a cycle rewrote the block's `name:` while the page
+    was open. The address moved, so the page should re-read."""
+    with patch.object(nova_site, "set_goal_status",
+                      return_value=(False, "that goal is no longer where the page thought it was")):
+        status, _, body = _post("/api/goal/status", {"name": "G9", "status": "approved"})
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": "approved"},
+    {"name": "  ", "status": "approved"},
+    {"name": 42, "status": "approved"},
+    {"name": "G1"},
+    {"name": "G1", "status": "settled"},
+    {"name": "G1", "status": ""},
+    {"name": "G1", "status": None},
+    # A status the parser would read as "proposed" must not be writable as
+    # a literal, or the file grows a value the page cannot render.
+    {"name": "G1", "status": "Approved"},
+])
+def test_a_goal_status_that_could_write_a_word_nothing_reads_is_rejected(payload):
+    with patch.object(nova_site, "set_goal_status") as put:
+        status, _, _ = _post("/api/goal/status", payload)
+    assert status == 400
+    put.assert_not_called()
