@@ -318,7 +318,65 @@ async function probeReplayHeader(browser) {
   return { probe: 'replay-header', ok: detail.status === 200 && detail.replayed === '1', detail, errors };
 }
 
+/* Every link in the menu drawer is reachable, on the phone that reported it.
+ *
+ * The owner, `issues.md` 2026-08-26: *"The sliding sidebar menu in Nova is
+ * now so full with pages links that it starts to move out the bottom of
+ * my screen."* The drawer is a `position: fixed` flex column pinned
+ * `top: 0; bottom: 0`, so its box is exactly one viewport tall; the
+ * thirteen links inside it are not. Without an `overflow-y` the surplus
+ * simply hangs below the bottom edge, unreachable -- `body.nav-open`
+ * stops the page behind from scrolling, and the drawer itself never
+ * scrolled.
+ *
+ * The viewport is the owner's, not the file's default: 360x697 CSS px, off the
+ * device report pasted into `notes.md`. That matters because the
+ * probe's failure has to be *possible* -- at the 844px this file uses
+ * elsewhere the links very nearly fit, and a probe that is green before
+ * the fix measures nothing.
+ *
+ * The assertion is the user's sentence, not the implementation: scroll
+ * the drawer as far down as it goes and the last link must be inside the
+ * viewport. `scrollable` is reported beside it rather than asserted, so
+ * a future layout that makes all thirteen fit outright still passes.
+ */
+async function probeNavReachable(browser, path) {
+  const ctx = await browser.newContext({ ...PHONE, viewport: { width: 360, height: 697 } });
+  const page = await ctx.newPage();
+  const errors = watch(page);
+  await page.goto(base + path, { waitUntil: 'networkidle', timeout: 30000 });
+
+  await page.locator('.menu-btn').tap();
+  await page.waitForTimeout(400); // the slide is 220ms
+
+  const detail = await page.evaluate(() => {
+    const nav = document.querySelector('.nav');
+    const tabs = nav ? nav.querySelectorAll('.nav-tab') : [];
+    const last = tabs.length ? tabs[tabs.length - 1] : null;
+    if (!nav || !last) return { open: false };
+    // Ask for the bottom before scrolling too, so the report says
+    // whether this drawer needed the scroll at all.
+    const before = last.getBoundingClientRect().bottom;
+    nav.scrollTop = nav.scrollHeight;
+    const after = last.getBoundingClientRect().bottom;
+    return {
+      open: nav.classList.contains('open'),
+      tabs: tabs.length,
+      viewport: window.innerHeight,
+      scrollable: nav.scrollHeight > nav.clientHeight,
+      lastBottomBeforeScroll: Math.round(before),
+      lastBottomAfterScroll: Math.round(after),
+      lastText: last.textContent.trim(),
+    };
+  });
+  await ctx.close();
+
+  const ok = !!detail.open && detail.tabs > 0 && detail.lastBottomAfterScroll <= detail.viewport;
+  return { probe: 'nav-reachable' + path, ok, detail, errors };
+}
+
 const PROBES = {
+  'nav-reachable': (b) => probeNavReachable(b, '/'),
   'search-focus': (b) => probeSearchFocus(b, '/issues'),
   'search-focus-ideas': (b) => probeSearchFocus(b, '/ideas'),
   'replay-header': (b) => probeReplayHeader(b),
