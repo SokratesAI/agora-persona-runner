@@ -9767,6 +9767,25 @@ describe("unread replies are counted on the card and in the header", () => {
     assert.equal(unreadChip(card).textContent, "1 new");
   });
 
+  test("more unread replies than comments prints the number, not \"all new\"", async () => {
+    /* `count` is comments and `unread` is replies, so they are not two
+     * measurements of one thing. One comment carrying two replies he has not
+     * read is 2 and 1, and "all new" there would describe the comments from a
+     * count of the replies. Two honest numbers beat one confident word. */
+    const comments = JSON.parse(JSON.stringify(payload.comments));
+    comments.byCycle["55"][0].replies = [
+      { author: "commentator", stamp: "2026-08-09 13:12", text: "one" },
+      { author: "commentator", stamp: "2026-08-09 13:20", text: "two" },
+    ];
+    const window = await loadSite("/", {
+      comments,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    const card = cardFor(window, 55);
+    assert.match(bubble(card).textContent, /^💬 1/);
+    assert.equal(unreadChip(card).textContent, "2 new");
+  });
+
   /* the owner, `issues.md` 2026-08-26: *"When i have a journal comments drawer
    * open, i do not need notifications as i allready have it open."* He sent a
    * screenshot of the drawer open with three of my replies landing in it over

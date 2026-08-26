@@ -1839,6 +1839,14 @@
        * which, so one of them becomes a word. `2 new` beside `💬 5` still says
        * two different things and looks it.
        *
+       * `===` and not `>=`, which is what I wrote first. The two quantities
+       * are not the same kind of thing -- `count` is comments, `unread` is
+       * replies -- so one comment carrying five unread replies gives 5 and 1,
+       * and "all new" there would be a claim about the comments made from a
+       * measurement of the replies. `5 new` beside `💬 1` is two honest
+       * numbers. "all new" is only ever printed when the chip would otherwise
+       * have repeated the count exactly, which is the case he reported.
+       *
        * `target.cycle` and not a guard on it: both callers of this function
        * are `cycleTarget`, so there is no drawer here without a cycle. A
        * null-check would have looked like defence and been dead code -- I
@@ -1846,7 +1854,7 @@
       var unread = unreadReplies(target.cycle, lastItems);
       if (unread) {
         toggle.appendChild(el("span", "comment-unread",
-          unread >= count ? "all new" : unread + " new"));
+          unread === count ? "all new" : unread + " new"));
       }
       // `classList.toggle` with a force argument, so a repaint that clears the
       // chip clears the highlight with it.
