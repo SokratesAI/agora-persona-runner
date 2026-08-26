@@ -53,10 +53,8 @@ shape of the catalog is testable without a cluster; only `read_*` shells out.
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
-import sys
 from dataclasses import dataclass, field
 
 # Namespaces holding things a person would call "a service". `kube-system`,
