@@ -59,6 +59,23 @@ itself. The org list is derived from the checkouts' own owners rather than
 hardcoded, so the "no stale constant" property above survives, and the
 checkouts are unioned back in so nothing that was swept before stops being.
 
+**A dismissal is not permanent when the reason for it was "there is no
+fix" -- Cycle 457.** `SokratesAI/sokrates-docs` carried two high-severity
+`image-size` advisories with no patched version published, so this tool
+exited 2 every cycle and no cycle could do anything but re-measure that
+there was nothing to do. They are dismissed now as `tolerable_risk`, with
+the measurement in the dismissal comment: the package is reached only by
+`@docusaurus/mdx-loader` at build time, and the Docker runner stage ships
+only `build/` and a `serve.mjs` that imports nothing but node builtins, so
+no `node_modules` reaches production at all. That dismissal is correct and
+it is also a trap, because GitHub never reopens a dismissed alert -- if a
+patch is published tomorrow, nothing anywhere would ever say so again. So
+the sweep now reads dismissed alerts too and brings one back the moment a
+patched version exists, but only when the dismissal was a judgement about
+the cost of fixing (`tolerable_risk`, `no_bandwidth`, `fix_started`)
+rather than about whether the vulnerability applies at all (`not_used`,
+`inaccurate`) -- see `_REVIVING_DISMISSALS`.
+
 Exit status: 0 when every repo answered and nothing needs acting on, 1
 when anything was unreadable or alerts are disabled somewhere, 2 when
 there is an open alert whose fix is not already on the default branch. So
@@ -117,7 +134,7 @@ def alerts_for(repo, run=None):
     code, out, err = (run or _gh)(
         [
             "api",
-            f"repos/{repo}/dependabot/alerts?state=open&per_page=100",
+            f"repos/{repo}/dependabot/alerts?state=open,dismissed&per_page=100",
         ]
     )
     if code != 0:
@@ -131,7 +148,7 @@ def alerts_for(repo, run=None):
         return ERROR, "gh returned something that is not JSON"
     if not isinstance(payload, list):
         return ERROR, "gh returned a JSON object where a list of alerts was expected"
-    return OK, [_summarise(a) for a in payload]
+    return OK, [a for a in (_summarise(x) for x in payload) if _still_counts(a)]
 
 
 def _summarise(alert):
@@ -154,7 +171,46 @@ def _summarise(alert):
         "manifest": (alert.get("dependency") or {}).get("manifest_path") or "?",
         "patched": patched.get("identifier") or "none published",
         "url": alert.get("html_url") or "",
+        "state": (alert.get("state") or "open").lower(),
+        "dismissed_reason": (alert.get("dismissed_reason") or "").lower(),
     }
+
+
+# Dismissal reasons a published patch actually overturns. Cycle 457 wrote
+# this after dismissing two `image-size` advisories on `sokrates-docs`
+# that had no patch to apply -- 2.0.2 was the newest release and both
+# advisories were open against it, so the tool exited 2 every cycle and
+# there was nothing any cycle could do about it. Dismissing them is
+# honest; dismissing them *silently and forever* is not, because the
+# reason they were tolerable was partly that no fix existed, and nothing
+# on GitHub reopens a dismissed alert when one is published.
+#
+# So the split is by what the dismissal was actually a judgement about.
+# `tolerable_risk`, `no_bandwidth` and `fix_started` are judgements about
+# the *cost of fixing*, and a published patch is exactly the fact that
+# changes that cost -- those come back. `not_used` and `inaccurate` are
+# judgements about whether the vulnerability applies here at all, and a
+# patch says nothing about that, so re-raising them would be noise
+# against a decision that is still correct. Anything GitHub adds later
+# that this set does not name stays dismissed, which is the quiet
+# direction; that is deliberate, because a reason nobody has reasoned
+# about should not start raising the exit status on its own.
+_REVIVING_DISMISSALS = {"tolerable_risk", "no_bandwidth", "fix_started"}
+
+
+def _still_counts(alert):
+    """Is this alert something a cycle should still be shown?
+
+    Open alerts always. A dismissed one only once a patch it could apply
+    exists and the dismissal was about the cost of applying it.
+    """
+    if alert["state"] == "open":
+        return True
+    if alert["state"] != "dismissed":
+        return False
+    if alert["patched"] == "none published":
+        return False
+    return alert["dismissed_reason"] in _REVIVING_DISMISSALS
 
 
 # The only manifests this can read a resolved version out of. A lockfile
@@ -314,6 +370,16 @@ def format_report(results):
         )
         for repo, alert in actionable:
             _describe(repo, alert, alert["summary"])
+            # A revived alert reads as a brand-new finding otherwise, and
+            # the next cycle would re-derive the whole judgement that was
+            # already made and written on the dismissal.
+            if alert.get("state") == "dismissed":
+                lines.append(
+                    "      previously dismissed as "
+                    f"{alert.get('dismissed_reason') or 'unknown'} — back because "
+                    f"{alert['patched']} is now published; read the "
+                    "dismissal comment before deciding again"
+                )
             # Only worth saying when something was tried and did not
             # settle it. "no reader for X" here is the honest reason this
             # alert is still in the actionable list rather than an

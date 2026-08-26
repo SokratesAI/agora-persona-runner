@@ -428,3 +428,106 @@ def test_an_org_listing_at_the_limit_is_an_error_rather_than_a_short_sweep():
     live, error, archived = security_alerts.repos_in_org("o", run=_runner(0, body))
     assert live == [] and archived == []
     assert "truncated" in error
+
+
+# --- a dismissal that a published patch overturns (Cycle 457) ---
+#
+# Two high-severity `image-size` advisories on `sokrates-docs` had no
+# patched version to apply, so the sweep exited 2 every cycle with nothing
+# any cycle could do. Dismissing them is honest. Dismissing them forever is
+# not, because GitHub never reopens a dismissed alert on its own, so the
+# day a patch is published nothing anywhere would say so.
+
+
+def _dismissed(severity, package, reason, patched="9.9.9"):
+    alert = _alert(severity, package, patched=patched)
+    alert["state"] = "dismissed"
+    alert["dismissed_reason"] = reason
+    return alert
+
+
+def test_an_open_alert_is_still_reported_when_dismissed_ones_are_read_too():
+    body = json.dumps([_alert("high", "brace-expansion", patched="2.1.4")])
+    state, payload = alerts_for("o/r", run=_runner(0, body))
+    assert state == OK
+    assert [a["package"] for a in payload] == ["brace-expansion"]
+
+
+def test_the_query_asks_for_dismissed_alerts_as_well_as_open_ones():
+    seen = []
+
+    def run(args):
+        seen.append(args)
+        return 0, "[]", ""
+
+    alerts_for("o/r", run=run)
+    assert "state=open,dismissed" in seen[0][-1]
+
+
+def test_a_dismissal_with_no_patch_published_stays_out_of_the_report():
+    alert = _dismissed("high", "image-size", "tolerable_risk", patched=None)
+    alert["security_vulnerability"]["first_patched_version"] = None
+    state, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
+    assert state == OK
+    assert payload == []
+
+
+def test_a_dismissal_comes_back_once_a_patch_is_published():
+    alert = _dismissed("high", "image-size", "tolerable_risk", patched="2.0.3")
+    state, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
+    assert state == OK
+    assert [a["package"] for a in payload] == ["image-size"]
+    assert payload[0]["patched"] == "2.0.3"
+
+
+def test_a_revived_alert_raises_the_exit_status_and_says_why_it_is_back():
+    alert = _dismissed("high", "image-size", "tolerable_risk", patched="2.0.3")
+    _, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
+    lines, code = format_report({"o/r": (OK, payload)})
+    assert code == 2
+    blob = "\n".join(lines)
+    assert "previously dismissed as tolerable_risk" in blob
+    assert "2.0.3 is now published" in blob
+
+
+def test_not_used_is_a_judgement_a_patch_does_not_overturn():
+    alert = _dismissed("high", "image-size", "not_used", patched="2.0.3")
+    _, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
+    assert payload == []
+
+
+def test_inaccurate_is_a_judgement_a_patch_does_not_overturn():
+    alert = _dismissed("high", "image-size", "inaccurate", patched="2.0.3")
+    _, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
+    assert payload == []
+
+
+def test_no_bandwidth_and_fix_started_both_come_back_when_a_patch_lands():
+    body = json.dumps(
+        [
+            _dismissed("high", "a-pkg", "no_bandwidth", patched="2.0.3"),
+            _dismissed("high", "b-pkg", "fix_started", patched="2.0.3"),
+        ]
+    )
+    _, payload = alerts_for("o/r", run=_runner(0, body))
+    assert sorted(a["package"] for a in payload) == ["a-pkg", "b-pkg"]
+
+
+def test_a_reason_this_loop_has_not_reasoned_about_stays_dismissed():
+    alert = _dismissed("high", "image-size", "some_future_reason", patched="2.0.3")
+    _, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
+    assert payload == []
+
+
+def test_an_auto_dismissed_alert_is_not_treated_as_a_dismissal():
+    alert = _alert("high", "image-size", patched="2.0.3")
+    alert["state"] = "auto_dismissed"
+    _, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
+    assert payload == []
+
+
+def test_a_fixed_alert_is_not_reported_even_if_the_api_returns_one():
+    alert = _alert("high", "image-size", patched="2.0.3")
+    alert["state"] = "fixed"
+    _, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
+    assert payload == []
