@@ -26,6 +26,14 @@ are. Agora's own page keeps all four.
 from agora_runner.config import AGORA_URL
 from agora_runner.http_util import agora_get, http_json
 from agora_runner.log import log
+from agora_runner import nova_conversations
+
+
+# A cycle thread is tagged `evolve-cycle:<heartbeatId>` by the runner when
+# it opens the conversation, which is the only link between a heartbeat and
+# the threads it has run. `nova_conversations` already reads that prefix to
+# set `cycleThread`; this reads the id after it.
+CYCLE_TAG = "evolve-cycle:"
 
 
 # The task text is what a heartbeat actually tells its persona to do, and
@@ -54,6 +62,40 @@ def _persona_names():
     return {p.get("id"): (p.get("name") or "") for p in body.get("personas", []) if p.get("id")}
 
 
+def _threads_by_heartbeat():
+    """heartbeatId -> its conversations, newest first.
+
+    His capture, `ideas.md` 2026-08-26: *"The heartbeat conversations should
+    rather somehow be listed in the beats page as they belong there. Somehow
+    underneath their relative heartbeat and as a dropdown drawer so they are
+    not shown unless i want to see them."* The grouping is done here rather
+    than in the page because the tag prefix is a rule about how the runner
+    names a thread, and `nova_conversations` is already the one module that
+    knows it.
+
+    Swallows a failure for `_persona_names`' reason, and it matters more
+    here: `conversations()` raises on a bad fetch, and letting that through
+    would turn a working heartbeats page into a 502 because a *second*
+    listing failed. No drawers is a worse page; no page is a broken one.
+    """
+    try:
+        rows = nova_conversations.conversations()["conversations"]
+    except Exception as e:
+        log(f"nova_heartbeats: conversation listing raised {e}")
+        return {}
+    by_hb = {}
+    for c in rows:
+        for tag in c.get("tags") or []:
+            if str(tag).startswith(CYCLE_TAG):
+                hid = str(tag)[len(CYCLE_TAG):]
+                if hid:
+                    by_hb.setdefault(hid, []).append(c)
+                break
+    # `conversations()` already sorted newest activity first and this only
+    # partitions that list, so each bucket keeps the order it arrived in.
+    return by_hb
+
+
 def heartbeats():
     """Every heartbeat Agora holds, the enabled ones first.
 
@@ -66,6 +108,7 @@ def heartbeats():
     if status != 200:
         raise RuntimeError(f"heartbeat listing returned {status}")
     names = _persona_names()
+    threads = _threads_by_heartbeat()
     rows = []
     for h in body.get("heartbeats", []):
         hid = h.get("id")
@@ -92,6 +135,14 @@ def heartbeats():
             # honest "is a cycle in flight" signal -- Agora's own
             # `/heartbeats/:id/run` route says so in its comment.
             "running": (h.get("lastResult") or "") == "running",
+            # Every thread this heartbeat has run, newest first, so the page
+            # can fold them under the card they belong to. The heartbeat's
+            # own current thread is included when the tag did not catch it:
+            # the retrospective and research heartbeats open untagged
+            # conversations, so without this their drawer would be empty
+            # while `conversationId` names a live thread.
+            "conversations": _with_current(
+                threads.get(hid, []), h.get("conversationId") or ""),
         })
     # Enabled first, then newest run first inside each group. A disabled
     # heartbeat is history and an enabled one is the machine he is looking
@@ -113,6 +164,35 @@ def heartbeats():
     rows.sort(key=lambda r: r["lastRunAt"], reverse=True)
     rows.sort(key=lambda r: not r["enabled"])
     return {"heartbeats": rows}
+
+
+def _with_current(rows, conversation_id):
+    """`rows`, plus the heartbeat's current thread if it is not already in them.
+
+    Prepended, not appended: the list is newest first, and the thread Agora
+    currently points the heartbeat at is by definition the newest one.
+    """
+    if not conversation_id:
+        return rows
+    if any(r.get("id") == conversation_id for r in rows):
+        return rows
+    return [{
+        "id": conversation_id,
+        # Deliberately blank rather than "Current thread": the page falls back
+        # to the heartbeat's own name when a thread has none, and a truthy
+        # placeholder here defeats that fallback and titles the opened thread
+        # "Current thread" -- which is six of the seven live heartbeats,
+        # since only the hourly one rotates tagged conversations. Reviewer
+        # measured that against the live listing. The label the drawer shows
+        # is the page's business; this is the name of a thread we did not
+        # fetch, and the honest value for that is empty.
+        "name": "",
+        "personaName": "",
+        "model": "",
+        "tags": [],
+        "updatedAt": "",
+        "cycleThread": False,
+    }] + rows
 
 
 def set_enabled(heartbeat_id, enabled):

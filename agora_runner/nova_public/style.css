@@ -3279,6 +3279,35 @@ body.has-full-chart { overflow: hidden; }
   margin: 0.4rem 0 0;
 }
 
+/* The conversations a heartbeat has run, folded under it. His capture,
+ * 2026-08-26: they belong on this page, under their own heartbeat, and
+ * behind a drawer so they are not shown unless he wants them. Same
+ * `details` treatment as the task fold above, so the two folds on a card
+ * read as one control repeated rather than two different things. */
+.hb-threads { margin-top: 0.5rem; }
+.hb-threads summary { color: var(--dim); font-size: 0.8rem; cursor: pointer; }
+.hb-thread-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.45rem; }
+
+.hb-thread {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.6rem;
+  width: 100%;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.hb-thread-name { word-break: break-word; }
+.hb-thread-when { color: var(--dim); font-size: 0.72rem; white-space: nowrap; }
+
 
 /* The service catalog (/catalog). Cards rather than the markdown table
  * the vault file holds: seven columns is a laptop layout, and this page is

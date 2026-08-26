@@ -27,6 +27,7 @@ from unittest.mock import patch
 
 import pytest
 
+import agora_runner.nova_conversations as nova_conversations
 import agora_runner.nova_heartbeats as hb
 
 
@@ -46,7 +47,7 @@ ROW = {
 PERSONAS = [{"id": "p-1", "name": "Nova"}, {"id": "p-2", "name": "K3s Sentinel"}]
 
 
-def _list(rows, list_status=200, persona_status=200):
+def _list(rows, list_status=200, persona_status=200, convs=None, conv_status=200):
     def fake_get(path):
         if path == "/heartbeats":
             return list_status, {"heartbeats": rows}
@@ -54,7 +55,17 @@ def _list(rows, list_status=200, persona_status=200):
             return persona_status, {"personas": PERSONAS}
         return 404, {}
 
-    with patch.object(hb, "agora_get", side_effect=fake_get):
+    def fake_conv_get(path):
+        if path == "/conversations":
+            return conv_status, {"conversations": convs or []}
+        return 404, {}
+
+    # `nova_conversations` has its own `agora_get`, and the grouping goes
+    # through it. Patched here as well so a test never reaches the live
+    # store -- unpatched it would raise, be swallowed, and every drawer
+    # would read empty for a reason no assertion could see.
+    with patch.object(hb, "agora_get", side_effect=fake_get), \
+            patch.object(nova_conversations, "agora_get", side_effect=fake_conv_get):
         return hb.heartbeats()
 
 
@@ -162,3 +173,66 @@ def test_two_runs_in_the_same_second_sort_by_the_microseconds():
     whole = dict(ROW, id="whole", lastRunAt="2026-08-25T20:40:06+00:00")
     later = dict(ROW, id="later", lastRunAt="2026-08-25T20:40:06.089807+00:00")
     assert [r["id"] for r in _list([whole, later])["heartbeats"]] == ["later", "whole"]
+
+
+# --- the conversations drawer (his capture, ideas.md 2026-08-26) ------------
+#
+# *"The heartbeat conversations should rather somehow be listed in the beats
+# page as they belong there. Somehow underneath their relative heartbeat and
+# as a dropdown drawer so they are not shown unless i want to see them."*
+#
+# The link between the two is the `evolve-cycle:<heartbeatId>` tag the runner
+# writes when it opens a cycle thread. What is worth pinning is that the tag
+# is read for *its own* heartbeat's id rather than merely recognised as a
+# cycle tag -- a grouping that ignores the id renders every thread under
+# every heartbeat and looks entirely plausible on a one-heartbeat estate.
+
+CONV_A = {"id": "c-1", "name": "Nova — Cycle 464", "tags": ["evolve-cycle:hb-1"],
+          "lastMessageAt": "2026-08-26T05:45:00Z"}
+CONV_B = {"id": "c-0", "name": "Nova — Cycle 463", "tags": ["evolve-cycle:hb-1"],
+          "lastMessageAt": "2026-08-26T05:22:00Z"}
+CONV_OTHER = {"id": "c-9", "name": "Sentinel — Cycle 2", "tags": ["evolve-cycle:hb-2"],
+              "lastMessageAt": "2026-08-26T05:50:00Z"}
+
+
+def test_a_thread_lands_under_its_own_heartbeat_and_not_under_another():
+    rows = _list([ROW, dict(ROW, id="hb-2", personaId="p-2", conversationId="")],
+                 convs=[CONV_OTHER, CONV_A, CONV_B])["heartbeats"]
+    by_id = {r["id"]: r for r in rows}
+    assert [c["id"] for c in by_id["hb-1"]["conversations"]] == ["c-1", "c-0"]
+    assert [c["id"] for c in by_id["hb-2"]["conversations"]] == ["c-9"]
+
+
+def test_the_drawer_is_newest_first():
+    rows = _list([ROW], convs=[CONV_B, CONV_A])["heartbeats"]
+    assert [c["id"] for c in rows[0]["conversations"]] == ["c-1", "c-0"]
+
+
+def test_an_untagged_current_thread_still_appears_and_appears_first():
+    """The retrospective and research heartbeats open untagged conversations.
+
+    Without this their drawer is empty while `conversationId` names a live
+    thread -- the page would say a heartbeat that has run forty times has no
+    conversations at all.
+    """
+    rows = _list([dict(ROW, conversationId="c-live")], convs=[CONV_A, CONV_B])["heartbeats"]
+    assert [c["id"] for c in rows[0]["conversations"]] == ["c-live", "c-1", "c-0"]
+
+
+def test_the_current_thread_is_not_listed_twice_when_the_tag_already_caught_it():
+    rows = _list([dict(ROW, conversationId="c-1")], convs=[CONV_A, CONV_B])["heartbeats"]
+    assert [c["id"] for c in rows[0]["conversations"]] == ["c-1", "c-0"]
+
+
+def test_a_failing_conversation_listing_does_not_take_the_page_down():
+    """`conversations()` raises on a bad fetch and `heartbeats()` must not.
+
+    A heartbeats page with no drawers is worse; a heartbeats page that 502s
+    because a second listing failed is broken.
+    """
+    rows = _list([ROW], convs=[CONV_A], conv_status=500)["heartbeats"]
+    assert rows[0]["name"] == "Nova"
+    assert rows[0]["conversations"] == [{
+        "id": "c-1", "name": "", "personaName": "",
+        "model": "", "tags": [], "updatedAt": "", "cycleThread": False,
+    }]

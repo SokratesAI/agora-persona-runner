@@ -8241,6 +8241,16 @@
    * not, and they are the four that can quietly take this loop off the air,
    * so they stay on Agora's page -- see `nova_heartbeats.py`.
    */
+  /* Which conversation drawers he has opened, by heartbeat id.
+   *
+   * `renderHeartbeats` wipes the feed and rebuilds every card, and it runs on
+   * a poll -- every 30s idle, every 4s while a run is queued. A `details`
+   * rebuilt from scratch is closed, so without this the drawer he just opened
+   * snaps shut under his thumb within four seconds of pressing "Run now".
+   * Reviewer caught it. Same shape as `boardState.open` on the goals board.
+   */
+  var hbOpenThreads = {};
+
   function hbStateLine(row) {
     if (row.running) return { text: "Running now", cls: "hb-state hb-state-running" };
     if (!row.enabled) return { text: "Off", cls: "hb-state hb-state-off" };
@@ -8396,6 +8406,47 @@
         actions.appendChild(open);
       }
       card.appendChild(actions);
+
+      // His capture: *"The heartbeat conversations should rather somehow be
+      // listed in the beats page as they belong there. Somehow underneath
+      // their relative heartbeat and as a dropdown drawer so they are not
+      // shown unless i want to see them."* Closed by default, same `details`
+      // shape as the Task fold above it, and the count is in the summary so
+      // he can see there are twelve without opening it.
+      var threads = row.conversations || [];
+      if (threads.length) {
+        var box = el("details", "hb-threads");
+        if (hbOpenThreads[row.id]) box.setAttribute("open", "");
+        box.addEventListener("toggle", function () {
+          hbOpenThreads[row.id] = box.open;
+        });
+        box.appendChild(el("summary", "",
+          threads.length + (threads.length === 1 ? " conversation" : " conversations")));
+        var tlist = el("div", "hb-thread-list");
+        threads.forEach(function (conv) {
+          var btn = el("button", "hb-thread", "");
+          btn.setAttribute("type", "button");
+          // A thread `_with_current` synthesised carries no name -- Agora has
+          // one, this page has not fetched it. "Current thread" is the label
+          // for the row and deliberately not the name passed to
+          // `openConversation` below, which falls back to the heartbeat's own
+          // name: "Current thread" as a page header says nothing about which
+          // heartbeat it belongs to, which is the one thing this fixes.
+          btn.appendChild(el("span", "hb-thread-name", conv.name || "Current thread"));
+          var tw = conv.updatedAt ? Date.parse(conv.updatedAt) : NaN;
+          if (!isNaN(tw)) btn.appendChild(el("span", "hb-thread-when", fmtStamp(tw)));
+          btn.addEventListener("click", function () {
+            // Same two-views-on-one-route reason as "Open thread" above: the
+            // poller and the back button both guard on the URL saying
+            // `conversations`, so the URL moves before the render.
+            history.pushState(null, "", "/conversations");
+            openConversation(conv.id, conv.name || row.name);
+          });
+          tlist.appendChild(btn);
+        });
+        box.appendChild(tlist);
+        card.appendChild(box);
+      }
 
       if (row.task) {
         var task = el("details", "hb-task");
