@@ -255,7 +255,8 @@ def test_the_default_branch_outranks_a_stale_checkout(
     out = capsys.readouterr().out
     assert status == 0
     assert "pinned 2.1.245" in out
-    assert "your workspace is behind the default branch" in out
+    assert "says 2.1.226, and the default branch says 2.1.245" in out
+    assert "out of step with the branch" in out
     assert "STALE" not in out
 
 
@@ -303,3 +304,19 @@ def test_read_remote_pin_decodes_the_base64_contents_api():
     assert version == "2.1.245"
     assert where.endswith("@default branch")
     assert calls[0][:2] == ["gh", "api"]
+
+
+def test_a_checkout_ahead_of_the_branch_is_not_called_behind(
+        dockerfile, monkeypatch, capsys):
+    """A local checkout on a branch that bumps the pin is *ahead*.
+
+    The disagreement line reports an inequality, and an inequality has
+    no direction in it -- calling it "behind" would be the same overclaim
+    the remote-first change exists to fix.
+    """
+    dockerfile("2.1.246")
+    run(monkeypatch, "2.1.246", ["2.1.245", "2.1.246"], {}, remote="2.1.245")
+    out = capsys.readouterr().out
+    warning = next(l for l in out.splitlines() if "the checkout at" in l)
+    assert "says 2.1.246, and the default branch says 2.1.245" in warning
+    assert "behind" not in warning

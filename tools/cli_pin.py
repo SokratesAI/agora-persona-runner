@@ -298,9 +298,15 @@ def main(argv=None, now=None):
     print(f"{PACKAGE}: pinned {pinned} (from {where}), latest {latest}")
     local, local_where = read_local_pin()
     if local is not None and where.startswith(REPO) and local != pinned:
-        print(f"  ⚠ the checkout at {local_where} says {local} — your "
-              "workspace is behind the default branch, and the verdict "
-              "below is the branch's")
+        # "Behind" is the usual case and it is still only one of two.
+        # A checkout sitting on a branch that bumps the pin is *ahead*,
+        # and saying "behind" there would be the same overclaim this
+        # tool was just fixed for -- an inequality does not carry a
+        # direction, so name both versions and let the reader see it.
+        print(f"  ⚠ the checkout at {local_where} says {local}, and the "
+              f"default branch says {pinned} — your workspace is out of "
+              "step with the branch, and the verdict below is the "
+              "branch's")
     if running is None:
         print("  running binary: not on this PATH (normal off the bridge pod)")
     elif running != pinned:
