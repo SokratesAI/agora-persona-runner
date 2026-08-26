@@ -62,6 +62,15 @@ class RollSpec:
     around; `check_archive` and `check_render` are extra guards the
     caller wants run before any write. All three default to nothing,
     because the generic checks below are the ones that matter.
+
+    `check_live` is the odd one out: it is handed the *whole* live
+    document rather than anything this engine parsed out of it, and it
+    runs before the marker is even located. Every other check here asks
+    whether the roll is faithful; that question is blind by construction
+    to a live file that was already wrong before the roll touched it,
+    because a faithful roll of a damaged document is a damaged document.
+    A caller that knows what its own file is supposed to look like says
+    so here.
     """
 
     def __init__(
@@ -78,7 +87,9 @@ class RollSpec:
         check_entries=None,
         check_archive=None,
         check_render=None,
+        check_live=None,
     ):
+        self.check_live = check_live
         self.check_entries = check_entries
         self.noun = noun
         self.marker = marker
@@ -305,6 +316,11 @@ def plan(live, archive, spec, keep=None, select=None):
     selection is right here rather than only caught downstream.
     """
     keep = spec.keep if keep is None else keep
+    # Before anything is parsed: `_body` splits on the marker and every
+    # check after it reasons about the section it found, so damage
+    # anywhere else in the document is invisible to all of them.
+    if spec.check_live:
+        spec.check_live(live)
     head, body, tail = _body(live, spec)
     entries = spec.split_entries(body)
     if spec.check_entry:

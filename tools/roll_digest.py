@@ -49,6 +49,7 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner.md_sections import split_at_heading
 from agora_runner.nova_journal import parse_digest, split_digest_entries
 from tools import rolling
+from tools.doc_integrity import duplicate_headings
 from tools.rolling import RollError, RollSpec, dedup, join_paragraphs
 
 # Half a day at the current one-cycle-an-hour cadence. The number is not
@@ -91,6 +92,49 @@ ARCHIVE_FRONTMATTER = (
     "(agora_runner/nova_sources.py, digest_markdown).\n"
     "---\n\n"
 )
+
+
+def _check_live(live):
+    """Refuse a live digest that is structurally wrong, before any roll.
+
+    The failure is not one the roll itself can cause, which is exactly
+    why nothing here could see it. `plan` splits on `## Digest` and every
+    other check in this file reasons about the section below it, so a
+    faithful roll of a spliced document is a spliced document, and this
+    script has read one and said nothing.
+
+    On 2026-08-26 the digest went live carrying
+    two `## Needs input` sections and two `## Next cycle` sections -- the
+    previous cycle's block and the current one's, one under the other,
+    because a cycle rewriting a section it did not write added its copy
+    without removing the old. `md_sections._sections` keys by heading and
+    keeps the *last* of each, so the site rendered the newer block and
+    looked correct; Obsidian, which the owner reads, showed both. It was
+    found by `tools.doc_integrity` twenty minutes later, at the start of
+    the next cycle -- which is the right instrument at the wrong moment,
+    because by then the damage is a cycle old and the next write lands on
+    top of it. This script is the only code that reads the live digest
+    out of the vault every cycle, seconds after it is written, so the same
+    invariant costs nothing here and closes that window.
+
+    Refusing rather than warning, deliberately, and it is not a free
+    choice -- `_check_entry`'s own history is that a refusal on the live
+    document stopped the trim for eight handoffs while the file grew. The
+    difference is what the message can ask for: that one needed the
+    matcher changed and named a paragraph instead, this one names the
+    duplicated heading and the fix is deleting the stale copy. Nothing is
+    lost by refusing either way; the digest was written before this runs
+    and the roll is idempotent.
+    """
+    duplicates = duplicate_headings(live)
+    if duplicates:
+        found = ", ".join(f"{name!r} x{n}" for name, n in sorted(duplicates.items()))
+        raise RollError(
+            "refusing to roll: the live digest holds a duplicated heading -- "
+            f"{found}. A second copy of a section is in this file; the site "
+            "renders the last of each and hides it, Obsidian shows both. "
+            "Delete the stale copy before rolling."
+        )
 
 
 def _check_entry(entry):
@@ -160,6 +204,7 @@ SPEC = RollSpec(
     join_entries=join_paragraphs,
     keep=KEEP,
     noun="digest lines",
+    check_live=_check_live,
     check_entry=_check_entry,
     check_archive=_check_archive,
     check_render=_check_render,
