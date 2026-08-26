@@ -58,7 +58,7 @@ TIMEOUT = 20
 
 def credential_candidates():
     """Where the Claude Code OAuth token might be, most specific first."""
-    seen, out = [], []
+    out = []
     roots = [os.environ.get("CLAUDE_CONFIG_DIR"),
              os.path.expanduser("~/.claude"),
              "/data/claude-home/.claude"]
@@ -66,8 +66,7 @@ def credential_candidates():
         if not root:
             continue
         path = os.path.join(root, ".credentials.json")
-        if path not in seen:
-            seen.append(path)
+        if path not in out:
             out.append(path)
     return out
 
@@ -177,7 +176,9 @@ def main(argv=None):
     if args.json:
         print(json.dumps({"quota": quota, "preflight": preflight,
                           "problems": problems, "credentials": where}, indent=2))
-        return 0 if (preflight or {}).get("action") == "proceed" else 2
+        # Same status as the report, so `--json` cannot say "fine" about a
+        # preflight that never answered.
+        return report(quota, preflight, problems, out=lambda _line: None)
     return report(quota, preflight, problems)
 
 
