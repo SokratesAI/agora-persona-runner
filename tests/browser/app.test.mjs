@@ -10454,3 +10454,164 @@ describe("the catalog page", () => {
     assert.match(window.document.querySelector(".empty").textContent, /Could not load the catalog/);
   });
 });
+
+/* The chat dock's conversation switcher.
+ *
+ * His capture, `ideas.md` 2026-08-26: *"Add multi-conversation support to
+ * the chat modal: hamburger button top-left opens a list of previous
+ * conversations, switchable, modal remembers last-opened conversation.
+ * Once done, delete the /ask page entirely as dead code (chat modal
+ * replaces it in both agora and /ask)."*
+ *
+ * The dock talked to one thread and one endpoint. What is new here is that
+ * two endpoints of different shapes sit behind one panel -- `/api/ask`
+ * takes no id and `/api/conversations/*` takes one -- so the thing worth
+ * pinning is not that the list renders but that every read and every write
+ * follows the thread he last picked, and that a fetch for the thread he
+ * left cannot paint over the one he opened.
+ */
+describe("the chat dock's conversation switcher", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const askThread = {
+    conversationId: "c-ask",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+  };
+  /* The `/ask` conversation is a normal Agora conversation carrying the
+   * `nova-ask` tag, so it really is in this listing -- which is the reason
+   * the dock filters it out rather than trusting it to be absent. */
+  const LIST = {
+    conversations: [
+      { id: "c-ask", name: "Nova Ask", personaName: "Nova", model: "m",
+        tags: ["nova-ask"], updatedAt: "2026-08-26T08:00:00.000Z" },
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], updatedAt: "2026-08-25T20:00:00.000Z" },
+    ],
+  };
+
+  async function openSwitcher(opts = {}) {
+    const window = await loadSite("/", { ask: askThread, convList: LIST, ...opts });
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    return window;
+  }
+
+  test("the hamburger lists Ask Nova plus every other thread, and the ask thread only once", async () => {
+    const window = await openSwitcher();
+    const names = [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+      .map((n) => n.textContent);
+    assert.deepEqual(names, ["Ask Nova", "Roofing"]);
+    assert.equal(window.document.getElementById("chat-list").hasAttribute("hidden"), false);
+    assert.equal(window.document.getElementById("chat-menu").getAttribute("aria-expanded"), "true");
+    // The list takes the thread's place; the composer must not be typeable
+    // into while it is up, which is a class the stylesheet reads.
+    assert.ok(window.document.getElementById("chat-dock").classList.contains("list-open"));
+  });
+
+  test("picking a conversation reads that thread, not the ask thread", async () => {
+    const asked = [];
+    const window = await openSwitcher({
+      convThread: (url) => {
+        asked.push(url);
+        return { conversationId: "c-1", waiting: false,
+          messages: [{ id: "9", sender: "Claude", text: "Two coats." }] };
+      },
+    });
+    // Guard: without this the assertion below could pass on a list that
+    // never rendered the row, because `[...][1]` of an empty list is
+    // undefined and the tap would throw rather than assert.
+    const rows = [...window.document.querySelectorAll("#chat-list .chat-list-row")];
+    assert.equal(rows.length, 2, "the switcher did not render the conversation row");
+    rows[1].dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(asked, ["/api/conversations/thread?id=c-1"]);
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
+      .map((n) => n.textContent), ["Two coats."]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Roofing");
+    assert.equal(window.document.getElementById("chat-dock").classList.contains("list-open"), false,
+      "picking a thread left the switcher up");
+  });
+
+  test("sending goes to the thread he picked, with its id", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    window.document.getElementById("chat-box").value = "when can you start?";
+    window.document.getElementById("chat-form")
+      .dispatchEvent(new window.Event("submit"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/send", { conversationId: "c-1", text: "when can you start?" }]]);
+  });
+
+  test("the dock opens on the thread he last had open", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: LIST,
+      convThread: () => ({ conversationId: "c-1", waiting: false,
+        messages: [{ id: "9", sender: "Claude", text: "Two coats." }] }),
+      install: (w) => w.localStorage.setItem("nova.chatSource.v1",
+        JSON.stringify({ kind: "conv", id: "c-1", name: "Roofing" })),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.equal(window.document.getElementById("chat-title").textContent, "Roofing");
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
+      .map((n) => n.textContent), ["Two coats."]);
+  });
+
+  test("a remembered conversation with no id is ignored rather than fetched", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: LIST,
+      install: (w) => w.localStorage.setItem("nova.chatSource.v1",
+        JSON.stringify({ kind: "conv", name: "Roofing" })),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.equal(window.document.getElementById("chat-title").textContent, "Ask Nova");
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
+      .map((n) => n.textContent), ["Seven."]);
+  });
+
+  test("picking a thread records it, so the next page load opens there", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(JSON.parse(window.localStorage.getItem("nova.chatSource.v1")),
+      { kind: "conv", id: "c-1", name: "Roofing" });
+  });
+
+  test("Escape closes the switcher first and the dock second", async () => {
+    const window = await openSwitcher();
+    const esc = () => window.document.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape" }));
+    esc();
+    assert.equal(window.document.getElementById("chat-dock").classList.contains("list-open"), false);
+    assert.equal(window.document.getElementById("chat-dock").hasAttribute("hidden"), false,
+      "Escape closed the whole dock from an open switcher");
+    esc();
+    assert.ok(window.document.getElementById("chat-dock").hasAttribute("hidden"));
+  });
+
+  test("a failed listing says so instead of leaving the switcher blank", async () => {
+    const window = await openSwitcher({ convStatus: 500 });
+    assert.match(window.document.querySelector("#chat-list .empty").textContent,
+      /Could not load your conversations/);
+    // Ask Nova is drawn locally, so it must still be there to go back to.
+    assert.deepEqual([...window.document.querySelectorAll("#chat-list .chat-list-name")]
+      .map((n) => n.textContent), ["Ask Nova"]);
+  });
+});
