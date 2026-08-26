@@ -796,3 +796,27 @@ def test_the_status_line_matches_the_indent_of_the_block_it_joins():
     indented = "  ```goal\n  name: G1\n  now: 3\n  ```\n"
     out = set_status_in_goals(indented, "G1", "approved")
     assert "  status: approved" in out
+
+
+def test_two_goals_with_the_same_name_are_refused_rather_than_guessed_at():
+    """My reviewer's finding on runner#418, and it is a real divergence:
+    two blocks sharing a `name:` render as two rows he can tap separately,
+    nothing on the wire tells them apart, and editing the first would
+    return 200 on the goal he did not touch."""
+    from agora_runner.nova_plan import set_status_in_goals
+
+    twice = "```goal\nname: Foo\nnow: 1\n```\n\n```goal\nname: Foo\nnow: 2\n```\n"
+    assert set_status_in_goals(twice, "Foo", "approved") is None
+
+
+def test_a_block_carrying_two_status_lines_ends_up_with_one_the_page_agrees_with():
+    """`_goal` assigns over every line, so the *last* `status:` is what the
+    page renders. Rewriting only the first returns 200 and changes nothing
+    he can see."""
+    from agora_runner.nova_plan import _fenced, _goal, set_status_in_goals
+
+    doubled = "```goal\nname: Foo\nstatus: proposed\nnow: 1\nstatus: declined\n```\n"
+    out = set_status_in_goals(doubled, "Foo", "approved")
+    assert out.count("status:") == 1
+    rows, _ = _fenced(out, {"goal": _goal})
+    assert rows["goal"][0]["status"] == "approved"

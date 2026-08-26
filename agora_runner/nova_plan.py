@@ -581,6 +581,14 @@ def set_status_in_goals(markdown, name, status):
     name_re = re.compile(r"^(?P<indent>[ \t]*)name:[ \t]*(?P<value>.*?)[ \t]*$")
     status_re = re.compile(r"^(?P<indent>[ \t]*)status:[ \t]*.*$")
 
+    # Every block that claims this name, not the first. Two goals sharing a
+    # `name:` render as two identical rows he can tap separately, and
+    # editing whichever comes first would report success on the one he did
+    # not touch. There is no way to tell them apart from the wire, so the
+    # honest answer is to refuse -- same `None` as a name that moved, which
+    # the page already shows him as "no longer where the page thought it
+    # was". Found by my own reviewer on this diff, not by a test.
+    hits = []
     start = None
     for index, line in enumerate(lines):
         if start is None:
@@ -601,15 +609,28 @@ def set_status_in_goals(markdown, name, status):
                 # writable -- editing inside one would move his own text.
                 if not _FENCE_CLOSE_RE.match(line):
                     return None
-                indent = name_re.match(lines[match]).group("indent")
-                for i in body:
-                    if status_re.match(lines[i]):
-                        lines[i] = f"{indent}status: {status}"
-                        return "\n".join(lines)
-                lines.insert(index, f"{indent}status: {status}")
-                return "\n".join(lines)
+                hits.append((match, index, body))
             start = index if opener.match(line) else None
-    return None
+    if len(hits) != 1:
+        return None
+
+    match, close, body = hits[0]
+    indent = name_re.match(lines[match]).group("indent")
+    # Every `status:` line in the block, not the first. `_goal` builds its
+    # row with a plain dict assignment over all the lines, so on a block
+    # that already carries two the *last* one is what the page renders --
+    # rewriting only the first would return 200 and change nothing he can
+    # see. Collapsing them also leaves the block with one answer in it,
+    # which is the only shape either side can agree on.
+    written = [i for i in body if status_re.match(lines[i])]
+    if written:
+        for i in written:
+            lines[i] = f"{indent}status: {status}"
+        for i in reversed(written[1:]):
+            del lines[i]
+        return "\n".join(lines)
+    lines.insert(close, f"{indent}status: {status}")
+    return "\n".join(lines)
 
 
 def set_goal_status(name, status):
