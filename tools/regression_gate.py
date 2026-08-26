@@ -404,13 +404,15 @@ def _check_name_guard_sees_an_unstaged_file() -> Optional[str]:
 CORPUS = [
     Regression(
         slug="name-guard-blind-to-an-unstaged-file",
-        cycle="488",
+        cycle="466 and 488",
         date="2026-08-26",
         surface="drove the code",
         failure=("The guard keeping the owner's name out of this public repo built its file "
                  "list from `git ls-files`, so a module a cycle had just written was the one "
-                 "file it could not read. Cycle 488 shipped his name in a docstring and wrote "
-                 "'green locally' truthfully; CI staged the file and turned red."),
+                 "file it could not read. Cycle 466 hit it, filed a note saying to run "
+                 "`git add` before the last local run, and 22 cycles later Cycle 488 hit the "
+                 "identical failure on a different new module. A note did not stop it twice; "
+                 "this entry is here because the code now does."),
         check=_check_name_guard_sees_an_unstaged_file,
     ),
     Regression(

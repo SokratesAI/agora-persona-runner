@@ -148,6 +148,9 @@ def repo_files(root, exempt_prefixes=()):
     `tools/ci_health.py` with the owner's name in its opening docstring and
     recorded "green locally" truthfully -- the suite really was green, against
     a file list the new module was not on yet. CI staged it and turned red.
+    Cycle 466 had already hit exactly this, on a different new module, and
+    filed a note reminding future cycles to `git add` first. Twenty-two cycles
+    later the note had not worked, which is why this is a code change.
 
     `--others --exclude-standard` adds the untracked-but-not-ignored files,
     which is the set `git add -A` would sweep in. `--exclude-standard` is not
