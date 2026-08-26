@@ -97,8 +97,13 @@ jobs:
       # test but a hung process: a jsdom window left open keeps a rescheduling
       # poll on the event loop, every test passes, and `node --test` simply
       # never returns. Two runs sat at 33 and 52 minutes before anyone read
-      # them as hung rather than slow. The suite takes ~3s, so 5 minutes turns
-      # that into a red X inside the hour it happened.
+      # them as hung rather than slow. 5 minutes turns that into a red X
+      # inside the hour it happened.
+      #
+      # That sentence used to say the suite takes ~3s, which is where the
+      # 100x headroom in this bound came from. Measured 2026-08-26 on the
+      # bridge pod: 71 seconds. The bound still holds, but it is 4x, not
+      # 100x, so a genuinely slower suite will start hitting it.
       - run: node --test
         working-directory: tests/browser
         timeout-minutes: 5
