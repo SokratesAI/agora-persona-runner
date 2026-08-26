@@ -178,7 +178,15 @@ def _with_current(rows, conversation_id):
         return rows
     return [{
         "id": conversation_id,
-        "name": "Current thread",
+        # Deliberately blank rather than "Current thread": the page falls back
+        # to the heartbeat's own name when a thread has none, and a truthy
+        # placeholder here defeats that fallback and titles the opened thread
+        # "Current thread" -- which is six of the seven live heartbeats,
+        # since only the hourly one rotates tagged conversations. Reviewer
+        # measured that against the live listing. The label the drawer shows
+        # is the page's business; this is the name of a thread we did not
+        # fetch, and the honest value for that is empty.
+        "name": "",
         "personaName": "",
         "model": "",
         "tags": [],

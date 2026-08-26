@@ -233,6 +233,6 @@ def test_a_failing_conversation_listing_does_not_take_the_page_down():
     rows = _list([ROW], convs=[CONV_A], conv_status=500)["heartbeats"]
     assert rows[0]["name"] == "Nova"
     assert rows[0]["conversations"] == [{
-        "id": "c-1", "name": "Current thread", "personaName": "",
+        "id": "c-1", "name": "", "personaName": "",
         "model": "", "tags": [], "updatedAt": "", "cycleThread": False,
     }]

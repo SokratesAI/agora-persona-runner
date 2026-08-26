@@ -10316,6 +10316,46 @@ describe("the heartbeats page", () => {
     assert.equal(rows[1].querySelector(".hb-threads"), null);
   });
 
+  /* Reviewer finding: `renderHeartbeats` wipes the feed and rebuilds every
+   * card, and it runs on a 4-30 second poll. A `details` rebuilt from scratch
+   * is closed, so the drawer he opened would snap shut under his thumb. The
+   * guard line below is what makes this test able to fail at all -- without a
+   * second render happening, the assertion under it is unfailable. */
+  test("a drawer he opened survives the page's own poll", async () => {
+    let timers;
+    const window = await loadSite("/heartbeats", {
+      hbList: WITH_THREADS,
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const before = window.document.querySelector(".hb-threads");
+    before.open = true;
+    before.dispatchEvent(new window.Event("toggle"));
+    await timers.firePagePoll();
+    const after = window.document.querySelector(".hb-threads");
+    assert.ok(!window.document.contains(before),
+      "the feed was not rebuilt, so this pins nothing");
+    assert.ok(after.hasAttribute("open"), "the poll closed a drawer he had opened");
+  });
+
+  /* Reviewer finding: six of the seven live heartbeats point at an untagged
+   * conversation, so the synthesised row is the common case, not the edge. */
+  test("a synthesised current thread is labelled, and opens under its heartbeat's name", async () => {
+    const ONE_STUB = {
+      heartbeats: [Object.assign({}, TWO.heartbeats[0], {
+        conversations: [{ id: "c-live", name: "", updatedAt: "" }],
+      })],
+    };
+    const window = await loadSite("/heartbeats", {
+      hbList: ONE_STUB,
+      convThread: () => ({ conversationId: "c-live", waiting: false, messages: [] }),
+    });
+    const btn = window.document.querySelector(".hb-thread");
+    assert.equal(btn.querySelector(".hb-thread-name").textContent, "Current thread");
+    click(window, btn);
+    assert.match(window.document.querySelector("#status").textContent, /Nova/);
+    assert.doesNotMatch(window.document.querySelector("#status").textContent, /Current thread/);
+  });
+
   test("opening one from the drawer moves to the conversations route", async () => {
     const window = await loadSite("/heartbeats", {
       hbList: WITH_THREADS,
