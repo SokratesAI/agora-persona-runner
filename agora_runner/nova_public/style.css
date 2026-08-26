@@ -1011,7 +1011,29 @@ a.status-sub:hover .status-pr { color: var(--text); }
    * down when the status bar pushes it, or the drawer's first link ends
    * up under the clock the moment the button stops being. At a zero
    * inset this is still exactly 4.6rem. */
-  padding: calc(var(--shell-top) + 3rem) 1rem 1rem;
+  /* The bottom was a flat `1rem` for as long as the drawer could not
+   * scroll, when nothing ever rested against that edge. Now the last
+   * link does, so it wants the same clearance every other bottom-pinned
+   * thing in this file already takes -- `.chat-btn`, `.chat-dock`, the
+   * composer -- or it sits under a home indicator on a phone that has
+   * one. My reviewer found this; the owner's own device reports zero
+   * insets, so nothing I can measure here would have shown it. */
+  padding: calc(var(--shell-top) + 3rem) 1rem max(1rem, env(safe-area-inset-bottom));
+  /* The drawer is pinned top and bottom, so its box is exactly one
+   * viewport tall and the links inside it are not. The owner, `issues.md`
+   * 2026-08-26: "The sliding sidebar menu in Nova is now so full with
+   * pages links that it starts to move out the bottom of my screen."
+   * Measured on the live site at the owner's own 360x697 (`tools.poke_page
+   * nav-reachable`): thirteen links end at 830px, so the last three hang
+   * 133px below the bottom edge -- and `body.nav-open` stops the page
+   * behind from scrolling, so there was no gesture that reached them.
+   *
+   * `contain` because the drawer scrolls over a body that is
+   * `overflow: hidden`; without it a flick past the last link chains to
+   * the document and pulls the whole page, which is the "rubber band
+   * under the menu" every phone browser does by default. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--card);
   border-left: 1px solid var(--line);
   box-shadow: -12px 0 28px #0008;

@@ -70,6 +70,7 @@ from pathlib import Path
 from tools.see_page import BrowserMissing, DEFAULT_BASE, PHONE_WIDTH, browser_root, render_env
 
 PROBES = (
+    "nav-reachable",
     "search-focus",
     "search-focus-ideas",
     "replay-header",
