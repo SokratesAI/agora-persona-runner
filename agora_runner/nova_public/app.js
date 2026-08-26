@@ -8284,6 +8284,18 @@
     if (row.deployedBy) {
       card.appendChild(el("div", "cat-meta", "Deployed by " + row.deployedBy));
     }
+    // The join that makes this a catalog rather than an inventory: the row
+    // says what a thing is, where it runs, and where it is written up. A
+    // service with no page says so rather than showing nothing, because the
+    // gap is the useful half -- it is what somebody would go and write.
+    if (row.docs) {
+      var doc = el("a", "cat-meta cat-docs", "Read the docs");
+      doc.href = row.docs;
+      doc.rel = "noopener";
+      card.appendChild(doc);
+    } else if (row.docs === null) {
+      card.appendChild(el("div", "cat-meta cat-nodocs", "No docs page"));
+    }
     return card;
   }
 
@@ -8312,6 +8324,10 @@
       (payload.unreadable || []).forEach(function (u) {
         lead.appendChild(el("p", "cat-detail", u));
       });
+      if (payload.docsHeadline) {
+        lead.appendChild(el("p", "cat-lead", payload.docsHeadline));
+        if (payload.docsDetail) lead.appendChild(el("p", "cat-detail", payload.docsDetail));
+      }
       feed.appendChild(lead);
     }
 

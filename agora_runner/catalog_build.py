@@ -53,8 +53,11 @@ shape of the catalog is testable without a cluster; only `read_*` shells out.
 
 from __future__ import annotations
 
+import http.client
 import json
+import re
 import subprocess
+import urllib.request
 from dataclasses import dataclass, field
 
 # Namespaces holding things a person would call "a service". `kube-system`,
@@ -65,6 +68,13 @@ APP_NAMESPACES = ("agents", "infra", "obsidian")
 # Kinds that order a *repo* rather than a running workload. A row matched by one
 # of these is not self-service coverage of the thing that is running.
 REPO_ONLY_KINDS = ("GitHubService", "GitHubRepoPolicy")
+
+# The knowledge base, read from the service itself rather than from its git repo.
+# The sitemap lists the pages that are *built and serving*, which is what a link
+# on the catalog has to point at -- a `.md` file on the default branch may not be
+# on the site yet, and the site is what the reader clicks. Cluster-internal, so no
+# token and no Tailscale hop; the `<loc>` entries it returns are the public URLs.
+DOCS_SITEMAP = "http://sokrates-docs.agents.svc.cluster.local:8080/sitemap.xml"
 
 
 @dataclass
@@ -90,6 +100,7 @@ class Service:
     url: str = ""
     repo_claim: str = ""
     argocd_app: str = ""
+    docs: str = ""
 
     @property
     def repo(self) -> str:
@@ -181,6 +192,26 @@ def read_claims() -> Source:
     return Source(rows=merged, error="; ".join(errors))
 
 
+def read_docs(url: str = DOCS_SITEMAP) -> Source:
+    """Every page the docs site publishes, read off its own sitemap.
+
+    The one source here that is not `kubectl`, and it keeps the same contract:
+    an unreachable site is an `error`, never an empty page list. Those two look
+    identical in the rendered table -- every row with a dash in the Docs column
+    -- and they mean opposite things, so `render` drops the column entirely
+    rather than filling it with dashes it cannot stand behind.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=30) as fh:
+            body = fh.read().decode("utf-8", "replace")
+    except (OSError, http.client.HTTPException) as exc:
+        return Source(error=f"{url}: {exc}")
+    pages = re.findall(r"<loc>([^<]+)</loc>", body)
+    if not pages:
+        return Source(error=f"{url}: no <loc> entries, so this is not a sitemap")
+    return Source(rows=pages)
+
+
 def services_from(workloads: list) -> list[Service]:
     out = []
     for item in workloads:
@@ -268,6 +299,32 @@ def attach_argocd(services: list[Service], apps: list) -> None:
                 break
 
 
+def attach_docs(services: list[Service], pages: list) -> list[str]:
+    """Link each service to its own page on the docs site. Returns the undocumented.
+
+    This is the join that makes the catalog an IDP rather than an inventory: a
+    row that says what a thing is, where it runs, and where it is written up.
+
+    Matched when the last segment of a page URL is *exactly* the service name or
+    its image repo name -- the same rule as `attach_argocd` above and for the
+    same reason. A substring match would link `agora-persona-runner` to
+    `/reference/agora-persona`, which is a page about the Persona resource and
+    not about the runner, and a wrong link in a catalog is worse than no link,
+    because the reader stops looking. So a blank here means "no page named after
+    this service", never "this service is undocumented" -- a README is still a
+    README and this join cannot see one.
+    """
+    by_slug = {}
+    for url in pages:
+        by_slug.setdefault(url.rstrip("/").rsplit("/", 1)[-1], url)
+    missing = []
+    for svc in services:
+        svc.docs = by_slug.get(svc.name) or by_slug.get(svc.repo) or ""
+        if not svc.docs:
+            missing.append(f"{svc.namespace}/{svc.name}")
+    return sorted(missing)
+
+
 def coverage(services: list[Service]) -> tuple[int, int, int]:
     """(workloads composed by a claim, source repos ordered by a claim, total).
 
@@ -279,7 +336,10 @@ def coverage(services: list[Service]) -> tuple[int, int, int]:
     return composed, repos, len(services)
 
 
-def render(services: list[Service], orphans: list[str], unread: list[str]) -> str:
+def render(services: list[Service], orphans: list[str], unread: list[str], undocumented=None) -> str:
+    """`undocumented` is `None` when the docs site could not be read, and a list
+    (possibly empty) when it could. The Docs column and its section appear only
+    in the second case -- see `read_docs`."""
     lines = ["# Service catalog", ""]
     if unread:
         lines.append(
@@ -299,15 +359,38 @@ def render(services: list[Service], orphans: list[str], unread: list[str]) -> st
             f"reconciles. Every row below is kept correct by somebody reading it."
         )
         lines.append("")
-    lines.append("| Service | Namespace | Source repo ordered by | Deployed by | URL | Up |")
-    lines.append("|---|---|---|---|---|---|")
+        if undocumented is not None:
+            have = len(services) - len(undocumented)
+            verb, pronoun = ("has", "it") if have == 1 else ("have", "them")
+            lines.append(
+                f"**{have} of {len(services)} services {verb} a page named after {pronoun} on the docs site.** "
+                "Matched on the name, so this counts pages written *about a service*; a service missing from "
+                "the count may still have a README this join cannot see."
+            )
+            lines.append("")
+    docs_col = " Docs |" if undocumented is not None else ""
+    docs_rule = "---|" if undocumented is not None else ""
+    lines.append("| Service | Namespace | Source repo ordered by | Deployed by | URL |" + docs_col + " Up |")
+    lines.append("|---|---|---|---|---|" + docs_rule + "---|")
     for s in services:
         url = f"[{s.url.removeprefix('https://')}]({s.url})" if s.url else "—"
+        docs = "" if undocumented is None else f" {f'[docs]({s.docs})' if s.docs else '—'} |"
         lines.append(
-            f"| {s.name} | {s.namespace} | {s.repo_claim or '—'} | {s.argocd_app or '—'} | {url} | "
+            f"| {s.name} | {s.namespace} | {s.repo_claim or '—'} | {s.argocd_app or '—'} | {url} |" + docs + " "
             f"{'yes' if s.ready else ('off' if s.wanted == 0 else 'NO')} |"
         )
     lines.append("")
+    if undocumented and not unread:
+        lines.append("## Services with no page named after them on the docs site")
+        lines.append("")
+        lines.append(
+            "The knowledge base is written by topic, so these are gaps in *service* documentation "
+            "specifically. Naming a page after one of these is what takes it off this list."
+        )
+        lines.append("")
+        for u in undocumented:
+            lines.append(f"- {u}")
+        lines.append("")
     # Suppressed on a partial read for the same reason the number is: if the
     # workload list is short because a namespace was Forbidden, every Ingress in
     # the cluster looks like an unaccounted-for door. That is a confident,
@@ -328,6 +411,7 @@ def build() -> tuple[str, int]:
     ingresses = read_ingresses()
     apps = read_argocd_apps()
     claims = read_claims()
+    docs = read_docs()
 
     unread = [
         f"{label}: {src.error}"
@@ -336,6 +420,7 @@ def build() -> tuple[str, int]:
             ("ingresses", ingresses),
             ("argocd applications", apps),
             ("crossplane claims", claims),
+            ("docs site", docs),
         )
         if not src.ok
     ]
@@ -344,7 +429,8 @@ def build() -> tuple[str, int]:
     orphans = attach_urls(services, ingresses.rows)
     attach_claims(services, claims.rows)
     attach_argocd(services, apps.rows)
-    return render(services, orphans, unread), (1 if unread else 0)
+    undocumented = attach_docs(services, docs.rows) if docs.ok else None
+    return render(services, orphans, unread, undocumented), (1 if unread else 0)
 
 
 # The frontmatter `catalog.md` carries in the vault. It was hand-written by
