@@ -1646,6 +1646,8 @@
     toggle.setAttribute("aria-label", target.ariaLabel);
 
     var lastItems = comments;
+    // Set only by `tapped`, read only by `paint`. See both.
+    var openedByTap = false;
 
     /* Which comments this drawer shows. A retired one is dropped outright.
      *
@@ -1789,6 +1791,35 @@
       // answer ever arriving on screen.
       var count = (lastItems || []).length;
       toggle.textContent = count ? "💬 " + count : "💬";
+      /* A reply that lands while he is looking at the open thread is not
+       * unread, and telling him it is, is the "notification for something I
+       * already have open" he filed.
+       *
+       * the owner, `issues.md` 2026-08-26: *"When i have a journal comments
+       * drawer open, i do not need notifications as i allready have it
+       * open."* He screenshotted it: the drawer open, three of my replies
+       * arriving over four minutes, and the chip relighting after each one.
+       * Opening the drawer marks it read once, at the tap; nothing marked
+       * anything read afterwards, so every later poll counted the new reply.
+       *
+       * Two conditions, and they are the two `setCommentsOpen`'s comment
+       * already argued for rather than a loosening of it. `openedByTap` is
+       * *he* opened this, not the app -- the ask auto-open and the two
+       * re-assertion paths still cannot consume a reply, and the tests under
+       * that comment still pin it. `!document.hidden` is the sightline the
+       * flag alone does not give: a drawer he tapped open and then locked his
+       * phone on keeps its chip. That is the same guard `pingAskWatching`
+       * uses for the same question one feature over.
+       *
+       * A feed re-render builds a new drawer and `openedByTap` starts false
+       * again, which is the honest reading -- what survives the render is
+       * `fold.comments`, a state, and the comment above is right that a state
+       * is not a sightline. */
+      if (openedByTap && !document.hidden) {
+        if (markRepliesRead(target.cycle, lastItems) && lastStatus) {
+          renderStatus(lastStatus, null);
+        }
+      }
       /* The unread chip.
        *
        * the owner, same capture: *"Journals should also show if i have some
@@ -1798,12 +1829,25 @@
        * it rather than replacing it. Replacing it would make a card he has
        * caught up on look empty.
        *
+       * The chip says **"all new"** rather than repeating the count when every
+       * comment on the card is unread, which is his other half of the same
+       * report: *"the number for the amount of unread messages is listed twice
+       * (see the two purple 3 numbers)"*. It was one number twice -- the total
+       * and the unread count are equal on a card he has never opened, and
+       * `has-unread` colours the whole toggle, so both read as purple and both
+       * read as unread. Two identical numbers side by side cannot say which is
+       * which, so one of them becomes a word. `2 new` beside `💬 5` still says
+       * two different things and looks it.
+       *
        * `target.cycle` and not a guard on it: both callers of this function
        * are `cycleTarget`, so there is no drawer here without a cycle. A
        * null-check would have looked like defence and been dead code -- I
        * wrote one, mutated it away, and all eight tests stayed green. */
       var unread = unreadReplies(target.cycle, lastItems);
-      if (unread) toggle.appendChild(el("span", "comment-unread", String(unread)));
+      if (unread) {
+        toggle.appendChild(el("span", "comment-unread",
+          unread >= count ? "all new" : unread + " new"));
+      }
       // `classList.toggle` with a force argument, so a repaint that clears the
       // chip clears the highlight with it.
       toggle.classList.toggle("has-unread", !!unread);
@@ -1951,8 +1995,15 @@
       if (lastStatus) renderStatus(lastStatus, null);
     }
 
+    /* Whether he opened this drawer himself, which `paint` needs and cannot
+     * work out for itself -- `aria-expanded` says open and says nothing about
+     * who opened it, and that difference is the whole of the reviewer finding
+     * `setCommentsOpen` documents. Closing clears it, so a drawer he shut and
+     * the app later re-asserted is back to being merely open. */
+    function tapped(open) { openedByTap = !!open; }
+
     container.appendChild(drawer);
-    return { toggle: toggle, drawer: drawer, seen: seen };
+    return { toggle: toggle, drawer: drawer, seen: seen, tapped: tapped };
   }
 
   function cycleTarget(cycle) {
@@ -2279,13 +2330,22 @@
      * would be marked read by the 30-second poll before it ever painted.
      * Both found by the reviewer; my own comment here previously argued the
      * opposite, on the grounds that an open drawer is on his screen. It is
-     * not: open is a state, not a sightline. */
+     * not: open is a state, not a sightline.
+     *
+     * That still holds and the two tests under it still pass. What changed on
+     * 2026-08-26 is what happens *after* a tap: `commenting.tapped` records
+     * that this drawer is one he opened himself, so the replies that land in
+     * it while he is looking do not come back as unread. See the paint-time
+     * branch in `commentDrawer` -- and note the flag is only ever set here,
+     * on the `byTap` path, so the three app-driven callers above are exactly
+     * as unable to consume a reply as they were. */
     function setCommentsOpen(open, byTap) {
       if (!commenting) return;
       fold.comments = open;
       card.classList.toggle("is-commenting", open);
       commenting.toggle.setAttribute("aria-expanded", open ? "true" : "false");
       if (open && byTap) commenting.seen();
+      if (byTap) commenting.tapped(open);
     }
     /* An ask opens its own card's drawer, once. `askSeen` rather than
      * opening on every render, so closing it stays closed through the
