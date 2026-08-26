@@ -581,7 +581,53 @@ def _check_ci_health_sees_a_repo_whose_jobs_never_start() -> Optional[str]:
     return None
 
 
+def _check_dream_pass_sees_the_done_marker_the_loop_writes() -> Optional[str]:
+    """The staleness pass must read the marker in the shape a cycle actually writes it.
+
+    `_DONE` matched `^- DONE (Cycle N)` only, while step 6 of the hourly
+    prompt has every bullet in these files open with `- <date> (Cycle N) —`.
+    So a cycle that closed a bullet by the book put the marker where the
+    pattern could not see it, and the tool printed `0 bullet(s) moved` over a
+    file holding three genuinely closed bullets, from Cycle 296 to Cycle 499.
+    A clean report from an instrument nobody re-pointed at the data looks
+    exactly like a clean file.
+
+    Two-sided on purpose: the marker must be found after the date prefix, and
+    a bullet that merely quotes it while describing the convention must not be
+    retired -- five such notes sit in the same section, and widening the
+    pattern to "contains DONE (Cycle" would have the tool delete the
+    description of its own mechanism.
+    """
+    from tools import dream_pass
+
+    live = dream_pass.parse(
+        "- 2026-08-22 (Cycle 312) — DONE (Cycle 312): the heartbeat named no shell\n"
+        "- DONE (Cycle 9): the older prefix-less shape\n"
+        "- 2026-08-20 (Cycle 285) — a capture reads as unprocessed unless the"
+        " bullet starts exactly `DONE (Cycle N):`\n"
+    )
+    got = [b.done for b in live]
+    if got != [True, True, False]:
+        return ("dream_pass._DONE reads [closed-with-date-prefix, closed-bare, "
+                "quotes-the-marker] as %r, wanted [True, True, False]" % (got,))
+    return None
+
+
 CORPUS = [
+    Regression(
+        slug="a-done-marker-the-matcher-could-not-see",
+        cycle="499",
+        date="2026-08-26",
+        surface="drove the code",
+        failure=("`tools.dream_pass` may only move bullets a cycle already marked "
+                 "`DONE (Cycle N):`, and its pattern read the very start of the bullet "
+                 "while the house style put the date there. Three closed bullets sat in "
+                 "the live section of `resources/issues.md` for months and every run "
+                 "reported `0 bullet(s) moved`, which is also what a tidy file looks "
+                 "like. Found while giving the pass a weekly owner -- scheduling it "
+                 "as-written would have scheduled a no-op."),
+        check=_check_dream_pass_sees_the_done_marker_the_loop_writes,
+    ),
     Regression(
         slug="a-repo-whose-jobs-never-start-read-as-green",
         cycle="496",

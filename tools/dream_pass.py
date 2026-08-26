@@ -95,9 +95,10 @@ guaranteed-positive test of the kind `prompt.md` warns about.
         --repo /data/workspace/agora-persona-runner \\
         --proposal /tmp/nova-issues.proposed.md
 
-**Who runs this, and how often.** Nothing did, for the first 83 cycles
-after it was built -- Cycle 417 noticed and filed it, and it is the third
-tool in this loop to have had that shape. It is owned by the Monday
+**Who runs this, and how often.** Nothing did, from Cycle 334 when it was
+built to Cycle 499 when this paragraph was written -- Cycle 417 noticed
+the gap 83 cycles in and filed it, and it is the third tool in this loop
+to have had that shape. It is owned by the Monday
 `Nova — goals & reprioritise` heartbeat now (`weekly-reprioritise.md`),
 which was the owner's own instruction on idea #100: *"Make the resources
 file cleanup (issues.md/ideas.md staleness pass) run weekly instead of

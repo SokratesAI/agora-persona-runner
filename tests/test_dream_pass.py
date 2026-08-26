@@ -51,7 +51,7 @@ def test_done_marker_is_read_from_the_head_line_only():
 
 
 def test_done_marker_is_seen_through_the_date_prefix_the_loop_actually_writes():
-    """The three shapes below are the live file, not invented cases.
+    """The first two shapes are the live file; the third is tolerance.
 
     `prompt.md` step 6 tells every cycle to open a bullet with the date and
     its own cycle number, and to close one by making it "start with
@@ -59,7 +59,9 @@ def test_done_marker_is_seen_through_the_date_prefix_the_loop_actually_writes():
     marker *after* the prefix, and the original `^- DONE` pattern saw none
     of the three in `resources/issues.md` on 2026-08-26 (Cycles 197, 228,
     312). The old prefix-less shape is still in the file 14 times and must
-    keep matching.
+    keep matching. The bolded third shape is not in the file today -- a
+    bold lead is the house style for a bullet's first clause, so a cycle
+    will write it eventually, and the pattern allows it on purpose.
     """
     bullets = dream_pass.parse(doc(
         "- DONE (Cycle 9): the old shape, still in the Retired section",
