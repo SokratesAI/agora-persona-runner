@@ -35,12 +35,34 @@ is roughly eighty extra API calls to find a file whose name is already
 known. If that judgement turns out wrong, the fix is a second suffix
 here, not a content scan.
 
-**Three verdicts, kept apart, for `security_alerts`' reason.** `healthy`
+**Four verdicts, kept apart, for `security_alerts`' reason.** `healthy`
 means the most recent *completed* run succeeded. `failing` means it did
 not. `error` means the run history could not be read at all -- which is
 no instrument, not a healthy workflow, and must never print what a clean
 sweep prints. A workflow with no runs yet is `never-run` and is reported
 without raising the status: a workflow merged an hour ago has not failed.
+
+`blocked` is the fourth, added Cycle 472, and it exists because this tool
+told three cycles the wrong story. `docs-sync`'s three-run streak is not
+one failure repeated: the 08-07 and 08-14 runs executed the agent and it
+died inside `Execute Gemini CLI` (the job sets an `ai_credits_rate_limit_error`
+output), while the 08-21 run failed **two seconds in with no step
+executed at all** and one annotation on it: *"The job was not started
+because recent account payments have failed or your spending limit needs
+to be increased."* Those are different problems with different owners,
+and folding them into `3 completed run(s) in a row ended 'failure'` sent
+two cycles hunting for a Gemini key that could not have fixed a run which
+never started. So when the newest failing run executed no steps, this
+reads the annotation and says so.
+
+**A blocked run does not raise the exit status**, which is
+`security_alerts`' ALREADY-FIXED contract exactly: there is no pull
+request that fixes an account's spending limit, so printing it as
+actionable makes every cycle re-derive it. It prints loudly under its own
+heading with the annotation quoted. The owner already knows -- 2026-08-26,
+on his comments board: *"I do not want to pay for the ci runs. We just
+have to wait until September 1st."* Exit 0 here means "nothing for a cycle
+to act on", not "nothing is wrong".
 
 **A run still in progress is not a verdict.** The newest run can be
 `in_progress` for ten minutes on a scheduled sweep, and reading that as
@@ -49,11 +71,11 @@ called. In-progress runs are skipped and the newest *completed* one
 decides; if every run on record is still going, that is `never-run` with
 a note, not a guess.
 
-Exit 2 means at least one agentic workflow is failing -- someone's
-automation is dead and has been reporting nothing about it. Exit 1 means
-something was unreadable. Exit 0 means every agentic workflow this sweep
-could see last completed green, and it says which repos answered so
-"checked and clean" can never be confused with "never looked".
+Exit 2 means at least one agentic workflow is failing on its own terms --
+someone's automation is dead and has been reporting nothing about it.
+Exit 1 means something was unreadable. Exit 0 means there is nothing for a
+cycle to act on, and it says which repos answered so "checked and clean"
+can never be confused with "never looked".
 """
 
 import json
@@ -143,6 +165,59 @@ def run_history(workflow, run=None):
     return payload, None
 
 
+def start_failure(repo, run_id, run=None):
+    """`(reason, error)` -- why a failed run never got off the ground, or `(None, None)`.
+
+    A run whose jobs executed steps failed at something somebody wrote. A
+    run where *no* job executed a single step never started, and GitHub
+    puts the reason in a check-run annotation rather than in any log --
+    which is why `gh run view --log-failed` answers `log not found` on
+    exactly the run you most want to read.
+
+    Two calls, and only on a workflow already known to be failing, so the
+    common sweep pays nothing. An unreadable annotation is not an error
+    here: "the job never started" is already the finding, and the quote is
+    detail on top of it.
+    """
+    code, out, err = (run or _gh)(["api", f"repos/{repo}/actions/runs/{run_id}/jobs"])
+    if code != 0:
+        blob = (err or out or "").strip()
+        return None, blob.splitlines()[0] if blob else f"gh exited {code}"
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        return None, "gh returned something that is not JSON"
+    jobs = payload.get("jobs") if isinstance(payload, dict) else payload
+    if not isinstance(jobs, list) or not jobs:
+        return None, "gh returned no job list"
+    if any((job or {}).get("steps") for job in jobs):
+        return None, None
+
+    job_id = (jobs[0] or {}).get("id")
+    quoted = None
+    if job_id is not None:
+        code, out, _err = (run or _gh)(
+            ["api", f"repos/{repo}/check-runs/{job_id}/annotations"]
+        )
+        if code == 0:
+            try:
+                notes = json.loads(out)
+            except ValueError:
+                notes = []
+            if isinstance(notes, list):
+                quoted = next(
+                    (
+                        (n or {}).get("message", "").strip()
+                        for n in notes
+                        if (n or {}).get("message", "").strip()
+                    ),
+                    None,
+                )
+    if quoted:
+        return f"the job never started -- GitHub says: {quoted}", None
+    return "the job never started, and GitHub gave no reason on the run", None
+
+
 def verdict_for(workflow, runs):
     """Fold a run list into one verdict plus the numbers behind it.
 
@@ -189,6 +264,8 @@ def verdict_for(workflow, runs):
         ),
         "failures": streak,
         "last_good": last_good,
+        # The caller needs the newest red run to ask whether it ever started.
+        "newest_id": completed[0].get("databaseId"),
     }
 
 
@@ -207,6 +284,15 @@ def sweep(repos, run=None):
                 continue
             entry = dict(workflow)
             entry.update(verdict_for(workflow, runs))
+            if entry["verdict"] == "failing" and entry.get("newest_id"):
+                reason, err = start_failure(entry["repo"], entry["newest_id"], run=run)
+                if err:
+                    # Not fatal: the streak is still a true finding. Say the
+                    # follow-up could not be made rather than implying it was.
+                    entry["note"] += f"; could not check whether it started -- {err}"
+                elif reason:
+                    entry["verdict"] = "blocked"
+                    entry["blocked_note"] = reason
             results.append(entry)
     return results, errors
 
@@ -215,6 +301,7 @@ def format_report(results, errors, swept):
     """The printed report, and the exit status it implies."""
     lines = []
     failing = [r for r in results if r["verdict"] == "failing"]
+    blocked = [r for r in results if r["verdict"] == "blocked"]
     never = [r for r in results if r["verdict"] == "never-run"]
     healthy = [r for r in results if r["verdict"] == "healthy"]
 
@@ -226,6 +313,19 @@ def format_report(results, errors, swept):
         for entry in sorted(failing, key=lambda r: -r["failures"]):
             lines.append(f"  {entry['repo']}  {entry['path']}")
             lines.append(f"      {entry['note']}")
+            lines.append(
+                f"      https://github.com/{entry['repo']}/actions/workflows/"
+                f"{entry['path'].rsplit('/', 1)[-1]}"
+            )
+    if blocked:
+        lines.append(
+            f"BLOCKED BEFORE IT STARTED — {len(blocked)} workflow(s). Nothing here is "
+            "fixable by a pull request; the account is."
+        )
+        for entry in blocked:
+            lines.append(f"  {entry['repo']}  {entry['path']}")
+            lines.append(f"      {entry['blocked_note']}")
+            lines.append(f"      earlier history: {entry['note']}")
             lines.append(
                 f"      https://github.com/{entry['repo']}/actions/workflows/"
                 f"{entry['path'].rsplit('/', 1)[-1]}"

@@ -17,19 +17,52 @@ from tools import agentic_health
 
 
 def _runs(*pairs):
-    """`(status, conclusion, createdAt)` triples as GitHub returns them."""
+    """`(status, conclusion, createdAt)` triples as GitHub returns them.
+
+    Each gets a `databaseId`, because a run without one cannot be asked
+    whether it ever started and the real API always sends it.
+    """
     return [
-        {"status": s, "conclusion": c, "createdAt": t, "event": "schedule"}
-        for s, c, t in pairs
+        {
+            "status": s,
+            "conclusion": c,
+            "createdAt": t,
+            "event": "schedule",
+            "databaseId": 1000 + i,
+        }
+        for i, (s, c, t) in enumerate(pairs)
     ]
 
 
-def _fake_gh(workflows_by_repo, runs_by_workflow, failures=()):
-    """A `_gh` stand-in driven by two dicts, so no test touches the network."""
+# A job that executed steps -- i.e. the workflow really ran and really
+# failed. This is what the jobs endpoint answers unless a test says otherwise.
+_JOB_THAT_RAN = {"id": 77, "name": "agent", "steps": [{"name": "Execute Gemini CLI"}]}
+# A job with no steps at all: three seconds long, nothing executed. This is
+# what GitHub returns when it refuses to start the run.
+_JOB_THAT_NEVER_STARTED = {"id": 88, "name": "activation", "steps": []}
+
+
+def _fake_gh(
+    workflows_by_repo,
+    runs_by_workflow,
+    failures=(),
+    jobs_by_run=None,
+    annotations_by_job=None,
+):
+    """A `_gh` stand-in driven by dicts, so no test touches the network."""
+    jobs_by_run = jobs_by_run or {}
+    annotations_by_job = annotations_by_job or {}
 
     def run(args):
         if args[0] == "api":
-            repo = args[1].split("/")[1] + "/" + args[1].split("/")[2]
+            path = args[1]
+            if "/actions/runs/" in path and path.endswith("/jobs"):
+                run_id = int(path.rsplit("/", 2)[-2])
+                return 0, json.dumps({"jobs": jobs_by_run.get(run_id, [_JOB_THAT_RAN])}), ""
+            if "/check-runs/" in path and path.endswith("/annotations"):
+                job_id = int(path.rsplit("/", 2)[-2])
+                return 0, json.dumps(annotations_by_job.get(job_id, [])), ""
+            repo = path.split("/")[1] + "/" + path.split("/")[2]
             if repo in failures:
                 return 1, "", "HTTP 404: Not Found"
             return 0, json.dumps({"workflows": workflows_by_repo.get(repo, [])}), ""
@@ -139,3 +172,96 @@ def test_a_repo_with_no_agentic_workflows_is_not_an_error(state):
     assert (results, errors) == ([], [])
     assert status == 0
     assert "No gh-aw workflows found" in report
+
+
+# --- Cycle 472: a run that never started is not a workflow that is broken ---
+
+
+def test_a_run_that_never_started_is_blocked_not_failing():
+    """The 08-21 `docs-sync` failure verbatim: two seconds, zero steps, one annotation.
+
+    Folding this into the streak is what sent two cycles hunting for a
+    Gemini key. A run that GitHub refused to start cannot be fixed by any
+    key, any prompt, or any pull request.
+    """
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {
+            "docs-sync.lock.yml": _runs(
+                ("completed", "failure", "2026-08-21T05:43:07Z"),
+                ("completed", "success", "2026-08-07T12:40:38Z"),
+            )
+        },
+        jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+        annotations_by_job={
+            88: [
+                {
+                    "annotation_level": "failure",
+                    "message": (
+                        "The job was not started because recent account payments "
+                        "have failed or your spending limit needs to be increased."
+                    ),
+                }
+            ]
+        },
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["blocked"]
+    assert status == 0, "no pull request fixes a spending limit; exit 2 means actionable"
+    assert "BLOCKED BEFORE IT STARTED" in report
+    assert "spending limit" in report
+    assert "AGENTIC WORKFLOW FAILING" not in report
+    # The streak is still on the page -- it is a true fact and the earlier
+    # runs failed for a different reason.
+    assert "last succeeded 2026-08-07T12:40:38Z" in report
+
+
+def test_a_run_that_executed_steps_stays_failing():
+    """The 08-14 failure: the agent ran for eight minutes and died inside a step."""
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-14T06:23:17Z"))},
+        jobs_by_run={1000: [_JOB_THAT_RAN]},
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["failing"]
+    assert status == 2
+    assert "AGENTIC WORKFLOW FAILING" in report
+
+
+def test_blocked_without_an_annotation_still_says_it_never_started():
+    """GitHub does not always leave a reason. "It never started" is already the finding."""
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-21T05:43:07Z"))},
+        jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["blocked"]
+    assert status == 0
+    assert "gave no reason" in report
+
+
+def test_an_unreadable_jobs_call_keeps_the_failing_verdict_and_says_it_could_not_check():
+    """Never quieten a red workflow on a call that did not answer."""
+
+    def run(args):
+        if args[0] == "api" and args[1].endswith("/jobs"):
+            return 1, "", "HTTP 403: Forbidden"
+        return _fake_gh(
+            {"o/r": [DOCS_SYNC]},
+            {
+                "docs-sync.lock.yml": _runs(
+                    ("completed", "failure", "2026-08-21T05:43:07Z")
+                )
+            },
+        )(args)
+
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["failing"]
+    assert status == 2
+    assert "could not check whether it started" in report
