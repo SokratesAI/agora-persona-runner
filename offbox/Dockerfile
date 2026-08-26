@@ -15,7 +15,14 @@ FROM python:3.12-slim
 # pywebpush is the only dependency, and it is only needed to send. The
 # decision logic imports nothing outside the standard library on purpose,
 # so it stays testable in the runner's own test suite.
-RUN pip install --no-cache-dir pywebpush==2.0.3
+#
+# 2.4.0 is the latest on PyPI as of 2026-08-27 and the pin is measured, not
+# remembered: I installed it here and read `inspect.signature(webpush)`, which
+# takes `subscription_info`, `data`, `vapid_private_key` and `vapid_claims` --
+# exactly the four `web_push_sender` passes. I cannot build this image from a
+# cycle, so the signature is the only proof available that the call shape is
+# right, and it is worth more than a version number I recalled.
+RUN pip install --no-cache-dir pywebpush==2.4.0
 
 WORKDIR /app
 COPY nova_watch.py /app/nova_watch.py
