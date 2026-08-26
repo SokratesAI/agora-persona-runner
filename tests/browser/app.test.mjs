@@ -4174,7 +4174,12 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/costs", "/retro", "/plan", "/ask", "/conversations", "/heartbeats", "/catalog", "/diag"]);
+    // Grouped by category on 2026-08-26, on the owner's ask: the three they
+    // named first with no heading, then Steering / Talking / The loop. `/ask`
+    // left this list and kept its route -- the chat dock is the same thread.
+    // The order and the grouping are pinned in tests/test_nav_is_grouped.py,
+    // which can see the `<h2>` headings this query steps over.
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/plan", "/conversations", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));

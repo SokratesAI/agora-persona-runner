@@ -30,18 +30,41 @@
 
 <div id="scrim" class="scrim"></div>
 
+<!-- The three the owner named sit at the top with no heading above them,
+     and every other page sits under one. Their ask, `issues.md` 2026-08-26:
+     "Now that the sidebar for the Nova app has begun to contain a lot of page
+     links, group the by category, but always show the top 3 most used at the
+     top. I mostly use journals, issues and ideas. And also, the ask page can
+     be cut as i now have the chat bubble."
+
+     The pinned three are a fixed list, not a usage counter. A menu whose
+     order moves under you is a menu you have to read every time, and the
+     owner already told me which three they are -- measuring it would be
+     re-deriving an answer I was handed, and paying for it with a stored
+     tally and a reordering drawer.
+
+     `/ask` loses its link here and keeps its route: the chat dock is the
+     same thread, so the page is redundant on the menu, but a bookmark or an
+     older journal entry pointing at it still resolves. `PAGE_ROUTES` in
+     `nova_site.py` is unchanged and `tests/test_nav_is_grouped.py` pins that
+     `/ask` is the only route deliberately absent from this list. -->
 <nav id="nav" class="nav" aria-label="Sections" aria-hidden="true">
   <a class="nav-tab" href="/">Journal</a>
   <a class="nav-tab" href="/issues">Issues</a>
   <a class="nav-tab" href="/ideas">Ideas</a>
+
+  <h2 class="nav-group">Steering</h2>
   <a class="nav-tab" href="/notes">Notes</a>
   <a class="nav-tab" href="/pool">Pool</a>
-  <a class="nav-tab" href="/costs">Costs</a>
-  <a class="nav-tab" href="/retro">Retro</a>
   <a class="nav-tab" href="/plan">Plan</a>
-  <a class="nav-tab" href="/ask">Ask</a>
+
+  <h2 class="nav-group">Talking</h2>
   <a class="nav-tab" href="/conversations">Chats</a>
   <a class="nav-tab" href="/heartbeats">Beats</a>
+
+  <h2 class="nav-group">The loop</h2>
+  <a class="nav-tab" href="/retro">Retro</a>
+  <a class="nav-tab" href="/costs">Costs</a>
   <a class="nav-tab" href="/catalog">Catalog</a>
   <a class="nav-tab" href="/diag">Device</a>
 </nav>
