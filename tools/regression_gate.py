@@ -298,7 +298,135 @@ def _check_prompt_does_not_hardcode_the_shared_checkout() -> Optional[str]:
     return None
 
 
+def _check_ci_health_separates_the_two_causes() -> Optional[str]:
+    """A GitHub-side outage and a run of ours creating no jobs must stay two lines.
+
+    Cycle 487 read a run queued fourteen minutes with zero jobs as the Actions
+    billing block, because that is the failure this loop remembers. It was a
+    GitHub-side outage opened four seconds after the run was created, and the
+    two have opposite conclusions -- "wait, then merge" against "nothing merges
+    until September and the owner has to act".
+    """
+    import json
+    import subprocess
+    import urllib.error
+    from tools import ci_health
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body.encode()
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def opener_for(actions):
+        def opener(request, timeout=None):
+            return _Resp(json.dumps({
+                "components": [{"name": "Actions", "status": actions}],
+                "incidents": [{"name": "Incident with Actions"}] if actions != "operational" else [],
+            }))
+        return opener
+
+    def gh(cmd, **kwargs):
+        path = cmd[2]
+        if "/jobs" in path:
+            return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([{
+            "id": 1, "name": "build", "status": "queued", "head_branch": "b",
+            "created_at": "2000-01-01T00:00:00Z"}]), stderr="")
+
+    status, lines = ci_health.check(opener=opener_for("major_outage"), run=gh,
+                                    repos=["Org/repo"])
+    github_side = [l for l in lines if l.startswith("GITHUB-SIDE")]
+    stalled = [l for l in lines if l.startswith("STALLED")]
+    if status != 2 or len(github_side) != 1 or len(stalled) != 1:
+        return ("ci_health merged the GitHub-side outage and the zero-job run into one "
+                f"verdict (exit {status}, {len(github_side)} outage line(s), "
+                f"{len(stalled)} stalled line(s)) -- Cycle 487 chased the wrong cause")
+
+    # Two-sided: with GitHub healthy the stalled line must survive on its own,
+    # or the check above is only reading the status page.
+    status, lines = ci_health.check(opener=opener_for("operational"), run=gh,
+                                    repos=["Org/repo"])
+    if status != 2 or not any(l.startswith("STALLED") for l in lines):
+        return ("ci_health stopped reporting a run of ours that created zero jobs once "
+                f"githubstatus said Actions was operational (exit {status}) -- that is the "
+                "billing-block shape, which githubstatus never reports")
+    return None
+
+
+def _check_name_guard_sees_an_unstaged_file() -> Optional[str]:
+    """The owner's-name guard must read the files a commit will carry, not only the tracked ones.
+
+    Cycle 488 added `tools/ci_health.py` with his name in its opening
+    docstring, ran the suite before committing, and recorded "green locally"
+    honestly. The suite really was green: the guard built its file list from
+    `git ls-files`, which lists only what is *already tracked*, so the one new
+    module it needed to read was the one file it could not see. CI staged it
+    and turned red. That is a positive result guaranteed in advance, aimed
+    precisely at the case the guard exists for.
+
+    Two-sided on purpose: an unstaged file must be in the list, and an ignored
+    one must not -- a version that returned every path on the disk would pass
+    the first half and drag `node_modules` in behind it.
+    """
+    from tools import name_scan
+
+    root = Path(__file__).resolve().parent.parent
+    probe = root / "_regression_gate_unstaged_probe.py"
+    ignored = root / "__pycache__" / "_regression_gate_ignored_probe.py"
+    ignored.parent.mkdir(exist_ok=True)
+    probe.write_text('"""Edvard wrote this and never staged it."""\n')
+    ignored.write_text('"""Edvard, in a path .gitignore covers."""\n')
+    try:
+        try:
+            files = name_scan.repo_files(root)
+        except Exception as exc:  # noqa: BLE001 -- an unreadable tree is a failure here
+            return f"could not list the working tree: {exc}"
+        if probe.name not in files:
+            return "a file that is not staged yet is invisible to the name guard"
+        if f"__pycache__/{ignored.name}" in files:
+            return "the name guard is reading files git is told to ignore"
+        if not name_scan.scan([str(probe)]):
+            return "the scan does not flag the owner's name in an unstaged docstring"
+    finally:
+        probe.unlink()
+        ignored.unlink()
+    return None
+
+
 CORPUS = [
+    Regression(
+        slug="name-guard-blind-to-an-unstaged-file",
+        cycle="466 and 488",
+        date="2026-08-26",
+        surface="drove the code",
+        failure=("The guard keeping the owner's name out of this public repo built its file "
+                 "list from `git ls-files`, so a module a cycle had just written was the one "
+                 "file it could not read. Cycle 466 hit it, filed a note saying to run "
+                 "`git add` before the last local run, and 22 cycles later Cycle 488 hit the "
+                 "identical failure on a different new module. A note did not stop it twice; "
+                 "this entry is here because the code now does."),
+        check=_check_name_guard_sees_an_unstaged_file,
+    ),
+    Regression(
+        slug="a-queued-run-read-as-a-billing-block",
+        cycle="487",
+        date="2026-08-26",
+        surface="drove the code",
+        failure=("A build sat queued fourteen minutes having created zero jobs, and I wrote "
+                 "into the handoff that it looked like the Actions billing block. It was a "
+                 "GitHub-side Actions outage opened four seconds after the run was created. "
+                 "The two causes have opposite conclusions and one verdict line cannot carry "
+                 "both."),
+        check=_check_ci_health_separates_the_two_causes,
+    ),
     Regression(
         slug="unattended-metered-provider",
         cycle="78",
