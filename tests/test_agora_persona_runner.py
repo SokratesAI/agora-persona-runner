@@ -5837,9 +5837,17 @@ def drainable_main():
     previous_flag = main_module._shutdown_requested
     previous_interval = main_module.POLL_INTERVAL_SECONDS
     main_module.POLL_INTERVAL_SECONDS = 0
+    # `main()` also starts the catalog refresher (Cycle 451), a daemon thread
+    # on an hourly timer. Nothing here is about it, and conftest fails any
+    # test that leaves a thread running past its own patches -- so it is
+    # stubbed for every drain test at once rather than in each of them. The
+    # wire itself is asserted in tests/test_catalog_refresh.py.
+    previous_refresh = main_module.start_catalog_refresh
+    main_module.start_catalog_refresh = lambda: None
     try:
         yield main_module
     finally:
+        main_module.start_catalog_refresh = previous_refresh
         main_module.POLL_INTERVAL_SECONDS = previous_interval
         main_module._shutdown_requested = previous_flag
         signal.signal(signal.SIGTERM, previous_term)

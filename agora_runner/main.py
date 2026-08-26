@@ -15,6 +15,7 @@ from agora_runner.log import log
 from agora_runner.heartbeats import join_running_heartbeats
 from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
+from agora_runner.catalog_refresh import start_catalog_refresh
 
 # Set by the SIGTERM/SIGINT handler, read by the poll loop between ticks.
 # A plain module flag rather than a threading.Event on purpose: a signal
@@ -71,6 +72,10 @@ def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
     start_invoke_server()
+    # Regenerates nova/catalog.md on a timer. Here rather than in a
+    # cycle's prompt because a cycle has to choose to run it, and a
+    # catalog nobody regenerates is a screenshot -- see the module.
+    start_catalog_refresh()
     log(f"polling {AGORA_URL}/conversations every {POLL_INTERVAL_SECONDS}s")
     while True:
         try:
