@@ -10276,6 +10276,55 @@ describe("the heartbeats page", () => {
       /Could not load your heartbeats/);
     assert.equal(window.document.querySelectorAll(".hb-row").length, 0);
   });
+
+  /* His capture, ideas.md 2026-08-26: *"The heartbeat conversations should
+   * rather somehow be listed in the beats page as they belong there. Somehow
+   * underneath their relative heartbeat and as a dropdown drawer so they are
+   * not shown unless i want to see them."*
+   *
+   * "Not shown unless i want to see them" is the half a rendering test can
+   * actually check, and the half that would silently regress: a `details`
+   * that ships with `open` looks identical in every assertion about its
+   * contents. */
+  const WITH_THREADS = {
+    heartbeats: [
+      Object.assign({}, TWO.heartbeats[0], {
+        conversations: [
+          { id: "c-1", name: "Nova — Cycle 464", updatedAt: "2026-08-26T05:45:00Z" },
+          { id: "c-0", name: "Nova — Cycle 463", updatedAt: "2026-08-26T05:22:00Z" },
+        ],
+      }),
+      Object.assign({}, TWO.heartbeats[1], { conversations: [] }),
+    ],
+  };
+
+  test("a heartbeat's conversations are folded under it, closed, with a count", async () => {
+    const window = await loadSite("/heartbeats", { hbList: WITH_THREADS });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    const box = rows[0].querySelector(".hb-threads");
+    assert.ok(box, "the drawer was not drawn at all");
+    assert.equal(box.hasAttribute("open"), false, "the drawer shipped open");
+    assert.equal(box.querySelector("summary").textContent, "2 conversations");
+    assert.deepEqual(
+      [...box.querySelectorAll(".hb-thread-name")].map((n) => n.textContent),
+      ["Nova — Cycle 464", "Nova — Cycle 463"]);
+  });
+
+  test("a heartbeat with no conversations gets no empty drawer", async () => {
+    const window = await loadSite("/heartbeats", { hbList: WITH_THREADS });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    assert.equal(rows[1].querySelector(".hb-threads"), null);
+  });
+
+  test("opening one from the drawer moves to the conversations route", async () => {
+    const window = await loadSite("/heartbeats", {
+      hbList: WITH_THREADS,
+      convThread: () => ({ conversationId: "c-0", waiting: false, messages: [] }),
+    });
+    const older = [...window.document.querySelectorAll(".hb-thread")][1];
+    click(window, older);
+    assert.equal(window.location.pathname, "/conversations");
+  });
 });
 
 

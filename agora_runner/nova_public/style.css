@@ -3301,7 +3301,7 @@ body.has-full-chart { overflow: hidden; }
   padding: 0.45rem 0.6rem;
   font: inherit;
   font-size: 0.82rem;
-  color: var(--fg);
+  color: var(--text);
   cursor: pointer;
 }
 
