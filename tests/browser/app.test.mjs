@@ -6790,6 +6790,45 @@ describe("commenting on a boarded row", () => {
     assert.equal(messages[1].querySelector(".note-msg-when").textContent, "08-12 (Cycle 120)");
   });
 
+  test("a row whose whole body is a conversation still shows it", async () => {
+    /* The write-up is `[]` here because everything under the heading was a
+     * dated note. That branch used to `return` before the composer, so a
+     * row he had commented on and nothing else would have shown "No
+     * write-up yet" with his own words and the reply box hidden behind it. */
+    const window = await loadSite("/issues#57", {
+      board: (url) =>
+        url.includes("item=")
+          ? {
+              name: "issues",
+              item: {
+                number: 57,
+                title: "Talked about, never written up",
+                status: "🟡 In progress",
+                statusKey: "in-progress",
+                updated: "08-26",
+                where: "",
+                priority: "",
+                priorityKey: "",
+                done: false,
+                blocks: [],
+                comments: [
+                  {
+                    author: "Edvard",
+                    stamp: "08-26",
+                    blocks: [{ type: "p", spans: [{ kind: "text", text: "is this one live?" }] }],
+                  },
+                ],
+              },
+              found: true,
+            }
+          : null,
+    });
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    assert.equal(body.querySelectorAll(".note-msg").length, 1, "the only content was dropped");
+    assert.match(body.querySelector(".note-msg-body").textContent, /is this one live/);
+    assert.ok(body.querySelector(".item-comment"), "no way to answer him on this row");
+  });
+
   test("the write-up above the first note stays write-up", async () => {
     /* The failure this guards is the split running too far: the notes are
      * appended into the same body, so a looser rule pulls his statement of
