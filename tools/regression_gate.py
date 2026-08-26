@@ -361,7 +361,58 @@ def _check_ci_health_separates_the_two_causes() -> Optional[str]:
     return None
 
 
+def _check_name_guard_sees_an_unstaged_file() -> Optional[str]:
+    """The owner's-name guard must read the files a commit will carry, not only the tracked ones.
+
+    Cycle 488 added `tools/ci_health.py` with his name in its opening
+    docstring, ran the suite before committing, and recorded "green locally"
+    honestly. The suite really was green: the guard built its file list from
+    `git ls-files`, which lists only what is *already tracked*, so the one new
+    module it needed to read was the one file it could not see. CI staged it
+    and turned red. That is a positive result guaranteed in advance, aimed
+    precisely at the case the guard exists for.
+
+    Two-sided on purpose: an unstaged file must be in the list, and an ignored
+    one must not -- a version that returned every path on the disk would pass
+    the first half and drag `node_modules` in behind it.
+    """
+    from tools import name_scan
+
+    root = Path(__file__).resolve().parent.parent
+    probe = root / "_regression_gate_unstaged_probe.py"
+    ignored = root / "__pycache__" / "_regression_gate_ignored_probe.py"
+    ignored.parent.mkdir(exist_ok=True)
+    probe.write_text('"""Edvard wrote this and never staged it."""\n')
+    ignored.write_text('"""Edvard, in a path .gitignore covers."""\n')
+    try:
+        try:
+            files = name_scan.repo_files(root)
+        except Exception as exc:  # noqa: BLE001 -- an unreadable tree is a failure here
+            return f"could not list the working tree: {exc}"
+        if probe.name not in files:
+            return "a file that is not staged yet is invisible to the name guard"
+        if f"__pycache__/{ignored.name}" in files:
+            return "the name guard is reading files git is told to ignore"
+        if not name_scan.scan([str(probe)]):
+            return "the scan does not flag the owner's name in an unstaged docstring"
+    finally:
+        probe.unlink()
+        ignored.unlink()
+    return None
+
+
 CORPUS = [
+    Regression(
+        slug="name-guard-blind-to-an-unstaged-file",
+        cycle="488",
+        date="2026-08-26",
+        surface="drove the code",
+        failure=("The guard keeping the owner's name out of this public repo built its file "
+                 "list from `git ls-files`, so a module a cycle had just written was the one "
+                 "file it could not read. Cycle 488 shipped his name in a docstring and wrote "
+                 "'green locally' truthfully; CI staged the file and turned red."),
+        check=_check_name_guard_sees_an_unstaged_file,
+    ),
     Regression(
         slug="a-queued-run-read-as-a-billing-block",
         cycle="487",

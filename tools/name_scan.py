@@ -21,6 +21,7 @@ when there are any, so it works as a pre-merge check as well as a test.
 import ast
 import io
 import re
+import subprocess
 import sys
 import tokenize
 from pathlib import Path
@@ -135,6 +136,31 @@ def hits(path, source):
             start = max(0, m.start() - 40)
             found.append((at, text[start:m.end() + 40].replace("\n", " ").strip()))
     return found
+
+
+def repo_files(root, exempt_prefixes=()):
+    """Every file in *root*'s working tree that a commit would carry.
+
+    `git ls-files` alone lists only what is *already tracked*, and that is a
+    positive result guaranteed in advance for exactly the files this scan
+    exists to catch: a cycle writes a new module, runs the guard before
+    committing, and the guard cannot see the file at all. Cycle 488 shipped
+    `tools/ci_health.py` with the owner's name in its opening docstring and
+    recorded "green locally" truthfully -- the suite really was green, against
+    a file list the new module was not on yet. CI staged it and turned red.
+
+    `--others --exclude-standard` adds the untracked-but-not-ignored files,
+    which is the set `git add -A` would sweep in. `--exclude-standard` is not
+    decoration: without it this walks `node_modules`, which took the guard
+    from 4 seconds to 111 (measured Cycle 490) and reports hits in vendored
+    code no commit of ours will ever carry.
+    """
+    out = subprocess.run(["git", "ls-files", "--cached", "--others",
+                          "--exclude-standard"],
+                         cwd=str(root), capture_output=True, text=True,
+                         check=True).stdout.split("\n")
+    return list(dict.fromkeys(
+        p for p in out if p and not p.startswith(tuple(exempt_prefixes))))
 
 
 def scan(paths):

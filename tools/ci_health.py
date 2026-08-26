@@ -12,8 +12,8 @@ It was not the billing block. Measured Cycle 488 in one call:
 `2026-08-26T15:11:58Z`, four seconds after that run was created. Nothing in
 this repo, this org or this account was wrong. The distinction is not
 academic — the billing story ends in "nothing merges until 1 September and
-Edvard has to act", and the outage story ends in "wait, then merge", and a
-cycle that picks the wrong one either stalls or plans around a wall that
+the owner has to act", and the outage story ends in "wait, then merge", and
+a cycle that picks the wrong one either stalls or plans around a wall that
 is not there.
 
     python3 -m tools.ci_health

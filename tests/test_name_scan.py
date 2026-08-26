@@ -1,5 +1,4 @@
 """The owner's name stays out of this public repo's prose, and stays in its data."""
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,14 +13,12 @@ ROOT = Path(__file__).resolve().parent.parent
 EXEMPT_PREFIXES = ("tests/fixtures/",)
 
 
-def tracked_files():
-    out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
-                         text=True, check=True).stdout.split("\n")
-    return [p for p in out if p and not p.startswith(EXEMPT_PREFIXES)]
+def repo_files():
+    return name_scan.repo_files(ROOT, EXEMPT_PREFIXES)
 
 
 def test_no_owner_name_in_any_comment_or_docstring():
-    report = name_scan.scan([str(ROOT / p) for p in tracked_files()])
+    report = name_scan.scan([str(ROOT / p) for p in repo_files()])
     assert report == [], (
         "the owner asked for his name out of public repos "
         "(issues.md 2026-08-24). Write 'the owner':\n" + "\n".join(report))
@@ -91,3 +88,26 @@ def test_main_exits_nonzero_on_a_hit(tmp_path):
 
 def test_a_syntactically_broken_python_file_does_not_crash_the_scan():
     assert name_scan.hits("x.py", "def (:\n") == []
+
+
+def test_repo_files_sees_a_file_that_is_not_staged_yet():
+    """The whole failure of Cycle 488: a new module is invisible until `git add`.
+
+    Both directions, because a one-sided check here would pass on a function
+    that returned every path on the disk: the untracked file must appear, and
+    a file git is told to ignore must not.
+    """
+    new = ROOT / "_name_scan_untracked_probe.py"
+    ignored = ROOT / "__pycache__" / "_name_scan_ignored_probe.py"
+    ignored.parent.mkdir(exist_ok=True)
+    new.write_text('"""Edvard wrote this and never staged it."""\n')
+    ignored.write_text('"""Edvard, in a path .gitignore covers."""\n')
+    try:
+        files = repo_files()
+        assert new.name in files, "an unstaged file is exactly what CI stages next"
+        assert f"__pycache__/{ignored.name}" not in files
+        report = name_scan.scan([str(ROOT / p) for p in files])
+        assert any(new.name in line for line in report)
+    finally:
+        new.unlink()
+        ignored.unlink()
