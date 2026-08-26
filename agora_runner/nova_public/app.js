@@ -3531,6 +3531,11 @@
     notes: BOARD_NOTES,
     open: null,
     details: {},
+    // The bubbles under the write-up, keyed the same way `details` is.
+    // A second dict rather than a field on the blocks list because they
+    // arrive together and are dropped together -- see the delete beside
+    // every `delete boardState.details[...]`.
+    comments: {},
     // The three halves of ideas.md #70/#71, kept on one state object
     // because they compose: search cuts the list down, the toggles cut
     // it further, sort orders what is left. `query` is what is typed;
@@ -4137,6 +4142,44 @@
     return { el: panel, focus: function () { box.focus(); } };
   }
 
+  /* The conversation appended under a board row's write-up, as the same
+   * green-and-purple bubbles the notes page and the capture box use.
+   *
+   * The owner, `issues.md` 2026-08-26: *"i see that boarded issues does not
+   * have those nice colored comments like there are now in the 'not boarded
+   * yet' box, so take the best from both worlds here."* His comment and my
+   * answer are appended into the row's own write-up as dated `**<author>,
+   * 08-26:**` lines, so until now the page drew all three voices -- his
+   * statement of the problem, his later question, my reply -- as one column
+   * of identical paragraphs. `nova_boards.split_detail_conversation` is
+   * what tells them apart; nothing in the file changed.
+   *
+   * `note-msg-mine` / `note-msg-nova` verbatim, not a board-specific
+   * variant: the whole ask is that the two pages read alike, and a second
+   * pair of colour rules is how they stop doing that a month from now.
+   */
+  function renderRowConversation(container, comments) {
+    (comments || []).forEach(function (message) {
+      var mine = message.author !== "Nova";
+      var msg = el("article", "note-msg " + (mine ? "note-msg-mine" : "note-msg-nova"));
+      var who = el("p", "note-msg-who");
+      who.appendChild(el("span", "note-msg-name", message.author || "Nova"));
+      // The stamp as written -- `08-26`, or `08-26 (Cycle 462)` when a
+      // cycle wrote it. Re-deriving the cycle here is the duplication this
+      // repo keeps filing against itself; `append_detail_note` owns it.
+      // No rule of its own in style.css on purpose: `.note-msg-who` is
+      // already the small dim flex row the notes page uses for exactly
+      // this, and a second rule restating what it inherits is one more
+      // thing to keep in step for no gain.
+      if (message.stamp) who.appendChild(el("span", "note-msg-when", message.stamp));
+      msg.appendChild(who);
+      var text = el("div", "note-msg-body");
+      renderBlocks(text, message.blocks || []);
+      msg.appendChild(text);
+      container.appendChild(msg);
+    });
+  }
+
   /* One row of the owner's board. Closed it is the number, the title and a
    * status chip; open it reveals the write-up, which is a second request
    * the first time a row is opened and memory after that. */
@@ -4237,14 +4280,16 @@
       body.textContent = "";
       body.appendChild(actionBar());
       if (item.where) body.appendChild(el("p", "item-where", "Landed in " + item.where));
-      var blocks = boardState.details[board + ":" + item.number];
+      var key = board + ":" + item.number;
+      var blocks = boardState.details[key];
       if (!blocks) {
         body.appendChild(el("p", "empty", "Loading…"));
         fetch("/api/board?name=" + board + "&item=" + item.number)
           .then(json)
           .then(function (payload) {
-            boardState.details[board + ":" + item.number] =
-              ((payload && payload.item) || {}).blocks || [];
+            var one = (payload && payload.item) || {};
+            boardState.details[key] = one.blocks || [];
+            boardState.comments[key] = one.comments || [];
             if (boardState.open === item.number) fill();
           })
           .catch(function (err) {
@@ -4253,29 +4298,39 @@
           });
         return;
       }
+      // Not an early return any more, and that is the whole of the bug
+      // this line used to carry into the new feature: a row whose body is
+      // *only* a conversation now renders an empty write-up, and stopping
+      // here would have hidden his comments and the box to answer them
+      // behind "No write-up yet".
       if (!blocks.length) {
         body.appendChild(el("p", "empty", "No write-up yet — only the board row."));
-        return;
+      } else {
+        renderBlocks(body, blocks);
       }
-      renderBlocks(body, blocks);
+      renderRowConversation(body, boardState.comments[key]);
       body.appendChild(commentBox());
     }
 
     /* The comment thread, idea #64: *"Lets me have the same comment
      * conversation on ideas, notes and issues like the Journal."*
      *
-     * **There is no thread to render, and that is the design rather than
-     * a missing half.** A comment is appended to the row's own write-up,
-     * which `renderBlocks` above has just drawn -- so his comment and my
-     * reply to it appear as part of the write-up, in order, in the file
-     * he reads in Obsidian when the app is down. The journal's drawer
-     * needs its own store because a journal entry is immutable; a board
-     * row's write-up is not.
+     * This used to say there was no thread to render and that this was
+     * the design: a comment is appended into the row's own write-up, so
+     * drawing the write-up drew the conversation with it, in order, in
+     * the same text he reads in Obsidian. That is still how the *file*
+     * works and it is still right. What was wrong was calling the
+     * rendering finished, and he said so on 2026-08-26: *"boarded issues
+     * does not have those nice colored comments like there are now in the
+     * 'not boarded yet' box, so take the best from both worlds here."*
+     * Three voices as one undifferentiated column of paragraphs is not a
+     * conversation, and the capture box beside it had already proved the
+     * better shape. `renderRowConversation` above draws them; this is
+     * still only the composer.
      *
-     * So this is only the composer, and it goes *after* the write-up for
-     * the reason `append_detail_note` puts the note at the end: the
-     * write-up is his statement of the problem and the conversation
-     * accumulates under it.
+     * It goes *after* the thread for the reason `append_detail_note` puts
+     * the note at the end: the write-up is his statement of the problem
+     * and the conversation accumulates under it.
      */
     function commentBox() {
       var wrap = el("div", "item-comment");
@@ -4322,6 +4377,7 @@
             // own sentence land, rather than being told it saved and
             // shown a body that does not contain it.
             delete boardState.details[board + ":" + item.number];
+            delete boardState.comments[board + ":" + item.number];
             busy(false);
             fill();
           })
@@ -5549,7 +5605,9 @@
         fetch("/api/board?name=" + board + "&item=" + item.number + "&mine=1")
           .then(json)
           .then(function (payload) {
-            boardState.details[key] = ((payload && payload.item) || {}).blocks || [];
+            var one = (payload && payload.item) || {};
+            boardState.details[key] = one.blocks || [];
+            boardState.comments[key] = one.comments || [];
             if (open) fill();
           })
           .catch(function (err) {
@@ -5558,11 +5616,15 @@
           });
         return;
       }
+      // My own rows have no comment box -- he comments on his board, not
+      // on mine -- but a row of mine can still carry notes a cycle wrote
+      // under it, and they are the same shape, so they draw the same way.
       if (!blocks.length) {
         body.appendChild(el("p", "empty", "No write-up yet — only the board row."));
-        return;
+      } else {
+        renderBlocks(body, blocks);
       }
-      renderBlocks(body, blocks);
+      renderRowConversation(body, boardState.comments[key]);
     }
 
     function toggle() {

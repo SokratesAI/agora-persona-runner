@@ -698,6 +698,58 @@ _COMMENT_NOTE_RE = re.compile(
 )
 
 
+_COMMENT_SPLIT_RE = re.compile(
+    r"^\*\*(" + "|".join(sorted(NOTE_AUTHORS.values()))
+    + r"), (\d{2}-\d{2}[^:*]*):\*\*[ \t]?",
+    re.MULTILINE,
+)
+
+
+def split_detail_conversation(body):
+    """One write-up -> `(prose, [{"author", "stamp", "text"}])`.
+
+    The owner, `issues.md` capture 2026-08-26: *"i see that boarded issues
+    does not have those nice colored comments like there are now in the 'not
+    boarded yet' box, so take the best from both worlds here."*
+
+    A board comment is appended into the row's own write-up as a
+    `**<author>, 08-26:**` line (`append_detail_note`), so the page has been
+    drawing his question and my answer as two more paragraphs of the same
+    prose block -- indistinguishable from the problem statement above them
+    and from each other. The capture box and the notes page both draw the
+    identical exchange as green and purple bubbles. This is the split that
+    lets a boarded row do the same, and it changes nothing in the file: the
+    markdown he reads in Obsidian is untouched, this is only how the page
+    reads it back.
+
+    Everything before the first note marker is the write-up proper. From
+    that marker on, every marker starts a message that runs to the next one.
+    That is deliberately the same positional rule
+    `unanswered_comment_bodies` uses to decide whether a row is waiting on
+    me -- one reading of what a note is, not two -- and it means a marker
+    written *inside* the problem statement pulls the rest of the statement
+    into a bubble. That is the honest failure: such a line is a note by
+    every other definition in this module, and inventing a second, looser
+    one here is how the two halves drift apart.
+    """
+    text = body or ""
+    found = list(_COMMENT_SPLIT_RE.finditer(text))
+    if not found:
+        return text.strip(), []
+    prose = text[: found[0].start()].strip()
+    messages = []
+    for position, match in enumerate(found):
+        end = found[position + 1].start() if position + 1 < len(found) else len(text)
+        messages.append({
+            "author": match.group(1),
+            # `08-26` or `08-26 (Cycle 462)` -- whatever the author wrote,
+            # not re-derived. `append_detail_note` owns that shape.
+            "stamp": match.group(2).strip(),
+            "text": text[match.end():end].strip(),
+        })
+    return prose, messages
+
+
 def unanswered_comments(markdown):
     """Row numbers whose write-up ends on a comment from the owner.
 
