@@ -9904,6 +9904,38 @@
       loadThread();
     }
 
+    /* A fold in the switcher, same `<details>` shape as the sidebar groups.
+     *
+     * His capture, `issues.md` 2026-08-26, two minutes apart: *"the list of
+     * conversations are just filled with heartbeats"*, then *"I ment not
+     * just filled with heartbeats, other converssations aswell but the
+     * beats take up a lot of space and i have to scroll past them. Maybe
+     * folders are the right solutions here aswell."*
+     *
+     * Measured against the live store the same morning: 40 non-archived
+     * conversations, **30 of them cycle threads**. So the switcher opened
+     * on 39 rows of which three quarters were a heartbeat he has never
+     * needed to reopen, and the nine threads he might want were below them.
+     *
+     * The count goes in the summary because a shut fold otherwise hides how
+     * much it is hiding, which is the failure the sidebar folds do not have
+     * (there, the group name tells you what is inside). Nothing is dropped
+     * -- every thread is still one tap away, which is the difference
+     * between a fold and a filter. */
+    function listFold(title, count, open) {
+      var fold = el("details", "chat-list-fold");
+      if (open) fold.setAttribute("open", "");
+      var summary = el("summary", "chat-list-group");
+      summary.appendChild(el("span", "chat-list-group-name", title));
+      summary.appendChild(el("span", "chat-list-group-count", String(count)));
+      fold.appendChild(summary);
+      // The rows live in a `<div>` rather than directly in the `<details>`
+      // for `.nav-fold-body`'s reason: overriding `display` on a `<details>`
+      // replaces the box its closed-state hiding is built on.
+      fold.appendChild(el("div", "chat-list-fold-body"));
+      return fold;
+    }
+
     function loadList() {
       listEl.textContent = "";
       listEl.appendChild(listRow("Ask Nova", "", source.kind === "ask", function () {
@@ -9921,15 +9953,37 @@
             listEl.appendChild(el("p", "empty", "No other conversations yet."));
             return;
           }
-          rows.forEach(function (row) {
-            var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
-            listEl.appendChild(listRow(
-              row.name, meta,
-              source.kind === "conv" && source.id === row.id,
-              function () {
-                switchTo({ kind: "conv", id: row.id, name: row.name });
-              }));
-          });
+          // `cycleThread` is `nova_conversations.conversations()`'s own flag
+          // for an `evolve-cycle:` tag. Reading the tag here as well would
+          // be a second copy of that rule in a second language.
+          var beats = rows.filter(function (row) { return !!row.cycleThread; });
+          var mine = rows.filter(function (row) { return !row.cycleThread; });
+
+          function fill(fold, group) {
+            var body = fold.lastChild;
+            group.forEach(function (row) {
+              var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
+              body.appendChild(listRow(
+                row.name, meta,
+                source.kind === "conv" && source.id === row.id,
+                function () {
+                  switchTo({ kind: "conv", id: row.id, name: row.name });
+                }));
+            });
+            listEl.appendChild(fold);
+          }
+
+          // Open on the threads he starts, shut on the ones the loop starts
+          // for itself -- and open the heartbeat fold anyway when it holds
+          // the thread he is reading, so the switcher never opens without
+          // the current row on screen.
+          if (mine.length) fill(listFold("Conversations", mine.length, true), mine);
+          if (beats.length) {
+            var current = source.kind === "conv" && beats.some(function (row) {
+              return row.id === source.id;
+            });
+            fill(listFold("Heartbeats", beats.length, current), beats);
+          }
         })
         .catch(function (err) {
           if (pending.parentNode) listEl.removeChild(pending);

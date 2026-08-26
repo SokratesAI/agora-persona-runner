@@ -1267,7 +1267,7 @@ body.nav-open { overflow: hidden; }
    * browser suite pins that there is exactly one reduced-motion block in
    * this sheet, so a rule that lives anywhere else is a rule nothing
    * checks the selector list of. */
-  .nav-group::after { transition: none; }
+  .nav-group::after, .chat-list-group::after { transition: none; }
 }
 
 .tabs, .filters {
@@ -3235,6 +3235,56 @@ body.has-full-chart { overflow: hidden; }
 .chat-list-row.current { border-color: var(--accent); }
 .chat-list-name { font-size: 0.9rem; }
 .chat-list-meta { font-size: 0.75rem; color: var(--dim); margin-top: 0.15rem; }
+
+/* The switcher's folds. Same `<details>` treatment as `.nav-group` in the
+ * sidebar drawer, down to the chevron drawn as a rotated border corner --
+ * he asked for "folders here as well", so it should look like the folders
+ * he already has rather than a second idea of one.
+ *
+ * `.chat-list` is a flex column with a gap, so the fold body needs its own
+ * column to keep the rows spaced once they are one box deep. */
+.chat-list-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.35rem;
+}
+.chat-list-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 40px;
+  padding: 0.2rem 0.1rem;
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  list-style: none;
+}
+.chat-list-group::-webkit-details-marker { display: none; }
+/* The count sits between the name and the chevron: a shut fold otherwise
+ * hides how much it is hiding. */
+.chat-list-group-count {
+  margin-left: auto;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.chat-list-group::after {
+  content: "";
+  flex: none;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 160ms ease;
+}
+.chat-list-fold[open] > .chat-list-group::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+.chat-list-fold[open] > .chat-list-group { color: var(--text); }
 .chat-close {
   flex: none;
   background: none;
