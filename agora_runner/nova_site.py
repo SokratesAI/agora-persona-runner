@@ -2899,10 +2899,18 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if "\n" in text or "\r" in text:
             self._send_json(400, {"error": "a comment cannot contain a line break"})
             return
-        # The page is his, so an unstated author is him; a cycle posting a
-        # reply says so. Anything else is refused rather than written into
-        # his board under a name neither of us used.
-        author = payload.get("author") or "Edvard"
+        # **Every caller says who it is; there is no default.** This used to
+        # fall back to the owner's own name on the reasoning that the page is
+        # his, and it is -- but the page is not the only caller. Cycle 479 posted
+        # two notes on idea #38 from a shell without the field, and both landed
+        # in his live `ideas.md` signed with his name. The damage is not the
+        # byline: `unanswered_comment_bodies` calls a row waiting when the last
+        # note on it is his, and that flag outranks a 🔴 in
+        # `tools.top_board_rows`, so my own comment put idea #38 at the top of
+        # his board as a question he had never asked. A default that is right
+        # for one caller and silently wrong for the other is not a default, and
+        # the one caller it was for now states it in `app.js`.
+        author = payload.get("author")
         if author not in ("Edvard", "Nova"):
             self._send_json(400, {"error": "author must be 'Edvard' or 'Nova'"})
             return

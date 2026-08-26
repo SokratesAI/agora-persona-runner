@@ -4465,12 +4465,12 @@ def test_commenting_on_a_boarded_row_reaches_the_vault_through_the_real_request_
     with patch.object(nova_site, "comment_on_row",
                       return_value=(True, "#64 commented on ideas")) as cm:
         status, _, body = _post(
-            "/api/board/comment", {"target": "ideas", "number": 64, "text": "  Still broken. "})
+            "/api/board/comment",
+            {"target": "ideas", "number": 64, "text": "  Still broken. ", "author": "Edvard"})
     assert status == 200
     assert json.loads(body)["ok"] is True
     target, number, text, dated, author = cm.call_args[0]
     assert (target, number, text) == ("ideas", 64, "Still broken.")
-    # The page is his, so an unstated author is him.
     assert author == "Edvard"
     # `MM-DD`, and Oslo's -- a module that reaches for a clock reaches for
     # it in UTC, and this lands in a file he reads.
@@ -4499,8 +4499,6 @@ def test_a_cycles_reply_is_attributed_to_nova_and_not_to_him():
 def test_an_author_neither_of_us_uses_is_refused_before_any_write(author):
     """His board is not a place to write under an arbitrary name.
 
-    `" "` is in here deliberately: it is truthy, so it survives the
-    `or "Edvard"` fallback and would be written as the author verbatim.  (not-prose: quoting a literal)
     The casing pair is here because `append_detail_note` renders the
     string as given -- `**nova, 08-17:**` is not a name either of us uses.
     """
@@ -4512,13 +4510,24 @@ def test_an_author_neither_of_us_uses_is_refused_before_any_write(author):
 
 
 @pytest.mark.parametrize("payload_extra", [{}, {"author": ""}, {"author": None}])
-def test_an_unstated_author_is_him_because_the_page_is_his(payload_extra):
-    with patch.object(nova_site, "comment_on_row",
-                      return_value=(True, "ok")) as cm:
-        status, _, _ = _post("/api/board/comment", dict(
+def test_a_caller_that_does_not_name_itself_is_refused_rather_than_written_as_him(payload_extra):
+    """This used to answer 200 and write the note down as the owner.
+
+    The reasoning was that the page is his, so an unstated author is him.
+    The page is his; it is not the only caller. Cycle 479 posted two notes
+    on idea #38 from a shell without the field and both landed in his live
+    `ideas.md` under his name -- and `unanswered_comment_bodies` reads the
+    last note on a row being his as him waiting for an answer, which
+    outranks every rating in `tools.top_board_rows`. So my own comment
+    pinned idea #38 to the top of his board as a question he never asked,
+    and no reply I could write would have cleared it.
+    """
+    with patch.object(nova_site, "comment_on_row") as cm:
+        status, _, body = _post("/api/board/comment", dict(
             {"target": "issues", "number": 94, "text": "hi"}, **payload_extra))
-    assert status == 200
-    assert cm.call_args[0][4] == "Edvard"
+    assert status == 400
+    assert "author" in json.loads(body)["error"]
+    cm.assert_not_called()
 
 
 def test_a_comment_cannot_smuggle_a_line_break_into_his_write_up():
@@ -4528,7 +4537,8 @@ def test_a_comment_cannot_smuggle_a_line_break_into_his_write_up():
     for text in ["two\nlines", "sneaky\rreturn"]:
         with patch.object(nova_site, "comment_on_row") as cm:
             status, _, _ = _post(
-                "/api/board/comment", {"target": "ideas", "number": 64, "text": text})
+                "/api/board/comment",
+                {"target": "ideas", "number": 64, "text": text, "author": "Edvard"})
         assert status == 400, text
         cm.assert_not_called()
 
@@ -4537,7 +4547,8 @@ def test_an_empty_comment_is_rejected_rather_than_written_as_a_blank_line():
     for text in ["", "   ", None, 7]:
         with patch.object(nova_site, "comment_on_row") as cm:
             status, _, _ = _post(
-                "/api/board/comment", {"target": "ideas", "number": 64, "text": text})
+                "/api/board/comment",
+                {"target": "ideas", "number": 64, "text": text, "author": "Edvard"})
         assert status == 400, text
         cm.assert_not_called()
 
@@ -4569,7 +4580,8 @@ def test_a_row_with_no_write_up_is_a_409_and_not_a_502():
     with patch.object(nova_site, "comment_on_row",
                       return_value=(False, "#63 is not a row on ideas")):
         status, _, body = _post(
-            "/api/board/comment", {"target": "ideas", "number": 63, "text": "x"})
+            "/api/board/comment",
+            {"target": "ideas", "number": 63, "text": "x", "author": "Edvard"})
     assert status == 409
     assert json.loads(body)["ok"] is False
 
@@ -4583,7 +4595,8 @@ def test_an_exhausted_write_is_a_502_and_not_a_409():
     with patch.object(nova_site, "comment_on_row",
                       return_value=(False, "could not write to ideas: 409 conflict")):
         status, _, body = _post(
-            "/api/board/comment", {"target": "ideas", "number": 64, "text": "x"})
+            "/api/board/comment",
+            {"target": "ideas", "number": 64, "text": "x", "author": "Edvard"})
     assert status == 502
     assert json.loads(body)["ok"] is False
 
@@ -4593,7 +4606,8 @@ def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
     comment; the next read must come from the file."""
     with patch.object(nova_site, "comment_on_row", return_value=(True, "ok")), \
             patch.object(nova_site, "invalidate") as inv:
-        _post("/api/board/comment", {"target": "ideas", "number": 64, "text": "x"})
+        _post("/api/board/comment",
+              {"target": "ideas", "number": 64, "text": "x", "author": "Edvard"})
     inv.assert_called_once_with("board:ideas")
 
 

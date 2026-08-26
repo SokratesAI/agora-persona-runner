@@ -6980,10 +6980,17 @@ describe("commenting on a boarded row", () => {
     await new Promise((r) => window.setTimeout(r, 0));
     const posted = window.posted.find((p) => p.url === "/api/board/comment");
     assert.ok(posted, "no write reached /api/board/comment");
+    // `author` is stated rather than left out. The server used to default a
+    // missing author to the owner and now refuses the write, because that
+    // default was right for this box and silently wrong for a cycle posting
+    // from a shell -- which is how two of my own notes ended up signed with
+    // his name on idea #38, and how they then pinned that row to the top of
+    // his board as a question he had never asked.
     assert.deepEqual(posted.body, {
       target: "issues",
       number: 57,
       text: "Still wrong on my phone.",
+      author: "Edvard",
     });
   });
 
