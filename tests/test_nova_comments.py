@@ -910,3 +910,48 @@ def test_an_ordinary_reply_still_goes_through_untouched():
     stored = [c for c in parse_comments(write.call_args[0][1]) if c["cycle"] == 63][0]
     assert stored["text"] == "great research, keep it up!"
     assert stored["reply"] == "thanks"
+
+
+def test_a_duplicated_document_is_refused():
+    """The 2026-08-26 corruption, as the guard now sees it.
+
+    A complete second copy of the file was spliced into the first copy's
+    frontmatter, at the point where the `contract:` line quotes the
+    literal `## Acknowledged`. Both existing halves of `verify_write` are
+    blind to it: `frontmatter()` reads the first block, which was intact,
+    and `comment_index()` is keyed on `(cycle, stamp)`, so a doubled
+    comment comes back under the key it already had.
+    """
+    good = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    doubled = good + "\n" + good
+    with pytest.raises(nova_comments.WriteRefused) as refused:
+        nova_comments.verify_write(good, doubled)
+    assert "duplicated or spliced into itself" in str(refused.value)
+
+
+def test_a_section_that_vanishes_is_refused():
+    """A write that eats `## Acknowledged` is damage, not a small diff."""
+    good = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    assert ACKNOWLEDGED_HEADING in good
+    truncated = good.replace(ACKNOWLEDGED_HEADING, "")
+    with pytest.raises(nova_comments.WriteRefused) as refused:
+        nova_comments.verify_write(good, truncated)
+    assert "went from 1 to 0" in str(refused.value)
+
+
+def test_the_first_comment_ever_may_create_the_sections():
+    """`_store` builds the document when the file does not exist yet.
+
+    Every landmark legitimately goes 0 -> 1 there, which is the one case
+    the count rule has to let through.
+    """
+    built = insert_comment("", 63, "keep it up", "2026-08-09 22:40")
+    nova_comments.verify_write("", built, exempt={(63, "2026-08-09 22:40")})
+
+
+def test_an_ordinary_reply_still_passes_the_count_rule():
+    """The guard must not refuse the writes it sits in front of."""
+    good = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    replied = insert_reply(good, 63, "2026-08-09 22:40", "thank you",
+                           "2026-08-09 22:45")
+    nova_comments.verify_write(good, replied, exempt={(63, "2026-08-09 22:40")})
