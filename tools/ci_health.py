@@ -47,7 +47,7 @@ flight rather than counting them as evidence.
 32984347949 was created four seconds into the 2026-08-26 Actions outage and
 sat `queued` with zero jobs for three hours, long after Actions went
 `operational`, its own pull request merged, and eight later runs in the same
-repo finished green. This tool still read it as "a merge cannot complete
+repo had finished. This tool still read it as "a merge cannot complete
 right now", and Cycle 494 believed it and skipped merging. A run that has
 been abandoned is a scar, not a symptom, and the two look identical from the
 queue alone. So a zero-job run is quietened — printed as `ABANDONED`, status
@@ -180,7 +180,7 @@ def stalled_runs(repo, grace_minutes=DEFAULT_GRACE_MINUTES, run=subprocess.run, 
     forever. Measured 2026-08-26 20:04 Oslo: run 32984347949 was created four
     seconds into that afternoon's outage and was still `queued` with zero jobs
     three hours later, while its own pull request had merged and eight later
-    runs in the same repo had completed green. This tool read the orphan, said
+    runs in the same repo had completed. This tool read the orphan, said
     a merge could not complete, and Cycle 494 believed it and picked a cycle
     that did not end in one.
 

@@ -340,7 +340,7 @@ def _check_ci_health_ignores_an_abandoned_run() -> Optional[str]:
     Cycle 495: run 32984347949 was created four seconds into the 2026-08-26
     Actions outage and was still `queued` with zero jobs three hours later,
     after Actions went `operational`, its own pull request merged, and eight
-    later runs in the same repo completed green. `ci_health` read the orphan and
+    later runs in the same repo completed. `ci_health` read the orphan and
     said a merge could not complete; Cycle 494 believed it and picked a cycle
     that did not end in one. The queue alone cannot tell a scar from a symptom.
     """
@@ -536,7 +536,7 @@ CORPUS = [
         surface="drove the code",
         failure=("A run created four seconds into an Actions outage sat `queued` with zero "
                  "jobs for three hours after the outage ended, its pull request merged and "
-                 "eight later runs went green. `ci_health` still printed \"a merge cannot "
+                 "eight later runs completed. `ci_health` still printed \"a merge cannot "
                  "complete right now\" off that one orphan, and Cycle 494 believed its own "
                  "instrument and skipped merging. A queued run outlives the thing that "
                  "queued it, and the queue alone cannot tell a scar from a symptom."),
