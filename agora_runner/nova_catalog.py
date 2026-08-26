@@ -39,10 +39,19 @@ STATUS = {"yes": "up", "off": "off", "NO": "down"}
 _ROW = re.compile(r"^\|(.+)\|\s*$")
 _LINK = re.compile(r"^\[([^\]]+)\]\(([^)]+)\)$")
 # `maintenance:` in the frontmatter carries the only provenance the file
-# has: which cycle last ran the tool, and when. Step 3 of the roadmap is
-# an hourly refresh, so a stale catalog is the failure this page exists to
-# make visible -- it belongs on the page, not just in the file.
-_REGENERATED = re.compile(r"Cycle (\d+) \(last regenerated ([^)]+)\)")
+# has: when it was last built, and -- while a cycle was the only thing that
+# ever built it -- which cycle. A stale catalog is the failure this page
+# exists to make visible, so it belongs on the page, not just in the file.
+#
+# Two forms, because step 3 (Cycle 451) took the rebuild off the cycles: the
+# runner refreshes it hourly now and has no cycle number to write, so the
+# builder writes a plain "Last regenerated <when>." The cycle form is still
+# matched, and not only for the archive -- `--publish` by hand and the timer
+# write the same document today, but an entry that predates the timer is
+# still a real reading of the cluster and the page should date it correctly
+# rather than call it undated.
+_REGENERATED_CYCLE = re.compile(r"Cycle (\d+) \(last regenerated ([^)]+)\)")
+_REGENERATED = re.compile(r"[Ll]ast regenerated ([^.]+?)\s*\.")
 
 
 def _cells(line):
@@ -129,10 +138,14 @@ def parse_catalog(markdown):
     for line in lines:
         stripped = line.strip()
         if regenerated is None:
-            found = _REGENERATED.search(stripped)
+            found = _REGENERATED_CYCLE.search(stripped)
             if found:
                 cycle = int(found.group(1))
                 regenerated = found.group(2)
+            else:
+                found = _REGENERATED.search(stripped)
+                if found:
+                    regenerated = found.group(1)
         if stripped.startswith("**"):
             # The first bold paragraph is the headline either way, but the
             # two say opposite things: one is a coverage number, the other

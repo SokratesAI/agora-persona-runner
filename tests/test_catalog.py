@@ -5,7 +5,7 @@ The two properties worth protecting are the ones the tool exists for: a
 claim, and an unreadable source must never render as a coverage number.
 """
 
-from tools import catalog
+from agora_runner import catalog_build as catalog
 
 
 def deployment(name, ns="agents", image="ghcr.io/sokratesai/thing:v1", ready=1, kind="Deployment"):
@@ -197,3 +197,82 @@ def test_the_composite_kinds_come_from_the_cluster_not_a_hardcoded_plural(monkey
 
     assert status == 0
     assert "3 of 3 running services are composed by a claim" in text
+
+
+# --- the document as it is stored, and publishing it (Cycle 451) -----------
+#
+# The failure these guard is not a wrong table. It is a correct table with a
+# provenance line nobody updated: `catalog.md` said "Cycle 448" because a
+# human typed it, so the page's freshness line was reporting when a cycle
+# last remembered rather than when the cluster was last read.
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+
+def test_the_stored_document_carries_the_time_it_was_built():
+    when = datetime(2026, 8, 26, 2, 15, tzinfo=timezone(timedelta(hours=2)))
+    doc = catalog.document("# Service catalog\n", now=when)
+
+    assert doc.startswith("---\n")
+    assert "updated: 2026-08-26" in doc
+    assert "Last regenerated 2026-08-26 02:15 Oslo." in doc
+    assert doc.endswith("# Service catalog\n")
+
+
+def test_the_stamp_is_oslo_not_the_pods_utc():
+    """Rule 7: anything the owner reads is Oslo time, and the runner pod is UTC."""
+    assert catalog._is_summer_time(datetime(2026, 8, 26, tzinfo=timezone.utc)) is True
+    assert catalog._is_summer_time(datetime(2026, 1, 15, tzinfo=timezone.utc)) is False
+    # The 2026 changeovers: 01:00 UTC on 29 March and on 25 October.
+    assert catalog._is_summer_time(datetime(2026, 3, 29, 0, 59, tzinfo=timezone.utc)) is False
+    assert catalog._is_summer_time(datetime(2026, 3, 29, 1, 0, tzinfo=timezone.utc)) is True
+    assert catalog._is_summer_time(datetime(2026, 10, 25, 0, 59, tzinfo=timezone.utc)) is True
+    assert catalog._is_summer_time(datetime(2026, 10, 25, 1, 0, tzinfo=timezone.utc)) is False
+
+
+def test_publish_writes_the_document_to_the_vault(monkeypatch):
+    written = {}
+
+    def fake_write(path, content, **kwargs):
+        written["path"] = path
+        written["content"] = content
+
+    monkeypatch.setattr("agora_runner.vault.vault_write_path", fake_write)
+    monkeypatch.setattr(catalog, "_kubectl", lambda args: catalog.Source(rows=[]))
+
+    text, status = catalog.publish()
+
+    assert status == 0
+    assert written["path"] == "projects/sokrates/projects/agora/nova/catalog.md"
+    assert written["content"].startswith("---\n")
+    assert written["content"].endswith(text)
+
+
+def test_publish_still_writes_when_a_source_was_forbidden(monkeypatch):
+    """A partial read is not a reason to withhold the write. `render` already
+    swaps the coverage number for a named refusal; withholding would leave the
+    previous, confident-looking catalog on the page instead."""
+    written = {}
+    monkeypatch.setattr(
+        "agora_runner.vault.vault_write_path",
+        lambda path, content, **kw: written.update(content=content),
+    )
+    monkeypatch.setattr(
+        catalog, "_kubectl", lambda args: catalog.Source(rows=[], error="Forbidden")
+    )
+
+    _text, status = catalog.publish()
+
+    assert status == 1
+    assert "**Incomplete" in written["content"]
+
+
+def test_oslo_now_shifts_the_pods_utc_by_the_right_offset():
+    """M6 in Cycle 451's mutation round survived without this: `_is_summer_time`
+    was tested and the thing that *applies* it was not, so a stamp reading the
+    pod's UTC would have passed every test in this file."""
+    summer = catalog._oslo_now(datetime(2026, 8, 26, 0, 9, tzinfo=timezone.utc))
+    winter = catalog._oslo_now(datetime(2026, 1, 15, 23, 30, tzinfo=timezone.utc))
+
+    assert summer.strftime("%Y-%m-%d %H:%M") == "2026-08-26 02:09"
+    assert winter.strftime("%Y-%m-%d %H:%M") == "2026-01-16 00:30"
