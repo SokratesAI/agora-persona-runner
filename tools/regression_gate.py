@@ -51,6 +51,13 @@ says so about `agents-limits` and it applies to my own tests. So each
 behavioural check also asserts the *good* input is accepted, in the same
 call, and reports a regression if either half moves.
 
+**Run this as a CLI, never inside the serving process.** Two of the
+behavioural checks swap a module-level function for a stub and put it back
+in a `finally` -- `reply.claude_cli_generate` and `nova_site.comment_on_row`.
+That is safe in a one-shot process and is a real hazard in a threaded server,
+where a live request could land on the stub during the swap. Nothing imports
+this module today; the sentence is here so nothing starts.
+
 The vault is read through `/app/bridge/vault_tool.py` when that exists
 (the bridge pod) and through `agora_runner.vault` otherwise (the runner
 pod). When neither answers, the check reports `UNREADABLE` and the run
