@@ -324,7 +324,7 @@ async function probeReplayHeader(browser) {
  * now so full with pages links that it starts to move out the bottom of
  * my screen."* The drawer is a `position: fixed` flex column pinned
  * `top: 0; bottom: 0`, so its box is exactly one viewport tall; the
- * thirteen links inside it are not. Without an `overflow-y` the surplus
+ * links inside it are not. Without an `overflow-y` the surplus
  * simply hangs below the bottom edge, unreachable -- `body.nav-open`
  * stops the page behind from scrolling, and the drawer itself never
  * scrolled.
@@ -338,7 +338,10 @@ async function probeReplayHeader(browser) {
  * The assertion is the user's sentence, not the implementation: scroll
  * the drawer as far down as it goes and the last link must be inside the
  * viewport. `scrollable` is reported beside it rather than asserted, so
- * a future layout that makes all thirteen fit outright still passes.
+ * a future layout that makes every link fit outright still passes. The
+ * count is deliberately not written down here -- it was "thirteen" until
+ * Cycle 461 grouped the menu, and a probe whose comment names a number
+ * the page can change is a comment that goes stale on its own.
  */
 async function probeNavReachable(browser, path) {
   const ctx = await browser.newContext({ ...PHONE, viewport: { width: 360, height: 697 } });

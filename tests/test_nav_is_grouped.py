@@ -75,11 +75,29 @@ def _page_routes():
 
 
 def test_the_three_the_owner_named_come_first():
-    """Pinned, ungrouped, and in their stated order."""
+    """Pinned, ungrouped, in their stated order, and exactly three.
+
+    My reviewer caught that the first half of this pinned nothing: Journal,
+    Issues and Ideas were already the first three anchors before the drawer
+    was grouped, so the order assertion alone passes with the whole change
+    reverted -- rubric item 1, under a test name that implies otherwise.
+    Measured rather than argued: restoring the pre-grouping `index.html` and
+    running this file leaves four of six green, this one among them.
+
+    The order is still worth pinning, so it stays. What makes the test able
+    to fail is the second assertion: **the pinned block is exactly three**,
+    so the item immediately after Ideas is a heading. That is the boundary
+    the owner drew ("the top 3"), it is new with the grouping, and a fourth
+    link creeping into the pinned block is the way it would quietly go.
+    """
     items = _nav_items()
     assert [href for kind, href in items[: len(PINNED)] if kind == "link"] == PINNED, (
         "the first three entries in the drawer must be Journal, Issues and Ideas, "
         f"with no heading above them. Found: {items[: len(PINNED) + 1]}"
+    )
+    assert len(items) > len(PINNED) and items[len(PINNED)][0] == "group", (
+        "the pinned block must be exactly three links -- the entry after Ideas has "
+        f"to be a category heading. Found: {items[len(PINNED) : len(PINNED) + 1]}"
     )
 
 
