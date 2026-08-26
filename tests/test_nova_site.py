@@ -835,6 +835,26 @@ def test_a_dead_agora_never_makes_the_watching_ping_an_error_on_his_screen():
     assert json.loads(body)["watching"] is False
 
 
+def test_the_dock_can_vouch_for_a_conversation_that_is_not_the_ask_thread():
+    """The switcher half of the same capture. `ask_watching` names no
+    conversation -- the server resolves the tagged one -- so a thread he
+    switched to had no way to say it was on his screen."""
+    with patch.object(nova_site, "conversation_watching",
+                      return_value=(True, "watching")) as ping:
+        status, _, body = _post("/api/conversations/watching", {"id": "c-1"})
+    assert status == 200
+    assert json.loads(body)["watching"] is True
+    ping.assert_called_once_with("c-1")
+
+
+def test_a_dead_agora_never_makes_the_conversation_vouch_an_error_either():
+    with patch.object(nova_site, "conversation_watching",
+                      side_effect=RuntimeError("agora is down")):
+        status, _, body = _post("/api/conversations/watching", {"id": "c-1"})
+    assert status == 200
+    assert json.loads(body)["watching"] is False
+
+
 def test_a_capture_reaches_the_vault_through_the_real_request_path():
     with patch.object(nova_site, "capture", return_value=(True, "captured to issues")) as cap:
         status, _, body = _post("/api/capture", {"target": "issues", "text": "the app needs a restart"})

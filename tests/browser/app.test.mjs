@@ -8606,6 +8606,70 @@ describe("the chat dock", () => {
       "a hidden page said he was reading it");
   });
 
+  /* Its own copy rather than the switcher block's `LIST` further down: that
+   * one is scoped to those tests, and a fixture reached across a describe
+   * boundary is a shared mutable nobody owns. */
+  const WATCHED_LIST = {
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], updatedAt: "2026-08-25T20:00:00.000Z" },
+    ],
+  };
+
+  /* The half of his capture the switcher left behind. The vouch above names
+   * no conversation -- the server resolves the tagged one -- so once the dock
+   * could paint any thread, every thread but that one went back to buzzing
+   * his phone about a message already on his screen. */
+  test("a switched-to conversation vouches for itself, not for the ask thread", async () => {
+    let timers;
+    let turn = 0;
+    const window = await loadSite("/", {
+      install: (win) => {
+        timers = captureTimers(win);
+        win.localStorage.setItem("nova.chatSource.v1",
+          JSON.stringify({ kind: "conv", id: "c-1", name: "Roofing" }));
+      },
+      ask: { conversationId: "c-ask", waiting: false, messages: [] },
+      convList: WATCHED_LIST,
+      convThread: () => {
+        turn += 1;
+        return { conversationId: "c-1", waiting: turn === 1,
+          messages: [{ id: "9", sender: "Edvard", text: "when?" }] };
+      },
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/watching", { id: "c-1" }]],
+      "the open conversation did not tell Agora it was on his screen");
+  });
+
+  test("a shut dock on a conversation stops vouching too", async () => {
+    let timers;
+    let turn = 0;
+    const window = await loadSite("/", {
+      install: (win) => {
+        timers = captureTimers(win);
+        win.localStorage.setItem("nova.chatSource.v1",
+          JSON.stringify({ kind: "conv", id: "c-1", name: "Roofing" }));
+      },
+      ask: { conversationId: "c-ask", waiting: false, messages: [] },
+      convList: WATCHED_LIST,
+      convThread: () => {
+        turn += 1;
+        return { conversationId: "c-1", waiting: turn === 1,
+          messages: [{ id: "9", sender: "Edvard", text: "when?" }] };
+      },
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    tap(window, "chat-close");
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), [],
+      "a shut dock told Agora the conversation was on his screen");
+  });
+
   /* The one that costs an answer if it regresses. `stopPolling()` runs on
    * every render; a dock poll registered in `livePolls` is cleared by the
    * navigation and the answer never lands. */

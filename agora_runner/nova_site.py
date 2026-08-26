@@ -171,6 +171,7 @@ from agora_runner.nova_conversations import (
     personas as conversation_personas,
     send as conversation_send,
     thread as conversation_thread,
+    watching as conversation_watching,
 )
 from agora_runner.nova_heartbeats import (
     heartbeats as heartbeat_list,
@@ -2967,6 +2968,27 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         self._send_json(200, {"watching": ok, "reason": reason})
 
+    def _post_conversation_watching(self, payload):
+        """`POST /api/conversations/watching` -- this thread is on his screen.
+
+        The same vouch as `_post_ask_watching` above, for the conversation the
+        dock actually has open rather than the one tagged `nova-ask`. Until
+        this existed the dock could only vouch while the ask thread was
+        showing, so every other thread in the switcher still buzzed his phone
+        from the other app -- which is the whole of the capture that built the
+        vouch in the first place.
+
+        Same contract as its neighbour and for the same reason: never an error
+        to him, never audited, and a refusal simply means no suppression.
+        """
+        try:
+            ok, reason = conversation_watching((payload or {}).get("id"))
+        except Exception as e:
+            log(f"nova-site conversations/watching failed: {e}")
+            self._send_json(200, {"watching": False, "reason": str(e)[:200]})
+            return
+        self._send_json(200, {"watching": ok, "reason": reason})
+
     def _post_ask(self, payload):
         """`/api/ask` -- the owner's question goes into the questions
         conversation and the Sonnet persona answers it on the next poll
@@ -3346,6 +3368,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
             "/api/conversations/send", "/api/conversations/new",
+            "/api/conversations/watching",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/pool/decide", "/api/pool/generate",
             "/api/goal/status",
@@ -3367,6 +3390,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/new":
             self._post_conversation_new(payload)
+            return
+        if path == "/api/conversations/watching":
+            self._post_conversation_watching(payload)
             return
         if path == "/api/heartbeats/enabled":
             self._post_heartbeat_enabled(payload)

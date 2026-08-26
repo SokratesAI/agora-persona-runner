@@ -214,3 +214,35 @@ def personas():
     ]
     rows.sort(key=lambda r: (r["metered"], r["name"].lower()))
     return {"personas": rows}
+
+
+def watching(conversation_id):
+    """Tell Agora this conversation is on his screen here, so it holds the buzz.
+
+    `nova_ask.watching` does the same thing for the questions thread and has
+    since Cycle 439. It resolves its conversation by tag, so it can only ever
+    vouch for that one thread -- and the dock stopped being a single-thread
+    panel when it grew a conversation switcher (runner#408). Since then the
+    poll tick has vouched only while the ask thread was open, on purpose,
+    because vouching for the wrong conversation drops a notification he wanted.
+    The consequence is that his original complaint is still live everywhere
+    else: read a heartbeat's thread in the dock and Agora buzzes the phone
+    about a message already on the screen.
+
+    Agora's `mark()` was always keyed by conversation id, so nothing over
+    there has to change -- this is the caller finally naming which one.
+
+    (ok, reason). A refused ping means no suppression, so failing here costs
+    at most a notification he was going to get anyway. The expensive direction
+    is vouching when he is not there, and nothing on this path can do that:
+    the id comes from the thread the dock is painting, and Agora refuses an id
+    that is not a conversation rather than marking blind.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    status, _body = agora_internal(
+        "POST", f"/conversations/{conversation_id}/presence", {})
+    if status not in (200, 201):
+        log(f"nova_conversations: presence ping failed HTTP {status}")
+        return False, "could not reach the conversation store"
+    return True, "watching"
