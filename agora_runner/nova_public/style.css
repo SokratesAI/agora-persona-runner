@@ -1071,27 +1071,93 @@ a.status-sub:hover .status-pr { color: var(--text); }
   color: var(--accent);
   border-color: var(--accent);
 }
-/* The category headings inside the drawer.
+/* A category inside the drawer: a native `<details>` fold, closed at rest.
  *
- * A real `<h2>` rather than a styled `<div>`: the drawer is now a list of
- * lists, and a heading is the only thing that lets a screen reader jump
- * between the groups the way a sighted reader jumps between them by eye.
+ * The links need a flex column so they keep the `gap` the drawer gives its
+ * own children -- a `<details>` is one box to its parent, so without it the
+ * links inside stack flush while the pinned three above them stay spaced.
+ * That column is `.nav-fold-body`, an extra `<div>` inside the fold, rather
+ * than `display: flex` on the `<details>` itself. Overriding `display` on a
+ * `<details>` replaces the box its closed-state hiding is built on, and how
+ * gracefully an engine survives that varies; a wrapper needs no engine to
+ * forgive anything. I did not measure a Chromium 131 failure here -- I wrote
+ * the flex on the element first, thought I had measured one, and the wrapper
+ * is what I kept once the measurement turned out to be my instrument.
  *
- * `margin-top` on top of the flex `gap` is what makes a group read as a
- * group -- the gap is uniform by definition, so with it alone the heading
- * sits exactly as far from the link above it as from the link below, and
- * the grouping is carried by the words alone. `:first-child` would not
- * help here because the first heading is never first; the pinned three
- * are. The heading is not a link, so it needs no tap target and no
- * min-height. */
+ * That instrument is worth a line, because it is the trap in checking this
+ * at all: **`getBoundingClientRect()` on a link inside a shut fold returns a
+ * real height, not zero.** Chromium skips the subtree's rendering without
+ * zeroing its box, so a probe that reads rects reports all twelve links laid
+ * out and visible with every group closed. `checkVisibility()` is the call
+ * that answers the question actually being asked, and a screenshot is what
+ * settles it. The browser suite cannot help either way -- jsdom does no
+ * layout -- and `tools.poke_page`'s `nav-reachable` probe passes here for the
+ * same reason it would pass if the folds did nothing at all. */
+.nav-fold {
+  margin-top: 0.75rem;
+}
+
+.nav-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+}
+
+/* The heading is now a `<summary>`, which means it is a real tap target
+ * rather than a label -- hence the padding and the 44px floor, which the
+ * `<h2>` it replaced deliberately did not need.
+ *
+ * `list-style: none` plus the `::-webkit-details-marker` rule kills the
+ * default disclosure triangle; the chevron below is drawn on the right
+ * instead, where a thumb on a 360px-wide screen is already looking. */
 .nav-group {
-  margin: 0.75rem 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.25rem 0.8rem;
+  margin: 0;
+  cursor: pointer;
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--dim);
   opacity: 0.75;
+  list-style: none;
+}
+
+.nav-group::-webkit-details-marker {
+  display: none;
+}
+
+/* The chevron. A rotated border-corner rather than a glyph, so it inherits
+ * `currentColor` and needs no font that might not be there. `translateY`
+ * offsets the optical centre a rotated square loses. */
+.nav-group::after {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.nav-fold[open] > .nav-group::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+
+.nav-fold[open] > .nav-group {
+  opacity: 1;
+}
+
+/* A fold holding the page you are on reads as part of the highlight. */
+.nav-fold:has(.nav-tab.on) > .nav-group {
+  color: var(--accent);
+  opacity: 1;
 }
 
 /* Dims the page behind the drawer, and is the large tap target that
@@ -1197,6 +1263,11 @@ body.nav-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .nav, .nav.open, .scrim, .scrim.open, .menu-bar { transition: none; }
   .board-sort-dir { transition: none; }
+  /* The group chevron. One block, not a second one beside it -- the
+   * browser suite pins that there is exactly one reduced-motion block in
+   * this sheet, so a rule that lives anywhere else is a rule nothing
+   * checks the selector list of. */
+  .nav-group::after { transition: none; }
 }
 
 .tabs, .filters {

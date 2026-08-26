@@ -4225,12 +4225,53 @@ describe("the sidebar", () => {
     // named first with no heading, then Steering / Talking / The loop. `/ask`
     // left this list and kept its route -- the chat dock is the same thread.
     // The order and the grouping are pinned in tests/test_nav_is_grouped.py,
-    // which can see the `<h2>` headings this query steps over.
+    // which can see the `<summary>` headings this query steps over. The
+    // groups became collapsible folds later the same day and this list is
+    // unchanged by that -- `querySelectorAll` reads the DOM, not the layout,
+    // so a link inside a closed `<details>` is still found here.
     assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/plan", "/conversations", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
     assert.equal(drawer(window).getAttribute("aria-hidden"), "false");
+  });
+
+  /* "dropdowns and default closed", the owner's follow-up the morning after
+   * the grouping shipped. Two halves and they pull against each other: the
+   * drawer has to be short at rest, and the highlight saying which page you
+   * are on must not be hidden inside a shut group. So every fold is closed
+   * except the one holding the current page, and on a pinned page -- which
+   * is in no fold at all -- every single one is closed. */
+  test("the group folds are closed, except the one holding the page you are on", async () => {
+    const journal = await loadSite("/");
+    const folds = (w) => [...drawer(w).querySelectorAll(".nav-fold")];
+    assert.equal(folds(journal).length, 3, "three groups: Steering, Talking, The loop");
+    assert.deepEqual(folds(journal).map((f) => f.open), [false, false, false],
+      "on a pinned page no group holds the current link, so none should be open");
+
+    const plan = await loadSite("/plan");
+    // Plan is the third link under Steering, the first fold.
+    assert.deepEqual(folds(plan).map((f) => f.open), [true, false, false]);
+    assert.ok(plan.document.querySelector(".nav-tab[href='/plan']").classList.contains("on"));
+
+    const catalog = await loadSite("/catalog");
+    assert.deepEqual(folds(catalog).map((f) => f.open), [false, false, true]);
+  });
+
+  /* A `<details>` the owner opens themselves has to stay open while they read
+   * it. `markNav` runs on every in-page navigation, and the guard that keeps
+   * this true is that it only ever sets `open = true` -- it never closes one.
+   * Worth its own test because the obvious implementation is a toggle, and a
+   * toggle passes the test above while shutting a group under the owner's
+   * thumb the moment anything re-marks the nav. */
+  test("a group the owner opens is never closed again by the nav marker", async () => {
+    const window = await loadSite("/");
+    const steering = drawer(window).querySelectorAll(".nav-fold")[0];
+    steering.open = true;
+    // Navigating to a pinned page: no fold is current, so a toggle would shut it.
+    click(window, window.document.querySelector(".nav-tab[href='/issues']"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(steering.open, "the group the owner opened was closed under them");
   });
 
   /* jsdom applies no stylesheet, so nothing above this can see the slide.
