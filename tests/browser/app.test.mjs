@@ -10656,3 +10656,124 @@ describe("the chat dock's conversation switcher", () => {
       .map((n) => n.textContent), ["Ask Nova"]);
   });
 });
+
+/* The switcher's folds.
+ *
+ * His capture, `issues.md` 2026-08-26 11:41 and 11:42, two minutes apart:
+ * *"Great! However, the list of conversations are just filled with
+ * heartbeats."* and *"I ment not just filled with heartbeats, other
+ * converssations aswell but the beats take up a lot of space and i have to
+ * scroll past them. Maybe folders are the right solutions here aswell."*
+ *
+ * Measured against the live store that morning: 40 non-archived
+ * conversations, 30 of them cycle threads. The number is why this is a fold
+ * rather than a filter -- 30 rows he never reopens is a scrolling problem,
+ * not a set of rows that should stop existing, and a list that silently
+ * drops rows is the 400-chip cap again.
+ *
+ * jsdom does no layout, so what these can pin is the structure and the
+ * `open` attribute, never that the panel got shorter. That is the honest
+ * limit of this suite here and the screenshot is what settles the rest.
+ */
+describe("the chat dock folds the heartbeat threads away", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const askThread = {
+    conversationId: "c-ask", waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+  };
+  const MIXED = {
+    conversations: [
+      { id: "c-ask", name: "Nova Ask", personaName: "Nova", model: "m",
+        tags: ["nova-ask"], updatedAt: "2026-08-26T08:00:00.000Z" },
+      { id: "c-b1", name: "Nova — Cycle 471", personaName: "Nova", model: "m",
+        tags: ["evolve-cycle:471"], cycleThread: true,
+        updatedAt: "2026-08-26T07:00:00.000Z" },
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], cycleThread: false, updatedAt: "2026-08-25T20:00:00.000Z" },
+      { id: "c-b2", name: "Nova — Cycle 470", personaName: "Nova", model: "m",
+        tags: ["evolve-cycle:470"], cycleThread: true,
+        updatedAt: "2026-08-25T06:00:00.000Z" },
+    ],
+  };
+
+  const folds = (window) =>
+    [...window.document.querySelectorAll("#chat-list .chat-list-fold")].map((f) => ({
+      name: f.querySelector(".chat-list-group-name").textContent,
+      count: f.querySelector(".chat-list-group-count").textContent,
+      open: f.hasAttribute("open"),
+      rows: [...f.querySelectorAll(".chat-list-name")].map((n) => n.textContent),
+    }));
+
+  async function openSwitcher(opts = {}) {
+    const window = await loadSite("/", { ask: askThread, convList: MIXED, ...opts });
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    return window;
+  }
+
+  test("his own threads are open, the heartbeats are shut, and both say how many", async () => {
+    const window = await openSwitcher();
+    assert.deepEqual(folds(window), [
+      { name: "Conversations", count: "1", open: true, rows: ["Roofing"] },
+      { name: "Heartbeats", count: "2", open: false,
+        rows: ["Nova — Cycle 471", "Nova — Cycle 470"] },
+    ]);
+    // Ask Nova stays pinned above both folds rather than falling into one.
+    const first = window.document.querySelector("#chat-list > *");
+    assert.ok(first.classList.contains("chat-list-row"));
+    assert.equal(first.querySelector(".chat-list-name").textContent, "Ask Nova");
+  });
+
+  test("a folded heartbeat is still one tap away, not filtered out", async () => {
+    const asked = [];
+    const window = await openSwitcher({
+      convThread: (url) => {
+        asked.push(url);
+        return { conversationId: "c-b2", waiting: false,
+          messages: [{ id: "9", sender: "Nova", text: "Merged it." }] };
+      },
+    });
+    const beats = window.document.querySelectorAll("#chat-list .chat-list-fold")[1];
+    const rows = [...beats.querySelectorAll(".chat-list-row")];
+    assert.equal(rows.length, 2, "the heartbeat fold rendered no rows to tap");
+    rows[1].dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(asked, ["/api/conversations/thread?id=c-b2"]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Nova — Cycle 470");
+  });
+
+  test("the heartbeat fold opens itself when he is reading a thread inside it", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: MIXED,
+      convThread: () => ({ conversationId: "c-b1", waiting: false, messages: [] }),
+      install: (w) => w.localStorage.setItem("nova.chatSource.v1",
+        JSON.stringify({ kind: "conv", id: "c-b1", name: "Nova — Cycle 471" })),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    // Guard: if the dock did not open on the remembered thread, the fold
+    // below would be shut for the ordinary reason and this would pin nothing.
+    assert.equal(window.document.getElementById("chat-title").textContent,
+      "Nova — Cycle 471", "the dock did not open on the remembered heartbeat");
+    tap(window, "chat-menu");
+    await tick();
+    const beats = folds(window)[1];
+    assert.equal(beats.name, "Heartbeats");
+    assert.equal(beats.open, true, "the switcher opened without the current thread on screen");
+    assert.equal(folds(window)[0].open, true);
+  });
+
+  test("no fold is drawn for a group with nothing in it", async () => {
+    const window = await openSwitcher({
+      convList: { conversations: MIXED.conversations.filter((c) => c.cycleThread) },
+    });
+    assert.deepEqual(folds(window).map((f) => f.name), ["Heartbeats"]);
+  });
+});
