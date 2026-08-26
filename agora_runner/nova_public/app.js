@@ -4604,7 +4604,10 @@
         fetch("/api/board/comment", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target: board, number: item.number, text: body }),
+          // The comment box on a board row is his, so it says so. The server
+          // has no default author any more -- a caller that does not name
+          // itself is refused rather than written down as him.
+          body: JSON.stringify({ target: board, number: item.number, text: body, author: "Edvard" }),
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (result) {
