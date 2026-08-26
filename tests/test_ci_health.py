@@ -492,3 +492,19 @@ def test_a_missing_annotation_still_reports_the_repo():
     body = "\n".join(lines)
     assert "CANNOT GO GREEN  Org/repo" in body
     assert "GitHub gave no reason" in body
+
+
+def test_a_cancelled_run_is_not_a_refused_account():
+    """A cancelled run has no steps either, and somebody pressed that button.
+
+    The success guard only rules out a run that passed. Without this, five
+    cancellations in a row read as GitHub refusing to start jobs — a finding
+    with nothing under it.
+    """
+    status, lines = run_check(
+        run=gh(history={"Org/repo": [{"id": 9, "conclusion": "cancelled"}, failed(8)]},
+               job_payload={9: [{"id": 900, "steps": []}]}))
+    assert status == 0, lines
+    body = "\n".join(lines)
+    assert "CANNOT GO GREEN" not in body
+    assert "not a run GitHub refused to start" in body

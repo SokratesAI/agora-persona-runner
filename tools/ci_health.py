@@ -340,6 +340,12 @@ def unrun_pushes(repo, grace_minutes=DEFAULT_GRACE_MINUTES, run=subprocess.run, 
 # failed or your spending limit needs to be increased."
 BILLING_PHRASES = ("recent account payments have failed", "spending limit")
 
+# What GitHub calls a run that tried and lost. `cancelled`, `skipped` and
+# `action_required` are deliberately not here: a cancelled run has no steps
+# either, and reading a human pressing the stop button five times as a
+# refused account would be a finding with nothing under it.
+FAILED_CONCLUSIONS = {"failure", "startup_failure", "timed_out"}
+
 
 def _first_annotation(repo, job_id, run):
     """The first non-empty check-run annotation on a job, or `None`.
@@ -408,6 +414,10 @@ def blocked_repo(repo, run=subprocess.run, sample=5):
                           f"{len(body)} completed run(s) — jobs execute here")], None
 
     newest = body[0]
+    if (newest.get("conclusion") or "") not in FAILED_CONCLUSIONS:
+        return [("clear", f"ok       {repo}: the newest completed run concluded "
+                          f"`{newest.get('conclusion')}` — that is not a run GitHub "
+                          f"refused to start")], None
     payload, why = _gh_json([f"repos/{repo}/actions/runs/{newest.get('id')}/jobs"], run)
     if payload is None:
         return None, f"{repo}#{newest.get('id')}: {why}"
