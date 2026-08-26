@@ -187,6 +187,71 @@ def stalled_runs(repo, grace_minutes=DEFAULT_GRACE_MINUTES, run=subprocess.run, 
     return verdicts, None
 
 
+def unrun_pushes(repo, grace_minutes=DEFAULT_GRACE_MINUTES, run=subprocess.run, now=None):
+    """`(verdicts, None)` or `(None, why)` for a commit GitHub created no run for.
+
+    `stalled_runs` above can only see runs that *exist*. Measured Cycle 492,
+    twice in one hour: the merge of runner#425 landed on `main` and GitHub
+    created no push run for it, and a push to a pull-request branch two
+    minutes later created no run either. Both times the repo would have read
+    `nothing in flight` -- which this tool's own report calls out as "evidence
+    that nobody pushed" -- and that sentence was false, because I had just
+    pushed. A run that never gets created is the *quieter* half of a broken
+    Actions and the more common one: the 2026-08-26 outage produced exactly
+    one two-hour stalled run and then stopped creating runs at all.
+
+    So this asks the opposite question: take the newest commit on the default
+    branch, and if it is older than the grace and carries no workflow run,
+    GitHub never started one.
+
+    **The guard is what makes a negative here mean anything.** A repo whose
+    workflows do not trigger on a push to the default branch has no run on
+    that commit whether Actions is healthy or dead -- a positive result
+    guaranteed in advance. So a repo is only judged when it has at least one
+    historical `push` run to compare against, and one that has none says so
+    rather than passing quietly.
+    """
+    from datetime import datetime, timezone
+
+    now = now or datetime.now(timezone.utc)
+    head, why = _gh_json(
+        [f"repos/{repo}/commits?per_page=1", "-q",
+         '[.[0] | {sha, date: .commit.committer.date}]'], run)
+    if head is None:
+        return None, why
+    if not head or not head[0].get("sha"):
+        return [("clear", f"ok       {repo}: no commits to check")], None
+    sha, date = head[0]["sha"], head[0].get("date") or ""
+    try:
+        committed = datetime.fromisoformat(date.replace("Z", "+00:00"))
+    except ValueError:
+        return None, f"{repo}: head commit {sha[:7]} has an unreadable date {date!r}"
+    age = (now - committed).total_seconds() / 60.0
+    if age < grace_minutes:
+        return [("clear", f"ok       {repo}: default-branch head {sha[:7]} is "
+                          f"{age:.0f}m old, inside the {grace_minutes}m grace")], None
+
+    history, why = _gh_json(
+        [f"repos/{repo}/actions/runs?event=push&per_page=1", "-q", ".total_count"], run)
+    if history is None:
+        return None, why
+    if not history:
+        return [("clear", f"ok       {repo}: no workflow has ever run on a push here, "
+                          f"so a missing run on {sha[:7]} says nothing")], None
+
+    count, why = _gh_json(
+        [f"repos/{repo}/actions/runs?head_sha={sha}&per_page=1", "-q", ".total_count"], run)
+    if count is None:
+        return None, why
+    if count == 0:
+        return [("norun",
+                 f"NO RUN   {repo}: default-branch head {sha[:7]} was pushed "
+                 f"{age:.0f}m ago and GitHub created no workflow run at all — "
+                 f"this repo normally runs one on every push")], None
+    return [("clear", f"ok       {repo}: default-branch head {sha[:7]} has "
+                      f"{count} run(s)")], None
+
+
 def _repos_to_sweep():
     """The repos this loop could open a PR on today: the ones it has a checkout of.
 
@@ -239,10 +304,21 @@ def check(opener=urllib.request.urlopen, run=subprocess.run,
             if state == "stalled":
                 blocked = True
 
+        verdicts, repo_why = unrun_pushes(repo, grace_minutes, run, now)
+        if verdicts is None:
+            lines.append(f"COULD NOT READ  {repo}: {repo_why}")
+            unreadable.append(repo)
+            continue
+        for state, text in verdicts:
+            lines.append(text)
+            if state == "norun":
+                blocked = True
+
     lines.append(f"Swept {len(repos)} repo(s) with a checkout here, grace {grace_minutes}m: "
                  f"{', '.join(repos) or 'none'}.")
     lines.append("A repo with nothing queued is not evidence that Actions works — "
-                 "it is evidence that nobody pushed.")
+                 "it is evidence that nobody pushed. The `NO RUN` line above is the "
+                 "check that separates those two.")
 
     if blocked:
         lines.append("A merge cannot complete right now. Pick a cycle that does not end in one.")
