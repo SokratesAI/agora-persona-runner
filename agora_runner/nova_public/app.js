@@ -5189,9 +5189,59 @@
     actions.hidden = true;
     one.appendChild(actions);
 
+    /* Turn this bullet into a numbered row on the board below it.
+     *
+     * The owner, capture 2026-08-26: *"they do no seem to just stay
+     * forever in the 'not boarded yet' box as unrated. Thats not what the
+     * box is for. This a re ideas you have not seen before and you pick it
+     * up, prioritised them and make them as their own nice item like the
+     * rest."*
+     *
+     * It sends no `priority`, which is not the same as sending none: the
+     * server reads that as "keep whatever rating the capture carries",
+     * and the chip on this card is how he sets one before tapping. A
+     * picker here would be a second way to do a thing this card already
+     * does one tap away.
+     *
+     * Like the convert buttons, it disables itself for the whole
+     * in-flight fetch -- a double tap on a slow phone would otherwise
+     * send a second promote, and the second one is refused as stale
+     * rather than boarding a duplicate, but the refusal would land on
+     * screen as an error for a thing that worked. */
+    var boardBtn = el("button", "capture-act", "Board it");
+    boardBtn.type = "button";
+    var boarding = false;
+    boardBtn.addEventListener("click", function () {
+      closeActionSheet();
+      if (boarding) return;
+      boarding = true;
+      boardBtn.disabled = true;
+      [editBtn, delBtn].forEach(function (b) { b.disabled = true; });
+      fetch("/api/capture/promote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: board, index: index, original: capture.text }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          /* Repaint from the file: the bullet has left one block of this
+           * page and a row has arrived in another, and only the vault
+           * knows what both now say. */
+          loadBoard(board);
+        })
+        .catch(function (err) {
+          boarding = false;
+          boardBtn.disabled = false;
+          fail(err);
+        });
+    });
+
     // Delete stays last: it is the destructive one and nothing new should
     // grow between it and the edge his thumb aims at.
-    var sheetButtons = [editBtn].concat(converts, [delBtn]);
+    var sheetButtons = [editBtn, boardBtn].concat(converts, [delBtn]);
     bindHoldMenu(body, function (fromGesture) {
       // Not while the editor is open -- `body` has been swapped out for
       // it, and offering Edit again would replace the box he is typing in.

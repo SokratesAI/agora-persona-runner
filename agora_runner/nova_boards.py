@@ -990,6 +990,139 @@ def set_row_title(markdown, number, title):
     return "\n".join(lines)
 
 
+def next_row_number(markdown):
+    """The lowest number no row and no write-up is already using.
+
+    Read from all three places a number can live -- both tables and the
+    `# Details` headings -- rather than from `## Board` alone. A row the
+    owner finished is in `## Done` and its number is still spoken for by
+    every journal entry and claim slug that ever pointed at it, and a
+    write-up whose row was deleted by hand still owns its heading. Taking
+    the highest of the three and adding one is the only allocation that
+    cannot hand out a number twice; picking the first *gap* would reuse a
+    deleted row's number, which is worse than a sparse sequence.
+    """
+    highest = 0
+    lines = (markdown or "").split("\n")
+    in_table = False
+    for line in lines:
+        heading = _SECTION_RE.match(line)
+        if heading:
+            in_table = (len(heading.group(1)) == 2
+                        and heading.group(2).strip().lower() in ("board", "done"))
+            continue
+        if not in_table or not line.strip().startswith("|"):
+            continue
+        masked = _WIKILINK_RE.sub(lambda m: m.group(0).replace("|", _ALIAS_PIPE), line.strip())
+        cells = masked.strip("|").split("|")
+        found = _ROW_NUMBER_RE.search(cells[0].replace(_ALIAS_PIPE, "|"))
+        if found:
+            highest = max(highest, int(found.group(1)))
+    for number in _detail_spans(markdown):
+        highest = max(highest, number)
+    return highest + 1
+
+
+def _board_insert_line(lines):
+    """Index to insert a new `## Board` row at -- under the header rule."""
+    in_table = False
+    seen_pipe = False
+    for index, line in enumerate(lines):
+        heading = _SECTION_RE.match(line)
+        if heading:
+            if in_table:
+                return None
+            in_table = (len(heading.group(1)) == 2
+                        and heading.group(2).strip().lower() == "board")
+            continue
+        if not in_table:
+            continue
+        if line.strip().startswith("|"):
+            seen_pipe = True
+            # The header row, then the `|---|` rule, then the data. A new
+            # row goes directly under the rule so the newest is first,
+            # which is the order every one of these tables already reads in.
+            if set(line.strip()) <= set("|-: \t"):
+                return index + 1
+        elif seen_pipe:
+            return None
+    return None
+
+
+def add_row(markdown, title, dated, priority="", write_up="", notes=()):
+    """Board a new row. Returns `(markdown, number)`, or `(None, None)`.
+
+    The owner, capture 2026-08-26: *"Whats with the not boarded
+    ideas/issues? ... they do no seem to just stay forever in the 'not
+    boarded yet' box as unrated. Thats not what the box is for. This a re
+    ideas you have not seen before and you pick it up, prioritised them
+    and make them as their own nice item like the rest."*
+
+    Nothing in this repo could write a row until now -- `set_row_title`,
+    `set_row_priority`, `set_row_status` and `delete_row` all edit a row
+    that already exists, and the only way one ever got created was a
+    cycle hand-editing his file through the vault. So the box filled up,
+    because answering a capture where it stands is one call and boarding
+    it was a manual edit nobody reached for. Eight cycles in a row chose
+    the cheap correct thing; that is a missing button, not a habit.
+
+    **A title is one line and his capture is a paragraph, so the two are
+    not the same string.** The title is his first sentence and the
+    write-up is everything he wrote, verbatim -- the row has to be
+    readable in a table cell that repeats it three times, and none of his
+    text may be lost to make that true. No character count is involved:
+    if his first sentence is long, it goes in long.
+
+    `notes` are lines already written under the capture -- a cycle's
+    answers -- and they ride across as dated notes so the thread survives
+    the promotion. Each must be a single line, which they are: a reply is
+    one indented bullet in his file.
+    """
+    title = (title or "").strip()
+    if not title or "|" in title or "\n" in title:
+        return None, None
+    label = canonical_priority(priority)
+    if label is None:
+        return None, None
+    lines = (markdown or "").split("\n")
+    at = _board_insert_line(lines)
+    if at is None:
+        return None, None
+    number = next_row_number(markdown)
+    cells = [f"[[#{number} — {title}\\|{number}]]", title,
+             STATUS_LABELS["backlog"], dated, label]
+    lines.insert(at, "| " + " | ".join(cells) + " |")
+
+    block = [f"### #{number} — {title}", ""]
+    body = (write_up or "").strip()
+    if body:
+        block.extend(body.split("\n") + [""])
+    for note in notes:
+        one = " ".join(str(note).split())
+        if one:
+            block.extend([f"**Nova, {dated}:** {one}", ""])
+    detail = _details_insert_line(lines)
+    if detail is None:
+        # No `# Details` section to put it under. The row is still a row
+        # and losing it to a missing heading would be worse than a board
+        # entry with no write-up, which is a state his files already have.
+        return "\n".join(lines), number
+    lines[detail:detail] = block
+    return "\n".join(lines), number
+
+
+def _details_insert_line(lines):
+    """Index of the first line under `# Details`, or `None`."""
+    for index, line in enumerate(lines):
+        heading = _SECTION_RE.match(line)
+        if heading and len(heading.group(1)) == 1 and heading.group(2).strip().lower() == "details":
+            after = index + 1
+            while after < len(lines) and not lines[after].strip():
+                after += 1
+            return after
+    return None
+
+
 def delete_row(markdown, number):
     """Remove one boarded row and its write-up. Returns markdown, or `None`.
 
