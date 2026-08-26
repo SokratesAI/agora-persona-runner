@@ -192,7 +192,31 @@
   var repliesRead = null;
   var repliesReadLoaded = false;
 
-  function replyStore() {
+  /* Which cards have already auto-opened their ask drawer, so it happens
+   * once per device rather than once per page load.
+   *
+   * the owner, unboarded capture 2026-08-25: *"Small bug. Journal comments seem
+   * to expand themselves when i refresh the page even though i just closed
+   * them."*
+   *
+   * The auto-open below (`asked.length && !fold.askSeen`) is the only thing
+   * on this page that opens a drawer he did not tap, and its "once" was
+   * kept in `folds`, which is a plain object rebuilt on every load. So
+   * "once" meant once per page load: he closed the drawer, refreshed, and
+   * the same card opened it again -- for as long as that ask stays on the
+   * feed, which is the newest twenty entries. The comment beside it claimed
+   * closing "stays closed through the five-minute poll", and that was the
+   * whole of what it covered.
+   *
+   * Same store and the same trade as the read marks above: per-device,
+   * because the server has no session and no idea which browser is his. A
+   * browser with no storage falls back to the old once-per-load behaviour
+   * rather than to a drawer that reopens on every render -- the in-memory
+   * map is the primary and localStorage is only the durable copy. */
+  var ASK_OPENED_KEY = "nova.askOpened.v1";
+  var askOpened = null;
+
+  function localStore() {
     try {
       return window.localStorage;
     } catch (err) {
@@ -203,7 +227,7 @@
   function loadRepliesRead() {
     if (repliesReadLoaded) return repliesRead;
     repliesReadLoaded = true;
-    var store = replyStore();
+    var store = localStore();
     if (!store) return repliesRead;
     try {
       var raw = store.getItem(READ_REPLIES_KEY);
@@ -217,11 +241,49 @@
   }
 
   function saveRepliesRead() {
-    var store = replyStore();
+    var store = localStore();
     if (!store || !repliesRead) return;
     try {
       store.setItem(READ_REPLIES_KEY, JSON.stringify(repliesRead));
     } catch (err) { /* quota or refused: the badge degrades, the page does not */ }
+  }
+
+  /* `{}` rather than `null` on an unreadable store: unlike the read marks
+   * there is no seeding decision to protect here, and "nothing recorded" and
+   * "cannot record" want the same answer -- open it this once. */
+  function loadAskOpened() {
+    if (askOpened) return askOpened;
+    askOpened = {};
+    var store = localStore();
+    if (!store) return askOpened;
+    try {
+      var raw = store.getItem(ASK_OPENED_KEY);
+      if (raw === null || raw === undefined) return askOpened;
+      var parsed = JSON.parse(raw);
+      // A corrupt value reads as never-stored, same as the read marks.
+      if (parsed && typeof parsed === "object") askOpened = parsed;
+    } catch (err) { /* unreadable: treat as never stored */ }
+    return askOpened;
+  }
+
+  /* `key` is null for an entry with no cycle number -- there is exactly one
+   * and nothing else can address it either, so it keeps the old
+   * once-per-render behaviour rather than being given an invented key that
+   * two untitled entries would share. */
+  function askAlreadyOpened(key) {
+    if (key === null) return false;
+    return !!loadAskOpened()[key];
+  }
+
+  function markAskOpened(key) {
+    if (key === null) return;
+    var opened = loadAskOpened();
+    opened[key] = true;
+    var store = localStore();
+    if (!store) return;
+    try {
+      store.setItem(ASK_OPENED_KEY, JSON.stringify(opened));
+    } catch (err) { /* quota or refused: it reopens next load, nothing breaks */ }
   }
 
   /* Every reply on one card's thread, with the stamp it is ordered by.
@@ -275,7 +337,7 @@
    * count starts from replies written after this existed. */
   function seedRepliesRead(byCycle) {
     if (loadRepliesRead()) return;
-    if (!replyStore()) return;
+    if (!localStore()) return;
     repliesRead = {};
     Object.keys(byCycle || {}).forEach(function (cycle) {
       var newest = newestReplyStamp(byCycle[cycle]);
@@ -2355,12 +2417,20 @@
       if (open && byTap) commenting.seen();
       if (byTap) commenting.tapped(open);
     }
-    /* An ask opens its own card's drawer, once. `askSeen` rather than
-     * opening on every render, so closing it stays closed through the
-     * five-minute poll -- a box that reopens itself is the pinned-open
-     * drawer this replaced. */
-    if (asked.length && !fold.askSeen) {
+    /* An ask opens its own card's drawer, once. `fold.askSeen` keeps it from
+     * reopening on every render within a load; `askAlreadyOpened` keeps it
+     * from reopening on the next load, which is the bug he reported -- see
+     * `ASK_OPENED_KEY`. A box that reopens itself is the pinned-open drawer
+     * this replaced.
+     *
+     * The mark is written where the drawer is actually opened, not where the
+     * ask is drawn: a card whose drawer this never opened has nothing to
+     * remember, and marking it would silently spend the one auto-open it is
+     * owed. */
+    var askKey = entry.cycle === null || entry.cycle === undefined ? null : String(entry.cycle);
+    if (asked.length && !fold.askSeen && !askAlreadyOpened(askKey)) {
       fold.askSeen = true;
+      markAskOpened(askKey);
       fold.comments = true;
     }
     setCommentsOpen(fold.comments);
