@@ -1028,6 +1028,15 @@ a.status-sub:hover .status-pr { color: var(--text); }
    * 133px below the bottom edge -- and `body.nav-open` stops the page
    * behind from scrolling, so there was no gesture that reached them.
    *
+   * **That measurement is the one that made this rule necessary and it no
+   * longer describes this drawer.** Grouping the menu (Cycle 461) traded
+   * one link for three headings, so the content is 890px now rather than
+   * 830 -- taller, not shorter, which is the direction that matters here.
+   * Re-measured against that markup at the same 360x697: last link bottom
+   * 890 before a scroll, 681 after. The numbers are kept in both forms
+   * deliberately: the first says why the rule exists, the second says it
+   * is still doing the job it was written for.
+   *
    * `contain` because the drawer scrolls over a body that is
    * `overflow: hidden`; without it a flick past the last link chains to
    * the document and pulls the whole page, which is the "rubber band

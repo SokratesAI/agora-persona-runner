@@ -1,4 +1,4 @@
-"""The menu drawer scrolls, because thirteen links do not fit on a phone.
+"""The menu drawer scrolls, because its links do not fit on a phone.
 
 The owner, `issues.md` 2026-08-26: *"The sliding sidebar menu in Nova is now
 so full with pages links that it starts to move out the bottom of my
@@ -11,11 +11,20 @@ exactly one viewport tall no matter how many links it holds. Thirteen
 `body.nav-open { overflow: hidden }` stops the page behind from
 scrolling, so no gesture reached them at all.
 
+**The drawer stopped being thirteen links the week after this was written.**
+Cycle 461 grouped it on the owner's ask: twelve links and three category
+headings, which is *taller* than what is described above -- 890px, not 830.
+So the rule these tests guard is under more load than when it was added, not
+less, and the numbers below are re-measured rather than inherited.
+
 **The instrument that can actually see this is `tools.poke_page
 nav-reachable`, not this file.** It opens the drawer in a real browser at
 that viewport, scrolls it, and asserts the last link ends inside the
-window. Measured against the live site on 2026-08-26: last link bottom
-830 in a 697 viewport, unmoved by a scroll. Against the fix: 681.
+window. Measured against the live site on 2026-08-26 before the fix: last link
+bottom 830 in a 697 viewport, unmoved by a scroll. Against the fix: 681.
+Re-measured against the grouped drawer the same morning: 890 before the
+scroll, 681 after -- the same 681, because the scroll ends at the same
+place regardless of how much is above it.
 
 This test is deliberately textual, for the same reason
 `test_shell_top_is_shared.py` is: the browser suite runs under jsdom,
