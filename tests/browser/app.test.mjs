@@ -1263,6 +1263,53 @@ describe("an ask lives on the card that raised it", () => {
     assert.ok(card.classList.contains("is-commenting"));
   });
 
+  /* the owner, unboarded capture 2026-08-25: *"Small bug. Journal comments seem
+   * to expand themselves when i refresh the page even though i just closed
+   * them."*
+   *
+   * The auto-open above is the only drawer on this page that opens itself,
+   * and its "once" was kept in memory, so a refresh handed it back. jsdom
+   * gives each window its own store, so a second `loadSite` really is a
+   * fresh device and the mark has to be seeded to express "he has seen it".
+   */
+  const askMarks = (window) => JSON.parse(window.localStorage.getItem("nova.askOpened.v1") || "null");
+
+  test("the first load records that it opened the ask drawer", async () => {
+    const journal = asking("Decide about the node.");
+    const window = await loadSite("/", { journal: () => journal });
+    const cycle = journal.entries[0].cycle;
+    assert.ok(
+      window.document.querySelector(".entry-ask").closest(".entry").classList.contains("is-commenting"),
+      "the drawer should still open on a device that has not seen this ask",
+    );
+    assert.deepEqual(askMarks(window), { [String(cycle)]: true }, "the auto-open was not recorded");
+  });
+
+  test("a reload leaves the ask drawer shut once it has opened once", async () => {
+    const journal = asking("Decide about the node.");
+    const cycle = journal.entries[0].cycle;
+    const window = await loadSite("/", {
+      journal: () => journal,
+      install: (w) => w.localStorage.setItem("nova.askOpened.v1", JSON.stringify({ [String(cycle)]: true })),
+    });
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    assert.ok(card.querySelector(".entry-ask"), "the ask itself must still be on the card");
+    assert.equal(
+      card.classList.contains("is-commenting"),
+      false,
+      "the drawer reopened itself on a reload -- this is the bug he reported",
+    );
+  });
+
+  test("a card with no ask spends nothing, so its own ask still opens later", async () => {
+    /* The mark is written where the drawer opens, not where a card renders.
+     * Marking every card would spend the one auto-open each ask is owed
+     * before the ask was ever written, and no test above would notice. */
+    const window = await loadSite("/");
+    assert.equal(window.document.querySelector(".entry-ask"), null, "the plain fixture should carry no ask");
+    assert.deepEqual(askMarks(window), null, "a feed with no ask in it wrote a mark");
+  });
+
   test("a two-part cycle shows both of its asks, not just the first", async () => {
     /* Reviewer finding, Cycle 247. The server cuts each part's ask out of
      * that part's own prose, so an ask the card declines to render is gone
