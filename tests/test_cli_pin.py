@@ -52,12 +52,25 @@ def dockerfile(tmp_path, monkeypatch):
     return write
 
 
-def run(monkeypatch, latest, versions, times, running=None, argv=None):
+def run(monkeypatch, latest, versions, times, running=None, argv=None,
+        remote=None):
+    """Drive main() with the registry and the running binary stubbed.
+
+    `remote` is the pin on the bridge's default branch. It defaults to
+    unreadable so these tests exercise the local-checkout fallback the
+    `dockerfile` fixture sets up; the remote-first path has its own
+    tests below. Without this the suite would shell out to real `gh`.
+    """
     monkeypatch.setattr(
         cli_pin, "fetch_registry",
         lambda: (latest, {v: {} for v in versions}, times, None),
     )
     monkeypatch.setattr(cli_pin, "running_version", lambda: running)
+    monkeypatch.setattr(
+        cli_pin, "read_remote_pin",
+        lambda runner=None: (remote, "SokratesAI/agora-claude-bridge@default branch")
+        if remote else (None, "gh failed: no token"),
+    )
     return cli_pin.main(argv or [], now=NOW)
 
 
@@ -137,6 +150,8 @@ def test_missing_pin_line_exits_one_rather_than_zero(dockerfile, monkeypatch, ca
     path = cli_pin.dockerfile_candidates()[0]
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("FROM python:3.12-slim\n")
+    monkeypatch.setattr(cli_pin, "read_remote_pin",
+                        lambda runner=None: (None, "gh failed: no token"))
     monkeypatch.setattr(cli_pin, "fetch_registry",
                         lambda: (_ for _ in ()).throw(
                             AssertionError("registry must not be reached")))
@@ -146,6 +161,8 @@ def test_missing_pin_line_exits_one_rather_than_zero(dockerfile, monkeypatch, ca
 
 def test_unreachable_registry_exits_one(dockerfile, monkeypatch, capsys):
     dockerfile("2.1.245")
+    monkeypatch.setattr(cli_pin, "read_remote_pin",
+                        lambda runner=None: (None, "gh failed: no token"))
     monkeypatch.setattr(cli_pin, "fetch_registry",
                         lambda: (None, None, None, "could not reach the npm registry: boom"))
     assert cli_pin.main([], now=NOW) == 1
@@ -219,3 +236,87 @@ def test_older_of_falls_back_to_the_pin_when_a_version_is_unorderable():
     assert older_of("2.1.245", None) == ("2.1.245", "the pinned version")
     assert older_of("2.1.245", "2.1.226-rc.1")[0] == "2.1.245"
     assert older_of("2.1.245", "2.1.226")[0] == "2.1.226"
+
+
+def test_the_default_branch_outranks_a_stale_checkout(
+        dockerfile, monkeypatch, capsys):
+    """The failure this ordering exists for, as it actually happened.
+
+    On 2026-08-26 the shared checkout had not been fetched in nineteen
+    days and still said 2.1.226 while the branch said 2.1.245. The old
+    read preferred the local file, so the tool printed STALE and told the
+    cycle to go and make a bump that was already merged.
+    """
+    dockerfile("2.1.226")
+    status = run(monkeypatch, "2.1.246",
+                 ["2.1.226", "2.1.245", "2.1.246"],
+                 {"2.1.245": "2026-08-25T12:00:00Z"},
+                 running="2.1.245", remote="2.1.245")
+    out = capsys.readouterr().out
+    assert status == 0
+    assert "pinned 2.1.245" in out
+    assert "says 2.1.226, and the default branch says 2.1.245" in out
+    assert "out of step with the branch" in out
+    assert "STALE" not in out
+
+
+def test_a_local_read_says_it_may_be_stale(dockerfile, monkeypatch, capsys):
+    """When gh cannot answer, the local file is used and labelled.
+
+    Falling back is right -- a pin nobody can read is worse than one
+    read from a possibly-stale copy -- but the reader has to be able to
+    discount it, so `where` carries the caveat rather than the docstring.
+    """
+    dockerfile("2.1.226")
+    run(monkeypatch, "2.1.226", ["2.1.226"], {})
+    assert "local checkout, possibly stale" in capsys.readouterr().out
+
+
+def test_unreadable_everywhere_exits_one(monkeypatch, capsys):
+    """Neither source answered: that is 1, never a clean 0."""
+    monkeypatch.delenv("NOVA_WORKSPACE", raising=False)
+    monkeypatch.setattr(cli_pin, "dockerfile_candidates", lambda: [])
+    monkeypatch.setattr(
+        cli_pin, "read_remote_pin",
+        lambda runner=None: (None, "gh failed: no token"),
+    )
+    assert cli_pin.main([], now=NOW) == 1
+    out = capsys.readouterr().out
+    assert "COULD NOT READ THE PIN" in out
+    assert "no bridge checkout on this pod" in out
+
+
+def test_read_remote_pin_decodes_the_base64_contents_api():
+    """The gh call returns base64, and a wrong decode is a silent None."""
+    import base64
+    from types import SimpleNamespace
+
+    body = base64.b64encode(
+        b"FROM python:3.12-slim\nARG CLAUDE_CODE_VERSION=2.1.245\n"
+    ).decode()
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=body, stderr="")
+
+    version, where = cli_pin.read_remote_pin(fake_run)
+    assert version == "2.1.245"
+    assert where.endswith("@default branch")
+    assert calls[0][:2] == ["gh", "api"]
+
+
+def test_a_checkout_ahead_of_the_branch_is_not_called_behind(
+        dockerfile, monkeypatch, capsys):
+    """A local checkout on a branch that bumps the pin is *ahead*.
+
+    The disagreement line reports an inequality, and an inequality has
+    no direction in it -- calling it "behind" would be the same overclaim
+    the remote-first change exists to fix.
+    """
+    dockerfile("2.1.246")
+    run(monkeypatch, "2.1.246", ["2.1.245", "2.1.246"], {}, remote="2.1.245")
+    out = capsys.readouterr().out
+    warning = next(l for l in out.splitlines() if "the checkout at" in l)
+    assert "says 2.1.246, and the default branch says 2.1.245" in warning
+    assert "behind" not in warning
