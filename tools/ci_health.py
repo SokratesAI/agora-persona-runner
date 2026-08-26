@@ -33,6 +33,17 @@ after the wrong half: a single number reads as a diagnosis. So this asks
 
 and prints them as separate lines with separate causes.
 
+**A third question, added Cycle 497, and the two above cannot answer it.**
+Both of them watch a run that is *in flight*. A repo GitHub refuses to run
+jobs for because the account owes money has nothing in flight at all: the
+run is created, no job starts, and the whole thing is `completed` and
+`failure` about two seconds later. Measured — every run in
+`SokratesAI/platform-config` since 13:47 Oslo on 2026-08-26 died that way,
+and this tool printed `ok` for that repo while Cycle 496 merged into it with
+a red check. So `blocked_repo` asks: when a run here completes, does any job
+execute a single step? See its docstring for why a finding there is loud in
+the text and deliberately does not raise the exit status.
+
 **A queued run is not the measurement, and a 200 from the status page is
 not either.** A run that has been queued forty seconds is normal, and the
 status summary answers `operational` for a healthy Actions and for a
@@ -322,6 +333,107 @@ def unrun_pushes(repo, grace_minutes=DEFAULT_GRACE_MINUTES, run=subprocess.run, 
                       f"{count} run(s)")], None
 
 
+# GitHub's own wording when it refuses to start a job because the account
+# owes money. Quoted from the annotation on SokratesAI/sokrates-docs run
+# 32937... on 2026-08-21 and on every platform-config run since 13:47 Oslo on
+# 2026-08-26: "The job was not started because recent account payments have
+# failed or your spending limit needs to be increased."
+BILLING_PHRASES = ("recent account payments have failed", "spending limit")
+
+
+def _first_annotation(repo, job_id, run):
+    """The first non-empty check-run annotation on a job, or `None`.
+
+    Same call `tools.agentic_health.start_failure` makes, and for the same
+    reason: when GitHub refuses to start a job it puts the reason here and
+    nowhere else, so `gh run view --log-failed` answers `log not found` on
+    exactly the run you most want to read.
+    """
+    if job_id is None:
+        return None
+    body, _why = _gh_json([f"repos/{repo}/check-runs/{job_id}/annotations"], run)
+    if not isinstance(body, list):
+        return None
+    for note in body:
+        message = ((note or {}).get("message") or "").strip()
+        if message:
+            return message
+    return None
+
+
+def blocked_repo(repo, run=subprocess.run, sample=5):
+    """`(verdicts, None)` or `(None, why)` for a repo where no run can execute.
+
+    **The hole Cycle 496 fell into.** Both checks above watch runs that are
+    *in flight*: `stalled_runs` wants a run sitting in the queue and
+    `unrun_pushes` wants a commit with no run on it. A billing-blocked repo
+    has neither. GitHub creates the run, refuses to start the job, and marks
+    the whole thing `completed` / `failure` about two seconds later — so the
+    queue is empty, every commit has a run against it, and this tool printed
+    `ok` for `SokratesAI/platform-config` while every run in it since 13:47
+    Oslo on 2026-08-26 had died that way and Cycle 496 merged there red.
+
+    So this asks the third question: **when a run here does complete, does
+    anything actually execute?**
+
+    The guard against a positive guaranteed in advance runs first and it is a
+    success: if any of the newest `sample` completed runs concluded
+    `success`, jobs are being run in this repo and nothing else here matters.
+    Only when all of them failed is the newest one opened, and the finding is
+    that **no job on it executed a single step** — which is the difference
+    between an account that will not pay for a runner and a test suite that
+    is red.
+
+    **It deliberately does not raise the exit status**, which is the same
+    call `tools.agentic_health` makes on the same annotation and the opposite
+    of the one this tool makes for a GitHub-side outage. An outage is over in
+    hours and exit 2 there means "merge later today". A billing block is over
+    when the owner pays; the owner has already decided to wait this one out
+    until 1 September (comments board, 2026-08-26: *"I do not want to pay for
+    the ci runs. We just have to wait until September 1st."*), so raising
+    would paint this check red for six days running, and a check that is
+    always red is one nobody reads. The finding belongs in the text, where a
+    cycle choosing what to merge will see it.
+    """
+    body, why = _gh_json(
+        [f"repos/{repo}/actions/runs?status=completed&per_page={sample}", "-q",
+         '[.workflow_runs[] | {id, conclusion}]'],
+        run)
+    if body is None:
+        return None, why
+    if not body:
+        return [("clear", f"ok       {repo}: no completed run here to judge")], None
+    if any((item.get("conclusion") or "") == "success" for item in body):
+        return [("clear", f"ok       {repo}: a success is among the newest "
+                          f"{len(body)} completed run(s) — jobs execute here")], None
+
+    newest = body[0]
+    payload, why = _gh_json([f"repos/{repo}/actions/runs/{newest.get('id')}/jobs"], run)
+    if payload is None:
+        return None, f"{repo}#{newest.get('id')}: {why}"
+    jobs = payload.get("jobs") if isinstance(payload, dict) else payload
+    if not isinstance(jobs, list) or not jobs:
+        return [("clear", f"ok       {repo}: the newest {len(body)} completed run(s) "
+                          f"failed, but gh listed no job on run "
+                          f"{newest.get('id')} to judge")], None
+    if any((job or {}).get("steps") for job in jobs):
+        return [("clear", f"ok       {repo}: the newest completed run executed steps "
+                          f"— what failed is code, not the account")], None
+
+    quoted = _first_annotation(repo, (jobs[0] or {}).get("id"), run)
+    lower = (quoted or "").lower()
+    if quoted and any(phrase in lower for phrase in BILLING_PHRASES):
+        cause = f"GitHub says: {quoted}"
+    elif quoted:
+        cause = f"no step ran and GitHub says: {quoted}"
+    else:
+        cause = "no step ran and GitHub gave no reason on the run"
+    return [("blocked",
+             f"CANNOT GO GREEN  {repo}: the newest {len(body)} completed run(s) all "
+             f"failed and run {newest.get('id')} executed no step at all — "
+             f"{cause}")], None
+
+
 def _repos_to_sweep():
     """The repos this loop could open a PR on today: the ones it has a checkout of.
 
@@ -340,7 +452,7 @@ def _repos_to_sweep():
 def check(opener=urllib.request.urlopen, run=subprocess.run,
           grace_minutes=DEFAULT_GRACE_MINUTES, repos=None, now=None):
     """Return `(exit_status, lines)`."""
-    lines, unreadable, blocked = [], [], False
+    lines, unreadable, blocked, cannot_go_green = [], [], False, []
 
     status, incidents, why = actions_status(opener)
     if status is None:
@@ -384,11 +496,27 @@ def check(opener=urllib.request.urlopen, run=subprocess.run,
             if state == "norun":
                 blocked = True
 
+        verdicts, repo_why = blocked_repo(repo, run)
+        if verdicts is None:
+            lines.append(f"COULD NOT READ  {repo}: {repo_why}")
+            unreadable.append(repo)
+            continue
+        for state, text in verdicts:
+            lines.append(text)
+            if state == "blocked":
+                cannot_go_green.append(repo)
+
     lines.append(f"Swept {len(repos)} repo(s) with a checkout here, grace {grace_minutes}m: "
                  f"{', '.join(repos) or 'none'}.")
     lines.append("A repo with nothing queued is not evidence that Actions works — "
                  "it is evidence that nobody pushed. The `NO RUN` line above is the "
                  "check that separates those two.")
+    if cannot_go_green:
+        lines.append(
+            f"A pull request into {', '.join(cannot_go_green)} cannot go green — "
+            f"GitHub is creating the run and refusing to start the job. There is no "
+            f"pull request that fixes that and a merge into any other repo above is "
+            f"unaffected, so the status is deliberately not raised.")
 
     if blocked:
         lines.append("A merge cannot complete right now. Pick a cycle that does not end in one.")

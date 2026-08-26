@@ -53,28 +53,62 @@ def status_page(actions="operational", incidents=(), raw=None):
     return opener
 
 
-def gh(runs=None, jobs=None, fail=None, completed=None):
+def gh(runs=None, jobs=None, fail=None, completed=None,
+       history=None, job_payload=None, annotations=None):
     """A fake `subprocess.run` answering the `gh api` calls this tool makes.
 
     `completed` is the newest completed run, as `{"id": ..., "created_at": ...}`
     or `None` — the measurement that separates an abandoned run from a stall.
+
+    `history` is what `blocked_repo` sees instead: the newest few completed
+    runs as `[{"id": ..., "conclusion": ...}]`. It is a separate parameter
+    from `completed` because the two calls ask for different fields off the
+    same endpoint, and a fake that answered both with one list would let a
+    test pass on a shape production never returns. They are told apart by
+    `per_page`, exactly as the tool writes them.
+
+    `job_payload` is the full job list for a run — `[{"id": ..., "steps": ...}]`
+    — as opposed to `jobs`, which is the bare `.total_count` the stall check
+    asks for. `annotations` is keyed by job id.
     """
     runs, jobs = runs or {}, jobs or {}
+    history, job_payload, annotations = history or {}, job_payload or {}, annotations or {}
 
     def runner(cmd, **kwargs):
         assert cmd[:2] == ["gh", "api"], cmd
         path = cmd[2]
         if fail is not None and fail in path:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: not found")
+        if "/annotations" in path:
+            job_id = int(path.split("/check-runs/")[1].split("/")[0])
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(annotations.get(job_id, [])), stderr="")
         if "/jobs" in path:
             run_id = int(path.split("/runs/")[1].split("/")[0])
+            if len(cmd) == 3:  # no `-q`: blocked_repo wants the whole payload
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps({"jobs": job_payload.get(run_id, [])}),
+                    stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(jobs.get(run_id, 0)), stderr="")
         if "status=completed" in path:
+            repo = path.split("repos/")[1].split("/actions")[0]
+            if "per_page=1" in path:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([completed] if completed else []), stderr="")
             return subprocess.CompletedProcess(
-                cmd, 0, stdout=json.dumps([completed] if completed else []), stderr="")
+                cmd, 0, stdout=json.dumps(history.get(repo, [])), stderr="")
         repo = path.split("repos/")[1].split("/actions")[0]
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(runs.get(repo, [])), stderr="")
     return runner
+
+
+BILLING = ("The job was not started because recent account payments have failed "
+           "or your spending limit needs to be increased. Please check the "
+           "'Billing & plans' section in your settings")
+
+
+def failed(run_id):
+    return {"id": run_id, "conclusion": "failure"}
 
 
 def completed_at(run_id, minutes_ago):
@@ -366,3 +400,95 @@ def test_an_outage_still_blocks_even_when_the_queued_run_is_abandoned():
     body = "\n".join(lines)
     assert "GITHUB-SIDE" in body
     assert [l for l in lines if l.startswith("ABANDONED")], lines
+
+
+def test_the_billing_block_this_tool_called_green():
+    """Cycle 496 merged into platform-config on a check that said `ok`.
+
+    Every run in that repo since 13:47 Oslo on 2026-08-26 was created, given
+    no job, and marked `failure` two seconds later. Nothing was ever queued,
+    every commit carried a run, and both of the older checks answered clean.
+    """
+    status, lines = run_check(
+        run=gh(history={"Org/repo": [failed(9), failed(8), failed(7)]},
+               job_payload={9: [{"id": 900, "steps": []}]},
+               annotations={900: [{"message": BILLING}]}))
+    body = "\n".join(lines)
+    assert "CANNOT GO GREEN  Org/repo" in body
+    assert "recent account payments have failed" in body
+    assert "cannot go green" in body
+    assert status == 0, lines
+
+
+def test_a_billing_block_does_not_veto_a_merge_into_another_repo():
+    """The reason it does not raise: a red check for six days is one nobody reads.
+
+    The owner has already decided to wait this block out until 1 September, and
+    a merge into any repo whose jobs still run is unaffected by it.
+    """
+    status, lines = run_check(
+        repos=["Org/blocked", "Org/fine"],
+        run=gh(history={"Org/blocked": [failed(9)],
+                        "Org/fine": [{"id": 5, "conclusion": "success"}]},
+               job_payload={9: [{"id": 900, "steps": []}]},
+               annotations={900: [{"message": BILLING}]}))
+    assert status == 0, lines
+    body = "\n".join(lines)
+    assert "CANNOT GO GREEN  Org/blocked" in body
+    assert "Org/fine: a success is among the newest" in body
+    summary = next(l for l in lines if l.startswith("A pull request into"))
+    assert "Org/blocked" in summary and "Org/fine" not in summary
+
+
+def test_a_red_test_suite_is_not_a_blocked_account():
+    """The distinction the whole check turns on.
+
+    A run whose jobs executed steps failed at something somebody wrote. Only
+    a run where no job executed anything says the account was refused.
+    """
+    status, lines = run_check(
+        run=gh(history={"Org/repo": [failed(9), failed(8)]},
+               job_payload={9: [{"id": 900, "steps": [{"name": "pytest"}]}]}))
+    assert status == 0, lines
+    body = "\n".join(lines)
+    assert "CANNOT GO GREEN" not in body
+    assert "what failed is code, not the account" in body
+
+
+def test_one_success_among_the_newest_runs_ends_the_question():
+    """The guard against a positive guaranteed in advance, and it runs first.
+
+    If jobs execute in this repo at all, nothing about the account is wrong,
+    and no annotation needs reading to know it.
+    """
+    status, lines = run_check(
+        run=gh(history={"Org/repo": [failed(9), {"id": 8, "conclusion": "success"}]},
+               job_payload={9: [{"id": 900, "steps": []}]},
+               annotations={900: [{"message": BILLING}]}))
+    assert status == 0, lines
+    assert "CANNOT GO GREEN" not in "\n".join(lines)
+
+
+def test_no_completed_run_is_not_a_verdict():
+    """A repo nobody has pushed to has no completed run, healthy or dead."""
+    status, lines = run_check(run=gh())
+    assert status == 0, lines
+    assert "no completed run here to judge" in "\n".join(lines)
+
+
+def test_an_unreadable_job_list_is_not_clean():
+    status, lines = run_check(
+        run=gh(history={"Org/repo": [failed(9)]}, fail="/runs/9/jobs"))
+    assert status == 1, lines
+    assert "COULD NOT READ  Org/repo" in "\n".join(lines)
+
+
+def test_a_missing_annotation_still_reports_the_repo():
+    """The finding is that no step ran. The quote is detail on top of it."""
+    status, lines = run_check(
+        run=gh(history={"Org/repo": [failed(9)]},
+               job_payload={9: [{"id": 900, "steps": []}]}))
+    assert status == 0, lines
+    body = "\n".join(lines)
+    assert "CANNOT GO GREEN  Org/repo" in body
+    assert "GitHub gave no reason" in body

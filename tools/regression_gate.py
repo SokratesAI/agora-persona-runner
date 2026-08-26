@@ -503,7 +503,100 @@ def _check_name_guard_sees_an_unstaged_file() -> Optional[str]:
     return None
 
 
+def _check_ci_health_sees_a_repo_whose_jobs_never_start() -> Optional[str]:
+    """A repo GitHub refuses to run jobs for must not read as `ok`.
+
+    Measured Cycle 497: every completed run in `SokratesAI/platform-config`
+    since 13:47 Oslo on 2026-08-26 was created, given no job, and marked
+    `failure` about two seconds later, carrying GitHub's *"recent account
+    payments have failed"* annotation. Both of `ci_health`'s older checks watch
+    a run that is *in flight*, so the queue was empty and every commit carried
+    a run, and the tool printed `ok` for that repo while Cycle 496 merged into
+    it on a red check.
+    """
+    import json
+    import subprocess
+    from tools import ci_health
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body.encode()
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def opener(request, timeout=None):
+        return _Resp(json.dumps({
+            "components": [{"name": "Actions", "status": "operational"}],
+            "incidents": []}))
+
+    billing = ("The job was not started because recent account payments have failed "
+               "or your spending limit needs to be increased.")
+
+    def gh_with_steps(steps):
+        def gh(cmd, **kwargs):
+            path = cmd[2]
+            if "/annotations" in path:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([{"message": billing}]), stderr="")
+            if "/jobs" in path:
+                if len(cmd) == 3:
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        stdout=json.dumps({"jobs": [{"id": 90, "steps": steps}]}),
+                        stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
+            if "status=completed" in path:
+                if "per_page=1" in path:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout=json.dumps([{"id": 9, "conclusion": "failure"}]), stderr="")
+            if "/commits" in path:
+                return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+        return gh
+
+    _status, lines = ci_health.check(opener=opener, run=gh_with_steps([]),
+                                     repos=["Org/repo"])
+    if not any(l.startswith("CANNOT GO GREEN") for l in lines):
+        return ("ci_health reported a repo clean where every completed run failed with no "
+                "job executing a step -- that is the billing block it called `ok` for "
+                "platform-config while a cycle merged into it red")
+
+    # Two-sided: a run whose jobs did execute steps is a red test suite, not a
+    # refused account, or the check above only proves the tool now flags everything.
+    _status, lines = ci_health.check(opener=opener,
+                                     run=gh_with_steps([{"name": "pytest"}]),
+                                     repos=["Org/repo"])
+    if any(l.startswith("CANNOT GO GREEN") for l in lines):
+        return ("ci_health called a repo blocked whose jobs executed steps -- a failing "
+                "test suite is somebody's code, not GitHub refusing to start a runner")
+    return None
+
+
 CORPUS = [
+    Regression(
+        slug="a-repo-whose-jobs-never-start-read-as-green",
+        cycle="496",
+        date="2026-08-26",
+        surface="drove the code",
+        failure=("Every completed run in `platform-config` since 13:47 Oslo had been "
+                 "created, given no job, and marked `failure` two seconds later on "
+                 "GitHub's *\"recent account payments have failed\"* annotation. Both of "
+                 "`ci_health`'s checks watch a run that is in flight, so the queue was "
+                 "empty and every commit carried a run, and the tool printed `ok` for "
+                 "that repo. Cycle 496 read that and merged there on a red check. A "
+                 "billing block is the quietest way for CI to be broken: nothing is "
+                 "pending, so nothing looks wrong."),
+        check=_check_ci_health_sees_a_repo_whose_jobs_never_start,
+    ),
     Regression(
         slug="name-guard-blind-to-an-unstaged-file",
         cycle="466 and 488",
