@@ -337,12 +337,13 @@ def _check_digest_roll_reads_the_whole_document() -> Optional[str]:
 def _check_ci_health_ignores_an_abandoned_run() -> Optional[str]:
     """A queued run that later runs have overtaken must not read as a live stall.
 
-    Cycle 495: run 32984347949 was created four seconds into the 2026-08-26
-    Actions outage and was still `queued` with zero jobs three hours later,
-    after Actions went `operational`, its own pull request merged, and eight
-    later runs in the same repo completed. `ci_health` read the orphan and
-    said a merge could not complete; Cycle 494 believed it and picked a cycle
-    that did not end in one. The queue alone cannot tell a scar from a symptom.
+    Measured Cycle 495, 2026-08-26 20:04 Oslo: run 32984347949 was created four
+    seconds into that afternoon's Actions outage and was still `queued` with
+    zero jobs three hours later — three minutes after githubstatus resolved the
+    incident, with its own pull request merged and eight later runs in the same
+    repo finished. `ci_health` read `operational` off the status page and still
+    said a merge could not complete, off that orphan alone. Nothing removes an
+    abandoned run from a queue, so that verdict had no end date.
     """
     import json
     import subprocess
@@ -386,8 +387,8 @@ def _check_ci_health_ignores_an_abandoned_run() -> Optional[str]:
                                     repos=["Org/repo"])
     if status != 0 or not any(l.startswith("ABANDONED") for l in lines):
         return ("ci_health called a merge impossible on a queued run that a later run had "
-                f"already overtaken (exit {status}) -- that is the Cycle 494 stall, where a "
-                "three-hour-old orphan from a finished outage stopped a cycle merging")
+                f"already overtaken (exit {status}) -- an orphan from an outage that has since "
+                "resolved would have refused every merge after it, forever")
 
     # Two-sided: with nothing completed after it, the stall must still stand,
     # or the check above only proves the tool stopped reporting stalls at all.
@@ -531,15 +532,17 @@ CORPUS = [
     ),
     Regression(
         slug="an-abandoned-run-read-as-a-live-stall",
-        cycle="494",
+        cycle="495",
         date="2026-08-26",
         surface="drove the code",
-        failure=("A run created four seconds into an Actions outage sat `queued` with zero "
-                 "jobs for three hours after the outage ended, its pull request merged and "
-                 "eight later runs completed. `ci_health` still printed \"a merge cannot "
-                 "complete right now\" off that one orphan, and Cycle 494 believed its own "
-                 "instrument and skipped merging. A queued run outlives the thing that "
-                 "queued it, and the queue alone cannot tell a scar from a symptom."),
+        failure=("A run created four seconds into an Actions outage was still `queued` with "
+                 "zero jobs three minutes after that incident resolved, with its pull "
+                 "request merged and eight later runs finished. `ci_health` read "
+                 "`operational` off the status page and still printed \"a merge cannot "
+                 "complete right now\" off that one orphan — and nothing removes an "
+                 "abandoned run from a queue, so the verdict had no end date. A queued run "
+                 "outlives the thing that queued it; the queue alone cannot tell a scar "
+                 "from a symptom."),
         check=_check_ci_health_ignores_an_abandoned_run,
     ),
     Regression(

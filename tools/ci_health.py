@@ -43,18 +43,22 @@ runs": a repo nobody has pushed to today has none, whether Actions is up
 or on fire. That is why the sweep names the repos that had nothing in
 flight rather than counting them as evidence.
 
-**And a queued run outlives the thing that queued it.** Cycle 495: run
-32984347949 was created four seconds into the 2026-08-26 Actions outage and
-sat `queued` with zero jobs for three hours, long after Actions went
-`operational`, its own pull request merged, and eight later runs in the same
-repo had finished. This tool still read it as "a merge cannot complete
-right now", and Cycle 494 believed it and skipped merging. A run that has
-been abandoned is a scar, not a symptom, and the two look identical from the
-queue alone. So a zero-job run is quietened — printed as `ABANDONED`, status
-deliberately not raised — only on a positive measurement: **a run in the same
-repo created after it that has since completed**, which is proof GitHub has
-been starting jobs since. No completed run to compare against quietens
-nothing.
+**And a queued run outlives the thing that queued it.** Run 32984347949 was
+created four seconds into the 2026-08-26 Actions outage and was still
+`queued` with zero jobs at 20:04 Oslo — three hours later, three minutes
+after githubstatus resolved that incident, with its own pull request merged
+and eight later runs in the same repo finished. Measured Cycle 495: this
+tool read `operational` off the status page, read that one orphan off the
+queue, and printed "a merge cannot complete right now" anyway. A run that
+has been abandoned is a scar, not a symptom, and the two are identical from
+the queue alone — so that verdict would have stood every cycle from then on,
+because nothing ever takes an abandoned run out of a queue.
+
+So a zero-job run is quietened — printed as `ABANDONED`, status deliberately
+not raised — only on a positive measurement: **a run in the same repo
+created after it that has since completed**, which is proof GitHub has been
+starting jobs in the interval this one has been sitting. No completed run to
+compare against quietens nothing.
 
 **The grace is five minutes and it is measured, not chosen.** Every
 complete build in `agora-persona-runner` on 2026-08-26 finished inside
@@ -179,10 +183,11 @@ def stalled_runs(repo, grace_minutes=DEFAULT_GRACE_MINUTES, run=subprocess.run, 
     the moment Actions recovers while the orphaned run stays in the queue
     forever. Measured 2026-08-26 20:04 Oslo: run 32984347949 was created four
     seconds into that afternoon's outage and was still `queued` with zero jobs
-    three hours later, while its own pull request had merged and eight later
-    runs in the same repo had completed. This tool read the orphan, said
-    a merge could not complete, and Cycle 494 believed it and picked a cycle
-    that did not end in one.
+    three hours later — three minutes after githubstatus resolved the incident,
+    with its own pull request merged and eight later runs in the same repo
+    finished. This tool read `operational` off the status page and still said a
+    merge could not complete, off that orphan alone, and would have gone on
+    saying it indefinitely: nothing removes an abandoned run from a queue.
 
     So the quietening measurement is the same shape `security_alerts` uses for
     an already-patched advisory — **only ever a positive**: has GitHub created
