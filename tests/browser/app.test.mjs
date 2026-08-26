@@ -9872,7 +9872,10 @@ describe("unread replies are counted on the card and in the header", () => {
     assert.match(bubble(card).textContent, /^💬 1/);
     const badge = unreadBadge(window);
     assert.equal(badge.textContent, "1 new reply");
-    assert.equal(badge.closest("a").getAttribute("href"), "/cycle/55");
+    // A button, not a link into a card. See "the header badge opens the
+    // replies themselves" below for why that changed.
+    assert.equal(badge.tagName, "BUTTON");
+    assert.equal(badge.closest("a"), null);
   });
 
   test("opening the drawer clears the card chip and the header badge together", async () => {
@@ -9902,7 +9905,6 @@ describe("unread replies are counted on the card and in the header", () => {
     });
     const badge = unreadBadge(window);
     assert.equal(badge.textContent, "2 new replies");
-    assert.equal(badge.closest("a").getAttribute("href"), "/cycle/55");
     assert.match(badge.parentElement.textContent, /oldest on cycle 55/);
   });
 
@@ -9955,6 +9957,109 @@ describe("unread replies are counted on the card and in the header", () => {
     const card = cardFor(window, 55);
     assert.match(bubble(card).textContent, /^💬 1/);
     assert.equal(unreadChip(card).textContent, "2 new");
+  });
+
+  /* the owner, `issues.md` 2026-08-26: *"The reply status that tells me that i
+   * have missed replies does not work as designed. Maybe it works technically,
+   * but its not user friendly. We need a better way to show me the message or
+   * drop it as it just noise now. I have read the replies, but the status still
+   * shows that i have not read them."*
+   *
+   * The screenshot read **7 new replies · oldest on cycle 456** on a
+   * twenty-card feed. Both halves of his report come from the same thing: the
+   * only path that marked a reply read was tapping open that one card's
+   * drawer, so seven replies were seven errands and the badge pointed at a card
+   * seventeen down. He took the "show me the message" option; these tests pin
+   * it.
+   *
+   * `spread()` is deliberately two cards rather than one -- a panel that only
+   * ever holds one card's replies is the card drawer with extra steps, and the
+   * failure he filed is specifically about replies scattered across cards. */
+  describe("the header badge opens the replies themselves", () => {
+    function spread() {
+      const comments = JSON.parse(JSON.stringify(payload.comments));
+      comments.byCycle["57"][1].replies = [
+        { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
+      ];
+      return comments;
+    }
+    const load = () =>
+      loadSite("/", {
+        comments: spread(),
+        install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
+      });
+    const panel = (window) => window.document.querySelector(".unread-panel");
+    const rows = (window) =>
+      Array.from(window.document.querySelectorAll(".unread-reply"));
+
+    test("nothing is open until he taps the badge", async () => {
+      const window = await load();
+      assert.equal(panel(window), null, "the panel drew itself uninvited");
+    });
+
+    test("tapping it shows every unread reply, newest first", async () => {
+      const window = await load();
+      click(window, unreadBadge(window));
+      const shown = rows(window);
+      assert.equal(shown.length, 2, "the panel did not hold both cards' replies");
+      // Cycle 57's reply is stamped 16:30 and cycle 55's 13:12, so newest
+      // first means 57 leads -- the opposite of the badge, which names the
+      // oldest card because that is the one about to scroll out of the feed.
+      assert.equal(shown[0].getAttribute("href"), "/cycle/57");
+      assert.match(shown[0].textContent, /on it/);
+      assert.equal(shown[1].getAttribute("href"), "/cycle/55");
+    });
+
+    test("the reply carries the comment it answers", async () => {
+      /* A reply read outside its thread has lost its question. "on it" is not
+       * a message on its own. */
+      const window = await load();
+      click(window, unreadBadge(window));
+      const asked = rows(window)[0].querySelector(".unread-reply-asked");
+      assert.ok(asked, "the panel showed my answer with nothing it answered");
+      assert.equal(asked.textContent, spread().byCycle["57"][1].text);
+    });
+
+    test("opening it marks every one of them read, in one tap", async () => {
+      /* The half that was actually broken. Seven replies over seven cards was
+       * seven taps on seven drawers, several of them off the bottom of the
+       * feed, which is why the count stood while he had read them. */
+      const window = await load();
+      click(window, unreadBadge(window));
+      assert.equal(unreadBadge(window), null, "the badge survived him reading the replies");
+      const stored = JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"));
+      assert.equal(stored["55"], "2026-08-09 13:12");
+      assert.equal(stored["57"], "2026-08-09 16:30");
+    });
+
+    test("the cards' own chips clear with it", async () => {
+      /* Same tap, same marks. Leaving these lit until the next poll would be
+       * the app insisting on a reply he has open on screen, which is the
+       * complaint one feature over. */
+      const window = await load();
+      click(window, unreadBadge(window));
+      assert.equal(window.document.querySelector(".comment-unread"), null);
+      assert.equal(window.document.querySelector(".comment-toggle.has-unread"), null);
+    });
+
+    test("the panel stays up after the badge it came from is gone", async () => {
+      /* The one that decides whether this is usable at all. The tap marks
+       * everything read, so a panel rebuilt from a fresh `unreadSummary` would
+       * find nothing unread and draw empty -- over the message he just asked
+       * to see. It renders from the items captured at the tap instead. */
+      const window = await load();
+      click(window, unreadBadge(window));
+      assert.ok(panel(window), "the panel vanished with the badge");
+      assert.equal(rows(window).length, 2);
+    });
+
+    test("closing it puts the header back to a normal, caught-up line", async () => {
+      const window = await load();
+      click(window, unreadBadge(window));
+      click(window, window.document.querySelector(".unread-panel-close"));
+      assert.equal(panel(window), null, "close left the panel up");
+      assert.equal(unreadBadge(window), null, "the badge came back on replies he has read");
+    });
   });
 
   /* the owner, `issues.md` 2026-08-26: *"When i have a journal comments drawer

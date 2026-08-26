@@ -204,6 +204,13 @@
   var repliesRead = null;
   var repliesReadLoaded = false;
 
+  /* The unread replies he has opened in the header, captured at the tap.
+   *
+   * Deliberately not persisted: this is "the panel is on screen right now",
+   * which is exactly the kind of state a reload should clear. The marks it
+   * writes are the durable half and they live in `localStorage`. */
+  var unreadOpen = null;
+
   /* Which cards have already auto-opened their ask drawer, so it happens
    * once per device rather than once per page load.
    *
@@ -303,18 +310,26 @@
    * A reply carrying no stamp of its own inherits its comment's, exactly as
    * `paint` does. The two have to agree: if they did not, the badge would be
    * counting a reply that the thread draws somewhere else. */
-  function replyStamps(items) {
-    var stamps = [];
+  function repliesOf(items) {
+    var out = [];
     (items || []).forEach(function (comment) {
       var replies = comment.replies;
       if (!(replies && replies.length) && comment.reply) {
-        replies = [{ stamp: comment.replyStamp }];
+        replies = [{ stamp: comment.replyStamp, text: comment.reply }];
       }
       (replies || []).forEach(function (answer) {
-        stamps.push((answer && answer.stamp) || comment.stamp || "");
+        out.push({
+          stamp: (answer && answer.stamp) || comment.stamp || "",
+          text: (answer && answer.text) || "",
+          asked: comment.text || "",
+        });
       });
     });
-    return stamps;
+    return out;
+  }
+
+  function replyStamps(items) {
+    return repliesOf(items).map(function (answer) { return answer.stamp; });
   }
 
   function newestReplyStamp(items) {
@@ -326,16 +341,15 @@
     return newest;
   }
 
-  function unreadReplies(cycle, items) {
+  function unreadOn(cycle, items) {
     var seen = loadRepliesRead();
-    if (!seen) return 0;
+    if (!seen) return [];
     var mark = seen[String(cycle)] || "";
-    var stamps = replyStamps(items);
-    var count = 0;
-    for (var i = 0; i < stamps.length; i++) {
-      if (stamps[i] > mark) count++;
-    }
-    return count;
+    return repliesOf(items).filter(function (answer) { return answer.stamp > mark; });
+  }
+
+  function unreadReplies(cycle, items) {
+    return unreadOn(cycle, items).length;
   }
 
   /* The first payload writes today's newest stamp for every card and shows
@@ -380,15 +394,23 @@
     var count = 0;
     var cards = 0;
     var oldest = null;
+    var items = [];
     Object.keys(byCycle || {}).forEach(function (key) {
-      var n = unreadReplies(key, byCycle[key]);
-      if (!n) return;
-      count += n;
+      var unread = unreadOn(key, byCycle[key]);
+      if (!unread.length) return;
+      count += unread.length;
       cards += 1;
       var cycle = parseInt(key, 10);
       if (!isNaN(cycle) && (oldest === null || cycle < oldest)) oldest = cycle;
+      unread.forEach(function (answer) {
+        items.push({ cycle: cycle, stamp: answer.stamp, text: answer.text, asked: answer.asked });
+      });
     });
-    return { count: count, cards: cards, cycle: oldest };
+    /* Newest first: the panel is a mailbox, and the reply he is most likely
+     * to be looking for is the one that just arrived. The *badge* still names
+     * the oldest card, because that one is about to scroll out of the feed. */
+    items.sort(function (a, b) { return a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0; });
+    return { count: count, cards: cards, cycle: oldest, items: items };
   }
 
   function el(tag, className, text) {
@@ -1365,9 +1387,58 @@
     if (!replayed && haveComments) {
       var unread = unreadSummary(lastCommentsByCycle);
       if (unread.count) {
-        var mail = statusField(unread.cycle);
-        mail.appendChild(el("span", "badge badge-unread",
-          unread.count + (unread.count === 1 ? " new reply" : " new replies")));
+        /* The badge is a button now, not a link to a card.
+         *
+         * the owner, `issues.md` 2026-08-26: *"The reply status that tells me
+         * that i have missed replies does not work as designed. Maybe it works
+         * technically, but its not user friendly. We need a better way to show
+         * me the message or drop it as it just noise now. I have read the
+         * replies, but the status still shows that i have not read them."* He
+         * screenshotted it reading **7 new replies · oldest on cycle 456**.
+         *
+         * Both halves of that are the same defect: the only thing that marks a
+         * reply read is tapping open that one card's drawer, so a badge over
+         * seven cards was seven separate errands, and cycle 456 was seventeen
+         * cards down a twenty-card feed. Tapping the badge scrolled the feed to
+         * a *collapsed* card and marked nothing. So he did read the replies --
+         * in the drawers, in the chat dock, wherever -- and the count stood,
+         * exactly as he says, because none of those paths is the one tap the
+         * mark is wired to.
+         *
+         * He offered two fixes and I took the first: show him the message. The
+         * badge opens the replies themselves, in the header, newest first, and
+         * opening it is what marks them read. One tap, no hunting, and the text
+         * is on screen rather than a number pointing at where the text lives.
+         *
+         * `unreadOpen` holds the items captured at the tap rather than
+         * recomputing them, because the tap marks them read: recomputing would
+         * find nothing unread and draw an empty panel over the message he just
+         * asked to see. */
+        var mail = el("p", "status-sub");
+        var open = el("button", "badge badge-unread status-unread-open",
+          unread.count + (unread.count === 1 ? " new reply" : " new replies"));
+        open.type = "button";
+        open.setAttribute("aria-expanded", "false");
+        open.addEventListener("click", function () {
+          unreadOpen = unread.items;
+          Object.keys(lastCommentsByCycle || {}).forEach(function (key) {
+            markRepliesRead(key, lastCommentsByCycle[key]);
+          });
+          renderStatus(lastStatus, null);
+          /* The cards' own chips are derived from the same marks, and there is
+           * no held journal payload to re-render the feed from. Clearing them
+           * in place is the honest edit rather than a shortcut: they are now
+           * read, and leaving them lit for up to a poll would be the badge
+           * insisting on a reply that is open on his screen -- the thing this
+           * whole feature keeps getting wrong. */
+          if (feed) {
+            Array.prototype.forEach.call(feed.querySelectorAll(".comment-unread"),
+              function (chip) { chip.remove(); });
+            Array.prototype.forEach.call(feed.querySelectorAll(".comment-toggle.has-unread"),
+              function (button) { button.classList.remove("has-unread"); });
+          }
+        });
+        mail.appendChild(open);
         mail.appendChild(el("span", "status-pr", unread.cards === 1
           ? "cycle " + unread.cycle
           : "oldest on cycle " + unread.cycle));
@@ -1487,6 +1558,42 @@
     }
 
     if (subs.childNodes.length) statusEl.appendChild(subs);
+
+    /* The replies themselves, which is the half of his ask the badge never
+     * had. Drawn after `subs` so it sits under the status line it came from,
+     * and outside the `!replayed` guard above because by the time this runs
+     * the items are already in hand -- a cached payload cannot make a message
+     * he asked to read disappear. */
+    if (unreadOpen && unreadOpen.length) {
+      var panel = el("div", "unread-panel");
+      var head = el("p", "unread-panel-head");
+      head.appendChild(el("span", "unread-panel-count",
+        unreadOpen.length + (unreadOpen.length === 1 ? " reply" : " replies")));
+      var shut = el("button", "unread-panel-close", "Close");
+      shut.type = "button";
+      shut.addEventListener("click", function () {
+        unreadOpen = null;
+        renderStatus(lastStatus, null);
+      });
+      head.appendChild(shut);
+      panel.appendChild(head);
+      unreadOpen.forEach(function (answer) {
+        var row = el("a", "unread-reply");
+        row.href = "/cycle/" + answer.cycle;
+        var meta = el("p", "unread-reply-meta");
+        meta.appendChild(el("span", "status-pr", "cycle " + answer.cycle));
+        if (answer.stamp) meta.appendChild(el("span", "status-pr", answer.stamp));
+        row.appendChild(meta);
+        /* His own comment first, dimmed, because a reply read outside its
+         * thread has lost the question it answers -- "yes, that is the same
+         * bug" is not a message on its own. One line of it: this is a mailbox,
+         * not the thread, and the thread is one tap away on the link. */
+        if (answer.asked) row.appendChild(el("p", "unread-reply-asked", answer.asked));
+        row.appendChild(el("p", "unread-reply-text", answer.text || "(no text)"));
+        panel.appendChild(row);
+      });
+      statusEl.appendChild(panel);
+    }
   }
 
   /* the owner, comments board 2026-08-14: "Or a display error if the fetch

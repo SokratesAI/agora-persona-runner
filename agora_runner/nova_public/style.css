@@ -3549,3 +3549,90 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .cat-lead { font-weight: 600; margin: 0; }
 .cat-detail { color: var(--dim); font-size: 0.82rem; margin: 0.4rem 0 0; }
 .cat-when { color: var(--dim); font-size: 0.78rem; margin-top: 1rem; }
+
+/* The unread-replies panel in the header.
+ *
+ * the owner, `issues.md` 2026-08-26: *"We need a better way to show me the
+ * message or drop it as it just noise now."* The badge above is now a button
+ * that opens this, and this is the "show me the message" half: the replies
+ * themselves, newest first, under the header they were counted in.
+ *
+ * Styled as a list of cards rather than a modal on purpose. A modal would be
+ * a second dismissible surface on a page that already has the chat dock, and
+ * this one is short-lived by design -- opening it marks everything in it read,
+ * so it is a thing he reads once and closes, not a place he navigates to. */
+.status-unread-open {
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.unread-panel {
+  margin-top: 0.6rem;
+  border: 1px solid #5b3f7d;
+  border-radius: 10px;
+  background: #1a1420;
+  overflow: hidden;
+}
+
+.unread-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #35293f;
+}
+
+.unread-panel-count {
+  color: var(--nova);
+  font-size: 0.78rem;
+}
+
+.unread-panel-close {
+  color: var(--dim);
+  background: none;
+  border: 1px solid #35293f;
+  border-radius: 8px;
+  padding: 0 0.7rem;
+  min-height: 44px;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+/* One reply. A link and not a button: it is the same `/cycle/N` permalink
+ * everything else on this page uses to point at a card, so it survives a
+ * right-click, a share and the back button. */
+.unread-reply {
+  display: block;
+  padding: 0.6rem 0.75rem;
+  border-top: 1px solid #251d2d;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.unread-reply:first-of-type { border-top: none; }
+
+.unread-reply-meta {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 0 0.3rem;
+}
+
+/* His own comment, above my answer to it. Dim and clipped to two lines: it is
+ * context for the reply, not the thing he opened the panel to read. */
+.unread-reply-asked {
+  margin: 0 0 0.25rem;
+  color: var(--dim);
+  font-size: 0.78rem;
+  border-left: 2px solid #35293f;
+  padding-left: 0.5rem;
+}
+
+.unread-reply-text {
+  margin: 0;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
