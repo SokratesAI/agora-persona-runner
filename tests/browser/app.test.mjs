@@ -9692,7 +9692,10 @@ describe("unread replies are counted on the card and in the header", () => {
     const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
     const card = cardFor(window, 55);
     assert.ok(bubble(card).classList.contains("has-unread"), "the 💬 button is not highlighted");
-    assert.equal(unreadChip(card).textContent, "1");
+    // Not "1" a second time. Cycle 55 holds one comment and one unread reply,
+    // so a bare count here would print the same number twice with nothing to
+    // tell them apart -- the "two purple 3 numbers" he filed on 2026-08-26.
+    assert.equal(unreadChip(card).textContent, "all new");
     // The comment count survives beside it: a card he has caught up on must
     // not look empty, which replacing the number would do.
     assert.match(bubble(card).textContent, /^💬 1/);
@@ -9740,8 +9743,114 @@ describe("unread replies are counted on the card and in the header", () => {
      * an empty seed makes both cards eligible and only one of them counts. */
     const window = await loadSite("/", { install: withRepliesRead({}) });
     assert.equal(unreadChip(cardFor(window, 57)), null, "his own comments were counted as unread");
-    assert.equal(unreadChip(cardFor(window, 55)).textContent, "1");
+    assert.equal(unreadChip(cardFor(window, 55)).textContent, "all new");
     assert.equal(unreadBadge(window).textContent, "1 new reply");
+  });
+
+  test("a card with more comments than unread replies says how many are new", async () => {
+    /* The other half of his 2026-08-26 report. When the two numbers differ
+     * they are both worth printing -- five comments, two of them new -- and
+     * the word is what stops the second one reading as a second total. */
+    const comments = JSON.parse(JSON.stringify(payload.comments));
+    const only = comments.byCycle["55"][0];
+    const quiet = JSON.parse(JSON.stringify(only));
+    delete quiet.reply;
+    delete quiet.replyStamp;
+    delete quiet.replies;
+    comments.byCycle["55"] = [only, quiet, JSON.parse(JSON.stringify(quiet))];
+    const window = await loadSite("/", {
+      comments,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    const card = cardFor(window, 55);
+    assert.match(bubble(card).textContent, /^💬 3/, "the total stopped being the total");
+    assert.equal(unreadChip(card).textContent, "1 new");
+  });
+
+  test("more unread replies than comments prints the number, not \"all new\"", async () => {
+    /* `count` is comments and `unread` is replies, so they are not two
+     * measurements of one thing. One comment carrying two replies he has not
+     * read is 2 and 1, and "all new" there would describe the comments from a
+     * count of the replies. Two honest numbers beat one confident word. */
+    const comments = JSON.parse(JSON.stringify(payload.comments));
+    comments.byCycle["55"][0].replies = [
+      { author: "commentator", stamp: "2026-08-09 13:12", text: "one" },
+      { author: "commentator", stamp: "2026-08-09 13:20", text: "two" },
+    ];
+    const window = await loadSite("/", {
+      comments,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    const card = cardFor(window, 55);
+    assert.match(bubble(card).textContent, /^💬 1/);
+    assert.equal(unreadChip(card).textContent, "2 new");
+  });
+
+  /* the owner, `issues.md` 2026-08-26: *"When i have a journal comments drawer
+   * open, i do not need notifications as i allready have it open."* He sent a
+   * screenshot of the drawer open with three of my replies landing in it over
+   * four minutes and the chip relighting after each one.
+   *
+   * The pair below is the whole rule: open *and* on screen is read; open on a
+   * hidden tab is not. Testing only the first would leave the drawer he falls
+   * asleep with silently eating the reply, which is the case the comment on
+   * `setCommentsOpen` was written to protect and which still holds. */
+  describe("a reply landing in a drawer he is looking at", () => {
+    /** Cycle 55's thread, awaiting a reply, with his read mark caught up. */
+    function opened(hidden) {
+      const waiting = JSON.parse(JSON.stringify(payload.comments));
+      waiting.byCycle["55"][0].replyPending = true;
+      return { waiting, hidden };
+    }
+
+    async function landReply({ hidden }) {
+      let timers;
+      const waiting = JSON.parse(JSON.stringify(payload.comments));
+      waiting.byCycle["55"][0].replyPending = true;
+      const window = await loadSite("/", {
+        comments: waiting,
+        install: (win) => {
+          withRepliesRead({ "55": "2026-08-09 13:12" })(win);
+          timers = captureTimers(win);
+        },
+      });
+      if (hidden) {
+        Object.defineProperty(window.document, "hidden", {
+          configurable: true,
+          get: () => true,
+        });
+      }
+      const card = cardFor(window, 55);
+      click(window, bubble(card));
+      assert.equal(unreadChip(card), null, "the fixture starts with him caught up");
+
+      const answered = JSON.parse(JSON.stringify(payload.comments));
+      answered.byCycle["55"][0].replyPending = false;
+      answered.byCycle["55"][0].replies = [
+        { author: "commentator", stamp: "2026-08-26 05:09", text: "and one more thing" },
+      ];
+      window.fetch = (url) =>
+        res(String(url).includes("/api/comments") ? answered : {});
+      const fired = await timers.fire();
+      assert.ok(fired > 0, "the drawer was not polling, so this pins nothing");
+      return { window, card: cardFor(window, 55) };
+    }
+
+    test("does not raise the chip, because he is reading it", async () => {
+      const { window, card } = await landReply({ hidden: false });
+      assert.equal(unreadChip(card), null,
+        "a reply that landed in the open drawer was announced as unread");
+      assert.equal(bubble(card).classList.contains("has-unread"), false);
+      assert.equal(unreadBadge(window), null,
+        "the header announced a reply that is open on his screen");
+    });
+
+    test("still raises it when the tab is hidden", async () => {
+      const { card } = await landReply({ hidden: true });
+      assert.equal(unreadChip(card).textContent, "all new",
+        "an open drawer on a locked phone ate the reply");
+      assert.ok(bubble(card).classList.contains("has-unread"));
+    });
   });
 
   test("a replayed page draws no badge", async () => {
@@ -9787,7 +9896,7 @@ describe("unread replies are counted on the card and in the header", () => {
     });
     const card = cardFor(window, 55);
     assert.ok(card.classList.contains("is-commenting"), "the ask did not auto-open the drawer, so this test proves nothing");
-    assert.equal(unreadChip(card).textContent, "1", "the auto-opened drawer ate the unread reply");
+    assert.equal(unreadChip(card).textContent, "all new", "the auto-opened drawer ate the unread reply");
     assert.equal(unreadBadge(window).textContent, "1 new reply");
   });
 
@@ -9801,7 +9910,7 @@ describe("unread replies are counted on the card and in the header", () => {
     const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
     const card = cardFor(window, 55);
     click(window, card.querySelector("h2"));           // expand: re-asserts the drawer
-    assert.equal(unreadChip(card).textContent, "1", "expanding the card consumed the unread reply");
+    assert.equal(unreadChip(card).textContent, "all new", "expanding the card consumed the unread reply");
     assert.equal(
       JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"))["55"],
       "2026-08-09 13:00",
@@ -9814,7 +9923,7 @@ describe("unread replies are counted on the card and in the header", () => {
      * the two are separate code paths that have drifted before. */
     const window = await loadSite("/cycle/55", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
     const card = window.document.querySelector(".entry.is-page");
-    assert.equal(unreadChip(card).textContent, "1");
+    assert.equal(unreadChip(card).textContent, "all new");
     click(window, bubble(card));
     assert.equal(unreadChip(card), null, "the deep-linked card kept its chip after he read the reply");
   });
