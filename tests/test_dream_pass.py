@@ -50,6 +50,43 @@ def test_done_marker_is_read_from_the_head_line_only():
     assert [b.done for b in bullets] == [True, False]
 
 
+def test_done_marker_is_seen_through_the_date_prefix_the_loop_actually_writes():
+    """The three shapes below are the live file, not invented cases.
+
+    `prompt.md` step 6 tells every cycle to open a bullet with the date and
+    its own cycle number, and to close one by making it "start with
+    `DONE (Cycle N):`". Both are followed, so a closed bullet carries the
+    marker *after* the prefix, and the original `^- DONE` pattern saw none
+    of the three in `resources/issues.md` on 2026-08-26 (Cycles 197, 228,
+    312). The old prefix-less shape is still in the file 14 times and must
+    keep matching.
+    """
+    bullets = dream_pass.parse(doc(
+        "- DONE (Cycle 9): the old shape, still in the Retired section",
+        "- 2026-08-22 (Cycle 312) — DONE (Cycle 312): the heartbeat named no shell",
+        "- 2026-08-16 (Cycle 228) — **DONE (Cycle 228)**: the four CI-blocked PRs are drafts",
+    ))
+    assert [b.done for b in bullets] == [True, True, True]
+
+
+def test_a_bullet_describing_the_done_convention_is_not_retired():
+    """The five decoys are why the fix is not "contains DONE (Cycle".
+
+    Every one of these is a live note *about* the marker, sitting in the
+    same section as the real ones. Retiring a bullet that documents the
+    mechanism would be the tool deleting the description of itself.
+    """
+    bullets = dream_pass.parse(doc(
+        "- 2026-08-20 (Cycle 285) — reads a capture as unprocessed unless the"
+        " bullet starts exactly `DONE (Cycle N):` and his did not",
+        "- 2026-08-17 (Cycle 251) — a capture marked `DONE (Cycle N):` is never"
+        " removed from his file",
+        "- 2026-08-14 (Cycle 183) — not one bullet is marked done, because"
+        " nothing has ever written DONE (Cycle N) here",
+    ))
+    assert [b.done for b in bullets] == [False, False, False]
+
+
 def test_propose_moves_done_bullets_and_keeps_every_other_word(tmp_path):
     before = doc(
         "- DONE (Cycle 9): fixed — 2026-08-01 (Cycle 5) — the first thing",
