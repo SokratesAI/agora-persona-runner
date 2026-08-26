@@ -27,10 +27,19 @@ day. `tools.roll_done_captures` already rolls finished bullets off
 Three signals, and the split between them is the point:
 
 `done`
-    The bullet already begins `DONE (Cycle N):`. A previous cycle wrote
-    that marker deliberately, so this is not a judgement -- it is a
-    label being honoured. **This is the only class `--proposal` moves**,
-    verbatim, into a `## Retired` section at the end of the file.
+    The bullet's text begins `DONE (Cycle N):` -- either at the very
+    start, or right after the `<date> (Cycle N) —` prefix that every
+    bullet in these files opens with. A previous cycle wrote that marker
+    deliberately, so this is not a judgement -- it is a label being
+    honoured. **This is the only class `--proposal` moves**, verbatim,
+    into a `## Retired` section at the end of the file.
+
+    The second of those two shapes was invisible until Cycle 499, which
+    is worth knowing before trusting a clean report: the pattern only
+    read the very start of the bullet, the house style puts the date
+    there, and so the one class this tool may act on had quietly stopped
+    matching anything a cycle wrote. A `--proposal` that moves 0 bullets
+    is therefore not by itself evidence that a file is tidy.
 
 `dead-path`
     The bullet cites a repo-relative code path in backticks that exists
@@ -86,6 +95,18 @@ guaranteed-positive test of the kind `prompt.md` warns about.
         --repo /data/workspace/agora-persona-runner \\
         --proposal /tmp/nova-issues.proposed.md
 
+**Who runs this, and how often.** Nothing did, from Cycle 334 when it was
+built to Cycle 499 when this paragraph was written -- Cycle 417 noticed
+the gap 83 cycles in and filed it, and it is the third tool in this loop
+to have had that shape. It is owned by the Monday
+`Nova — goals & reprioritise` heartbeat now (`weekly-reprioritise.md`),
+which was the owner's own instruction on idea #100: *"Make the resources
+file cleanup (issues.md/ideas.md staleness pass) run weekly instead of
+every cycle."* Weekly is the right cadence for a sweep over files that
+gain two bullets an hour, and putting it in a named prompt is what
+`tools.doc_owners` can see; a paragraph in the hourly prompt would be
+read 72 times a day and acted on by none of them.
+
 Exits 0 whether or not it found anything; a clean file is a result, not
 a failure. Exit 1 is a bad argument or an unreadable file.
 """
@@ -106,7 +127,26 @@ _BULLET = re.compile(r"^- (?!\s*$)")
 # `--proposal` would have moved it. All 14 markers in the live file carry
 # the cycle number -- two of them as `DONE (Cycle 221, runner#212):` -- so
 # the tighter pattern loses none of them. Reviewer, runner#296.
-_DONE = re.compile(r"^- DONE \(Cycle \d+")
+#
+# Then the convention moved and this pattern did not. `prompt.md` step 6
+# says to make a closed bullet "start with `DONE (Cycle N):`", but the
+# bullets it also tells every cycle to write open with the date and the
+# writing cycle -- `- 2026-08-22 (Cycle 312) — ...` -- so a cycle marking
+# one done puts the marker after that prefix, where `^- DONE` cannot see
+# it. Measured Cycle 499 on the live file: three bullets are genuinely
+# closed in that shape (Cycles 197, 228, 312) and the pattern moved none
+# of them, so the one class `--proposal` is allowed to act on had been
+# matching nothing for as long as the date prefix has been the house style.
+#
+# Widening to "contains DONE (Cycle" is the obvious fix and is wrong. Five
+# other bullets in the same section quote the marker while *describing* the
+# convention -- "reads a closed capture as unprocessed unless the bullet
+# starts exactly `DONE (Cycle N):`" -- and retiring those would delete live
+# notes about the very mechanism. So the marker still has to be at the head
+# of what the bullet says: either at the very start (the old form) or
+# immediately after the `<date> (Cycle N) —` prefix and nothing else.
+_DATE_PREFIX = r"(?:\d{4}-\d{2}-\d{2} \(Cycle \d+\)\s*[-–—]+\s*)?"
+_DONE = re.compile(r"^- " + _DATE_PREFIX + r"(?:\*\*)?DONE \(Cycle \d+")
 _CYCLE = re.compile(r"Cycle (\d+)")
 _DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
