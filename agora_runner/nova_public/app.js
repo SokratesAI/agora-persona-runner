@@ -8397,6 +8397,37 @@
       }
       card.appendChild(actions);
 
+      // His capture: *"The heartbeat conversations should rather somehow be
+      // listed in the beats page as they belong there. Somehow underneath
+      // their relative heartbeat and as a dropdown drawer so they are not
+      // shown unless i want to see them."* Closed by default, same `details`
+      // shape as the Task fold above it, and the count is in the summary so
+      // he can see there are twelve without opening it.
+      var threads = row.conversations || [];
+      if (threads.length) {
+        var box = el("details", "hb-threads");
+        box.appendChild(el("summary", "",
+          threads.length + (threads.length === 1 ? " conversation" : " conversations")));
+        var tlist = el("div", "hb-thread-list");
+        threads.forEach(function (conv) {
+          var btn = el("button", "hb-thread", "");
+          btn.setAttribute("type", "button");
+          btn.appendChild(el("span", "hb-thread-name", conv.name || "(unnamed)"));
+          var tw = conv.updatedAt ? Date.parse(conv.updatedAt) : NaN;
+          if (!isNaN(tw)) btn.appendChild(el("span", "hb-thread-when", fmtStamp(tw)));
+          btn.addEventListener("click", function () {
+            // Same two-views-on-one-route reason as "Open thread" above: the
+            // poller and the back button both guard on the URL saying
+            // `conversations`, so the URL moves before the render.
+            history.pushState(null, "", "/conversations");
+            openConversation(conv.id, conv.name || row.name);
+          });
+          tlist.appendChild(btn);
+        });
+        box.appendChild(tlist);
+        card.appendChild(box);
+      }
+
       if (row.task) {
         var task = el("details", "hb-task");
         var summary = el("summary", "", "Task");
