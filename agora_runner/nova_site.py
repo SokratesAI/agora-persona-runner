@@ -192,6 +192,7 @@ from agora_runner.nova_demos import DEMOS_PATH, load as load_demos, lookup as lo
 from agora_runner.vault import vault_read_path
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
+from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
 from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_runtimes import attach_runtimes
@@ -2505,6 +2506,57 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "no longer" in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
+    def _post_goal_status(self, payload):
+        """`POST /api/goal/status` -- the owner ticks or strikes one goal.
+
+        `goals.md` has told him since 2026-08-16 that *"nothing here is
+        settled until you edit it"*, and the only way to edit it was
+        Obsidian on a phone. He has not, in ten days, which is why the top
+        row of his own board (idea #38) has sat at "In progress" with its
+        remaining half described as his. Goal **G2** counts the things he
+        still has to leave this app to do and names this as one of four.
+
+        Addressing is by the goal's `name`, which is the block's only
+        required field and the exact string the row on `/plan` is drawn
+        from -- so a stale page addresses a goal that has been renamed and
+        gets the same 409 a stale capture reply gets. Nothing failed; the
+        address moved.
+        """
+        name = payload.get("name")
+        status = payload.get("status")
+        if not isinstance(name, str) or not name.strip():
+            self._send_json(400, {"error": "name must be a non-empty string"})
+            return
+        if status not in GOAL_STATUSES:
+            self._send_json(400, {"error": f"status must be one of {list(GOAL_STATUSES)}"})
+            return
+
+        try:
+            ok, message = set_goal_status(name, status)
+        except Exception as e:
+            log(f"nova-site goal status failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            invalidate("plan")
+
+        audit(
+            "Nova",
+            "",
+            "nova_plan",
+            f"Goal {name} -> {status} · {'ok' if ok else message}",
+            before=name[:MAX_BODY_BYTES],
+            after=status,
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        stale = "no longer" in message
+        self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
     def _post_promote(self, payload):
         """`POST /api/capture/promote` -- turn one capture into a board row.
 
@@ -3288,6 +3340,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/conversations/send", "/api/conversations/new",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/pool/decide", "/api/pool/generate",
+            "/api/goal/status",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -3336,6 +3389,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/comment":
             self._post_board_comment(payload)
+            return
+        if path == "/api/goal/status":
+            self._post_goal_status(payload)
             return
         if path == "/api/pool/decide":
             self._post_pool_decide(payload)

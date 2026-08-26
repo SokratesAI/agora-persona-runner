@@ -86,7 +86,24 @@ _DIRECTIONS = ("up", "down")
 # the payload rather than passed through: the page can only render what it
 # has a row for, and a silently-ignored `targt:` typo is a goal that shows
 # no target for a week before anybody notices.
-_FIELDS = ("name", "measure", "now", "target", "unit", "direction")
+_FIELDS = ("name", "measure", "now", "target", "unit", "direction", "status")
+
+# What the owner has said about a goal. `goals.md`'s own contract calls the
+# slate a set of proposed goals awaiting his approval -- "he ticks, edits or
+# deletes; nothing here is settled until he does" -- and until now ticking
+# one meant opening Obsidian and editing markdown on a phone. He has not
+# done it once since Cycle 229 wrote the slate on 2026-08-16, which is why
+# idea #38 has sat at "In progress" with its remaining half described as
+# "yours" for ten days.
+#
+# **A missing `status:` means proposed, and that is the whole compatibility
+# story.** Every block in `goals.md` today has no such line, so the default
+# has to be the state they are actually in rather than a neutral "unknown" —
+# and a goal he declines keeps its block and its prose instead of being
+# deleted, because a struck goal is a decision worth being able to read
+# later and worth being able to reverse in one tap.
+GOAL_STATUSES = ("proposed", "approved", "declined")
+DEFAULT_GOAL_STATUS = "proposed"
 
 _NUMBER_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$")
 
@@ -128,6 +145,14 @@ def _goal(lines):
     if direction not in _DIRECTIONS:
         direction = ""
 
+    # An unreadable `status:` reads as proposed rather than as its own
+    # fourth state. The row is a control he taps, so the only safe way to
+    # render a value nothing understands is the one where his next tap
+    # writes a value that is understood.
+    status = row.get("status", "").strip().lower()
+    if status not in GOAL_STATUSES:
+        status = DEFAULT_GOAL_STATUS
+
     on_target = None
     if direction and now_value is not None and target_value is not None:
         on_target = (
@@ -144,6 +169,7 @@ def _goal(lines):
         "nowValue": now_value,
         "targetValue": target_value,
         "onTarget": on_target,
+        "status": status,
     }
 
 
@@ -514,3 +540,116 @@ def plan_payload(documents, history=None):
             for key, label, _path in PLAN_DOCUMENTS
         ]
     }
+
+
+# Bounding the 409 retry, same as `nova_capture.WRITE_ATTEMPTS` and for the
+# same reason: the concurrent writer here is a cycle rewriting `goals.md`'s
+# weekly review, so a conflict is a real event to re-read past, not a spin.
+WRITE_ATTEMPTS = 3
+
+
+def set_status_in_goals(markdown, name, status):
+    """Set one goal's `status:` inside its own ```goal fence. `None` if it moved.
+
+    **The edit is inside the fence and touches nothing else in the file.**
+    `goals.md` is 23KB of the owner's prose and my weekly reviews, and the
+    fenced block is the one part of it anything parses -- so a status tap
+    rewrites six words of machine-readable data and leaves every sentence
+    alone. That is also why `status` lives in the block rather than as a
+    tick in a heading: a heading is prose a cycle rewrites, and this has to
+    survive that.
+
+    The goal is addressed by `name`, which is the block's own required
+    field and the string the row on the page is drawn from. A block whose
+    name has been rewritten since the page loaded returns `None` -- nothing
+    failed, the address moved -- which is `reply_under_capture`'s contract
+    and gets `reply_under_capture`'s 409.
+
+    An existing `status:` line is replaced in place so the block keeps its
+    field order; a block with none gets one appended as its last line,
+    which is where a reader looking for "what did he say about this"
+    expects it and where it cannot be mistaken for part of `measure`.
+    """
+    if status not in GOAL_STATUSES:
+        return None
+    wanted = (name or "").strip()
+    if not wanted:
+        return None
+
+    lines = (markdown or "").split("\n")
+    opener = _fence_open_re("goal")
+    name_re = re.compile(r"^(?P<indent>[ \t]*)name:[ \t]*(?P<value>.*?)[ \t]*$")
+    status_re = re.compile(r"^(?P<indent>[ \t]*)status:[ \t]*.*$")
+
+    start = None
+    for index, line in enumerate(lines):
+        if start is None:
+            if opener.match(line):
+                start = index
+            continue
+        if _FENCE_CLOSE_RE.match(line) or opener.match(line):
+            body = range(start + 1, index)
+            match = None
+            for i in body:
+                found = name_re.match(lines[i])
+                if found and found.group("value") == wanted:
+                    match = i
+                    break
+            if match is not None:
+                # An unterminated fence is a half-written edit (see
+                # `_fenced.abandon`), so only a block that really closed is
+                # writable -- editing inside one would move his own text.
+                if not _FENCE_CLOSE_RE.match(line):
+                    return None
+                indent = name_re.match(lines[match]).group("indent")
+                for i in body:
+                    if status_re.match(lines[i]):
+                        lines[i] = f"{indent}status: {status}"
+                        return "\n".join(lines)
+                lines.insert(index, f"{indent}status: {status}")
+                return "\n".join(lines)
+            start = index if opener.match(line) else None
+    return None
+
+
+def set_goal_status(name, status):
+    """Record what the owner said about one goal. Returns `(ok, message)`.
+
+    Idea #38's remaining half, and it is the half he was left holding:
+    *"the five goals in `goals.md` are still a slate awaiting your tick,
+    and nothing in it is settled until you edit it"* -- written on
+    2026-08-19 and still true today, because editing it meant opening
+    Obsidian on a phone to hand-edit markdown. It is also one of the four
+    things goal **G2** counts as still needing an app other than Nova, and
+    it is the only one of the four that blocks another board row.
+
+    Same read-modify-write, same `if_rev`, same bounded 409 retry as
+    `nova_capture.comment_on_capture`, because the losing writer is the
+    same class: a cycle appending this week's review while he taps.
+    """
+    from agora_runner.log import log
+    from agora_runner.vault import vault_read_path_rev, vault_write_path
+
+    if status not in GOAL_STATUSES:
+        return False, f"status must be one of {list(GOAL_STATUSES)}"
+    if not (name or "").strip():
+        return False, "no goal named"
+
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(GOALS_PATH)
+        if current is None:
+            return False, "goals.md not found"
+        amended = set_status_in_goals(current, name, status)
+        if amended is None:
+            return False, "that goal is no longer where the page thought it was"
+        if amended == current:
+            return True, f"already {status}"
+        result = vault_write_path(GOALS_PATH, amended, if_rev=rev)
+        if result == "written":
+            log(f"nova-plan goal {name!r} marked {status}")
+            return True, status
+        if "409" not in result:
+            break
+    log(f"nova-plan failed marking goal {name!r} {status}: {result}")
+    return False, f"could not write to goals.md: {result}"

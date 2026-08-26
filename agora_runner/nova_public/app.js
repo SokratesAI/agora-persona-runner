@@ -7158,7 +7158,88 @@
 
     var spark = goalSparkline(goal);
     if (spark) row.appendChild(spark);
+    row.appendChild(goalVerdict(goal));
     return row;
+  }
+
+  /* The words for what the owner has said about a goal, and the word for
+   * the tap that says it. `goals.md` has told him since it was written
+   * that "nothing here is settled until you edit it", and editing it meant
+   * Obsidian on a phone -- so in ten days he settled nothing.
+   *
+   * The word travels with the state (personality.md, his ask on 08-20:
+   * pair the symbol with the word). "Proposed" is not a failure state and
+   * is not styled like one; it is me still waiting on him. */
+  var GOAL_STATE_WORDS = {
+    proposed: "🟡 Awaiting your call",
+    approved: "🟢 Approved",
+    declined: "⚪ Struck"
+  };
+
+  /* Approve / Strike on one goal, plus the state it is in now.
+   *
+   * Both buttons are always present, including on a goal already in that
+   * state: this is the one control on the page whose whole purpose is to
+   * be reversible, and hiding the way back would make "Struck" a decision
+   * he could not take back without Obsidian -- which is the thing being
+   * fixed. The button for the current state is the one that reads as
+   * pressed, and tapping it again is a no-op the server answers "already".
+   *
+   * Buttons go disabled while a write is in flight so a double-tap cannot
+   * race two writes at one goal, and on failure the state snaps back to
+   * what the server still holds rather than showing a tick never written. */
+  function goalVerdict(goal) {
+    var box = el("div", "goal-verdict-row");
+    var state = el("span", "goal-state " + (goal.status || "proposed"),
+      GOAL_STATE_WORDS[goal.status] || GOAL_STATE_WORDS.proposed);
+    box.appendChild(state);
+    var note = el("span", "goal-state-note", "");
+    var buttons = [];
+
+    function draw() {
+      buttons.forEach(function (b) {
+        b.el.className = "goal-state-btn" + (goal.status === b.status ? " current" : "");
+        b.el.setAttribute("aria-pressed", goal.status === b.status ? "true" : "false");
+      });
+      state.className = "goal-state " + (goal.status || "proposed");
+      state.textContent = GOAL_STATE_WORDS[goal.status] || GOAL_STATE_WORDS.proposed;
+    }
+
+    [["approved", "Approve"], ["declined", "Strike"]].forEach(function (pair) {
+      var button = el("button", "goal-state-btn", pair[1]);
+      button.type = "button";
+      button.setAttribute("data-goal-status", pair[0]);
+      button.addEventListener("click", function () {
+        var was = goal.status;
+        buttons.forEach(function (b) { b.el.disabled = true; });
+        note.textContent = "Saving…";
+        fetch("/api/goal/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: goal.name, status: pair[0] })
+        })
+          .then(json)
+          .then(function (payload) {
+            if (!payload || !payload.ok) throw new Error((payload && payload.message) || "failed");
+            goal.status = pair[0];
+            note.textContent = "";
+          })
+          .catch(function (err) {
+            goal.status = was;
+            note.textContent = "Could not save: " + err;
+          })
+          .then(function () {
+            buttons.forEach(function (b) { b.el.disabled = false; });
+            draw();
+          });
+      });
+      buttons.push({ el: button, status: pair[0] });
+      box.appendChild(button);
+    });
+
+    box.appendChild(note);
+    draw();
+    return box;
   }
 
   function renderScoreboard(goals) {
