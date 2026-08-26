@@ -53,8 +53,12 @@ def status_page(actions="operational", incidents=(), raw=None):
     return opener
 
 
-def gh(runs=None, jobs=None, fail=None):
-    """A fake `subprocess.run` answering the two `gh api` calls this tool makes."""
+def gh(runs=None, jobs=None, fail=None, completed=None):
+    """A fake `subprocess.run` answering the `gh api` calls this tool makes.
+
+    `completed` is the newest completed run, as `{"id": ..., "created_at": ...}`
+    or `None` — the measurement that separates an abandoned run from a stall.
+    """
     runs, jobs = runs or {}, jobs or {}
 
     def runner(cmd, **kwargs):
@@ -65,9 +69,18 @@ def gh(runs=None, jobs=None, fail=None):
         if "/jobs" in path:
             run_id = int(path.split("/runs/")[1].split("/")[0])
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(jobs.get(run_id, 0)), stderr="")
+        if "status=completed" in path:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([completed] if completed else []), stderr="")
         repo = path.split("repos/")[1].split("/actions")[0]
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(runs.get(repo, [])), stderr="")
     return runner
+
+
+def completed_at(run_id, minutes_ago):
+    return {"id": run_id,
+            "created_at": (NOW - timedelta(minutes=minutes_ago))
+            .strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
 def queued(run_id, minutes_ago, branch="b", status="queued"):
@@ -292,3 +305,64 @@ def test_the_no_run_check_is_compared_as_utc():
         now=NOW.astimezone(oslo))
     assert why is None, why
     assert verdicts[0][0] == "clear", verdicts
+
+
+# --- an abandoned run is not a stall (Cycle 495) ---------------------------
+
+def test_a_queued_run_that_later_runs_have_overtaken_is_not_a_blocker():
+    """2026-08-26 20:04: run 32984347949 queued 173m through an outage that ended.
+
+    Its pull request had merged and eight later runs had gone green, and this
+    tool still said a merge could not complete. Cycle 494 believed it.
+    """
+    status, lines = run_check(
+        run=gh(runs={"Org/repo": [queued(32984347949, 173)]},
+               jobs={32984347949: 0},
+               completed=completed_at(32995409057, 30)))
+    assert status == 0, lines
+    body = "\n".join(lines)
+    assert [l for l in lines if l.startswith("ABANDONED")], lines
+    assert "32995409057" in body
+    assert "does not end in one" not in body
+
+
+def test_a_stall_with_no_completed_run_after_it_still_blocks():
+    """Two-sided: quietening on any completed run at all would pass the test above.
+
+    A run that completed *before* the queued one is exactly what an outage
+    leaves behind, so it is not evidence that jobs are starting now.
+    """
+    status, lines = run_check(
+        run=gh(runs={"Org/repo": [queued(7, 173)]}, jobs={7: 0},
+               completed=completed_at(6, 200)))
+    assert status == 2, lines
+    assert [l for l in lines if l.startswith("STALLED")], lines
+
+
+def test_a_stall_in_a_repo_with_no_completed_run_still_blocks():
+    """Nothing to compare against quietens nothing."""
+    status, lines = run_check(
+        run=gh(runs={"Org/repo": [queued(7, 173)]}, jobs={7: 0}, completed=None))
+    assert status == 2, lines
+    assert [l for l in lines if l.startswith("STALLED")], lines
+
+
+def test_an_unreadable_completed_query_is_one_not_zero():
+    """Being unable to check is not the same as nothing to check."""
+    status, lines = run_check(
+        run=gh(runs={"Org/repo": [queued(7, 173)]}, jobs={7: 0},
+               fail="status=completed"))
+    assert status == 1, lines
+    assert "COULD NOT READ  Org/repo" in "\n".join(lines)
+
+
+def test_an_outage_still_blocks_even_when_the_queued_run_is_abandoned():
+    """The two measurements stay separate: githubstatus red is its own verdict."""
+    status, lines = run_check(
+        opener=status_page(actions="major_outage", incidents=["Incident with Actions"]),
+        run=gh(runs={"Org/repo": [queued(9, 173)]}, jobs={9: 0},
+               completed=completed_at(10, 30)))
+    assert status == 2, lines
+    body = "\n".join(lines)
+    assert "GITHUB-SIDE" in body
+    assert [l for l in lines if l.startswith("ABANDONED")], lines
