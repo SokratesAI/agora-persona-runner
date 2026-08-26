@@ -20,6 +20,14 @@ so a fourth route quietly missing its link fails instead of shipping
 unreachable. The complement matters too: a link to a route the server does
 not serve is a 404 in the menu, and that direction is checked as well.
 
+The groups became collapsible `<details>` folds the next morning, on the
+owner's follow-up: *"But regarding the menu grouping for pages, good
+groups. But i want them to be dropdowns and default closed so i can
+navigate more easily and we can easily add more pages of necessary without
+expanding the sidebar length too much."* That is the third block of
+assertions below. The heading moved from `<h2>` to `<summary>` with it, so
+the reader above changed shape; nothing else about the grouping did.
+
 Textual, like `test_nav_drawer_scrolls.py` beside it and for the same
 reason -- the browser suite runs under jsdom, which does no layout. What
 this file can see is document order and set membership, and both of those
@@ -56,7 +64,7 @@ def _nav_items():
     """
     items = []
     for hit in re.finditer(
-        r"<a class=\"nav-tab\" href=\"([^\"]+)\"|<h2 class=\"nav-group\">([^<]+)</h2>",
+        r"<a class=\"nav-tab\" href=\"([^\"]+)\"|<summary class=\"nav-group\">([^<]+)</summary>",
         _nav_markup(),
     ):
         if hit.group(1) is not None:
@@ -152,4 +160,64 @@ def test_ask_is_off_the_menu_and_still_served():
     assert "/ask" in _page_routes(), (
         "`/ask` lost its route as well as its link -- the link was the ask, and a "
         "bookmark to the page should still resolve"
+    )
+
+
+def test_every_group_is_a_collapsible_fold():
+    """Each heading is a `<summary>` inside its own `<details class="nav-fold">`.
+
+    The owner asked for dropdowns, and the reason a `<details>` is the answer
+    rather than a `<div>` with a click handler is that this drawer is the only
+    way to reach ten of the thirteen pages: the native disclosure widget is
+    keyboard-operable and announces its state without any script running.
+    """
+    nav = _nav_markup()
+    headings = re.findall(r"<summary class=\"nav-group\">([^<]+)</summary>", nav)
+    assert headings, "no `<summary class=\"nav-group\">` in the drawer"
+    assert not re.search(r"<h2 class=\"nav-group\">", nav), (
+        "a group heading is still an `<h2>` -- a heading is not a disclosure "
+        "control, so that group cannot be opened or closed"
+    )
+    folds = re.findall(r"<details class=\"nav-fold\">(.*?)</details>", nav, re.S)
+    assert len(folds) == len(headings), (
+        f"{len(headings)} group heading(s) but {len(folds)} `<details class=\"nav-fold\">` "
+        "block(s) -- every group has to be its own fold"
+    )
+    for fold in folds:
+        assert re.search(r"<summary class=\"nav-group\">", fold), (
+            "a `.nav-fold` with no `<summary class=\"nav-group\">` has nothing to tap"
+        )
+
+
+def test_no_fold_is_open_on_load():
+    """`default closed` was half the ask, and it is one attribute away from not.
+
+    `markNav` opens the fold holding the current page at runtime; that is
+    deliberate and is pinned in the browser suite. What must not happen is a
+    fold shipping `open` in the markup, because then it is open on every page.
+    """
+    stray = re.findall(r"<details[^>]*\bopen\b[^>]*>", _nav_markup())
+    assert not stray, (
+        f"{stray} ship open in the markup, so that group is expanded on every page -- "
+        "the owner asked for default closed"
+    )
+
+
+def test_every_grouped_link_lives_inside_a_fold():
+    """A link that sits between two folds is grouped by eye and not by markup.
+
+    `test_every_other_link_sits_under_a_category` reads document order, so a
+    link dropped just after a closing `</details>` still passes it: a heading
+    precedes it. This reads containment instead, which is what now decides
+    whether that link disappears when the group is shut.
+    """
+    nav = _nav_markup()
+    inside = set()
+    for fold in re.findall(r"<details class=\"nav-fold\">(.*?)</details>", nav, re.S):
+        inside.update(re.findall(r"<a class=\"nav-tab\" href=\"([^\"]+)\"", fold))
+    all_links = [href for kind, href in _nav_items() if kind == "link"]
+    loose = [h for h in all_links[len(PINNED):] if h not in inside]
+    assert not loose, (
+        f"{loose} sit outside every `.nav-fold` -- they are grouped in document order "
+        "only, so they stay visible when their group is collapsed"
     )

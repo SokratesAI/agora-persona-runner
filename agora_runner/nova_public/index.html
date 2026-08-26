@@ -47,26 +47,54 @@
      same thread, so the page is redundant on the menu, but a bookmark or an
      older journal entry pointing at it still resolves. `PAGE_ROUTES` in
      `nova_site.py` is unchanged and `tests/test_nav_is_grouped.py` pins that
-     `/ask` is the only route deliberately absent from this list. -->
+     `/ask` is the only route deliberately absent from this list.
+
+     Each group is a `<details>`, closed on load. The owner asked for that the
+     morning after the grouping shipped: "i want them to be dropdowns and
+     default closed so i can navigate more easily and we can easily add more
+     pages of necessary without expanding the sidebar length too much." So the
+     drawer is four rows tall at rest -- three links and three folds -- and
+     adding a fourteenth page no longer makes it longer.
+
+     `<details>` rather than a `<div>` and a click handler: the disclosure
+     widget is native, so it is keyboard-operable, it announces expanded and
+     collapsed to a screen reader, and it opens with no JavaScript at all --
+     which matters here because this drawer is the only way to reach ten of
+     the thirteen pages. The `<h2>` the headings used to be is gone with it;
+     `<summary>` is a button, and a heading nested inside one is read as
+     neither. `markNav` in `app.js` opens the fold holding the current page,
+     so the highlighted link is never hidden behind a closed group. -->
 <nav id="nav" class="nav" aria-label="Sections" aria-hidden="true">
   <a class="nav-tab" href="/">Journal</a>
   <a class="nav-tab" href="/issues">Issues</a>
   <a class="nav-tab" href="/ideas">Ideas</a>
 
-  <h2 class="nav-group">Steering</h2>
-  <a class="nav-tab" href="/notes">Notes</a>
-  <a class="nav-tab" href="/pool">Pool</a>
-  <a class="nav-tab" href="/plan">Plan</a>
+  <details class="nav-fold">
+    <summary class="nav-group">Steering</summary>
+    <div class="nav-fold-body">
+      <a class="nav-tab" href="/notes">Notes</a>
+      <a class="nav-tab" href="/pool">Pool</a>
+      <a class="nav-tab" href="/plan">Plan</a>
+    </div>
+  </details>
 
-  <h2 class="nav-group">Talking</h2>
-  <a class="nav-tab" href="/conversations">Chats</a>
-  <a class="nav-tab" href="/heartbeats">Beats</a>
+  <details class="nav-fold">
+    <summary class="nav-group">Talking</summary>
+    <div class="nav-fold-body">
+      <a class="nav-tab" href="/conversations">Chats</a>
+      <a class="nav-tab" href="/heartbeats">Beats</a>
+    </div>
+  </details>
 
-  <h2 class="nav-group">The loop</h2>
-  <a class="nav-tab" href="/retro">Retro</a>
-  <a class="nav-tab" href="/costs">Costs</a>
-  <a class="nav-tab" href="/catalog">Catalog</a>
-  <a class="nav-tab" href="/diag">Device</a>
+  <details class="nav-fold">
+    <summary class="nav-group">The loop</summary>
+    <div class="nav-fold-body">
+      <a class="nav-tab" href="/retro">Retro</a>
+      <a class="nav-tab" href="/costs">Costs</a>
+      <a class="nav-tab" href="/catalog">Catalog</a>
+      <a class="nav-tab" href="/diag">Device</a>
+    </div>
+  </details>
 </nav>
 
 <section id="capture" class="capture">

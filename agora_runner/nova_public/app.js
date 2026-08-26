@@ -92,6 +92,18 @@
       // and the active one is otherwise distinguishable by colour alone.
       if (on) tabs[i].setAttribute("aria-current", "page");
       else tabs[i].removeAttribute("aria-current");
+      // The groups are `<details>`, closed on load, so the highlight above
+      // would otherwise be drawn inside a fold nobody can see. Opening the
+      // one fold that holds the current page is the exception to "default
+      // closed" the owner's ask implies rather than states: they asked for
+      // a short drawer, and the group you are standing in is the one row
+      // that is not noise. Only ever opened here -- a fold the owner shuts
+      // themselves stays shut, because `markNav` runs on navigation, and
+      // navigating is what changes which fold is current.
+      if (on) {
+        var fold = tabs[i].closest ? tabs[i].closest(".nav-fold") : null;
+        if (fold) fold.open = true;
+      }
     }
   }
 
