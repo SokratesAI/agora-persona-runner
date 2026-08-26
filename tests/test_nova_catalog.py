@@ -222,3 +222,35 @@ def _when(*parts):
     from datetime import datetime, timedelta, timezone
 
     return datetime(*parts, tzinfo=timezone(timedelta(hours=2)))
+
+
+def test_a_docs_column_arrives_as_a_link_and_the_status_still_reads():
+    """The break this file exists to catch, and did not: `_service` unpacked the
+    row by position, so a Docs column shifted the status word out of place and
+    every service on the page read "Unknown"."""
+    services = [_service("agora", "agents", docs="https://docs.example/explanation/agora"),
+                _service("redis", "agents")]
+    payload = parse_catalog(render(services, [], [], ["agents/redis"]))
+
+    rows = {s["name"]: s for s in payload["services"]}
+    assert rows["agora"]["docs"] == "https://docs.example/explanation/agora"
+    assert rows["redis"]["docs"] is None
+    assert [s["status"] for s in payload["services"]] == ["up", "up"]
+
+
+def test_the_documentation_count_reaches_the_page_as_its_own_headline():
+    payload = parse_catalog(render([_service("agora", "agents")], [], [], ["agents/agora"]))
+
+    assert "composed by a claim" in payload["headline"]
+    assert "0 of 1 services have a page named after them" in payload["docsHeadline"]
+    assert "**" not in payload["docsHeadline"]
+
+
+def test_a_catalog_written_without_the_docs_column_still_parses():
+    """`render` drops the column when the docs site could not be read, so the
+    parser has to cope with both widths rather than with the current one."""
+    payload = parse_catalog(render([_service("agora", "agents")], [], []))
+
+    assert payload["services"][0]["docs"] is None
+    assert payload["services"][0]["status"] == "up"
+    assert payload["docsHeadline"] == ""

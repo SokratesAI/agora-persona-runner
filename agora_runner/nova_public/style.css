@@ -3247,6 +3247,11 @@ body.has-full-chart { overflow: hidden; }
 .cat-name { font-weight: 600; color: var(--text); }
 a.cat-name { color: var(--accent); text-decoration: none; }
 .cat-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
+/* The docs link is the one thing on a card worth tapping after the name, so
+ * it reads as a link; "No docs page" stays dim, because a gap is information
+ * and not a warning. */
+a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
+.cat-nodocs { font-style: italic; }
 
 /* The word beside the state, never a bare colour -- and "off on purpose"
  * spelled out rather than shortened, because the whole point of the

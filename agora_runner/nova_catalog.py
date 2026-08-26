@@ -99,19 +99,33 @@ def _split_lead(paragraph):
     return _plain(body[:close].strip()), _plain(body[close + 2:].strip())
 
 
-def _service(cells):
-    name, namespace, claim, deployed, url, up = cells[:6]
-    link = _LINK.match(url)
+def _service(cells, columns):
+    """One table row, read by column *name* rather than by position.
+
+    Positional unpacking is what this was, and it broke the first time the
+    builder grew a column: `tools.catalog` gained a Docs column, `cells[:6]`
+    then put a docs link where the status word goes, and every service on the
+    page read "Unknown". The column is also optional -- `render` drops it when
+    the docs site could not be read -- so a fixed layout was never going to
+    hold. The header row is right there in the same table; use it.
+    """
+    def cell(title):
+        at = columns.get(title)
+        return cells[at] if at is not None and at < len(cells) else ""
+
+    link = _LINK.match(cell("url"))
+    docs = _LINK.match(cell("docs"))
     return {
-        "name": name,
-        "namespace": namespace,
+        "name": cell("service"),
+        "namespace": cell("namespace"),
         # An em dash is how the markdown says "nothing"; the page wants an
         # absence it can test, not a character it has to know about.
-        "claim": None if claim == "—" else claim,
-        "deployedBy": None if deployed == "—" else deployed,
+        "claim": None if cell("source repo ordered by") == "—" else cell("source repo ordered by"),
+        "deployedBy": None if cell("deployed by") == "—" else cell("deployed by"),
         "host": link.group(1) if link else None,
         "url": link.group(2) if link else None,
-        "status": STATUS.get(up, "unknown"),
+        "docs": docs.group(2) if docs else None,
+        "status": STATUS.get(cell("up"), "unknown"),
     }
 
 
@@ -135,6 +149,9 @@ def parse_catalog(markdown):
 
     in_table = False
     in_doors = False
+    columns = {}
+    docs_headline = ""
+    docs_detail = ""
     for line in lines:
         stripped = line.strip()
         if regenerated is None:
@@ -153,6 +170,12 @@ def parse_catalog(markdown):
             if not headline:
                 headline, detail = _split_lead(stripped)
                 incomplete = stripped.startswith("**Incomplete")
+            elif not docs_headline:
+                # The second bolded claim is the documentation count, and it
+                # is only written when the docs site answered. Dropping it
+                # would put a number in the vault file that the page -- the
+                # thing he actually opens -- does not have.
+                docs_headline, docs_detail = _split_lead(stripped)
             continue
         if stripped.startswith("## "):
             in_doors = stripped.lower().startswith("## doors")
@@ -165,8 +188,13 @@ def parse_catalog(markdown):
                 # the table cannot be read as a service.
                 in_table = cells is not None and set("".join(cells)) <= {"-", " "}
                 continue
-            if in_table and len(cells) >= 6:
-                services.append(_service(cells))
+            if not in_table:
+                # The row above the `|---|` separator is the header, and it is
+                # what tells this parser where each column went.
+                columns = {title.lower(): at for at, title in enumerate(cells)}
+                continue
+            if columns and len(cells) >= len(columns):
+                services.append(_service(cells, columns))
             continue
         if stripped.startswith("- "):
             item = stripped[2:].strip()
@@ -185,6 +213,8 @@ def parse_catalog(markdown):
         "detail": detail,
         "incomplete": incomplete,
         "unreadable": unreadable,
+        "docsHeadline": docs_headline,
+        "docsDetail": docs_detail,
         "services": services,
         "doors": doors,
         "cycle": cycle,
