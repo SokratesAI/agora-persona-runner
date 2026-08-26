@@ -3172,7 +3172,69 @@ body.has-full-chart { overflow: hidden; }
 }
 
 .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.chat-title { margin: 0; font-size: 0.82rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
+/* `flex: 1` and a centred line rather than the left-aligned heading this
+ * used to be: with a button on each side of the head, a left-aligned title
+ * reads as attached to the hamburger. It also has to be able to shrink --
+ * a conversation name is whatever he called it, and an unbounded one would
+ * push the close button off a 360px screen. */
+.chat-title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.chat-menu {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+  cursor: pointer;
+}
+
+/* The conversation switcher. It takes the thread's place inside the panel
+ * rather than floating over it, so there is only ever one scrolling region
+ * and the composer cannot be typed into while the list is up.
+ *
+ * `[hidden]` needs its own rule for the reason `.chat-dock[hidden]` does,
+ * eight rules up: `display: flex` here is an author declaration and
+ * `[hidden]` is a user-agent one, so the attribute alone would leave the
+ * list permanently drawn. */
+.chat-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  margin: 0.6rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.chat-list[hidden] { display: none; }
+.chat-dock.list-open .chat-thread,
+.chat-dock.list-open .chat-form { display: none; }
+.chat-list-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.chat-list-row.current { border-color: var(--accent); }
+.chat-list-name { font-size: 0.9rem; }
+.chat-list-meta { font-size: 0.75rem; color: var(--dim); margin-top: 0.15rem; }
 .chat-close {
   flex: none;
   background: none;

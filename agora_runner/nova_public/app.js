@@ -9633,6 +9633,69 @@
     var lastCount = 0;
     var isOpen = false;
 
+    var menuBtn = document.getElementById("chat-menu");
+    var listEl = document.getElementById("chat-list");
+    var titleEl = document.getElementById("chat-title");
+
+    /* Which thread the dock is showing.
+     *
+     * His capture, `ideas.md` 2026-08-26: *"Add multi-conversation support
+     * to the chat modal: hamburger button top-left opens a list of previous
+     * conversations, switchable, modal remembers last-opened conversation.
+     * Once done, delete the /ask page entirely as dead code."* The dock
+     * talked to exactly one thread -- the `/ask` conversation -- and the
+     * only place every other thread was reachable was the Conversations
+     * page, which is the page he wants to stop needing.
+     *
+     * Two shapes behind one panel. `kind: "ask"` is `/api/ask`, which has
+     * no id because the server finds its one tagged conversation itself;
+     * `kind: "conv"` is `/api/conversations/thread?id=`. The two payloads
+     * are already identical -- `{messages, waiting}` -- so only the URLs
+     * differ, and nothing had to be added to the server.
+     *
+     * `sourceToken` is `convOpenId`'s job on the Conversations page: a
+     * fetch for the thread he just left must not paint over the one he
+     * just opened. A counter rather than an id because "ask" has none. */
+    var source = { kind: "ask", id: null, name: "Ask Nova" };
+    var sourceToken = 0;
+    var recalled = false;
+
+    /* Same store and the same trade as the read marks at the top of this
+     * file: per-device, because the server has no session and no idea which
+     * browser is his. A browser with storage disabled simply opens on the
+     * ask thread every time, which is where the dock opened before this. */
+    var CHAT_SOURCE_KEY = "nova.chatSource.v1";
+
+    function rememberSource() {
+      var store = localStore();
+      if (!store) return;
+      try {
+        store.setItem(CHAT_SOURCE_KEY, JSON.stringify(source));
+      } catch (err) { /* full or disabled: the dock still works */ }
+    }
+
+    function recallSource() {
+      var store = localStore();
+      if (!store) return;
+      try {
+        var raw = store.getItem(CHAT_SOURCE_KEY);
+        if (!raw) return;
+        var parsed = JSON.parse(raw);
+        // A conversation needs an id to be fetchable at all, so a stored
+        // `conv` without one is corrupt and reads as never-stored rather
+        // than as a thread that 404s on every open.
+        if (!parsed || parsed.kind !== "conv" || !parsed.id) return;
+        source = { kind: "conv", id: parsed.id, name: parsed.name || "Conversation" };
+      } catch (err) { /* unreadable: stay on the ask thread */ }
+    }
+
+    function threadUrl() {
+      if (source.kind === "conv") {
+        return "/api/conversations/thread?id=" + encodeURIComponent(source.id);
+      }
+      return "/api/ask";
+    }
+
     /* The composer grows with what he types. His capture, issues.md
      * 2026-08-25: *"make the input field start at one line, then when the
      * content is two lines it gets tall enough to fit two lines and
@@ -9743,26 +9806,39 @@
     function pollChat(attempts) {
       stopChatPoll();
       if (attempts >= ASK_POLL_MAX) return;
+      var token = sourceToken;
       pollHandle = setTimeout(function () {
         pollHandle = null;
-        pingAskWatching(isOpen);
-        fetchPage("/api/ask")
+        // Presence is about the `/ask` thread specifically -- it is what
+        // tells Agora to withhold the push because he is already looking at
+        // the answer. Reading a different conversation is not looking at
+        // that one, so vouching from here would drop a notification he
+        // wanted.
+        pingAskWatching(isOpen && source.kind === "ask");
+        fetchPage(threadUrl())
           .then(function (payload) {
+            if (token !== sourceToken) return;
             paint(payload);
             if (payload.waiting) pollChat(attempts + 1);
           })
           // A failed poll is not a failed answer, same as `pollAsk`.
-          .catch(function () { pollChat(attempts + 1); });
+          .catch(function () {
+            if (token !== sourceToken) return;
+            pollChat(attempts + 1);
+          });
       }, ASK_POLL_MS);
     }
 
     function loadThread() {
-      return fetchPage("/api/ask")
+      var token = sourceToken;
+      return fetchPage(threadUrl())
         .then(function (payload) {
+          if (token !== sourceToken) return;
           paint(payload);
           if (payload.waiting) pollChat(0);
         })
         .catch(function (err) {
+          if (token !== sourceToken) return;
           // Only paint an error over an empty dock. Overwriting a thread he
           // can already read with "could not load" would be the wrong
           // report -- the messages on screen are still true.
@@ -9770,6 +9846,94 @@
             thread.textContent = "";
             thread.appendChild(el("p", "empty", "Could not load the thread: " + err));
           }
+        });
+    }
+
+    /* The switcher.
+     *
+     * `Ask Nova` is pinned at the top as its own row rather than left to
+     * arrive in the listing: the `/ask` thread *is* in `/api/conversations`
+     * -- it is a normal Agora conversation carrying the `nova-ask` tag --
+     * but it is reachable through an endpoint that needs no id, and letting
+     * both rows exist would give one thread two identities and two unread
+     * counts. So it is filtered out below and pinned here.
+     *
+     * The list replaces the thread inside the panel instead of floating
+     * over it, so the composer cannot be typed into while it is up and
+     * there is only ever one scrolling region.
+     */
+    function setList(next) {
+      var on = !!next;
+      if (!listEl || !menuBtn) return;
+      dock.classList.toggle("list-open", on);
+      menuBtn.setAttribute("aria-expanded", on ? "true" : "false");
+      if (on) listEl.removeAttribute("hidden");
+      else listEl.setAttribute("hidden", "");
+      if (on) loadList();
+    }
+
+    function listRow(label, meta, current, onPick) {
+      var row = el("button", "chat-list-row" + (current ? " current" : ""));
+      row.setAttribute("type", "button");
+      row.appendChild(el("div", "chat-list-name", label));
+      if (meta) row.appendChild(el("div", "chat-list-meta", meta));
+      row.addEventListener("click", onPick);
+      return row;
+    }
+
+    function switchTo(next) {
+      // Tapping the row he is already reading closes the list and leaves
+      // the thread alone -- reloading it would blank a painted thread and
+      // scroll him back to the bottom for nothing.
+      var same = next.kind === source.kind &&
+        (next.kind !== "conv" || next.id === source.id);
+      setList(false);
+      if (same) return;
+      source = next;
+      sourceToken += 1;
+      rememberSource();
+      stopChatPoll();
+      // A fresh thread has its own message count, and `loaded` is what stops
+      // the first paint of it lighting the unread dot on a thread he is
+      // looking at right now.
+      loaded = false;
+      lastCount = 0;
+      titleEl.textContent = source.name;
+      thread.textContent = "";
+      thread.appendChild(el("p", "empty", "loading…"));
+      loadThread();
+    }
+
+    function loadList() {
+      listEl.textContent = "";
+      listEl.appendChild(listRow("Ask Nova", "", source.kind === "ask", function () {
+        switchTo({ kind: "ask", id: null, name: "Ask Nova" });
+      }));
+      var pending = el("p", "empty", "loading…");
+      listEl.appendChild(pending);
+      fetchPage("/api/conversations")
+        .then(function (payload) {
+          listEl.removeChild(pending);
+          var rows = (payload.conversations || []).filter(function (row) {
+            return (row.tags || []).indexOf("nova-ask") === -1;
+          });
+          if (!rows.length) {
+            listEl.appendChild(el("p", "empty", "No other conversations yet."));
+            return;
+          }
+          rows.forEach(function (row) {
+            var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
+            listEl.appendChild(listRow(
+              row.name, meta,
+              source.kind === "conv" && source.id === row.id,
+              function () {
+                switchTo({ kind: "conv", id: row.id, name: row.name });
+              }));
+          });
+        })
+        .catch(function (err) {
+          if (pending.parentNode) listEl.removeChild(pending);
+          listEl.appendChild(el("p", "empty", "Could not load your conversations: " + err));
         });
     }
 
@@ -9787,9 +9951,24 @@
       // dock is a small panel and the rule does not apply.
       document.body.classList.toggle("chat-open", isOpen);
       // Closing deliberately leaves the poll running: the question is still
-      // being answered and the dot is how he finds out it landed.
-      if (!isOpen) return;
+      // being answered and the dot is how he finds out it landed. The
+      // switcher does collapse, so re-opening lands on the thread rather
+      // than on a list he left up three pages ago.
+      if (!isOpen) {
+        setList(false);
+        return;
+      }
       setDot(false);
+      /* Read the remembered thread once per page load, on the first open
+       * rather than at construction: `localStorage` is one synchronous
+       * read and there is no reason to spend it on a dock he never taps.
+       * After that `source` is the live value and the store is only its
+       * durable copy. */
+      if (!recalled) {
+        recalled = true;
+        recallSource();
+        titleEl.textContent = source.name;
+      }
       /* Opening the dock deliberately does not focus the box. It used to,
        * and his capture on `issues.md`, 2026-08-25: *"The new chat bubble
        * autoselects the input box which makes my mobile keyboard open up
@@ -9813,8 +9992,18 @@
     if (box) box.addEventListener("input", growChatBox);
     btn.addEventListener("click", function () { setOpen(!isOpen); });
     if (closeBtn) closeBtn.addEventListener("click", function () { setOpen(false); });
+    if (menuBtn) {
+      menuBtn.addEventListener("click", function () {
+        setList(!dock.classList.contains("list-open"));
+      });
+    }
     document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && isOpen) setOpen(false);
+      if (event.key !== "Escape" || !isOpen) return;
+      // Escape backs out one level at a time: the switcher first, the dock
+      // only once the switcher is down. Closing the whole panel from an
+      // open list would lose the thread he was trying to get back to.
+      if (dock.classList.contains("list-open")) setList(false);
+      else setOpen(false);
     });
 
     form.addEventListener("submit", function (event) {
@@ -9827,10 +10016,16 @@
       sending = true;
       syncSend();
       status.textContent = "sending…";
-      fetch("/api/ask", {
+      // Two endpoints, one composer. `/api/ask` finds its own conversation
+      // from the `nova-ask` tag and takes no id; every other thread is
+      // addressed by one.
+      var conv = source.kind === "conv";
+      var token = sourceToken;
+      fetch(conv ? "/api/conversations/send" : "/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: body }),
+        body: JSON.stringify(
+          conv ? { conversationId: source.id, text: body } : { text: body }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
@@ -9846,6 +10041,11 @@
           status.textContent = "";
           sending = false;
           syncSend();
+          // The send landed, but he may have switched threads while it was
+          // in flight -- painting his message into the thread he moved to
+          // would put it under the wrong name, and polling would then be
+          // polling the new thread on the old one's schedule.
+          if (token !== sourceToken) return;
           // Paint his question straight away rather than waiting a poll for
           // the server to echo it, for `renderAsk`'s reason: a box that has
           // gone blank with nothing to show for it reads as a lost message.
