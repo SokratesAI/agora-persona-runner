@@ -126,6 +126,7 @@ from agora_runner.nova_capture import (
     comment_on_capture,
     comment_on_row,
     convert_capture,
+    promote_capture,
     edit_row,
     remove_row,
     set_priority,
@@ -2504,6 +2505,68 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "no longer" in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
+    def _post_promote(self, payload):
+        """`POST /api/capture/promote` -- turn one capture into a board row.
+
+        The owner, capture 2026-08-26: *"they do no seem to just stay
+        forever in the 'not boarded yet' box as unrated. Thats not what
+        the box is for. This a re ideas you have not seen before and you
+        pick it up, prioritised them and make them as their own nice item
+        like the rest."*
+
+        **`priority` is optional and its absence is not "unrated".** Left
+        out, the capture's own rating rides across; sent, it overrides,
+        because the ask is that the thing gets *rated* on the way past.
+        `""` is a real value meaning no rating, which is why the check
+        below is `is not None` rather than a truth test -- the same
+        distinction `canonical_priority` already draws.
+        """
+        target = payload.get("target")
+        index = payload.get("index")
+        original = payload.get("original")
+        priority = payload.get("priority")
+        if target not in BOARD_PATHS:
+            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
+            return
+        # `True` is an int in Python and would silently address capture 1.
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            self._send_json(400, {"error": "index must be a non-negative number"})
+            return
+        if not isinstance(original, str) or not original.strip():
+            self._send_json(400, {"error": "original must be a non-empty string"})
+            return
+        if priority is not None and canonical_priority(priority) is None:
+            self._send_json(400, {"error": "priority must be one of the four ratings"})
+            return
+
+        try:
+            ok, message = promote_capture(target, index, original, priority)
+        except Exception as e:
+            log(f"nova-site capture promote failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            # The bullet left the capture list and a row arrived on the
+            # board, and both of those are drawn by the same cached page.
+            _invalidate_capture_target(target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Promote a capture in {target} to a board row · {'ok' if ok else message}",
+            before=original[:MAX_BODY_BYTES],
+            after=message,
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        stale = STALE_CAPTURE in message
+        self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
     def _post_convert(self, payload):
         """`POST /api/capture/convert` -- move one capture to another file.
 
@@ -3218,7 +3281,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete",
-            "/api/capture/convert", "/api/comment",
+            "/api/capture/convert", "/api/capture/promote", "/api/comment",
             "/api/board/priority", "/api/board/edit", "/api/board/delete",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
@@ -3261,6 +3324,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/capture/convert":
             self._post_convert(payload)
+            return
+        if path == "/api/capture/promote":
+            self._post_promote(payload)
             return
         if path == "/api/board/priority":
             self._post_priority(payload)

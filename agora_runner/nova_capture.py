@@ -51,6 +51,7 @@ from agora_runner.config import OSLO
 from agora_runner.log import log
 from agora_runner.nova_boards import (
     BOARD_PATHS,
+    add_row,
     CAPTURE_PRIORITY_SEP,
     PRIORITY_LABELS,
     canonical_priority,
@@ -61,6 +62,7 @@ from agora_runner.nova_boards import (
     extract_row,
     set_row_priority,
     set_row_title,
+    split_capture_done,
     split_capture_priority,
 )
 from agora_runner.nova_uploads import is_attachment_line
@@ -420,6 +422,99 @@ def convert_capture(source, index, original, dest):
         )
     log(f"nova-capture converted a capture from {source} to {dest}")
     return True, f"moved to {dest}"
+
+
+# Where his first sentence ends. `. ` / `? ` / `! ` followed by a capital
+# or the end of the line -- not a bare full stop, which would cut
+# `sonarr.` or `08-26.` in half. A capture with no sentence break at all
+# has no match and becomes its own title, whole.
+_FIRST_SENTENCE_RE = re.compile(r"^(.*?[.!?])(?:\s+(?=[A-Z0-9])|\s*$)", re.DOTALL)
+
+
+def capture_title(text):
+    """One capture bullet -> the one-line title its board row should carry."""
+    body = " ".join((text or "").split())
+    match = _FIRST_SENTENCE_RE.match(body)
+    return (match.group(1) if match else body).strip()
+
+
+def promote_capture(target, index, original, priority=None):
+    """Turn one unboarded capture into a numbered row. Returns (ok, message).
+
+    The owner, capture 2026-08-26: *"Whats with the not boarded
+    ideas/issues? I really like the comments on them so that i can see
+    whats happening, but they do no seem to just stay forever in the 'not
+    boarded yet' box as unrated. Thats not what the box is for. This a re
+    ideas you have not seen before and you pick it up, prioritised them
+    and make them as their own nice item like the rest."*
+
+    **One write, not two, and that is the whole reason this is not shaped
+    like `convert_capture`.** A capture and the board it is promoted onto
+    live in the *same file* -- `issues.md` holds the bullet list at the
+    top, `## Board` in the middle and `# Details` at the bottom -- so
+    adding the row and removing the bullet are one read-modify-write
+    against one revision, and there is no half-done state to choose a
+    lesser evil between. `convert_capture` has to write two files and
+    says so; this one does not and must not, because a row written by a
+    first call and a bullet removed by a second would show him his own
+    text twice for as long as the second call took to fail.
+
+    The rating rides across if he set one and `priority` overrides it --
+    the point of the ask is that a cycle *rates* the thing on the way
+    past, and his own rating is the better default when he gave one.
+
+    A cycle's earlier answers under the bullet ride across as dated notes
+    on the write-up, so the thread he says he likes survives the move.
+    `None` from `replace_capture` means the address is stale, which is
+    the one failure worth telling apart: nothing has been written, and
+    the page needs re-reading rather than the write retrying.
+    """
+    paths = BOARD_PATHS.get(target)
+    path = paths.get("edvard") if paths else None
+    if path is None or target not in CAPTURE_TARGETS:
+        return False, f"unknown target: {target!r}"
+    wanted = (original or "").strip()
+    if not wanted:
+        return False, "nothing to promote"
+
+    dated = datetime.now(OSLO).strftime("%m-%d")
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(path)
+        if current is None:
+            return False, f"{path} not found"
+        entries = capture_entries(current)
+        if not isinstance(index, int) or not 0 <= index < len(entries):
+            return False, f"that capture is {STALE_CAPTURE}"
+        _, _, text, replies = entries[index]
+        if text != wanted:
+            return False, f"that capture is {STALE_CAPTURE}"
+        rating, body = split_capture_priority(text)
+        _, body = split_capture_done(body)
+        chosen = canonical_priority(rating if priority is None else priority)
+        if chosen is None:
+            return False, f"unknown priority: {priority!r}"
+        title = capture_title(body)
+        if not title:
+            return False, "nothing to promote"
+        # A pipe would close the table cell it is written into and a
+        # newline would end the row; `add_row` refuses both. Folding them
+        # is not this function's call to make, so the refusal is passed on.
+        boarded, number = add_row(
+            current, title, dated, chosen, write_up=body, notes=replies)
+        if boarded is None:
+            return False, f"could not board {title!r}"
+        updated = replace_capture(boarded, index, wanted, [])
+        if updated is None:
+            return False, f"that capture is {STALE_CAPTURE}"
+        result = vault_write_path(path, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture promoted a {target} capture to #{number}")
+            return True, f"boarded as #{number}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed to promote a {target} capture: {result}")
+    return False, f"could not write to {target}: {result}"
 
 
 def clean_capture_text(text):
