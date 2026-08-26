@@ -110,6 +110,20 @@ def test_a_sweep_that_calls_an_unlistable_org_complete_turns_it_red(monkeypatch)
     assert "reported as a complete sweep" in detail
 
 
+def test_the_org_check_does_not_read_the_workspace(monkeypatch):
+    """The failure CI found: no checkouts, so no org, so a false red.
+
+    This is the whole reason the check stubs the workspace. On a machine
+    with no clones -- which is every CI runner -- the real
+    `_repos_from_workspace()` returns nothing, `_repos_to_sweep` has no org
+    to enumerate, and the outsider repo can never appear. The gate reported
+    Cycle 432's blind spot against code that had been fixed for a day.
+    """
+    from tools import security_alerts
+    monkeypatch.setattr(security_alerts, "_repos_from_workspace", lambda: ([], []))
+    assert _verdict("security-sweep-covered-only-the-checkouts")[0] == "held"
+
+
 def test_the_org_sweep_holds_today():
     assert _verdict("security-sweep-covered-only-the-checkouts")[0] == "held"
 

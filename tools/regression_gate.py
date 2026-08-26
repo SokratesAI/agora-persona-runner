@@ -194,9 +194,21 @@ def _check_ask_opens_with_a_question() -> Optional[str]:
 
 
 def _check_security_sweep_covers_the_org() -> Optional[str]:
+    """Does the advisory sweep still union the org in, or only the checkouts?
+
+    **Both halves are stubbed on purpose.** The first version of this check
+    called the real `_repos_from_workspace()`, so it passed on my pod and
+    went red in CI, where there are no checkouts at all -- no checkout means
+    no org to enumerate, so the fake listing below was never consulted and
+    the check reported Cycle 432's blind spot against code that does not
+    have it. A check whose verdict moves with the environment is not a check
+    of the code, and a gate that cries regression on a clean tree is worse
+    than no gate. So the workspace is fixed here too.
+    """
     from tools import security_alerts
 
     outsider = "SokratesAI/a-repo-with-no-checkout-here"
+    checkouts = (["SokratesAI/agora-persona-runner"], [])
 
     def fake_gh(args):
         return 0, json.dumps([
@@ -204,7 +216,15 @@ def _check_security_sweep_covers_the_org() -> Optional[str]:
             {"nameWithOwner": "SokratesAI/an-archived-one", "isArchived": True},
         ]), ""
 
-    repos, _unplaceable, _notes, incomplete = security_alerts._repos_to_sweep(run=fake_gh)
+    original_workspace = security_alerts._repos_from_workspace
+    try:
+        security_alerts._repos_from_workspace = lambda: checkouts
+        repos, _unplaceable, _notes, incomplete = security_alerts._repos_to_sweep(run=fake_gh)
+        broken = security_alerts._repos_to_sweep(run=lambda args: (1, "", "gh: could not resolve org"))
+    finally:
+        security_alerts._repos_from_workspace = original_workspace
+    incomplete_when_broken = broken[3]
+
     if outsider not in repos:
         return ("a repo the org lists but this loop has not cloned was left out of the sweep -- "
                 "this is Cycle 432's blind spot exactly")
@@ -212,10 +232,6 @@ def _check_security_sweep_covers_the_org() -> Optional[str]:
         return "an archived repo was swept; an alert there cannot be closed by a pull request"
 
     # Two-sided: a failure to list the org must not read as a clean sweep.
-    def broken_gh(args):
-        return 1, "", "gh: could not resolve org"
-
-    _r, _u, _n, incomplete_when_broken = security_alerts._repos_to_sweep(run=broken_gh)
     if not incomplete_when_broken:
         return "an org that could not be listed was reported as a complete sweep"
     if incomplete:
