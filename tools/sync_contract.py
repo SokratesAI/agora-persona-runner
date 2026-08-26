@@ -1854,6 +1854,15 @@ REDACTION_PROBES = (
      + ".QWJjRGVmR2hpSmts", True),
     ("aws access key id", "id AKIAIOSFODNN7EXAMPLE here", True),
     ("aws session key id", "id ASIAIOSFODNN7EXAMPLE here", True),
+    # Both Google shapes, and both built from pieces for the same reason the
+    # jwt probe above is: gitleaks' `gcp-api-key` rule keys on a contiguous
+    # `AIza...`, and this repo's own secret scan runs over this file. The
+    # `AQ.` form is the one actually on this estate -- measured Cycle 503,
+    # by length and prefix, without printing the value.
+    ("google api key, classic",
+     "header b'" + "AIza" + "Sy" + "D" + "0" * 34 + "'", True),
+    ("google api key, current AI Studio form",
+     "header b'" + "AQ" + "." + "e" * 50 + "'", True),
     ("private key block",
      "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNza\nAAAA\n"
      "-----END OPENSSH PRIVATE KEY-----", True),
@@ -1876,6 +1885,13 @@ REDACTION_PROBES = (
      "The password rotation is documented in decisions/adr-0012.md.", False),
     ("named value below the length floor", "TOKEN = short", False),
     ("a word that is only a topic", "secrets, passwords and api keys", False),
+    ("a google key prefix with nothing behind it",
+     "The queue drained: AQ. Then the job exited.", False),
+    # The probe that holds the length floor. The line above cannot: a space
+    # follows its `AQ.`, so no floor is under test at all. Seven characters
+    # running on from the dot is what a floor below 40 would swallow.
+    ("a google key prefix with a short run behind it",
+     "rollback is covered in AQ.section 4 of the runbook", False),
     ("empty string", "", False),
     ("not a string at all", None, False),
     ("also not a string", 42, False),

@@ -6339,6 +6339,46 @@ def test_redact_replaces_each_credential_shape_with_a_visible_marker(runner):
         assert out.startswith("before ") and out.endswith(" after")
 
 
+def test_redact_catches_a_google_key_with_no_name_beside_it(runner):
+    """The traceback case in the owner's idea #106, in both key formats.
+
+    `GEMINI_API_KEY` in the runner pod carries a trailing newline; `urllib`
+    refuses a header value with one in it and quotes the whole value back in
+    the exception. There is no `NAME=` in a traceback, so the name-anchored
+    value pattern cannot help -- only a format pattern can.
+
+    Both shapes are here because only one of them is on this box. Cycle 503
+    wrote the documented `AIza` form first and then measured the live key:
+    it is 53 characters and starts `AQ.`, so the documented form alone would
+    have been a filter that guards nothing on the one key it was built for.
+    """
+    redact = audit_module.redact
+    classic = "AIza" + "Sy" + "D" + "0" * 34          # 39, the documented form
+    current = "AQ" + "." + "e" * 50                   # 53, what AI Studio issues now
+    for key in (classic, current):
+        crash = "ValueError: Invalid header value b'%s\\n'" % key
+        out = redact(crash)
+        assert key not in out
+        assert "[redacted: google api key]" in out
+        # The exception still reads -- only the value went.
+        assert out.startswith("ValueError: Invalid header value b'")
+
+
+def test_redact_does_not_eat_a_sentence_that_merely_starts_like_a_key(runner):
+    """`AQ.` is a short prefix, so the length floor is what keeps it honest."""
+    redact = audit_module.redact
+    for text in ("The queue drained: AQ. Then the job exited.",
+                 # This is the one that actually bites the floor: seven
+                 # base64url characters run on from the dot, so a floor set
+                 # anywhere below 40 eats it. Cycle 503 shipped the sentence
+                 # above first, then mutated the floor to {2,} and watched
+                 # this test stay green -- a space follows that `AQ.`, so no
+                 # floor could ever have been tested by it.
+                 "rollback is covered in AQ.section 4 of the runbook",
+                 "AIzaSy is a prefix, not a credential."):
+        assert redact(text) == text
+
+
 def test_redact_keeps_the_variable_name_and_drops_only_the_value(runner):
     """Knowing that ANTHROPIC_API_KEY is *set* is exactly the kind of thing
     the owner wants to be able to see; the value is the part that must not ship."""
