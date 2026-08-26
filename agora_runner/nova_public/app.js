@@ -1418,7 +1418,9 @@
         var open = el("button", "badge badge-unread status-unread-open",
           unread.count + (unread.count === 1 ? " new reply" : " new replies"));
         open.type = "button";
-        open.setAttribute("aria-expanded", "false");
+        /* No `aria-expanded`: the badge does not survive being pressed. The
+         * tap marks everything read, so the next render draws the panel and
+         * no badge at all, and a control that is gone cannot be expanded. */
         open.addEventListener("click", function () {
           unreadOpen = unread.items;
           Object.keys(lastCommentsByCycle || {}).forEach(function (key) {
