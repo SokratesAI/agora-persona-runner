@@ -1,6 +1,6 @@
 """Is every Agora heartbeat still firing?
 
-Cycle 475, on Edvard's comment on idea #141: *"I do think the Sentinel is
+Cycle 475, on the owner's comment on idea #141: *"I do think the Sentinel is
 paused. Maybe turn it on again?"* He was right. `K3s Sentinel` --- the
 daily cluster scan that reports crash-looping pods, unready deployments
 and not-Ready nodes --- had `enabled: false` and had not run since
@@ -32,7 +32,7 @@ are separate verdicts with separate evidence lines, never a single
 **A heartbeat that is deliberately off says so in its own name.** Both
 `Workflow trial ... (disabled, manual only)` rows carry it, and that
 convention already exists because the Heartbeats page shows the name to
-Edvard. So a `(disabled` marker in the name means the off state is
+the owner. So a `(disabled` marker in the name means the off state is
 documented where a reader can see it, and it prints as context. Anything
 else that is off raises the status --- which is exactly what the Sentinel
 would have done, since nothing anywhere recorded that it had been
