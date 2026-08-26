@@ -12,6 +12,7 @@
 
   var feed = document.getElementById("feed");
   var statusEl = document.getElementById("status");
+  var mailEl = document.getElementById("mail");
 
   var navEl = document.getElementById("nav");
   var menuBtn = document.getElementById("menu-btn");
@@ -411,6 +412,171 @@
      * the oldest card, because that one is about to scroll out of the feed. */
     items.sort(function (a, b) { return a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0; });
     return { count: count, cards: cards, cycle: oldest, items: items };
+  }
+
+  /* The unread-reply badge and the panel it opens, in their own node outside
+   * `statusEl` so they survive a page that is not the journal.
+   *
+   * the owner, capture 2026-08-25: *"I want to have a status the Nova header
+   * if i have unread Journal comments."* The header is one element shared by
+   * every page, and this badge lived inside `renderStatus`, which only the
+   * journal view calls -- every other view opens by wiping `statusEl` and
+   * writing its own line into it. So the status he asked for existed on one
+   * of thirteen pages, and the twelve others silently dropped it. That is the
+   * half of *"I have read the replies, but the status still shows that i have
+   * not read them"* that cycle 474 did not reach: from Issues, Ideas or Beats
+   * there was no badge to tap and no way to find out a reply had arrived.
+   *
+   * `#mail` is a sibling of the header rather than a child, because a child
+   * would be destroyed by the very `statusEl.textContent = ""` that each page
+   * runs on entry -- which is exactly how the badge got lost in the first
+   * place. Painting into a node nobody else clears is the fix; hooking twelve
+   * header builders would be twelve places to forget. */
+  function paintMail(replayed) {
+    if (!mailEl) return;
+    mailEl.textContent = "";
+    paintMailInto(replayed);
+    if (mailEl.childNodes.length) mailEl.removeAttribute("hidden");
+    else mailEl.setAttribute("hidden", "");
+  }
+
+  /* Comments for a page that does not fetch them.
+   *
+   * Only the journal view calls `fetchAll`, so `haveComments` was false on
+   * every other page and `paintMail` had nothing to count. One uncached read
+   * per navigation, tolerated the same way `fetchAll` tolerates its own: the
+   * badge is not worth an error on a page it is not about. */
+  function refreshMail() {
+    return fetch("/api/comments")
+      .then(json)
+      .then(function (data) {
+        if (!data) return;
+        lastCommentsByCycle = data.byCycle || {};
+        haveComments = true;
+        seedRepliesRead(lastCommentsByCycle);
+        paintMail(false);
+      })
+      .catch(function () { /* leave whatever the last paint put there */ });
+  }
+
+  function paintMailInto(replayed) {
+    /* Replies he has not opened yet, pointing at the card holding the oldest.
+     *
+     * the owner, capture 2026-08-25: *"I want to have a status the Nova header
+     * if i have unread Journal comments."* This is that status. It reads the
+     * same `lastCommentsByCycle` the ask pill above does, and it is the header
+     * half of a pair -- the card's 💬 button carries the per-card count.
+     *
+     * Suppressed on a replayed payload for the ask pill's reason: the page is
+     * showing a saved copy and already says so one line up, and a count of
+     * what is new is a claim about right now.
+     *
+     * That guard is `status.replayed` -- the *journal* came out of the
+     * worker's cache -- and not "the comments payload was replayed", which is
+     * a weaker case and deliberately not covered. A cached comments payload
+     * can only be missing replies, never carrying extra ones, so the count it
+     * yields is at worst too low; suppressing on it would trade a badge that
+     * under-reports for no badge at all, which is the same thing from the
+     * reader's side and costs a real notification when only that one route
+     * was stale. */
+    if (!replayed && haveComments) {
+      var unread = unreadSummary(lastCommentsByCycle);
+      if (unread.count) {
+        /* The badge is a button now, not a link to a card.
+         *
+         * the owner, `issues.md` 2026-08-26: *"The reply status that tells me
+         * that i have missed replies does not work as designed. Maybe it works
+         * technically, but its not user friendly. We need a better way to show
+         * me the message or drop it as it just noise now. I have read the
+         * replies, but the status still shows that i have not read them."* He
+         * screenshotted it reading **7 new replies · oldest on cycle 456**.
+         *
+         * Both halves of that are the same defect: the only thing that marks a
+         * reply read is tapping open that one card's drawer, so a badge over
+         * seven cards was seven separate errands, and cycle 456 was seventeen
+         * cards down a twenty-card feed. Tapping the badge scrolled the feed to
+         * a *collapsed* card and marked nothing. So he did read the replies --
+         * in the drawers, in the chat dock, wherever -- and the count stood,
+         * exactly as he says, because none of those paths is the one tap the
+         * mark is wired to.
+         *
+         * He offered two fixes and I took the first: show him the message. The
+         * badge opens the replies themselves, in the header, newest first, and
+         * opening it is what marks them read. One tap, no hunting, and the text
+         * is on screen rather than a number pointing at where the text lives.
+         *
+         * `unreadOpen` holds the items captured at the tap rather than
+         * recomputing them, because the tap marks them read: recomputing would
+         * find nothing unread and draw an empty panel over the message he just
+         * asked to see. */
+        var mail = el("p", "status-sub");
+        var open = el("button", "badge badge-unread status-unread-open",
+          unread.count + (unread.count === 1 ? " new reply" : " new replies"));
+        open.type = "button";
+        /* No `aria-expanded`: the badge does not survive being pressed. The
+         * tap marks everything read, so the next render draws the panel and
+         * no badge at all, and a control that is gone cannot be expanded. */
+        open.addEventListener("click", function () {
+          unreadOpen = unread.items;
+          Object.keys(lastCommentsByCycle || {}).forEach(function (key) {
+            markRepliesRead(key, lastCommentsByCycle[key]);
+          });
+          paintMail(replayed);
+          /* The cards' own chips are derived from the same marks, and there is
+           * no held journal payload to re-render the feed from. Clearing them
+           * in place is the honest edit rather than a shortcut: they are now
+           * read, and leaving them lit for up to a poll would be the badge
+           * insisting on a reply that is open on his screen -- the thing this
+           * whole feature keeps getting wrong. */
+          if (feed) {
+            Array.prototype.forEach.call(feed.querySelectorAll(".comment-unread"),
+              function (chip) { chip.remove(); });
+            Array.prototype.forEach.call(feed.querySelectorAll(".comment-toggle.has-unread"),
+              function (button) { button.classList.remove("has-unread"); });
+          }
+        });
+        mail.appendChild(open);
+        mail.appendChild(el("span", "status-pr", unread.cards === 1
+          ? "cycle " + unread.cycle
+          : "oldest on cycle " + unread.cycle));
+        mailEl.appendChild(mail);
+      }
+    }
+    /* The replies themselves, which is the half of his ask the badge never
+     * had. Drawn after `subs` so it sits under the status line it came from,
+     * and outside the `!replayed` guard above because by the time this runs
+     * the items are already in hand -- a cached payload cannot make a message
+     * he asked to read disappear. */
+    if (unreadOpen && unreadOpen.length) {
+      var panel = el("div", "unread-panel");
+      var head = el("p", "unread-panel-head");
+      head.appendChild(el("span", "unread-panel-count",
+        unreadOpen.length + (unreadOpen.length === 1 ? " reply" : " replies")));
+      var shut = el("button", "unread-panel-close", "Close");
+      shut.type = "button";
+      shut.addEventListener("click", function () {
+        unreadOpen = null;
+        paintMail(replayed);
+      });
+      head.appendChild(shut);
+      panel.appendChild(head);
+      unreadOpen.forEach(function (answer) {
+        var row = el("a", "unread-reply");
+        row.href = "/cycle/" + answer.cycle;
+        var meta = el("p", "unread-reply-meta");
+        meta.appendChild(el("span", "status-pr", "cycle " + answer.cycle));
+        if (answer.stamp) meta.appendChild(el("span", "status-pr", answer.stamp));
+        row.appendChild(meta);
+        /* His own comment first, dimmed, because a reply read outside its
+         * thread has lost the question it answers -- "yes, that is the same
+         * bug" is not a message on its own. One line of it: this is a mailbox,
+         * not the thread, and the thread is one tap away on the link. */
+        if (answer.asked) row.appendChild(el("p", "unread-reply-asked", answer.asked));
+        row.appendChild(el("p", "unread-reply-text", answer.text || "(no text)"));
+        panel.appendChild(row);
+      });
+      mailEl.appendChild(panel);
+    }
   }
 
   function el(tag, className, text) {
@@ -1365,88 +1531,6 @@
       }
     }
 
-    /* Replies he has not opened yet, pointing at the card holding the oldest.
-     *
-     * the owner, capture 2026-08-25: *"I want to have a status the Nova header
-     * if i have unread Journal comments."* This is that status. It reads the
-     * same `lastCommentsByCycle` the ask pill above does, and it is the header
-     * half of a pair -- the card's 💬 button carries the per-card count.
-     *
-     * Suppressed on a replayed payload for the ask pill's reason: the page is
-     * showing a saved copy and already says so one line up, and a count of
-     * what is new is a claim about right now.
-     *
-     * That guard is `status.replayed` -- the *journal* came out of the
-     * worker's cache -- and not "the comments payload was replayed", which is
-     * a weaker case and deliberately not covered. A cached comments payload
-     * can only be missing replies, never carrying extra ones, so the count it
-     * yields is at worst too low; suppressing on it would trade a badge that
-     * under-reports for no badge at all, which is the same thing from the
-     * reader's side and costs a real notification when only that one route
-     * was stale. */
-    if (!replayed && haveComments) {
-      var unread = unreadSummary(lastCommentsByCycle);
-      if (unread.count) {
-        /* The badge is a button now, not a link to a card.
-         *
-         * the owner, `issues.md` 2026-08-26: *"The reply status that tells me
-         * that i have missed replies does not work as designed. Maybe it works
-         * technically, but its not user friendly. We need a better way to show
-         * me the message or drop it as it just noise now. I have read the
-         * replies, but the status still shows that i have not read them."* He
-         * screenshotted it reading **7 new replies · oldest on cycle 456**.
-         *
-         * Both halves of that are the same defect: the only thing that marks a
-         * reply read is tapping open that one card's drawer, so a badge over
-         * seven cards was seven separate errands, and cycle 456 was seventeen
-         * cards down a twenty-card feed. Tapping the badge scrolled the feed to
-         * a *collapsed* card and marked nothing. So he did read the replies --
-         * in the drawers, in the chat dock, wherever -- and the count stood,
-         * exactly as he says, because none of those paths is the one tap the
-         * mark is wired to.
-         *
-         * He offered two fixes and I took the first: show him the message. The
-         * badge opens the replies themselves, in the header, newest first, and
-         * opening it is what marks them read. One tap, no hunting, and the text
-         * is on screen rather than a number pointing at where the text lives.
-         *
-         * `unreadOpen` holds the items captured at the tap rather than
-         * recomputing them, because the tap marks them read: recomputing would
-         * find nothing unread and draw an empty panel over the message he just
-         * asked to see. */
-        var mail = el("p", "status-sub");
-        var open = el("button", "badge badge-unread status-unread-open",
-          unread.count + (unread.count === 1 ? " new reply" : " new replies"));
-        open.type = "button";
-        /* No `aria-expanded`: the badge does not survive being pressed. The
-         * tap marks everything read, so the next render draws the panel and
-         * no badge at all, and a control that is gone cannot be expanded. */
-        open.addEventListener("click", function () {
-          unreadOpen = unread.items;
-          Object.keys(lastCommentsByCycle || {}).forEach(function (key) {
-            markRepliesRead(key, lastCommentsByCycle[key]);
-          });
-          renderStatus(lastStatus, null);
-          /* The cards' own chips are derived from the same marks, and there is
-           * no held journal payload to re-render the feed from. Clearing them
-           * in place is the honest edit rather than a shortcut: they are now
-           * read, and leaving them lit for up to a poll would be the badge
-           * insisting on a reply that is open on his screen -- the thing this
-           * whole feature keeps getting wrong. */
-          if (feed) {
-            Array.prototype.forEach.call(feed.querySelectorAll(".comment-unread"),
-              function (chip) { chip.remove(); });
-            Array.prototype.forEach.call(feed.querySelectorAll(".comment-toggle.has-unread"),
-              function (button) { button.classList.remove("has-unread"); });
-          }
-        });
-        mail.appendChild(open);
-        mail.appendChild(el("span", "status-pr", unread.cards === 1
-          ? "cycle " + unread.cycle
-          : "oldest on cycle " + unread.cycle));
-        subs.appendChild(mail);
-      }
-    }
 
     /* The newest written entry's PR, so the cycle it references is
      * `status.cycle` — the same number the line above it prints.
@@ -1561,41 +1645,7 @@
 
     if (subs.childNodes.length) statusEl.appendChild(subs);
 
-    /* The replies themselves, which is the half of his ask the badge never
-     * had. Drawn after `subs` so it sits under the status line it came from,
-     * and outside the `!replayed` guard above because by the time this runs
-     * the items are already in hand -- a cached payload cannot make a message
-     * he asked to read disappear. */
-    if (unreadOpen && unreadOpen.length) {
-      var panel = el("div", "unread-panel");
-      var head = el("p", "unread-panel-head");
-      head.appendChild(el("span", "unread-panel-count",
-        unreadOpen.length + (unreadOpen.length === 1 ? " reply" : " replies")));
-      var shut = el("button", "unread-panel-close", "Close");
-      shut.type = "button";
-      shut.addEventListener("click", function () {
-        unreadOpen = null;
-        renderStatus(lastStatus, null);
-      });
-      head.appendChild(shut);
-      panel.appendChild(head);
-      unreadOpen.forEach(function (answer) {
-        var row = el("a", "unread-reply");
-        row.href = "/cycle/" + answer.cycle;
-        var meta = el("p", "unread-reply-meta");
-        meta.appendChild(el("span", "status-pr", "cycle " + answer.cycle));
-        if (answer.stamp) meta.appendChild(el("span", "status-pr", answer.stamp));
-        row.appendChild(meta);
-        /* His own comment first, dimmed, because a reply read outside its
-         * thread has lost the question it answers -- "yes, that is the same
-         * bug" is not a message on its own. One line of it: this is a mailbox,
-         * not the thread, and the thread is one tap away on the link. */
-        if (answer.asked) row.appendChild(el("p", "unread-reply-asked", answer.asked));
-        row.appendChild(el("p", "unread-reply-text", answer.text || "(no text)"));
-        panel.appendChild(row);
-      });
-      statusEl.appendChild(panel);
-    }
+    paintMail(replayed);
   }
 
   /* the owner, comments board 2026-08-14: "Or a display error if the fetch
@@ -9223,6 +9273,11 @@
     captureHome();
     stopScrollWatch();
     var here = route(window.location.pathname);
+    /* The journal view gets its comments from `fetchAll` and paints the badge
+     * out of `renderStatus`. Every other view has to ask for them, or the
+     * badge he asked for in the header is a journal-page feature wearing a
+     * header's clothes. */
+    if (here.view !== "journal") refreshMail();
     if (here.view === "board") {
       loadBoard(here.board);
       return;

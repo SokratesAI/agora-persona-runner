@@ -28,6 +28,12 @@
   <p class="status-line">loading…</p>
 </header>
 
+<!-- The unread-reply badge and the panel it opens. Outside `#status` on
+     purpose: every page view starts by wiping the header and writing its
+     own line into it, so a badge parked in there only ever survived on the
+     journal page. See `paintMail` in app.js. -->
+<div id="mail" class="mail" aria-live="polite" hidden></div>
+
 <div id="scrim" class="scrim"></div>
 
 <!-- The three the owner named sit at the top with no heading above them,

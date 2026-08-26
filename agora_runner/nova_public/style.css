@@ -3567,6 +3567,15 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   font-size: 0.72rem;
 }
 
+.mail {
+  /* The header above already carries the 1.5rem gap, so this only owns the
+     space under itself. Hidden when there is nothing unread, which is the
+     common case -- an empty box would push every page down for nothing. */
+  margin: -1rem 0 1.5rem;
+}
+
+.mail[hidden] { display: none; }
+
 .unread-panel {
   margin-top: 0.6rem;
   border: 1px solid #5b3f7d;

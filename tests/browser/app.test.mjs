@@ -10062,6 +10062,64 @@ describe("unread replies are counted on the card and in the header", () => {
     });
   });
 
+  /* The half of that report cycle 474 did not reach.
+   *
+   * His ask was for the *header* -- "I want to have a status the Nova header
+   * if i have unread Journal comments" -- and the header is one element that
+   * every page shares. The badge was built inside `renderStatus`, which only
+   * the journal view calls, and every other view opens by wiping the header
+   * and writing its own line. So on twelve of thirteen pages there was no
+   * badge, no panel and no way to find out a reply had landed. These pin the
+   * fix on a board page, which is where he spends most of his time. */
+  describe("the badge is on every page, not only the journal", () => {
+    function spread() {
+      const comments = JSON.parse(JSON.stringify(payload.comments));
+      comments.byCycle["57"][1].replies = [
+        { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
+      ];
+      return comments;
+    }
+    const onIssues = () =>
+      loadSite("/issues", {
+        comments: spread(),
+        install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
+      });
+
+    test("a board page shows the same count the journal does", async () => {
+      const window = await onIssues();
+      const badge = unreadBadge(window);
+      assert.ok(badge, "no unread badge on the Issues page");
+      assert.match(badge.textContent, /2 new replies/);
+    });
+
+    test("it lives outside the header, so drawing the page cannot destroy it", async () => {
+      /* The mechanism, not the symptom. A badge parked inside `#status` is
+       * removed by the `statusEl.textContent = ""` every view runs on entry,
+       * which is exactly how it went missing. */
+      const window = await onIssues();
+      const mail = window.document.getElementById("mail");
+      assert.ok(mail, "#mail is gone");
+      assert.equal(unreadBadge(window).closest("#mail"), mail);
+      assert.equal(window.document.querySelector("#status .badge-unread"), null);
+    });
+
+    test("tapping it reads the replies and marks them, off the journal too", async () => {
+      const window = await onIssues();
+      click(window, unreadBadge(window));
+      const rows = Array.from(window.document.querySelectorAll(".unread-reply"));
+      assert.equal(rows.length, 2, "the panel did not open on a board page");
+      assert.equal(unreadBadge(window), null, "the badge survived him reading the replies");
+      const stored = JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"));
+      assert.equal(stored["57"], "2026-08-09 16:30");
+    });
+
+    test("nothing unread leaves the node hidden rather than an empty gap", async () => {
+      const window = await loadSite("/issues", { comments: spread() });
+      const mail = window.document.getElementById("mail");
+      assert.equal(mail.hasAttribute("hidden"), true, "#mail took up space with nothing in it");
+    });
+  });
+
   /* the owner, `issues.md` 2026-08-26: *"When i have a journal comments drawer
    * open, i do not need notifications as i allready have it open."* He sent a
    * screenshot of the drawer open with three of my replies landing in it over
