@@ -298,6 +298,42 @@ def _check_prompt_does_not_hardcode_the_shared_checkout() -> Optional[str]:
     return None
 
 
+def _check_digest_roll_reads_the_whole_document() -> Optional[str]:
+    """A spliced live digest must be refused before the roll, not after.
+
+    Cycle 492 wrote `journal-digest.md` carrying two `## Needs input` and two
+    `## Next cycle` sections, one block stacked under the other.
+    `tools.roll_digest` read those exact bytes out of the vault seconds later
+    and said nothing, because every check it carries reasons about the
+    `## Digest` section `plan` splits out and the damage was above it. The
+    site hid it too -- `parse_digest` keeps the last section of each name --
+    so the only reader who saw it was the owner, in Obsidian.
+    """
+    from tools import roll_digest
+    from tools.rolling import RollError
+
+    head = "---\ntype: log\n---\n\n# Journal — Digest\n"
+    tail = "\n## Digest\n\n**Cycle 2** (2026-08-26 19:14) — Second.\n\n**Cycle 1** (2026-08-26 18:36) — First.\n"
+    spliced = head + "\n## Next cycle\n\nStale.\n\n## Next cycle\n\nCurrent.\n" + tail
+    whole = head + "\n## Next cycle\n\nOnly one.\n" + tail
+
+    try:
+        roll_digest.plan(spliced, "", keep=1)
+    except RollError as exc:
+        if "duplicated heading" not in str(exc):
+            return f"roll_digest refused a spliced digest for the wrong reason: {exc}"
+    else:
+        return "roll_digest rolled a digest holding two '## Next cycle' sections"
+
+    # Two-sided: a checker that refuses everything would pass the half above
+    # while making every honest digest unrollable.
+    try:
+        roll_digest.plan(whole, "", keep=1)
+    except RollError as exc:
+        return f"roll_digest refused an undamaged digest: {exc}"
+    return None
+
+
 def _check_ci_health_separates_the_two_causes() -> Optional[str]:
     """A GitHub-side outage and a run of ours creating no jobs must stay two lines.
 
@@ -414,6 +450,19 @@ CORPUS = [
                  "identical failure on a different new module. A note did not stop it twice; "
                  "this entry is here because the code now does."),
         check=_check_name_guard_sees_an_unstaged_file,
+    ),
+    Regression(
+        slug="digest-rolled-a-spliced-document",
+        cycle="492",
+        date="2026-08-26",
+        surface="drove the code",
+        failure=("The digest went live with the previous cycle's **Needs input** and "
+                 "**Next cycle** blocks still above the current one's. `roll_digest` read "
+                 "the damaged file out of the vault seconds after it was written and "
+                 "rolled it happily, because every check it had reasoned about the "
+                 "`## Digest` section alone. The site rendered the last section of each "
+                 "name and hid it; Obsidian, which the owner reads, showed both."),
+        check=_check_digest_roll_reads_the_whole_document,
     ),
     Regression(
         slug="a-queued-run-read-as-a-billing-block",
