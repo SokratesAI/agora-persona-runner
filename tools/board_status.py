@@ -153,7 +153,7 @@ def check(before, after, number, status, noted):
     return problems
 
 
-def _refuse_cell(name, value):
+def _refuse_cell(value):
     """A `|` splits the cell, a newline splits the row. Both reach his file."""
     return "|" in value or "\n" in value
 
@@ -183,14 +183,14 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 1
-    if args.dated is not None and (_refuse_cell("--dated", args.dated) or not args.dated.strip()):
+    if args.dated is not None and (_refuse_cell(args.dated) or not args.dated.strip()):
         print(
             "REFUSED: --dated goes straight into a table cell, so it may not "
             "be blank or carry a '|' or a newline",
             file=sys.stderr,
         )
         return 1
-    if args.note is not None and (_refuse_cell("--note", args.note) or not args.note.strip()):
+    if args.note is not None and (_refuse_cell(args.note) or not args.note.strip()):
         print(
             "REFUSED: --note is one line in his write-up, so it may not be "
             "blank or carry a '|' or a newline",
