@@ -114,24 +114,46 @@ def open_alarm_issue() -> dict | None:
     return None
 
 
-def raise_alarm(reason: str) -> None:
+def alarm_body(verdict: str, reason: str) -> str:
+    """The two verdicts get different bodies, because they need different work.
+
+    Writing one body for both would put the separation in the title and throw
+    it away in the part anyone actually reads.
+    """
+    if verdict == "NEVER":
+        return (
+            f"{reason}\n\n"
+            f"`refs/{REF}` in `{REPO}` has never been written, so the alarm "
+            "half of the dead-man's switch is running and the ping half is "
+            "not. This is **not** evidence that the cluster is down.\n\n"
+            "Most likely one of: `cronjobs/nova-alive-ping.yaml` has not "
+            "merged or ArgoCD has not synced it; or `github-bot-token` is "
+            "not scoped to push a ref to this repo, which is the one thing "
+            "a Nova cycle cannot check for itself.\n\n"
+            "Closed automatically on the first ping."
+        )
+    return (
+        f"{reason}\n\n"
+        f"`refs/{REF}` in `{REPO}` is force-pushed every 5 minutes by the "
+        "`nova-alive-ping` CronJob on the cluster. It has stopped.\n\n"
+        "Two things this cannot separate from outside, and they need "
+        "different actions: the cluster answering nothing at all (the box, "
+        "the network or Tailscale) versus the CronJob failing while the box "
+        "is fine. Check `kubectl get cronjob nova-alive-ping -n obsidian` "
+        "first — if that answers, the box is up and only the pinger is "
+        "broken.\n\n"
+        "Closed automatically on the next ping."
+    )
+
+
+def raise_alarm(verdict: str, reason: str) -> None:
     """One issue, reopened and commented rather than duplicated.
 
     A cron that files a fresh issue every 30 minutes is a channel he mutes,
     and a muted channel is the same silence this whole thing exists to end.
     """
     existing = open_alarm_issue()
-    body = (
-        f"{reason}\n\n"
-        f"`refs/{REF}` in `{REPO}` is force-pushed every 5 minutes by the "
-        "`nova-alive-ping` CronJob on the cluster. It has stopped.\n\n"
-        "Two things this separates, because they need different actions: the "
-        "cluster answering nothing at all (the box, the network or Tailscale) "
-        "versus the CronJob itself failing while the box is fine. Check "
-        "`kubectl get cronjob nova-alive-ping -n obsidian` first — if that "
-        "answers, the box is up and only the pinger is broken.\n\n"
-        "Closed automatically on the next ping."
-    )
+    body = alarm_body(verdict, reason)
     if existing:
         _gh("api", f"/repos/{REPO}/issues/{existing['number']}/comments",
             "-f", f"body={body}")
@@ -163,7 +185,7 @@ def main() -> int:
     if verdict == "OK":
         clear_alarm(reason)
         return 0
-    raise_alarm(reason)
+    raise_alarm(verdict, reason)
     return 2
 
 

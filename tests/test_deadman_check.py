@@ -47,3 +47,14 @@ def test_a_ping_from_the_future_does_not_alarm():
     # Clock skew between the cluster and GitHub is small but real, and a
     # negative age must not wrap into a stale verdict.
     assert assess(NOW + timedelta(minutes=2), NOW, GRACE)[0] == "OK"
+
+
+def test_the_two_verdicts_do_not_share_a_body():
+    from tools.deadman_check import alarm_body
+
+    never = alarm_body("NEVER", "x")
+    stale = alarm_body("STALE", "x")
+    assert "not** evidence that the cluster is down" in never
+    assert "github-bot-token" in never
+    assert "It has stopped" in stale
+    assert "nova-alive-ping -n obsidian" in stale
