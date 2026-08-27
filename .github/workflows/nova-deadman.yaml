@@ -15,46 +15,42 @@
 # start is worse than no watchdog, because it looks like coverage.
 name: nova-deadman
 
+# ONE cron, deliberately, and its twin lives in `nova-deadman-fast.yaml`
+# rather than in a second `- cron:` line below. That split is the fix for
+# a zero-run count, and the reasoning is the whole point of this comment.
+#
+# What is measured:
+#   * This workflow declared three cadences at once — `7,37 * * * *`,
+#     `23 */6 * * *`, `53 4 * * *` — and GitHub started it **zero** times
+#     in the 866 minutes they were live (Cycle 555). The workflow is
+#     `active`, Actions `enabled` / `allowed_actions: all`, repo public,
+#     not a fork, not archived, default branch `main`.
+#   * This account's scheduler runs badly late. Across all 25 scheduled
+#     runs this org has ever had, the fastest started **36 minutes** after
+#     the minute it asked for, the median **92**, and the worst **574** —
+#     `sokrates-docs/agentics-maintenance.yml` was owed 00:37 UTC on
+#     2026-08-27 and started at 10:11 UTC (Cycle 555, runner#471).
+#
+# GitHub drops a scheduled occurrence that a newer occurrence of the *same
+# workflow* overtakes before the queue reaches it. Under a 92-minute median
+# the `7,37` rung produces a fresh occurrence every 30 minutes, so it did
+# not merely fail to run — **it stood in front of the other two rungs and
+# superseded them, in this same file, on every pass.** Cycle 554 ruled the
+# cadence out on the grounds that a 6-hourly cron "cannot be overtaken by a
+# 90-minute delay": 90 was GitHub's documented figure and this account's
+# real worst is 574 minutes, which is longer than six hours, so the 6-hourly
+# rung was never safe either. Only the daily rung is, at 1440 minutes.
+#
+# So this file keeps the one cadence that cannot be overtaken by anything
+# this account has ever done, and the fast rung moves to its own workflow
+# where it has its own occurrence queue and can starve nothing but itself.
+#
+# This is a hypothesis with a measurement under it, not a proven cause, and
+# the split is the experiment that settles it: the daily rung's next chance
+# is 04:53 UTC. One scheduled run here and the mechanism is confirmed; still
+# zero after that and supersession is not what is wrong with this repo.
 on:
   schedule:
-    # A ladder of three cadences, because two 30-minute crons in a row have
-    # now been scheduled by GitHub exactly zero times and the next guess
-    # should be a measurement instead.
-    #
-    # What is measured, 2026-08-27 22:40 Oslo:
-    #   * `agora-persona-runner` has had 0 scheduled runs, ever
-    #     (`/actions/runs?event=schedule` -> total_count 0). The workflow is
-    #     `active`, Actions `enabled` with `allowed_actions: all`, the repo
-    #     public, not a fork, not archived, default branch `main`. `*/30`
-    #     ran for 7h and `7,37` for 11h50m; 23+ firing opportunities, none
-    #     taken.
-    #   * The one schedule that does fire in this org is
-    #     `sokrates-docs/agentics-maintenance.yml`, cron `37 0 * * *`. Its
-    #     last 18 daily runs landed between 01:58 and 03:10 UTC -- 81 to 153
-    #     minutes after the minute it asked for, every day -- and the run on
-    #     2026-08-27 landed at 10:11 UTC, 9h34m late.
-    #
-    # So this account's scheduler is running one to two and a half hours
-    # behind, and GitHub skips a scheduled occurrence that is superseded
-    # before the queue reaches it. A 30-minute cron under a 90-minute delay
-    # is overtaken every single time, which is a sufficient explanation for
-    # a run count of zero. It is not a proven one -- I have one working
-    # schedule to compare against and it is daily -- so the three crons
-    # below are the experiment that settles it, and each rung is also real
-    # coverage the alarm does not have today.
-    #
-    # How to read the result: `tools.schedule_health` reports this workflow
-    # every cycle. Zero runs after 24h means the cause is not the interval
-    # and is something about this repo. Roughly one run a day means only the
-    # daily rung fires. Five or so means the 6-hourly rung fires too. Around
-    # forty-eight means the 30-minute rung came back and the delay was
-    # transient.
-    #
-    # The 30-minute rung stays deliberately: it costs nothing while it never
-    # fires, it is the control for the whole hypothesis, and if GitHub's
-    # queue recovers the alarm goes back to 30-minute latency on its own.
-    - cron: "7,37 * * * *"
-    - cron: "23 */6 * * *"
     - cron: "53 4 * * *"
   workflow_dispatch:
 

@@ -297,7 +297,12 @@ def test_a_cron_that_cannot_be_judged_does_not_take_its_workflow_with_it():
 
 
 def _deadman_stub(created_at, runs):
-    """The real `nova-deadman` file — three rungs — with a settable history."""
+    """A three-rung workflow with a settable history.
+
+    This was `nova-deadman`'s real shape until Cycle 556 split the rungs into
+    two files; it is kept synthetic here because the behaviour under test is
+    "a workflow with several crons", not that one file.
+    """
     import base64
 
     source = base64.b64encode(
@@ -323,7 +328,8 @@ def _deadman_stub(created_at, runs):
 def test_a_multi_cron_workflow_that_never_fired_is_judged_at_the_tightest():
     """The alarm meant to survive this box read `ok` while it had never once run.
 
-    `nova-deadman` declares a 30-minute, a 6-hourly and a daily rung. On
+    `nova-deadman` declared a 30-minute, a 6-hourly and a daily rung in one
+    file, before Cycle 556 split them. On
     2026-08-28 GitHub had started it zero times in 829 minutes — roughly 27
     missed firings of the tight rung — and this check called it healthy,
     because the daily rung is allowed 4320m. The loosest rule exists to stop
