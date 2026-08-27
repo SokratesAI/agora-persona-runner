@@ -3599,6 +3599,30 @@ def test_a_limit_that_is_not_a_number_falls_back_to_the_window():
     assert len(json.loads(body)["entries"]) == nova_site.JOURNAL_DEFAULT_LIMIT
 
 
+def test_a_search_with_no_limit_is_capped_but_still_counts_every_match():
+    """The default reaches the search branch too, and a reviewer found it
+    uncovered on runner#452.
+
+    Twenty matches come back instead of thirty, which is safe only because
+    `total` stays the true match count -- that is what lets the page say
+    "N entries mention X" while holding a window of them. If `total` ever
+    started counting the window instead, the search box would start lying
+    and nothing else here would notice.
+    """
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?q=Body")
+    payload = json.loads(body)
+    assert len(payload["entries"]) == nova_site.JOURNAL_DEFAULT_LIMIT
+    assert payload["total"] == 30
+
+
+def test_a_search_that_asks_for_everything_gets_every_match():
+    """`?limit=all` is the escape hatch on the search branch as well."""
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?q=Body&limit=all")
+    assert len(json.loads(body)["entries"]) == 30
+
+
 def test_a_deep_link_is_not_cut_by_the_default_window():
     """`?cycle=N` names one entry and never carries a limit; the default
     must not turn a deep link into the front page."""

@@ -1229,6 +1229,17 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
     X" is the only window a search box asks for. `total` stays the number
     of matches, so the page can say how many there were even when it was
     handed fewer.
+
+    That last sentence is what makes the HTTP default safe on a search.
+    `/api/journal?q=X` with no `limit` now returns 20 matches rather than
+    all of them, which is a real behaviour change and not one the page can
+    see -- `app.js` resets its window to `PAGE` and always sends `q` and
+    `limit` together. It is safe because `total` is still the true match
+    count, so "N entries mention X" stays correct while the page holds
+    twenty of them; it would not be safe if a caller counted `entries`.
+    A reviewer found this on runner#452 and nothing covered it, which is
+    why it is written down here with a test rather than left to be
+    rediscovered.
     """
     entries = payload.get("entries") or []
     if search is not None and search.strip():
@@ -1638,9 +1649,16 @@ def digest_page(payload, journal, limit=None, offset=0, cycle=None):
     entry is invisible to the client either way, and a range cannot fall
     out of step with a feed that is itself contiguous.
 
-    No `limit` means every line, for the same reason `journal_page` says
-    it: an app.js served out of a service worker's cache from before this
-    shipped asks the old way and must still get a whole answer.
+    No `limit` means every line. That reason used to be given as "an
+    app.js served out of a service worker's cache from before windowing
+    shipped asks the old way", copied from `journal_page`, and
+    `journal_page` no longer says it -- the bound there lives at the HTTP
+    edge and that docstring says so. Two contradictory explanations of the
+    same `limit is None` branch, one file apart, is the stale-prose trap
+    this codebase keeps paying for, so this one now carries its own real
+    reason: `_send_digest` deliberately does not default the window, and
+    `limit is None` is the branch that serves the file rather than asking
+    the journal which cycles to summarise. See `_send_digest`.
     """
     lines = payload.get("lines") or []
     if cycle is not None:
@@ -1790,6 +1808,15 @@ def journal_descriptor(page, limit, offset, cycle, search=None):
 # `?cycle=N` still ignores the window entirely so a deep link into an old
 # entry works on a cold load. The capability is intact and now has to be
 # asked for, which is the difference between a default and a cap.
+#
+# So this is a default, not a ceiling, and the distinction is worth being
+# exact about: `?limit=all` still builds the whole 4MB body in memory, and
+# a reviewer was right that calling this "the bound" overstates what it
+# does. What it removes is the *accidental* route to that spike -- nothing
+# in this repo asks for `all`, and everything that used to get it was
+# asking for nothing in particular. A real ceiling would have to refuse or
+# stream, and neither belongs on a corpus the owner is entitled to read
+# whole.
 JOURNAL_DEFAULT_LIMIT = 20
 
 
