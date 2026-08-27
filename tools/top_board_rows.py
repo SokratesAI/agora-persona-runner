@@ -621,6 +621,42 @@ def _capture_reply_help(captures):
     return out
 
 
+def _capture_board_help(captures):
+    """How to move a capture out of the box and onto the board.
+
+    The owner, `issues.md` 2026-08-27, rated 🔴 Immediately: *"You should
+    immediately board 'not boarded yet' ideas and issues. Of you are not
+    able to start the work on it, mark it as backlog and give it a
+    priority. ... I see so many cycles just letting them be unstaged,
+    comments them and moves on."*
+
+    That is the block above, working exactly as written and stopping one
+    step short. `_capture_reply_help` prints the filled-in call for
+    *answering* a capture, so answering is one copied line; boarding it
+    was a hand edit to his document, so every cycle did the cheap correct
+    thing and the box grew to twelve. Same shape as `add_row`'s own
+    docstring one layer down -- *"a missing button, not a habit"* -- and
+    the same fix: print the button.
+
+    **Highest index first, and the line says so**, because
+    `capture_entries` renumbers as soon as one is removed and a cycle
+    working top-down boards the wrong bullets from the second call on.
+    """
+    if not captures:
+        return []
+    out = ["  Board one — python3 -m tools.board_capture --file <his file on disk> "
+           "--index N --priority low|medium|high|immediate "
+           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD",
+           "  It adds the row AND cuts the bullet, so the item is in one place. "
+           "Board highest --index first: the indices renumber after each cut."]
+    for capture in sorted(captures, key=lambda c: -c["index"]):
+        board = "notes" if capture["board"] == "note" else capture["board"] + "s"
+        out.append(f"     --index {capture['index']}  ({board})  ->  {capture['text'][:70]}")
+    out.append("  The caller owns the compare-and-swap: vault_tool.py get --rev-file, "
+               "then put --if-rev-file, in ONE Bash call.")
+    return out
+
+
 def _claim_footer(rows, captures, claims_readable):
     """What to type to take what this tool just named, and who has what.
 
@@ -673,6 +709,8 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         out.extend("  -> " + _capture_line(c) for c in captures)
         out.append("")
         out.extend(_capture_reply_help(captures))
+        out.append("")
+        out.extend(_capture_board_help(captures))
         out.append("")
     ranked = rank(rows)
     if not ranked:

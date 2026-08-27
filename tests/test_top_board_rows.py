@@ -1218,3 +1218,22 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
     top_board_rows.main(["--issues", str(issues2), "--ideas", str(ideas),
                          "--notes", str(notes2)])
     assert "/api/capture/comment" not in capsys.readouterr().out
+
+
+def test_the_capture_block_prints_how_to_board_one():
+    """His 2026-08-27 🔴 Immediately ask: cycles answer a capture and leave it
+    unstaged. Answering was one copied line and boarding was a hand edit."""
+    from tools.top_board_rows import _capture_board_help
+
+    captures = [
+        {"board": "issue", "index": 0, "text": "The first thing", "original": "x"},
+        {"board": "idea", "index": 3, "text": "The fourth thing", "original": "y"},
+    ]
+    lines = _capture_board_help(captures)
+    body = "\n".join(lines)
+    assert "tools.board_capture" in body
+    assert "backlog|in-progress|done|blocked-on-edvard" in body
+    # Highest index first, or the second cut lands on the wrong bullet.
+    positions = [body.index("--index 3  "), body.index("--index 0  ")]
+    assert positions == sorted(positions)
+    assert _capture_board_help([]) == []
