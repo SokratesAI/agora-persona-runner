@@ -1,0 +1,42 @@
+# The alarm that survives the box it watches — idea #113, slice 1.
+#
+# Everything that watches this cluster runs on this cluster: one node, no
+# Alertmanager, no Prometheus alerting rules, and a Web Push path whose
+# three hops are all on `server1`. So the 2026-08-24 outage was silent.
+#
+# This job is off-box on purpose. It never asks the cluster anything —
+# it could not, the ingresses are tailnet-only — it reads a ref the
+# cluster force-pushes every five minutes and alarms when that stops.
+#
+# It lives in this repo because this repo is PUBLIC, so scheduled Actions
+# here are free. That is not an incidental fact: `SokratesAI/sokrates-docs`
+# had a run refused on 2026-08-21 with "recent account payments have failed
+# or your spending limit needs to be increased", and a watchdog that cannot
+# start is worse than no watchdog, because it looks like coverage.
+name: nova-deadman
+
+on:
+  schedule:
+    # Every 30 minutes. GitHub's scheduler is best-effort and routinely runs
+    # late under load, which is why the grace inside the check is an hour
+    # rather than a small multiple of the 5-minute ping.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nova-deadman
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Is the cluster still pinging?
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 -m tools.deadman_check
