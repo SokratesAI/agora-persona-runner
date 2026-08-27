@@ -50,6 +50,13 @@ so a half-hourly job is only a finding after two hours and a daily one
 after three days — long enough that anything this reports is a real
 absence rather than a late arrival.
 
+**A workflow with several crons is judged at its loosest rung once it
+has fired and at its tightest rung while it never has.** GitHub does not
+say which cron produced a run, so with a run history the tight rungs are
+unjudgeable; with no run at all there is nothing to disambiguate and the
+tightest is the one a run was owed on first. `verdict_for` carries the
+measurement that put this here.
+
 **Cron interval is measured, not assumed.** Rather than special-casing
 `*/n`, this walks forward minute by minute from a reference instant and
 takes the gap between the first two matches, so a `7,37 * * * *` and a
@@ -286,18 +293,39 @@ def grace_minutes(interval):
 
 
 def verdict_for(entry, now):
-    """`(verdict, note)` for one scheduled workflow. Pure -- no network."""
-    interval = entry["interval"]
-    window = interval + grace_minutes(interval)
+    """`(verdict, note)` for one scheduled workflow. Pure -- no network.
+
+    A workflow with several crons is judged at its **loosest** once it has a
+    run history and at its **tightest** when it has none, and the split is
+    the whole point. GitHub's run payload does not say which cron produced a
+    run, so with runs on the board there is no way to tell a dead tight rung
+    from a live loose one, and calling that overdue would be red on day one
+    and forever. With *zero* scheduled runs there is nothing to disambiguate:
+    every rung is silent, including the tightest, so the tightest is the
+    interval at which a run was genuinely owed.
+
+    `nova-deadman` is why this is written down. It declares `7,37 * * * *`,
+    `23 */6 * * *` and `53 4 * * *`; GitHub had started it zero times in 829
+    minutes on 2026-08-28, which is roughly 27 missed firings of the
+    30-minute rung, and this check called it `ok` because the daily rung is
+    allowed 4320m. That is the alarm meant to survive this box reporting
+    healthy while it has never once run. It goes quiet again the moment any
+    rung produces a first scheduled run, so the red is actionable rather
+    than permanent.
+    """
     last = _as_datetime(entry.get("last_scheduled"))
     created = _as_datetime(entry.get("created_at"))
     if last is not None:
+        interval = entry["interval"]
+        window = interval + grace_minutes(interval)
         age = int((now - last).total_seconds() // 60)
         detail = (
             f"cron {entry['cron']} every {interval}m; last scheduled run "
             f"{last:%Y-%m-%d %H:%M} UTC, {age}m ago, allowed {window}m"
         )
         return ("overdue" if age > window else "ok"), detail
+    interval = entry.get("tightest", entry["interval"])
+    window = interval + grace_minutes(interval)
     if created is None:
         return "unreadable", (
             f"cron {entry['cron']} every {interval}m; no scheduled run, and GitHub "
@@ -343,9 +371,16 @@ def sweep(repos, run=None, now=None):
             # one and forever is the same as off" failure this module is
             # written to avoid. `nova-deadman` declares three cadences on
             # purpose (see its own file) and would have reported OVERDUE for
-            # the rest of its life. So the workflow is judged at its *loosest*
-            # cron: that is the interval at which a run is genuinely owed, and
-            # anything tighter firing is a bonus this check cannot see anyway.
+            # the rest of its life. So a workflow with runs on the board is
+            # judged at its *loosest* cron, and anything tighter firing is a
+            # bonus this check cannot see anyway.
+            #
+            # That reasoning is entirely about telling one rung's runs from
+            # another's, and it has no purchase when the run count is zero:
+            # nothing has fired, so every rung is silent and the tightest is
+            # the one that was owed a run first. A workflow with no scheduled
+            # run at all is therefore judged at its *tightest* -- see
+            # `verdict_for`, which is where that split lives.
             # A cron this module cannot judge is reported and skipped rather
             # than taking the whole workflow with it: the error already stops
             # the sweep reading as clean, and dropping a workflow that also
@@ -372,14 +407,20 @@ def sweep(repos, run=None, now=None):
                 errors.append(f"{repo} {workflow['path']}: {error}")
                 continue
             loosest = max(interval for _, interval in declared)
+            tightest = min(interval for _, interval in declared)
             label = " | ".join(cron for cron, _ in declared)
             if len(declared) > 1:
-                label += " (judged at the loosest)"
+                label += (
+                    " (judged at the tightest)"
+                    if last is None
+                    else " (judged at the loosest)"
+                )
             entry = dict(
                 workflow,
                 cron=label,
                 crons=[cron for cron, _ in declared],
                 interval=loosest,
+                tightest=tightest,
                 last_scheduled=last,
             )
             entry["verdict"], entry["note"] = verdict_for(entry, now)
