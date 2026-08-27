@@ -1173,6 +1173,78 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
   });
 });
 
+/* The `Project` chip row -- idea #92's phase 2. The chip is the whole
+ * feature from where he stands: the column exists to be filtered on, and
+ * a column nothing filters on is a column he has to read cell by cell.
+ *
+ * The hidden-while-uniform case is the one worth pinning rather than the
+ * obvious one. Both live boards ship with every row on the same project,
+ * so the state this page spends its first hour in is the state where the
+ * control must not appear -- and a chip row that rendered anyway would
+ * look perfectly correct in a screenshot. */
+describe("the project chips filter the board and hide themselves when they cannot", () => {
+  const projectBoard = (names) => {
+    const board = JSON.parse(JSON.stringify(payload.board));
+    board.items.forEach((item, index) => { item.project = names[index % names.length]; });
+    return (url) => (url.includes("item=") ? null : board);
+  };
+  const rows = (window) =>
+    [...window.document.querySelectorAll(".item")].map((r) => r.id);
+  const projectChips = (window) =>
+    [...window.document.querySelectorAll(".filter-project")].map((c) => c.textContent);
+
+  test("one project on every row means no chips at all", async () => {
+    const window = await loadSite("/issues", { board: projectBoard(["Nova"]) });
+    click(window, window.document.querySelector(".board-filter-btn"));
+    assert.deepEqual(projectChips(window), [],
+      "a chip row appeared for a board with one project on it");
+  });
+
+  test("a second project makes the row appear, and tapping one cuts the board to it", async () => {
+    const board = projectBoard(["Nova", "Agora"]);
+    const window = await loadSite("/issues", { board });
+    click(window, window.document.querySelector(".board-filter-btn"));
+    const chips = projectChips(window);
+    assert.ok(chips.some((c) => c.startsWith("Agora")),
+      "no Agora chip on a board that has Agora rows: " + chips.join(","));
+    const before = rows(window);
+    const agora = [...window.document.querySelectorAll(".filter-project")]
+      .filter((c) => c.textContent.startsWith("Agora"))[0];
+    click(window, agora);
+    const after = rows(window);
+    assert.ok(after.length > 0 && after.length < before.length,
+      "picking a project changed nothing: " + before.length + " -> " + after.length);
+    // Every row still shown must actually be that project -- the count in
+    // the chip label agreeing is not the same assertion.
+    const shown = board("").items.filter((i) => after.includes("item-" + i.number));
+    assert.ok(shown.length && shown.every((i) => i.project === "Agora"),
+      "a row from another project survived the project filter");
+  });
+
+  test("tapping the chip that is already on clears it", async () => {
+    const window = await loadSite("/issues", { board: projectBoard(["Nova", "Agora"]) });
+    click(window, window.document.querySelector(".board-filter-btn"));
+    const pick = () => [...window.document.querySelectorAll(".filter-project")]
+      .filter((c) => c.textContent.startsWith("Agora"))[0];
+    const all = rows(window).length;
+    click(window, pick());
+    assert.ok(rows(window).length < all, "the filter did not apply, so clearing it pins nothing");
+    click(window, pick());
+    assert.equal(rows(window).length, all);
+  });
+
+  test("a project pick lights the dot on the closed filter button", async () => {
+    const window = await loadSite("/issues", { board: projectBoard(["Nova", "Agora"]) });
+    const btn = () => window.document.querySelector(".board-filter-btn");
+    assert.ok(!btn().classList.contains("on"), "the dot was lit before anything was picked");
+    click(window, btn());
+    click(window, [...window.document.querySelectorAll(".filter-project")]
+      .filter((c) => c.textContent.startsWith("Agora"))[0]);
+    assert.ok(btn().classList.contains("on"),
+      "the one filter that can empty the board left no sign it was on");
+  });
+});
+
 describe("a board link opens the row it names", () => {
   test("/issues#57 opens that row rather than only landing on the page", async () => {
     const window = await loadSite("/issues#57");
