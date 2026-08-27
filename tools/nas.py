@@ -346,10 +346,9 @@ def status(conf_all, get=_get):
 
 UNCONFIGURED_HELP = (
     "Nothing on this NAS is reachable yet, and that is expected rather than broken.\n"
-    "Step 1 of the NAS write-up in the vault (research/nas-voice-front-end-2026-08.md)\n"
-    "is his own and\n"
-    "physical: Tailscale on the NAS itself, the node tagged, one narrow grant to the\n"
-    "agents namespace. Once that is done, four values make this tool work:\n"
+    "Step 1 of the NAS write-up in the vault -- research/nas-voice-front-end-2026-08.md\n"
+    "-- is the owner's own and physical: Tailscale on the NAS itself, the node tagged,\n"
+    "one narrow grant to the agents namespace. Then four values make this tool work:\n"
     "  SONARR_URL / SONARR_API_KEY   RADARR_URL / RADARR_API_KEY\n"
     "The key is Settings -> General -> API Key in each app. The URL may be a bare\n"
     "host:port; it gets http:// because the transport security here is Tailscale's."
