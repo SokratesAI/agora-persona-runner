@@ -11231,11 +11231,19 @@ describe("holding a conversation in the switcher opens edit options", () => {
 
   const LIST = {
     folders: [{ id: "f-1", name: "House" }],
+    // `models` is what `nova_conversations.conversations()` now sends beside
+    // the folders. `m` is deliberately not in it: a conversation on a model
+    // the catalog no longer lists must still open on its own model.
+    models: [
+      { id: "claude-cli:claude-sonnet-5", label: "Claude Sonnet 5 (CLI)", metered: false },
+      { id: "anthropic:claude-opus-5", label: "Claude Opus 5", metered: true },
+    ],
     conversations: [
       { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
         tags: [], cycleThread: false, folderId: "f-1",
         updatedAt: "2026-08-26T07:00:00.000Z" },
-      { id: "c-2", name: "Loose thread", personaName: "Claude", model: "m",
+      { id: "c-2", name: "Loose thread", personaName: "Claude",
+        model: "claude-cli:claude-sonnet-5",
         tags: [], cycleThread: false, folderId: "",
         updatedAt: "2026-08-25T07:00:00.000Z" },
     ],
@@ -11334,6 +11342,53 @@ describe("holding a conversation in the switcher opens edit options", () => {
       ["/api/conversations/folder", { name: "Work" }],
       ["/api/conversations/move", { id: "c-2", folderId: "f-new" }],
     ]);
+  });
+
+  /* The model picker -- idea #95's opening line: *"It is hard to change model
+   * for a conversation because that means changing the model for all other
+   * conversations that personas is in."* Agora fixed the data model on 08-21
+   * and this panel is the only place in the app he reads that can reach it. */
+
+  test("the picker opens on the thread's own model and says which ones are metered", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Loose thread"));
+    const pick = window.document.querySelector("#chat-list .chat-row-edit-model");
+    assert.ok(pick, "the editor rendered no model picker");
+    assert.equal(pick.value, "claude-cli:claude-sonnet-5");
+    assert.deepEqual([...pick.options].map((o) => o.textContent),
+      ["Claude Sonnet 5 (CLI)", "Claude Opus 5 (metered)"]);
+  });
+
+  test("a model the catalog has dropped is still offered, selected, rather than silently swapped", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Roofing"));
+    const pick = window.document.querySelector("#chat-list .chat-row-edit-model");
+    assert.equal(pick.value, "m",
+      "the picker moved the thread off its own model just by opening");
+    assert.equal(pick.options.length, 3);
+  });
+
+  test("choosing another model posts it, and only for the thread that was held", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Loose thread"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-model").value = "anthropic:claude-opus-5";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/model",
+        { id: "c-2", model: "anthropic:claude-opus-5" }]]);
+  });
+
+  test("saving without touching the model posts no model change", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Loose thread"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-name").value = "Loose end";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => p.url),
+      ["/api/conversations/rename"]);
   });
 
   test("delete asks first, and does nothing when he says no", async () => {
