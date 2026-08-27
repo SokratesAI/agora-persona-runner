@@ -152,6 +152,12 @@ def stale_job_failures(cronjobs, jobs_by_owner):
     Comparison is on `creationTimestamp`, not on the name. The generated
     suffix happens to sort correctly today because it counts minutes, and
     relying on that would be reading a schedule out of a string.
+
+    The timestamps are compared as strings, which is only safe because
+    `metav1.Time` serialises to RFC3339 in UTC with a `Z` and no fractional
+    part — every stamp kubectl returns has the same width and the same zone,
+    so lexical order is chronological order. If these ever came from
+    somewhere other than the API server, parse them.
     """
     stale, live = [], []
     for key in cronjobs:
