@@ -112,7 +112,8 @@ def conversations():
     # chronological. A row with no timestamp sorts last rather than first:
     # an undated conversation is not fresh news.
     rows.sort(key=lambda r: r["updatedAt"] or "", reverse=True)
-    return {"conversations": rows, "folders": _folder_rows()}
+    return {"conversations": rows, "folders": _folder_rows(),
+            "models": _model_rows()}
 
 
 def thread(conversation_id, limit=MAX_THREAD):
@@ -285,6 +286,69 @@ def _folder_rows():
     ]
     rows.sort(key=lambda r: r["name"].lower())
     return rows
+
+
+def _model_rows():
+    """The model catalog Agora will accept, or `[]` if it cannot say.
+
+    Swallows a failed fetch for `_folder_rows`' reason: a switcher with no
+    model picker still shows him every thread, and losing the picker is
+    worth not losing the list.
+
+    `metered` comes straight from Agora's catalog rather than being derived
+    here. `nova_conversations.personas` derives it from an `anthropic:`
+    prefix because a persona row carries no such flag; the model catalog
+    does, and re-deriving it would be a second copy of the rule that pays
+    for the whole prepaid balance if it drifts.
+    """
+    status, body = agora_get("/models")
+    if status != 200:
+        log(f"nova_conversations: model listing returned {status}")
+        return []
+    rows = []
+    for m in body.get("models", []):
+        mid = m.get("id")
+        if not mid:
+            continue
+        rows.append({
+            "id": mid,
+            "label": m.get("label") or mid,
+            "metered": bool(m.get("metered")),
+        })
+    return rows
+
+
+def set_model(conversation_id, model):
+    """(ok, message). Point one thread at a different model.
+
+    This is the last door on idea #95 slice 1. Agora moved `model` off the
+    persona and onto the conversation on 08-21 (agora#65/#66), which is the
+    thing he actually complained about -- *"it is hard to change model for a
+    conversation because that means changing the model for all other
+    conversations that personas is in"* -- and the write has been accepted
+    ever since. Nothing in Nova ever called it, so from the app he reads,
+    the model was still unchangeable.
+
+    The catalog is not re-checked here on purpose. Agora validates against
+    its own `VALID_MODEL_IDS` and answers 400, so a copy of that set in this
+    file would be a second list to drift; the 400 is mapped to a sentence he
+    can read instead.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    if not isinstance(model, str) or not model.strip():
+        return False, "which model?"
+    model = model.strip()
+    status, _body = agora_internal(
+        "PATCH", f"/conversations/{conversation_id}", {"model": model})
+    if status != 200:
+        log(f"nova_conversations: set_model failed HTTP {status}")
+        if status == 404:
+            return False, "that conversation is gone"
+        if status == 400:
+            return False, "Agora does not have that model"
+        return False, "could not change the model"
+    return True, model
 
 
 def rename(conversation_id, name):

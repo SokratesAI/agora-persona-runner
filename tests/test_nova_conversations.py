@@ -24,8 +24,14 @@ import pytest
 import agora_runner.nova_conversations as convs
 
 
+MODEL_CATALOG = [
+    {"id": "claude-cli:claude-sonnet-5", "label": "Claude Sonnet 5 (CLI)", "metered": False},
+    {"id": "anthropic:claude-opus-5", "label": "Claude Opus 5", "metered": True},
+]
+
+
 def _fakes(conversations=None, messages=None, personas=None, create_id="c-new",
-           list_status=200):
+           list_status=200, models=None, model_status=200):
     calls = []
 
     def fake_get(path):
@@ -34,6 +40,8 @@ def _fakes(conversations=None, messages=None, personas=None, create_id="c-new",
             return list_status, {"conversations": conversations or []}
         if path == "/personas":
             return 200, {"personas": personas or []}
+        if path == "/models":
+            return model_status, {"models": models if models is not None else MODEL_CATALOG}
         if path.startswith("/conversations/"):
             return 200, {"messages": messages or []}
         return 404, {}
@@ -280,6 +288,8 @@ def _manage_fakes(status=200, body=None, folders=None, folder_status=200):
             return folder_status, {"folders": folders or []}
         if path == "/conversations":
             return 200, {"conversations": []}
+        if path == "/models":
+            return 200, {"models": MODEL_CATALOG}
         return 404, {}
 
     def fake_internal(method, path, payload=None):
@@ -429,3 +439,81 @@ def test_an_unreadable_folder_list_still_returns_every_conversation():
         payload = convs.conversations()
     assert payload["folders"] == []
     assert len(payload["conversations"]) == 1
+
+
+# --- the model picker (idea #95, slice 1's last door) -----------------------
+#
+# Agora moved `model` off the persona and onto the conversation on 08-21 and
+# nothing in Nova ever called that write, so from the app he opens the model
+# was still unchangeable. What is worth pinning:
+#
+# - the catalog rides along with the conversation list, because a picker
+#   fetched separately is a second round trip on the switcher he opens most;
+# - `metered` is passed through from Agora rather than re-derived, since a
+#   picker that mislabels which models bill per token spends real money;
+# - an unreadable catalog must not take the conversation list down with it,
+#   for `_folder_rows`' reason.
+
+
+def test_the_conversation_list_carries_the_model_catalog():
+    payload, calls = _run(convs.conversations)
+    assert payload["models"] == [
+        {"id": "claude-cli:claude-sonnet-5",
+         "label": "Claude Sonnet 5 (CLI)", "metered": False},
+        {"id": "anthropic:claude-opus-5", "label": "Claude Opus 5", "metered": True},
+    ]
+    assert ("GET", "/models", None) in calls
+
+
+def test_an_unreadable_catalog_leaves_the_conversations_intact():
+    payload, _calls = _run(convs.conversations, model_status=500,
+                           conversations=[dict(LIVE_ROW)])
+    assert payload["models"] == []
+    assert len(payload["conversations"]) == 1
+
+
+def test_a_model_without_an_id_is_dropped_rather_than_offered():
+    payload, _calls = _run(convs.conversations,
+                           models=[{"label": "Nameless"},
+                                   {"id": "gemini:gemini-flash-latest"}])
+    assert [m["id"] for m in payload["models"]] == ["gemini:gemini-flash-latest"]
+    # No label in the catalog row, so the id stands in rather than "".
+    assert payload["models"][0]["label"] == "gemini:gemini-flash-latest"
+
+
+def test_set_model_patches_the_conversation_and_returns_the_model():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.set_model("c-1", "  claude-cli:claude-sonnet-5  ")
+    assert (ok, message) == (True, "claude-cli:claude-sonnet-5")
+    assert calls == [("INTERNAL", "PATCH", "/conversations/c-1",
+                      {"model": "claude-cli:claude-sonnet-5"})]
+
+
+@pytest.mark.parametrize("model", ["", "   ", None, 5])
+def test_set_model_refuses_a_blank_model_without_calling_agora(model):
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, _message = convs.set_model("c-1", model)
+    assert ok is False
+    assert calls == []
+
+
+def test_set_model_reports_a_model_agora_rejects_as_its_own_refusal():
+    # Agora validates against VALID_MODEL_IDS and answers 400. This file
+    # deliberately keeps no copy of that set, so the 400 is the only signal.
+    _get, internal, public, _calls = _manage_fakes(status=400)
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.set_model("c-1", "openai:gpt-9")
+    assert (ok, message) == (False, "Agora does not have that model")
+
+
+def test_set_model_reports_a_missing_conversation_as_gone():
+    _get, internal, public, _calls = _manage_fakes(status=404)
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.set_model("c-1", "claude-cli:claude-sonnet-5")
+    assert (ok, message) == (False, "that conversation is gone")

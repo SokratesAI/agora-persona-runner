@@ -174,6 +174,7 @@ from agora_runner.nova_conversations import (
     remove as conversation_remove,
     rename as conversation_rename,
     send as conversation_send,
+    set_model as conversation_set_model,
     thread as conversation_thread,
     watching as conversation_watching,
 )
@@ -3211,6 +3212,23 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             ("a folder needs", "that name is longer"),
             lambda p: (p.get("name"),))
 
+    def _post_conversation_model(self, payload):
+        """`/api/conversations/model` -- point one thread at another model.
+
+        Idea #95's first line: *"It is hard to change model for a
+        conversation because that means changing the model for all other
+        conversations that personas is in."* Agora fixed that in the data
+        model on 08-21; this is the control that reaches it from the app he
+        actually opens. Audited for `_post_conversation_rename`'s reason,
+        and one of its own: which model answers him decides whether a reply
+        spends the prepaid balance, so who changed it and when is worth a
+        row.
+        """
+        self._conversation_write(
+            payload, conversation_set_model, "model",
+            ("which conversation", "which model", "Agora does not have"),
+            lambda p: (p.get("id"), p.get("model")))
+
     def _post_conversation_delete(self, payload):
         """`/api/conversations/delete` -- remove a thread for good.
 
@@ -3225,7 +3243,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             lambda p: (p.get("id"),))
 
     def _conversation_write(self, payload, fn, label, bad_input_prefixes, args_of):
-        """The shared body of the four writes above.
+        """The shared body of the five writes above.
 
         They differ only in which function they call and which refusals are
         his fault rather than the store's, so the split between 400 and 502
@@ -3543,7 +3561,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/conversations/send", "/api/conversations/new",
             "/api/conversations/watching", "/api/conversations/rename",
             "/api/conversations/move", "/api/conversations/delete",
-            "/api/conversations/folder",
+            "/api/conversations/folder", "/api/conversations/model",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/pool/decide", "/api/pool/generate",
             "/api/goal/status",
@@ -3577,6 +3595,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/folder":
             self._post_conversation_folder(payload)
+            return
+        if path == "/api/conversations/model":
+            self._post_conversation_model(payload)
             return
         if path == "/api/conversations/delete":
             self._post_conversation_delete(payload)

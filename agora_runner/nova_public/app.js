@@ -10247,7 +10247,7 @@
      * gone, and Agora unbinds any heartbeat pointing at it on the way out,
      * so there is nothing to put back.
      */
-    function rowEditor(row, folders, done) {
+    function rowEditor(row, folders, models, done) {
       var wrap = el("div", "chat-row-edit");
 
       var name = document.createElement("input");
@@ -10276,6 +10276,57 @@
       // one intention and making him create the folder first would be two.
       pick.appendChild(option("+new", "New folder…", false));
       wrap.appendChild(pick);
+
+      /* Which model answers in this thread.
+       *
+       * Idea #95 opens with it: *"It is hard to change model for a
+       * conversation because that means changing the model for all other
+       * conversations that personas is in."* Agora moved `model` off the
+       * persona and onto the conversation on 08-21, so the write has worked
+       * for six days -- from Agora's own app, which is not the one he opens.
+       * This is that fix arriving at the door he uses.
+       *
+       * A model the catalog does not list still gets an option, selected,
+       * so the picker can never silently repoint a thread at something else
+       * just because Agora's catalog moved on. Same reason the folder list
+       * starts with the one the row is already in.
+       *
+       * `(metered)` is on the label for `newChatForm`'s reason and it is a
+       * money reason, not a cosmetic one: a metered model spends the prepaid
+       * balance per token, and a picker that hides which ones do would let
+       * him spend it by picking the top of a list.
+       */
+      var modelPick = document.createElement("select");
+      // Two classes: the first is the folder select's styling, the second is
+      // this control's own hook. Sharing only the styling class would make
+      // `querySelector(".chat-row-edit-folder")` ambiguous in the panel.
+      modelPick.className = "chat-row-edit-folder chat-row-edit-model";
+      modelPick.setAttribute("aria-label", "Model");
+      var listed = false;
+      models = models || [];
+      models.forEach(function (m) {
+        if (m.id === row.model) listed = true;
+        modelPick.appendChild(option(
+          m.id, m.label + (m.metered ? " (metered)" : ""), false));
+      });
+      if (row.model && !listed) {
+        modelPick.insertBefore(option(row.model, row.model, false), modelPick.firstChild);
+      }
+      if (!row.model) {
+        modelPick.insertBefore(option("", "Model (unset)", false), modelPick.firstChild);
+      }
+      // Set after the options exist rather than with `selected` on each one.
+      // A select auto-selects its first option, and the reset algorithm then
+      // keeps only the *last* option marked selected -- so an option marked
+      // at creation and inserted at the front loses to the auto-selected one
+      // behind it, and the picker opens on a model the thread is not on.
+      // Caught by the browser test on a conversation whose model the catalog
+      // no longer lists; the same bug made an untouched save post a change.
+      modelPick.value = row.model || "";
+      // No catalog, no picker. `_model_rows` returns `[]` when Agora cannot
+      // say what it accepts, and a select holding only the model the thread
+      // already has is a control that cannot change anything.
+      if (models.length) wrap.appendChild(modelPick);
 
       var newFolder = document.createElement("input");
       newFolder.type = "text";
@@ -10335,6 +10386,12 @@
             if ((folderId || "") !== (row.folderId || "")) {
               work.push(chatWrite("/api/conversations/move",
                 { id: row.id, folderId: folderId || "" }));
+            }
+            // Only when it moved. Re-sending the model it already has would
+            // audit a change that did not happen on every rename.
+            if (modelPick.value && modelPick.value !== (row.model || "")) {
+              work.push(chatWrite("/api/conversations/model",
+                { id: row.id, model: modelPick.value }));
             }
             return Promise.all(work).then(function () { return wanted; });
           })
@@ -10590,6 +10647,7 @@
         .then(function (payload) {
           listEl.removeChild(pending);
           var folders = payload.folders || [];
+          var models = payload.models || [];
           var rows = (payload.conversations || []).filter(function (row) {
             return (row.tags || []).indexOf("nova-ask") === -1;
           });
@@ -10615,7 +10673,7 @@
                 });
               holdToEdit(node, function () {
                 if (listEl.querySelector(".chat-row-edit")) return;
-                var editor = rowEditor(row, folders, function (changed) {
+                var editor = rowEditor(row, folders, models, function (changed) {
                   if (changed) loadList();
                   else if (editor.parentNode) editor.parentNode.replaceChild(node, editor);
                 });

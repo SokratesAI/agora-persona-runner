@@ -62,6 +62,8 @@ ROUTE_FIXTURES = {
     "/api/conversations/new": ({"name": "STUFF", "personaId": "p1"}, "conversation_create"),
     "/api/conversations/rename": ({"id": "c1", "name": "STUFF"}, "conversation_rename"),
     "/api/conversations/move": ({"id": "c1", "folderId": "f1"}, "conversation_move"),
+    "/api/conversations/model": ({"id": "c1", "model": "claude-cli:claude-sonnet-5"},
+                                 "conversation_set_model"),
     "/api/conversations/folder": ({"name": "Nova"}, "conversation_folder_create"),
     "/api/conversations/delete": ({"id": "c1"}, "conversation_remove"),
 }
