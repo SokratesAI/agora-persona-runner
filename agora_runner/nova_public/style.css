@@ -3600,6 +3600,34 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 
 .mail[hidden] { display: none; }
 
+/* "3 cycles since you last looked · 2 PRs merged" -- see `paintChanged`.
+   Sits between the header and the capture box, in the same negative-margin
+   slot `.mail` uses, so a page with nothing new to say is laid out exactly
+   as it was before this existed. */
+.changed {
+  margin: -1rem 0 1.5rem;
+}
+
+.changed[hidden] { display: none; }
+
+/* A button because tapping it dismisses the line, and the whole line is the
+   target: it is a phone-first surface and a small "x" beside it would be the
+   one thing on this page you have to aim at. */
+.changed-line {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--nova);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
 .unread-panel {
   margin-top: 0.6rem;
   border: 1px solid #5b3f7d;

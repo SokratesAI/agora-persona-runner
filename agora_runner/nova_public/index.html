@@ -34,6 +34,13 @@
      journal page. See `paintMail` in app.js. -->
 <div id="mail" class="mail" aria-live="polite" hidden></div>
 
+<!-- "3 cycles since you last looked · 2 PRs merged". Outside `#status` for
+     the same reason `#mail` is: `renderStatus` empties that element on every
+     paint, so a line parked inside it would be wiped by the next render.
+     `paintChanged` in app.js owns it, and it stays hidden whenever there is
+     nothing new to say -- which is most of the time. -->
+<div id="changed" class="changed" aria-live="polite" hidden></div>
+
 <div id="scrim" class="scrim"></div>
 
 <!-- The three the owner named sit at the top with no heading above them,

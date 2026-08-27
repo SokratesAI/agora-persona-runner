@@ -13,6 +13,7 @@
   var feed = document.getElementById("feed");
   var statusEl = document.getElementById("status");
   var mailEl = document.getElementById("mail");
+  var changedEl = document.getElementById("changed");
 
   var navEl = document.getElementById("nav");
   var menuBtn = document.getElementById("menu-btn");
@@ -412,6 +413,171 @@
      * the oldest card, because that one is about to scroll out of the feed. */
     items.sort(function (a, b) { return a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0; });
     return { count: count, cards: cards, cycle: oldest, items: items };
+  }
+
+  /* "3 cycles since you last looked · 2 PRs merged", and nothing at all
+   * when there is nothing new.
+   *
+   * the owner, ideas board #115 (approved 08-25): *"You are asleep for nine
+   * cycles at a time and the app opens on the newest journal card with no
+   * sense of how much you missed. One line -- six cycles, two PRs merged,
+   * one thing needs your input, one board row moved -- would let you decide
+   * in two seconds whether to read or to close it."*
+   *
+   * Two of his four examples are deliberately not in the line, and both
+   * omissions are about not saying the same thing twice on one screen. "One
+   * thing needs your input" is already the `waiting on you` field in the
+   * header directly above, and unread replies are already the `#mail` badge
+   * directly below -- a second copy of either is the duplicate-outcome-pill
+   * complaint (`issues.md` 2026-08-23) coming back through a different door.
+   * "One board row moved" is the one I could not build here honestly: this
+   * page fetches no board payload, and a row's *previous* status is not
+   * stored anywhere on the device or the server, so there is nothing to
+   * diff against. That is a real gap and it is written down rather than
+   * guessed at.
+   *
+   * The mark lives in `localStorage` for the reason the read-reply marks do:
+   * the server has no session and no idea which device is his, so "since
+   * *you* last looked" can only be answered by the browser that looked. Per
+   * device is the honest scope -- it is his phone that has or has not seen
+   * cycle 540. */
+  var LAST_SEEN_KEY = "nova.lastSeen.v1";
+
+  /* The mark as it stood when this document loaded, held for the whole
+   * session, and the reason this is a variable rather than a `getItem` at
+   * paint time.
+   *
+   * `paintChanged` advances the stored mark the first time it draws, so a
+   * second read of storage would answer "nothing new" -- and then tapping a
+   * card and coming back, which is an in-page navigation and re-renders the
+   * header, would silently drop the line he was reading. Capturing it once
+   * means the line survives every navigation and every poll inside one open
+   * of the app, and a genuinely fresh load is what resets it. A PWA resumed
+   * from the background fires `pageshow`/`focus` and re-fetches without
+   * reloading the document, so that path keeps the line too, which is the
+   * behaviour I want: he backgrounded the app, he did not read it. */
+  var lastSeenCycle = null;
+  var lastSeenCaptured = false;
+  var changedDismissed = false;
+
+  function loadLastSeen() {
+    var store = localStore();
+    if (!store) return null;
+    try {
+      var raw = store.getItem(LAST_SEEN_KEY);
+      var seen = parseInt(raw, 10);
+      return isNaN(seen) ? null : seen;
+    } catch (err) { return null; }
+  }
+
+  function saveLastSeen(cycle) {
+    var store = localStore();
+    if (!store) return;
+    try {
+      store.setItem(LAST_SEEN_KEY, String(cycle));
+    } catch (err) { /* quota or refused: the line degrades, the page does not */ }
+  }
+
+  /* What to say, or "" for "say nothing".
+   *
+   * `entries` is the feed's window, not the whole journal, so the counts are
+   * taken off the cards that are actually there and the line says `at least`
+   * whenever the mark predates the oldest of them. That is the only way to
+   * be exact in the common case -- he is a handful of cycles behind -- while
+   * staying true after a week away, and it is why this counts cards rather
+   * than subtracting cycle numbers: the loop has real holes in its numbering
+   * (`status.missingCycles` exists because of them), so `540 - 534` is six
+   * cycles only if all six ran.
+   *
+   * A PR counts when the footer names one *and* the outcome is `merged`.
+   * `isRealPr` alone would count a `stuck` cycle that opened a PR nobody
+   * took, which is the opposite of the reassurance the line is for. */
+  function changedLine(newest, entries, seen) {
+    if (seen === null || seen === undefined) return "";
+    if (typeof newest !== "number" || newest <= seen) return "";
+    var cycles = {};
+    var mergedCycles = {};
+    var oldest = null;
+    (entries || []).forEach(function (entry) {
+      var n = entry && entry.cycle;
+      if (typeof n !== "number") return;
+      if (oldest === null || n < oldest) oldest = n;
+      if (n <= seen) return;
+      cycles[n] = true;
+      /* Keyed by cycle and not counted per entry: a cycle that writes an
+       * addendum has two entries carrying the same `PR:` footer, and
+       * counting rows would report one merge as two. */
+      if (isRealPr(entry.pr) && /^merged$/i.test(String(entry.outcome || "").trim())) {
+        mergedCycles[n] = true;
+      }
+    });
+    var fresh = Object.keys(cycles).length;
+    var merged = Object.keys(mergedCycles).length;
+    if (!fresh) return "";
+    /* The mark is older than the oldest card on the feed, so there are new
+     * cycles this window cannot see and both counts are floors. */
+    var partial = oldest !== null && oldest > seen + 1;
+    var lead = partial ? "at least " : "";
+    var line = lead + fresh + (fresh === 1 ? " cycle" : " cycles") + " since you last looked";
+    if (merged) line += " · " + lead + merged + (merged === 1 ? " PR" : " PRs") + " merged";
+    return line;
+  }
+
+  /* Draw it, and advance the mark.
+   *
+   * Only from the journal feed, and only on a live payload. A `/cycle/N`
+   * permalink builds its status off the single entry it asked for, so
+   * `status.cycle` there is whichever old cycle he deep-linked to -- writing
+   * that as the mark would set it *backwards* and then claim a hundred
+   * cycles were new on his next open. A replayed payload is suppressed for
+   * the reason the badges beside it are: "this is what changed" is a claim
+   * about now, made from bytes the service worker cached at some unknown
+   * earlier time.
+   *
+   * The mark advances on the first paint rather than on a tap, because the
+   * common case is that he opens the app, reads the line, and closes it
+   * without touching anything -- a mark that only moved on a tap would show
+   * him the same "6 cycles" forever. The tap is a dismissal, not the
+   * acknowledgement. */
+  function hideChanged() {
+    if (!changedEl) return;
+    changedEl.textContent = "";
+    changedEl.setAttribute("hidden", "");
+  }
+
+  function paintChanged(status, entries) {
+    if (!changedEl) return;
+    if (routedCycle(window.location.pathname) !== null) return;
+    /* A search answers with whichever cycles matched, from anywhere in the
+     * archive, so the entries it returns are not "the newest N" and counting
+     * them would report the shape of his query rather than what he missed. */
+    if (journalQuery.trim()) return;
+    if (!status || status.replayed) return;
+    var newest = status.cycle;
+    if (typeof newest !== "number") return;
+    if (!lastSeenCaptured) {
+      lastSeenCaptured = true;
+      lastSeenCycle = loadLastSeen();
+    }
+    /* Never backwards: a search result or a short window can hand this a
+     * `status.cycle` below the mark, and lowering it would invent news. */
+    if (lastSeenCycle === null || newest > lastSeenCycle) saveLastSeen(newest);
+    changedEl.textContent = "";
+    var text = changedDismissed ? "" : changedLine(newest, entries, lastSeenCycle);
+    if (!text) {
+      changedEl.setAttribute("hidden", "");
+      return;
+    }
+    var btn = el("button", "changed-line", text);
+    btn.type = "button";
+    btn.title = "Dismiss";
+    btn.addEventListener("click", function () {
+      changedDismissed = true;
+      changedEl.textContent = "";
+      changedEl.setAttribute("hidden", "");
+    });
+    changedEl.appendChild(btn);
+    changedEl.removeAttribute("hidden");
   }
 
   /* The unread-reply badge and the panel it opens, in their own node outside
@@ -3225,6 +3391,7 @@
     // comments" and "no answer about the comments" are different, and only
     // the first one licenses the header to say he owes a reply.
     renderStatus(journal.status || {}, comments ? commentsByCycle : null);
+    paintChanged(journal.status || {}, journal.entries || []);
 
     var byCycle = {};
     ((digest && digest.lines) || []).forEach(function (line) {
@@ -9436,6 +9603,12 @@
      * badge he asked for in the header is a journal-page feature wearing a
      * header's clothes. */
     if (here.view !== "journal") refreshMail();
+    /* Every internal link on this site is a `pushState`, not a page load
+     * (see the delegated click handler at the bottom of this file), so a
+     * `#changed` line painted on the journal would otherwise still be
+     * sitting over the Issues board after one tap. `render` repaints it on
+     * the way back in. */
+    hideChanged();
     if (here.view === "board") {
       loadBoard(here.board);
       return;
