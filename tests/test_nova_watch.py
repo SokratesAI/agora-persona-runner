@@ -5,7 +5,10 @@ removed -- checked by breaking each one deliberately before committing, which
 is the step Cycle 505 and Cycle 503 both found a vacuous test by skipping.
 """
 
+import contextlib
 import json
+import sys
+import types
 
 import pytest
 
@@ -159,7 +162,12 @@ def test_the_two_verdicts_are_never_the_same_message():
     stalled = nova_watch.silent_text(
         {"stalled": True, "silentIntervals": 2, "cycle": 1})
     down = nova_watch.unreachable_text(2, "2026-08-27 01:00", "refused")
-    assert "UNREACHABLE" in down and "UNREACHABLE" not in stalled.split("not ")[0]
+    # `SILENT` may name UNREACHABLE exactly once, and only to say it is not
+    # that. Counting is the assertion; `split("not ")[0]` was the first version
+    # and it could only ever look at the four characters before that phrase.
+    assert stalled.count("UNREACHABLE") == 1
+    assert "SILENT, not UNREACHABLE" in stalled
+    assert "SILENT" not in down
     assert "agora-persona-runner pod" in stalled
     assert "agora-persona-runner pod" not in down
 
@@ -220,3 +228,77 @@ def test_run_polls_the_number_of_times_it_was_asked_to():
                              interval=7)
     watch.run(sleep=calls.append, polls=3)
     assert calls == [7, 7]
+
+
+def full_env(**over):
+    env = {"NOVA_WATCH_SUBSCRIPTION":
+           '{"endpoint": "https://fcm.example/x", "keys": {"p256dh": "a", "auth": "b"}}',
+           "VAPID_PRIVATE_KEY": "k"}
+    env.update(over)
+    return env
+
+
+def test_a_subscription_with_no_encryption_keys_is_refused():
+    """`pywebpush` cannot encrypt without them, so this would start, print that
+    it is polling, and never ring the phone for any verdict."""
+    for broken in ('{"endpoint": "https://fcm.example/x"}',
+                   '{"endpoint": "https://fcm.example/x", "keys": {"p256dh": "a"}}',
+                   '{"endpoint": "https://fcm.example/x", "keys": {"auth": "b"}}'):
+        send, problem = nova_watch.sender_from_env(full_env(NOVA_WATCH_SUBSCRIPTION=broken))
+        assert send is None, broken
+        assert "keys." in problem
+
+
+def test_a_complete_subscription_is_accepted():
+    with fake_pywebpush() as calls:
+        send, problem = nova_watch.sender_from_env(full_env())
+        assert problem is None and callable(send)
+        send("SILENT", "text")
+    assert calls["data"]
+
+
+def test_the_default_url_names_the_site_that_serves_the_journal():
+    """`agora` and `nova` are different services on the same tailnet and only
+    one of them has `/api/journal`. The wrong one 404s on every poll, which
+    reads as a permanent outage and silences the watcher after one message."""
+    assert "//nova." in nova_watch.DEFAULT_URL
+    assert "/api/journal" in nova_watch.DEFAULT_URL
+
+
+def test_a_status_field_of_the_wrong_type_does_not_kill_the_loop():
+    """`poll` promises it never raises, and building the message used to happen
+    outside the try that keeps that promise."""
+    phone = Phone()
+    watch = nova_watch.Watch(fetch=answering(
+        stalled=True, silentIntervals=2, cycle=5,
+        lastWokeDate=20260827, lastWokeTime="01:00",
+        lastWrittenAt="2026-08-27T01:19:00+02:00"), send=phone)
+    assert watch.poll(now=100) is None
+    assert phone.sent == []
+    watch.run(sleep=lambda s: None, polls=2)
+
+
+@contextlib.contextmanager
+def fake_pywebpush():
+    """`pywebpush` is not installed here — it only has to exist on the NAS —
+    so the send path is exercised against a stand-in that records its call."""
+    calls = {}
+    module = types.ModuleType("pywebpush")
+    module.webpush = lambda **kwargs: calls.update(kwargs)
+    sys.modules["pywebpush"] = module
+    try:
+        yield calls
+    finally:
+        del sys.modules["pywebpush"]
+
+
+def test_the_push_send_carries_a_timeout():
+    """A hung push endpoint is not an exception, so `_deliver`'s catch does not
+    cover it and only a timeout does."""
+    with fake_pywebpush() as calls:
+        send = nova_watch.web_push_sender(
+            {"endpoint": "https://fcm.example/x"}, "key", "https://example")
+        send("SILENT", "text")
+    assert calls["timeout"] == nova_watch.SEND_TIMEOUT
+    assert calls["vapid_private_key"] == "key"
+    assert calls["vapid_claims"] == {"sub": "https://example"}

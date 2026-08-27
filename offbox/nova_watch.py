@@ -40,6 +40,14 @@ writes -- the same event that ends the stall. ``UNREACHABLE`` has no such
 stamp to read, so it keys on the first failure of the current outage, which
 gives the same one-message-per-outage shape.
 
+**One hole, named rather than papered over.** `nova-site` forces `stalled` to
+false whenever `recordStale` is set, because a failed vault rebuild looks
+identical to a dead loop from inside the process. So a site that is up while
+CouchDB is unreachable answers "not stalled" and this watcher stays quiet. It
+is inherited from `stall_notice` and the same trade -- a third verdict for it
+would need its own grace and its own dedupe, and I would rather write the gap
+down than guess at a shape for it from outside the box.
+
 Everything that decides is a pure function of an observation and the state
 carried between polls. The network and the phone are injected, so the whole
 path including the rate limiter is testable here, on the box, without the
@@ -57,7 +65,15 @@ import urllib.request
 # carries no `stalled` at all. The journal route's `status` object is where
 # `stalled`, `silentIntervals` and `lastWrittenAt` are computed, and `limit=1`
 # is what keeps it small -- the unlimited form is 1.49MB.
-DEFAULT_URL = "https://agora.tailc83eb3.ts.net/api/journal?limit=1"
+# **`nova`, not `agora`.** I wrote `agora` here first and my reviewer caught
+# it; measured off the live cluster afterwards rather than argued about:
+# `kubectl get ingress -n agents` gives `nova.tailc83eb3.ts.net` for the
+# `nova-site` backend and `agora.tailc83eb3.ts.net` for `agora`, which is a
+# different service that has no `/api/journal` at all. The wrong host is the
+# worst possible failure for this program specifically -- every poll 404s, so
+# it fires one false UNREACHABLE and then goes quiet forever, which is
+# indistinguishable from a healthy watcher.
+DEFAULT_URL = "https://nova.tailc83eb3.ts.net/api/journal?limit=1"
 
 # Seconds between polls. The thing being detected is measured in heartbeat
 # intervals -- tens of minutes -- so polling faster buys little, and every
@@ -186,7 +202,8 @@ class Watch:
         if key == self._notified_unreachable:
             return None
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(key))
-        if self._deliver("UNREACHABLE", unreachable_text(self._failures, when, detail)):
+        if self._deliver("UNREACHABLE",
+                         lambda: unreachable_text(self._failures, when, detail)):
             self._notified_unreachable = key
             return "UNREACHABLE"
         return None
@@ -211,20 +228,27 @@ class Watch:
             return None
         if key == self._notified_silent:
             return None
-        if self._deliver("SILENT", silent_text(status)):
+        if self._deliver("SILENT", lambda: silent_text(status)):
             self._notified_silent = key
             return "SILENT"
         return None
 
-    def _deliver(self, verdict, text):
+    def _deliver(self, verdict, build_text):
         """True if the message actually went. A failed send is not recorded.
 
         Deliberate: recording a send that failed would mark this outage
         announced and go quiet for the rest of it, which is the one failure
         mode a watchdog may not have.
+
+        **`build_text` is a callable, not a string, and that is the fix for a
+        real hole.** Building the message was an argument expression at the
+        call site, so it ran *outside* every `try` -- a status payload whose
+        `lastWokeDate` was a number instead of a string raised out of `poll`
+        and killed the loop, contradicting `poll`'s own docstring. Rendering
+        it in here puts the formatting inside the same net as the send.
         """
         try:
-            self._send(verdict, text)
+            self._send(verdict, build_text())
             return True
         except Exception as error:  # noqa: BLE001
             print(f"nova-watch: sending {verdict} failed: {error!r}", flush=True)
@@ -242,7 +266,15 @@ class Watch:
                 sleep(self._interval)
 
 
-def web_push_sender(subscription, public_key, private_key, subject):
+# How long to wait on a push service. Same reasoning as the poll timeout and
+# it is the one my reviewer had to point out: `_deliver` catches an exception,
+# and a hung socket is not one. Without this, a push endpoint that accepts the
+# connection and never answers -- during the outage that triggered the send --
+# stops the whole loop with the process still looking healthy to Docker.
+SEND_TIMEOUT = 30
+
+
+def web_push_sender(subscription, private_key, subject):
     """A `send(verdict, text)` that rings his phone without touching the box.
 
     Web Push is sender-side-only: this signs a request with the VAPID keypair
@@ -262,6 +294,7 @@ def web_push_sender(subscription, public_key, private_key, subject):
             data=json.dumps({"title": f"Nova: {verdict}", "body": text}),
             vapid_private_key=private_key,
             vapid_claims={"sub": subject},
+            timeout=SEND_TIMEOUT,
         )
 
     return send
@@ -286,9 +319,18 @@ def sender_from_env(env=None):
         return None, f"NOVA_WATCH_SUBSCRIPTION is not JSON: {error}"
     if not subscription.get("endpoint"):
         return None, "NOVA_WATCH_SUBSCRIPTION carries no endpoint"
+    # `keys.p256dh` and `keys.auth` are what the payload is encrypted with;
+    # without them `pywebpush` raises on every send. Checking only that the
+    # variable is *set* is the difference between "refuse to start if
+    # unconfigured" and "refuse to start if unset", and the second one starts
+    # happily, prints that it is polling, and never rings the phone -- which
+    # is the coloured-in version of the failure this program exists to end.
+    keys = subscription.get("keys") or {}
+    absent = [name for name in ("p256dh", "auth") if not keys.get(name)]
+    if absent:
+        return None, f"NOVA_WATCH_SUBSCRIPTION has no keys.{' and keys.'.join(absent)}"
     return web_push_sender(
         subscription,
-        env.get("VAPID_PUBLIC_KEY", ""),
         env["VAPID_PRIVATE_KEY"],
         # The `sub` claim VAPID requires. Not a real address in a public repo:
         # the push services accept any mailto or https URL the sender can be

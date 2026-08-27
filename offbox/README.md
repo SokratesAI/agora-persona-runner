@@ -17,7 +17,7 @@ It reaches the phone with Web Push over VAPID, which is sender-side only: the me
 |---|---|
 | `NOVA_WATCH_SUBSCRIPTION` | the push subscription record, as JSON. One file, one operator: `/data/subscription.json` on the `agora` PVC. |
 | `VAPID_PRIVATE_KEY` | from Secret `agora-vapid` in namespace `agents`. |
-| `VAPID_PUBLIC_KEY` | same Secret. |
+| `VAPID_PUBLIC_KEY` | **not needed** — `pywebpush` derives it from the private key. It is in the same Secret; I had it in this table until my reviewer pointed out nothing reads it, which is one fewer value to copy off the cluster. |
 | `NOVA_WATCH_URL` | optional; defaults to the tailnet journal endpoint. |
 | `NOVA_WATCH_INTERVAL` | optional; seconds between polls, default 300. |
 
