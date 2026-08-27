@@ -49,6 +49,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     DEMOS_PATH,
     POD_GONE,
     PROCESS_GONE,
+    STARTING,
     DemoError,
     dumps,
     entries,
@@ -228,16 +229,27 @@ def pid_alive(pid):
 
 
 def judge(entry, host):
-    """`nova_demos.verdict` with the one syscall it deliberately omits."""
-    return verdict(entry, host, entry.get("pid") and pid_alive(entry["pid"]))
+    """`nova_demos.verdict` with the one syscall it deliberately omits.
+
+    `pid_alive` goes in as a callable so the host check runs first -- see
+    `verdict`'s docstring; passing the probe's *result* fires it at a pid
+    belonging to a pod that no longer exists.
+    """
+    return verdict(entry, host, pid_alive)
 
 
 #: What each verdict reads as on a line the owner or a cycle looks at.
 VERDICT_TEXT = {
     ALIVE: "running",
+    STARTING: "starting -- no pid recorded yet",
     POD_GONE: "stale -- the pod it ran in is gone",
     PROCESS_GONE: "dead -- the dev server is not running here",
 }
+
+#: What `reap` collects. `STARTING` is deliberately absent: a row with no
+#: pid is one `tools.demo start` wrote a moment ago and has not finished
+#: with, and reaping it makes that start kill its own healthy server.
+REAPABLE = (POD_GONE, PROCESS_GONE)
 
 
 def cmd_stop(args):
@@ -294,7 +306,7 @@ def cmd_list(args):
     stale = 0
     for demo in rows:
         state = judge(demo, here)
-        stale += state != ALIVE
+        stale += state in REAPABLE
         print(f"{PUBLIC_BASE}/{demo['slug']}/  [{VERDICT_TEXT[state]}]")
         print(f"  {demo['host']}:{demo['port']}  started {demo.get('started_at', '?')}"
               f"  pid {demo.get('pid', '?')}")
@@ -308,7 +320,7 @@ def cmd_list(args):
 
 
 def cmd_reap(args):
-    """Drop every row that is not serving anything, and free its port.
+    """Drop every row whose demo is gone, and free its port.
 
     Idea #136 asks that a demo survive the owner's deploys and stop itself
     when nobody is looking. It cannot survive a roll -- the dev server dies
@@ -316,10 +328,13 @@ def cmd_reap(args):
     longer exists -- so the honest half is that the registry stops claiming
     it did. Nothing else in this loop ever ran `stop` for a demo whose pod
     had rolled, which is why one row held port 5174 for two days.
+
+    It leaves a `STARTING` row alone -- `verdict` has the reproduction.
     """
     registry, rev = _read_registry()
-    doomed = [(d, judge(d, pod_ip())) for d in entries(registry)]
-    doomed = [(d, v) for d, v in doomed if v != ALIVE]
+    here = pod_ip()
+    doomed = [(d, judge(d, here)) for d in entries(registry)]
+    doomed = [(d, v) for d, v in doomed if v in REAPABLE]
     if not doomed:
         print("nothing to reap")
         return 0

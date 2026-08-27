@@ -448,20 +448,38 @@ def test_a_row_from_another_pod_is_never_judged_running():
     from agora_runner.nova_demos import POD_GONE, verdict
     entry = {"slug": "bakeoff", "host": "10.42.0.84", "port": 5174, "pid": 311849}
     # pid_alive=True on purpose: a live pid must not rescue a dead pod.
-    assert verdict(entry, "10.42.0.56", True) == POD_GONE
+    assert verdict(entry, "10.42.0.56", lambda pid: True) == POD_GONE
 
 
 def test_a_row_on_this_pod_is_judged_by_its_process():
     from agora_runner.nova_demos import ALIVE, PROCESS_GONE, verdict
     entry = {"slug": "a", "host": "10.42.0.56", "port": 5174, "pid": 42}
-    assert verdict(entry, "10.42.0.56", True) == ALIVE
-    assert verdict(entry, "10.42.0.56", False) == PROCESS_GONE
+    assert verdict(entry, "10.42.0.56", lambda pid: True) == ALIVE
+    assert verdict(entry, "10.42.0.56", lambda pid: False) == PROCESS_GONE
 
 
-def test_a_row_with_no_pid_is_not_running():
-    from agora_runner.nova_demos import PROCESS_GONE, verdict
+def test_a_row_with_no_pid_yet_is_starting_and_not_dead():
+    """`start` writes the row a second before it writes the pid.
+
+    My reviewer reproduced the consequence of getting this wrong: a
+    concurrent `reap` drops the row, `cmd_start` then finds itself gone,
+    kills its own healthy dev server and fails. So the pid-less state is
+    its own verdict and `reap` does not collect it.
+    """
+    from agora_runner.nova_demos import STARTING, verdict
     entry = {"slug": "a", "host": "10.42.0.56", "port": 5174}
-    assert verdict(entry, "10.42.0.56", True) == PROCESS_GONE
+    assert verdict(entry, "10.42.0.56", lambda pid: True) == STARTING
+
+
+def test_a_foreign_row_is_judged_without_probing_its_pid():
+    """Eager evaluation would fire os.kill at a pid this pod reused."""
+    from agora_runner.nova_demos import POD_GONE, verdict
+
+    def _boom(pid):
+        raise AssertionError("probed a pid recorded by another pod")
+
+    entry = {"slug": "a", "host": "10.42.0.84", "port": 5174, "pid": 311849}
+    assert verdict(entry, "10.42.0.56", _boom) == POD_GONE
 
 
 def _fake_registry(demos):
@@ -579,3 +597,56 @@ def test_list_says_which_rows_are_not_serving_anything(capsys):
     out = capsys.readouterr().out
     assert "the pod it ran in is gone" in out
     assert "1 of 2 hold a port and are not serving anything" in out
+
+
+def test_reap_leaves_a_demo_that_is_still_starting_alone():
+    """The reviewer's reproduction, as a test.
+
+    `cmd_start` writes the row, sleeps a second, then writes the pid. A
+    `reap` inside that window used to read the row as dead and drop it,
+    which makes `start` kill its own live server and fail.
+    """
+    from tools import demo as demo_cli
+
+    state, _read, _write = _fake_registry([
+        {"slug": "starting", "host": "10.42.0.56", "port": 5174},
+        {"slug": "old", "host": "10.42.0.84", "port": 5175, "pid": 311849},
+    ])
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: False):
+        assert demo_cli.cmd_reap(type("A", (), {})()) == 0
+    assert [d["slug"] for d in state["registry"]["demos"]] == ["starting"]
+
+
+def test_list_does_not_offer_to_reap_a_demo_that_is_starting(capsys):
+    from tools import demo as demo_cli
+
+    state, _read, _write = _fake_registry([
+        {"slug": "starting", "host": "10.42.0.56", "port": 5174,
+         "started_at": "2026-08-27T23:14:02", "dir": "/d"},
+    ])
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"):
+        assert demo_cli.cmd_list(type("A", (), {})()) == 0
+    out = capsys.readouterr().out
+    assert "starting -- no pid recorded yet" in out
+    assert "hold a port and are not serving" not in out
+
+
+def test_judge_does_not_probe_the_pid_of_a_row_from_another_pod():
+    """`judge` is a wrapper, so its own ordering needs its own test.
+
+    The `verdict` version of this passes even when `judge` computes the
+    probe eagerly and hands `verdict` a constant -- which is exactly the
+    mutation that survived the first round.
+    """
+    from tools import demo as demo_cli
+
+    def _boom(pid):
+        raise AssertionError("probed a pid recorded by another pod")
+
+    entry = {"slug": "old", "host": "10.42.0.84", "port": 5174, "pid": 311849}
+    with patch.object(demo_cli, "pid_alive", _boom):
+        assert demo_cli.judge(entry, "10.42.0.56") == "pod-gone"
