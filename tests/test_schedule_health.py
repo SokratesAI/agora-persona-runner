@@ -289,3 +289,78 @@ def test_a_cron_that_cannot_be_judged_does_not_take_its_workflow_with_it():
     assert len(results) == 1
     assert results[0]["verdict"] == "never"
     assert results[0]["interval"] == 30
+
+
+def _deadman_stub(created_at, runs):
+    """The real `nova-deadman` file — three rungs — with a settable history."""
+    import base64
+
+    source = base64.b64encode(
+        b'name: d\non:\n  schedule:\n'
+        b'    - cron: "7,37 * * * *"\n'
+        b'    - cron: "23 */6 * * *"\n'
+        b'    - cron: "53 4 * * *"\n'
+        b'  workflow_dispatch:\n'
+    ).decode()
+    return _stub(
+        {
+            "actions/workflows --paginate": (
+                '{"workflows": [{"path": ".github/workflows/nova-deadman.yaml",'
+                '"name": "nova-deadman", "state": "active",'
+                f'"created_at": "{created_at}"}}]}}'
+            ),
+            "contents/": source,
+            "run list": runs,
+        }
+    )
+
+
+def test_a_multi_cron_workflow_that_never_fired_is_judged_at_the_tightest():
+    """The alarm meant to survive this box read `ok` while it had never once run.
+
+    `nova-deadman` declares a 30-minute, a 6-hourly and a daily rung. On
+    2026-08-28 GitHub had started it zero times in 829 minutes — roughly 27
+    missed firings of the tight rung — and this check called it healthy,
+    because the daily rung is allowed 4320m. The loosest rule exists to stop
+    a dead tight rung being inferred from a live loose one; with no run at
+    all there is no inference to make, every rung is silent, and the tightest
+    is the one a run was owed on first.
+    """
+    # Created 829m before NOW: past the 30-minute rung's 120m window, and
+    # nowhere near the daily rung's 4320m.
+    run = _deadman_stub("2026-08-27T01:51:00Z", "[]")
+    results, errors = sweep_at(run)
+    assert errors == []
+    assert len(results) == 1
+    assert results[0]["verdict"] == "never", results[0]["note"]
+    assert results[0]["tightest"] == 30
+    assert "every 30m" in results[0]["note"]
+    assert "judged at the tightest" in results[0]["note"]
+    assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 2
+
+
+def test_the_first_scheduled_run_on_any_rung_clears_the_red():
+    """The red has to be actionable, not permanent — one run and it goes quiet.
+
+    Same workflow, same age, one scheduled run an hour ago. That run could
+    have come from any rung and GitHub does not say which, so the loosest is
+    the only honest window again and the verdict is `ok`.
+    """
+    run = _deadman_stub("2026-08-27T01:51:00Z", '[{"createdAt": "2026-08-27T14:40:00Z"}]')
+    results, errors = sweep_at(run)
+    assert errors == []
+    assert results[0]["verdict"] == "ok"
+    assert "judged at the loosest" in results[0]["note"]
+    assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 0
+
+
+def test_a_never_fired_multi_cron_workflow_inside_the_tight_window_is_not_yet_a_finding():
+    """Tightest does not mean impatient: a workflow younger than its own tight
+    window has not missed anything yet, and reporting it would be the day-one
+    red this module refuses to ship."""
+    # 60m old against the 30-minute rung's 120m window.
+    run = _deadman_stub("2026-08-27T14:40:00Z", "[]")
+    results, errors = sweep_at(run)
+    assert errors == []
+    assert results[0]["verdict"] == "ok"
+    assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 0
