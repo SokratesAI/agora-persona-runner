@@ -161,11 +161,16 @@ def test_sweep_excludes_manual_dispatches_from_the_measurement():
 
 
 def sweep_at(run):
-    return sh.sweep(["SokratesAI/agora-persona-runner"], run=run, now=NOW)
+    results, errors, _lateness = sh.sweep(
+        ["SokratesAI/agora-persona-runner"], run=run, now=NOW
+    )
+    return results, errors
 
 
 def test_an_unreadable_repo_never_reads_as_clean():
-    results, errors = sh.sweep(["SokratesAI/x"], run=lambda args: (1, "", "boom"), now=NOW)
+    results, errors, _lateness = sh.sweep(
+        ["SokratesAI/x"], run=lambda args: (1, "", "boom"), now=NOW
+    )
     assert results == []
     assert errors and "boom" in errors[0]
     assert sh.format_report(results, errors, ["SokratesAI/x"])[1] == 1
@@ -364,3 +369,97 @@ def test_a_never_fired_multi_cron_workflow_inside_the_tight_window_is_not_yet_a_
     assert errors == []
     assert results[0]["verdict"] == "ok"
     assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 0
+
+
+# --- the floor is measured, not documented (Cycle 555) -------------------
+
+
+def test_lateness_is_measured_against_the_minute_the_cron_asked_for():
+    # `37 0 * * *` owed a run at 00:37; GitHub started it at 02:10, which is
+    # 93 minutes late. That is a real reading off this org's own history.
+    late = sh.lateness_minutes(["37 0 * * *"], 1440, ["2026-08-26T02:10:27Z"])
+    assert late == [93]
+
+
+def test_a_run_that_cannot_be_attributed_to_an_occurrence_is_dropped():
+    # A Friday-only cron and a run on a Tuesday: within one interval there is
+    # no occurrence to attribute it to, so it contributes nothing rather than
+    # inventing a lateness.
+    assert sh.lateness_minutes(["7 5 * * 5"], 60, ["2026-08-25T05:07:00Z"]) == []
+
+
+def test_the_floor_never_drops_below_the_documented_ninety():
+    assert sh.measured_floor([]) == 90
+    assert sh.measured_floor([("a", 4), ("a", 11)]) == 90
+    assert sh.measured_floor([("a", 4), ("a", 574)]) == 574
+
+
+def test_a_workflow_is_never_judged_against_its_own_lateness():
+    # My reviewer's finding: without this a workflow that fires chronically
+    # late puts its own worst run into the floor it is then judged against.
+    samples = [("late-one", 574), ("other", 36)]
+    assert sh.measured_floor(samples) == 574
+    assert sh.measured_floor(samples, without="late-one") == 90
+    assert sh.measured_floor(samples, without="other") == 574
+
+
+def test_a_run_later_than_the_documented_grace_is_not_a_finding_when_the_account_is_that_late():
+    # 574 minutes late is normal for this account, so a daily schedule that
+    # last fired 200 minutes ago is healthy under the measured floor and
+    # would still be healthy under the documented one -- the case that
+    # actually separates them is the tight cron below.
+    entry = {
+        "cron": "*/30 * * * *",
+        "interval": 30,
+        "tightest": 30,
+        "last_scheduled": "2026-08-27T00:00:00Z",
+    }
+    now = datetime(2026, 8, 27, 4, 0, tzinfo=timezone.utc)  # 240m ago
+    assert sh.verdict_for(entry, now)[0] == "overdue"
+    assert sh.verdict_for(entry, now, floor=574)[0] == "ok"
+
+
+def test_the_report_says_where_the_floor_came_from():
+    results = []
+    text, status = sh.format_report(
+        results, [], ["SokratesAI/x"], {"samples": [36, 92, 574], "floor": 574}
+    )
+    assert "measured, not documented" in text
+    assert "36m to 574m" in text
+    assert "median 92m" in text
+    assert "twice that and 574 minutes" in text
+
+
+def test_the_report_says_so_when_it_had_nothing_to_measure():
+    text, _status = sh.format_report([], [], ["SokratesAI/x"], {"samples": [], "floor": 90})
+    assert "documented best-effort" in text
+    assert "measured, not documented" not in text
+
+
+def test_the_sweep_actually_collects_the_lateness_it_judges_with():
+    # The wiring, not the helper: a sweep that computed a floor and never fed
+    # it any runs would report the documented 90 forever and look identical.
+    import base64
+
+    source = base64.b64encode(
+        b'name: m\non:\n  schedule:\n    - cron: "37 0 * * *"\n'
+    ).decode()
+    run = _stub(
+        {
+            "actions/workflows --paginate": (
+                '{"workflows": [{"path": ".github/workflows/agentics-maintenance.yml",'
+                '"name": "m", "state": "active", "created_at": "2026-08-01T00:00:00Z"}]}'
+            ),
+            "contents/": source,
+            "run list": (
+                '[{"createdAt": "2026-08-27T00:37:12Z"},'
+                ' {"createdAt": "2026-08-26T02:10:27Z"}]'
+            ),
+        }
+    )
+    _results, errors, lateness = sh.sweep(
+        ["SokratesAI/agora-persona-runner"], run=run, now=NOW
+    )
+    assert errors == []
+    assert lateness["samples"] == [0, 93]
+    assert lateness["floor"] == 93
