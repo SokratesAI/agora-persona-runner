@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 # Repo root on sys.path so `python3 tools/demo.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
@@ -53,6 +54,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     DemoError,
     dumps,
     entries,
+    idle_seconds,
     load,
     lookup,
     register,
@@ -71,6 +73,34 @@ SPAWN_CHECK_SECONDS = 1.0
 #: Where the owner opens it. One hostname, path-routed, rather than a tailnet
 #: device per demo that would outlive the demo it was minted for.
 PUBLIC_BASE = "https://nova.tailc83eb3.ts.net/demo"
+
+#: The site's in-cluster address. Every request for a demo goes through its
+#: `/demo/<slug>/` proxy, so it is the only thing that knows whether anyone
+#: is looking. Reachable from either pod -- measured Cycle 349 from the
+#: bridge pod with plain `urllib`.
+ACTIVITY_URL = "http://nova-site.agents.svc.cluster.local:8083/api/demo/activity"
+
+#: How long a demo may go unasked-for before `reap --idle` stops it. Two
+#: hours because the thing being protected is a demo left open in a meeting
+#: that resumes after lunch, and the thing being spent is one of thirty
+#: ports. Override per call; nothing reaps on idle unless asked.
+DEFAULT_IDLE_MINUTES = 120
+
+
+def fetch_activity(url=ACTIVITY_URL, timeout=10):
+    """`/api/demo/activity`, or None if the site did not answer.
+
+    None means "I do not know who is looking", and every caller treats that
+    as "reap nothing on idle" rather than as "nobody is looking". A site
+    that is down is the case where guessing kills a live demo.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        print(f"could not read demo activity from the site ({e}); "
+              f"idle is unknown", file=sys.stderr)
+        return None
 
 
 def _run(argv, **kw):
@@ -252,6 +282,35 @@ VERDICT_TEXT = {
 REAPABLE = (POD_GONE, PROCESS_GONE)
 
 
+def terminate(entry):
+    """SIGTERM this demo's process group. Returns (may-deregister, what).
+
+    **Only ever call this on a row `judge` calls `ALIVE`.** A pid is
+    meaningful only inside the pod that recorded it and pid numbers are
+    reused, so signalling a row from a pod that is gone reaches an
+    unrelated process here -- see `nova_demos.verdict`.
+
+    The `PermissionError` branch is why this returns a permission rather
+    than only a message: the process is *alive* and this account cannot
+    signal it, and freeing the port in the registry while something still
+    holds it is the silent cross-serve `nova_demos` exists to prevent --
+    the next start would allocate it, fail to bind, and serve this demo's
+    page under the new slug.
+    """
+    pid = entry.get("pid")
+    if not pid:
+        return True, "no pid recorded"
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        return True, f"stopped pid {pid}"
+    except ProcessLookupError:
+        # Deregister. A registry row pointing at a dead process holds a
+        # port forever and answers 502 to whoever opens it.
+        return True, f"pid {pid} was already gone"
+    except PermissionError as e:
+        return False, f"pid {pid} is alive and could not be signalled ({e})"
+
+
 def cmd_stop(args):
     registry, rev = _read_registry()
     entry = lookup(registry, args.slug)
@@ -273,22 +332,10 @@ def cmd_stop(args):
               f"nothing to signal; port {entry['port']} released")
         return 0
     if pid:
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-            killed = f"stopped pid {pid}"
-        except ProcessLookupError:
-            # Deregister. A registry row pointing at a dead process holds a
-            # port forever and answers 502 to whoever opens it.
-            killed = f"pid {pid} was already gone"
-        except PermissionError as e:
-            # The opposite case, and it must not deregister: the process is
-            # *alive* and this account cannot signal it. Freeing the port in
-            # the registry while something still holds it is exactly the
-            # silent cross-serve `nova_demos` exists to prevent -- the next
-            # start would allocate it, fail to bind, and serve this demo's
-            # page under the new slug.
-            print(f"{args.slug}: pid {pid} is alive and could not be signalled "
-                  f"({e}); port {entry['port']} stays registered", file=sys.stderr)
+        freed, killed = terminate(entry)
+        if not freed:
+            print(f"{args.slug}: {killed}; port {entry['port']} stays registered",
+                  file=sys.stderr)
             return 1
     unregister(registry, args.slug)
     _write_registry(registry, rev)
@@ -303,11 +350,16 @@ def cmd_list(args):
         print("no demos are running")
         return 0
     here = pod_ip()
+    activity = fetch_activity()
+    now = time.time()
     stale = 0
     for demo in rows:
         state = judge(demo, here)
         stale += state in REAPABLE
-        print(f"{PUBLIC_BASE}/{demo['slug']}/  [{VERDICT_TEXT[state]}]")
+        age = idle_seconds(demo, activity, now) if state == ALIVE else None
+        seen = ("" if age is None
+                else f"  [nobody has asked for it in {int(age // 60)} min]")
+        print(f"{PUBLIC_BASE}/{demo['slug']}/  [{VERDICT_TEXT[state]}]{seen}")
         print(f"  {demo['host']}:{demo['port']}  started {demo.get('started_at', '?')}"
               f"  pid {demo.get('pid', '?')}")
         print(f"  {demo.get('dir', '?')}")
@@ -330,21 +382,53 @@ def cmd_reap(args):
     had rolled, which is why one row held port 5174 for two days.
 
     It leaves a `STARTING` row alone -- `verdict` has the reproduction.
+
+    `--idle <minutes>` adds the second half: stop and deregister a demo
+    that is genuinely running here and that nobody has asked for in that
+    long. The site is the only thing that knows -- every request for a demo
+    goes through its proxy -- so this is the one subcommand that needs the
+    network, and it does nothing on idle when the site does not answer.
     """
     registry, rev = _read_registry()
     here = pod_ip()
-    doomed = [(d, judge(d, here)) for d in entries(registry)]
-    doomed = [(d, v) for d, v in doomed if v in REAPABLE]
+    states = [(d, judge(d, here)) for d in entries(registry)]
+    doomed = [(d, VERDICT_TEXT[v]) for d, v in states if v in REAPABLE]
+    refused = []
+    if args.idle is not None:
+        # The other half of #136: a demo nobody is looking at. Only an
+        # `ALIVE` row is a candidate -- the two above are already collected,
+        # and a `STARTING` row is one `start` wrote a second ago.
+        activity = fetch_activity()
+        now = time.time()
+        for demo, state in states:
+            if state != ALIVE:
+                continue
+            age = idle_seconds(demo, activity, now)
+            # `None` is "I do not know", not "nobody is looking": the site
+            # is down, or the row predates the activity endpoint. Reaping
+            # on it would stop a demo somebody is watching.
+            if age is None or age < args.idle * 60:
+                continue
+            freed, note = terminate(demo)
+            if not freed:
+                refused.append((demo, note))
+                continue
+            doomed.append((demo, f"idle {int(age // 60)} min; {note}"))
     if not doomed:
         print("nothing to reap")
-        return 0
-    for demo, state in doomed:
+        for demo, note in refused:
+            print(f"{demo['slug']}: {note}; port {demo['port']} stays registered",
+                  file=sys.stderr)
+        return 1 if refused else 0
+    for demo, _ in doomed:
         unregister(registry, demo["slug"])
     _write_registry(registry, rev)
-    for demo, state in doomed:
-        print(f"{demo['slug']}: {VERDICT_TEXT[state]}; "
-              f"port {demo['port']} released")
-    return 0
+    for demo, why in doomed:
+        print(f"{demo['slug']}: {why}; port {demo['port']} released")
+    for demo, note in refused:
+        print(f"{demo['slug']}: {note}; port {demo['port']} stays registered",
+              file=sys.stderr)
+    return 1 if refused else 0
 
 
 def main(argv=None):
@@ -367,6 +451,11 @@ def main(argv=None):
     lst.set_defaults(func=cmd_list)
 
     reap = sub.add_parser("reap", help="release ports held by demos that are gone")
+    reap.add_argument("--idle", type=int, nargs="?", const=DEFAULT_IDLE_MINUTES,
+                      default=None, metavar="MINUTES",
+                      help=f"also stop demos nobody has asked for in this many "
+                           f"minutes (default {DEFAULT_IDLE_MINUTES} when the "
+                           f"flag is given with no number)")
     reap.set_defaults(func=cmd_reap)
 
     args = parser.parse_args(argv)

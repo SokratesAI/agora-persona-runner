@@ -1305,6 +1305,8 @@ def main(argv=None):
     parser.add_argument("--no-gh", action="store_true",
                         help="do not ask GitHub whether a branch was merged; "
                              "a landed branch then reads `unfinished`")
+    parser.add_argument("--no-demos", action="store_true",
+                        help="skip releasing demo ports nothing is using")
     parser.add_argument("--no-remote", action="store_true",
                         help="skip the sweep for remote branches no checkout "
                              "is parked on (~11s over four repos)")
@@ -1328,7 +1330,42 @@ def main(argv=None):
     # question twice and print the same branch twice.
     if not (args.no_remote or args.no_gh):
         _sweep_remote(roots)
+    if not args.no_demos:
+        _sweep_demos()
     return 0
+
+
+def _sweep_demos(idle_minutes=None):
+    """Release demo ports nothing is using. Idea #136's presser.
+
+    `tools.demo reap` was built and nothing ran it, which is the same
+    failure it was built to fix one level up: a demo whose pod has rolled
+    holds one of thirty ports forever, and a demo nobody has asked for in
+    two hours holds one too. This step is the only thing that runs every
+    cycle from the pod the demos live in, so it is where the button goes.
+
+    **It cannot misfire from the runner pod.** `tools.demo` reads the
+    registry by shelling `/app/bridge/vault_tool.py`, which exists only on
+    the bridge pod; anywhere else the read fails and it reaps nothing. That
+    matters because `reap` decides a demo is gone by comparing the recorded
+    pod IP against its own, so from the wrong pod every live demo looks
+    dead -- the failure is real and the guard is that the tool never gets
+    that far.
+
+    Never fatal. A tidy sweep that stops because the demo registry was
+    unreadable would take the checkout verdicts with it, and those are what
+    the cycle actually came for.
+    """
+    from tools import demo as demo_cli
+
+    idle = demo_cli.DEFAULT_IDLE_MINUTES if idle_minutes is None else idle_minutes
+    try:
+        demo_cli.cmd_reap(argparse.Namespace(idle=idle))
+    except Exception as e:
+        print("could not sweep demos: %s -- a stale demo may still be holding "
+              "a port" % (str(e)[:200],))
+    finally:
+        demo_cli._cleanup_temps()
 
 
 def _sweep_remote(roots):
