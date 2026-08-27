@@ -10488,6 +10488,18 @@
         note.textContent = "starting…";
         chatWrite("/api/conversations/new", { name: wanted, personaId: who.value })
           .then(function (id) {
+            // A create that answers 200 without an id is the one failure
+            // this form cannot recover from silently: `switchTo` would open
+            // `?id=undefined`, which 404s, and the composer under it would
+            // refuse every message with "conversationId and text must be
+            // strings". That is exactly what he photographed on 2026-08-27,
+            // because the route answered under `conversationId` while every
+            // other chat write answers under `result`. Say so instead --
+            // the conversation itself was created either way, so the list
+            // is where he can still reach it.
+            if (typeof id !== "string" || !id) {
+              throw new Error("it was created but the server did not say which one — open it from the list");
+            }
             // Straight into the thread he just made: he started it to say
             // something, and leaving him on the list would make him find it.
             switchTo({ kind: "conv", id: id, name: wanted });

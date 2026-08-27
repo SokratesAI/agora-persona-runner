@@ -3090,8 +3090,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         bad_input = not ok and message.startswith(
             ("a conversation needs", "that name is longer", "pick who"))
+        # `result`, not `conversationId`: the page's one chat writer reads
+        # `result.result` off every `/api/conversations/*` write, and this
+        # route answering under a name of its own is why a conversation he
+        # started opened as `?id=undefined` (404) and refused his first
+        # message with "conversationId and text must be strings".
         self._send_json(200 if ok else (400 if bad_input else 502),
-                        {"ok": ok, "conversationId": message if ok else None,
+                        {"ok": ok, "result": message if ok else None,
                          "message": message})
 
     def _post_conversation_rename(self, payload):
