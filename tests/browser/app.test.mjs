@@ -11436,3 +11436,157 @@ describe("holding a conversation in the switcher opens edit options", () => {
     assert.equal(window.document.getElementById("chat-title").textContent, "Gutters");
   });
 });
+
+/* the owner, ideas board #115: *"You are asleep for nine cycles at a time and
+ * the app opens on the newest journal card with no sense of how much you
+ * missed. One line -- six cycles, two PRs merged, one thing needs your input,
+ * one board row moved -- would let you decide in two seconds whether to read
+ * or to close it."*
+ *
+ * The mark lives in `localStorage`, so every test here either seeds it through
+ * `install` or deliberately leaves it empty -- jsdom gives each window its own
+ * store, and empty is the honest first-load case. The fixture's journal is
+ * cycles 57 (twice, an entry and its addendum), 55, and one unnumbered report;
+ * `status.cycle` is 57 and 56 is a real hole in the numbering.
+ */
+describe("what changed since you last looked", () => {
+  const withLastSeen = (cycle) => (window) => {
+    window.localStorage.setItem("nova.lastSeen.v1", String(cycle));
+  };
+  const line = (window) => window.document.querySelector("#changed .changed-line");
+  const box = (window) => window.document.getElementById("changed");
+
+  test("a first load says nothing and seeds the mark instead", async () => {
+    /* The same call `nova.repliesRead.v1` makes one describe block up: with
+     * no mark there is no "last time", and printing "540 cycles" on day one
+     * is the absence of a measurement dressed as one. */
+    const window = await loadSite("/");
+    assert.equal(line(window), null, "a fresh device claimed news it cannot know about");
+    assert.equal(box(window).hasAttribute("hidden"), true);
+    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "57",
+      "the first load did not record where he got to");
+  });
+
+  test("it counts the cycles and the merges he missed", async () => {
+    const window = await loadSite("/", { install: withLastSeen(54) });
+    assert.equal(line(window).textContent, "2 cycles since you last looked · 2 PRs merged");
+  });
+
+  test("a cycle and its addendum are one cycle and one PR, not two", async () => {
+    /* Cycle 57 has two entries carrying the same `PR: agora#45` footer. */
+    const window = await loadSite("/", { install: withLastSeen(56) });
+    assert.equal(line(window).textContent, "1 cycle since you last looked · 1 PR merged");
+  });
+
+  test("nothing new says nothing at all", async () => {
+    const window = await loadSite("/", { install: withLastSeen(57) });
+    assert.equal(line(window), null, "drew a line with no news in it");
+    assert.equal(box(window).hasAttribute("hidden"), true);
+  });
+
+  test("a mark older than the feed's window says `at least`", async () => {
+    /* The feed is the newest N cycles, so a mark from before the oldest card
+     * on it cannot be counted exactly -- both numbers are floors. */
+    const window = await loadSite("/", { install: withLastSeen(3) });
+    assert.equal(line(window).textContent,
+      "at least 2 cycles since you last looked · at least 2 PRs merged");
+  });
+
+  test("a cycle that shipped no PR is counted as a cycle and not as a merge", async () => {
+    const journal = () => ({
+      status: { ...payload.journal.status, cycle: 60 },
+      entries: [
+        { ...payload.journal.entries[0], cycle: 60, pr: "none", outcome: "no-op" },
+        ...payload.journal.entries,
+      ],
+    });
+    const window = await loadSite("/", { install: withLastSeen(57), journal });
+    assert.equal(line(window).textContent, "1 cycle since you last looked",
+      "counted a cycle with no PR as a merge");
+  });
+
+  test("tapping the line dismisses it", async () => {
+    const window = await loadSite("/", { install: withLastSeen(54) });
+    line(window).dispatchEvent(new window.Event("click"));
+    assert.equal(line(window), null, "the tap left the line on screen");
+    assert.equal(box(window).hasAttribute("hidden"), true);
+  });
+
+  test("the mark only moves forward", async () => {
+    /* A deep link or a search can hand `render` a `status.cycle` below the
+     * mark; writing it would invent a hundred cycles of news on his next
+     * open. */
+    const journal = () => ({ ...payload.journal, status: { ...payload.journal.status, cycle: 40 } });
+    const window = await loadSite("/", { install: withLastSeen(57), journal });
+    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "57");
+  });
+
+  test("a /cycle/N permalink neither draws the line nor moves the mark", async () => {
+    const window = await loadSite("/cycle/55", { install: withLastSeen(54) });
+    assert.equal(line(window), null, "a permalink drew a line about its own single entry");
+    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "54",
+      "a permalink overwrote the mark with the cycle he deep-linked to");
+  });
+
+  test("a payload replayed out of the worker's cache says nothing", async () => {
+    /* Same call the badges beside it make: "this is what changed" is a claim
+     * about now, and these bytes were cached at some unknown earlier time. */
+    const window = await loadSite("/", { install: withLastSeen(54), replayed: true });
+    assert.equal(line(window), null, "made a claim about now off a cached payload");
+  });
+
+  test("the page renders without localStorage at all", async () => {
+    const window = await loadSite("/", {
+      install: (w) => {
+        Object.defineProperty(w, "localStorage", {
+          get() { throw new Error("refused"); },
+        });
+      },
+    });
+    assert.equal(cards(window).length > 0, true, "the feed did not render without localStorage");
+    assert.equal(line(window), null);
+  });
+
+  test("a search cannot change what the line says", async () => {
+    /* A search answers with whichever cycles matched, from anywhere in the
+     * archive, so its entries are not "the newest N". Recomputing off them
+     * would describe the query rather than what he missed -- here, the one
+     * matched cycle would read "1 cycle" against the true "2 cycles". */
+    const journal = (url) => {
+      if (!url.includes("q=")) return payload.journal;
+      return {
+        ...payload.journal,
+        query: "tailscale",
+        total: 1,
+        entries: [payload.journal.entries[0]],
+        status: { ...payload.journal.status, cycle: 57 },
+      };
+    };
+    const window = await loadSite("/", { install: withLastSeen(54), journal });
+    const before = line(window).textContent;
+    assert.equal(before, "2 cycles since you last looked · 2 PRs merged");
+    const input = window.document.querySelector(".journal-search-input");
+    input.value = "tailscale";
+    input.dispatchEvent(new window.Event("input"));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Guard: without this the assertion below passes on a search that never
+    // rendered, which is what the fixture does by default.
+    assert.equal(window.document.querySelector(".journal-search-count").textContent,
+      "1 entry mentions \u201Ctailscale\u201D", "the search never rendered");
+    assert.equal(line(window).textContent, before,
+      "the search rewrote the what-changed line off its own results");
+  });
+
+  test("the line survives an in-page navigation", async () => {
+    /* The mark advances on the first paint, so a second read of storage
+     * would answer "nothing new" -- and tapping a card and coming back
+     * re-renders the header. */
+    const window = await loadSite("/", { install: withLastSeen(54) });
+    assert.ok(line(window), "no line on the first paint");
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(line(window).textContent, "2 cycles since you last looked · 2 PRs merged",
+      "the line vanished when he navigated back to the feed");
+  });
+});
