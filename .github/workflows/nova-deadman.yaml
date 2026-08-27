@@ -17,27 +17,45 @@ name: nova-deadman
 
 on:
   schedule:
-    # Every 30 minutes, at :07 and :37 rather than :00 and :30.
+    # A ladder of three cadences, because two 30-minute crons in a row have
+    # now been scheduled by GitHub exactly zero times and the next guess
+    # should be a measurement instead.
     #
-    # This was `*/30 * * * *` and GitHub never scheduled it once. Measured
-    # 2026-08-27 15:40 UTC, seven hours and thirteen firing opportunities
-    # after the workflow was added to `main`:
-    # `/actions/runs?event=schedule` answered `total_count: 0`, and the
-    # workflow's only two runs ever were manual dispatches. The workflow
-    # was `active`, Actions `enabled`, the repo public, and
-    # `SokratesAI/sokrates-docs` had run a scheduled workflow at 10:11 UTC
-    # the same morning -- so it is neither the account nor the org.
+    # What is measured, 2026-08-27 22:40 Oslo:
+    #   * `agora-persona-runner` has had 0 scheduled runs, ever
+    #     (`/actions/runs?event=schedule` -> total_count 0). The workflow is
+    #     `active`, Actions `enabled` with `allowed_actions: all`, the repo
+    #     public, not a fork, not archived, default branch `main`. `*/30`
+    #     ran for 7h and `7,37` for 11h50m; 23+ firing opportunities, none
+    #     taken.
+    #   * The one schedule that does fire in this org is
+    #     `sokrates-docs/agentics-maintenance.yml`, cron `37 0 * * *`. Its
+    #     last 18 daily runs landed between 01:58 and 03:10 UTC -- 81 to 153
+    #     minutes after the minute it asked for, every day -- and the run on
+    #     2026-08-27 landed at 10:11 UTC, 9h34m late.
     #
-    # The one difference from that working schedule is the minute: it asks
-    # for `37 0 * * *` and this asked for the top and half of every hour,
-    # which is where GitHub documents `schedule` as delayed under load.
-    # That explains lateness, not absence, so this is an experiment rather
-    # than a diagnosis -- and `tools.schedule_health` is what reads the
-    # result, every cycle, instead of nobody noticing for another week.
+    # So this account's scheduler is running one to two and a half hours
+    # behind, and GitHub skips a scheduled occurrence that is superseded
+    # before the queue reaches it. A 30-minute cron under a 90-minute delay
+    # is overtaken every single time, which is a sufficient explanation for
+    # a run count of zero. It is not a proven one -- I have one working
+    # schedule to compare against and it is daily -- so the three crons
+    # below are the experiment that settles it, and each rung is also real
+    # coverage the alarm does not have today.
     #
-    # The cadence is unchanged and the grace inside the check is an hour,
-    # so nothing about the alarm's behaviour depends on this either way.
+    # How to read the result: `tools.schedule_health` reports this workflow
+    # every cycle. Zero runs after 24h means the cause is not the interval
+    # and is something about this repo. Roughly one run a day means only the
+    # daily rung fires. Five or so means the 6-hourly rung fires too. Around
+    # forty-eight means the 30-minute rung came back and the delay was
+    # transient.
+    #
+    # The 30-minute rung stays deliberately: it costs nothing while it never
+    # fires, it is the control for the whole hypothesis, and if GitHub's
+    # queue recovers the alarm goes back to 30-minute latency on its own.
     - cron: "7,37 * * * *"
+    - cron: "23 */6 * * *"
+    - cron: "53 4 * * *"
   workflow_dispatch:
 
 permissions:

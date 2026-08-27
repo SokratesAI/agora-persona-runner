@@ -221,3 +221,71 @@ def test_a_workflow_with_no_file_in_the_repo_is_skipped_not_unreadable():
     results, errors = sweep_at(run)
     assert results == [] and errors == []
     assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 0
+
+
+def test_several_crons_on_one_workflow_are_judged_at_the_loosest():
+    """`nova-deadman` declares three cadences and GitHub does not say which fired.
+
+    Judged per cron, the 30-minute rung is `overdue` forever the moment the
+    daily rung is the only one firing — a permanent red on a healthy
+    workflow, which is the failure this module exists to avoid. One run
+    inside the daily window is the whole evidence there is, so the daily
+    window is the honest verdict.
+    """
+    import base64
+
+    source = base64.b64encode(
+        b'name: d\non:\n  schedule:\n'
+        b'    - cron: "7,37 * * * *"\n'
+        b'    - cron: "23 */6 * * *"\n'
+        b'    - cron: "53 4 * * *"\n'
+        b'  workflow_dispatch:\n'
+    ).decode()
+    run = _stub(
+        {
+            "actions/workflows --paginate": (
+                '{"workflows": [{"path": ".github/workflows/nova-deadman.yaml",'
+                '"name": "nova-deadman", "state": "active",'
+                '"created_at": "2026-08-01T00:00:00Z"}]}'
+            ),
+            "contents/": source,
+            # 2h47m before NOW: far past the 30-minute rung’s 120m window,
+            # comfortably inside the daily one's.
+            "run list": '[{"createdAt": "2026-08-27T12:53:00Z"}]',
+        }
+    )
+    results, errors = sweep_at(run)
+    assert errors == []
+    assert len(results) == 1, "one entry per workflow, not per cron"
+    assert results[0]["verdict"] == "ok"
+    assert results[0]["interval"] == 1440
+    assert results[0]["crons"] == ["7,37 * * * *", "23 */6 * * *", "53 4 * * *"]
+    assert "judged at the loosest" in results[0]["note"]
+    assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 0
+
+
+def test_a_cron_that_cannot_be_judged_does_not_take_its_workflow_with_it():
+    """One nonsense cron is reported; the sibling it shares a file with is still judged."""
+    import base64
+
+    source = base64.b64encode(
+        b'name: d\non:\n  schedule:\n'
+        b'    - cron: "not-a-cron"\n'
+        b'    - cron: "*/30 * * * *"\n'
+    ).decode()
+    run = _stub(
+        {
+            "actions/workflows --paginate": (
+                '{"workflows": [{"path": ".github/workflows/nova-deadman.yaml",'
+                '"name": "nova-deadman", "state": "active",'
+                '"created_at": "2026-08-01T00:00:00Z"}]}'
+            ),
+            "contents/": source,
+            "run list": "[]",
+        }
+    )
+    results, errors = sweep_at(run)
+    assert len(errors) == 1 and "not-a-cron" in errors[0]
+    assert len(results) == 1
+    assert results[0]["verdict"] == "never"
+    assert results[0]["interval"] == 30

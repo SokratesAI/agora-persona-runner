@@ -334,6 +334,24 @@ def sweep(repos, run=None, now=None):
             if error:
                 errors.append(f"{repo} {workflow['path']}: {error}")
                 continue
+            # One entry per *workflow*, not per cron. A workflow may declare
+            # several crons, and GitHub's run payload does not say which one
+            # produced a run -- so per-cron is a verdict the evidence cannot
+            # support. Judging each separately against the one shared run
+            # history makes the tightest cron permanently red the moment the
+            # loosest is the only one firing, which is exactly the "red on day
+            # one and forever is the same as off" failure this module is
+            # written to avoid. `nova-deadman` declares three cadences on
+            # purpose (see its own file) and would have reported OVERDUE for
+            # the rest of its life. So the workflow is judged at its *loosest*
+            # cron: that is the interval at which a run is genuinely owed, and
+            # anything tighter firing is a bonus this check cannot see anyway.
+            # A cron this module cannot judge is reported and skipped rather
+            # than taking the whole workflow with it: the error already stops
+            # the sweep reading as clean, and dropping a workflow that also
+            # declares a cron we *can* judge would trade a real verdict for a
+            # second copy of the same complaint.
+            declared = []
             for cron in crons_in(source or ""):
                 try:
                     interval = cron_interval_minutes(cron)
@@ -346,13 +364,26 @@ def sweep(repos, run=None, now=None):
                         "twice in seventy days — too rare for this check to judge"
                     )
                     continue
-                last, error = newest_scheduled_run(workflow, run=run)
-                if error:
-                    errors.append(f"{repo} {workflow['path']}: {error}")
-                    continue
-                entry = dict(workflow, cron=cron, interval=interval, last_scheduled=last)
-                entry["verdict"], entry["note"] = verdict_for(entry, now)
-                results.append(entry)
+                declared.append((cron, interval))
+            if not declared:
+                continue
+            last, error = newest_scheduled_run(workflow, run=run)
+            if error:
+                errors.append(f"{repo} {workflow['path']}: {error}")
+                continue
+            loosest = max(interval for _, interval in declared)
+            label = " | ".join(cron for cron, _ in declared)
+            if len(declared) > 1:
+                label += " (judged at the loosest)"
+            entry = dict(
+                workflow,
+                cron=label,
+                crons=[cron for cron, _ in declared],
+                interval=loosest,
+                last_scheduled=last,
+            )
+            entry["verdict"], entry["note"] = verdict_for(entry, now)
+            results.append(entry)
     return results, errors
 
 
