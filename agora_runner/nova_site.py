@@ -1207,11 +1207,10 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
     deep link into an entry older than the first page would have to page
     backwards through the feed to find its own subject.
 
-    No `limit` means every entry, which is what this endpoint has always
-    done. The client always sends one; the default exists so an app.js
-    served out of a service worker's cache from before this shipped still
-    renders a whole feed instead of silently losing everything past the
-    first page.
+    No `limit` means every entry. That is this function's contract and it
+    is deliberately not where the bound lives -- `_journal_limit` supplies
+    `JOURNAL_DEFAULT_LIMIT` at the HTTP edge, so an unwindowed call here is
+    still how `?limit=all` and every in-process caller reads the corpus.
 
     `search` is the owner's capture, issues.md 2026-08-25: *"I want to be
     able to search through journals. Give me a button or a input field
@@ -1773,6 +1772,41 @@ def journal_descriptor(page, limit, offset, cycle, search=None):
             f"|running={bool(status.get('running'))}")
 
 
+# What `/api/journal` sends when the caller did not say how many entries
+# it wants. It sent every entry ever written until 2026-08-27 -- 4,031,475
+# bytes over 600 entries, measured against the live pod at 13:05 Oslo that
+# day, growing by one entry an hour -- and `nova-site` was OOMKilled on it
+# the day before, which is what took the pod's memory ceiling from 256Mi to
+# 512Mi. Raising the ceiling was a bandage on a payload with no bound at
+# all; this is the bound.
+#
+# 20 is not a number invented here: it is `PAGE` in `app.js`, the window
+# the page asks for on a cold load and widens by on every tap of the pager.
+# So the client sees exactly what it saw before, and the callers that never
+# said what they wanted -- `site_check`, and any probe pointed at this
+# endpoint -- get 122,274 bytes instead of 4,031,475.
+#
+# Nothing loses the whole corpus: `?limit=all` still serves every entry, and
+# `?cycle=N` still ignores the window entirely so a deep link into an old
+# entry works on a cold load. The capability is intact and now has to be
+# asked for, which is the difference between a default and a cap.
+JOURNAL_DEFAULT_LIMIT = 20
+
+
+def _journal_limit(query):
+    """`?limit=` for the journal: an int, `None` for `all`, else the default.
+
+    `_int_param` cannot express this on its own -- it answers `default` for
+    anything it cannot parse, so `all` and a typo would mean the same thing.
+    The literal is checked before the parse so that "every entry" stays
+    reachable and stays deliberate.
+    """
+    raw = (query.get("limit") or [None])[0]
+    if raw is not None and raw.strip().lower() == "all":
+        return None
+    return _int_param(query, "limit", JOURNAL_DEFAULT_LIMIT)
+
+
 def _int_param(query, name, default):
     """A non-negative int from the query string, or `default`.
 
@@ -1845,10 +1879,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json_or_304(body, etag)
 
     def _send_journal(self, query):
-        """`/api/journal`, sliced to the window the client asked for."""
+        """`/api/journal`, sliced to the window the client asked for.
+
+        A caller that asks for no window gets `JOURNAL_DEFAULT_LIMIT` rather
+        than the whole archive; see that constant for the bytes.
+        """
         payload, _, base, age = cached_entry("journal", journal_payload)
         cycle = _int_param(query, "cycle", None)
-        limit = _int_param(query, "limit", None)
+        limit = _journal_limit(query)
         offset = _int_param(query, "offset", 0)
         search = (query.get("q") or [None])[0]
         page = journal_page(
@@ -1871,6 +1909,20 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         for with the same ones, so the page never has to wait for the feed
         before it can ask for the summaries -- both requests go out
         together on a cold load, as they always have.
+
+        It deliberately does **not** take the feed's default window, and the
+        1,681,533 bytes it answers unwindowed (13:07 Oslo, 2026-08-27) are
+        left on the floor on purpose. `limit=None` here does not mean "a
+        window nobody named" -- it takes the branch that skips the journal
+        entirely and serves the file, and a default would route those callers
+        through `journal_page` instead. With an unreadable or empty journal
+        that resolves to an empty cycle range, so the digest answers 200 with
+        zero lines: a plausible wrong answer in place of the whole file,
+        which is the silent-fallback failure this codebase has paid for more
+        than any other. `test_api_digest_returns_the_handoff_and_the_digest_lines`
+        caught exactly that when Cycle 535 tried it. Bounding this one wants
+        a slice over `lines` that does not consult the feed; it is written up
+        rather than guessed at here.
         """
         payload, _, base = cached_payload("digest", digest_payload)
         cycle = _int_param(query, "cycle", None)
