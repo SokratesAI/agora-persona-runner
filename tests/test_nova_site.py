@@ -863,7 +863,27 @@ def test_a_capture_reaches_the_vault_through_the_real_request_path():
     # The unrated default reaches `capture` explicitly rather than by
     # omission, so this pins that an unrated capture still writes his words
     # and nothing else -- tests/test_board_priority.py covers a rated one.
-    cap.assert_called_once_with("issues", "the app needs a restart", "")
+    cap.assert_called_once_with("issues", "the app needs a restart", "", one_item=False)
+
+
+@pytest.mark.parametrize("sent,expected", [
+    (True, True),
+    (False, False),
+    # Not truthiness. A client that sends the string or the number must not
+    # silently glue a whole paste into one item -- the default is one bullet
+    # per line and only an explicit `true` may change it.
+    ("true", False),
+    (1, False),
+    (None, False),
+])
+def test_only_an_explicit_true_keeps_a_paste_as_one_item(sent, expected):
+    payload = {"target": "issues", "text": "one\ntwo"}
+    if sent is not None:
+        payload["oneItem"] = sent
+    with patch.object(nova_site, "capture", return_value=(True, "captured to issues")) as cap:
+        status, _, _ = _post("/api/capture", payload)
+    assert status == 200
+    cap.assert_called_once_with("issues", "one\ntwo", "", one_item=expected)
 
 
 def test_editing_a_capture_reaches_the_vault_through_the_real_request_path():
@@ -4162,7 +4182,7 @@ def test_a_capture_is_in_the_board_on_the_very_next_request():
                       side_effect=lambda name: (live["text"], "", "")):
         assert _board_captures() == ["an older capture"]
 
-        def _write(target, text, priority=""):
+        def _write(target, text, priority="", one_item=False):
             live["text"] = live["text"].replace(
                 "- \n", f"- {text}\n- \n", 1
             )

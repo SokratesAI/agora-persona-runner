@@ -261,6 +261,29 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 .capture-status.is-error { color: var(--warn); }
 
+/* Appears only when the box holds more than one line, so it costs the
+ * one-line capture -- which is nearly every capture -- no height at all.
+ * `[hidden]` needs the explicit `display: none` because the rule below
+ * sets `display: flex` and would otherwise win on specificity. */
+.capture-one {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  /* 44px is the iOS touch-target minimum, same as `.capture-btn`. */
+  min-height: 44px;
+  color: var(--dim);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.capture-one[hidden] { display: none; }
+
+.capture-one input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+}
+
 .capture-btn {
   background: none;
   color: var(--accent);

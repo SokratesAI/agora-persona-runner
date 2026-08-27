@@ -6345,6 +6345,59 @@ describe("the priority picker (buildPrioPicker)", () => {
     );
   });
 
+  test("the one-item toggle appears only once the box holds more than one line", async () => {
+    const window = await loadSite("/issues");
+    const box = window.document.getElementById("capture-text");
+    const row = window.document.getElementById("capture-one");
+    assert.equal(row.hidden, true, "the toggle should be hidden on an empty box");
+    box.value = "one line";
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(row.hidden, true, "a one-line capture cannot be split, so the toggle means nothing");
+    box.value = "first paragraph\n\nsecond paragraph";
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(row.hidden, false, "the toggle should appear once the paste would split");
+  });
+
+  test("a value the browser restored across a refresh shows the toggle on load", async () => {
+    // `install` runs before `app.js` is evaluated, which is the only way to
+    // put a value in the box the way a browser's own form restoration does.
+    const window = await loadSite("/issues", {
+      install: (w) => {
+        w.document.getElementById("capture-text").value = "first paragraph\n\nsecond";
+      },
+    });
+    assert.equal(
+      window.document.getElementById("capture-one").hidden, false,
+      "the toggle only appears on an input event, so a restored paste never gets one",
+    );
+  });
+
+  test("a checked one-item toggle rides along with the capture, then resets", async () => {
+    const window = await loadSite("/issues");
+    const box = window.document.getElementById("capture-text");
+    box.value = "Stand up k3s on the NAS.\n\nWHY: the NAS is LAN-exposed.";
+    box.dispatchEvent(new window.Event("input"));
+    click(window, window.document.getElementById("capture-one-input"));
+    assert.equal(window.document.getElementById("capture-one-input").checked, true);
+    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].body.oneItem, true);
+    assert.equal(
+      window.document.getElementById("capture-one-input").checked, false,
+      "the toggle did not reset after a send, so the next one-line capture would carry it",
+    );
+    assert.equal(window.document.getElementById("capture-one").hidden, true);
+  });
+
+  test("an untouched capture posts oneItem false rather than nothing", async () => {
+    const window = await loadSite("/issues");
+    window.document.getElementById("capture-text").value = "the app needs a restart";
+    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted[0].body.oneItem, false);
+  });
+
   test("picking a rating on a boarded row posts it and updates the chip", async () => {
     const window = await loadSite("/issues#57");
     const trigger = window.document.getElementById("item-57").querySelector(".item-meta-row > .chip.prio");
