@@ -403,8 +403,30 @@ def _hb(schedule, persona=NOVA_PERSONA_ID, enabled=True,
             "lastResult": last_result}
 
 
-def _with_agora(monkeypatch, fake):
+def _with_agora(monkeypatch, fake, public=None):
+    """Point the snapshot at a fake internal API, and at a fake public one.
+
+    The public fallback defaults to a hard failure so every existing test
+    keeps asserting what the *internal* read does. A test that wants the
+    fallback passes its own `public`.
+    """
     monkeypatch.setattr("agora_runner.http_util.agora_internal", fake)
+    if public is None:
+        public = _FakePublicAgora(status=599)
+    monkeypatch.setattr("agora_runner.http_util.agora_get", public)
+
+
+class _FakePublicAgora:
+    """Stands in for `agora_get` -- the unauthenticated read on :8080."""
+
+    def __init__(self, status=200, heartbeats=()):
+        self.status = status
+        self.heartbeats = list(heartbeats)
+        self.calls = []
+
+    def __call__(self, path):
+        self.calls.append(path)
+        return self.status, {"heartbeats": self.heartbeats}
 
 
 def test_the_silence_is_measured_in_the_live_cadence_not_the_constant():
@@ -1122,3 +1144,45 @@ def test_a_cycle_still_alive_past_the_bridges_turn_cap_is_not_a_stall():
                           minutes=STALL_MINUTES)
         assert status["stalled"] is False, age
         assert due(status, None) is None, age
+
+from agora_runner.cycle_health import nova_heartbeat_snapshot
+
+
+# The bridge pod has no AGORA_TOKEN, so the internal API answers 401 there
+# rather than failing to connect -- measured 2026-08-27, Cycle 523, after
+# `quota_runway` had called that "the bridge pod cannot reach Agora" for 264
+# cycles and silently fallen back to a cadence inferred from wake-ups. These
+# pin the fallback and pin that it does not fire when it is not needed.
+
+
+def test_an_unauthenticated_internal_read_falls_back_to_the_public_one(monkeypatch):
+    internal = _FakeAgora(status=401, heartbeats=[])
+    public = _FakePublicAgora(heartbeats=[
+        _hb("every@30m@16:00", last_run_at="2026-08-27T07:00:00+02:00",
+            last_result="running")])
+    _with_agora(monkeypatch, internal, public)
+    assert nova_heartbeat_snapshot() == (
+        30, "2026-08-27T07:00:00+02:00", "running")
+    assert public.calls == ["/heartbeats"]
+
+
+def test_the_public_read_is_not_made_when_the_internal_one_answers(monkeypatch):
+    """The runner pod holds the token; asking twice there would be waste,
+    and worse, would let a stale public read overwrite a good one."""
+    internal = _FakeAgora(heartbeats=[
+        _hb("every@40m@19:00", last_run_at="2026-08-12T23:15:00+02:00",
+            last_result="merged")])
+    public = _FakePublicAgora(heartbeats=[_hb("every@5m")])
+    _with_agora(monkeypatch, internal, public)
+    assert nova_heartbeat_snapshot() == (
+        40, "2026-08-12T23:15:00+02:00", "merged")
+    assert public.calls == [], "the public API is a fallback, not a second source"
+
+
+def test_both_apis_failing_still_carries_no_run_state(monkeypatch):
+    """`None` has to keep meaning 'no honest answer'. If the fallback made
+    the snapshot always succeed, `quota_runway` could never report
+    OBSERVED and would present an inferred cadence as a scheduled one."""
+    _with_agora(monkeypatch, _FakeAgora(status=401),
+                _FakePublicAgora(status=503, heartbeats=[_hb("every@40m")]))
+    assert nova_heartbeat_snapshot() == (None, None, None)
