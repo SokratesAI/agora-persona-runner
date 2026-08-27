@@ -15,11 +15,14 @@ from tools.doc_owners import (
     OSLO,
     age_days,
     check_registry,
+    claim_age,
+    declared_date,
     longest_gap_days,
     owners,
     parse_recent,
     render,
     report,
+    stamp_explains,
     verdict,
     window_days,
 )
@@ -304,3 +307,117 @@ class TestRender:
         text = render([self._row(verdict="stale", age=None)], [])
         assert "0.0d" not in text
         assert "not written in 90d" in text
+
+
+ROADMAP = DOCS[0][1]
+
+
+class TestDeclaredDate:
+    def test_the_frontmatter_stamp_is_read_as_an_oslo_date(self):
+        text = "---\nupdated: 2026-08-16\n---\n\n# Roadmap\n"
+        assert declared_date(text) == datetime(2026, 8, 16, tzinfo=OSLO)
+
+    def test_a_document_with_no_frontmatter_has_no_stamp(self):
+        assert declared_date("# Roadmap\n\nupdated: 2026-08-16\n") is None
+
+    def test_a_stamp_that_is_not_a_plain_date_is_not_guessed_at(self):
+        assert declared_date("---\nupdated: last Tuesday\n---\n") is None
+
+    def test_no_text_at_all_is_no_stamp_rather_than_a_crash(self):
+        assert declared_date(None) is None
+
+
+class TestClaimAge:
+    def test_the_older_of_the_two_decides(self):
+        assert claim_age(6.0, 11.1) == 11.1
+
+    def test_a_stamp_younger_than_the_bytes_cannot_make_it_look_fresh(self):
+        assert claim_age(11.1, 6.0) == 11.1
+
+    def test_no_stamp_falls_back_to_the_write_time(self):
+        assert claim_age(6.0, None) == 6.0
+
+    def test_no_write_time_falls_back_to_the_stamp(self):
+        assert claim_age(None, 11.1) == 11.1
+
+    def test_neither_is_unknown_rather_than_zero(self):
+        assert claim_age(None, None) is None
+
+
+class TestStampDecidesTheVerdict:
+    def _rows(self, written, declared):
+        return report(
+            DOCS,
+            _texts(**{"weekly-reprioritise.md": "roadmap.md and journal-digest.md"}),
+            written,
+            {path for _, path, _, _ in DOCS},
+            NOW,
+            declared=declared,
+        )
+
+    def test_a_document_written_recently_but_stamped_long_ago_is_stale(self):
+        # The live case, Cycle 510: roadmap.md's bytes changed six days ago
+        # and it stamps itself eleven, inside and outside an eight-day window.
+        rows = self._rows(
+            {path: NOW - timedelta(days=6) for _, path, _, _ in DOCS},
+            {ROADMAP: NOW - timedelta(days=11)},
+        )
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["Roadmap"]["verdict"] == "stale"
+        assert by_name["Digest"]["verdict"] == "fresh"
+
+    def test_without_the_stamp_the_same_document_reads_as_fresh(self):
+        rows = self._rows(
+            {path: NOW - timedelta(days=6) for _, path, _, _ in DOCS},
+            {},
+        )
+        assert {r["name"]: r["verdict"] for r in rows}["Roadmap"] == "fresh"
+
+    def test_both_ages_are_carried_so_the_report_can_explain_itself(self):
+        rows = self._rows(
+            {path: NOW - timedelta(days=6) for _, path, _, _ in DOCS},
+            {ROADMAP: NOW - timedelta(days=11)},
+        )
+        row = {r["name"]: r for r in rows}["Roadmap"]
+        assert round(row["writeAge"]) == 6
+        assert round(row["stampAge"]) == 11
+        assert round(row["age"]) == 11
+
+
+class TestStampExplains:
+    def _row(self, verdict_word, write_age, limit=8):
+        return {"verdict": verdict_word, "writeAge": write_age, "limit": limit}
+
+    def test_a_stale_row_whose_bytes_are_young_is_explained(self):
+        assert stamp_explains(self._row("stale", 6.0)) is True
+
+    def test_a_stale_row_whose_bytes_are_also_old_needs_no_explanation(self):
+        assert stamp_explains(self._row("stale", 11.0)) is False
+
+    def test_a_fresh_row_is_never_explained(self):
+        assert stamp_explains(self._row("fresh", 1.0)) is False
+
+    def test_a_row_with_no_write_time_is_not_explained(self):
+        assert stamp_explains(self._row("stale", None)) is False
+
+
+class TestRenderExplainsTheStamp:
+    def _render(self, write_days, stamp_days):
+        rows = report(
+            DOCS,
+            _texts(**{"weekly-reprioritise.md": "roadmap.md and journal-digest.md"}),
+            {path: NOW - timedelta(days=write_days) for _, path, _, _ in DOCS},
+            {path for _, path, _, _ in DOCS},
+            NOW,
+            declared={ROADMAP: NOW - timedelta(days=stamp_days)},
+        )
+        return render(rows, [])
+
+    def test_the_stale_line_says_the_bytes_are_younger_than_the_claim(self):
+        text = self._render(6, 11)
+        assert "STALE" in text
+        assert "the stamp is why" in text
+        assert "6.0d old" in text
+
+    def test_a_document_stale_by_its_bytes_too_gets_no_extra_line(self):
+        assert "the stamp is why" not in self._render(11, 11)

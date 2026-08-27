@@ -38,6 +38,15 @@ waiting will never fix it. Collapsing the last two into "out of date"
 would print the same line for a job that missed a week and a job that
 does not exist.
 
+**Age is measured from the document's own `updated:` stamp, not from when
+its bytes last changed** -- or rather from whichever of the two is older.
+The first live run of this tool called `roadmap.md` fresh at 6.0 days
+while `/plan` was showing the owner `Updated 2026-08-16`, eleven days
+back, because something had written to the file on the 21st without
+renewing the claim in it. A staleness check that reads the clock the
+reader cannot see is the roadmap failure one more level down. See
+`claim_age`.
+
 **The staleness window is computed from the owner's cadence, not chosen.**
 A number picked per document would be me inventing a limit, which
 `personality.md` has a section about. Each prompt declares the weekdays
@@ -197,6 +206,49 @@ def age_days(written, now):
     return (now - written).total_seconds() / 86400
 
 
+def declared_date(text):
+    """The `updated:` stamp from the document's own frontmatter as an Oslo
+    datetime, or `None` when there is no stamp or it is not a plain date.
+
+    Parsed at **midnight** rather than end of day: a stamp is a claim about
+    a day, and taking its earliest instant makes the resulting age the
+    largest the stamp can honestly support. That direction is the same one
+    `parse_recent` picks when a row will not parse -- for a staleness check,
+    erring toward "look at this" is the safe error.
+    """
+    stamp = nova_plan._updated(text or "")
+    try:
+        when = datetime.strptime(stamp.strip(), "%Y-%m-%d")
+    except ValueError:
+        return None
+    return when.replace(tzinfo=OSLO)
+
+
+def claim_age(write_age, stamp_age):
+    """How old the document's *claim* is: the older of the two ages, or
+    whichever one exists.
+
+    **This is the whole point of the file and it was reading the wrong
+    clock.** `vault_tool.py recent` reports when the bytes last changed,
+    and a byte can change for reasons that renew nothing -- a typo, a
+    section appended by a tool, a reformat. The page does not show that
+    date. It shows the `updated:` stamp out of the frontmatter, and that
+    stamp is what a cycle bumps when it actually rewrites the thinking.
+    Measured Cycle 510 on the live vault: `roadmap.md` was last written
+    2026-08-21 and stamps itself `2026-08-16`, so this tool called it
+    6.0d old and fresh while `/plan` told the owner it was eleven days
+    old -- two numbers off one document, and the alarm was reading the
+    one nobody sees.
+
+    Taking the older of the two rather than the stamp alone keeps the
+    opposite failure covered: a cycle that rewrites a document and
+    forgets to bump the stamp still ages by its bytes, and a stamp dated
+    in the future cannot make anything look younger than it is.
+    """
+    ages = [a for a in (write_age, stamp_age) if a is not None]
+    return max(ages) if ages else None
+
+
 def verdict(found, age, owner_list, blind=False):
     """One of `missing`, `unknown owner`, `no owner`, `stale`, `fresh`.
 
@@ -232,16 +284,25 @@ def verdict(found, age, owner_list, blind=False):
     return "stale" if age > limit else "fresh"
 
 
-def report(documents, prompt_texts, written, present, now, blind=False):
+def report(documents, prompt_texts, written, present, now, blind=False,
+           declared=None):
     """One row per registered document: `(name, page, claim, verdict,
     age, owners, limit)`. Pure -- every read this needs has already
     happened, which is what makes the whole judgement testable without a
     vault.
+
+    `declared` is `{path: datetime}` from each document's own `updated:`
+    stamp; see `claim_age` for why the verdict is taken off the older of
+    that and the write time. It defaults to empty so a caller with no
+    stamps behaves exactly as this did before.
     """
+    declared = declared or {}
     rows = []
     for name, path, page, claim in documents:
         owner_list = owners(path, prompt_texts)
-        age = age_days(written.get(path), now)
+        write_age = age_days(written.get(path), now)
+        stamp_age = age_days(declared.get(path), now)
+        age = claim_age(write_age, stamp_age)
         limit = (
             min(window_days(weekdays) for _, _, weekdays in owner_list)
             if owner_list
@@ -255,11 +316,32 @@ def report(documents, prompt_texts, written, present, now, blind=False):
                 "claim": claim,
                 "verdict": verdict(path in present, age, owner_list, blind),
                 "age": age,
+                "writeAge": write_age,
+                "stampAge": stamp_age,
                 "owners": owner_list,
                 "limit": limit,
             }
         )
     return rows
+
+
+def stamp_explains(row):
+    """True when this row is stale *because of* its `updated:` stamp -- the
+    bytes alone would have read as fresh.
+
+    Only printed in that case, and deliberately not whenever the two
+    numbers merely disagree. `goals.md` is edited by the /plan page every
+    time the owner ticks a goal, and `idea-pool.md` by its own refresh, so
+    a note on every divergence would be a permanent line under two rows
+    where nothing is wrong. It earns its place exactly when a reader would
+    otherwise ask why a document written this week is being called stale.
+    """
+    if row["verdict"] != "stale":
+        return False
+    write_age, limit = row.get("writeAge"), row.get("limit")
+    if write_age is None or limit is None:
+        return False
+    return write_age <= limit
 
 
 def _age_text(age):
@@ -306,6 +388,17 @@ def render(rows, unreadable):
                 f"past the {row['limit']}d window of its tightest owner. Owned by {who}, so "
                 f"the job exists and has not run."
             )
+
+    for row in bad:
+        if not stamp_explains(row):
+            continue
+        lines.append(
+            f"          ...and the stamp is why: the bytes are only "
+            f"{_age_text(row['writeAge'])}, so the write time alone would have "
+            f"read as fresh. Something edited {row['path'].rsplit('/', 1)[-1]} "
+            f"without renewing the claim in it, and {row['page']} shows the "
+            "stamp."
+        )
 
     if good:
         lines.append(
@@ -417,12 +510,27 @@ def _read_state(documents):
             unreadable.append(f"write times under {prefix}")
         else:
             written.update(parse_recent(recent))
-    return prompt_texts, written, present, unreadable
+
+    # The stamp each document makes about itself. A document that cannot
+    # be read is *not* recorded as unreadable here: its write time and its
+    # presence in the listing were both measured above, so the verdict
+    # still stands on real evidence and only the drift note is lost.
+    # Adding it to `unreadable` would drop the whole run to exit 1 -- no
+    # instrument -- over a detail line.
+    declared = {}
+    for _, path, _, _ in documents:
+        if path not in present:
+            continue
+        text = _vault("get", path)
+        when = declared_date(text) if text is not None else None
+        if when is not None:
+            declared[path] = when
+    return prompt_texts, written, present, unreadable, declared
 
 
 def main(argv=None):
     check_registry()
-    prompt_texts, written, present, unreadable = _read_state(DOCUMENTS)
+    prompt_texts, written, present, unreadable, declared = _read_state(DOCUMENTS)
     if not prompt_texts:
         print(
             "refusing to report: none of the cycle prompts could be read, so "
@@ -435,6 +543,7 @@ def main(argv=None):
     rows = report(
         DOCUMENTS, prompt_texts, written, present, datetime.now(tz=OSLO),
         blind=any(f in unreadable for f, _, _ in PROMPTS),
+        declared=declared,
     )
     print(render(rows, unreadable))
 
