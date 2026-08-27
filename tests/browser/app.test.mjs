@@ -11505,6 +11505,29 @@ describe("what changed since you last looked", () => {
       "counted a cycle with no PR as a merge");
   });
 
+  test("a dismissal only covers the news he was actually shown", async () => {
+    /* The tab stays open on his phone. A plain "dismissed" flag silenced the
+     * line for the whole session, so every cycle that ran while he had it
+     * open went unannounced -- which is the case the feature exists for. */
+    let cycle = 57;
+    const journal = () => ({
+      status: { ...payload.journal.status, cycle },
+      entries: cycle > 57
+        ? [{ ...payload.journal.entries[0], cycle, pr: "runner#500", outcome: "merged" },
+           ...payload.journal.entries]
+        : payload.journal.entries,
+    });
+    const window = await loadSite("/", { install: withLastSeen(54), journal });
+    line(window).dispatchEvent(new window.Event("click"));
+    assert.equal(line(window), null, "the tap left the line on screen");
+    // A cycle runs while he has the tab open, and the page re-renders.
+    cycle = 60;
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(line(window), "news that arrived after the tap was never shown");
+    assert.equal(line(window).textContent, "3 cycles since you last looked · 3 PRs merged");
+  });
+
   test("tapping the line dismisses it", async () => {
     const window = await loadSite("/", { install: withLastSeen(54) });
     line(window).dispatchEvent(new window.Event("click"));

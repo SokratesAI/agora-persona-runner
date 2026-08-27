@@ -458,7 +458,19 @@
    * behaviour I want: he backgrounded the app, he did not read it. */
   var lastSeenCycle = null;
   var lastSeenCaptured = false;
-  var changedDismissed = false;
+
+  /* The newest cycle he had been told about when he tapped the line away, or
+   * null if he has not tapped it.
+   *
+   * A plain `dismissed = true` flag is what this was for one commit, and it
+   * was wrong in the case the feature exists for: he leaves the app open on
+   * his phone. The tap silenced `paintChanged` for the whole document
+   * session, so the four cycles that ran while the tab sat there never
+   * raised the line again -- the mark kept advancing underneath it and
+   * nothing ever said so. Remembering *what* he dismissed instead of *that*
+   * he dismissed means the line comes back the moment there is something in
+   * it he has not already been shown. */
+  var changedDismissedAt = null;
 
   function loadLastSeen() {
     var store = localStore();
@@ -538,7 +550,8 @@
    * common case is that he opens the app, reads the line, and closes it
    * without touching anything -- a mark that only moved on a tap would show
    * him the same "6 cycles" forever. The tap is a dismissal, not the
-   * acknowledgement. */
+   * acknowledgement, and it dismisses the news he was shown rather than the
+   * feature: see `changedDismissedAt`. */
   function hideChanged() {
     if (!changedEl) return;
     changedEl.textContent = "";
@@ -563,7 +576,8 @@
      * `status.cycle` below the mark, and lowering it would invent news. */
     if (lastSeenCycle === null || newest > lastSeenCycle) saveLastSeen(newest);
     changedEl.textContent = "";
-    var text = changedDismissed ? "" : changedLine(newest, entries, lastSeenCycle);
+    var stale = changedDismissedAt !== null && newest <= changedDismissedAt;
+    var text = stale ? "" : changedLine(newest, entries, lastSeenCycle);
     if (!text) {
       changedEl.setAttribute("hidden", "");
       return;
@@ -572,7 +586,7 @@
     btn.type = "button";
     btn.title = "Dismiss";
     btn.addEventListener("click", function () {
-      changedDismissed = true;
+      changedDismissedAt = newest;
       changedEl.textContent = "";
       changedEl.setAttribute("hidden", "");
     });
