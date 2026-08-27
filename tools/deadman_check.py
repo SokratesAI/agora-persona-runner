@@ -136,7 +136,7 @@ def assess_channel(has_issues: bool | None, assignable: list[str]) -> tuple[bool
 
 
 def parse_heartbeat_token(message: str) -> str | None:
-    """The `hb=` token off the ping's commit subject, or None if it carries one.
+    """The `hb=` token off the ping's commit subject, or None if it carries none.
 
     `cronjobs/nova-alive-ping.yaml` writes `nova alive <ts> hb=<token>`. Every
     ping written before that change has no token at all, and so does any ping
@@ -281,15 +281,31 @@ def heartbeat_alarm_body(reason: str) -> str:
     )
 
 
-def raise_alarm(verdict: str, reason: str, *, title: str = TITLE, body: str | None = None) -> None:
+def raise_alarm(
+    verdict: str,
+    reason: str,
+    *,
+    title: str = TITLE,
+    body: str | None = None,
+    renotify: bool = True,
+) -> None:
     """One issue, reopened and commented rather than duplicated.
 
     A cron that files a fresh issue every 30 minutes is a channel he mutes,
     and a muted channel is the same silence this whole thing exists to end.
+
+    `renotify=False` goes further and says nothing at all on an issue that is
+    already open. A comment every 30 minutes is a live-outage signal and reads
+    as one; a heartbeat that is switched off can stay that way for a week,
+    which is 336 comments saying the same sentence. The open issue is the
+    alarm. Repeating it is what mutes it.
     """
     existing = open_alarm_issue(title)
     body = body if body is not None else alarm_body(verdict, reason)
     if existing:
+        if not renotify:
+            print(f"alarm #{existing['number']} is already open: {title}")
+            return
         _gh("api", f"/repos/{REPO}/issues/{existing['number']}/comments",
             "-f", f"body={body}")
         print(f"commented on existing alarm #{existing['number']}")
@@ -332,7 +348,7 @@ def main() -> int:
         if hb_verdict == "BAD" and channel_ok:
             try:
                 raise_alarm(hb_verdict, hb_reason, title=HEARTBEAT_TITLE,
-                            body=heartbeat_alarm_body(hb_reason))
+                            body=heartbeat_alarm_body(hb_reason), renotify=False)
             except Exception as exc:
                 print(f"COULD NOT FILE THE HEARTBEAT ALARM: {exc}", file=sys.stderr)
         elif hb_verdict == "OK" and channel_ok:
