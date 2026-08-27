@@ -249,3 +249,183 @@ def test_a_store_that_refuses_the_ping_is_reported_as_not_watching():
     with patch.object(convs, "agora_internal", side_effect=refuse):
         ok, _reason = convs.watching("c-gone")
     assert ok is False
+
+
+# --- Managing a conversation from the dock -------------------------------
+#
+# His capture, `issues.md` 2026-08-27, rated 🔴 Immediately: *"I need the
+# chat bubble to be able to start ned conversations, delete them, change
+# name, organize like move to a folder."*
+#
+# What is worth pinning here is which *app* each write goes to and what a
+# refusal means, because both are invisible from the page:
+#
+# - `DELETE /conversations/:id` is registered on Agora's public app only, so
+#   a delete sent over the internal one answers 404 -- which this module
+#   would report as "that conversation is already gone", the exact opposite
+#   of what happened, and he would believe it;
+# - moving to the top level is `folderId: None`, not `folderId: ""`, because
+#   Agora treats the empty string as "not a string I recognise" and ignores
+#   the key, so a conversation could never be taken *out* of a folder;
+# - a failed folder listing must not take the conversation list down with
+#   it, since losing the groups is much cheaper than losing every thread.
+
+
+def _manage_fakes(status=200, body=None, folders=None, folder_status=200):
+    calls = []
+
+    def fake_get(path):
+        calls.append(("GET", path, None))
+        if path == "/folders":
+            return folder_status, {"folders": folders or []}
+        if path == "/conversations":
+            return 200, {"conversations": []}
+        return 404, {}
+
+    def fake_internal(method, path, payload=None):
+        calls.append(("INTERNAL", method, path, payload))
+        return status, body or {}
+
+    def fake_public(method, path, payload=None):
+        calls.append(("PUBLIC", method, path, payload))
+        return status, body or {}
+
+    return fake_get, fake_internal, fake_public, calls
+
+
+def test_rename_patches_the_name_and_returns_it():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.rename("c-1", "  Holiday plans  ")
+    assert (ok, message) == (True, "Holiday plans")
+    assert calls == [("INTERNAL", "PATCH", "/conversations/c-1",
+                      {"name": "Holiday plans"})]
+
+
+@pytest.mark.parametrize("name", ["", "   ", None, 5])
+def test_rename_refuses_a_nameless_conversation_without_calling_agora(name):
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, _message = convs.rename("c-1", name)
+    assert ok is False
+    assert calls == []
+
+
+def test_rename_refuses_a_name_longer_than_create_would_accept():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, _message = convs.rename("c-1", "x" * (convs.MAX_NAME_CHARS + 1))
+    assert ok is False
+    assert calls == []
+
+
+def test_rename_reports_a_missing_conversation_as_gone():
+    _get, internal, public, _calls = _manage_fakes(status=404)
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.rename("c-1", "Anything")
+    assert (ok, message) == (False, "that conversation is gone")
+
+
+def test_move_sends_the_folder_id():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, _message = convs.move("c-1", "f-9")
+    assert ok is True
+    assert calls == [("INTERNAL", "PATCH", "/conversations/c-1",
+                      {"folderId": "f-9"})]
+
+
+def test_move_to_the_top_level_sends_null_not_empty_string():
+    """`""` is not a folder id and Agora ignores it -- see the note above."""
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, _message = convs.move("c-1", "")
+    assert ok is True
+    assert calls == [("INTERNAL", "PATCH", "/conversations/c-1",
+                      {"folderId": None})]
+
+
+def test_move_reports_an_unknown_folder_as_such():
+    _get, internal, public, _calls = _manage_fakes(status=400)
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.move("c-1", "f-nope")
+    assert (ok, message) == (False, "that folder does not exist")
+
+
+def test_delete_goes_to_the_public_app_because_that_is_where_the_route_is():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.remove("c-1")
+    assert (ok, message) == (True, "deleted")
+    assert calls == [("PUBLIC", "DELETE", "/conversations/c-1", None)]
+
+
+def test_delete_without_an_id_calls_nothing():
+    _get, internal, public, calls = _manage_fakes()
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, _message = convs.remove("")
+    assert ok is False
+    assert calls == []
+
+
+def test_folder_create_accepts_the_200_that_means_it_already_existed():
+    _get, internal, public, calls = _manage_fakes(
+        status=200, body={"folder": {"id": "f-1"}})
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.folder_create("  Work  ")
+    assert (ok, message) == (True, "f-1")
+    assert calls == [("PUBLIC", "POST", "/folders", {"name": "Work"})]
+
+
+def test_folder_create_refuses_a_response_with_no_id():
+    _get, internal, public, _calls = _manage_fakes(status=201, body={})
+    with patch.object(convs, "agora_internal", internal), \
+         patch.object(convs, "agora_public", public):
+        ok, message = convs.folder_create("Work")
+    assert ok is False
+    assert "folder id" in message
+
+
+def test_the_listing_carries_folders_and_each_row_s_folder_id():
+    fake_get, internal, public, _calls = _manage_fakes(
+        folders=[{"id": "f-2", "name": "Zebras"}, {"id": "f-1", "name": "apples"}])
+
+    def listing(path):
+        if path == "/conversations":
+            return 200, {"conversations": [
+                {"id": "c-1", "name": "One", "folderId": "f-1"},
+                {"id": "c-2", "name": "Two"},
+            ]}
+        return fake_get(path)
+
+    with patch.object(convs, "agora_get", listing):
+        payload = convs.conversations()
+    # Sorted case-insensitively, or "Zebras" would sort above "apples" and
+    # his folders would come back in ASCII order rather than alphabetical.
+    assert payload["folders"] == [
+        {"id": "f-1", "name": "apples"}, {"id": "f-2", "name": "Zebras"}]
+    assert [r["folderId"] for r in payload["conversations"]] == ["f-1", ""]
+
+
+def test_an_unreadable_folder_list_still_returns_every_conversation():
+    fake_get, _internal, _public, _calls = _manage_fakes(folder_status=500)
+
+    def listing(path):
+        if path == "/conversations":
+            return 200, {"conversations": [{"id": "c-1", "name": "One"}]}
+        return fake_get(path)
+
+    with patch.object(convs, "agora_get", listing):
+        payload = convs.conversations()
+    assert payload["folders"] == []
+    assert len(payload["conversations"]) == 1

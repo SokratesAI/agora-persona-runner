@@ -27,7 +27,7 @@ convention: `decide_turn` speaks only when the last visible message came
 from him, so any other sender writes a message nothing ever answers.
 """
 
-from agora_runner.http_util import agora_get, agora_internal
+from agora_runner.http_util import agora_get, agora_internal, agora_public
 from agora_runner.log import log
 
 
@@ -104,6 +104,7 @@ def conversations():
             "model": c.get("model") or "",
             "tags": c.get("tags") or [],
             "updatedAt": c.get("lastMessageAt") or c.get("createdAt") or "",
+            "folderId": c.get("folderId") or "",
             "cycleThread": any(
                 str(t).startswith("evolve-cycle:") for t in (c.get("tags") or [])),
         })
@@ -111,7 +112,7 @@ def conversations():
     # chronological. A row with no timestamp sorts last rather than first:
     # an undated conversation is not fresh news.
     rows.sort(key=lambda r: r["updatedAt"] or "", reverse=True)
-    return {"conversations": rows}
+    return {"conversations": rows, "folders": _folder_rows()}
 
 
 def thread(conversation_id, limit=MAX_THREAD):
@@ -246,3 +247,143 @@ def watching(conversation_id):
         log(f"nova_conversations: presence ping failed HTTP {status}")
         return False, "could not reach the conversation store"
     return True, "watching"
+
+
+# --- Managing a conversation from the dock -------------------------------
+#
+# His capture, `issues.md` 2026-08-27, rated 🔴 Immediately: *"I need the
+# chat bubble to be able to start ned conversations, delete them, change
+# name, organize like move to a folder. Editing by pressing the
+# conversation for 1 sec and it gives me edit options."*
+#
+# Every one of these already existed in Agora and none of them was reachable
+# from Nova. `PATCH /conversations/:id` takes `name` and `folderId`, the
+# `/folders` routes are registered on both apps, and `DELETE
+# /conversations/:id` is on the public app only -- so the only thing missing
+# was this file and the four routes over it. Nothing new is invented here;
+# the whole diff is a front end for writes Agora has been accepting all
+# along.
+
+
+def _folder_rows():
+    """The folders, newest name-sorted, or `[]` if the store cannot say.
+
+    Unlike `conversations()` this swallows a failed fetch rather than
+    raising. A conversation list that fails is a blank switcher and has to
+    be a visible error; a *folder* list that fails is a switcher with no
+    groups in it, which still shows him every thread. Losing the grouping
+    is worth not losing the list.
+    """
+    status, body = agora_get("/folders")
+    if status != 200:
+        log(f"nova_conversations: folder listing returned {status}")
+        return []
+    rows = [
+        {"id": f.get("id"), "name": f.get("name") or "(unnamed)"}
+        for f in body.get("folders", [])
+        if f.get("id")
+    ]
+    rows.sort(key=lambda r: r["name"].lower())
+    return rows
+
+
+def rename(conversation_id, name):
+    """(ok, message). Change what a thread is called.
+
+    The same `MAX_NAME_CHARS` and the same emptiness check as `create`,
+    because it is the same field -- a rename that could write a name
+    `create` refuses would let him produce a conversation he could not have
+    started.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    if not isinstance(name, str) or not name.strip():
+        return False, "a conversation needs a name"
+    name = name.strip()
+    if len(name) > MAX_NAME_CHARS:
+        return False, f"that name is longer than {MAX_NAME_CHARS} characters"
+    status, _body = agora_internal(
+        "PATCH", f"/conversations/{conversation_id}", {"name": name})
+    if status != 200:
+        log(f"nova_conversations: rename failed HTTP {status}")
+        if status == 404:
+            return False, "that conversation is gone"
+        return False, "could not rename the conversation"
+    return True, name
+
+
+def move(conversation_id, folder_id):
+    """(ok, message). File a thread under a folder, or `""` for the top level.
+
+    Agora refuses an unknown folder id with a 400 rather than storing it,
+    which is the behaviour this relies on: a typo cannot file a
+    conversation into a folder that does not exist and thereby hide it from
+    every group the switcher draws.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    if folder_id is None:
+        folder_id = ""
+    if not isinstance(folder_id, str):
+        return False, "which folder?"
+    folder_id = folder_id.strip()
+    status, _body = agora_internal(
+        "PATCH", f"/conversations/{conversation_id}",
+        {"folderId": folder_id or None})
+    if status != 200:
+        log(f"nova_conversations: move failed HTTP {status}")
+        if status == 404:
+            return False, "that conversation is gone"
+        if status == 400:
+            return False, "that folder does not exist"
+        return False, "could not move the conversation"
+    return True, folder_id
+
+
+def folder_create(name):
+    """(ok, id-or-message). A new folder, or the existing one of that name.
+
+    `POST /folders` is `ensure`, not `create`: the same name twice answers
+    200 with the folder that already exists instead of 201 with a second
+    one. Both are success here -- he asked for a folder with that name and
+    there is now a folder with that name.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return False, "a folder needs a name"
+    name = name.strip()
+    if len(name) > MAX_NAME_CHARS:
+        return False, f"that name is longer than {MAX_NAME_CHARS} characters"
+    status, body = agora_public("POST", "/folders", {"name": name})
+    if status not in (200, 201):
+        log(f"nova_conversations: folder create failed HTTP {status}")
+        return False, "could not create the folder"
+    new_id = (body.get("folder") or {}).get("id")
+    if not new_id:
+        log("nova_conversations: folder create answered without an id")
+        return False, "the conversation store answered without a folder id"
+    return True, new_id
+
+
+def remove(conversation_id):
+    """(ok, message). Delete a thread for good.
+
+    **This is the one irreversible call on the page and it is deliberately
+    not softened into an archive.** He asked to delete them; Agora already
+    unbinds any heartbeat pointing at the conversation before it goes, so
+    the destructive edge this has -- a beat firing into a 404 -- is handled
+    on that side rather than guessed at here. The confirmation is the
+    page's job, and it asks.
+
+    `DELETE /conversations/:id` is registered on the public app only, which
+    is why this is the one write in this module that does not go through
+    `agora_internal`.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    status, _body = agora_public("DELETE", f"/conversations/{conversation_id}")
+    if status not in (200, 204):
+        log(f"nova_conversations: delete failed HTTP {status}")
+        if status == 404:
+            return False, "that conversation is already gone"
+        return False, "could not delete the conversation"
+    return True, "deleted"

@@ -168,7 +168,11 @@ from agora_runner.nova_boards import (
 from agora_runner.nova_conversations import (
     conversations as conversation_list,
     create as conversation_create,
+    folder_create as conversation_folder_create,
+    move as conversation_move,
     personas as conversation_personas,
+    remove as conversation_remove,
+    rename as conversation_rename,
     send as conversation_send,
     thread as conversation_thread,
     watching as conversation_watching,
@@ -3090,6 +3094,91 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                         {"ok": ok, "conversationId": message if ok else None,
                          "message": message})
 
+    def _post_conversation_rename(self, payload):
+        """`/api/conversations/rename` -- change what a thread is called.
+
+        His capture, `issues.md` 2026-08-27 (🔴 Immediately): *"I need the
+        chat bubble to be able to start ned conversations, delete them,
+        change name, organize like move to a folder."* Audited for
+        `_post_conversation_new`'s reason -- it changes what the machine
+        shows him, and nothing else records that a thread was renamed.
+        """
+        self._conversation_write(
+            payload, conversation_rename, "rename",
+            ("which conversation", "a conversation needs", "that name is longer"),
+            lambda p: (p.get("id"), p.get("name")))
+
+    def _post_conversation_move(self, payload):
+        """`/api/conversations/move` -- file a thread under a folder.
+
+        An empty `folderId` is the top level and is a legal move, not a
+        missing argument: taking a conversation *out* of a folder has to be
+        expressible or a mis-filed thread is stuck there.
+        """
+        self._conversation_write(
+            payload, conversation_move, "move",
+            ("which conversation", "which folder", "that folder does not exist"),
+            lambda p: (p.get("id"), p.get("folderId") or ""))
+
+    def _post_conversation_folder(self, payload):
+        """`/api/conversations/folder` -- a new folder for the switcher."""
+        self._conversation_write(
+            payload, conversation_folder_create, "folder",
+            ("a folder needs", "that name is longer"),
+            lambda p: (p.get("name"),))
+
+    def _post_conversation_delete(self, payload):
+        """`/api/conversations/delete` -- remove a thread for good.
+
+        The only destructive write on this page. The confirmation is the
+        page's; what belongs here is the audit line, because after this
+        call there is no conversation left to look at and the audit row is
+        the only record that it existed.
+        """
+        self._conversation_write(
+            payload, conversation_remove, "delete",
+            ("which conversation", "that conversation is already gone"),
+            lambda p: (p.get("id"),))
+
+    def _conversation_write(self, payload, fn, label, bad_input_prefixes, args_of):
+        """The shared body of the four writes above.
+
+        They differ only in which function they call and which refusals are
+        his fault rather than the store's, so the split between 400 and 502
+        -- `_post_conversation_send`'s split -- is written once. A refusal
+        the caller could fix by typing something else is a 400; anything
+        else is a 502, because a 400 tells him to retype a message that was
+        never the problem.
+        """
+        payload = payload or {}
+        try:
+            args = args_of(payload)
+        except Exception:
+            self._send_json(400, {"error": "bad request"})
+            return
+        if any(a is not None and not isinstance(a, str) for a in args):
+            self._send_json(400, {"error": "every field must be a string"})
+            return
+        try:
+            ok, message = fn(*args)
+        except Exception as e:
+            log(f"nova-site conversations/{label} failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Conversation {label} · {'ok' if ok else message}",
+            after=" ".join(a for a in args if a)[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        bad_input = not ok and message.startswith(tuple(bad_input_prefixes))
+        self._send_json(200 if ok else (400 if bad_input else 502),
+                        {"ok": ok, "result": message if ok else None,
+                         "message": message})
+
     def _post_heartbeat_enabled(self, payload):
         """`/api/heartbeats/enabled` -- switch one heartbeat on or off.
 
@@ -3368,7 +3457,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
             "/api/conversations/send", "/api/conversations/new",
-            "/api/conversations/watching",
+            "/api/conversations/watching", "/api/conversations/rename",
+            "/api/conversations/move", "/api/conversations/delete",
+            "/api/conversations/folder",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/pool/decide", "/api/pool/generate",
             "/api/goal/status",
@@ -3393,6 +3484,18 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/watching":
             self._post_conversation_watching(payload)
+            return
+        if path == "/api/conversations/rename":
+            self._post_conversation_rename(payload)
+            return
+        if path == "/api/conversations/move":
+            self._post_conversation_move(payload)
+            return
+        if path == "/api/conversations/folder":
+            self._post_conversation_folder(payload)
+            return
+        if path == "/api/conversations/delete":
+            self._post_conversation_delete(payload)
             return
         if path == "/api/heartbeats/enabled":
             self._post_heartbeat_enabled(payload)

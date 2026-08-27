@@ -10154,6 +10154,214 @@
       return row;
     }
 
+    /* One write against a conversation, resolved or thrown.
+     *
+     * The four routes answer `{ok, message}` and a refusal he can fix
+     * carries a 400, so a rejected promise here always has a sentence in it
+     * that is worth showing him -- which is why nothing on this path
+     * swallows. */
+    function chatWrite(path, body) {
+      return fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          return result.result;
+        });
+    }
+
+    /* The edit options a held row turns into.
+     *
+     * His capture, `issues.md` 2026-08-27, rated 🔴 Immediately: *"I need
+     * the chat bubble to be able to start ned conversations, delete them,
+     * change name, organize like move to a folder. Editing by pressing the
+     * conversation for 1 sec and it gives me edit options."*
+     *
+     * The gesture is `HOLD_MS`, the same second his board rows use, because
+     * it is the same instruction -- issue #84's *"If i hold the card for
+     * more than 1 second i get into edit mode"*. Reusing the number rather
+     * than picking one means a future change to how long a hold is stays
+     * one edit.
+     *
+     * The panel replaces the row in place instead of opening a modal, for
+     * the board editor's reason: the dock is a small panel on a phone and a
+     * second layer over it would cover the list he is choosing from.
+     *
+     * **Delete asks, and it is the only one that does.** Rename and move
+     * are both undoable by doing them again; a deleted conversation is
+     * gone, and Agora unbinds any heartbeat pointing at it on the way out,
+     * so there is nothing to put back.
+     */
+    function rowEditor(row, folders, done) {
+      var wrap = el("div", "chat-row-edit");
+
+      var name = document.createElement("input");
+      name.type = "text";
+      name.className = "chat-row-edit-name";
+      name.value = row.name;
+      name.setAttribute("aria-label", "Conversation name");
+      wrap.appendChild(name);
+
+      var pick = document.createElement("select");
+      pick.className = "chat-row-edit-folder";
+      pick.setAttribute("aria-label", "Folder");
+      function option(value, label, selected) {
+        var o = document.createElement("option");
+        o.value = value;
+        o.textContent = label;
+        if (selected) o.selected = true;
+        return o;
+      }
+      pick.appendChild(option("", "No folder", !row.folderId));
+      folders.forEach(function (f) {
+        pick.appendChild(option(f.id, f.name, f.id === row.folderId));
+      });
+      // A folder he has not made yet. Chosen from the same control as the
+      // ones that exist, because "move it into a new folder called X" is
+      // one intention and making him create the folder first would be two.
+      pick.appendChild(option("+new", "New folder…", false));
+      wrap.appendChild(pick);
+
+      var newFolder = document.createElement("input");
+      newFolder.type = "text";
+      newFolder.className = "chat-row-edit-name";
+      newFolder.placeholder = "New folder name";
+      newFolder.setAttribute("aria-label", "New folder name");
+      newFolder.hidden = true;
+      wrap.appendChild(newFolder);
+      pick.addEventListener("change", function () {
+        newFolder.hidden = pick.value !== "+new";
+        if (!newFolder.hidden) newFolder.focus();
+      });
+
+      var note = el("p", "chat-row-edit-note", "");
+      var foot = el("div", "chat-row-edit-foot");
+      var save = el("button", "chat-row-edit-save", "Save");
+      save.setAttribute("type", "button");
+      var cancel = el("button", "chat-row-edit-cancel", "Cancel");
+      cancel.setAttribute("type", "button");
+      var drop = el("button", "chat-row-edit-delete", "Delete");
+      drop.setAttribute("type", "button");
+      foot.appendChild(save);
+      foot.appendChild(cancel);
+      foot.appendChild(drop);
+      wrap.appendChild(foot);
+      wrap.appendChild(note);
+
+      function busy(on) {
+        save.disabled = on;
+        drop.disabled = on;
+        cancel.disabled = on;
+      }
+
+      cancel.addEventListener("click", function () { done(false); });
+
+      save.addEventListener("click", function () {
+        var wanted = name.value.trim();
+        if (!wanted) {
+          note.textContent = "A conversation needs a name.";
+          return;
+        }
+        busy(true);
+        note.textContent = "saving…";
+        // The folder is resolved first because creating it can fail, and a
+        // rename that landed beside a failed move would leave the row half
+        // changed with no way to tell which half.
+        var folder = Promise.resolve(pick.value === "+new"
+          ? chatWrite("/api/conversations/folder", { name: newFolder.value.trim() })
+          : pick.value);
+        folder
+          .then(function (folderId) {
+            var work = [];
+            if (wanted !== row.name) {
+              work.push(chatWrite("/api/conversations/rename",
+                { id: row.id, name: wanted }));
+            }
+            if ((folderId || "") !== (row.folderId || "")) {
+              work.push(chatWrite("/api/conversations/move",
+                { id: row.id, folderId: folderId || "" }));
+            }
+            return Promise.all(work).then(function () { return wanted; });
+          })
+          .then(function (saved) {
+            // The dock title is the one copy of this name outside the list,
+            // so a rename of the thread he is reading has to move it too.
+            if (source.kind === "conv" && source.id === row.id) {
+              source.name = saved;
+              titleEl.textContent = saved;
+              rememberSource();
+            }
+            done(true);
+          })
+          .catch(function (err) {
+            busy(false);
+            note.textContent = "Could not save: " + err.message;
+          });
+      });
+
+      drop.addEventListener("click", function () {
+        if (!window.confirm("Delete \u201c" + row.name + "\u201d? This cannot be undone.")) return;
+        busy(true);
+        note.textContent = "deleting…";
+        chatWrite("/api/conversations/delete", { id: row.id })
+          .then(function () {
+            // He may have been reading the thread he just deleted. Falling
+            // back to the ask thread is the only source that is guaranteed
+            // to still exist -- `nova_ask` finds it by tag and creates it
+            // if it is missing.
+            if (source.kind === "conv" && source.id === row.id) {
+              switchTo({ kind: "ask", id: null, name: "Ask Nova" });
+            }
+            done(true);
+          })
+          .catch(function (err) {
+            busy(false);
+            note.textContent = "Could not delete: " + err.message;
+          });
+      });
+
+      return wrap;
+    }
+
+    /* Press-and-hold on a conversation row. Same shape as the board's, and
+     * the comment there is the one that explains it: the timer is cleared on
+     * every way a press can end, not just on let-go, because a pending
+     * `setTimeout` that fires into a detached node has already broken this
+     * suite once. `held` suppresses the click the browser sends afterwards,
+     * so a hold does not also switch threads. */
+    function holdToEdit(node, open) {
+      var timer = null;
+      var held = false;
+      function end() {
+        if (timer) { clearTimeout(timer); timer = null; }
+      }
+      function start() {
+        end();
+        held = false;
+        timer = setTimeout(function () {
+          timer = null;
+          held = true;
+          open();
+        }, HOLD_MS);
+      }
+      ["mousedown", "touchstart"].forEach(function (name) {
+        node.addEventListener(name, start);
+      });
+      ["mouseup", "mouseleave", "touchend", "touchcancel", "touchmove", "scroll"]
+        .forEach(function (name) { node.addEventListener(name, end); });
+      node.addEventListener("click", function (event) {
+        if (!held) return;
+        held = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+    }
+
     function switchTo(next) {
       // Tapping the row he is already reading closes the list and leaves
       // the thread alone -- reloading it would blank a painted thread and
@@ -10209,8 +10417,108 @@
       return fold;
     }
 
+    /* The form behind "New conversation".
+     *
+     * A thread needs a persona as well as a name -- `nova_conversations.create`
+     * refuses without one -- so this is a form rather than a prompt. The
+     * persona list is fetched when the form opens rather than with the
+     * conversation list, because most openings of the switcher are him
+     * picking a thread and paying for a second request every time would
+     * make the common case slower to serve the rare one.
+     */
+    function newForm(done) {
+      var wrap = el("div", "chat-row-edit");
+      var name = document.createElement("input");
+      name.type = "text";
+      name.className = "chat-row-edit-name";
+      name.placeholder = "What is it about?";
+      name.setAttribute("aria-label", "Conversation name");
+      wrap.appendChild(name);
+
+      var who = document.createElement("select");
+      who.className = "chat-row-edit-folder";
+      who.setAttribute("aria-label", "Who are you talking to?");
+      wrap.appendChild(who);
+
+      var note = el("p", "chat-row-edit-note", "loading…");
+      var foot = el("div", "chat-row-edit-foot");
+      var save = el("button", "chat-row-edit-save", "Start");
+      save.setAttribute("type", "button");
+      save.disabled = true;
+      var cancel = el("button", "chat-row-edit-cancel", "Cancel");
+      cancel.setAttribute("type", "button");
+      foot.appendChild(save);
+      foot.appendChild(cancel);
+      wrap.appendChild(foot);
+      wrap.appendChild(note);
+
+      cancel.addEventListener("click", function () { done(false); });
+
+      fetchPage("/api/conversations/personas")
+        .then(function (payload) {
+          var rows = payload.personas || [];
+          if (!rows.length) throw new Error("no personas to talk to");
+          rows.forEach(function (persona) {
+            var option = document.createElement("option");
+            option.value = persona.id;
+            // A metered persona spends the prepaid API balance rather than
+            // the subscription (`identity.md` rule 9), so it is labelled
+            // rather than hidden -- the server sends the flag for exactly
+            // this, and hiding it would make the choice for him silently.
+            option.textContent = persona.name +
+              (persona.metered ? " (metered)" : "");
+            who.appendChild(option);
+          });
+          note.textContent = "";
+          save.disabled = false;
+          name.focus();
+        })
+        .catch(function (err) {
+          note.textContent = "Could not load personas: " + err.message;
+        });
+
+      save.addEventListener("click", function () {
+        var wanted = name.value.trim();
+        if (!wanted) {
+          note.textContent = "A conversation needs a name.";
+          return;
+        }
+        save.disabled = true;
+        cancel.disabled = true;
+        note.textContent = "starting…";
+        chatWrite("/api/conversations/new", { name: wanted, personaId: who.value })
+          .then(function (id) {
+            // Straight into the thread he just made: he started it to say
+            // something, and leaving him on the list would make him find it.
+            switchTo({ kind: "conv", id: id, name: wanted });
+            done(false);
+          })
+          .catch(function (err) {
+            save.disabled = false;
+            cancel.disabled = false;
+            note.textContent = "Could not start it: " + err.message;
+          });
+      });
+      return wrap;
+    }
+
     function loadList() {
       listEl.textContent = "";
+      // The label is the button's own text, not a `.chat-list-name` child:
+      // that class means "a conversation is called this", and anything
+      // reading the list -- a stylesheet, a test, a future feature counting
+      // threads -- would be right to treat a node carrying it as a thread.
+      var start = el("button", "chat-list-new", "+ New conversation");
+      start.setAttribute("type", "button");
+      start.addEventListener("click", function () {
+        if (listEl.querySelector(".chat-row-edit")) return;
+        var form = newForm(function (changed) {
+          if (changed) loadList();
+          else if (form.parentNode) listEl.replaceChild(start, form);
+        });
+        listEl.replaceChild(form, start);
+      });
+      listEl.appendChild(start);
       listEl.appendChild(listRow("Ask Nova", "", source.kind === "ask", function () {
         switchTo({ kind: "ask", id: null, name: "Ask Nova" });
       }));
@@ -10219,6 +10527,7 @@
       fetchPage("/api/conversations")
         .then(function (payload) {
           listEl.removeChild(pending);
+          var folders = payload.folders || [];
           var rows = (payload.conversations || []).filter(function (row) {
             return (row.tags || []).indexOf("nova-ask") === -1;
           });
@@ -10230,27 +10539,65 @@
           // for an `evolve-cycle:` tag. Reading the tag here as well would
           // be a second copy of that rule in a second language.
           var beats = rows.filter(function (row) { return !!row.cycleThread; });
-          var mine = rows.filter(function (row) { return !row.cycleThread; });
+          var loose = rows.filter(function (row) { return !row.cycleThread; });
 
           function fill(fold, group) {
             var body = fold.lastChild;
             group.forEach(function (row) {
               var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
-              body.appendChild(listRow(
+              var node = listRow(
                 row.name, meta,
                 source.kind === "conv" && source.id === row.id,
                 function () {
                   switchTo({ kind: "conv", id: row.id, name: row.name });
-                }));
+                });
+              holdToEdit(node, function () {
+                if (listEl.querySelector(".chat-row-edit")) return;
+                var editor = rowEditor(row, folders, function (changed) {
+                  if (changed) loadList();
+                  else if (editor.parentNode) editor.parentNode.replaceChild(node, editor);
+                });
+                body.replaceChild(editor, node);
+              });
+              body.appendChild(node);
             });
             listEl.appendChild(fold);
           }
 
+          /* His folders, each as its own fold.
+           *
+           * His capture, `issues.md` 2026-08-27: *"organize like move to a
+           * folder"*. Agora has carried `folderId` on a conversation all
+           * along and the switcher grouped by the `evolve-cycle:` tag
+           * instead, so a folder he made was invisible here -- the rows in
+           * it fell into "Conversations" with everything else.
+           *
+           * A folder that holds nothing is deliberately still drawn. An
+           * empty fold is how he can see the folder exists, and dropping it
+           * would make a folder disappear the moment its last conversation
+           * moved out -- with no way to move anything back into it. */
+          var filed = {};
+          folders.forEach(function (folder) {
+            filed[folder.id] = loose.filter(function (row) {
+              return row.folderId === folder.id;
+            });
+          });
+          var top = loose.filter(function (row) {
+            return !row.folderId || !filed[row.folderId];
+          });
+
+          folders.forEach(function (folder) {
+            var group = filed[folder.id];
+            var current = source.kind === "conv" && group.some(function (row) {
+              return row.id === source.id;
+            });
+            fill(listFold(folder.name, group.length, current), group);
+          });
           // Open on the threads he starts, shut on the ones the loop starts
-          // for itself -- and open the heartbeat fold anyway when it holds
-          // the thread he is reading, so the switcher never opens without
-          // the current row on screen.
-          if (mine.length) fill(listFold("Conversations", mine.length, true), mine);
+          // for itself -- and open a fold anyway when it holds the thread he
+          // is reading, so the switcher never opens without the current row
+          // on screen.
+          if (top.length) fill(listFold("Conversations", top.length, true), top);
           if (beats.length) {
             var current = source.kind === "conv" && beats.some(function (row) {
               return row.id === source.id;

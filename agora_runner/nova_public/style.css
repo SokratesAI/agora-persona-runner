@@ -3659,3 +3659,67 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   font-size: 0.85rem;
   white-space: pre-wrap;
 }
+
+/* Editing a conversation from the switcher — his 🔴 capture, `issues.md`
+ * 2026-08-27: *"delete them, change name, organize like move to a folder.
+ * Editing by pressing the conversation for 1 sec and it gives me edit
+ * options."*
+ *
+ * The panel takes the row's place rather than opening over it, so it wears
+ * the row's own box. `-webkit-user-select: none` on the rows is what stops
+ * a one-second press on a phone selecting the conversation's name instead
+ * of opening this. */
+.chat-list-row { -webkit-user-select: none; user-select: none; }
+/* Its own class rather than a second `.chat-list-row`: the switcher's rows
+ * are the conversations, and a control that is not one of them must not be
+ * counted as one -- by a stylesheet or by anything reading the list. */
+.chat-list-new {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.chat-row-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+}
+.chat-row-edit-name, .chat-row-edit-folder {
+  width: 100%;
+  font: inherit;
+  font-size: 0.9rem;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.35rem 0.45rem;
+  box-sizing: border-box;
+}
+.chat-row-edit-foot { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.chat-row-edit-foot button {
+  font: inherit;
+  font-size: 0.8rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: inherit;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+.chat-row-edit-save { border-color: var(--accent); }
+/* Delete is the only irreversible control in the dock, so it is the only
+ * one that reads as a warning. It still asks before it acts. */
+.chat-row-edit-delete { margin-left: auto; color: var(--bad, #c0392b); }
+.chat-row-edit-note { font-size: 0.75rem; color: var(--dim); margin: 0; }
+.chat-row-edit-note:empty { display: none; }
