@@ -253,3 +253,118 @@ def idle_seconds(entry, activity, now):
     if last is None:
         return None
     return max(0.0, now - max(last, floor))
+
+
+# ---------------------------------------------------------------------------
+# Promotion -- idea #138, "keep this" turns a demo into a real service.
+#
+# **The merge is the API.** Nothing here calls a platform service, because
+# there is no platform service and idea #138 is where that call was made:
+# the only step in the roadmap that needs a Crossplane claim is promotion,
+# promotion is human-gated by definition ("keep this" is the owner
+# deciding), and a claim commit reached both repos in 4m34s when it was
+# timed. So promotion renders a `GitHubService` claim, opens a pull request
+# on `platform-config`, and the tap that merges it is the whole API.
+#
+# Two phases on purpose, and they cannot be one call. The claim creates the
+# repository, and the repository does not exist until Crossplane has
+# reconciled the merge -- minutes later. So `promote` opens the PR and
+# `ship` pushes the demo's source once the repo answers. A single command
+# would have to block for minutes on something that may never happen if the
+# PR is never tapped, which is precisely the state this design refuses to
+# sit in.
+
+#: The XRD's own `serviceName` pattern, copied rather than imported: this
+#: module cannot read the cluster, and a name this rejects is one the claim
+#: would be refused for on apply, hours after the PR was opened.
+SERVICE_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+#: Where `platform-config` keeps one claim per service.
+CLAIM_DIR = "crossplane"
+
+
+def claim_path(name):
+    """Repo-relative path of the claim file for a service."""
+    return f"{CLAIM_DIR}/service-{name}.yaml"
+
+
+def promotion_branch(name):
+    return f"nova/promote-{name}"
+
+
+def check_promotable(entry, name):
+    """Raise `DemoError` unless this demo can become the service `name`.
+
+    Every check here is one a later step would fail on anyway -- on apply,
+    or on push -- and failing there means a pull request the owner taps and
+    which then quietly does nothing. The point is to refuse before anything
+    is written.
+    """
+    if entry is None:
+        raise DemoError("no such demo is registered")
+    if not SERVICE_NAME_RE.match(name or ""):
+        raise DemoError(
+            f"{name!r} is not a legal service name: the GitHubService XRD "
+            "requires lowercase letters, digits and hyphens, starting and "
+            "ending with a letter or digit"
+        )
+    if len(name) > 63:
+        raise DemoError(
+            f"{name!r} is {len(name)} characters; it also becomes a Kubernetes "
+            "object name, which stops at 63"
+        )
+    # `dir`, not `directory` -- that is the key `register` writes, and the
+    # first version of this read `directory`, which is absent from every
+    # entry the registry has ever held. It refused a real demo with a
+    # sentence blaming whatever registered it.
+    directory = entry.get("dir")
+    if not directory:
+        raise DemoError(
+            "this demo has no directory recorded, so there is no source to "
+            "promote -- it was registered by something that is not `demo start`"
+        )
+    return directory
+
+
+def promotion_claim(name, description, demo_url, directory, today):
+    """The `GitHubService` claim text for a promoted demo.
+
+    Rendered rather than templated from a file so the tests can read the
+    result without a checkout. Only `serviceName` is required by the XRD;
+    `visibility` is left at the schema default (private) deliberately --
+    going public is a three-commit dance the XRD documents at length, and
+    doing it implicitly on a promotion would be irreversible for anything
+    already cloned.
+    """
+    # **Collapse the description to one line before it is rendered.** It is
+    # emitted as a folded scalar with a single indented line under it, so a
+    # newline in the text would end the scalar and the rest would be parsed
+    # as YAML at the wrong indentation -- a claim that either fails to apply
+    # or, worse, applies as something else. Collapsing is the fix rather than
+    # refusing, because the description is prose the owner typed and a
+    # line break in it is not a mistake he should have to hear about.
+    description = " ".join((description or f"{name}, promoted from a Nova demo.").split())
+    return "\n".join([
+        f"# {name} -- promoted from the live demo `{demo_url}` on {today}.",
+        "#",
+        "# Written by `tools.demo promote` (idea #138). The demo itself ran as a",
+        f"# dev server out of `{directory}` on the bridge pod and was reachable",
+        "# only while that pod lived; merging this claim is what makes it a real",
+        "# service with its own repo, CI, image and tailnet hostname.",
+        "#",
+        "# The source is NOT in this claim. The composition seeds a Node skeleton",
+        "# on first reconcile and then hands off (every RepositoryFile is",
+        "# [Observe, Create, LateInitialize], no Update), so the demo's own files",
+        "# land as an ordinary commit afterwards -- `tools.demo ship " + name + "`",
+        "# does that once this merge has produced the repo.",
+        "apiVersion: platform.sokratesai.io/v1alpha1",
+        "kind: GitHubService",
+        "metadata:",
+        f"  name: {name}",
+        "  namespace: platform-catalog",
+        "spec:",
+        f"  serviceName: {name}",
+        "  description: >-",
+        f"    {description}",
+        "",
+    ])
