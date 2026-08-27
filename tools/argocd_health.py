@@ -74,9 +74,12 @@ def _run(runner, args):
     if proc.returncode != 0:
         return None, f"kubectl failed: {proc.stderr.strip() or proc.stdout.strip()}"
     try:
-        return json.loads(proc.stdout), None
+        body = json.loads(proc.stdout)
     except ValueError as exc:
         return None, f"kubectl returned something that is not JSON: {exc}"
+    if not isinstance(body, dict):
+        return None, "kubectl returned JSON that is not an object"
+    return body, None
 
 
 def read_applications(runner=subprocess.run):
@@ -169,7 +172,13 @@ def stale_job_failures(cronjobs, jobs_by_owner):
                 continue
             row = {"namespace": key[0], "cronjob": key[1], "job": run["name"],
                    "created": run["created"]}
-            if newest_success and newest_success > run["created"]:
+            # A failure with no timestamp cannot be *proven* superseded, and
+            # the empty string sorts before every real stamp — so the naive
+            # comparison would call it stale and go quiet on it. Quiet is the
+            # one direction this must never fail in.
+            if not run["created"]:
+                live.append(row)
+            elif newest_success and newest_success > run["created"]:
                 row["succeeded_since"] = newest_success
                 stale.append(row)
             else:
@@ -264,10 +273,16 @@ def main(argv=None, runner=subprocess.run, now=None):
         print("COULD NOT READ  kubectl returned no Applications at all")
         return 1
 
-    jobs_by_owner, why = read_jobs(runner)
-    if why:
-        print(f"COULD NOT READ  {why}")
-        return 1
+    # Jobs are only ever consulted to explain an unhealthy Application, and
+    # `kubectl get jobs -A` is a cluster-wide read that a restricted account
+    # can be refused. Asking for it on a clean cluster would turn a green
+    # answer into `COULD NOT READ` for data nothing was going to use.
+    jobs_by_owner = {}
+    if any(a["health"] in UNHEALTHY for a in apps):
+        jobs_by_owner, why = read_jobs(runner)
+        if why:
+            print(f"COULD NOT READ  {why}")
+            return 1
 
     lines, status = report(apps, jobs_by_owner, now or datetime.datetime.now(datetime.timezone.utc))
     for line in lines:

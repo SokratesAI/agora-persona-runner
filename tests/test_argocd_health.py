@@ -190,8 +190,11 @@ def test_kubectl_refused_on_applications_is_status_one(capsys):
 
 
 def test_kubectl_refused_on_jobs_is_status_one(capsys):
+    # Only reachable when something is unhealthy, which is the only time
+    # the Jobs are asked for at all.
     assert argocd_health.main(
-        [], runner=fake_kubectl(apps=[app("x")], fail_on="jobs"), now=NOW) == 1
+        [], runner=fake_kubectl(apps=[app("x", health="Degraded")], fail_on="jobs"),
+        now=NOW) == 1
     assert "COULD NOT READ" in capsys.readouterr().out
 
 
@@ -227,3 +230,58 @@ def test_an_unreadable_timestamp_costs_the_age_and_not_the_verdict():
 ])
 def test_age_units(since, expected):
     assert argocd_health._age(since, NOW) == expected
+
+
+# --- the reviewer's findings, pinned ---------------------------------
+
+def test_a_failed_job_with_no_timestamp_is_never_swept_quiet():
+    # An empty `creationTimestamp` sorts before every real stamp, so the
+    # plain comparison would call any such failure superseded and go
+    # silent on it. Nothing establishes that it predates the success.
+    lines, status = report_for(
+        [app("infra", health="Degraded", cronjobs=[("agents", "rss")])],
+        [{"metadata": {"name": "mystery", "namespace": "agents",
+                       "creationTimestamp": "",
+                       "ownerReferences": [{"kind": "CronJob", "name": "rss"}]},
+          "status": {"failed": 1}},
+         job("rss-2", "rss", "2026-08-26T08:00:00Z", succeeded=True)],
+    )
+    assert status == 2
+    assert any("mystery failed and rss has not succeeded since" in l for l in lines)
+
+
+def test_valid_json_that_is_not_an_object_is_unreadable_not_a_traceback(capsys):
+    assert argocd_health.main(
+        [], runner=fake_kubectl(stdout=("applications", "null")), now=NOW) == 1
+    assert "not an object" in capsys.readouterr().out
+
+
+def test_jobs_are_not_read_at_all_when_every_application_is_healthy():
+    # `kubectl get jobs -A` is a cluster-wide read a restricted account can
+    # be refused; asking for it on a clean cluster would turn a green answer
+    # into COULD NOT READ for data nothing was going to use.
+    asked = []
+
+    def runner(args, **kwargs):
+        which = "applications" if "applications" in args else "jobs"
+        asked.append(which)
+        items = [app("x")] if which == "applications" else []
+        return subprocess.CompletedProcess(
+            args, 0, json.dumps({"items": items}), "")
+
+    assert argocd_health.main([], runner=runner, now=NOW) == 0
+    assert asked == ["applications"]
+
+
+def test_jobs_are_read_once_something_is_unhealthy():
+    asked = []
+
+    def runner(args, **kwargs):
+        which = "applications" if "applications" in args else "jobs"
+        asked.append(which)
+        items = [app("x", health="Degraded")] if which == "applications" else []
+        return subprocess.CompletedProcess(
+            args, 0, json.dumps({"items": items}), "")
+
+    assert argocd_health.main([], runner=runner, now=NOW) == 2
+    assert asked == ["applications", "jobs"]
