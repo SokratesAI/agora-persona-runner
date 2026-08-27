@@ -48,10 +48,17 @@ def _fake_gh(
     failures=(),
     jobs_by_run=None,
     annotations_by_job=None,
+    newest_green_by_repo=None,
 ):
-    """A `_gh` stand-in driven by dicts, so no test touches the network."""
+    """A `_gh` stand-in driven by dicts, so no test touches the network.
+
+    `newest_green_by_repo` is the newest run on the repo that finished
+    green, as `repos/{repo}/actions/runs?status=success` answers it --
+    `None` (the default) means the repo has never had one.
+    """
     jobs_by_run = jobs_by_run or {}
     annotations_by_job = annotations_by_job or {}
+    newest_green_by_repo = newest_green_by_repo or {}
 
     def run(args):
         if args[0] == "api":
@@ -63,6 +70,10 @@ def _fake_gh(
                 job_id = int(path.rsplit("/", 2)[-2])
                 return 0, json.dumps(annotations_by_job.get(job_id, [])), ""
             repo = path.split("/")[1] + "/" + path.split("/")[2]
+            if "status=success" in path:
+                when = newest_green_by_repo.get(repo)
+                found = [{"created_at": when}] if when else []
+                return 0, json.dumps({"workflow_runs": found}), ""
             if repo in failures:
                 return 1, "", "HTTP 404: Not Found"
             return 0, json.dumps({"workflows": workflows_by_repo.get(repo, [])}), ""
@@ -243,6 +254,83 @@ def test_blocked_without_an_annotation_still_says_it_never_started():
     assert [r["verdict"] for r in results] == ["blocked"]
     assert status == 0
     assert "gave no reason" in report
+
+
+def test_a_block_the_repo_has_run_past_is_lifted_and_actionable():
+    """`sokrates-docs` verbatim: blocked 08-21, went public 08-25, green 08-26.
+
+    The whole defect this closes is that the two states printed the same
+    report. A repo that is still out of Actions minutes has no green run
+    after the block; this one does, and a green conclusion is not
+    something a refused job can produce.
+    """
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {
+            "docs-sync.lock.yml": _runs(
+                ("completed", "failure", "2026-08-21T05:43:07Z"),
+                ("completed", "success", "2026-08-07T12:40:38Z"),
+            )
+        },
+        jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+        annotations_by_job={
+            88: [{"annotation_level": "failure", "message": "spending limit"}]
+        },
+        newest_green_by_repo={"o/r": "2026-08-26T02:10:27Z"},
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["lifted"]
+    assert status == 2, "one dispatch fixes this, so it is a cycle's to act on"
+    assert "BLOCK HAS LIFTED" in report
+    assert "2026-08-26T02:10:27Z" in report
+    assert "gh workflow run docs-sync.lock.yml --repo o/r" in report
+    # The annotation stays on the page -- it is why the workflow stopped.
+    assert "spending limit" in report
+    assert "BLOCKED BEFORE IT STARTED" not in report
+
+
+def test_a_green_run_older_than_the_block_does_not_lift_it():
+    """The 08-07 success is what a *still*-blocked repo looks like: green, then dead."""
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {
+            "docs-sync.lock.yml": _runs(
+                ("completed", "failure", "2026-08-21T05:43:07Z"),
+                ("completed", "success", "2026-08-07T12:40:38Z"),
+            )
+        },
+        jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+        newest_green_by_repo={"o/r": "2026-08-07T12:40:38Z"},
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["blocked"]
+    assert status == 0
+    assert "BLOCK HAS LIFTED" not in report
+
+
+def test_an_unreadable_lift_check_leaves_the_block_standing_and_says_so():
+    """Never escalate on a call that did not answer, the same as the jobs call."""
+
+    def run(args):
+        if args[0] == "api" and "status=success" in args[1]:
+            return 1, "", "HTTP 403: Forbidden"
+        return _fake_gh(
+            {"o/r": [DOCS_SYNC]},
+            {
+                "docs-sync.lock.yml": _runs(
+                    ("completed", "failure", "2026-08-21T05:43:07Z")
+                )
+            },
+            jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+        )(args)
+
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["blocked"]
+    assert status == 0
+    assert "could not check whether the block has lifted -- HTTP 403" in report
 
 
 def test_an_unreadable_jobs_call_keeps_the_failing_verdict_and_says_it_could_not_check():

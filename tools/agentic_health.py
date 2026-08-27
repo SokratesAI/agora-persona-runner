@@ -64,6 +64,28 @@ on his comments board: *"I do not want to pay for the ci runs. We just
 have to wait until September 1st."* Exit 0 here means "nothing for a cycle
 to act on", not "nothing is wrong".
 
+`lifted` is the fifth, added Cycle 514, and it exists because `blocked`
+inherits its whole verdict from an annotation on one old run and never
+asks whether that annotation is still true. `sokrates-docs` went **public**
+on 2026-08-25 (issue #109), Actions minutes are free on public repos, and
+that repo has executed jobs to success twice since -- 08-25 20:19 and
+08-26 02:10 UTC. The 08-21 block was over. This tool still printed
+*"Nothing here is fixable by a pull request; the account is"*, three
+cycles of handoff still said docs-sync could not be retested before
+1 September, and a manual dispatch at 2026-08-27 01:46 UTC started
+immediately and ran the agent. Nobody was ever going to notice, because
+`blocked` was designed not to be actionable.
+
+So a block is only current if nothing contradicts it. The contradiction
+worth trusting is a **successful run on the same repo, created after the
+blocked one** -- a `success` conclusion is a thing only a job that really
+executed can produce, so a private repo out of Actions minutes cannot
+fake one. When that exists the verdict becomes `lifted` and **does raise
+the exit status**, because unlike a spending limit there is now something
+a cycle can do in one command: dispatch the workflow. That is the same
+both-directions test `prompt.md` asks for -- what would I have seen if
+the block had lifted? The same report, which is the whole defect.
+
 **A run still in progress is not a verdict.** The newest run can be
 `in_progress` for ten minutes on a scheduled sweep, and reading that as
 either outcome would make this tool's answer depend on when it was
@@ -71,11 +93,12 @@ called. In-progress runs are skipped and the newest *completed* one
 decides; if every run on record is still going, that is `never-run` with
 a note, not a guess.
 
-Exit 2 means at least one agentic workflow is failing on its own terms --
-someone's automation is dead and has been reporting nothing about it.
-Exit 1 means something was unreadable. Exit 0 means there is nothing for a
-cycle to act on, and it says which repos answered so "checked and clean"
-can never be confused with "never looked".
+Exit 2 means at least one agentic workflow is dead in a way a cycle can
+act on -- failing on its own terms, or held down by a block that has
+since lifted and never re-run. Exit 1 means something was unreadable.
+Exit 0 means there is nothing for a cycle to act on, and it says which
+repos answered so "checked and clean" can never be confused with "never
+looked".
 """
 
 import json
@@ -218,6 +241,46 @@ def start_failure(repo, run_id, run=None):
     return "the job never started, and GitHub gave no reason on the run", None
 
 
+def block_has_lifted(repo, blocked_at, run=None):
+    """`(evidence, error)` -- proof the repo has executed a job since the block.
+
+    One call. `?status=success` asks GitHub for the newest run on the repo
+    that finished green, across every workflow, and a green conclusion is
+    the one thing a repo GitHub is refusing to start jobs for cannot
+    produce. Comparing against a *failed* newer run would prove nothing --
+    that is what a repo still blocked looks like.
+
+    Both timestamps are UTC ISO-8601 with a `Z`, from the same API, so
+    they sort correctly as strings; that is only safe because the format
+    is fixed on both sides, and it is why this reads `created_at` rather
+    than anything it would have to parse.
+
+    Returns `(None, None)` when the newest green run predates the block --
+    the honest answer, and the one that leaves the `blocked` verdict alone.
+    """
+    code, out, err = (run or _gh)(
+        ["api", f"repos/{repo}/actions/runs?status=success&per_page=1"]
+    )
+    if code != 0:
+        blob = (err or out or "").strip()
+        return None, blob.splitlines()[0] if blob else f"gh exited {code}"
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        return None, "gh returned something that is not JSON"
+    runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
+    if not isinstance(runs, list):
+        return None, "gh returned no run list"
+    if not runs:
+        return None, None
+    when = (runs[0] or {}).get("created_at")
+    if not when:
+        return None, "the newest successful run carried no created_at"
+    if not blocked_at or when <= blocked_at:
+        return None, None
+    return when, None
+
+
 def verdict_for(workflow, runs):
     """Fold a run list into one verdict plus the numbers behind it.
 
@@ -264,8 +327,11 @@ def verdict_for(workflow, runs):
         ),
         "failures": streak,
         "last_good": last_good,
-        # The caller needs the newest red run to ask whether it ever started.
+        # The caller needs the newest red run to ask whether it ever started,
+        # and its date to ask whether whatever stopped it is still stopping
+        # anything.
         "newest_id": completed[0].get("databaseId"),
+        "newest_at": completed[0].get("createdAt"),
     }
 
 
@@ -293,6 +359,23 @@ def sweep(repos, run=None):
                 elif reason:
                     entry["verdict"] = "blocked"
                     entry["blocked_note"] = reason
+                    since, err = block_has_lifted(
+                        entry["repo"], entry.get("newest_at"), run=run
+                    )
+                    if err:
+                        # Same rule as above: never quieten and never escalate
+                        # on a call that did not answer. `blocked` stands and
+                        # the page says the follow-up was not made.
+                        entry["blocked_note"] += (
+                            f"; could not check whether the block has lifted -- {err}"
+                        )
+                    elif since:
+                        entry["verdict"] = "lifted"
+                        entry["lifted_note"] = (
+                            f"but {entry['repo']} ran a job to success on {since} "
+                            "(UTC), after that block -- so the block is history and "
+                            "this workflow simply has not been re-run"
+                        )
             results.append(entry)
     return results, errors
 
@@ -302,6 +385,7 @@ def format_report(results, errors, swept):
     lines = []
     failing = [r for r in results if r["verdict"] == "failing"]
     blocked = [r for r in results if r["verdict"] == "blocked"]
+    lifted = [r for r in results if r["verdict"] == "lifted"]
     never = [r for r in results if r["verdict"] == "never-run"]
     healthy = [r for r in results if r["verdict"] == "healthy"]
 
@@ -330,6 +414,18 @@ def format_report(results, errors, swept):
                 f"      https://github.com/{entry['repo']}/actions/workflows/"
                 f"{entry['path'].rsplit('/', 1)[-1]}"
             )
+    if lifted:
+        lines.append(
+            f"BLOCK HAS LIFTED — {len(lifted)} workflow(s) held down by something that "
+            "has since stopped applying. One dispatch each answers whether they work."
+        )
+        for entry in lifted:
+            leaf = entry["path"].rsplit("/", 1)[-1]
+            lines.append(f"  {entry['repo']}  {entry['path']}")
+            lines.append(f"      {entry['blocked_note']}")
+            lines.append(f"      {entry['lifted_note']}")
+            lines.append(f"      earlier history: {entry['note']}")
+            lines.append(f"      gh workflow run {leaf} --repo {entry['repo']}")
     for entry in never:
         lines.append(f"NOT YET RUN — {entry['repo']} {entry['path']}: {entry['note']}")
     for entry in healthy:
@@ -348,7 +444,7 @@ def format_report(results, errors, swept):
         "Agentic means a `.lock.yml` workflow; gh-aw's own "
         "`agentics-maintenance.yml` is out of scope on purpose."
     )
-    if failing:
+    if failing or lifted:
         return "\n".join(lines), 2
     if errors:
         return "\n".join(lines), 1
