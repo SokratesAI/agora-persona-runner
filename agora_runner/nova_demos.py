@@ -149,3 +149,40 @@ def unregister(registry, slug):
         if demo.get("slug") == slug:
             return demos.pop(i)
     return None
+
+
+#: The three states a registry row can be in, from the pod that would have
+#: to signal it. `RUNNING` is the only one whose `pid` may be signalled.
+ALIVE = "running"
+POD_GONE = "pod-gone"
+PROCESS_GONE = "process-gone"
+
+
+def verdict(entry, host, pid_alive):
+    """What this row is, judged from the pod whose address is `host`.
+
+    Measured Cycle 551: `bakeoff` was registered on 10.42.0.84:5174 and the
+    bridge pod had since rolled to 10.42.0.56. The dev server died with the
+    pod it ran in, the row stayed, and `list` printed it as if it were
+    serving. Two consequences, and the second is the one that matters.
+
+    The visible one is a leak: the row holds port 5174 against the
+    allocator forever, and after enough rolls every port in the window is
+    held by a demo that has not existed for days.
+
+    The one that bites is that **a pid is only meaningful inside the pod
+    that created it.** `stop` signals `os.getpgid(pid)` with no reference to
+    `host`, so running it against a row from a dead pod signals whatever
+    now happens to hold pid 311849 *here* -- an unrelated process group in
+    a live pod, killed on the strength of a two-day-old number. So the host
+    check comes first and a row from another pod is never signalled, only
+    dropped.
+
+    `pid_alive` is passed in rather than probed here so this stays a pure
+    function; the caller owns the one syscall.
+    """
+    if entry.get("host") != host:
+        return POD_GONE
+    if not entry.get("pid"):
+        return PROCESS_GONE
+    return ALIVE if pid_alive else PROCESS_GONE
