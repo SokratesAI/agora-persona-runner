@@ -17,10 +17,27 @@ name: nova-deadman
 
 on:
   schedule:
-    # Every 30 minutes. GitHub's scheduler is best-effort and routinely runs
-    # late under load, which is why the grace inside the check is an hour
-    # rather than a small multiple of the 5-minute ping.
-    - cron: "*/30 * * * *"
+    # Every 30 minutes, at :07 and :37 rather than :00 and :30.
+    #
+    # This was `*/30 * * * *` and GitHub never scheduled it once. Measured
+    # 2026-08-27 15:40 UTC, seven hours and thirteen firing opportunities
+    # after the workflow was added to `main`:
+    # `/actions/runs?event=schedule` answered `total_count: 0`, and the
+    # workflow's only two runs ever were manual dispatches. The workflow
+    # was `active`, Actions `enabled`, the repo public, and
+    # `SokratesAI/sokrates-docs` had run a scheduled workflow at 10:11 UTC
+    # the same morning -- so it is neither the account nor the org.
+    #
+    # The one difference from that working schedule is the minute: it asks
+    # for `37 0 * * *` and this asked for the top and half of every hour,
+    # which is where GitHub documents `schedule` as delayed under load.
+    # That explains lateness, not absence, so this is an experiment rather
+    # than a diagnosis -- and `tools.schedule_health` is what reads the
+    # result, every cycle, instead of nobody noticing for another week.
+    #
+    # The cadence is unchanged and the grace inside the check is an hour,
+    # so nothing about the alarm's behaviour depends on this either way.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
 
 permissions:
