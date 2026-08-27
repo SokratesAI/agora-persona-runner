@@ -23,8 +23,18 @@ touches the vault.
       "overall": "One sentence on how it actually feels.",
       "good": "What is working.",
       "bad": "What is not.",
+      "week": {
+        "shipped": "What landed.",
+        "broke": "What broke.",
+        "stuck": "What is still stuck.",
+        "change": "The one thing I would change."
+      },
       "changes": ["What I am changing because of this retro."]
     }
+
+`week` is the one screen the owner reads on his phone (ideas.md #120) and
+all four parts are required. `resources/weekly-retro.md` is where the
+retro run is told what to put in them.
 
 Vault I/O is deliberately not in here, the same as `roll_digest.py`: the
 ledger comes in as a path and goes out as the same path, so this runs
