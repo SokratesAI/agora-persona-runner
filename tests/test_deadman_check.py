@@ -6,7 +6,14 @@ during exactly the failure it exists for.
 """
 from datetime import datetime, timedelta, timezone
 
-from tools.deadman_check import alarm_body, assess, assess_channel
+from tools.deadman_check import (
+    alarm_body,
+    assess,
+    assess_channel,
+    assess_heartbeats,
+    heartbeat_alarm_body,
+    parse_heartbeat_token,
+)
 
 NOW = datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
 GRACE = timedelta(minutes=60)
@@ -101,3 +108,61 @@ def test_the_alarm_body_addresses_him_by_name():
     # is a participating notification, which is on by default everywhere.
     for verdict in ("NEVER", "STALE"):
         assert alarm_body(verdict, "because").startswith("@EdvardGB ")
+
+
+# --- the heartbeat verdict the ping carries out (idea #117) ------------------
+
+
+def test_a_ping_from_before_the_change_carries_no_token():
+    # None, not "unknown". "This cluster runs an older manifest" and "the
+    # cluster tried and could not read /api/health" are different facts, and
+    # only one of them means anything is wrong with the site.
+    assert parse_heartbeat_token("nova alive 2026-08-27T15:00:00Z") is None
+    verdict, reason = assess_heartbeats(None)
+    assert verdict == "UNKNOWN"
+    assert "older manifest" in reason
+
+
+def test_the_token_is_read_off_the_subject_line():
+    assert parse_heartbeat_token("nova alive 2026-08-27T15:00:00Z hb=ok") == "ok"
+    # A name with spaces in it runs to the end of the line and is not clipped
+    # at the first one.
+    token = parse_heartbeat_token(
+        "nova alive 2026-08-27T15:00:00Z hb=bad(2):Nova — ideas & research\n\nbody"
+    )
+    assert token == "bad(2):Nova — ideas & research"
+
+
+def test_every_heartbeat_firing_is_the_clean_answer():
+    verdict, reason = assess_heartbeats("ok")
+    assert verdict == "OK"
+    assert "firing" in reason
+
+
+def test_a_stopped_heartbeat_is_the_alarm_and_names_it():
+    verdict, reason = assess_heartbeats("bad(2):Nova — ideas & research")
+    assert verdict == "BAD"
+    assert "2 heartbeat(s)" in reason
+    assert "Nova — ideas & research" in reason
+
+
+def test_a_ping_that_could_not_read_the_site_is_never_an_alarm():
+    # The cluster is demonstrably up -- it pinged. Alarming here would page him
+    # about a NetworkPolicy, which is not what this issue says.
+    verdict, _ = assess_heartbeats("unknown")
+    assert verdict == "UNKNOWN"
+
+
+def test_a_token_this_does_not_recognise_is_unknown_not_clean():
+    # A future manifest writing something else must not read as healthy.
+    verdict, reason = assess_heartbeats("hb")
+    assert verdict == "UNKNOWN"
+    assert "unrecognised" in reason
+
+
+def test_the_heartbeat_alarm_says_the_box_is_up():
+    # The whole point of the second issue: the body must not read like an
+    # outage, or he checks the box first and finds nothing wrong with it.
+    body = heartbeat_alarm_body("because")
+    assert body.startswith("@EdvardGB ")
+    assert "**up**" in body
