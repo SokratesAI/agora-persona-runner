@@ -33,9 +33,19 @@ had at least one run refused for billing this month (`SokratesAI/sokrates-docs`,
 2026-08-21). A watchdog that cannot run is worse than none, because it
 looks like coverage.
 
+The ping carries a second answer as of idea #117: the commit *message* holds
+`hb=<token>`, the box's own verdict on whether every Agora heartbeat is still
+firing, read off `/api/health` by the CronJob just before it pushes. That
+question can only be asked from inside the tailnet and only answered by a
+process that outlives the hourly loop, so nova-site computes it and the ping
+carries it out. The two findings stay two alarms with two issues: "the box is
+gone" and "the box is fine and a scheduled run stopped" need different work.
+
 Exit contract, the same one `security_alerts` and `heartbeat_health` use:
-2 means the ping has stopped, 1 means the ref could not be read -- which
-never reads as clean -- and 0 means the cluster pinged inside the grace.
+2 means the ping has stopped or the box reported a heartbeat that is not
+firing, 1 means something could not be read -- the ref, the alarm channel, or
+the heartbeat verdict -- which never reads as clean, and 0 means the cluster
+pinged inside the grace and said every heartbeat is up.
 """
 from __future__ import annotations
 
@@ -55,6 +65,13 @@ REF = os.environ.get("DEADMAN_REF", "nova/alive")
 # outage stays detected in well under the three hours he waited on 08-24.
 GRACE = timedelta(minutes=int(os.environ.get("DEADMAN_GRACE_MINUTES", "60")))
 TITLE = "nova-deadman: the cluster has stopped pinging"
+# Deliberately a second issue with its own title, not a second paragraph in the
+# first one. "The box is gone" and "the box is fine and a heartbeat stopped" need
+# different actions from him and resolve independently -- folding them into one
+# alarm would mean the heartbeat finding is closed the moment the pings resume,
+# which is the `agentic_health` streak-counter mistake with two causes behind one
+# number. Idea #117.
+HEARTBEAT_TITLE = "nova-deadman: a heartbeat has stopped firing"
 # Who the alarm is addressed to. An issue on this repo notifies nobody by
 # default: measured 2026-08-27, `subscribers_count` is **0**, so a plain
 # bot-authored issue lands in a repository no human is watching. An
@@ -118,18 +135,64 @@ def assess_channel(has_issues: bool | None, assignable: list[str]) -> tuple[bool
     return True, f"issues enabled, alarm addressed to @{ASSIGNEE}"
 
 
+def parse_heartbeat_token(message: str) -> str | None:
+    """The `hb=` token off the ping's commit subject, or None if it carries none.
+
+    `cronjobs/nova-alive-ping.yaml` writes `nova alive <ts> hb=<token>`. Every
+    ping written before that change has no token at all, and so does any ping
+    from a cluster running an older manifest -- which is a different thing from
+    a token that says the verdict is unknown, and is why this returns None
+    rather than "unknown".
+    """
+    subject = message.splitlines()[0] if message else ""
+    marker = " hb="
+    idx = subject.rfind(marker)
+    if idx < 0:
+        return None
+    return subject[idx + len(marker):].strip() or None
+
+
+def assess_heartbeats(token: str | None) -> tuple[str, str]:
+    """Pure decision: (verdict, one-line reason).
+
+    Three outcomes, and only one of them is an alarm:
+
+    - OK -- every heartbeat on the box is firing on its own schedule.
+    - BAD -- at least one is off, overdue or on a schedule the checker cannot
+      parse. This is the finding, and it is the one that opens an issue.
+    - UNKNOWN -- the ping ran but could not read `/api/health`, or the ping is
+      too old to carry the token. This is never an alarm and never clean: the
+      cluster is demonstrably up (it pinged) and this watchdog simply cannot
+      say anything about the heartbeats on it.
+    """
+    if token is None:
+        return "UNKNOWN", "the ping carries no hb= token: the cluster is running an older manifest"
+    if token == "ok":
+        return "OK", "every heartbeat is firing"
+    if token == "unknown":
+        return "UNKNOWN", "the ping could not read /api/health on nova-site"
+    if token.startswith("bad("):
+        return "BAD", f"the cluster reported {token[4:].split(')', 1)[0]} heartbeat(s) not firing, first: {token.split(':', 1)[-1]}"
+    return "UNKNOWN", f"unrecognised hb= token {token!r}"
+
+
 def _gh(*args: str) -> str:
     return subprocess.run(
         ["gh", *args], check=True, capture_output=True, text=True
     ).stdout
 
 
-def read_ping() -> datetime | None:
-    """Committer date on the ref, or None if the ref is absent.
+def read_ping() -> tuple[datetime, str] | None:
+    """(committer date, commit message) on the ref, or None if the ref is absent.
 
     A missing ref answers 404 and that is a real answer, not a failure; any
     other error is left to raise, because "I could not read it" must never
     reach the caller wearing the same face as "it is fine".
+
+    The message is read as well as the date because the ping now writes the
+    box's own heartbeat verdict into it (idea #117). The date stays the
+    liveness signal -- nothing about the alarm below depends on the message
+    being there.
     """
     try:
         out = _gh("api", f"/repos/{REPO}/git/ref/{REF}")
@@ -139,8 +202,9 @@ def read_ping() -> datetime | None:
         raise
     sha = json.loads(out)["object"]["sha"]
     commit = json.loads(_gh("api", f"/repos/{REPO}/git/commits/{sha}"))
-    return datetime.fromisoformat(
-        commit["committer"]["date"].replace("Z", "+00:00")
+    return (
+        datetime.fromisoformat(commit["committer"]["date"].replace("Z", "+00:00")),
+        commit.get("message", ""),
     )
 
 
@@ -157,12 +221,12 @@ def read_channel() -> tuple[bool, str]:
     return assess_channel(repo.get("has_issues"), assignable)
 
 
-def open_alarm_issue() -> dict | None:
+def open_alarm_issue(title: str = TITLE) -> dict | None:
     rows = json.loads(
         _gh("api", f"/repos/{REPO}/issues?state=open&per_page=100")
     )
     for row in rows:
-        if row.get("title") == TITLE and "pull_request" not in row:
+        if row.get("title") == title and "pull_request" not in row:
             return row
     return None
 
@@ -199,26 +263,60 @@ def alarm_body(verdict: str, reason: str) -> str:
     )
 
 
-def raise_alarm(verdict: str, reason: str) -> None:
+def heartbeat_alarm_body(reason: str) -> str:
+    return (
+        f"@{ASSIGNEE} {reason}\n\n"
+        "The cluster is **up** — it is still pinging `refs/nova/alive` every 5 "
+        "minutes, and that ping is what carried this verdict out. What has "
+        "stopped is one of the heartbeats *on* it, so a scheduled run is not "
+        "happening and nothing on the box was going to say so.\n\n"
+        "The full picture is `heartbeats` on `/api/health` on the Nova site, "
+        "which names every heartbeat, its schedule and when it last ran. A "
+        "verdict of `off` means Agora has it disabled without saying so in its "
+        "name, `overdue` means it is enabled and has not fired inside its own "
+        "cadence, and `unjudged` means its schedule string could not be parsed "
+        "and so nothing is watching it at all.\n\n"
+        "Closed automatically on the first ping that reports every heartbeat "
+        "firing again."
+    )
+
+
+def raise_alarm(
+    verdict: str,
+    reason: str,
+    *,
+    title: str = TITLE,
+    body: str | None = None,
+    renotify: bool = True,
+) -> None:
     """One issue, reopened and commented rather than duplicated.
 
     A cron that files a fresh issue every 30 minutes is a channel he mutes,
     and a muted channel is the same silence this whole thing exists to end.
+
+    `renotify=False` goes further and says nothing at all on an issue that is
+    already open. A comment every 30 minutes is a live-outage signal and reads
+    as one; a heartbeat that is switched off can stay that way for a week,
+    which is 336 comments saying the same sentence. The open issue is the
+    alarm. Repeating it is what mutes it.
     """
-    existing = open_alarm_issue()
-    body = alarm_body(verdict, reason)
+    existing = open_alarm_issue(title)
+    body = body if body is not None else alarm_body(verdict, reason)
     if existing:
+        if not renotify:
+            print(f"alarm #{existing['number']} is already open: {title}")
+            return
         _gh("api", f"/repos/{REPO}/issues/{existing['number']}/comments",
             "-f", f"body={body}")
         print(f"commented on existing alarm #{existing['number']}")
         return
-    _gh("api", f"/repos/{REPO}/issues", "-f", f"title={TITLE}", "-f", f"body={body}",
+    _gh("api", f"/repos/{REPO}/issues", "-f", f"title={title}", "-f", f"body={body}",
         "-f", f"assignees[]={ASSIGNEE}")
-    print("opened alarm issue")
+    print(f"opened alarm issue: {title}")
 
 
-def clear_alarm(reason: str) -> None:
-    existing = open_alarm_issue()
+def clear_alarm(reason: str, *, title: str = TITLE) -> None:
+    existing = open_alarm_issue(title)
     if not existing:
         return
     _gh("api", f"/repos/{REPO}/issues/{existing['number']}/comments",
@@ -233,14 +331,29 @@ def main() -> int:
     print(f"CHANNEL {'OK' if channel_ok else 'BROKEN'}: {channel_reason}")
 
     try:
-        pinged_at = read_ping()
+        ping = read_ping()
     except Exception as exc:  # unreadable is its own verdict, never clean
         print(f"UNREADABLE: could not read refs/{REF} on {REPO}: {exc}", file=sys.stderr)
         return 1
+    pinged_at, message = ping if ping else (None, "")
     verdict, reason = assess(pinged_at, datetime.now(timezone.utc), GRACE)
     print(f"{verdict}: {reason}")
 
     if verdict == "OK":
+        # Only ask the second question when the first one answered. A stale
+        # ping's hb= token is as old as the ping, so reading it during an
+        # outage would report a heartbeat verdict from before the box died.
+        hb_verdict, hb_reason = assess_heartbeats(parse_heartbeat_token(message))
+        print(f"HEARTBEATS {hb_verdict}: {hb_reason}")
+        if hb_verdict == "BAD" and channel_ok:
+            try:
+                raise_alarm(hb_verdict, hb_reason, title=HEARTBEAT_TITLE,
+                            body=heartbeat_alarm_body(hb_reason), renotify=False)
+            except Exception as exc:
+                print(f"COULD NOT FILE THE HEARTBEAT ALARM: {exc}", file=sys.stderr)
+        elif hb_verdict == "OK" and channel_ok:
+            clear_alarm(hb_reason, title=HEARTBEAT_TITLE)
+
         if not channel_ok:
             # The cluster is fine and the alarm is not. Exit 1 rather than 0,
             # for the same reason every other check in `tools/` does: "I could
@@ -253,7 +366,15 @@ def main() -> int:
             )
             return 1
         clear_alarm(reason)
-        return 0
+        # A heartbeat verdict this could not read is not a reason to alarm and
+        # not a reason to call the run clean either -- same contract as the
+        # channel check above, and as every other tool in this directory. The
+        # cluster is up; what is missing is this watchdog's second answer.
+        if hb_verdict == "UNKNOWN":
+            print("NOT CLEAN: the ping is healthy but its heartbeat verdict is unreadable",
+                  file=sys.stderr)
+            return 1
+        return 2 if hb_verdict == "BAD" else 0
 
     try:
         raise_alarm(verdict, reason)
