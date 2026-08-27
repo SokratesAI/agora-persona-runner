@@ -36,7 +36,11 @@ def test_no_workflow_declares_more_than_one_cron():
         doc = yaml.safe_load(path.read_text())
         if not isinstance(doc, dict):
             continue
-        schedule = _triggers(doc).get("schedule") or []
+        triggers = _triggers(doc)
+        if not isinstance(triggers, dict):
+            # `on: [push, pull_request]` is legal and carries no schedule.
+            continue
+        schedule = triggers.get("schedule") or []
         crons = [entry.get("cron") for entry in schedule if isinstance(entry, dict)]
         if len(crons) > 1:
             offenders.append(f"{path.name}: {crons}")

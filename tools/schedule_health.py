@@ -415,8 +415,11 @@ def verdict_for(entry, now, floor=DOCUMENTED_FLOOR):
     every rung is silent, including the tightest, so the tightest is the
     interval at which a run was genuinely owed.
 
-    `nova-deadman` is why this is written down. It declares `7,37 * * * *`,
-    `23 */6 * * *` and `53 4 * * *`; GitHub had started it zero times in 829
+    `nova-deadman` is why this is written down. It declared `7,37 * * * *`,
+    `23 */6 * * *` and `53 4 * * *` in one file until Cycle 556 split the
+    rungs across two workflows (a fast rung's occurrences supersede a slow
+    rung's when they share a workflow, which is a sufficient cause of a run
+    count of zero); GitHub had started it zero times in 829
     minutes on 2026-08-28, which is roughly 27 missed firings of the
     30-minute rung, and this check called it `ok` because the daily rung is
     allowed 4320m. That is the alarm meant to survive this box reporting
@@ -480,8 +483,8 @@ def sweep(repos, run=None, now=None):
             # history makes the tightest cron permanently red the moment the
             # loosest is the only one firing, which is exactly the "red on day
             # one and forever is the same as off" failure this module is
-            # written to avoid. `nova-deadman` declares three cadences on
-            # purpose (see its own file) and would have reported OVERDUE for
+            # written to avoid. `nova-deadman` declared three cadences in
+            # one file until Cycle 556 split them, and would have reported OVERDUE for
             # the rest of its life. So a workflow with runs on the board is
             # judged at its *loosest* cron, and anything tighter firing is a
             # bonus this check cannot see anyway.
