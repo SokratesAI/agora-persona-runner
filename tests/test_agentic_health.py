@@ -59,10 +59,15 @@ def _fake_gh(
     jobs_by_run = jobs_by_run or {}
     annotations_by_job = annotations_by_job or {}
     newest_green_by_repo = newest_green_by_repo or {}
+    # Every path this fake was asked for, so a test can assert the lift
+    # check was actually *made* rather than assert an outcome that a
+    # missing feature would produce too.
+    calls = []
 
     def run(args):
         if args[0] == "api":
             path = args[1]
+            calls.append(path)
             if "/actions/runs/" in path and path.endswith("/jobs"):
                 run_id = int(path.rsplit("/", 2)[-2])
                 return 0, json.dumps({"jobs": jobs_by_run.get(run_id, [_JOB_THAT_RAN])}), ""
@@ -72,7 +77,11 @@ def _fake_gh(
             repo = path.split("/")[1] + "/" + path.split("/")[2]
             if "status=success" in path:
                 when = newest_green_by_repo.get(repo)
-                found = [{"created_at": when}] if when else []
+                # A str is one green run; a list is a page of them, in
+                # whatever order the test wants -- GitHub promises none.
+                if isinstance(when, str):
+                    when = [when]
+                found = [{"created_at": t} for t in (when or [])]
                 return 0, json.dumps({"workflow_runs": found}), ""
             if repo in failures:
                 return 1, "", "HTTP 404: Not Found"
@@ -82,6 +91,7 @@ def _fake_gh(
             return 0, json.dumps(runs_by_workflow.get(name, [])), ""
         raise AssertionError(f"unexpected gh call: {args}")
 
+    run.calls = calls
     return run
 
 
@@ -291,7 +301,12 @@ def test_a_block_the_repo_has_run_past_is_lifted_and_actionable():
 
 
 def test_a_green_run_older_than_the_block_does_not_lift_it():
-    """The 08-07 success is what a *still*-blocked repo looks like: green, then dead."""
+    """The 08-07 success is what a *still*-blocked repo looks like: green, then dead.
+
+    The verdict alone would not prove anything -- `blocked` is also what
+    a build with no lift check at all produces -- so this asserts the
+    call was made and still came back negative.
+    """
     run = _fake_gh(
         {"o/r": [DOCS_SYNC]},
         {
@@ -305,9 +320,63 @@ def test_a_green_run_older_than_the_block_does_not_lift_it():
     )
     results, errors = agentic_health.sweep(["o/r"], run=run)
     report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert any("status=success" in path for path in run.calls), (
+        "the lift check was never made; this assertion is the only thing "
+        "separating a negative result from an absent feature"
+    )
     assert [r["verdict"] for r in results] == ["blocked"]
     assert status == 0
     assert "BLOCK HAS LIFTED" not in report
+
+
+def test_the_newest_green_run_wins_whatever_order_github_sends_them_in():
+    """`GET /actions/runs` documents no sort order, so this must not trust row zero."""
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-21T05:43:07Z"))},
+        jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+        newest_green_by_repo={
+            "o/r": ["2026-08-07T12:40:38Z", "2026-08-26T02:10:27Z"],
+        },
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, _status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["lifted"]
+    assert "2026-08-26T02:10:27Z" in report
+
+
+def test_a_fractional_second_does_not_decide_it_the_wrong_way():
+    """`...07.5Z` sorts *below* `...07Z` as text and above it as a time.
+
+    The two dates come from two different producers -- `gh run list --json
+    createdAt` and the REST API's `created_at` -- so a string compare here
+    would be an assumption about both of them at once.
+    """
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-21T05:43:07Z"))},
+        jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+        newest_green_by_repo={"o/r": "2026-08-21T05:43:07.5Z"},
+    )
+    results, _errors = agentic_health.sweep(["o/r"], run=run)
+    assert [r["verdict"] for r in results] == ["lifted"]
+
+
+def test_an_undated_blocked_run_is_an_error_not_a_quiet_pass():
+    """No date to compare against is a call that did not answer, not a negative."""
+    runs = _runs(("completed", "failure", "2026-08-21T05:43:07Z"))
+    del runs[0]["createdAt"]
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {"docs-sync.lock.yml": runs},
+        jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+        newest_green_by_repo={"o/r": "2026-08-26T02:10:27Z"},
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["blocked"]
+    assert status == 0
+    assert "no createdAt to compare against" in report
 
 
 def test_an_unreadable_lift_check_leaves_the_block_standing_and_says_so():

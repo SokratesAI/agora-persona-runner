@@ -35,7 +35,7 @@ is roughly eighty extra API calls to find a file whose name is already
 known. If that judgement turns out wrong, the fix is a second suffix
 here, not a content scan.
 
-**Four verdicts, kept apart, for `security_alerts`' reason.** `healthy`
+**Five verdicts, kept apart, for `security_alerts`' reason.** `healthy`
 means the most recent *completed* run succeeded. `failing` means it did
 not. `error` means the run history could not be read at all -- which is
 no instrument, not a healthy workflow, and must never print what a clean
@@ -72,9 +72,11 @@ that repo has executed jobs to success twice since -- 08-25 20:19 and
 08-26 02:10 UTC. The 08-21 block was over. This tool still printed
 *"Nothing here is fixable by a pull request; the account is"*, three
 cycles of handoff still said docs-sync could not be retested before
-1 September, and a manual dispatch at 2026-08-27 01:46 UTC started
-immediately and ran the agent. Nobody was ever going to notice, because
-`blocked` was designed not to be actionable.
+1 September. A manual dispatch at 2026-08-27 01:46 UTC started
+immediately, ran for six minutes and died inside `Execute Gemini CLI` --
+which is the *other* half of the streak, and the only half still real.
+Nobody was ever going to notice, because `blocked` was designed not to be
+actionable.
 
 So a block is only current if nothing contradicts it. The contradiction
 worth trusting is a **successful run on the same repo, created after the
@@ -104,6 +106,7 @@ looked".
 import json
 import subprocess
 import sys
+from datetime import datetime
 
 # How many runs back to read per workflow. Enough to say "failed the last
 # three scheduled runs and last succeeded on the 7th" rather than just
@@ -241,25 +244,52 @@ def start_failure(repo, run_id, run=None):
     return "the job never started, and GitHub gave no reason on the run", None
 
 
+def _as_timestamp(text):
+    """An ISO-8601 UTC stamp as a comparable value, or `None` if it is not one."""
+    if not isinstance(text, str):
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def block_has_lifted(repo, blocked_at, run=None):
     """`(evidence, error)` -- proof the repo has executed a job since the block.
 
-    One call. `?status=success` asks GitHub for the newest run on the repo
-    that finished green, across every workflow, and a green conclusion is
-    the one thing a repo GitHub is refusing to start jobs for cannot
-    produce. Comparing against a *failed* newer run would prove nothing --
-    that is what a repo still blocked looks like.
+    One call. `?status=success` asks GitHub for runs on the repo that
+    finished green, across every workflow, and a green conclusion is the
+    one thing a repo GitHub is refusing to start jobs for cannot produce.
+    Comparing against a *failed* newer run would prove nothing -- that is
+    what a repo still blocked looks like.
 
-    Both timestamps are UTC ISO-8601 with a `Z`, from the same API, so
-    they sort correctly as strings; that is only safe because the format
-    is fixed on both sides, and it is why this reads `created_at` rather
-    than anything it would have to parse.
+    **Repo-wide is deliberate.** A spending limit is an account fact, not
+    a workflow fact, so any workflow in the repo getting off the ground is
+    the evidence. This never claims the blocked workflow itself now works
+    -- that is the dispatch the report asks for.
 
-    Returns `(None, None)` when the newest green run predates the block --
-    the honest answer, and the one that leaves the `blocked` verdict alone.
+    **It takes the maximum rather than the first row.** GitHub documents
+    no sort order for `GET /repos/{repo}/actions/runs`; it happens to
+    answer newest-first today, and building on that would be assuming an
+    ordering nobody promised. `max()` over a page costs the same call.
+
+    **Both timestamps are parsed, not compared as text.** `blocked_at`
+    comes from `gh run list --json createdAt` and these come from the REST
+    API's `created_at` -- two producers, and a fractional second from
+    either would sort wrongly as a string (`...07.5Z` < `...07Z`) while
+    parsing correctly. Anything unparseable is an error rather than a
+    quiet miss.
+
+    Returns `(None, None)` when every green run predates the block -- the
+    honest answer, and the one that leaves the `blocked` verdict alone.
     """
+    if not blocked_at:
+        return None, "the blocked run carried no createdAt to compare against"
+    blocked_ts = _as_timestamp(blocked_at)
+    if blocked_ts is None:
+        return None, f"could not read the blocked run's date {blocked_at!r}"
     code, out, err = (run or _gh)(
-        ["api", f"repos/{repo}/actions/runs?status=success&per_page=1"]
+        ["api", f"repos/{repo}/actions/runs?status=success&per_page=30"]
     )
     if code != 0:
         blob = (err or out or "").strip()
@@ -271,14 +301,19 @@ def block_has_lifted(repo, blocked_at, run=None):
     runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
     if not isinstance(runs, list):
         return None, "gh returned no run list"
-    if not runs:
+    newest, newest_ts = None, None
+    for entry in runs:
+        when = (entry or {}).get("created_at")
+        if not when:
+            continue
+        stamp = _as_timestamp(when)
+        if stamp is None:
+            return None, f"could not read a successful run's date {when!r}"
+        if newest_ts is None or stamp > newest_ts:
+            newest, newest_ts = when, stamp
+    if newest_ts is None or newest_ts <= blocked_ts:
         return None, None
-    when = (runs[0] or {}).get("created_at")
-    if not when:
-        return None, "the newest successful run carried no created_at"
-    if not blocked_at or when <= blocked_at:
-        return None, None
-    return when, None
+    return newest, None
 
 
 def verdict_for(workflow, runs):
