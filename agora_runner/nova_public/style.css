@@ -1426,6 +1426,16 @@ body.nav-open { overflow: hidden; }
   font-size: 0.82rem;
 }
 
+/* The project chips sit in the same strip as the extras and read the
+ * same size, so the strip stays one control rather than two. They are
+ * a single pick where the extras compose, and the italic heading is
+ * what says so without a label row costing another line on a phone. */
+.filter-project {
+  flex: 0 1 auto;
+  font-size: 0.82rem;
+  font-style: italic;
+}
+
 .board-sort {
   display: flex;
   align-items: center;

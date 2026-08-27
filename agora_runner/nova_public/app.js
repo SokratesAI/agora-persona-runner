@@ -3786,6 +3786,12 @@
     matches: null,
     matchedQuery: null,
     toggles: {},
+
+    /* Which project's rows to show, "" for all. A single pick rather
+     * than a toggle: the toggles above AND together, and two projects
+     * ANDed is always the empty board, so composing them the same way
+     * would give a control whose every multi-tap answer is nothing. */
+    project: "",
     sort: "filed",
     desc: false,
     // Whether the filter modal (the owner, 2026-08-14: "make the filters
@@ -3991,6 +3997,9 @@
     TOGGLES.forEach(function (toggle) {
       if (boardState.toggles[toggle.key]) shown = shown.filter(toggle.match);
     });
+    if (boardState.project) {
+      shown = shown.filter(function (i) { return i.project === boardState.project; });
+    }
     var query = boardState.query.trim().toLowerCase();
     if (query) {
       var matched = boardState.matchedQuery === query && boardState.matches
@@ -5609,6 +5618,41 @@
       });
       chips.appendChild(chip);
     });
+    /* The project row, built from the board rather than from a list.
+     * `nova_boards.board_projects` reads the names off the rows for the
+     * same reason: typing a name into a `Project` cell is how a project
+     * gets added, and a second list somewhere could only ever disagree
+     * with the rows.
+     *
+     * Hidden while every row says the same thing, which is the state
+     * both boards are in the day this ships. That is not a cap on the
+     * control -- it is that a single chip reading "Nova (157)" filters
+     * nothing and takes a row of screen on a 360px phone to say so. It
+     * appears by itself the first time a second project exists. */
+    var projects = [];
+    items.forEach(function (i) {
+      if (i.project && projects.indexOf(i.project) < 0) projects.push(i.project);
+    });
+    if (projects.length > 1) {
+      projects.forEach(function (name) {
+        var on = boardState.project === name;
+        var count = items.filter(currentFilter().match).filter(function (i) {
+          return i.project === name;
+        }).length;
+        var chip = el("button", "filter filter-project" + (on ? " on" : ""),
+          name + " (" + count + ")");
+        chip.type = "button";
+        chip.setAttribute("aria-pressed", on ? "true" : "false");
+        // Tapping the one that is already on clears it. There is no
+        // separate "All" chip: it would be a fourth thing to explain and
+        // the off state of every chip already means the same thing.
+        chip.addEventListener("click", function () {
+          boardState.project = on ? "" : name;
+          renderBoard(board, payload);
+        });
+        chips.appendChild(chip);
+      });
+    }
     return chips;
   }
 
@@ -5777,7 +5821,12 @@
     // toggles: Open/Done/All always has exactly one of the three selected,
     // so highlighting it here would light up on every load and mean
     // nothing.
-    var anyToggleOn = TOGGLES.some(function (t) { return !!boardState.toggles[t.key]; });
+    // The dot on the closed filter button means "a cut is active that
+    // you cannot see from here". A project pick is exactly that, so it
+    // lights the same dot -- leaving it out would hide the one filter
+    // capable of emptying the board with no sign of why.
+    var anyToggleOn = TOGGLES.some(function (t) { return !!boardState.toggles[t.key]; })
+      || !!boardState.project;
     var filterBtn = el("button", "board-filter-btn" + (anyToggleOn ? " on" : ""));
     filterBtn.type = "button";
     filterBtn.setAttribute("aria-haspopup", "dialog");
@@ -6101,6 +6150,7 @@
       boardState.matches = null;
       boardState.matchedQuery = null;
       boardState.toggles = {};
+      boardState.project = "";
       boardState.sort = "filed";
       boardState.desc = false;
     }
