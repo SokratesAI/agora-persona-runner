@@ -757,19 +757,52 @@ def assign_emoji(entries):
     return entries
 
 
+#: A run of letters long enough to be a word. One letter is not: `06:5x`
+#: is a mistyped minute, not prose, and it is the reason this is `{2,}`
+#: rather than `_is_metadata_only`'s "no alphanumerics at all".
+_PROSE_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+
+
+def _is_stamp_paragraph(text):
+    """True if a paragraph carries a timestamp and no words.
+
+    Many entries open on their own clock line -- `2026-08-27, 06:22-06:45
+    Oslo` -- before the first sentence. That line is not a label, and the
+    card is labelled by the brief: the owner, `issues.md` 2026-08-27,
+    rated Immediately, *"Cycles has no text title anymore."* Cycles 521
+    and 522 both opened this way and both drew a bare date where their
+    headline belonged, because `hasBrief` in `app.js` suppresses the
+    heading title whenever a brief exists and this counted as one.
+
+    Deliberately not `_is_metadata_only`, which `parse_heading` uses:
+    that one refuses any alphanumeric left over, and Cycle 522's line
+    read `06:42-06:5x Oslo, 2026-08-27.` -- a typo'd minute leaves an
+    `x` behind and the heading test would call it prose. A single
+    stranded letter is not a word.
+    """
+    rest = _DATE_RE.sub("", text or "")
+    rest = _TIME_RE.sub("", rest)
+    rest = _TZ_TOKEN_RE.sub("", rest)
+    return not _PROSE_WORD_RE.search(rest)
+
+
 def _first_paragraph(body):
     """An entry body -> its opening paragraph as one unwrapped line.
 
     Skips a leading bullet or fenced block so an entry that opens with a
-    list still briefs from its first real prose. Lines are joined with a
-    space for the same reason `render_blocks` does it: the journal is
-    hard-wrapped, and the wrap is not a sentence boundary.
+    list still briefs from its first real prose, and a leading clock line
+    for the same reason -- see `_is_stamp_paragraph`. Lines are joined
+    with a space for the same reason `render_blocks` does it: the journal
+    is hard-wrapped, and the wrap is not a sentence boundary.
     """
     for chunk in re.split(r"\n[ \t]*\n", body or ""):
         lines = [line.strip() for line in chunk.strip().split("\n") if line.strip()]
         if not lines or _BULLET_RE.match(lines[0]) or _FENCE_RE.match(lines[0]):
             continue
-        return " ".join(lines)
+        text = " ".join(lines)
+        if _is_stamp_paragraph(text):
+            continue
+        return text
     return ""
 
 

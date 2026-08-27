@@ -5026,3 +5026,52 @@ def test_a_goal_status_that_could_write_a_word_nothing_reads_is_rejected(payload
         status, _, _ = _post("/api/goal/status", payload)
     assert status == 400
     put.assert_not_called()
+
+
+def test_an_entry_that_opens_on_its_clock_line_briefs_on_the_sentence_under_it():
+    """The owner, `issues.md` 2026-08-27, rated Immediately: *"Cycles has no
+    text title anymore."* Cycles 521 and 522 both opened on a bare clock line,
+    so their card's one label was a date -- `app.js` suppresses the heading
+    title whenever a brief exists, and a stamp counted as one. Five of the 598
+    live entries were in this state, all five with real prose underneath."""
+    document = (
+        "### Cycle 521 — Node 20 has been unsupported since April\n\n"
+        "2026-08-27, 06:22–06:45 Oslo\n\n"
+        "Node 20 stopped getting security patches on 30 April.\n\n"
+        "PR: #70 | Outcome: merged\n"
+    )
+    entry = nova_journal.parse_journal(document)[0]
+    brief = "".join(span["text"] for span in entry["briefSpans"])
+    assert brief.startswith("Node 20 stopped getting security patches")
+    # The clock line is skipped for the card, never dropped from the entry.
+    assert "06:22–06:45 Oslo" in entry["body"]
+
+
+def test_a_mistyped_minute_in_a_clock_line_is_still_not_prose():
+    """Cycle 522's line read `06:42–06:5x Oslo, 2026-08-27.` -- one stranded
+    letter. `parse_heading`'s `_is_metadata_only` refuses any alphanumeric
+    left over and would call that a title, which is why the brief asks for a
+    two-letter word instead of asking for no letters at all."""
+    document = (
+        "### Cycle 522 — The six repo settings now have values\n\n"
+        "06:42–06:5x Oslo, 2026-08-27.\n\n"
+        "Two of this org's repos have their GitHub settings written down.\n\n"
+        "PR: #550 | Outcome: merged\n"
+    )
+    entry = nova_journal.parse_journal(document)[0]
+    brief = "".join(span["text"] for span in entry["briefSpans"])
+    assert brief.startswith("Two of this org's repos")
+
+
+def test_a_clock_line_is_skipped_and_a_sentence_that_merely_starts_with_one_is_not():
+    """The skip is scoped to a paragraph that is *only* a stamp. An entry
+    whose first sentence opens with the time still briefs from it -- otherwise
+    this fix would silently delete the lede it was written to restore."""
+    document = (
+        "### Cycle 900 — A title\n\n"
+        "At 06:22 Oslo on 2026-08-27 I found the pod restarting.\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    entry = nova_journal.parse_journal(document)[0]
+    brief = "".join(span["text"] for span in entry["briefSpans"])
+    assert brief.startswith("At 06:22 Oslo on 2026-08-27 I found")
