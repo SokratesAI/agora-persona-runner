@@ -59,6 +59,11 @@ of them. This module only reads.
 import sys
 from datetime import datetime, timezone
 
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 # The judging lives in `agora_runner.heartbeat_liveness` so `nova-site` can
 # serve it on `/api/health` (idea #117, Cycle 541). The image the site runs
 # from copies `agora_runner/` and not `tools/`, so the split is what makes
