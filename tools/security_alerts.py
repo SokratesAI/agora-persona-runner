@@ -76,9 +76,24 @@ the cost of fixing (`tolerable_risk`, `no_bandwidth`, `fix_started`)
 rather than about whether the vulnerability applies at all (`not_used`,
 `inaccurate`) -- see `_REVIVING_DISMISSALS`.
 
+**Every repo is read twice, over two different routes -- Cycle 548.** The
+per-repo sweep printed "No open security alerts" at 21:33 on 2026-08-27
+with `SokratesAI/agora` on its answered list, while that repo's open
+high-severity `brace-expansion` alert was there the whole time and came
+back on eleven later calls. I never reproduced the empty answer and so
+name no cause; what is certain is that `alerts_for` returned exit 0 with
+an empty list, and that is byte-for-byte what a clean repo looks like. A
+false clean is the worst thing this instrument can do, so `org_alerts`
+now reads `/orgs/{org}/dependabot/alerts` -- the same alerts, a different
+route -- and `cross_check` reports any alert one view has and the other
+does not, in either direction. It never reads as clean.
+
 Exit status: 0 when every repo answered and nothing needs acting on, 1
-when anything was unreadable or alerts are disabled somewhere, 2 when
-there is an open alert whose fix is not already on the default branch. So
+when anything was unreadable, alerts are disabled somewhere, or the two
+views disagree, 2 when there is an open alert whose fix is not already on
+the default branch. A disagreement is deliberately 1 rather than 2: it
+does not say there is something to fix, it says this instrument's answer
+cannot be believed right now, which is exactly what `disabled` means. So
 a cycle can read the status without parsing the text, and "I could not
 check" never reads as "nothing here". Failing to enumerate an org is a 1
 for the same reason a `disabled` repo is: the sweep was smaller than it
@@ -164,6 +179,10 @@ def _summarise(alert):
     package = (vuln.get("package") or (alert.get("dependency") or {}).get("package")) or {}
     patched = vuln.get("first_patched_version") or {}
     return {
+        # GitHub's own per-repo alert number. Nothing prints it; it is the
+        # only stable identity an alert has, so it is what the org-level
+        # cross-check below matches the two views on.
+        "number": alert.get("number"),
         "severity": (advisory.get("severity") or "unknown").lower(),
         "package": package.get("name") or "?",
         "ecosystem": package.get("ecosystem") or "?",
@@ -499,6 +518,123 @@ def repos_in_org(org, run=None):
     return sorted(live), None, sorted(archived)
 
 
+# GitHub answers the org-wide alert list from the same store as the
+# per-repo one, but it is a different request against a different route, so
+# the two agreeing is real evidence and the two disagreeing is real evidence
+# that one of them is lying. Same "exactly at the limit" reasoning as
+# `_ORG_PAGE_LIMIT`: this route pages at 100 and gives no "there were more"
+# signal, so a full page is treated as a failed read rather than a complete
+# one.
+_ORG_ALERT_PAGE = 100
+
+
+def org_alerts(org, run=None):
+    """`(state, alerts_or_message)` for a whole org in one request.
+
+    Each alert carries the `repo` it belongs to alongside the same fields
+    `_summarise` produces, so it can be compared to the per-repo sweep
+    without a second shape to keep in step.
+    """
+    code, out, err = (run or _gh)(
+        [
+            "api",
+            f"orgs/{org}/dependabot/alerts"
+            f"?state=open,dismissed&per_page={_ORG_ALERT_PAGE}",
+        ]
+    )
+    if code != 0:
+        blob = (err or out or "").strip()
+        return ERROR, blob.splitlines()[0] if blob else f"gh exited {code}"
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        return ERROR, "gh returned something that is not JSON"
+    if not isinstance(payload, list):
+        return ERROR, "gh returned a JSON object where a list of alerts was expected"
+    if len(payload) >= _ORG_ALERT_PAGE:
+        return ERROR, (
+            f"the org alert list came back at exactly {_ORG_ALERT_PAGE} alerts, "
+            "so it is truncated and cannot be compared"
+        )
+    out_alerts = []
+    for raw in payload:
+        repo = ((raw.get("repository") or {}).get("full_name") or "").strip()
+        if not repo:
+            return ERROR, "an org alert carried no repository name"
+        summary = _summarise(raw)
+        if not _still_counts(summary):
+            continue
+        summary["repo"] = repo
+        out_alerts.append(summary)
+    return OK, out_alerts
+
+
+def cross_check(results, org_views):
+    """`(lines, disagreed)` -- do the two views of the same alerts agree?
+
+    **This exists because the per-repo sweep was caught printing a clean
+    answer for a repo that had an open high-severity alert.** At 21:33 on
+    2026-08-27 `tools.security_alerts` printed "No open security alerts"
+    with `SokratesAI/agora` on the answered list, while
+    `SokratesAI/agora`'s `brace-expansion` alert was open and stayed open
+    through eleven later calls that all reported it. I could not reproduce
+    the empty answer, so I am not naming a cause -- what I can say is that
+    `alerts_for` returned exit 0 and a list with nothing in it, and that
+    path is indistinguishable from a genuinely clean repo. A false clean on
+    the one instrument that watches this surface is the worst failure it
+    has, so the fix is a second reading rather than a guess at the first.
+
+    Only alerts on repos this sweep actually read are compared. An org-wide
+    alert on an archived repo, or on one whose alerts are disabled for this
+    token, is not a disagreement -- it is a repo that was never in the
+    sweep, which the report already says elsewhere.
+    """
+    lines, disagreed = [], False
+    for org in sorted(org_views):
+        state, payload = org_views[org]
+        if state != OK:
+            lines.append(
+                f"⚠ {org}: COULD NOT CROSS-CHECK THE ORG ALERT LIST — {payload}. "
+                "The per-repo sweep below is unconfirmed."
+            )
+            disagreed = True
+            continue
+        readable = {
+            repo for repo in results
+            if results[repo][0] == OK and repo.split("/")[0] == org
+        }
+        seen = {
+            (repo, alert.get("number"))
+            for repo in readable
+            for alert in results[repo][1]
+        }
+        from_org = {
+            (alert["repo"], alert.get("number"))
+            for alert in payload
+            if alert["repo"] in readable
+        }
+        for repo, number in sorted(from_org - seen, key=lambda k: (k[0], k[1] or 0)):
+            lines.append(
+                f"⚠ {repo}: the org-wide alert list reports alert #{number} and "
+                "the per-repo sweep did not. The per-repo answer for this repo "
+                "is wrong, and a clean line for it means nothing."
+            )
+            disagreed = True
+        for repo, number in sorted(seen - from_org, key=lambda k: (k[0], k[1] or 0)):
+            lines.append(
+                f"⚠ {repo}: the per-repo sweep reports alert #{number} and the "
+                "org-wide list did not. The two disagree, so neither is trusted."
+            )
+            disagreed = True
+    return lines, disagreed
+
+
+def _orgs_from_workspace():
+    """The org names this workspace's checkouts belong to, sorted."""
+    checkouts, _unplaceable = _repos_from_workspace()
+    return sorted({r.split("/")[0] for r in checkouts if "/" in r})
+
+
 def _repos_to_sweep(run=None):
     """`(repos, unplaceable, notes, incomplete)` -- what this sweep covers.
 
@@ -566,8 +702,15 @@ def main(argv=None):
 
     results = {repo: alerts_for(repo) for repo in repos}
     verify_landed(results)
+    # Same rule as the sweep itself: the orgs are whatever this workspace's
+    # checkouts name, so nothing here hardcodes one and an owner that is a
+    # user rather than an org never gets asked an org-only question.
+    org_views = {org: org_alerts(org) for org in _orgs_from_workspace()}
+    disagreement, disagreed = cross_check(results, org_views)
     lines, code = format_report(results)
     for line in lines:
+        print(line)
+    for line in disagreement:
         print(line)
     for note in notes:
         print(note)
@@ -577,6 +720,12 @@ def main(argv=None):
         # A sweep that could not build its own repo list is not a clean
         # sweep, whatever the repos it did reach answered. Same rule as
         # `disabled` above: no instrument never reads as no alerts.
+        code = max(code, 1)
+    if disagreed:
+        # Deliberately 1 and not 2. A disagreement does not say there is an
+        # alert to fix, it says this instrument's answer cannot be believed
+        # right now -- which is the same thing `disabled` and `COULD NOT
+        # READ` mean, and they are already 1.
         code = max(code, 1)
     return code
 
