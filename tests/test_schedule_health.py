@@ -390,8 +390,17 @@ def test_a_run_that_cannot_be_attributed_to_an_occurrence_is_dropped():
 
 def test_the_floor_never_drops_below_the_documented_ninety():
     assert sh.measured_floor([]) == 90
-    assert sh.measured_floor([4, 11]) == 90
-    assert sh.measured_floor([4, 574]) == 574
+    assert sh.measured_floor([("a", 4), ("a", 11)]) == 90
+    assert sh.measured_floor([("a", 4), ("a", 574)]) == 574
+
+
+def test_a_workflow_is_never_judged_against_its_own_lateness():
+    # My reviewer's finding: without this a workflow that fires chronically
+    # late puts its own worst run into the floor it is then judged against.
+    samples = [("late-one", 574), ("other", 36)]
+    assert sh.measured_floor(samples) == 574
+    assert sh.measured_floor(samples, without="late-one") == 90
+    assert sh.measured_floor(samples, without="other") == 574
 
 
 def test_a_run_later_than_the_documented_grace_is_not_a_finding_when_the_account_is_that_late():

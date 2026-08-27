@@ -62,8 +62,10 @@ that `nova-deadman`'s 6-hourly rung "cannot be overtaken by a 90-minute
 scheduler delay" and concluded the cause was not the cadence, using the
 one number in this file that had never been checked against this
 account. Only runs that actually happened contribute, so a schedule that
-never fires cannot widen its own window, and the report prints the
-sample so the floor can be argued with.
+never fires cannot widen its own window -- and each workflow is judged
+on every *other* workflow's lateness, so one that fires chronically late
+cannot certify itself either. The report prints the pooled sample so the
+floor can be argued with.
 
 **A workflow with several crons is judged at its loosest rung once it
 has fired and at its tightest rung while it never has.** GitHub does not
@@ -323,6 +325,12 @@ def occurrence_at_or_before(crons, moment, interval):
     attributed to an occurrence, and an unattributable run is dropped from the
     sample rather than guessed at.
 
+    With several crons it answers for *whichever* of them fired most recently,
+    because GitHub's run payload does not say which cron text produced a run.
+    That understates lateness for a workflow whose loose rung fired while a
+    tight rung had an occurrence in between -- and understating is the
+    direction to fail in, since the sample only ever makes the check stricter.
+
     Known limit, stated rather than papered over: this reads the cron the
     workflow declares *today* and the runs it produced over weeks. A cron that
     was edited inside that window has its older runs measured against the new
@@ -354,7 +362,7 @@ def lateness_minutes(crons, interval, run_times):
     return out
 
 
-def measured_floor(samples):
+def measured_floor(samples, without=None):
     """The grace floor this account's own scheduler has earned, in minutes.
 
     The 90 below is GitHub's documented "best effort, late at the top of the
@@ -366,11 +374,28 @@ def measured_floor(samples):
     reaches for 90 because that is the number written down.
 
     Only runs that actually happened contribute, so a schedule that never fires
-    cannot widen its own window.
+    cannot widen its own window. `without` closes the other half of that, which
+    my reviewer found and I had not: a workflow that *does* fire but is
+    chronically late would otherwise put its own worst run into the floor it is
+    then judged against, and certify itself. Each workflow is judged on the
+    lateness of every workflow *except* itself.
+
+    **It cannot bite today and the algebra is why, written down because a
+    mutation cannot show it.** A run's measured lateness is bounded by the
+    walk-back, which is the workflow's tightest interval `t`; the window is
+    `loosest + max(2 * loosest, floor)` and `loosest >= t`. So a workflow's own
+    sample could only move its own verdict if `t > 2 * loosest`, which is never.
+    Reverting this line therefore leaves every test green -- I checked -- and
+    that is the reachability of the condition, not the strength of the guard.
+    It stays because the bound and the window are two numbers a later cycle
+    could change independently, and because it costs one argument.
     """
-    if not samples:
+    pool = [n for key, n in samples if key != without] if without is not None else [
+        n for _key, n in samples
+    ]
+    if not pool:
         return DOCUMENTED_FLOOR
-    return max(DOCUMENTED_FLOOR, max(samples))
+    return max(DOCUMENTED_FLOOR, max(pool))
 
 
 def grace_minutes(interval, floor=DOCUMENTED_FLOOR):
@@ -495,8 +520,12 @@ def sweep(repos, run=None, now=None):
             last = stamps[0] if stamps else None
             loosest = max(interval for _, interval in declared)
             tightest = min(interval for _, interval in declared)
+            key = f"{repo} {workflow['path']}"
             lateness.extend(
-                lateness_minutes([cron for cron, _ in declared], tightest, stamps)
+                (key, late)
+                for late in lateness_minutes(
+                    [cron for cron, _ in declared], tightest, stamps
+                )
             )
             label = " | ".join(cron for cron, _ in declared)
             if len(declared) > 1:
@@ -519,10 +548,15 @@ def sweep(repos, run=None, now=None):
     # -- a floor per workflow -- would let a schedule that fires punctually
     # judge itself punctually while the account is hours behind on everything
     # else, which is the number this loop actually needs.
-    floor = measured_floor(lateness)
     for entry in results:
-        entry["verdict"], entry["note"] = verdict_for(entry, now, floor)
-    return results, errors, {"samples": sorted(lateness), "floor": floor}
+        own = f"{entry['repo']} {entry['path']}"
+        entry["verdict"], entry["note"] = verdict_for(
+            entry, now, measured_floor(lateness, without=own)
+        )
+    return results, errors, {
+        "samples": sorted(late for _key, late in lateness),
+        "floor": measured_floor(lateness),
+    }
 
 
 def format_report(results, errors, swept, lateness=None):
