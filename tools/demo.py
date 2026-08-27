@@ -9,6 +9,8 @@ serves it.
     python3 -m tools.demo start bakeoff /data/workspace/demos/bakeoff
     python3 -m tools.demo list
     python3 -m tools.demo stop bakeoff
+    python3 -m tools.demo promote bakeoff     # "keep this" -- opens the claim PR
+    python3 -m tools.demo ship bakeoff        # ...once that PR is merged
 
 **Why the bridge pod specifically:** it is the pod with node (v20.20.2) and
 npm on it; the runner pod has neither. Measured Cycle 442, along with the
@@ -47,16 +49,21 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_demos import (  # noqa: E402
     ALIVE,
+    CLAIM_DIR,
     DEMOS_PATH,
     POD_GONE,
     PROCESS_GONE,
     STARTING,
     DemoError,
+    check_promotable,
+    claim_path,
     dumps,
     entries,
     idle_seconds,
     load,
     lookup,
+    promotion_branch,
+    promotion_claim,
     register,
     unregister,
     verdict,
@@ -431,6 +438,203 @@ def cmd_reap(args):
     return 1 if refused else 0
 
 
+PLATFORM_CONFIG = "SokratesAI/platform-config"
+DEMO_BASE = "https://nova.tailc83eb3.ts.net/demo"
+
+
+def _workspace_repo(name):
+    """A checkout of `name` in this cycle's workspace, or None.
+
+    `$NOVA_WORKSPACE` and not `/data/workspace`: a concurrent cycle gets its
+    own worktree and writing to the shared one is the single thing it must
+    not do.
+    """
+    root = os.environ.get("NOVA_WORKSPACE") or "/data/workspace"
+    path = os.path.join(root, name)
+    # `exists`, not `isdir`. A concurrent cycle's checkout is a `git
+    # worktree`, where `.git` is a *file* pointing at the shared object
+    # store -- so an `isdir` test says "no checkout here" in exactly the
+    # configuration this loop runs in most of the time.
+    return path if os.path.exists(os.path.join(path, ".git")) else None
+
+
+def _gh_repo_exists(repo):
+    """`True` / `False`, or `None` when the question could not be asked.
+
+    Three answers rather than two on purpose. `promote` refuses when the
+    repo already exists, and a failed `gh` call returning False would turn
+    "I could not check" into "it is not there" -- which is the negative
+    result guaranteed in advance that this repo keeps paying for.
+    """
+    got = _run(["gh", "repo", "view", repo, "--json", "name"])
+    if got.returncode == 0:
+        return True
+    blob = ((got.stderr or "") + (got.stdout or "")).lower()
+    if "could not resolve" in blob or "not found" in blob:
+        return False
+    return None
+
+
+def cmd_promote(args):
+    registry, _ = _read_registry()
+    entry = lookup(registry, args.slug)
+    name = args.name or args.slug
+    directory = check_promotable(entry, name)
+
+    repo = f"SokratesAI/{name}"
+    exists = _gh_repo_exists(repo)
+    if exists is None:
+        print(f"could not ask GitHub whether {repo} already exists; refusing "
+              "to open a claim for a repository that may be there already",
+              file=sys.stderr)
+        return 1
+    if exists:
+        print(f"{repo} already exists -- this demo has been promoted before. "
+              f"Push its source with: python3 -m tools.demo ship {args.slug}",
+              file=sys.stderr)
+        return 2
+
+    checkout = _workspace_repo("platform-config")
+    if checkout is None:
+        print("no platform-config checkout in this workspace", file=sys.stderr)
+        return 1
+
+    rel = claim_path(name)
+    body = promotion_claim(
+        name,
+        args.description,
+        f"{DEMO_BASE}/{args.slug}/",
+        directory,
+        time.strftime("%Y-%m-%d"),
+    )
+    target = os.path.join(checkout, rel)
+    if os.path.exists(target):
+        print(f"{rel} already exists in platform-config", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        print(f"--- {rel}")
+        print(body, end="")
+        return 0
+
+    # **Never move a working tree that has work in it.** `checkout -B` below
+    # rewrites the checkout's branch and files, and this runs in a workspace
+    # a sibling cycle may be building in right now. Uncommitted work there
+    # is not something to carry onto a promotion branch or to discover from
+    # a conflict -- it is a refusal.
+    dirty = _run(["git", "-C", checkout, "status", "--porcelain"])
+    if dirty.returncode != 0:
+        print(f"could not read the platform-config checkout: "
+              f"{dirty.stderr.strip()[:300]}", file=sys.stderr)
+        return 1
+    if dirty.stdout.strip():
+        print("the platform-config checkout has uncommitted changes; "
+              "promoting would move it onto a new branch. Commit or stash "
+              "them first.", file=sys.stderr)
+        return 2
+
+    branch = promotion_branch(name)
+    for argv in (
+        ["git", "-C", checkout, "fetch", "--quiet", "origin", "main"],
+        ["git", "-C", checkout, "checkout", "--quiet", "-B", branch, "origin/main"],
+    ):
+        step = _run(argv)
+        if step.returncode != 0:
+            print(f"{' '.join(argv[3:])} failed: {step.stderr.strip()[:300]}",
+                  file=sys.stderr)
+            return 1
+    os.makedirs(os.path.join(checkout, CLAIM_DIR), exist_ok=True)
+    with open(target, "w") as fh:
+        fh.write(body)
+    for argv in (
+        ["git", "-C", checkout, "add", rel],
+        ["git", "-C", checkout, "commit", "--quiet", "-m",
+         f"Promote the {args.slug} demo to a service ({name})"],
+        ["git", "-C", checkout, "push", "--quiet", "-u", "origin", branch],
+    ):
+        step = _run(argv)
+        if step.returncode != 0:
+            print(f"{' '.join(argv[3:])[:80]} failed: {step.stderr.strip()[:300]}",
+                  file=sys.stderr)
+            return 1
+    pr = _run([
+        "gh", "pr", "create", "--repo", PLATFORM_CONFIG, "--head", branch,
+        "--base", "main",
+        "--title", f"Promote the {args.slug} demo to a service ({name})",
+        "--body",
+        f"`tools.demo promote {args.slug}` (idea #138). Merging this asks "
+        f"Crossplane for `{repo}` and `{repo}-config` with CI, a GHCR image, "
+        f"an ArgoCD Application and a tailnet hostname.\n\n"
+        f"The demo's own source is not in this commit -- the composition "
+        f"seeds a Node skeleton and hands off. Once the repo exists, "
+        f"`python3 -m tools.demo ship {args.slug}` pushes it.",
+    ])
+    if pr.returncode != 0:
+        print(f"gh pr create failed: {pr.stderr.strip()[:400]}", file=sys.stderr)
+        return 1
+    url = pr.stdout.strip().splitlines()[-1] if pr.stdout.strip() else "(no url)"
+    print(f"{args.slug} -> {repo}")
+    print(f"tap to keep it: {url}")
+    print(f"then: python3 -m tools.demo ship {args.slug}")
+    return 0
+
+
+def cmd_ship(args):
+    """Push the demo's source into the repo the merged claim created."""
+    registry, _ = _read_registry()
+    entry = lookup(registry, args.slug)
+    name = args.name or args.slug
+    directory = check_promotable(entry, name)
+    if not os.path.isdir(directory):
+        print(f"{directory} is gone -- the demo's source is not on this pod, "
+              "so there is nothing to ship", file=sys.stderr)
+        return 2
+
+    repo = f"SokratesAI/{name}"
+    exists = _gh_repo_exists(repo)
+    if exists is None:
+        print(f"could not ask GitHub whether {repo} exists", file=sys.stderr)
+        return 1
+    if not exists:
+        print(f"{repo} does not exist yet -- the promotion PR has not been "
+              "merged, or Crossplane has not reconciled it. Nothing pushed.",
+              file=sys.stderr)
+        return 2
+
+    branch = f"nova/demo-source-{args.slug}"
+    work = _run(["git", "-C", directory, "rev-parse", "--show-toplevel"])
+    if work.returncode == 0:
+        print(f"{directory} is already inside a git repository "
+              f"({work.stdout.strip()}); refusing to re-init it", file=sys.stderr)
+        return 2
+    for argv in (
+        ["git", "-C", directory, "init", "--quiet", "-b", branch],
+        ["git", "-C", directory, "add", "-A"],
+        ["git", "-C", directory, "-c", "user.name=Nova",
+         "-c", "user.email=nova@sokratesai.io",
+         "commit", "--quiet", "-m", f"The {args.slug} demo, as promoted"],
+        ["git", "-C", directory, "push", "--quiet",
+         f"https://github.com/{repo}.git", f"{branch}:{branch}"],
+    ):
+        step = _run(argv)
+        if step.returncode != 0:
+            print(f"{' '.join(argv[3:])[:80]} failed: {step.stderr.strip()[:300]}",
+                  file=sys.stderr)
+            return 1
+    pr = _run([
+        "gh", "pr", "create", "--repo", repo, "--head", branch, "--base", "main",
+        "--title", f"The {args.slug} demo's own source",
+        "--body", "The files the demo actually ran, on top of the skeleton "
+                  "Crossplane seeded. Opened by `tools.demo ship`.",
+    ])
+    if pr.returncode != 0:
+        print(f"pushed {branch} to {repo}, but gh pr create failed: "
+              f"{pr.stderr.strip()[:300]}", file=sys.stderr)
+        return 1
+    print(f"{args.slug} source pushed to {repo}")
+    print(pr.stdout.strip().splitlines()[-1] if pr.stdout.strip() else "")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -457,6 +661,23 @@ def main(argv=None):
                            f"minutes (default {DEFAULT_IDLE_MINUTES} when the "
                            f"flag is given with no number)")
     reap.set_defaults(func=cmd_reap)
+
+    promote = sub.add_parser(
+        "promote", help="open the claim PR that turns this demo into a service")
+    promote.add_argument("slug")
+    promote.add_argument("--name", default="",
+                         help="repo/service name (default: the slug)")
+    promote.add_argument("--description", default="",
+                         help="one line for the claim's description field")
+    promote.add_argument("--dry-run", action="store_true",
+                         help="print the claim and open nothing")
+    promote.set_defaults(func=cmd_promote)
+
+    ship = sub.add_parser(
+        "ship", help="push the demo's source once the promoted repo exists")
+    ship.add_argument("slug")
+    ship.add_argument("--name", default="")
+    ship.set_defaults(func=cmd_ship)
 
     args = parser.parse_args(argv)
     try:
