@@ -11547,11 +11547,12 @@ describe("what changed since you last looked", () => {
     assert.equal(line(window), null);
   });
 
-  test("a search cannot change what the line says", async () => {
+  test("a search takes the line down rather than recounting off its results", async () => {
     /* A search answers with whichever cycles matched, from anywhere in the
      * archive, so its entries are not "the newest N". Recomputing off them
      * would describe the query rather than what he missed -- here, the one
-     * matched cycle would read "1 cycle" against the true "2 cycles". */
+     * matched cycle would read "1 cycle" against the true "2 cycles".
+     * Clearing the search brings the original line back unchanged. */
     const journal = (url) => {
       if (!url.includes("q=")) return payload.journal;
       return {
@@ -11573,8 +11574,24 @@ describe("what changed since you last looked", () => {
     // rendered, which is what the fixture does by default.
     assert.equal(window.document.querySelector(".journal-search-count").textContent,
       "1 entry mentions \u201Ctailscale\u201D", "the search never rendered");
+    assert.equal(line(window), null, "the search left a line over its own results");
+    window.document.querySelector(".journal-search-clear")
+      .dispatchEvent(new window.Event("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(line(window).textContent, before,
-      "the search rewrote the what-changed line off its own results");
+      "clearing the search did not bring the same line back");
+  });
+
+  test("navigating to another page takes the line down with it", async () => {
+    /* Every internal link is a `pushState`, so without a hide the journal's
+     * line sits over the Issues board after one tap. */
+    const window = await loadSite("/", { install: withLastSeen(54) });
+    assert.ok(line(window), "no line on the journal");
+    window.document.querySelector('.nav-tab[href="/issues"]')
+      .dispatchEvent(new window.Event("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.location.pathname, "/issues", "the tap did not navigate");
+    assert.equal(line(window), null, "the journal's line stayed on the board page");
   });
 
   test("the line survives an in-page navigation", async () => {

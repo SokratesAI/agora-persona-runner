@@ -539,6 +539,12 @@
    * without touching anything -- a mark that only moved on a tap would show
    * him the same "6 cycles" forever. The tap is a dismissal, not the
    * acknowledgement. */
+  function hideChanged() {
+    if (!changedEl) return;
+    changedEl.textContent = "";
+    changedEl.setAttribute("hidden", "");
+  }
+
   function paintChanged(status, entries) {
     if (!changedEl) return;
     if (routedCycle(window.location.pathname) !== null) return;
@@ -9597,6 +9603,12 @@
      * badge he asked for in the header is a journal-page feature wearing a
      * header's clothes. */
     if (here.view !== "journal") refreshMail();
+    /* Every internal link on this site is a `pushState`, not a page load
+     * (see the delegated click handler at the bottom of this file), so a
+     * `#changed` line painted on the journal would otherwise still be
+     * sitting over the Issues board after one tap. `render` repaints it on
+     * the way back in. */
+    hideChanged();
     if (here.view === "board") {
       loadBoard(here.board);
       return;
