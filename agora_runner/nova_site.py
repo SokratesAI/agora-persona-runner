@@ -194,6 +194,7 @@ from agora_runner.nova_idea_pool import (
     request_generate as pool_request_generate,
 )
 from agora_runner.nova_catalog import catalog_page, parse_catalog
+from agora_runner.heartbeat_liveness import liveness
 from agora_runner.nova_demos import DEMOS_PATH, load as load_demos, lookup as lookup_demo
 from agora_runner.vault import vault_read_path
 from agora_runner.nova_notes import notes_payload
@@ -2202,6 +2203,21 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                     role for role, db in health["databases"].items() if not db["reachable"]
                 ]
                 health["ok"] = not unreachable
+                # Idea #117: every heartbeat's cadence against when it last
+                # fired. `tools.heartbeat_health` has judged this since Cycle
+                # 475, but only when a cycle runs it -- so the one heartbeat
+                # it could never vouch for is the hourly loop's own, because a
+                # loop that has stopped runs no check. This process is alive
+                # on its own schedule, so it can.
+                #
+                # **It is a sibling of `ok`, never a term in it.** A weekly
+                # heartbeat switched off does not make this service unhealthy,
+                # and `tools.site_check` reads the top-level `ok` as the
+                # database verdict; folding the two together would merge two
+                # causes with different fixes into one red light, which is the
+                # mistake `agentic_health` had to unpick a layer down. The 503
+                # stays a database 503 for the same reason.
+                health["heartbeats"] = liveness()
                 self._send_json(200 if health["ok"] else 503, health)
                 return
         except Exception as e:
