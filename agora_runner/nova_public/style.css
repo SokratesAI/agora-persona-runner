@@ -2225,6 +2225,40 @@ body.has-full-chart { overflow: hidden; }
 .share-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
 .share-note { margin: 0.4rem 0 0; color: var(--dim); font-size: 0.78rem; }
 
+/* The one screen (ideas.md #120), at the top of the retro page. Built on
+ * the retro card's shape because it is the same kind of object, with an
+ * accent border down the leading edge -- it is the one thing on the page
+ * he is meant to read if he reads nothing else, and a card that looks
+ * exactly like the four under it says the opposite. */
+.week-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1.1rem;
+}
+
+.week-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.week-title { margin: 0; font-size: 1.05rem; }
+.week-date { margin: 0; color: var(--dim); font-size: 0.8rem; }
+
+.week-sub {
+  margin: 0.8rem 0 0.2rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.week-text { margin: 0; line-height: 1.55; }
+
 /* Retrospectives (the owner, issues.md 2026-08-13). One card per Friday,
  * built out of the journal card's shape rather than a new one -- it is
  * the same kind of object (a dated thing Nova wrote) and does not toggle,

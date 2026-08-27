@@ -7147,6 +7147,42 @@
     return row;
   }
 
+  /* The one screen, drawn first (ideas.md #120).
+   *
+   * He asked for "one screen -- what shipped, what broke, what is still
+   * stuck, and the one thing you would want to change", because a
+   * chat-style report had read better to him than the journal did,
+   * twice. So this is four short labelled paragraphs and nothing else:
+   * no scores, no chart, no cycle numbers. Everything that answers "is
+   * the loop getting better" is below it and is a different question.
+   *
+   * It is drawn from the newest retro that *has* a summary rather than
+   * from the newest retro, because the three retros written before #120
+   * have none, and skipping to the last real one is the difference
+   * between an empty card and no card. Returns null when no retro has
+   * written one yet -- the first is due the next time the retro runs. */
+  function renderWeekCard(payload) {
+    var rows = payload.retros || [];
+    var row = null;
+    for (var i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].week) { row = rows[i]; break; }
+    }
+    if (!row) return null;
+
+    var card = el("article", "week-card");
+    var head = el("header", "week-head");
+    head.appendChild(el("h2", "week-title", "This week"));
+    head.appendChild(el("p", "week-date", row.date));
+    card.appendChild(head);
+    (payload.weekKeys || []).forEach(function (part) {
+      var text = row.week[part.key];
+      if (!text) return;
+      card.appendChild(el("h3", "week-sub", part.label));
+      card.appendChild(el("p", "week-text", text));
+    });
+    return card;
+  }
+
   /* One retro, in full. The chart answers "is it getting better"; this
    * answers "why", and the two are on one page because the score without
    * the sentence behind it is the thing he specifically did not ask for. */
@@ -7216,6 +7252,8 @@
       ));
       return;
     }
+    var week = renderWeekCard(payload);
+    if (week) feed.appendChild(week);
     feed.appendChild(renderRetroTiles(payload));
     feed.appendChild(renderRetroChart(payload));
     // Newest first, which is the opposite of the chart's left-to-right

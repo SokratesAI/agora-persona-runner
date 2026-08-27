@@ -5483,6 +5483,67 @@ describe("the retrospective page", () => {
     assert.doesNotMatch(feedText(window), /Could not load/);
   });
 
+  /* The one screen (his idea #120): "what shipped, what broke, what is
+   * still stuck, and the one thing you would want to change", as its own
+   * card. The three retros already in the vault predate it and carry no
+   * `week`, so "nothing to draw" is a state this page ships in, not an
+   * edge case. */
+  const weekOf = (parts) => ({
+    shipped: "The board can be filtered by project.",
+    broke: "The journal endpoint handed out four megabytes.",
+    stuck: "The outage alarm waits on a notification nobody has confirmed.",
+    change: "Ask whether an instrument has ever returned a value.",
+    ...parts,
+  });
+  const weekKeys = [
+    { key: "shipped", label: "What shipped" },
+    { key: "broke", label: "What broke" },
+    { key: "stuck", label: "What is still stuck" },
+    { key: "change", label: "The one thing I would change" },
+  ];
+
+  test("no retro has written the one screen yet, so no card is drawn", async () => {
+    const window = await loadSite("/retro", { retro: { ...twoRetros, weekKeys } });
+    assert.equal(window.document.querySelectorAll(".week-card").length, 0);
+    // And the rest of the page is untouched -- an absent summary must not
+    // take the chart and the cards down with it.
+    assert.equal(window.document.querySelectorAll(".retro-card").length, 2);
+  });
+
+  test("the one screen is the four parts he asked for, in his order, above everything else", async () => {
+    const retros = twoRetros.retros.map((r, i) => (i === 1 ? { ...r, week: weekOf() } : r));
+    const window = await loadSite("/retro", { retro: { ...twoRetros, weekKeys, retros } });
+    const card = window.document.querySelector(".week-card");
+    assert.ok(card, "the one screen did not render");
+    assert.deepEqual(
+      [...card.querySelectorAll(".week-sub")].map((n) => n.textContent),
+      ["What shipped", "What broke", "What is still stuck", "The one thing I would change"],
+    );
+    assert.match(card.textContent, /2026-08-14/);
+    assert.match(card.textContent, /Ask whether an instrument has ever returned a value/);
+    // First in the feed, because it is the thing he is meant to read if
+    // he reads nothing else. Drawn after the chart it would be the
+    // journal-length report the idea exists to replace.
+    const feed = window.document.getElementById("feed");
+    assert.equal(feed.firstElementChild, card, "the one screen is not the first thing on the page");
+    // No scores on it: they are the loop rating itself and are the other
+    // question this page answers, one card down.
+    assert.equal(card.querySelectorAll(".retro-pill").length, 0);
+  });
+
+  test("the newest summary is drawn even when the newest retro has none", async () => {
+    /* The retro that writes a summary and the newest retro are not the
+     * same row while the three pre-#120 rows are still the tail of some
+     * window, and skipping to the last real one is the difference between
+     * a card and no card. */
+    const retros = twoRetros.retros.map((r, i) => (i === 0 ? { ...r, week: weekOf({ change: "Read the ledger first." }) } : r));
+    const window = await loadSite("/retro", { retro: { ...twoRetros, weekKeys, retros } });
+    const card = window.document.querySelector(".week-card");
+    assert.ok(card, "an older summary was skipped because a newer retro had none");
+    assert.match(card.textContent, /2026-08-07/);
+    assert.match(card.textContent, /Read the ledger first/);
+  });
+
   test("one line per score, with a dot at every real retro", async () => {
     const window = await loadSite("/retro", { retro: twoRetros });
     const series = window.document.querySelector(".chart").chartOption.series;
