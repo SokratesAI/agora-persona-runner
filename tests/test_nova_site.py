@@ -3546,12 +3546,65 @@ def test_an_offset_walks_further_back_without_repeating_a_page(journal_md):
     assert seen == [49, 29, 19, 6]
 
 
-def test_asking_for_no_limit_still_serves_the_whole_journal(journal_md):
-    """An app.js served out of a service worker's cache from before this
-    shipped sends no `limit`, and must not silently lose the feed."""
-    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+def _wide_journal(count):
+    """A journal with more entries than `JOURNAL_DEFAULT_LIMIT`, one cycle each.
+
+    The checked-in fixture holds five, which is under the default window, so
+    every assertion about the window is vacuous against it -- it answers the
+    same whether the bound exists or not. One cycle per entry matters too:
+    the slice deliberately runs past its end rather than splitting a cycle in
+    half, so a fixture that repeated a cycle number would make the count
+    depend on where the pairs fell.
+    """
+    entries = "\n\n".join(
+        f"### 2026-08-27 {n % 24:02d}:00 (Oslo) \u2014 Cycle {900 + n}\n\n"
+        f"Body of entry {n}.\n\n---\nPR: none | Outcome: no-op"
+        for n in range(count, 0, -1)
+    )
+    return "---\ntype: log\n---\n\n# Journal\n\n## Entries\n\n" + entries + "\n"
+
+
+def test_asking_for_no_limit_serves_the_default_window_not_the_whole_archive():
+    """The bound this endpoint had none of until 2026-08-27.
+
+    `/api/journal` answered 4,031,475 bytes over 600 entries to any caller
+    that named no window, and `nova-site` was OOMKilled on it the day
+    before. The old test here asserted the opposite -- that no limit meant
+    the whole feed -- and it passed on a five-entry fixture whatever the
+    server did, which is why it is replaced rather than kept beside this.
+    """
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
         _, _, body = _get("/api/journal")
-    assert len(json.loads(body)["entries"]) == 5
+    payload = json.loads(body)
+    assert len(payload["entries"]) == nova_site.JOURNAL_DEFAULT_LIMIT
+    # The window is a window, not a truncation: the reader is still told how
+    # many entries exist behind it, which is what the pager counts against.
+    assert payload["total"] == 30
+
+
+def test_the_whole_archive_is_still_reachable_by_asking_for_it():
+    """A default is not a cap. `?limit=all` is the escape hatch, and it has
+    to keep working or this change removed a capability instead of bounding
+    one."""
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?limit=all")
+    assert len(json.loads(body)["entries"]) == 30
+
+
+def test_a_limit_that_is_not_a_number_falls_back_to_the_window():
+    """`all` is checked as a literal before the parse, so everything else
+    that fails to parse must land on the default rather than on it."""
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?limit=lots")
+    assert len(json.loads(body)["entries"]) == nova_site.JOURNAL_DEFAULT_LIMIT
+
+
+def test_a_deep_link_is_not_cut_by_the_default_window():
+    """`?cycle=N` names one entry and never carries a limit; the default
+    must not turn a deep link into the front page."""
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?cycle=901")
+    assert [e["cycle"] for e in json.loads(body)["entries"]] == [901]
 
 
 def test_a_deep_linked_cycle_is_served_without_paging_back_to_it(journal_md):
