@@ -10147,6 +10147,10 @@
     textEl.addEventListener("input", fit);
     textEl.addEventListener("input", fitOne);
     fit();
+    // Both on load, not just `fit`: a browser restores a textarea's value
+    // across a refresh, so the box can already hold a paste before he has
+    // typed a character and fired an `input` event.
+    fitOne();
   })();
 
   if (menuBtn) {

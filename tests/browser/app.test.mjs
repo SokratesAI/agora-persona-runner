@@ -6358,6 +6358,20 @@ describe("the priority picker (buildPrioPicker)", () => {
     assert.equal(row.hidden, false, "the toggle should appear once the paste would split");
   });
 
+  test("a value the browser restored across a refresh shows the toggle on load", async () => {
+    // `install` runs before `app.js` is evaluated, which is the only way to
+    // put a value in the box the way a browser's own form restoration does.
+    const window = await loadSite("/issues", {
+      install: (w) => {
+        w.document.getElementById("capture-text").value = "first paragraph\n\nsecond";
+      },
+    });
+    assert.equal(
+      window.document.getElementById("capture-one").hidden, false,
+      "the toggle only appears on an input event, so a restored paste never gets one",
+    );
+  });
+
   test("a checked one-item toggle rides along with the capture, then resets", async () => {
     const window = await loadSite("/issues");
     const box = window.document.getElementById("capture-text");
