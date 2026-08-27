@@ -8,6 +8,7 @@ from agora_runner.config import OSLO
 from agora_runner.cycle_health import (
     describe,
     findings,
+    gap_windows,
     gaps_since,
     heartbeat_findings,
     missing_cycles,
@@ -263,3 +264,36 @@ def test_the_heartbeat_report_does_not_forget_to_filter():
     assert findings(list(mtimes), mtimes, NOW)["missing"] == [127, 128]
     assert report["missing"] == []
     assert describe(report) == ""
+
+
+def test_every_silent_cycle_is_named_not_the_newest_five():
+    """The count and the list have to agree.
+
+    This line printed `missing[-5:]` and said `22 cycle(s) ran and wrote no
+    journal entry` above it, which reads as the whole list -- so the six
+    holes that would have answered idea #125 were never on screen. A
+    fixture of five could not have caught it in either direction, which is
+    why this one has seven."""
+    holes = [110, 112, 114, 116, 118, 120, 122]
+    present = [109] + [n + 1 for n in holes if n + 1 not in holes] + [123]
+    report = findings(paths(*sorted(set(present))), {}, NOW)
+    assert report["missing"] == holes
+    line = describe(report)
+    for number in holes:
+        assert f"{number}" in line
+    assert line.startswith("7 cycle(s) ran and wrote no journal entry: 110, 112")
+
+
+def test_a_silent_cycle_is_bracketed_by_the_entries_either_side_of_it():
+    mtimes = written({126: NOW - timedelta(hours=3), 129: NOW - timedelta(hours=1)})
+    assert gap_windows([127, 128], mtimes) == [
+        (127, NOW - timedelta(hours=3), None),
+        (128, None, NOW - timedelta(hours=1)),
+    ]
+
+
+def test_a_neighbour_with_no_timestamp_leaves_that_end_unbounded():
+    """`mtimes` is what the vault returned. An absent end is reported as
+    absent rather than widened to the next neighbour out, which would move
+    the bracket without saying so."""
+    assert gap_windows([127], {}) == [(127, None, None)]

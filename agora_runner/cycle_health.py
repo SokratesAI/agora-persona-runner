@@ -404,6 +404,37 @@ def first_written_at(mtimes):
     return out
 
 
+def gap_windows(missing, mtimes):
+    """`[(cycle, after, before)]` -- when each silent cycle can only have run.
+
+    A dead cycle leaves no document and therefore no timestamp of its own,
+    so the only honest statement about *when* it ran is the bracket its
+    neighbours give it: later than the entry below it appeared, earlier
+    than the entry above it did. Both ends come from `first_written_at`,
+    which is already the map `gaps_since` brackets against.
+
+    Either end can be `None` and that is not a defect: `mtimes` is what the
+    vault returned, and a neighbour whose document carried no modification
+    time gives no bound on that side. A caller printing `?` for a missing
+    end is telling the truth; inventing a bound from the next neighbour out
+    would widen the window silently.
+
+    This exists because the count alone cannot be acted on. `describe`
+    names which cycles are missing; a cycle number is only a date if you
+    already hold the whole journal, which is the thing the reader of this
+    check does not have. Idea #125 -- "test whether the silent-session fix
+    explains the cycles that write nothing" -- is a question about dates,
+    and it was unanswerable from this module's own output.
+    """
+    written = first_written_at(mtimes)
+    out = []
+    for number in missing:
+        below = written.get(number - 1)
+        above = written.get(number + 1)
+        out.append((number, below, above))
+    return out
+
+
 def gaps_since(paths, mtimes, since):
     """Interior gaps that became *observable* after `since`, ascending.
 
@@ -517,9 +548,20 @@ def describe(report):
         parts.append(f"part of the journal could not be read: {note}")
     missing = report.get("missing") or []
     if missing:
-        recent = ", ".join(str(n) for n in missing[-5:])
+        # Every one of them, not the newest five. This line said
+        # `missing[-5:]` for its whole life and never said it was doing
+        # that, so it printed "22 cycle(s) ran and wrote no journal entry"
+        # and then named five -- which reads as the whole list. The owner
+        # asked (idea #125) whether the 2.1.243 CLI fix explained these,
+        # and answering that needs *which* cycles, on both sides of the
+        # bump; Cycle 546 had to re-derive the set by hand from the folder
+        # listing because the instrument that reports the count withholds
+        # the evidence. `personality.md`: a limit needs a danger I have
+        # measured, and the danger here is 22 integers, about 90
+        # characters. There is none.
+        named = ", ".join(str(n) for n in missing)
         parts.append(
-            f"{len(missing)} cycle(s) ran and wrote no journal entry: {recent}"
+            f"{len(missing)} cycle(s) ran and wrote no journal entry: {named}"
             + (" (newest last)" if len(missing) > 1 else "")
         )
     if report.get("stalled"):
@@ -547,6 +589,16 @@ def main():
     line = describe(report)
     if line:
         print(line)
+        # The bracket for each hole, one line each. `describe` returns a
+        # single line on purpose -- it is also the note handed to a waking
+        # cycle and the badge the site reads -- so the dates go here, in
+        # the report a human asked for by running the module.
+        for number, below, above in gap_windows(report.get("missing") or [], mtimes):
+            span = " to ".join(
+                stamp.strftime("%Y-%m-%d %H:%M") if stamp else "?"
+                for stamp in (below, above)
+            )
+            print(f"  cycle {number}: between the entries either side of it, {span} Oslo")
         return 1
     return 0
 
