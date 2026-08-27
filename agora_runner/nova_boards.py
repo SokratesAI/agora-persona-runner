@@ -1309,6 +1309,18 @@ def parse_board(markdown):
                 # `prio-` class with no colour at all -- strictly worse
                 # than before the rename, on every row nobody re-saved.
                 priority = canonical_priority(priority) or priority
+                # `Project` is a sixth column, appended for the same
+                # reason `Priority` was a fifth: every cell above keeps
+                # its index, and both live files parse unchanged on the
+                # day this ships without a single row being rewritten.
+                # An absent or empty cell means `DEFAULT_PROJECT` rather
+                # than "no project" -- every row on both boards today
+                # predates the column and every one of them is Nova, so
+                # a blank is a row nobody has re-filed, not a row that
+                # belongs nowhere. `## Done` has its own four-column
+                # shape and never carries one.
+                project = cells[5] if (not done and len(cells) > 5) else ""
+                project = project.strip() or DEFAULT_PROJECT
                 items.append({
                     "number": number,
                     "title": cells[1],
@@ -1318,6 +1330,7 @@ def parse_board(markdown):
                     "where": cells[3] if done else "",
                     "priority": priority,
                     "priorityKey": priority_key(priority),
+                    "project": project,
                     "done": done,
                 })
             continue
@@ -1387,3 +1400,116 @@ def parse_notes(markdown):
                 "text": body_text,
             })
     return notes
+
+
+#: What a `## Board` row means when its `Project` cell is empty or absent.
+#: Every row on both live files predates the column, and every one of them
+#: is this project -- so a blank is "nobody has re-filed this yet", not
+#: "belongs to nothing". Reading it as the latter would put 300 rows into
+#: an "unassigned" bucket the owner never asked for and would have to
+#: empty by hand.
+DEFAULT_PROJECT = "Nova"
+
+#: The heading text of the sixth column. Appended to whatever header the
+#: file already has rather than written as a full row of six: the two
+#: boards do not agree on their own second column (`issues.md` says
+#: `Item`, `ideas.md` says `Idea`) and rewriting the header wholesale
+#: renamed his column while adding mine. Caught before it shipped by
+#: diffing a real write against the live `ideas.md`.
+_PROJECT_HEADING = "Project"
+
+#: How wide a `## Board` row is once it carries a project.
+_BOARD_WIDTH = 6
+
+
+def board_projects(items):
+    """Every project named on the board, in the order it first appears.
+
+    Derived from the rows rather than from a constant or a second
+    document, which is the one design decision in this slice worth
+    stating: the plan in `resources/ideas/project-dashboard-and-idea-pool.md`
+    says the project list "should come from a document rather than a
+    constant, because he will add one" -- and the board *is* that
+    document. Typing a new name into a `Project` cell adds a project;
+    nothing else has to be edited, and there is no second list that can
+    disagree with the rows.
+    """
+    seen = []
+    for item in items or []:
+        name = (item.get("project") or "").strip()
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
+def _ensure_project_column(lines, index):
+    """Give the `## Board` table a sixth column if it has only five.
+
+    A six-cell data row under a five-cell header is not a rendering
+    detail -- Obsidian drops the extra cell outright, so the value the
+    owner is looking at would be gone from his screen while `parse_board`
+    kept reporting it. `index` is a known data row, so the header and the
+    `|---|` rule are the two table lines above it that this has to reach;
+    they are found by walking back to the rule rather than by a fixed
+    offset, because `## Board` is not always the first table in the file.
+    """
+    rule = None
+    for position in range(index - 1, -1, -1):
+        text = lines[position].strip()
+        if not text.startswith("|"):
+            break
+        cells = [cell.strip() for cell in text.strip("|").split("|")]
+        if all(set(cell) <= set("-: ") and cell for cell in cells):
+            rule = position
+            break
+    if rule is None or rule == 0:
+        return
+    header = [cell.strip() for cell in lines[rule - 1].strip().strip("|").split("|")]
+    if len(header) >= _BOARD_WIDTH:
+        return
+    dashes = [cell.strip() for cell in lines[rule].strip().strip("|").split("|")]
+    while len(header) < _BOARD_WIDTH:
+        header.append(_PROJECT_HEADING if len(header) == _BOARD_WIDTH - 1 else "")
+    while len(dashes) < _BOARD_WIDTH:
+        dashes.append("---")
+    lines[rule - 1] = "| " + " | ".join(header) + " |"
+    lines[rule] = "|" + "|".join(dashes) + "|"
+
+
+def set_row_project(markdown, number, project):
+    """Set one `## Board` row's `Project` cell. `None` means not written.
+
+    Refused rather than written: a `|`, which would split the row into a
+    seventh column; a line break, which would end the table; and a `*`,
+    which is `set_row_priority`'s boundary for the same reason -- these
+    cells sit inside the owner's own file and unbalanced emphasis there
+    does not stop at the cell.
+
+    **Any other name is accepted.** There is no allowed-projects list to
+    check against, on purpose: `board_projects` reads the names back off
+    the rows, so the set of projects is whatever the rows say it is and a
+    new one costs one cell. A fixed list would be the constant the plan
+    for this explicitly ruled out.
+
+    A `## Done` row is out of reach, the same boundary `set_row_status`
+    draws: the two tables do not share a column layout and a sixth cell
+    there would land past `Where` in a four-column table.
+    """
+    name = (project or "").strip()
+    if not name or len(name) > 40:
+        return None
+    if any(c in name for c in "|*\r\n"):
+        return None
+    lines = (markdown or "").split("\n")
+    index, cells = _row_span(lines, number, tables=("board",))
+    if index is None:
+        return None
+    # A row that predates the column is short rather than wrong, so it is
+    # padded up to the new width instead of refused -- that is the whole
+    # point of appending the column rather than inserting it.
+    while len(cells) < 6:
+        cells.append("")
+    cells[5] = name
+    lines[index] = "| " + " | ".join(cells) + " |"
+    _ensure_project_column(lines, index)
+    return "\n".join(lines)

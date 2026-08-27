@@ -348,6 +348,7 @@
         "where": "",
         "priority": "",
         "priorityKey": "",
+        "project": "Nova",
         "done": false
       },
       {
@@ -359,6 +360,7 @@
         "where": "",
         "priority": "",
         "priorityKey": "",
+        "project": "Nova",
         "done": false
       },
       {
@@ -370,6 +372,7 @@
         "where": "",
         "priority": "",
         "priorityKey": "",
+        "project": "Nova",
         "done": false
       },
       {
@@ -381,6 +384,7 @@
         "where": "inbox.md, identity.md, prompt.md",
         "priority": "",
         "priorityKey": "",
+        "project": "Nova",
         "done": true
       }
     ],
@@ -442,6 +446,7 @@
       "where": "",
       "priority": "",
       "priorityKey": "",
+      "project": "Nova",
       "done": false,
       "blocks": [
         {
