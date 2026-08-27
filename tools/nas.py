@@ -64,6 +64,18 @@ import urllib.request
 
 USER_AGENT = "nova-nas/1"
 
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib copies every header onto a redirect target, with no same-origin
+    check, so a host that answers 302 would forward the API key wherever it
+    liked. Nothing here has any reason to follow one."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"refused a redirect to {newurl}", headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
 try:  # tzdata is present on both pods; a fixed offset would be wrong all winter
     from zoneinfo import ZoneInfo
 
@@ -71,15 +83,17 @@ try:  # tzdata is present on both pods; a fixed offset would be wrong all winter
 except Exception:  # pragma: no cover - only if the image loses tzdata
     OSLO = dt.timezone(dt.timedelta(hours=1))
 
-# The whole read-only boundary. A path not on this list cannot be fetched,
-# and there is no entry here that is not a GET.
+# Half the read-only boundary: a path not on this list cannot be fetched.
+# The other half, and the load-bearing one, is `method="GET"` in `_get` --
+# `/api/v3/series` also accepts POST, so the list is not by itself a list of
+# read-only operations. It holds exactly the four paths this module calls and
+# nothing else, because an allowlist that grants more than the code uses is
+# the one thing an allowlist must not do.
 READ_ONLY = {
     "/api/v3/system/status",
     "/api/v3/calendar",
     "/api/v3/series",
     "/api/v3/series/lookup",
-    "/api/v3/movie",
-    "/api/v3/movie/lookup",
 }
 
 SERVICES = ("sonarr", "radarr")
@@ -91,6 +105,10 @@ class NotConfigured(Exception):
 
 class Unreachable(Exception):
     """A service is configured but did not answer usefully."""
+
+
+class NothingToSearchFor(Exception):
+    """The search term had no letters or digits in it."""
 
 
 def config(env=None):
@@ -115,12 +133,13 @@ def config(env=None):
     return out
 
 
-def _get(service, conf, path, params=None, opener=urllib.request.urlopen):
+def _get(service, conf, path, params=None, opener=None):
     """The only function here that touches the network.
 
     Hardcodes GET, refuses a path outside `READ_ONLY`, and never sends a
     body. Callers pass a path and a query dict; they cannot pass a method.
     """
+    opener = _OPENER.open if opener is None else opener
     if path not in READ_ONLY:
         raise ValueError(f"{path} is not a read-only endpoint this tool may call")
     query = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
@@ -167,8 +186,29 @@ def _to_oslo(stamp):
     return parsed.astimezone(OSLO).strftime("%d %b %H:%M")
 
 
-def _window(days, today=None):
-    start = today or dt.date.today()
+def _to_oslo_date(stamp):
+    """A UTC `date-time` as the Oslo calendar day it falls on."""
+    if not stamp:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return stamp[:10] or None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(OSLO).date().isoformat()
+
+
+def _window(days, today=None, now=None):
+    """Oslo's today, not the pod's.
+
+    The pod runs UTC, so between 22:00 and midnight Oslo `date.today()` is
+    still yesterday -- the window would start a day early and quietly drop the
+    last day he asked for. `now` exists so a test can stand at that hour
+    rather than passing only when the two zones happen to agree.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    start = today or now.astimezone(OSLO).date()
     return start.isoformat(), (start + dt.timedelta(days=days)).isoformat()
 
 
@@ -187,7 +227,14 @@ def calendar(conf_all, days=7, get=_get, today=None):
         if not conf:
             continue
         try:
-            rows = get(name, conf, "/api/v3/calendar", {"start": start, "end": end})
+            params = {"start": start, "end": end}
+            if name == "sonarr":
+                # `includeSeries` defaults to false in the spec, and without it
+                # `EpisodeResource.series` comes back empty -- so every line
+                # would say "unknown series" against a real Sonarr while the
+                # tests, which supply their own fixture, stayed green.
+                params["includeSeries"] = "true"
+            rows = get(name, conf, "/api/v3/calendar", params)
         except Unreachable as exc:
             failures.append(str(exc))
             continue
@@ -207,11 +254,15 @@ def _episode_line(ep):
 
 
 def _movie_line(movie):
-    # Radarr's three release fields are date-only and any of them may be
-    # absent; the earliest one present is the one the calendar row is for.
-    dates = [movie.get(k) for k in ("inCinemas", "digitalRelease", "physicalRelease")]
-    when = next((d for d in dates if d), None)
-    when = (when or "")[:10] or "date unknown"
+    # All three release fields are `date-time` in the spec, not date-only, and
+    # any of them may be absent. Slicing the first present one to ten
+    # characters gets both halves wrong: it shows the UTC calendar day while
+    # every other line here is Oslo, and a film on the calendar for its
+    # digital release still carries a cinema date from months earlier, which
+    # would sort to the top of a seven-day window.
+    dates = [_to_oslo_date(movie.get(k)) for k in ("inCinemas", "digitalRelease", "physicalRelease")]
+    present = sorted(d for d in dates if d)
+    when = present[0] if present else "date unknown"
     have = "have it" if movie.get("hasFile") else "not downloaded"
     return f"{when}  {movie.get('title') or 'untitled'} ({movie.get('year') or '?'}) ({have})"
 
@@ -231,20 +282,25 @@ def airing(conf_all, term, get=_get, today=None):
     if not conf:
         raise NotConfigured("sonarr")
     needle = _normalise(term)
+    if not needle:
+        # `_normalise` throws away punctuation, so "???" folds to "" and
+        # `"" in anything` is true -- the whole library came back as a hit.
+        raise NothingToSearchFor(term)
     series = get("sonarr", conf, "/api/v3/series") or []
     hits = [s for s in series if needle in _normalise(s.get("title") or "")]
     lines = []
     for s in hits:
+        title = s.get("title") or "untitled"
         nxt = _to_oslo(s.get("nextAiring"))
         if nxt:
-            lines.append(f"{s['title']}: next episode {nxt} (Oslo)")
+            lines.append(f"{title}: next episode {nxt} (Oslo)")
         elif s.get("ended"):
             prev = _to_oslo(s.get("previousAiring"))
-            lines.append(f"{s['title']}: ended{f', last aired {prev}' if prev else ''}")
+            lines.append(f"{title}: ended{f', last aired {prev}' if prev else ''}")
         else:
             prev = _to_oslo(s.get("previousAiring"))
             lines.append(
-                f"{s['title']}: in your library, no next air date known"
+                f"{title}: in your library, no next air date known"
                 f"{f' (last aired {prev})' if prev else ''}"
             )
     if lines:
@@ -290,7 +346,8 @@ def status(conf_all, get=_get):
 
 UNCONFIGURED_HELP = (
     "Nothing on this NAS is reachable yet, and that is expected rather than broken.\n"
-    "Step 1 of nova/resources/research/nas-voice-front-end-2026-08.md is his own and\n"
+    "Step 1 of the NAS write-up in the vault (research/nas-voice-front-end-2026-08.md)\n"
+    "is his own and\n"
     "physical: Tailscale on the NAS itself, the node tagged, one narrow grant to the\n"
     "agents namespace. Once that is done, four values make this tool work:\n"
     "  SONARR_URL / SONARR_API_KEY   RADARR_URL / RADARR_API_KEY\n"
@@ -299,12 +356,19 @@ UNCONFIGURED_HELP = (
 )
 
 
+def _at_least_one_day(raw):
+    days = int(raw)
+    if days < 1:
+        raise argparse.ArgumentTypeError("a window shorter than one day has nothing in it")
+    return days
+
+
 def main(argv=None, env=None, get=_get, out=sys.stdout):
     parser = argparse.ArgumentParser(prog="python3 -m tools.nas", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status", help="is each service reachable")
     cal = sub.add_parser("calendar", help="what is airing or releasing soon")
-    cal.add_argument("--days", type=int, default=7)
+    cal.add_argument("--days", type=_at_least_one_day, default=7)
     air = sub.add_parser("airing", help="when is a named show next on")
     air.add_argument("term", nargs="+")
     args = parser.parse_args(argv)
@@ -335,6 +399,9 @@ def main(argv=None, env=None, get=_get, out=sys.stdout):
         lines = airing(conf_all, term, get=get)
     except NotConfigured:
         print("airing needs Sonarr: set SONARR_URL and SONARR_API_KEY.", file=out)
+        return 1
+    except NothingToSearchFor:
+        print("give me something with a letter or a number in it to search for.", file=out)
         return 1
     except Unreachable as exc:
         print(f"could not read: {exc}", file=out)

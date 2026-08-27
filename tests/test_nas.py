@@ -13,6 +13,7 @@ import io
 import json
 import urllib.error
 import urllib.request
+import pathlib
 
 import pytest
 
@@ -36,11 +37,27 @@ def test_get_refuses_a_path_outside_the_allowlist():
     assert len(calls) == 1  # the forbidden path never reached the network
 
 
-def test_the_write_endpoints_sonarr_offers_are_not_reachable():
-    # His question has two halves and only the first is buildable here.
-    # `POST /api/v3/series` is the half that writes to his disk.
-    for path in ("/api/v3/command", "/api/v3/release", "/api/v3/rootfolder", "/api/v3/queue"):
-        assert path not in nas.READ_ONLY
+def test_the_allowlist_grants_nothing_the_module_does_not_call():
+    # The old test here asserted four string literals were absent from a set
+    # literal in the same repo. It exercised nothing and would have passed
+    # with no allowlist check at all. This one reads the source and fails if
+    # the two ever drift -- which they had: two movie paths were granted and
+    # never called.
+    source = pathlib.Path(nas.__file__).read_text()
+    body = source.split("READ_ONLY = {", 1)[1].split("}", 1)[1]
+    for path in nas.READ_ONLY:
+        assert f'"{path}"' in body, f"{path} is allowed but never called"
+
+
+def test_a_redirect_is_refused_rather_than_followed():
+    # urllib copies headers onto the redirect target with no same-origin
+    # check, so following one would hand the API key to whoever answered.
+    handler = nas._NoRedirect()
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(
+            urllib.request.Request("http://nas:8989/api/v3/calendar"),
+            io.BytesIO(b""), 302, "Found", {}, "http://elsewhere.example/",
+        )
 
 
 def _stub_opener(payload, captured):
@@ -164,7 +181,9 @@ def test_calendar_asks_for_the_window_it_was_given():
         return []
 
     nas.calendar(CONF, days=3, get=get, today=dt.date(2026, 8, 27))
-    assert seen["sonarr"] == {"start": "2026-08-27", "end": "2026-08-30"}
+    # includeSeries defaults to false, and without it every episode line reads
+    # "unknown series" against a real Sonarr.
+    assert seen["sonarr"] == {"start": "2026-08-27", "end": "2026-08-30", "includeSeries": "true"}
     assert seen["radarr"] == {"start": "2026-08-27", "end": "2026-08-30"}
 
 
@@ -312,3 +331,57 @@ def test_status_exits_0_only_when_everything_answered():
     assert nas.main(["status"], env=env, get=lambda *a, **k: {"version": "4.0"}, out=io.StringIO()) == 1
     env["RADARR_URL"], env["RADARR_API_KEY"] = "http://r", "k"
     assert nas.main(["status"], env=env, get=lambda *a, **k: {"version": "4.0"}, out=io.StringIO()) == 0
+
+
+# --- the fixes the reviewer found ------------------------------------------
+
+
+def test_the_window_starts_on_oslos_today_not_the_pods():
+    # The pod runs UTC. At 23:30 Oslo on 27 Aug it is still 21:30 UTC on the
+    # 27th in winter but 00:30 UTC on the 28th is the case that bites: a naive
+    # date.today() would start the window on the wrong day.
+    start, end = nas._window(3, today=dt.date(2026, 8, 27))
+    assert (start, end) == ("2026-08-27", "2026-08-30")
+    # 23:30 UTC on the 27th is 01:30 on the 28th in Oslo. The pod's own date
+    # is still the 27th, so this is the hour where the two disagree.
+    late = dt.datetime(2026, 8, 27, 23, 30, tzinfo=dt.timezone.utc)
+    assert nas._window(1, now=late) == ("2026-08-28", "2026-08-29")
+
+
+def test_a_movie_shows_its_earliest_release_not_the_first_field_present():
+    # The fields are read in the order inCinemas, digitalRelease,
+    # physicalRelease, so this row's *first present* date is not its earliest.
+    line = nas._movie_line(
+        {"title": "M", "year": 2026, "digitalRelease": "2026-08-29T12:00:00Z", "physicalRelease": "2026-08-20T12:00:00Z"}
+    )
+    assert line.startswith("2026-08-20"), line
+
+
+def test_a_release_time_late_in_the_utc_day_lands_on_the_oslo_day():
+    # 23:00Z on 29 Aug is 01:00 on the 30th in Oslo. Slicing the string to ten
+    # characters would print the 29th while every other line here is Oslo.
+    assert nas._to_oslo_date("2026-08-29T23:00:00Z") == "2026-08-30"
+    assert nas._to_oslo_date(None) is None
+
+
+def test_a_punctuation_only_term_does_not_match_the_whole_library():
+    with pytest.raises(nas.NothingToSearchFor):
+        nas.airing(CONF, "???", get=_library_get())
+    out = io.StringIO()
+    env = {"SONARR_URL": "http://s", "SONARR_API_KEY": "k"}
+    assert nas.main(["airing", "???"], env=env, get=_library_get(), out=out) == 1
+    assert "letter or a number" in out.getvalue()
+
+
+def test_a_series_with_no_title_does_not_crash_the_line():
+    def get(service, conf, path, params=None):
+        return [{"title": None, "ended": True}] if path == "/api/v3/series" else []
+
+    # A null title cannot match a real needle, so the lookup path is what runs;
+    # the point is that neither branch raises a KeyError.
+    assert nas.airing(CONF, "anything", get=get) == []
+
+
+def test_a_window_shorter_than_a_day_is_refused_rather_than_silently_empty():
+    with pytest.raises(SystemExit):
+        nas.main(["calendar", "--days", "0"], env={"SONARR_URL": "http://s", "SONARR_API_KEY": "k"}, out=io.StringIO())
