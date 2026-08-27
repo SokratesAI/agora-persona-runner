@@ -393,6 +393,7 @@ def test_main_never_exits_clean_on_an_incomplete_sweep(monkeypatch, capsys):
     )
     monkeypatch.setattr(security_alerts, "alerts_for", lambda repo: (OK, []))
     monkeypatch.setattr(security_alerts, "verify_landed", lambda results: None)
+    monkeypatch.setattr(security_alerts, "_orgs_from_workspace", lambda: [])
     assert security_alerts.main([]) == 1
     assert "COULD NOT LIST THE ORG" in capsys.readouterr().out
 
@@ -531,3 +532,116 @@ def test_a_fixed_alert_is_not_reported_even_if_the_api_returns_one():
     alert["state"] = "fixed"
     _, payload = alerts_for("o/r", run=_runner(0, json.dumps([alert])))
     assert payload == []
+
+
+# --- the org-wide cross-check (Cycle 548) ---
+#
+# The per-repo sweep printed "No open security alerts" with
+# SokratesAI/agora on the answered list at 21:33 on 2026-08-27, while that
+# repo's brace-expansion alert was open and reported by eleven later calls.
+# I never reproduced the empty answer, so nothing here claims a cause. What
+# these cover is the consequence: a per-repo read that comes back exit 0
+# and empty is indistinguishable from a clean repo, and the only way to
+# tell them apart is a second reading over a different route.
+
+
+def _org_alert(repo, number, package="brace-expansion"):
+    alert = _alert("high", package, patched="2.1.4")
+    alert["number"] = number
+    alert["repository"] = {"full_name": repo}
+    return alert
+
+
+def test_the_org_view_carries_the_repo_and_the_alert_number():
+    body = json.dumps([_org_alert("o/a", 2), _org_alert("o/b", 7, "left-pad")])
+    state, alerts = security_alerts.org_alerts("o", run=_runner(0, body))
+    assert state == OK
+    assert {(a["repo"], a["number"]) for a in alerts} == {("o/a", 2), ("o/b", 7)}
+
+
+def test_an_alert_the_per_repo_sweep_missed_is_a_disagreement():
+    # The exact shape of what happened: the repo answered ok with nothing
+    # in it, and the org-wide list has an alert on it.
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (OK, [dict(_org_alert("o/a", 2), repo="o/a")])}
+    lines, disagreed = security_alerts.cross_check(results, org_views)
+    assert disagreed is True
+    assert any("the per-repo sweep did not" in line for line in lines)
+    assert any("#2" in line for line in lines)
+
+
+def test_the_two_views_agreeing_says_nothing_at_all():
+    results = {"o/a": (OK, [{"number": 2}])}
+    org_views = {"o": (OK, [dict(_org_alert("o/a", 2), repo="o/a")])}
+    assert security_alerts.cross_check(results, org_views) == ([], False)
+
+
+def test_an_alert_only_the_per_repo_sweep_saw_is_also_a_disagreement():
+    results = {"o/a": (OK, [{"number": 2}])}
+    org_views = {"o": (OK, [])}
+    lines, disagreed = security_alerts.cross_check(results, org_views)
+    assert disagreed is True
+    assert any("the org-wide list did not" in line for line in lines)
+
+
+def test_a_repo_the_sweep_could_not_read_is_not_a_disagreement():
+    # An archived repo, or one whose alerts are disabled for this token, is
+    # absent from the sweep by design. Reporting that as a contradiction
+    # would make the check red on day one and forever, which is the same as
+    # off.
+    results = {"o/a": (DISABLED, "Dependabot alerts are disabled")}
+    org_views = {"o": (OK, [dict(_org_alert("o/a", 2), repo="o/a")])}
+    assert security_alerts.cross_check(results, org_views) == ([], False)
+
+
+def test_a_repo_outside_the_sweep_entirely_is_not_a_disagreement():
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (OK, [dict(_org_alert("o/archived", 2), repo="o/archived")])}
+    assert security_alerts.cross_check(results, org_views) == ([], False)
+
+
+def test_an_unreadable_org_view_leaves_the_sweep_unconfirmed():
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (ERROR, "HTTP 403")}
+    lines, disagreed = security_alerts.cross_check(results, org_views)
+    assert disagreed is True
+    assert any("COULD NOT CROSS-CHECK" in line for line in lines)
+
+
+def test_a_full_page_of_org_alerts_is_unreadable_rather_than_complete():
+    body = json.dumps(
+        [_org_alert("o/a", n) for n in range(security_alerts._ORG_ALERT_PAGE)]
+    )
+    state, message = security_alerts.org_alerts("o", run=_runner(0, body))
+    assert state == ERROR
+    assert "truncated" in message
+
+
+def test_a_dismissed_org_alert_with_no_patch_is_filtered_the_same_way():
+    # The org view has to apply `_still_counts` too, or every alert this
+    # loop has deliberately dismissed reads as one the per-repo sweep lost.
+    alert = _org_alert("o/a", 2)
+    alert["state"] = "dismissed"
+    alert["dismissed_reason"] = "tolerable_risk"
+    alert["security_vulnerability"]["first_patched_version"] = None
+    state, alerts = security_alerts.org_alerts("o", run=_runner(0, json.dumps([alert])))
+    assert state == OK and alerts == []
+
+
+def test_main_never_exits_clean_when_the_two_views_disagree(monkeypatch, capsys):
+    monkeypatch.setattr(
+        security_alerts, "_repos_to_sweep", lambda: (["o/a"], [], [], False)
+    )
+    monkeypatch.setattr(security_alerts, "alerts_for", lambda repo: (OK, []))
+    monkeypatch.setattr(security_alerts, "verify_landed", lambda results: None)
+    monkeypatch.setattr(security_alerts, "_orgs_from_workspace", lambda: ["o"])
+    monkeypatch.setattr(
+        security_alerts,
+        "org_alerts",
+        lambda org: (OK, [dict(_org_alert("o/a", 2), repo="o/a")]),
+    )
+    assert security_alerts.main([]) == 1
+    out = capsys.readouterr().out
+    # Both the clean-looking per-repo line and the contradiction of it.
+    assert "No open security alerts" in out
+    assert "the per-repo sweep did not" in out
