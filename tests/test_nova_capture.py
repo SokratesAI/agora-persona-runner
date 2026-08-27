@@ -95,6 +95,45 @@ def test_nothing_typed_is_no_bullets(empty):
     assert clean_capture_text(empty) == []
 
 
+# --- "keep this as one item" ---------------------------------------------
+
+
+def test_one_item_joins_a_paste_into_a_single_bullet():
+    """issues.md #123: thirteen paragraphs of one request, filed as thirteen."""
+    typed = "Stand up k3s on the NAS.\n\nWHY: the NAS is LAN-exposed.\n\nScope: bootstrap only."
+    assert clean_capture_text(typed, one_item=True) == [
+        "Stand up k3s on the NAS. WHY: the NAS is LAN-exposed. Scope: bootstrap only."
+    ]
+
+
+def test_one_item_loses_none_of_his_words():
+    typed = "first line\n\nsecond line\nthird line"
+    joined = clean_capture_text(typed, one_item=True)[0]
+    for word in typed.split():
+        assert word in joined
+    assert joined.split() == typed.split()
+
+
+def test_one_item_writes_a_bullet_with_no_newline_in_it():
+    """A bullet holding a raw newline would break the list it lands in."""
+    bullets = clean_capture_text("a\nb\nc", one_item=True)
+    assert len(bullets) == 1
+    assert "\n" not in bullets[0]
+
+
+def test_one_item_on_a_single_line_changes_nothing():
+    assert clean_capture_text("just the one", one_item=True) == ["just the one"]
+
+
+def test_one_item_on_nothing_typed_is_still_no_bullets():
+    assert clean_capture_text("\n\n  \n", one_item=True) == []
+
+
+def test_the_default_is_still_one_bullet_per_line():
+    """The phone case the box was built for must not change under it."""
+    assert clean_capture_text("first thing\nsecond thing") == ["first thing", "second thing"]
+
+
 # --- an attached image belongs to the text it was attached to -------------
 #
 # the owner, capture 2026-08-21: "I see that my image upload test was split

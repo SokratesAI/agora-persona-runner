@@ -517,7 +517,7 @@ def promote_capture(target, index, original, priority=None):
     return False, f"could not write to {target}: {result}"
 
 
-def clean_capture_text(text):
+def clean_capture_text(text, one_item=False):
     """Text as typed -> the bullets to add.
 
     Each non-blank line becomes its own bullet. A multi-line paste into a
@@ -558,6 +558,24 @@ def clean_capture_text(text):
 
     A leading `- ` is stripped so typing the bullet character yields one
     bullet rather than `- - like this`.
+
+    **`one_item` is the owner saying the whole paste is one thought**, and
+    it exists because the structural argument above has an edge the owner
+    hits with a keyboard rather than a phone. Sokrates pasted a
+    thirteen-paragraph write-up of the NAS into the box on 2026-08-27 --
+    one request, with a rationale, an inventory and a scope note -- and it
+    filed as thirteen separate unboarded captures, because every line
+    became its own bullet. His words: *"a long paste into the capture box
+    has no way to signal 'this is one issue' short of avoiding blank lines
+    entirely."* Cycle 545 put those thirteen back together by hand into
+    issue #122; this is so the next one does not need to.
+
+    It joins every line into a single bullet with a space, which is the
+    same joining `capture_entries` does when it reads a wrapped bullet
+    back, so nothing he typed is lost and the list it lands in stays
+    parseable. It is off unless the caller asks for it: the default is
+    still one bullet per line, and that is still the right guess for the
+    phone the box was built for.
     """
     bullets = []
     # Attachment lines seen before any text line -- he attached first.
@@ -581,7 +599,10 @@ def clean_capture_text(text):
         else:
             bullets.append(line)
     # Nothing ever came to attach them to.
-    return bullets + pending
+    bullets = bullets + pending
+    if one_item and len(bullets) > 1:
+        return [" ".join(bullets)]
+    return bullets
 
 
 def insert_captures(markdown, bullets):
@@ -615,7 +636,7 @@ def insert_captures(markdown, bullets):
     return "\n".join(lines[:start] + block + lines[end:])
 
 
-def capture(target, text, priority=""):
+def capture(target, text, priority="", one_item=False):
     """Append a capture to `issues.md` or `ideas.md`. Returns (ok, message).
 
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
@@ -648,7 +669,7 @@ def capture(target, text, priority=""):
         submitted, priority = priority, canonical_priority(priority)
         if priority is None:
             return False, f"unknown priority: {submitted!r}"
-    bullets = clean_capture_text(text or "")
+    bullets = clean_capture_text(text or "", one_item=one_item)
     if not bullets:
         return False, "nothing to capture"
     if priority:

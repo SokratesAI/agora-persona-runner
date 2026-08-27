@@ -3671,9 +3671,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(
                 400, {"error": f"priority must be one of {sorted(PRIORITY_LABELS.values())}"})
             return
+        # `is True` rather than truthiness: the default is one bullet per
+        # line and a client that sends `"false"` or `1` by accident must
+        # not silently glue a whole paste into one item.
+        one_item = payload.get("oneItem") is True
 
         try:
-            ok, message = capture(target, text, priority)
+            ok, message = capture(target, text, priority, one_item=one_item)
         except Exception as e:
             log(f"nova-site capture failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})

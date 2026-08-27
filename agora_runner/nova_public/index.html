@@ -116,6 +116,12 @@
     <textarea id="capture-text" rows="2" placeholder="One line — issue, idea or note…"
               autocapitalize="sentences" autocomplete="off"></textarea>
     <label class="capture-prio-label visually-hidden" for="capture-prio">Priority</label>
+    <!-- Hidden until the box holds more than one non-blank line, because
+         that is the only moment it means anything. `app.js` toggles it. -->
+    <label id="capture-one" class="capture-one" hidden>
+      <input type="checkbox" id="capture-one-input">
+      <span>Keep this as one item</span>
+    </label>
     <div class="capture-actions">
       <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
       <div class="capture-submit">

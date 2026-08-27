@@ -10040,6 +10040,37 @@
       textEl.style.height = textEl.scrollHeight + "px";
     }
 
+    /* "Keep this as one item". The owner, via Sokrates, issues.md #123: a
+     * thirteen-paragraph paste about the NAS filed as thirteen separate
+     * unboarded captures, because `clean_capture_text` makes every line
+     * its own bullet -- *"a long paste into the capture box has no way to
+     * signal 'this is one issue' short of avoiding blank lines entirely."*
+     *
+     * It is shown only while the box holds more than one non-blank line.
+     * That is not tidiness: the control has no meaning on a one-line
+     * capture, and this box is opened on a phone dozens of times a day to
+     * type one line, so a permanently visible checkbox would cost every
+     * one of those a row of height and a decision to ignore. Counting
+     * non-blank lines is the same question `clean_capture_text` asks, so
+     * the checkbox appears exactly when the split would actually happen.
+     *
+     * The attachment tray is deliberately not counted. An image already
+     * folds onto the sentence beside it, so a sentence plus a screenshot
+     * is one bullet either way and offering the toggle there would be
+     * offering a choice that changes nothing. */
+    var oneRow = document.getElementById("capture-one");
+    var oneInput = document.getElementById("capture-one-input");
+    function fitOne() {
+      var lines = textEl.value.split("\n").filter(function (line) {
+        return line.trim() !== "";
+      });
+      var many = lines.length > 1;
+      if (oneRow) oneRow.hidden = !many;
+      // Unchecking on the way out matters: he clears the box, types one
+      // line the next hour, and the hidden checkbox would still be on.
+      if (!many && oneInput) oneInput.checked = false;
+    }
+
     function setStatus(text, isError) {
       captureStatus.textContent = text;
       captureStatus.className = isError ? "capture-status is-error" : "capture-status";
@@ -10059,7 +10090,12 @@
       fetch("/api/capture", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: target, text: body, priority: prioPicker.getValue() }),
+        body: JSON.stringify({
+          target: target,
+          text: body,
+          priority: prioPicker.getValue(),
+          oneItem: !!(oneInput && oneInput.checked),
+        }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
@@ -10068,6 +10104,7 @@
           captureAttach.clear();
           prioPicker.setValue("");
           fit();
+          fitOne();
           setStatus("saved to " + target, false);
           // The capture may be the top bullet of a file the feed shows.
           load();
@@ -10108,6 +10145,7 @@
       }
     });
     textEl.addEventListener("input", fit);
+    textEl.addEventListener("input", fitOne);
     fit();
   })();
 
