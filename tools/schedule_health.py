@@ -45,10 +45,25 @@ that does not know about it.
 documents the `schedule` event as best-effort and delayed "during
 periods of high loads... including the start of every hour", so a
 tight window would report GitHub's normal behaviour as an incident
-every day. The window is `interval + max(2 * interval, 90 minutes)`,
+every day. The window is `interval + max(2 * interval, floor)`,
 so a half-hourly job is only a finding after two hours and a daily one
 after three days — long enough that anything this reports is a real
 absence rather than a late arrival.
+
+**The floor is this account's own measured lateness, not the documented
+90 minutes** (Cycle 555). Every scheduled run the sweep reads is now
+attributed back to the cron minute it was owed to, and the largest gap
+that produces becomes the floor. The number 90 came from GitHub's docs
+and was the only one written down anywhere in this loop; measured across
+the 25 scheduled runs this org has ever had, the *fastest* was 36
+minutes late, the median 92, and one landed 574 minutes late. So 90 was
+below the median. That cost more than a noisy check: Cycle 554 reasoned
+that `nova-deadman`'s 6-hourly rung "cannot be overtaken by a 90-minute
+scheduler delay" and concluded the cause was not the cadence, using the
+one number in this file that had never been checked against this
+account. Only runs that actually happened contribute, so a schedule that
+never fires cannot widen its own window, and the report prints the
+sample so the floor can be argued with.
 
 **A workflow with several crons is judged at its loosest rung once it
 has fired and at its tightest rung while it never has.** GitHub does not
@@ -241,12 +256,16 @@ def workflow_source(repo, path, run=None):
         return None, f"could not decode {path}: {exc}"
 
 
-def newest_scheduled_run(workflow, run=None):
-    """`(created_at, error)` -- when this workflow last ran *on its schedule*.
+def scheduled_runs(workflow, run=None, limit=30):
+    """`(created_at strings, newest first, error)` -- runs GitHub started itself.
 
     `--event schedule` is the whole point: a workflow kept alive by manual
     dispatches looks healthy to any check that reads run history without
     it, which is exactly how `nova-deadman` read as fine.
+
+    More than one run, because the newest answers *is it firing* and the rest
+    are the only evidence this loop has about *how late this account's
+    scheduler actually is* -- see `grace_minutes`.
     """
     code, out, err = (run or _gh)(
         [
@@ -259,23 +278,30 @@ def newest_scheduled_run(workflow, run=None):
             "--event",
             "schedule",
             "--limit",
-            "1",
+            str(limit),
             "--json",
             "createdAt",
         ]
     )
     if code != 0:
         blob = (err or out or "").strip()
-        return None, blob.splitlines()[0] if blob else f"gh exited {code}"
+        return [], blob.splitlines()[0] if blob else f"gh exited {code}"
     try:
         payload = json.loads(out)
     except ValueError:
-        return None, "gh returned something that is not JSON"
+        return [], "gh returned something that is not JSON"
     if not isinstance(payload, list):
-        return None, "gh returned a JSON object where a list of runs was expected"
-    if not payload:
-        return None, None
-    return (payload[0] or {}).get("createdAt") or None, None
+        return [], "gh returned a JSON object where a list of runs was expected"
+    stamps = [(row or {}).get("createdAt") for row in payload]
+    return [stamp for stamp in stamps if stamp], None
+
+
+def newest_scheduled_run(workflow, run=None):
+    """`(created_at, error)` -- when this workflow last ran on its schedule."""
+    stamps, error = scheduled_runs(workflow, run=run)
+    if error:
+        return None, error
+    return (stamps[0] if stamps else None), None
 
 
 def _as_datetime(text):
@@ -287,12 +313,64 @@ def _as_datetime(text):
         return None
 
 
-def grace_minutes(interval):
+DOCUMENTED_FLOOR = 90
+
+
+def occurrence_at_or_before(crons, moment, interval):
+    """The newest minute at or before `moment` that any of `crons` fires on.
+
+    Bounded by one interval on purpose: past that the run cannot honestly be
+    attributed to an occurrence, and an unattributable run is dropped from the
+    sample rather than guessed at.
+    """
+    moment = moment.replace(second=0, microsecond=0)
+    for back in range(int(interval) + 1):
+        candidate = moment - timedelta(minutes=back)
+        for cron in crons:
+            if cron_matches(cron, candidate):
+                return candidate
+    return None
+
+
+def lateness_minutes(crons, interval, run_times):
+    """How many minutes after its own cron each scheduled run actually started."""
+    out = []
+    for text in run_times:
+        started = _as_datetime(text)
+        if started is None:
+            continue
+        due = occurrence_at_or_before(crons, started, interval)
+        if due is None:
+            continue
+        out.append(int((started - due).total_seconds() // 60))
+    return out
+
+
+def measured_floor(samples):
+    """The grace floor this account's own scheduler has earned, in minutes.
+
+    The 90 below is GitHub's documented "best effort, late at the top of the
+    hour" and was the only number here until Cycle 555. Measured that night
+    across the 25 scheduled runs this org has: the *fastest* was 36 minutes
+    late, the median 92, and one landed 574 minutes late. So a check built on
+    90 calls this account's normal behaviour an incident, and -- worse, and the
+    reason this was found -- a cycle reasoning about whether a run was missed
+    reaches for 90 because that is the number written down.
+
+    Only runs that actually happened contribute, so a schedule that never fires
+    cannot widen its own window.
+    """
+    if not samples:
+        return DOCUMENTED_FLOOR
+    return max(DOCUMENTED_FLOOR, max(samples))
+
+
+def grace_minutes(interval, floor=DOCUMENTED_FLOOR):
     """How late GitHub is allowed to be before lateness becomes a finding."""
-    return max(2 * interval, 90)
+    return max(2 * interval, floor)
 
 
-def verdict_for(entry, now):
+def verdict_for(entry, now, floor=DOCUMENTED_FLOOR):
     """`(verdict, note)` for one scheduled workflow. Pure -- no network.
 
     A workflow with several crons is judged at its **loosest** once it has a
@@ -317,7 +395,7 @@ def verdict_for(entry, now):
     created = _as_datetime(entry.get("created_at"))
     if last is not None:
         interval = entry["interval"]
-        window = interval + grace_minutes(interval)
+        window = interval + grace_minutes(interval, floor)
         age = int((now - last).total_seconds() // 60)
         detail = (
             f"cron {entry['cron']} every {interval}m; last scheduled run "
@@ -325,7 +403,7 @@ def verdict_for(entry, now):
         )
         return ("overdue" if age > window else "ok"), detail
     interval = entry.get("tightest", entry["interval"])
-    window = interval + grace_minutes(interval)
+    window = interval + grace_minutes(interval, floor)
     if created is None:
         return "unreadable", (
             f"cron {entry['cron']} every {interval}m; no scheduled run, and GitHub "
@@ -342,7 +420,7 @@ def verdict_for(entry, now):
 def sweep(repos, run=None, now=None):
     """`(results, errors)` across every repo -- one entry per scheduled workflow."""
     now = now or datetime.now(timezone.utc)
-    results, errors = [], []
+    results, errors, lateness = [], [], []
     for repo in repos:
         found, error = workflows_in(repo, run=run)
         if error:
@@ -402,12 +480,16 @@ def sweep(repos, run=None, now=None):
                 declared.append((cron, interval))
             if not declared:
                 continue
-            last, error = newest_scheduled_run(workflow, run=run)
+            stamps, error = scheduled_runs(workflow, run=run)
             if error:
                 errors.append(f"{repo} {workflow['path']}: {error}")
                 continue
+            last = stamps[0] if stamps else None
             loosest = max(interval for _, interval in declared)
             tightest = min(interval for _, interval in declared)
+            lateness.extend(
+                lateness_minutes([cron for cron, _ in declared], tightest, stamps)
+            )
             label = " | ".join(cron for cron, _ in declared)
             if len(declared) > 1:
                 label += (
@@ -423,12 +505,19 @@ def sweep(repos, run=None, now=None):
                 tightest=tightest,
                 last_scheduled=last,
             )
-            entry["verdict"], entry["note"] = verdict_for(entry, now)
             results.append(entry)
-    return results, errors
+    # Every verdict is judged against one floor and the floor is built from
+    # every run this sweep saw, so it has to be a second pass. The alternative
+    # -- a floor per workflow -- would let a schedule that fires punctually
+    # judge itself punctually while the account is hours behind on everything
+    # else, which is the number this loop actually needs.
+    floor = measured_floor(lateness)
+    for entry in results:
+        entry["verdict"], entry["note"] = verdict_for(entry, now, floor)
+    return results, errors, {"samples": sorted(lateness), "floor": floor}
 
 
-def format_report(results, errors, swept):
+def format_report(results, errors, swept, lateness=None):
     """`(text, exit_status)`."""
     lines = []
     never = [r for r in results if r["verdict"] == "never"]
@@ -465,10 +554,24 @@ def format_report(results, errors, swept):
         lines.extend(f"  {blob}" for blob in errors)
 
     lines.append(f"Swept {len(swept)} repo(s): {', '.join(swept)}")
+    samples = sorted((lateness or {}).get("samples") or [])
+    floor = (lateness or {}).get("floor", DOCUMENTED_FLOOR)
     lines.append(
         "A schedule is judged only against runs GitHub started itself; the window "
-        "is the cron's own interval plus the larger of twice that and 90 minutes."
+        f"is the cron's own interval plus the larger of twice that and {floor} minutes."
     )
+    if samples:
+        lines.append(
+            f"That {floor} is measured, not documented: across the {len(samples)} "
+            "scheduled run(s) this sweep could attribute to a cron, GitHub started "
+            f"them {min(samples)}m to {max(samples)}m after the minute they asked "
+            f"for (median {samples[len(samples) // 2]}m)."
+        )
+    else:
+        lines.append(
+            f"No scheduled run could be attributed to a cron, so that {floor} is "
+            "GitHub's documented best-effort figure and not this account's measured one."
+        )
     if never or overdue:
         return "\n".join(lines), 2
     if errors or unreadable:
@@ -480,10 +583,10 @@ def main(argv=None):
     from tools.security_alerts import _repos_to_sweep
 
     repos, _unplaceable, notes, incomplete = _repos_to_sweep()
-    results, errors = sweep(repos)
+    results, errors, lateness = sweep(repos)
     if incomplete:
         errors.extend(notes)
-    report, status = format_report(results, errors, repos)
+    report, status = format_report(results, errors, repos, lateness)
     print(report)
     return status
 
