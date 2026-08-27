@@ -322,6 +322,14 @@ def occurrence_at_or_before(crons, moment, interval):
     Bounded by one interval on purpose: past that the run cannot honestly be
     attributed to an occurrence, and an unattributable run is dropped from the
     sample rather than guessed at.
+
+    Known limit, stated rather than papered over: this reads the cron the
+    workflow declares *today* and the runs it produced over weeks. A cron that
+    was edited inside that window has its older runs measured against the new
+    minute, which can inflate a sample by up to one interval. Nothing in
+    GitHub's run payload says which cron text produced a run, so the honest
+    options are this or no measurement at all; the bound is what stops it
+    running away.
     """
     moment = moment.replace(second=0, microsecond=0)
     for back in range(int(interval) + 1):
