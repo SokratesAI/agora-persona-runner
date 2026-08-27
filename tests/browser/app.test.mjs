@@ -11067,9 +11067,12 @@ describe("the chat dock folds the heartbeat threads away", () => {
         rows: ["Nova — Cycle 471", "Nova — Cycle 470"] },
     ]);
     // Ask Nova stays pinned above both folds rather than falling into one.
-    const first = window.document.querySelector("#chat-list > *");
-    assert.ok(first.classList.contains("chat-list-row"));
+    // The first child of the list is the "new conversation" control, which
+    // is deliberately not a `.chat-list-row` -- the rows are the threads.
+    const first = window.document.querySelector("#chat-list .chat-list-row");
     assert.equal(first.querySelector(".chat-list-name").textContent, "Ask Nova");
+    assert.equal(window.document.querySelector("#chat-list > *").className,
+      "chat-list-new", "the new-conversation control is not above the list");
   });
 
   test("a folded heartbeat is still one tap away, not filtered out", async () => {
@@ -11117,5 +11120,192 @@ describe("the chat dock folds the heartbeat threads away", () => {
       convList: { conversations: MIXED.conversations.filter((c) => c.cycleThread) },
     });
     assert.deepEqual(folds(window).map((f) => f.name), ["Heartbeats"]);
+  });
+});
+
+/* Managing a conversation from the dock -- his capture, `issues.md`
+ * 2026-08-27, rated 🔴 Immediately: *"I need the chat bubble to be able to
+ * start ned conversations, delete them, change name, organize like move to
+ * a folder. Editing by pressing the conversation for 1 sec and it gives me
+ * edit options."*
+ *
+ * Driven through the real gesture and asserted on `window.posted`, for the
+ * board-row hold tests' reason: the whole feature is the difference between
+ * a tap and a hold, and what a hold is worth is the request it ends in. A
+ * test that called the handler would pass with the gesture unwired. */
+describe("holding a conversation in the switcher opens edit options", () => {
+  const HOLD = 1000;
+  const press = (window, node, type) =>
+    node.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true }));
+  const hold = async (window, node) => {
+    press(window, node, "mousedown");
+    await new Promise((resolve) => setTimeout(resolve, HOLD + 30));
+    press(window, node, "mouseup");
+    node.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  function tap(window, id) {
+    window.document.getElementById(id)
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const ASK = {
+    conversationId: "c-ask",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+  };
+
+  const LIST = {
+    folders: [{ id: "f-1", name: "House" }],
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], cycleThread: false, folderId: "f-1",
+        updatedAt: "2026-08-26T07:00:00.000Z" },
+      { id: "c-2", name: "Loose thread", personaName: "Claude", model: "m",
+        tags: [], cycleThread: false, folderId: "",
+        updatedAt: "2026-08-25T07:00:00.000Z" },
+    ],
+  };
+
+  async function openSwitcher(opts = {}) {
+    const window = await loadSite("/", { ask: ASK, convList: LIST, ...opts });
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    return window;
+  }
+
+  const rowNamed = (window, label) =>
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")]
+      .find((r) => r.querySelector(".chat-list-name").textContent === label);
+
+  test("his folders are their own folds, and a thread in one is not loose", async () => {
+    const window = await openSwitcher();
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-fold")].map((f) => ({
+        name: f.querySelector(".chat-list-group-name").textContent,
+        rows: [...f.querySelectorAll(".chat-list-name")].map((n) => n.textContent),
+      })),
+      [{ name: "House", rows: ["Roofing"] },
+       { name: "Conversations", rows: ["Loose thread"] }]);
+  });
+
+  test("a hold opens the editor on that row, prefilled, and does not switch to it", async () => {
+    const asked = [];
+    const window = await openSwitcher({
+      convThread: (url) => { asked.push(url); return { messages: [], waiting: false }; },
+    });
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    assert.ok(editor, "holding the row opened no editor");
+    assert.equal(editor.querySelector(".chat-row-edit-name").value, "Roofing");
+    assert.equal(editor.querySelector(".chat-row-edit-folder").value, "f-1",
+      "the editor did not open on the folder the conversation is in");
+    // The hold must not also count as the tap that opens the thread.
+    assert.deepEqual(asked, []);
+  });
+
+  test("saving a new name posts the rename, and moves the dock title with it", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    rowNamed(window, "Roofing").dispatchEvent(new window.Event("click"));
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-name").value = "New roof";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/rename", { id: "c-1", name: "New roof" }]]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "New roof");
+  });
+
+  test("an unchanged name and folder post nothing at all", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Roofing"));
+    window.document.querySelector(".chat-row-edit-save")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted, []);
+  });
+
+  test("moving to the top level posts an empty folderId, not the old one", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-folder").value = "";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/move", { id: "c-1", folderId: "" }]]);
+  });
+
+  test("a new folder is created first, and the move uses the id it answered with", async () => {
+    const window = await openSwitcher();
+    window.postReply = { ok: true, result: "f-new" };
+    await hold(window, rowNamed(window, "Loose thread"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    const pick = editor.querySelector(".chat-row-edit-folder");
+    pick.value = "+new";
+    pick.dispatchEvent(new window.Event("change"));
+    editor.querySelector('input[placeholder="New folder name"]').value = "Work";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]), [
+      ["/api/conversations/folder", { name: "Work" }],
+      ["/api/conversations/move", { id: "c-2", folderId: "f-new" }],
+    ]);
+  });
+
+  test("delete asks first, and does nothing when he says no", async () => {
+    const window = await openSwitcher();
+    window.confirm = () => false;
+    await hold(window, rowNamed(window, "Roofing"));
+    window.document.querySelector(".chat-row-edit-delete")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted, []);
+  });
+
+  test("delete posts the id once he confirms", async () => {
+    const window = await openSwitcher();
+    window.confirm = () => true;
+    await hold(window, rowNamed(window, "Roofing"));
+    window.document.querySelector(".chat-row-edit-delete")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/delete", { id: "c-1" }]]);
+  });
+
+  test("the new-conversation control starts a thread and opens it", async () => {
+    const window = await openSwitcher({
+      convPersonas: { personas: [{ id: "p-1", name: "Nova", model: "m", metered: false }] },
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    window.postReply = { ok: true, result: "c-9" };
+    window.document.querySelector("#chat-list .chat-list-new")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    const form = window.document.querySelector("#chat-list .chat-row-edit");
+    assert.ok(form, "the new-conversation control opened no form");
+    // Guard: the persona list is fetched when the form opens, and an empty
+    // one would leave `personaId` blank while the assertion below still read
+    // the right URL.
+    assert.equal(form.querySelector(".chat-row-edit-folder").value, "p-1",
+      "the form did not load the personas");
+    form.querySelector(".chat-row-edit-name").value = "Gutters";
+    form.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/new", { name: "Gutters", personaId: "p-1" }]]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Gutters");
   });
 });

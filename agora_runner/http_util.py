@@ -79,3 +79,16 @@ def agora_get(path):
 def agora_internal(method, path, payload=None):
     headers = {"x-agora-token": AGORA_TOKEN} if AGORA_TOKEN else {}
     return http_json(method, f"{AGORA_INTERNAL_URL}{path}", payload, headers)
+
+
+def agora_public(method, path, payload=None):
+    """A write against Agora's *public* app, which is where his browser writes.
+
+    `agora_internal` is the agent-facing app (ADR 0007) and carries the token;
+    this is the same app `agora_get` reads. It exists because two of the
+    conversation routes the dock needs -- `DELETE /conversations/:id` above
+    all -- are registered on the public app only, so a delete over the
+    internal one is a 404 rather than a permission error, which reads as
+    "that conversation is gone" and is the opposite of what happened.
+    """
+    return http_json(method, f"{AGORA_URL}{path}", payload)
