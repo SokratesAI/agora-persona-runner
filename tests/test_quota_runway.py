@@ -439,7 +439,10 @@ def test_the_wake_up_count_still_uses_the_schedule_not_the_old_cadence():
     _, _, _, lost_20, _ = runway(90.0, 155.9, 20.0, 20)
     _, _, _, lost_30, _ = runway(90.0, 155.9, 20.0, 30, spend_cadence_minutes=20)
     assert lost_20 > lost_30, "a slower heartbeat wastes fewer wake-ups"
-    assert lost_30 == int((155.9 - 90.0 / 20.0 * 24) * 60 // 30)
+    # Worked by hand, not restated from the source: 90% at 20%/day is 108h of
+    # runway against 155.9h to the reset, so 47.9h dark = 2874 minutes.
+    # 2874 // 30 = 95 wake-ups, 2874 // 20 = 143.
+    assert (lost_20, lost_30) == (143, 95)
 
 
 def test_an_unchanged_cadence_needs_no_second_number():
