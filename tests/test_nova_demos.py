@@ -32,6 +32,25 @@ from agora_runner.nova_demos import (
 from tests.test_nova_site import _get, _post
 
 
+def _args(**kw):
+    """A stand-in for the argparse namespace these subcommands receive."""
+    return type("Args", (), kw)()
+
+
+@pytest.fixture(autouse=True)
+def _no_network_activity():
+    """`list` and `reap --idle` ask the site who is looking at each demo.
+
+    Left unpatched every test in this file would make a real DNS lookup for
+    a cluster address, so the default here is "the site did not answer" --
+    which is also the case the reaper must be safe in. A test that wants an
+    answer patches it itself.
+    """
+    from tools import demo as demo_cli
+    with patch.object(demo_cli, "fetch_activity", lambda *a, **kw: None):
+        yield
+
+
 def test_absent_document_is_an_empty_registry_not_an_error():
     # `vault_tool.py get` exits 0 and prints this for a path with no
     # document, so the first caller ever to start a demo is handed a
@@ -558,7 +577,7 @@ def test_reap_releases_the_ports_of_demos_that_are_gone_and_keeps_the_live_one()
          patch.object(demo_cli, "_write_registry", _write), \
          patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
          patch.object(demo_cli, "pid_alive", lambda pid: pid == 4242):
-        assert demo_cli.cmd_reap(type("A", (), {})()) == 0
+        assert demo_cli.cmd_reap(_args(idle=None)) == 0
     left = [d["slug"] for d in state["registry"]["demos"]]
     assert left == ["live"]
     # The whole point is the port coming back to the allocator.
@@ -577,7 +596,7 @@ def test_reap_writes_nothing_when_every_demo_is_serving():
                       lambda r, rev: wrote.append(r)), \
          patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
          patch.object(demo_cli, "pid_alive", lambda pid: True):
-        assert demo_cli.cmd_reap(type("A", (), {})()) == 0
+        assert demo_cli.cmd_reap(_args(idle=None)) == 0
     assert wrote == []
 
 
@@ -593,7 +612,7 @@ def test_list_says_which_rows_are_not_serving_anything(capsys):
     with patch.object(demo_cli, "_read_registry", _read), \
          patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
          patch.object(demo_cli, "pid_alive", lambda pid: pid == 4242):
-        assert demo_cli.cmd_list(type("A", (), {})()) == 0
+        assert demo_cli.cmd_list(_args()) == 0
     out = capsys.readouterr().out
     assert "the pod it ran in is gone" in out
     assert "1 of 2 hold a port and are not serving anything" in out
@@ -616,7 +635,7 @@ def test_reap_leaves_a_demo_that_is_still_starting_alone():
          patch.object(demo_cli, "_write_registry", _write), \
          patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
          patch.object(demo_cli, "pid_alive", lambda pid: False):
-        assert demo_cli.cmd_reap(type("A", (), {})()) == 0
+        assert demo_cli.cmd_reap(_args(idle=None)) == 0
     assert [d["slug"] for d in state["registry"]["demos"]] == ["starting"]
 
 
@@ -629,7 +648,7 @@ def test_list_does_not_offer_to_reap_a_demo_that_is_starting(capsys):
     ])
     with patch.object(demo_cli, "_read_registry", _read), \
          patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"):
-        assert demo_cli.cmd_list(type("A", (), {})()) == 0
+        assert demo_cli.cmd_list(_args()) == 0
     out = capsys.readouterr().out
     assert "starting -- no pid recorded yet" in out
     assert "hold a port and are not serving" not in out
@@ -650,3 +669,179 @@ def test_judge_does_not_probe_the_pid_of_a_row_from_another_pod():
     entry = {"slug": "old", "host": "10.42.0.84", "port": 5174, "pid": 311849}
     with patch.object(demo_cli, "pid_alive", _boom):
         assert demo_cli.judge(entry, "10.42.0.56") == "pod-gone"
+
+
+# -- Idea #136's other half: a demo nobody is looking at ---------------------
+#
+# The tests worth having here are the ones about *not* reaping. Stopping an
+# idle demo is the easy half and a wrong answer costs a port; refusing to
+# stop one somebody is watching is the half that shows on his screen.
+
+
+def test_the_site_records_who_asked_for_a_demo_and_publishes_it():
+    from agora_runner.nova_demos import dumps as demo_dumps
+
+    registry = demo_dumps({"demos": [
+        {"slug": "bakeoff", "host": "10.42.0.56", "port": 5174, "pid": 4242},
+    ]})
+    body = b"<html>demo</html>"
+
+    class _Up:
+        status = 200
+        headers = {"Content-Type": "text/html"}
+
+        def read(self, n):
+            return body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    with patch.object(nova_site, "_demo_registry", lambda: registry), \
+         patch.object(nova_site, "_demo_opener",
+                      lambda: type("O", (), {"open": lambda self, r, timeout: _Up()})()):
+        assert _get("/demo/bakeoff/")[0] == 200
+    seen = json.loads(_get("/api/demo/activity")[2])
+    assert "bakeoff" in seen["last_seen"]
+    assert seen["started_at"] <= seen["last_seen"]["bakeoff"]
+
+
+def test_a_request_for_a_slug_nobody_registered_is_not_someone_looking():
+    with patch.object(nova_site, "_demo_registry", lambda: '{"demos": []}'):
+        assert _get("/demo/ghost/")[0] == 404
+    assert "ghost" not in json.loads(_get("/api/demo/activity")[2])["last_seen"]
+
+
+def test_idle_is_measured_from_the_site_restart_not_from_a_forgotten_request():
+    """The failure this rule exists to prevent, as a test.
+
+    `last_seen` is in the site pod's memory. A minute after a site deploy no
+    demo has a recorded request, so measuring from `started_at` alone would
+    call a two-day-old demo idle for two days and reap it instantly -- while
+    somebody had it open. The site's own start time is the floor.
+    """
+    from agora_runner.nova_demos import idle_seconds
+
+    two_days = 2 * 24 * 3600
+    now = datetime.now().timestamp()
+    demo = {"slug": "bakeoff",
+            "started_at": datetime.fromtimestamp(now - two_days).isoformat(
+                timespec="seconds")}
+    fresh_site = {"started_at": now - 60, "last_seen": {}}
+    assert idle_seconds(demo, fresh_site, now) == pytest.approx(60, abs=2)
+    old_site = {"started_at": now - two_days - 60, "last_seen": {}}
+    assert idle_seconds(demo, old_site, now) == pytest.approx(two_days, abs=2)
+
+
+def test_idle_is_unknown_rather_than_zero_when_the_site_did_not_answer():
+    from agora_runner.nova_demos import idle_seconds
+
+    assert idle_seconds({"slug": "x", "started_at": "2026-08-25T10:00:00"},
+                        None, 1_000_000.0) is None
+    # A row written before this feature existed has no readable start time
+    # either; that is also "I do not know", not "idle forever".
+    assert idle_seconds({"slug": "x"}, {"started_at": 1.0, "last_seen": {}},
+                        1_000_000.0) is None
+
+
+def test_reap_idle_stops_a_demo_nobody_asked_for_and_frees_its_port():
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    state, _read, _write = _fake_registry([
+        {"slug": "cold", "host": "10.42.0.56", "port": 5174, "pid": 4242},
+        {"slug": "warm", "host": "10.42.0.56", "port": 5175, "pid": 4243},
+    ])
+    activity = {"started_at": now - 10 * 3600,
+                "last_seen": {"cold": now - 5 * 3600, "warm": now - 60}}
+    signalled = []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(idle=120)) == 0
+    assert [d["slug"] for d in state["registry"]["demos"]] == ["warm"]
+    assert signalled and signalled[0][0] == 4242
+
+
+def test_reap_idle_stops_nothing_when_the_site_does_not_answer():
+    """`fetch_activity` returning None must not read as 'nobody is looking'.
+
+    This is the case that matters: the site being down is exactly when the
+    naive answer -- no recorded requests, therefore idle -- would stop every
+    demo the owner has open.
+    """
+    from tools import demo as demo_cli
+
+    state, _read, _write = _fake_registry([
+        {"slug": "live", "host": "10.42.0.56", "port": 5174, "pid": 4242},
+    ])
+    wrote, signalled = [], []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry",
+                      lambda r, rev: wrote.append(r)), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: None), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(idle=1)) == 0
+    assert wrote == [] and signalled == []
+
+
+def test_reap_without_the_flag_never_touches_a_running_demo_however_old():
+    """Idle reaping is opt-in: no `--idle`, no judgement about who is looking."""
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    state, _read, _write = _fake_registry([
+        {"slug": "ancient", "host": "10.42.0.56", "port": 5174, "pid": 4242},
+    ])
+    wrote, signalled = [], []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry",
+                      lambda r, rev: wrote.append(r)), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity",
+                      lambda *a, **kw: {"started_at": now - 10 ** 6,
+                                        "last_seen": {}}), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(idle=None)) == 0
+    assert wrote == [] and signalled == []
+
+
+def test_reap_idle_keeps_the_port_registered_when_it_cannot_signal():
+    """Alive and unsignallable is the one case that must not deregister.
+
+    Freeing the port while something still holds it is the silent
+    cross-serve: the next `start` allocates it, fails to bind, and serves
+    this demo's page under the new slug.
+    """
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    state, _read, _write = _fake_registry([
+        {"slug": "stubborn", "host": "10.42.0.56", "port": 5174, "pid": 4242},
+    ])
+    wrote = []
+
+    def _refuse(*a):
+        raise PermissionError("Operation not permitted")
+
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry",
+                      lambda r, rev: wrote.append(r)), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity",
+                      lambda *a, **kw: {"started_at": now - 10 ** 6,
+                                        "last_seen": {"stubborn": now - 10 ** 5}}), \
+         patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
+         patch.object(demo_cli.os, "killpg", _refuse):
+        assert demo_cli.cmd_reap(_args(idle=1)) == 1
+    assert wrote == []

@@ -887,6 +887,27 @@ DEMO_FORWARD_HEADERS = ("Range", "Accept", "Accept-Language")
 _demo_registry_cache = {"at": 0.0, "text": None}
 _demo_registry_lock = threading.Lock()
 
+#: When anyone last asked for each demo, and when this process started.
+#: Idea #136's idle half: nothing else in the system knows whether a demo
+#: is being looked at, because every request for one arrives here. It is
+#: deliberately in memory rather than in the registry -- a demo page is
+#: forty assets and the registry is a CouchDB document, so writing it
+#: through would be forty round trips per page load, which is the cost
+#: `DEMO_REGISTRY_TTL` above exists to avoid. The consequence is that a
+#: site roll forgets it, which is why the start time is published
+#: alongside: `nova_demos.idle_seconds` uses it as a floor so a roll
+#: restarts the idle clock instead of making every demo instantly
+#: reapable.
+_demo_last_seen = {}
+_demo_last_seen_lock = threading.Lock()
+SITE_STARTED_AT = time.time()
+
+
+def demo_activity():
+    """What `/api/demo/activity` answers. Epoch seconds, UTC-agnostic."""
+    with _demo_last_seen_lock:
+        return {"started_at": SITE_STARTED_AT, "last_seen": dict(_demo_last_seen)}
+
 
 def _demo_registry():
     """The registry text, reused for `DEMO_REGISTRY_TTL` seconds."""
@@ -2191,6 +2212,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # to check it landed.
                 self._send_json(200, pool_history())
                 return
+            if path == "/api/demo/activity":
+                # Never cached: `tools.demo reap --idle` decides whether to
+                # kill a running demo on this answer, and a stale one would
+                # kill a demo somebody asked for CACHE_FRESH_SECONDS ago.
+                self._send_json(200, demo_activity())
+                return
             if path == "/api/health":
                 # Never cached, and that is the entire point of it. The
                 # thing this answers -- "which database did you resolve,
@@ -2272,6 +2299,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if demo is None:
             self._send_json(404, {"error": f"no demo named {slug!r} is running"})
             return
+        # Recorded here rather than at the top of the method, deliberately:
+        # a request for a slug nobody registered is not somebody looking at
+        # a demo, and counting it would keep a row alive that no longer
+        # exists. Recorded before the upstream call rather than after, also
+        # deliberately -- a demo that is being watched while its dev server
+        # is briefly failing is still being watched, and reaping it because
+        # its own 502s did not count is the wrong answer.
+        with _demo_last_seen_lock:
+            _demo_last_seen[slug] = time.time()
         # `.get`, not `[...]`, because this route is dispatched above
         # `do_GET`'s `try` -- a hand-edited registry row missing either
         # field would be a traceback and a dropped connection rather than

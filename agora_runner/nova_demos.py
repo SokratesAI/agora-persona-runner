@@ -203,3 +203,53 @@ def verdict(entry, host, pid_alive):
     if not pid:
         return STARTING
     return ALIVE if pid_alive(pid) else PROCESS_GONE
+
+
+def started_epoch(entry):
+    """`started_at` as a POSIX timestamp, or None if it is unreadable.
+
+    `register` writes a naive local isoformat, so this is naive-local too
+    and both ends of every comparison here come from the same clock.
+    """
+    stamp = entry.get("started_at")
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def idle_seconds(entry, activity, now):
+    """How long since anyone asked for this demo, in seconds.
+
+    Idea #136's other half: a demo nobody is looking at runs until the pod
+    dies. The site is the only thing that knows whether anyone is looking,
+    because every request for a demo goes through its `/demo/<slug>/`
+    proxy, so `activity` is what `/api/demo/activity` returned --
+    `{"started_at": <epoch>, "last_seen": {slug: epoch}}`.
+
+    **The site's own start time is a floor on the answer, and leaving it
+    out is what would kill a demo somebody was watching.** `last_seen`
+    lives in that pod's memory and is gone when it rolls, so a minute after
+    a site deploy every demo has no recorded request and would read as idle
+    since whenever it started -- which for a two-day-old demo is instantly
+    reapable. Taking the later of "when the demo started" and "when the
+    site started" says the honest thing instead: nobody has asked for this
+    since the earliest moment I could have noticed, and the clock restarts
+    on a roll rather than the demo dying under it.
+
+    Returns None when the answer is unknowable -- no site start time, or a
+    row with no readable `started_at` and no recorded request. None is not
+    zero and callers must not reap on it.
+    """
+    activity = activity or {}
+    floor = activity.get("started_at")
+    if floor is None:
+        return None
+    last = activity.get("last_seen", {}).get(entry.get("slug"))
+    if last is None:
+        last = started_epoch(entry)
+    if last is None:
+        return None
+    return max(0.0, now - max(last, floor))
