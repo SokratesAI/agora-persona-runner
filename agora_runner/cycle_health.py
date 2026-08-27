@@ -160,14 +160,37 @@ def nova_heartbeat_snapshot():
     and a rule that is wrong only in the case it was written for is not
     much of a rule.
 
-    All three are `None` when Agora is unreachable or no enabled
-    heartbeat targets Nova, which is the same "no honest answer" the
-    cadence returns rather than a fabricated one.
+    **The internal API is asked first and the public one is the fallback,
+    because only one of the two pods holding this code has a token.**
+    `agora_internal` sends `x-agora-token` at `AGORA_INTERNAL_URL` (:8081);
+    the bridge pod has no `AGORA_TOKEN`, so from there the call answers
+    **401**, not a connection error. Measured from the bridge pod
+    2026-08-27: `agora_internal("GET", "/heartbeats")` returns 401 while
+    `agora_get("/heartbeats")` returns 200 with all seven heartbeats and
+    every field this function reads. The public route takes no auth --
+    `app.get("/heartbeats")` in agora's `server.ts` sits with the other
+    unauthenticated read routes -- and it is a read, so nothing is
+    loosened by falling back to it.
+
+    That 401 was recorded as "the bridge pod cannot reach Agora" in
+    `quota_runway.live_cadence_minutes`, and the consequence was not
+    cosmetic: a cycle runs that tool from the bridge pod, so the normal
+    path silently dropped to `OBSERVED` -- the cadence inferred from the
+    loop's own wake-ups over 48h -- and reported the *old* interval for
+    two days after a schedule change. Cycle 523 changed the Nova
+    heartbeat from 20 to 30 minutes and this is the read that tells the
+    tool so.
+
+    All three are `None` when neither API answers or no enabled heartbeat
+    targets Nova, which is the same "no honest answer" the cadence returns
+    rather than a fabricated one.
     """
-    from agora_runner.http_util import agora_internal
+    from agora_runner.http_util import agora_internal, agora_get
     from agora_runner.turns import schedule_minutes
 
     status, body = agora_internal("GET", "/heartbeats")
+    if status != 200:
+        status, body = agora_get("/heartbeats")
     if status != 200:
         return (None, None, None)
     nova = nova_cycle_heartbeats(body.get("heartbeats"))

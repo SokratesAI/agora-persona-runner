@@ -69,7 +69,8 @@ TIGHT = "TIGHT"
 DARK = "DARK"
 
 
-def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_MINUTES):
+def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_MINUTES,
+           spend_cadence_minutes=None):
     """How long the budget lasts, and what is left over.
 
     `pct_per_day` is the measured burn rate. A rate at or below zero
@@ -80,7 +81,21 @@ def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_M
     `TIGHT` is the band where the budget runs out inside one cadence
     interval of the reset -- close enough that it is not worth acting on,
     and worth distinguishing from `DARK` so the check does not cry wolf.
+
+    **`cadence_minutes` and `spend_cadence_minutes` are two different
+    questions and only collapse into one while the cadence is unchanged.**
+    `cadence_minutes` is what the heartbeat is set to *now*, and it is what
+    the wake-up counts are in -- those are forward-looking. `pct_per_day`
+    was earned over the trailing sample, at whatever interval was in force
+    *then*, and `_needed_cadence` scales that rate, so it must divide by
+    the interval that produced it. Passing the new one double-counts a
+    cadence change: on 2026-08-27 the loop moved from 20 to 30 minutes and
+    the suggestion jumped from 29 to 43 the moment it read the new
+    schedule, having measured nothing new. Defaults to `cadence_minutes`,
+    which is right whenever the schedule has not just moved.
     """
+    if spend_cadence_minutes is None:
+        spend_cadence_minutes = cadence_minutes
     lines = []
 
     if remaining_pct <= 0:
@@ -136,7 +151,7 @@ def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_M
     lines.append(
         "  The lever is cadence, and it is Edvard's. Slowing the heartbeat "
         f"enough to stretch {remaining_pct:.0f}% over {hours_to_reset:.1f}h means "
-        f"about {_needed_cadence(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes):.0f} "
+        f"about {_needed_cadence(remaining_pct, hours_to_reset, pct_per_day, spend_cadence_minutes):.0f} "
         "minutes between cycles."
     )
     return DARK, hours_of_runway, dark_hours, cycles_lost, lines
@@ -148,6 +163,10 @@ def _needed_cadence(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes)
     Cost is linear in cadence because every cycle is a cold session --
     the setup is paid per wake-up, not per hour -- so halving the rate
     means doubling the interval.
+
+    `cadence_minutes` here is the interval `pct_per_day` was *measured*
+    at, which is not always the one the heartbeat is set to -- see
+    `runway`'s `spend_cadence_minutes`.
     """
     needed_rate = remaining_pct / (hours_to_reset / 24)
     return cadence_minutes * pct_per_day / needed_rate
@@ -243,11 +262,23 @@ def live_cadence_minutes(rows=(), now=None, window_hours=CADENCE_WINDOW_HOURS):
     lives in two places is a cadence that will disagree with itself.
 
     **The source is not decoration.** Cycle 259 shipped this with a
-    silent fallback and was wrong within the minute: the bridge pod
-    cannot reach Agora, so `nova_cadence_minutes()` returns `None`
-    there, and the tool cheerfully reported a wake-up count computed
-    from a stale 40 while the real cadence was 60. A cycle runs this
-    from the bridge pod, so the silent path *was* the normal path.
+    silent fallback and was wrong within the minute: from the bridge pod
+    `nova_cadence_minutes()` returned `None`, and the tool cheerfully
+    reported a wake-up count computed from a stale 40 while the real
+    cadence was 60. A cycle runs this from the bridge pod, so the silent
+    path *was* the normal path.
+
+    **Why it returned `None` there was written down wrong, and the wrong
+    reason stood for 264 cycles.** This docstring said "the bridge pod
+    cannot reach Agora". It can. Measured from the bridge pod
+    2026-08-27, Cycle 523: the internal API answers **401** because that
+    pod holds no `AGORA_TOKEN`, while the *public* API on :8080 answers
+    200 with the same seven heartbeats -- an auth failure on one port
+    recorded as a network failure of the whole service. That is the
+    shape `prompt.md` warns about: an "I can't" is a measurement, and it
+    decays. `nova_heartbeat_snapshot` now falls back to the public read,
+    so `SCHEDULE` is the answer from either pod and `OBSERVED` means
+    what it says -- Agora genuinely did not answer.
 
     Cycle 260 made that path measure instead of assume. Announcing the
     assumption was the right first move and it was not the fix -- the
@@ -352,14 +383,46 @@ def main_argv(argv=None):
     if cadence is None:
         cadence, source = live_cadence_minutes(history, now, CADENCE_WINDOW_HOURS)
 
+    # The burn rate was earned over the trailing sample, so the interval
+    # that produced it is the realised one, not the scheduled one. They
+    # agree except in the hours after a cadence change -- which is exactly
+    # when somebody runs this tool.
+    spend_cadence, _, _ = observed_cadence_minutes(history, now, CADENCE_WINDOW_HOURS)
+    if not spend_cadence:
+        spend_cadence = cadence
+
     state, _, _, _, lines = runway(
-        seven["remaining_pct"], hours_to_reset, rate, cadence
+        seven["remaining_pct"], hours_to_reset, rate, cadence, spend_cadence
     )
     for line in lines:
+        print(line)
+    for line in _cadence_change_note(cadence, spend_cadence):
         print(line)
     for line in _cadence_note(source, cadence, history, now):
         print(line)
     return 0 if state == HEALTHY else 2
+
+
+def _cadence_change_note(cadence, spend_cadence):
+    """Say so when the schedule and the realised interval disagree.
+
+    Silence here would present a suggestion built on a rate from the old
+    cadence as though it described the new one. The disagreement is
+    temporary and self-healing -- once the sample is all at the new
+    interval the two converge -- but for those hours the reader needs to
+    know which number the advice is standing on.
+    """
+    if not spend_cadence or round(spend_cadence) == round(cadence):
+        return []
+    direction = "slower" if cadence > spend_cadence else "faster"
+    return [
+        f"  NOTE: the heartbeat is set to {cadence:.0f} minutes but the burn "
+        f"rate above was earned at about {spend_cadence:.0f} -- the schedule "
+        f"moved {direction} inside the sample. The suggested interval is "
+        f"scaled from the {spend_cadence:.0f} that produced the rate, so it is "
+        f"directly comparable to the {cadence:.0f} now set. The rate itself is "
+        f"still the old cadence's and will fall as the sample rolls over."
+    ]
 
 
 def _cadence_note(source, cadence, history, now):
