@@ -45,7 +45,11 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_demos import (  # noqa: E402
+    ALIVE,
     DEMOS_PATH,
+    POD_GONE,
+    PROCESS_GONE,
+    STARTING,
     DemoError,
     dumps,
     entries,
@@ -53,6 +57,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     lookup,
     register,
     unregister,
+    verdict,
 )
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -210,6 +215,43 @@ def cmd_start(args):
     return 0
 
 
+def pid_alive(pid):
+    """Does this pod hold that pid? Signal 0 checks without delivering."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # It exists and belongs to somebody else. Alive is the safe answer:
+        # the alternative frees a port something is still bound to.
+        return True
+
+
+def judge(entry, host):
+    """`nova_demos.verdict` with the one syscall it deliberately omits.
+
+    `pid_alive` goes in as a callable so the host check runs first -- see
+    `verdict`'s docstring; passing the probe's *result* fires it at a pid
+    belonging to a pod that no longer exists.
+    """
+    return verdict(entry, host, pid_alive)
+
+
+#: What each verdict reads as on a line the owner or a cycle looks at.
+VERDICT_TEXT = {
+    ALIVE: "running",
+    STARTING: "starting -- no pid recorded yet",
+    POD_GONE: "stale -- the pod it ran in is gone",
+    PROCESS_GONE: "dead -- the dev server is not running here",
+}
+
+#: What `reap` collects. `STARTING` is deliberately absent: a row with no
+#: pid is one `tools.demo start` wrote a moment ago and has not finished
+#: with, and reaping it makes that start kill its own healthy server.
+REAPABLE = (POD_GONE, PROCESS_GONE)
+
+
 def cmd_stop(args):
     registry, rev = _read_registry()
     entry = lookup(registry, args.slug)
@@ -218,6 +260,18 @@ def cmd_stop(args):
         return 2
     pid = entry.get("pid")
     killed = "no pid recorded"
+    if judge(entry, pod_ip()) == POD_GONE:
+        # **Never signal a pid recorded by another pod.** A pid is only
+        # meaningful inside the pod that created it, and pid numbers are
+        # reused: `bakeoff` sat in the registry for two days holding pid
+        # 311849 from a bridge pod that no longer exists, and the code below
+        # would have sent SIGTERM to whatever process group holds 311849
+        # here. There is nothing of ours to stop, so this only deregisters.
+        unregister(registry, args.slug)
+        _write_registry(registry, rev)
+        print(f"{args.slug}: the pod it ran in ({entry.get('host')}) is gone, "
+              f"nothing to signal; port {entry['port']} released")
+        return 0
     if pid:
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -248,11 +302,48 @@ def cmd_list(args):
     if not rows:
         print("no demos are running")
         return 0
+    here = pod_ip()
+    stale = 0
     for demo in rows:
-        print(f"{PUBLIC_BASE}/{demo['slug']}/")
+        state = judge(demo, here)
+        stale += state in REAPABLE
+        print(f"{PUBLIC_BASE}/{demo['slug']}/  [{VERDICT_TEXT[state]}]")
         print(f"  {demo['host']}:{demo['port']}  started {demo.get('started_at', '?')}"
               f"  pid {demo.get('pid', '?')}")
         print(f"  {demo.get('dir', '?')}")
+    if stale:
+        # A row that reads like a running demo and is not is the whole
+        # failure this listing was printing before: `reap` is the button.
+        print(f"\n{stale} of {len(rows)} hold a port and are not serving "
+              f"anything -- `python3 -m tools.demo reap` releases them")
+    return 0
+
+
+def cmd_reap(args):
+    """Drop every row whose demo is gone, and free its port.
+
+    Idea #136 asks that a demo survive the owner's deploys and stop itself
+    when nobody is looking. It cannot survive a roll -- the dev server dies
+    with the pod, and this pod cannot restart a process in a pod that no
+    longer exists -- so the honest half is that the registry stops claiming
+    it did. Nothing else in this loop ever ran `stop` for a demo whose pod
+    had rolled, which is why one row held port 5174 for two days.
+
+    It leaves a `STARTING` row alone -- `verdict` has the reproduction.
+    """
+    registry, rev = _read_registry()
+    here = pod_ip()
+    doomed = [(d, judge(d, here)) for d in entries(registry)]
+    doomed = [(d, v) for d, v in doomed if v in REAPABLE]
+    if not doomed:
+        print("nothing to reap")
+        return 0
+    for demo, state in doomed:
+        unregister(registry, demo["slug"])
+    _write_registry(registry, rev)
+    for demo, state in doomed:
+        print(f"{demo['slug']}: {VERDICT_TEXT[state]}; "
+              f"port {demo['port']} released")
     return 0
 
 
@@ -274,6 +365,9 @@ def main(argv=None):
 
     lst = sub.add_parser("list", help="what is running")
     lst.set_defaults(func=cmd_list)
+
+    reap = sub.add_parser("reap", help="release ports held by demos that are gone")
+    reap.set_defaults(func=cmd_reap)
 
     args = parser.parse_args(argv)
     try:

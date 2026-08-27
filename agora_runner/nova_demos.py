@@ -149,3 +149,57 @@ def unregister(registry, slug):
         if demo.get("slug") == slug:
             return demos.pop(i)
     return None
+
+
+#: The four states a registry row can be in, from the pod that would have
+#: to signal it. `ALIVE` is the only one whose `pid` may be signalled, and
+#: `STARTING` is the only one that is none of the operator's business yet.
+ALIVE = "running"
+STARTING = "starting"
+POD_GONE = "pod-gone"
+PROCESS_GONE = "process-gone"
+
+
+def verdict(entry, host, pid_alive):
+    """What this row is, judged from the pod whose address is `host`.
+
+    Measured Cycle 551: `bakeoff` was registered on 10.42.0.84:5174 and the
+    bridge pod had since rolled to 10.42.0.56. The dev server died with the
+    pod it ran in, the row stayed, and `list` printed it as if it were
+    serving. Two consequences, and the second is the one that matters.
+
+    The visible one is a leak: the row holds port 5174 against the
+    allocator forever, and after enough rolls every port in the window is
+    held by a demo that has not existed for days.
+
+    The one that bites is that **a pid is only meaningful inside the pod
+    that created it.** `stop` signalled `os.getpgid(pid)` with no reference
+    to `host`, so running it against a row from a dead pod signals whatever
+    now holds pid 311849 *here* -- an unrelated process group in a live pod,
+    killed on the strength of a two-day-old number. So the host check comes
+    first and a row from another pod is never signalled, only dropped.
+
+    **`STARTING` exists because the first version of this reaped a demo
+    that was working.** My reviewer reproduced it: `tools.demo start`
+    reserves the port and writes the row *before* it spawns anything, and
+    writes the `pid` a second later -- so for about a second the row sits on
+    the right host with no `pid` key at all. Reading that as "the process is
+    gone" is true of the field and false of the world, and a concurrent
+    `reap` would drop the row, which then makes `start` kill its own healthy
+    server and fail. So a pid-less row is `STARTING` and nothing collects
+    it; `stop` still clears one by hand, which is the escape for the rare
+    row stranded between those two writes.
+
+    `pid_alive` is a **callable**, not a value, and that is the second
+    reviewer finding rather than a style choice: evaluated eagerly it fires
+    `os.kill` at a pid recorded by a pod that no longer exists, which is the
+    exact thing the paragraph above says must never happen. Harmless today
+    because the probe is signal 0, and the ordering has to hold in the code
+    rather than in the comment.
+    """
+    if entry.get("host") != host:
+        return POD_GONE
+    pid = entry.get("pid")
+    if not pid:
+        return STARTING
+    return ALIVE if pid_alive(pid) else PROCESS_GONE
