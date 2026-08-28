@@ -149,8 +149,25 @@ class InvokeHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "messages must contain a user turn"})
                 return
 
+            # The model belongs to the conversation, not the persona (idea
+            # #95, slice 1). Agora sends the conversation's own model here
+            # alongside `personaId`, because one persona curates many
+            # conversations -- Cycle 291 measured Nova as the persona on 291
+            # of the 297 that existed on 2026-08-21 -- so resolving
+            # the model off the fetched persona made every Ask on every one
+            # of those conversations run the persona's model no matter what
+            # Edvard had picked on the conversation. `personaId` still
+            # carries everything that is genuinely shared (personality,
+            # memory, tool grants); only the model is overridden, and a
+            # payload without one falls back to the persona exactly as
+            # before. Passed as an override rather than written into
+            # `persona`, which fetch_persona caches and shares.
+            model_override = payload.get("model")
+            if not isinstance(model_override, str) or not model_override:
+                model_override = None
             system = build_system(persona)
-            reply = generate_reply(persona, dict(NO_CAPS), system, merged, None)
+            reply = generate_reply(persona, dict(NO_CAPS), system, merged, None,
+                                   model_override=model_override)
             self._send(200, {"reply": reply})
         except Exception as e:
             log(f"/invoke failed: {e}")

@@ -8134,3 +8134,92 @@ def test_read_conversation_says_so_plainly_when_the_offset_runs_off_the_end(runn
             {"conversation": "c-stuff", "offset": 99}, {"name": "T"}, "c1")
     assert "5 messages total, none in this window (offset 99 is past the oldest)." in past
     assert "#1-#0" not in past
+
+
+def _invoke_handler(body):
+    """An /invoke handler over a canned body, same shape as the
+    /tool-activity helper above."""
+    from agora_runner import invoke_server
+    handler = invoke_server.InvokeHandler.__new__(invoke_server.InvokeHandler)
+    handler.path = "/invoke"
+    raw = json.dumps(body).encode()
+    handler.rfile = io.BytesIO(raw)
+    handler.headers = {"Content-Length": str(len(raw))}
+    sent = {}
+
+    def fake_send(status, payload):
+        sent["status"] = status
+        sent["payload"] = payload
+    handler._send = fake_send
+    return handler, sent
+
+
+def _invoke_capturing_the_model(body):
+    """Run /invoke against a stub persona and return the model
+    generate_reply was actually handed."""
+    from agora_runner import invoke_server
+    seen = {}
+    persona = {"id": "p1", "name": "Nova", "personality": "",
+               "model": "claude-cli:claude-opus-5", "thinking": False,
+               "sharedMemory": ""}
+
+    def fake_generate(persona_arg, caps, system, history, conversation_id,
+                      model_override=None, **kwargs):
+        seen["effective"] = model_override or persona_arg.get("model")
+        seen["override"] = model_override
+        seen["persona_model"] = persona_arg.get("model")
+        return "ok"
+
+    handler, sent = _invoke_handler(body)
+    with patch.object(invoke_server, "AGORA_TOKEN", ""), \
+         patch.object(invoke_server, "fetch_persona", lambda pid: persona), \
+         patch.object(invoke_server, "build_system", lambda p: "sys"), \
+         patch.object(invoke_server, "generate_reply", fake_generate):
+        handler.do_POST()
+    return sent, seen, persona
+
+
+def test_invoke_runs_the_conversation_model_not_the_personas(clean_grants):
+    """Idea #95, slice 1, one route over. Ask sends `personaId` because the
+    persona still owns personality, memory and tool grants -- but one
+    persona curates hundreds of conversations, so resolving the model off it
+    ran every Ask on the persona's model no matter what was picked on the
+    conversation. The override wins, and it does not mutate the cached
+    persona."""
+    sent, seen, persona = _invoke_capturing_the_model({
+        "personaId": "p1",
+        "model": "claude-cli:claude-haiku-4-5-20251001",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert sent["status"] == 200
+    assert seen["effective"] == "claude-cli:claude-haiku-4-5-20251001"
+    assert seen["override"] == "claude-cli:claude-haiku-4-5-20251001"
+    # fetch_persona caches and shares its dict -- an override must never
+    # write through to it, or one Ask repoints every later turn.
+    assert persona["model"] == "claude-cli:claude-opus-5"
+
+
+def test_invoke_without_a_model_still_falls_back_to_the_persona(clean_grants):
+    """A conversation with no model of its own -- every one created before
+    the create route started copying the persona's -- behaves exactly as it
+    did before."""
+    _, seen, _ = _invoke_capturing_the_model({
+        "personaId": "p1",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert seen["override"] is None
+    assert seen["effective"] == "claude-cli:claude-opus-5"
+
+
+def test_invoke_ignores_a_model_that_is_not_a_non_empty_string(clean_grants):
+    """Agora sends `conversation.model`, which is `""` on older rows. An
+    empty string must read as "no override" rather than as a model, or
+    generate_reply raises `unknown model provider ''`."""
+    for bad in ("", None, 5, {"id": "x"}):
+        _, seen, _ = _invoke_capturing_the_model({
+            "personaId": "p1",
+            "model": bad,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert seen["override"] is None, bad
+        assert seen["effective"] == "claude-cli:claude-opus-5", bad
