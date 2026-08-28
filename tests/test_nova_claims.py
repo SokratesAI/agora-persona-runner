@@ -31,6 +31,7 @@ from agora_runner.nova_claims import (
     progressed_claims,
     prune,
     release,
+    SLUG_MAX,
     slug_for_comment,
     summarise,
     take,
@@ -166,7 +167,7 @@ def test_two_different_items_do_not_collide():
 
 @pytest.mark.parametrize(
     "bad",
-    ["", "ab", "Confirm-Deploy", "confirm deploy", "confirm_deploy", "-leading", "x" * 49],
+    ["", "ab", "Confirm-Deploy", "confirm deploy", "confirm_deploy", "-leading"],
 )
 def test_a_slug_that_would_alias_another_slug_is_refused(bad):
     # The whole mechanism is string equality, so `Confirm-Deploy` and
@@ -174,6 +175,31 @@ def test_a_slug_that_would_alias_another_slug_is_refused(bad):
     # would be told they had it.
     with pytest.raises(ClaimError):
         take(empty(), bad, 189, T0)
+
+
+# The length ceiling used to live in the list above as `"x" * 49`, which is
+# why nobody ever looked at it: a runaway key is not an aliasing failure and
+# it was being tested as one. These two are the real contract.
+
+
+def test_the_handoff_slugs_the_digest_actually_writes_are_claimable():
+    # Measured Cycle 591 against the live `journal-digest.md`: nine of the
+    # fourteen **Next cycle** slugs were 49-72 characters, and every one was
+    # refused by the 48-char ceiling. This is the longest of them, verbatim.
+    # A cycle refused here works the item unclaimed, which at three
+    # overlapping cycles is exactly the duplicate work the ledger prevents.
+    real = "step-1b-delegation-now-takes-eleven-minutes-and-that-is-two-measurements"
+    assert len(real) == 72
+    assert take(empty(), real, 591, T0)[0] is True
+
+
+def test_a_runaway_slug_is_still_refused():
+    # The cap was raised, not removed. The slug is a key in one document
+    # every claim in this loop reads and rewrites, so an unbounded one
+    # costs every cycle.
+    assert take(empty(), "x" * SLUG_MAX, 591, T0)[0] is True
+    with pytest.raises(ClaimError):
+        take(empty(), "x" * (SLUG_MAX + 1), 591, T0)
 
 
 def test_a_cycle_number_must_be_a_positive_integer():
