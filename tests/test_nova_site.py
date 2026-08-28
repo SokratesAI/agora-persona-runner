@@ -5172,3 +5172,34 @@ def test_a_clock_line_is_skipped_and_a_sentence_that_merely_starts_with_one_is_n
     entry = nova_journal.parse_journal(document)[0]
     brief = "".join(span["text"] for span in entry["briefSpans"])
     assert brief.startswith("At 06:22 Oslo on 2026-08-27 I found")
+
+
+def test_push_key_route_serves_agoras_vapid_key():
+    with patch.object(nova_site, "vapid_key", return_value={"publicKey": "BFakeKey"}):
+        status, _, body = _get("/api/push/key")
+    assert status == 200
+    assert json.loads(body) == {"publicKey": "BFakeKey"}
+
+
+def test_push_subscribe_route_hands_the_body_to_agora():
+    seen = {}
+
+    def fake(payload):
+        seen["payload"] = payload
+        return True, {"ok": True}
+
+    sub = {"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {"p256dh": "x"}}
+    with patch.object(nova_site, "store_subscription", side_effect=fake):
+        status, _, body = _post("/api/push/subscribe", sub)
+    assert status == 200
+    assert json.loads(body) == {"ok": True}
+    assert seen["payload"] == sub
+
+
+def test_push_subscribe_route_answers_502_when_agora_refuses():
+    # Not a 200 with an error body: the page retries nothing and a silent
+    # success here is how a phone ends up believing it is subscribed.
+    with patch.object(nova_site, "store_subscription", return_value=(False, {"error": "agora /subscribe answered 500"})):
+        status, _, body = _post("/api/push/subscribe", {"endpoint": "https://example.invalid/x"})
+    assert status == 502
+    assert "500" in json.loads(body)["error"]

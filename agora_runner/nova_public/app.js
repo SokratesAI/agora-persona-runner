@@ -10322,7 +10322,7 @@
   });
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(function () {});
+    navigator.serviceWorker.register("/sw.js").then(subscribeToPush).catch(function () {});
   }
 
   /* The chat dock -- the owner's capture on `ideas.md`, 2026-08-25, rated
@@ -11353,3 +11353,59 @@
   load();
   schedulePoll();
 })();
+
+/* Register this origin for push. Agora keeps the VAPID keypair, the
+ * subscription store and the sender; `/api/push/key` and
+ * `/api/push/subscribe` proxy to it. This exists because until
+ * 2026-08-28 the Agora PWA was the only thing that could create a
+ * subscription, so the owner's notifications depended on an app he had
+ * said he would never open again (issues.md #119).
+ *
+ * Everything here fails quietly. A browser with no push support, a
+ * declined permission prompt and an Agora with no VAPID keys are all
+ * ordinary states, not errors worth a message on his screen -- the site
+ * works identically without a subscription.
+ *
+ * `Notification.permission` is read before requesting so a reload does
+ * not re-prompt; the browser would answer from its own record anyway,
+ * but "default" is the only state where a prompt is the right thing.
+ */
+function subscribeToPush(registration) {
+  if (!registration || !registration.pushManager) return;
+  if (typeof Notification === "undefined") return;
+  var permission = Notification.permission;
+  var ask = permission === "default"
+    ? Notification.requestPermission()
+    : Promise.resolve(permission);
+  ask.then(function (granted) {
+    if (granted !== "granted") return;
+    return fetch("/api/push/key")
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (body) {
+        if (!body || !body.publicKey) return;
+        return registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(body.publicKey),
+        });
+      })
+      .then(function (subscription) {
+        if (!subscription) return;
+        return fetch("/api/push/subscribe", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(subscription.toJSON()),
+        });
+      });
+  }).catch(function () {});
+}
+
+/* The VAPID public key arrives base64url-encoded and `subscribe` wants
+ * the raw bytes. Same conversion Agora's own app.js does. */
+function urlBase64ToUint8Array(base64String) {
+  var padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  var base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  var raw = atob(base64);
+  var output = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
+  return output;
+}
