@@ -440,3 +440,118 @@ def test_main_exits_cleanly_on_a_file_that_is_not_utf8(tmp_path, capsys):
     src.write_bytes(b"- a note \xff\xfe and then some\n")
     assert dream_pass.main(["--file", str(src)]) == 1
     assert "cannot read" in capsys.readouterr().err
+
+
+# --- the constitution corpus (--mode constitution) -------------------------
+#
+# The test that earns its place is `..._under_a_different_anchor`. Running
+# this by hand first, with one anchor, called `resources/architecture.md`
+# dead; it lives one level up at `projects/sokrates/projects/agora/
+# resources/architecture.md`, and reporting that as rot would have put a
+# false correction in front of a cycle about to edit its own constitution.
+
+NOVA = "projects/sokrates/projects/agora/nova/"
+AGORA = "projects/sokrates/projects/agora/"
+
+
+def listing(*paths):
+    return set(paths)
+
+
+def test_a_citation_resolves_under_a_different_anchor_than_the_obvious_one():
+    # `identity.md` writes this as `resources/architecture.md` and means
+    # agora/resources/, not nova/resources/.
+    found = dream_pass.resolve_doc(
+        "resources/architecture.md", listing(AGORA + "resources/architecture.md"))
+    assert found == AGORA + "resources/architecture.md"
+
+
+def test_a_citation_no_anchor_holds_is_dead():
+    assert dream_pass.resolve_doc(
+        "context/_idea-template.md", listing(NOVA + "resources/ideas.md")) is None
+
+
+def test_an_elided_citation_resolves_on_its_tail():
+    found = dream_pass.resolve_doc(
+        ".../nova/resources/inbox.md", listing(NOVA + "resources/inbox.md"))
+    assert found == NOVA + "resources/inbox.md"
+
+
+def test_a_filename_format_is_not_treated_as_a_citation():
+    # `<seq>-cycle-<n>.md` and `NNN-report-<first>-<last>.md` describe a
+    # naming convention. Resolving one is meaningless and calling it dead
+    # is a positive guaranteed before the check runs.
+    refs = dream_pass.cited_docs(
+        "put it as `<seq>-cycle-<n>.md`, and the report as "
+        "`NNN-report-<first>-<last>.md`, beside `inbox.md`")
+    assert refs == ["inbox.md"]
+
+
+def test_a_citation_repeated_eleven_times_is_dead_once():
+    assert dream_pass.cited_docs("`kanban.md` " * 11) == ["kanban.md"]
+
+
+def test_no_vault_listing_reports_cannot_check_rather_than_all_dead():
+    out = dream_pass.constitution_report("identity.md", "`kanban.md`", None, [])
+    assert "CANNOT CHECK documents" in out
+    assert "DEAD DOCUMENT" not in out
+
+
+def test_no_checkout_reports_cannot_check_rather_than_every_module_dead():
+    out = dream_pass.constitution_report("prompt.md", "`tools.nope`", listing(), [])
+    assert "CANNOT CHECK modules" in out
+    assert "DEAD MODULE" not in out
+
+
+def test_a_tools_module_that_exists_in_a_checkout_is_not_flagged(tmp_path):
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "lint_entry.py").write_text("")
+    _, dead = dream_pass.dead_refs("`tools.lint_entry` and `tools.gone`",
+                                   listing(), [str(tmp_path)])
+    assert dead == ["gone"]
+
+
+def test_constitution_mode_reads_every_file_it_is_given(tmp_path, capsys):
+    a = tmp_path / "identity.md"
+    a.write_text("read `kanban.md`")
+    b = tmp_path / "personality.md"
+    b.write_text("read `inbox.md`")
+    lst = tmp_path / "listing.txt"
+    lst.write_text(NOVA + "resources/inbox.md\n")
+    rc = dream_pass.main(["--mode", "constitution", "--file", str(a),
+                          "--file", str(b), "--vault-listing", str(lst)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "identity.md" in out and "personality.md" in out
+    assert "kanban.md" in out
+    # The live one must not be reported as dead anywhere in the output.
+    assert "    inbox.md" not in out
+
+
+def test_constitution_mode_exits_1_on_an_empty_vault_listing(tmp_path, capsys):
+    # An empty listing and a healthy vault look identical to `resolve_doc`
+    # and mean opposite things, so this may not read as "everything dead".
+    a = tmp_path / "identity.md"
+    a.write_text("read `inbox.md`")
+    lst = tmp_path / "listing.txt"
+    lst.write_text("\n\n")
+    assert dream_pass.main(["--mode", "constitution", "--file", str(a),
+                            "--vault-listing", str(lst)]) == 1
+    assert "empty vault listing" in capsys.readouterr().err
+
+
+def test_constitution_mode_refuses_proposal(tmp_path, capsys):
+    a = tmp_path / "identity.md"
+    a.write_text("read `inbox.md`")
+    assert dream_pass.main(["--mode", "constitution", "--file", str(a),
+                            "--proposal", str(tmp_path / "out.md")]) == 1
+    assert "no meaning in --mode constitution" in capsys.readouterr().err
+
+
+def test_captures_mode_refuses_more_than_one_file(tmp_path, capsys):
+    a = tmp_path / "issues.md"
+    a.write_text(doc("- a note"))
+    b = tmp_path / "ideas.md"
+    b.write_text(doc("- another"))
+    assert dream_pass.main(["--file", str(a), "--file", str(b)]) == 1
+    assert "reads one --file" in capsys.readouterr().err

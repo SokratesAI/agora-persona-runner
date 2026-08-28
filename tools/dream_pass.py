@@ -500,10 +500,207 @@ def report(bullets, repos, threshold, paths_mean="rot"):
     return "\n".join(out)
 
 
+# ---------------------------------------------------------------------------
+# The constitution corpus (`--mode constitution`).
+#
+# The second half of idea #83, and a different shape of rot from the one
+# above. `identity.md`, `personality.md` and `prompt.md` are prose, not
+# bullets, so nothing here parses; what they carry instead is roughly
+# forty citations of *other* documents and modules, and every cycle is
+# told to go and read them. `identity.md` says of itself: "If a path here
+# ever disagrees with reality again, trust the vault, not this file" --
+# a document confessing this exact failure, having already corrected two
+# dead paths (`architecture.md`, the ADR folder) and lost a third
+# (`kanban.md`) to a deletion it did not hear about.
+#
+# The measurement that decides how this resolves a citation. I ran it by
+# hand first, anchoring every bare filename under `nova/` and
+# `nova/resources/`, and it called `resources/architecture.md` dead.
+# It is not dead: it lives at `projects/sokrates/projects/agora/resources/
+# architecture.md`, one level up, exactly where `identity.md` says it is
+# in the same sentence. So a single-anchor resolver reports my own reading
+# error as the document's rot, which is worse than not looking -- it puts
+# a false correction in front of a cycle that is about to edit its own
+# constitution. Hence `_ANCHORS`: a citation resolves if *any* plausible
+# anchor holds it, and only a citation no anchor holds is called dead.
+#
+# Everything is read out of a vault listing passed in on the command line
+# (`vault_tool.py ls 'projects/' > listing.txt`), never fetched here. Two
+# reasons and both are load-bearing: this module has no vault client and
+# should not grow one, and a missing listing then means CANNOT CHECK
+# rather than "every path is dead" -- the guaranteed-positive failure
+# `dead_paths` above already had to be taught.
+
+_NOVA = "projects/sokrates/projects/agora/nova/"
+_AGORA = "projects/sokrates/projects/agora/"
+
+# Ordered widest-plausible-first only for readability; resolution tries all
+# of them and stops at the first hit, so the order changes nothing.
+_ANCHORS = (
+    "",
+    _NOVA,
+    _NOVA + "resources/",
+    _NOVA + "resources/playbooks/",
+    _NOVA + "resources/research/",
+    _NOVA + "resources/ideas/",
+    _NOVA + "context/",
+    _AGORA,
+    _AGORA + "resources/",
+    "projects/sokrates/projects/nova/",
+)
+
+# A citation is a backticked span naming a markdown document, a `tools.x`
+# module, or a repo-relative `.py` file. Prose about "his ideas.md" is not
+# backticked and so cannot be flagged, which is the same restraint
+# `_CODE_PATH` above exercises for the bullet corpus.
+_DOC_REF = re.compile(r"`([A-Za-z0-9_.<>/\-]+\.md)`")
+_MOD_REF = re.compile(r"`tools\.([a-z0-9_]+)`")
+
+# `<seq>-cycle-<n>.md`, `NNN-report-<first>-<last>.md` and friends are
+# filename *formats* being described, not files being cited. Resolving one
+# is meaningless and calling it dead is a guaranteed positive.
+_PLACEHOLDER = re.compile(r"[<>]|^NNN")
+
+
+def cited_docs(markdown):
+    """Every backticked markdown citation in `markdown`, in file order.
+
+    Deduplicated, because these files quote the same filename many times
+    and a citation is dead once, not eleven times.
+    """
+    out = []
+    for ref in _DOC_REF.findall(markdown):
+        ref = ref.lstrip("./")
+        if _PLACEHOLDER.search(ref) or not ref:
+            continue
+        if ref not in out:
+            out.append(ref)
+    return out
+
+
+def cited_modules(markdown):
+    """Every `tools.<name>` citation in `markdown`, deduplicated."""
+    out = []
+    for name in _MOD_REF.findall(markdown):
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def read_listing(path):
+    """The set of vault paths in a `vault_tool.py ls` dump."""
+    with open(path, encoding="utf-8") as fh:
+        return {line.strip() for line in fh if line.strip()}
+
+
+def resolve_doc(ref, listing):
+    """The vault path `ref` names, or None if no anchor holds it.
+
+    A citation written with the leading directories elided -- the house
+    style writes `.../nova/resources/ideas.md` -- is resolved on its tail,
+    since the elision is exactly the part that carries no information.
+    """
+    tail = ref.split("/")[-1] if ref.startswith("...") else ref
+    for anchor in _ANCHORS:
+        for candidate in (anchor + ref, anchor + tail):
+            if candidate in listing:
+                return candidate
+    return None
+
+
+def dead_refs(markdown, listing, repos):
+    """(dead_docs, dead_modules) -- citations nothing given can resolve.
+
+    With no listing this returns no dead docs rather than all of them,
+    and with no checkouts no dead modules, for the reason `dead_paths`
+    states: an unanswerable question is not a positive result.
+    """
+    dead_docs = []
+    if listing:
+        dead_docs = [r for r in cited_docs(markdown) if not resolve_doc(r, listing)]
+    dead_mods = []
+    if repos:
+        for name in cited_modules(markdown):
+            if not resolves("tools/%s.py" % name, repos):
+                dead_mods.append(name)
+    return dead_docs, dead_mods
+
+
+def constitution_report(name, markdown, listing, repos):
+    docs = cited_docs(markdown)
+    mods = cited_modules(markdown)
+    dead_docs, dead_mods = dead_refs(markdown, listing, repos)
+    out = ["%s — %d document citation(s), %d tools module(s)"
+           % (name, len(docs), len(mods))]
+    if not listing:
+        out.append("  CANNOT CHECK documents — no --vault-listing given, so a "
+                   "missing one would look identical to a present one")
+    else:
+        out.append("  DEAD DOCUMENT (%d) — no anchor in the vault holds this, "
+                   "so a cycle told to read it gets [not found]" % len(dead_docs))
+        for ref in dead_docs:
+            out.append("    %s" % ref)
+    if not repos:
+        out.append("  CANNOT CHECK modules — no --repo given")
+    else:
+        out.append("  DEAD MODULE (%d) — cited as tools.<name>, no such file "
+                   "in any checkout given" % len(dead_mods))
+        for name_ in dead_mods:
+            out.append("    tools.%s" % name_)
+    return "\n".join(out)
+
+
+def _constitution(args):
+    """`--mode constitution`: report unresolvable citations, write nothing.
+
+    Exits 0 whether or not it found any, the same as the captures pass: a
+    clean constitution is a result. Exit 1 is only an unreadable input,
+    because a citation this cannot answer for is reported as CANNOT CHECK
+    rather than raised.
+    """
+    if args.proposal:
+        print("--proposal has no meaning in --mode constitution: a dead "
+              "citation is fixed by writing the document or editing the "
+              "sentence, and neither is mechanical", file=sys.stderr)
+        return 1
+    listing = None
+    if args.vault_listing:
+        try:
+            listing = read_listing(args.vault_listing)
+        except OSError as exc:
+            print("cannot read %s: %s" % (args.vault_listing, exc), file=sys.stderr)
+            return 1
+        if not listing:
+            print("empty vault listing: %s" % args.vault_listing, file=sys.stderr)
+            return 1
+    blocks = []
+    for path in args.file:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                markdown = fh.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            print("cannot read %s: %s" % (path, exc), file=sys.stderr)
+            return 1
+        blocks.append(constitution_report(os.path.basename(path), markdown,
+                                          listing, args.repo))
+    print("\n\n".join(blocks))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--file", required=True,
-                    help="capture file on disk; fetch it with vault_tool.py first")
+    ap.add_argument("--file", required=True, action="append",
+                    help="document on disk; fetch it with vault_tool.py first. "
+                         "Repeatable in --mode constitution, where the corpus is "
+                         "three files rather than one")
+    ap.add_argument("--mode", choices=("captures", "constitution"), default="captures",
+                    help="'captures' is the bullet pass over issues.md/ideas.md; "
+                         "'constitution' is the citation pass over identity.md, "
+                         "personality.md and prompt.md")
+    ap.add_argument("--vault-listing",
+                    help="output of `vault_tool.py ls 'projects/'`, one path per "
+                         "line. Without it --mode constitution says CANNOT CHECK "
+                         "rather than calling every citation dead")
     ap.add_argument("--repo", action="append", default=[],
                     help="checkout root to resolve cited paths against; repeatable")
     ap.add_argument("--proposal",
@@ -514,16 +711,27 @@ def main(argv=None):
                     help="what a missing path is evidence of; default is "
                          "'unbuilt' for an ideas file, 'rot' otherwise")
     args = ap.parse_args(argv)
+    for root in args.repo:
+        if not os.path.isdir(root):
+            print("no such checkout: %s" % root, file=sys.stderr)
+            return 1
+
+    if args.mode == "constitution":
+        return _constitution(args)
+
+    # Every other mode reads exactly one file. Taking [-1] instead of
+    # refusing would silently ignore the earlier ones.
+    if len(args.file) != 1:
+        print("--mode captures reads one --file; got %d" % len(args.file),
+              file=sys.stderr)
+        return 1
+    args.file = args.file[0]
     paths_mean = args.paths_mean or paths_mean_for(args.file)
 
     if args.proposal and os.path.abspath(args.proposal) == os.path.abspath(args.file):
         print("--proposal must not be --file: this tool never edits in place",
               file=sys.stderr)
         return 1
-    for root in args.repo:
-        if not os.path.isdir(root):
-            print("no such checkout: %s" % root, file=sys.stderr)
-            return 1
     try:
         with open(args.file, encoding="utf-8") as fh:
             markdown = fh.read()
