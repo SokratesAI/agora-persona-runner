@@ -7884,3 +7884,86 @@ def test_since_and_the_answered_live_chip_filter_together(runner):
 
     got = runner.heartbeats._unread_from_edvard(detail, since="2026-08-19T19:30:00+00:00")
     assert got == "still waiting"
+
+
+# --- Redaction by value, not by shape (idea #106, Cycle 560) -----------------
+# Measured on the live runner pod before any of this was written: redact()
+# returned the bare values of AGORA_TOKEN, COUCHDB_PASSWORD and
+# TINYFISH_API_KEY completely unaltered, because none of the three has a
+# documented format for a pattern to match. `environ` is injected here so the
+# tests never touch a real credential.
+
+_FAKE_ENV = {
+    "AGORA_TOKEN": "20" + "a" * 62,
+    "COUCHDB_PASSWORD": "Xk#notarealpw123",
+    "HOME": "/root",
+}
+
+
+def test_redact_catches_a_formatless_password_with_no_name_beside_it(runner):
+    """The traceback case: a value alone on the line, no `NAME=` to anchor on.
+
+    A 16-character random password has no shape, so every pattern in the table
+    is blind to it by construction. This is the failure idea #106 names and the
+    one the shape-based half of the filter can never reach.
+    """
+    out = audit_module.redact(
+        "urllib3.exceptions: rejected Xk#notarealpw123", _FAKE_ENV)
+    assert "Xk#notarealpw123" not in out
+    assert "[redacted: COUCHDB_PASSWORD]" in out
+
+
+def test_redact_names_which_credential_it_removed(runner):
+    """A silent deletion is against the keep-everything rule; the marker says
+    what went, the same way the shape patterns name the vendor."""
+    out = audit_module.redact("token=" + "20" + "a" * 62, _FAKE_ENV)
+    assert "[redacted: AGORA_TOKEN]" in out
+
+
+def test_redact_matches_the_stripped_value_so_a_trailing_newline_cannot_hide_it(runner):
+    """GEMINI_API_KEY on the runner pod carries a trailing newline, and it is
+    the *unstripped* value urllib quotes back in the exception. Redacting only
+    the stripped form would leave the real key in the one place it has actually
+    been seen printed."""
+    env = {"GEMINI_API_KEY": "AQ.notarealkey0123456789\n"}
+    # The text carries the value *without* the newline on purpose: whatever
+    # printed it may have trimmed the line. Matching on the raw value alone
+    # would miss this, and matching on the stripped one covers both.
+    out = audit_module.redact(
+        "ValueError: Invalid header value 'AQ.notarealkey0123456789'", env)
+    assert "AQ.notarealkey0123456789" not in out
+    assert "[redacted: GEMINI_API_KEY]" in out
+
+
+def test_redact_replaces_the_longer_secret_first(runner):
+    """One secret containing another must be replaced whole. Shortest-first
+    would blank the inner one and leave the outer one's tail in the output,
+    which reads as redacted and is not."""
+    env = {"A_TOKEN": "abcdefgh", "B_TOKEN": "abcdefgh-and-more-tail"}
+    out = audit_module.redact("value abcdefgh-and-more-tail here", env)
+    assert "abcdefgh" not in out
+    assert "[redacted: B_TOKEN]" in out
+
+
+def test_redact_ignores_a_secret_named_var_too_short_to_be_one(runner):
+    """The danger below the floor is over-redaction, not exposure: a var named
+    like a secret holding `true` would blank that word out of every sentence
+    this loop publishes. The shortest real one on either pod is 16 characters."""
+    env = {"DEBUG_SECRET": "true"}
+    text = "the answer is true and it stays true"
+    assert audit_module.redact(text, env) == text
+
+
+def test_redact_only_reads_env_vars_whose_name_says_they_hold_a_secret(runner):
+    """Redacting every long env value would eat HOME, PWD and the workspace
+    path out of ordinary tool output."""
+    env = {"NOVA_WORKSPACE": "/data/workspace-concurrent/7-129550988400320"}
+    text = "cd /data/workspace-concurrent/7-129550988400320 && pytest"
+    assert audit_module.redact(text, env) == text
+
+
+def test_redact_still_runs_the_shape_patterns_when_the_env_holds_nothing(runner):
+    """The value pass is additive. A copy that returned early on an empty
+    environment would pass every test above and ship the old hole."""
+    out = audit_module.redact("crash: sk-ant-notarealkeyvalue000000", {})
+    assert "[redacted: anthropic key]" in out

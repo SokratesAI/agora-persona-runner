@@ -963,7 +963,7 @@ def test_a_label_reworded_in_one_copy_is_drift(tmp_path):
 def test_a_copy_with_no_redact_is_an_error_not_agreement(tmp_path):
     """Same reasoning as ContractRouterMissing: a filter that cannot be
     found has not been shown to agree with anything."""
-    other = _redact_copy(tmp_path, old="def redact(text):", new="def scrub(text):")
+    other = _redact_copy(tmp_path, old="def redact(text, environ=None):", new="def scrub(text, environ=None):")
     with pytest.raises(sync_contract.ContractRedactorMissing):
         sync_contract.compare_redaction(redact.__file__, other)
 

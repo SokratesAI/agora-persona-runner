@@ -28,6 +28,7 @@ is that nothing is thrown away to make the UI tidier -- the answer to
 one exception, because the danger is nameable and it has happened.
 """
 
+import os
 import re
 
 # (label, pattern). The label is what the reader sees in place of the
@@ -104,14 +105,79 @@ _PATTERNS = (
 )
 
 
-def redact(text):
+# The names above cover a credential that has a *format*. Three of the ones
+# actually mounted here do not, and Cycle 560 measured that on the live pods
+# rather than reasoning about it: `redact()` returned the bare value of
+# AGORA_TOKEN (64 chars), COUCHDB_PASSWORD/CDB_PASS (16) and TINYFISH_API_KEY
+# (44, `sk-` but not `sk-ant-`) completely unaltered. Those are the token that
+# can act as any persona on Agora, the password to the CouchDB holding both
+# Nova's database and the owner's Obsidian vault, and a third-party API key.
+# No shape rule can ever catch them, because a random 16-character password
+# has no shape -- that is the whole point of it.
+#
+# So this pass matches by *value* instead. The process publishing the text is
+# the process holding the secret, so it can look the literal up rather than
+# guess at it, and a literal match cannot be defeated by a format nobody
+# documented. This is the same move as the sandbox's `credentials.mode: "mask"`
+# that idea #106 points at, done at the one boundary this loop actually
+# controls today: the CLI's own masking needs the sandbox proxy turned on to
+# substitute on egress, and turning that on would confine this loop's shell.
+#
+# Selected by name, using the same vocabulary as the `value` pattern above so
+# there is one list of what "a secret" is called and not two.
+_SECRET_NAME = re.compile(
+    r"(?i)^[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|_PASS|API[_-]?KEY"
+    r"|ACCESS[_-]?KEY|CREDENTIAL)S?$"
+)
+
+# A floor, and it is measured rather than chosen for comfort. The shortest
+# secret-named value on either pod is 16 characters (COUCHDB_PASSWORD); the
+# danger below this line is real and in the other direction -- an env var
+# named like a secret holding `true` or `none` would blank that word out of
+# every sentence this loop publishes, which is exactly the over-redaction the
+# owner's keep-everything rule forbids. 8 sits an octave clear of both.
+_MIN_SECRET_LEN = 8
+
+
+def _secret_literals(environ=None):
+    """`(name, value)` for every env var whose name says it holds a secret.
+
+    Longest value first, so a secret that contains another one is replaced
+    whole rather than leaving the tail of the shorter match behind.
+
+    The value is stripped, and that is the whole handling of surrounding
+    whitespace rather than an oversight. GEMINI_API_KEY on the runner pod
+    carries a trailing newline and it is the *unstripped* value `urllib` quotes
+    back in the exception this idea was filed over -- but the stripped form is a
+    substring of the raw one, so matching on it covers both. A first version
+    carried the raw value as well; the mutation that removed it survived every
+    test, which is the tell that it was a branch doing no work.
+    """
+    env = os.environ if environ is None else environ
+    out = []
+    for name, value in env.items():
+        if not isinstance(value, str) or not _SECRET_NAME.match(name or ""):
+            continue
+        literal = value.strip()
+        if len(literal) >= _MIN_SECRET_LEN and (name, literal) not in out:
+            out.append((name, literal))
+    out.sort(key=lambda pair: len(pair[1]), reverse=True)
+    return out
+
+
+def redact(text, environ=None):
     """`text` with any credential-shaped run replaced by a visible marker.
 
     Returns non-strings unchanged so callers don't have to type-check
-    before handing over whatever a tool returned.
+    before handing over whatever a tool returned. `environ` is for tests --
+    production reads the real environment, so nothing has to be configured
+    and a credential added to a pod is covered the moment it is mounted.
     """
     if not isinstance(text, str) or not text:
         return text
+    for name, literal in _secret_literals(environ):
+        if literal in text:
+            text = text.replace(literal, "[redacted: %s]" % (name,))
     for label, pattern in _PATTERNS:
         if label == "value":
             text = pattern.sub(rf"\1\2[redacted: {label}]", text)
