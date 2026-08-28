@@ -860,7 +860,17 @@ def project_payload(name=None):
         # 500 with `'tuple' object has no attribute 'get'` from the day the
         # page shipped -- and no test could see it, because the fixture
         # replaced `cached_payload` with one that returns the payload alone.
-        payload, _body, _etag = cached_payload(board, lambda b=board: board_payload(b))
+        # `"board:" + board`, the same key `_send_board` uses, and not the
+        # bare name this read until 2026-08-28. Two spellings meant two
+        # cache entries over one build: `/projects` paid the full cold
+        # board build a second time after `warm_cache` had just paid it,
+        # and every `invalidate("board:" + target)` in this module -- all
+        # five of them -- missed this copy entirely, so a row edited from
+        # the app stayed stale here until the next stale-while-revalidate
+        # refresh happened to land.
+        payload, _body, _etag = cached_payload(
+            "board:" + board, lambda b=board: board_payload(b)
+        )
         boards[board] = payload
         for project in board_projects(payload.get("items") or []):
             if project not in known:
@@ -1302,8 +1312,13 @@ def warm_cache():
     sidebar press into a board, five seconds, on the first press after
     almost any cycle merges.
 
-    So they are warmed now, and the general lesson is worth more than the
-    two lines: **an exclusion justified by a number needs the number
+    So they are warmed now. `/projects` reads the same two payloads and
+    was spelling the key without the `board:` prefix, which made it a
+    second cache entry over one build and put it outside every
+    `invalidate` in this module; it uses the same key now, so warming
+    reaches it too.
+
+    The general lesson is worth more than the two lines: **an exclusion justified by a number needs the number
     re-read, not the reasoning re-read.** Nothing here was wrong when it
     was written and nothing about it looked stale afterwards.
 
