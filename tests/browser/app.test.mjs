@@ -10722,6 +10722,30 @@ describe("the conversations page", () => {
     assert.equal(window.document.querySelector(".ask-form"), null);
   });
 
+  test("a persona that wakes on its own says so in the picker", async () => {
+    // His issues board #119, 2026-08-28: the app is called Nova and one of
+    // the personas inside it is also called Nova, "and it is easy to lose
+    // track of which 'Nova' a sentence means: the product, or the one
+    // persona." The label is the cheap half of that. The flag comes off
+    // Agora's heartbeat registry, so what it says is not "this one is
+    // special" but "this one will answer you without being asked".
+    const window = await loadSite("/conversations", {
+      convList: TWO,
+      convPersonas: { personas: [
+        { id: "p-1", name: "Claude", model: "claude-cli:claude-sonnet-5",
+          metered: false, scheduled: false },
+        { id: "p-2", name: "Nova", model: "claude-cli:claude-opus-5",
+          metered: false, scheduled: true },
+      ] },
+      convThread: () => ({ conversationId: "c-new", waiting: false, messages: [] }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const options = [...window.document.querySelectorAll(".conv-new-who option")];
+    assert.deepEqual(options.map((o) => o.textContent),
+      ["Claude", "Nova (on a schedule)"]);
+  });
+
   test("starting a conversation posts the name and the persona, then opens it", async () => {
     const window = await loadSite("/conversations", {
       convList: TWO,
@@ -10738,7 +10762,7 @@ describe("the conversations page", () => {
     // The metered persona is offered and says so; the first option -- the
     // one a thumb lands on -- is a subscription one.
     assert.deepEqual(options.map((o) => o.textContent),
-      ["Claude", "Zed (metered API)"]);
+      ["Claude", "Zed (metered)"]);
 
     window.document.querySelector(".conv-new-name").value = "Roofing quote";
     window.document.querySelector(".conv-new-who").value = "p-1";

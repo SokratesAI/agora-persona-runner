@@ -200,22 +200,62 @@ def personas():
     `identity.md` rule 9 forbids *defaulting* onto it, not seeing it -- so
     it is labelled rather than hidden, which is what lets him make the
     choice knowingly instead of having it made for him silently.
+
+    `scheduled` is the same move for a different confusion, and it is his,
+    `issues.md` #119 on 2026-08-28: the app is called Nova and one of the
+    personas inside it is also called Nova, so *"it is easy to lose track
+    of which 'Nova' a sentence means: the product, or the one persona."*
+    The honest separator is not the name -- it is that some of these wake
+    up on their own and the rest only answer when he types. Capabilities
+    cannot tell them apart (Claude and Opus hold every capability Nova
+    holds, plus one), so it is read off Agora's heartbeat registry, which
+    is the thing that actually does the waking. Today that marks Nova, the
+    build loop, and K3s Sentinel, the nightly cluster scan.
+
+    A heartbeat listing that fails degrades to no flag rather than to no
+    picker: this is the only route he can start a conversation from, and
+    `issues.md` #118 was that route being unusable for a day.
     """
     status, body = agora_get("/personas")
     if status != 200:
         raise RuntimeError(f"persona listing returned {status}")
+    scheduled = _personas_with_a_live_heartbeat()
     rows = [
         {
             "id": p.get("id"),
             "name": p.get("name") or "(unnamed)",
             "model": p.get("model") or "",
             "metered": str(p.get("model") or "").startswith("anthropic:"),
+            "scheduled": p.get("id") in scheduled,
         }
         for p in body.get("personas", [])
         if p.get("id")
     ]
     rows.sort(key=lambda r: (r["metered"], r["name"].lower()))
     return {"personas": rows}
+
+
+def _personas_with_a_live_heartbeat():
+    """Which personas wake on their own, by id.
+
+    Only an *enabled* heartbeat counts. A disabled one is a schedule
+    nobody is running -- the four `Workflow trial` personas each carry
+    one -- and marking those as scheduled would say the opposite of what
+    the label means.
+    """
+    try:
+        status, body = agora_get("/heartbeats")
+    except Exception as err:                        # pragma: no cover - network
+        log(f"nova_conversations: heartbeat listing failed: {err}")
+        return set()
+    if status != 200:
+        log(f"nova_conversations: heartbeat listing returned {status}")
+        return set()
+    return {
+        hb.get("personaId")
+        for hb in (body.get("heartbeats") or [])
+        if hb.get("enabled") and hb.get("personaId")
+    }
 
 
 def watching(conversation_id):
