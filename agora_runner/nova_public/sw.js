@@ -120,3 +120,46 @@ function replayed(hit) {
     });
   });
 }
+
+/* Push. Until 2026-08-28 the Agora PWA was the only thing in either repo
+ * that could register a subscription, so every notification the owner got
+ * -- including every cycle reply -- was delivered to a subscription his
+ * Agora app created, while he had said he would never open Agora again
+ * (issues.md #119). Agora still owns the VAPID keypair and does the
+ * sending; this file only has to render what arrives at Nova's origin.
+ *
+ * No notification while a Nova tab is visible: the page is already showing
+ * him the thing, and a system banner on top of that is noise rather than a
+ * missed-message alert. That is the same call Agora's own worker makes.
+ */
+self.addEventListener("push", function (event) {
+  var data = { title: "Nova", body: "" };
+  try {
+    if (event.data) data = event.data.json();
+  } catch (err) {
+    data = { title: "Nova", body: event.data ? event.data.text() : "" };
+  }
+  event.waitUntil(
+    self.clients.matchAll({ type: "window" }).then(function (clients) {
+      var open = clients.some(function (c) { return c.visibilityState === "visible"; });
+      if (open) return undefined;
+      return self.registration.showNotification(data.title || "Nova", {
+        body: data.body || "",
+        icon: "/icon.svg",
+        data: { conversationId: data.conversationId || null },
+      });
+    })
+  );
+});
+
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (clients) {
+      for (var i = 0; i < clients.length; i++) {
+        if ("focus" in clients[i]) return clients[i].focus();
+      }
+      return self.clients.openWindow("/");
+    })
+  );
+});

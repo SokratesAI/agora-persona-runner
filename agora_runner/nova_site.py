@@ -202,6 +202,7 @@ from agora_runner.vault import vault_read_path
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
+from agora_runner.nova_push import store_subscription, vapid_key
 from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_runtimes import attach_runtimes
@@ -2301,6 +2302,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             if path == "/api/conversations/personas":
                 self._send_json(200, conversation_personas())
                 return
+            if path == "/api/push/key":
+                # Agora owns the VAPID keypair and the subscription store;
+                # this site only needs its own origin to appear in that
+                # store. See nova_push for why that is a proxy and not a
+                # second push service.
+                self._send_json(200, vapid_key())
+                return
             if path == "/api/heartbeats":
                 # Not cached, for `/api/conversations`' reason: this is the
                 # list he opens to see whether the loop is still running, so
@@ -3735,7 +3743,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/conversations/folder", "/api/conversations/model",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/pool/decide", "/api/pool/generate",
-            "/api/goal/status",
+            "/api/goal/status", "/api/push/subscribe",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -3745,6 +3753,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/ask":
             self._post_ask(payload)
+            return
+        if path == "/api/push/subscribe":
+            ok, body = store_subscription(payload)
+            self._send_json(200 if ok else 502, body)
             return
         if path == "/api/ask/watching":
             self._post_ask_watching()
