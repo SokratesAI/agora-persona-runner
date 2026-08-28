@@ -612,6 +612,16 @@ def resolve_doc(ref, listing):
     style writes `.../nova/resources/ideas.md` -- is resolved on its tail,
     since the elision is exactly the part that carries no information.
     """
+    # The limitation this design accepts, stated rather than discovered:
+    # trying several anchors answers "can a cycle find *a* document by this
+    # name", not "is this the right one". `issues.md` and `ideas.md` each
+    # exist twice in this vault -- mine under `nova/resources/`, Edvard's
+    # under `projects/nova/` -- and the constitution cites both on purpose,
+    # so this cannot tell a citation of one from a citation of the other.
+    # Narrowing it would trade the false positive that matters (a bare
+    # filename called dead because I anchored it wrong, which is what a
+    # cycle would then go and "fix" in its own constitution) for a false
+    # negative that costs nothing, and that is the wrong way round here.
     tail = ref.split("/")[-1] if ref.startswith("...") else ref
     for anchor in _ANCHORS:
         for candidate in (anchor + ref, anchor + tail):
