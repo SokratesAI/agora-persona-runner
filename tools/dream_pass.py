@@ -531,6 +531,18 @@ def report(bullets, repos, threshold, paths_mean="rot"):
 # rather than "every path is dead" -- the guaranteed-positive failure
 # `dead_paths` above already had to be taught.
 
+# Measured Cycle 569 over the three live files: 59 citations, two of them
+# unresolvable. `context/_idea-template.md` is the real one -- `identity.md`
+# and `prompt.md` both send a cycle to read it before promoting an idea, and
+# no such document has ever existed in the vault, so every promoted idea in
+# `resources/ideas/` was written by guessing at the shape. The other is
+# `kanban.md`, and it is dead *on purpose*: both files cite it inside the
+# sentence recording that the owner deleted it. A deliberately dead citation
+# reads identically to rot here, and it stays that way -- a classifier for
+# "does the surrounding sentence say this is gone" is a second instrument
+# guessing at what I meant, and this tool's whole contract is that a cycle
+# decides. Two flags is a list a cycle can read in a second.
+
 _NOVA = "projects/sokrates/projects/agora/nova/"
 _AGORA = "projects/sokrates/projects/agora/"
 

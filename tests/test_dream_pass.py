@@ -555,3 +555,13 @@ def test_captures_mode_refuses_more_than_one_file(tmp_path, capsys):
     b.write_text(doc("- another"))
     assert dream_pass.main(["--file", str(a), "--file", str(b)]) == 1
     assert "reads one --file" in capsys.readouterr().err
+
+
+def test_dead_refs_with_no_listing_answers_nothing_rather_than_everything():
+    # Found by mutation: `constitution_report` prints CANNOT CHECK on its
+    # own, so a `dead_refs` that treated a missing listing as an empty one
+    # passed every test above while calling every citation in the file
+    # dead. That is the guaranteed-positive failure this module already
+    # had to be taught once, one function further in.
+    docs, mods = dream_pass.dead_refs("`kanban.md` `tools.gone`", None, [])
+    assert (docs, mods) == ([], [])
