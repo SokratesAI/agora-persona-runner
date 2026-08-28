@@ -35,6 +35,8 @@ own context is bounded by `conversations.FETCH_LIMIT` exactly as it is for
 every other conversation.
 """
 
+from agora_runner.audit import narration_passage
+from agora_runner.nova_conversations import keep_only_live_passages
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.log import log
 
@@ -180,18 +182,34 @@ def thread():
     status, detail = agora_get(f"/conversations/{cid}/messages?limit={MAX_THREAD}")
     if status != 200:
         raise RuntimeError(f"conversation fetch returned {status}")
-    messages = [
-        {
+    messages = []
+    for m in detail.get("messages", []):
+        if m.get("forgotten") or m.get("system") or m.get("thinking"):
+            continue
+        # Keep exactly one kind of activity message: a passage the persona
+        # wrote on its way to the answer, pushed here live while the turn is
+        # still running. See audit.narration_passage and nova_conversations
+        # ._visible -- this is issue #129, the reply arriving in pieces
+        # instead of as one block after four minutes of nothing.
+        passage = narration_passage(m)
+        if m.get("activity") and passage is None:
+            continue
+        messages.append({
             "id": m.get("id"),
             "sender": m.get("sender") or "",
-            "text": m.get("text") or "",
+            "text": passage if passage is not None else (m.get("text") or ""),
             "createdAt": m.get("createdAt") or "",
-        }
-        for m in detail.get("messages", [])
-        if not (m.get("forgotten") or m.get("system")
-                or m.get("activity") or m.get("thinking"))
-    ]
+            "partial": passage is not None,
+        })
+    messages = keep_only_live_passages(messages)
     # The page needs to know whether to keep polling, and it cannot work
     # that out from the sender alone without re-deriving `decide_turn`.
-    waiting = bool(messages) and messages[-1]["sender"] == "Edvard"
+    #
+    # Deliberately blind to the partials above, and this is the one place
+    # they could do damage: a passage arrives from the persona mid-turn, so
+    # the naive "last sender is the owner" reads as answered and the page stops
+    # polling before the actual reply lands. A partial is evidence the turn
+    # is still going, never that it finished.
+    settled = [m for m in messages if not m["partial"]]
+    waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
     return {"conversationId": cid, "messages": messages[-MAX_THREAD:], "waiting": waiting}

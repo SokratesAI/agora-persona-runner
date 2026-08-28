@@ -225,3 +225,24 @@ def test_a_refused_presence_ping_is_reported_rather_than_claimed():
          patch.object(nova_ask, "agora_internal", side_effect=fake_internal):
         ok, reason = nova_ask.watching()
     assert not ok and "could not reach" in reason
+
+
+def test_the_thread_keeps_the_passages_the_answer_is_being_written_in():
+    """Issue #129, same change as `nova_conversations._visible`. The Ask
+    page polls every four seconds and drew nothing at all until the whole
+    turn finished; the passages were in the store the whole time."""
+    messages = [
+        {"id": "1", "sender": "Edvard", "text": "how many pods?", "createdAt": "t1"},
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods"},
+         "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "assistant_text: Counting.",
+         "activity": {"capability": "assistant_text", "detail": "Counting."},
+         "createdAt": "t3"},
+    ]
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert [m["id"] for m in payload["messages"]] == ["1", "3"]
+    assert payload["messages"][1]["text"] == "Counting."
+    assert payload["messages"][1]["partial"] is True
+    # And the page must keep polling: the turn is still running.
+    assert payload["waiting"] is True

@@ -59,3 +59,29 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
         agora_internal("POST", "/audit", payload)
     except Exception as e:  # audit must never break a turn
         log(f"audit post failed: {e}")
+
+
+def narration_passage(message):
+    """The passage a persona wrote on its way to the answer, or None.
+
+    Every capability call the bridge narrates is appended to the conversation
+    as an `activity` message (agora/src/server.ts:1552), and one of those
+    "capabilities" is not a tool call at all: NARRATION_TEXT is a paragraph
+    the persona wrote between two tools, pushed live while the turn is still
+    running (agora-claude-bridge bridge/activity.py report_text). The reply
+    the owner finally sees is only the *last* such passage -- cli.py picks
+    `pending[-1]` whenever narration is enabled -- so the earlier ones are
+    not a duplicate of the answer, they are the earlier parts of it.
+
+    Both Nova chat surfaces used to drop them along with the tool chips,
+    which is why a turn looked like four minutes of nothing followed by one
+    block of text. Returns the passage itself rather than the message's
+    `text`, because Agora prefixes that with the capability name
+    ("assistant_text: ...") for its own search.
+    """
+    activity = message.get("activity")
+    if not isinstance(activity, dict):
+        return None
+    if activity.get("capability") != NARRATION_TEXT:
+        return None
+    return (activity.get("detail") or "").strip() or None
