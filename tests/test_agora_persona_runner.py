@@ -7967,3 +7967,170 @@ def test_redact_still_runs_the_shape_patterns_when_the_env_holds_nothing(runner)
     environment would pass every test above and ship the old hole."""
     out = audit_module.redact("crash: sk-ant-notarealkeyvalue000000", {})
     assert "[redacted: anthropic key]" in out
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-28 list_conversations / read_conversation — the owner asked the
+# "Claude" persona in Agora to read an earlier conversation called "Stuff"
+# and file its contents as issues. It could not do either, and its own
+# words were "there's no tool to list existing conversations or fetch their
+# message history". That was accurate: every manageAgora tool up to here
+# CREATES things (personas, conversations, heartbeats, workflows) or lists
+# personas and models. Nothing could read a conversation other than the one
+# the turn was already in, so "read that other conversation" had no answer
+# for any persona, not just that one.
+# ---------------------------------------------------------------------------
+
+CONVERSATIONS_FIXTURE = {"conversations": [
+    {"id": "c-stuff", "name": "Stuff", "lastMessageAt": "2026-08-27T07:33:14.931Z"},
+    {"id": "c-main", "name": "Main", "lastMessageAt": "2026-08-28T06:00:00.000Z"},
+    {"id": "c-quiet", "name": "Never spoken in"},
+]}
+
+
+def test_conversation_readers_only_advertised_with_manage_agora(runner):
+    caps_on = dict(runner.NO_CAPS, manageAgora=True)
+    caps_off = dict(runner.NO_CAPS, manageAgora=False)
+    names_on = {t["name"] for t in runner.client_tool_schemas(caps_on)}
+    names_off = {t["name"] for t in runner.client_tool_schemas(caps_off)}
+    assert {"list_conversations", "read_conversation"} <= names_on
+    assert not ({"list_conversations", "read_conversation"} & names_off)
+
+
+def test_list_conversations_sorts_newest_first_and_survives_a_never_used_row(runner):
+    with patch.object(runner.tools_dispatch, "agora_get",
+                      return_value=(200, CONVERSATIONS_FIXTURE)), \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool("list_conversations", {}, {"name": "T"}, "c1")
+    lines = result.splitlines()
+    assert lines[0] == "3 conversations:"
+    # Newest first, and the row with no lastMessageAt sorts last instead of
+    # raising on a None comparison.
+    assert lines[1].startswith("c-main | Main | 2026-08-28")
+    assert lines[2].startswith("c-stuff | Stuff | 2026-08-27")
+    assert lines[3] == "c-quiet | Never spoken in | never"
+
+
+def test_list_conversations_query_filters_and_reports_the_whole_count(runner):
+    with patch.object(runner.tools_dispatch, "agora_get",
+                      return_value=(200, CONVERSATIONS_FIXTURE)), \
+         patch.object(runner.tools_dispatch, "audit"):
+        hit = runner.execute_tool("list_conversations", {"query": "stu"}, {"name": "T"}, "c1")
+        miss = runner.execute_tool("list_conversations", {"query": "zzz"}, {"name": "T"}, "c1")
+    assert hit.splitlines()[0] == "1 of 3 conversations match 'stu':"
+    assert "c-stuff | Stuff" in hit
+    assert "c-main" not in hit
+    assert "no conversation name contains 'zzz'" in miss and "3 exist" in miss
+
+
+def _messages(n):
+    return {"messages": [
+        {"id": f"m{i}", "sender": "Edvard" if i % 2 else "Claude",
+         "text": f"line {i}", "ts": f"2026-08-27T0{i % 10}:00:00.000Z"}
+        for i in range(n)
+    ]}
+
+
+def test_read_conversation_resolves_a_name_and_windows_from_the_newest_end(runner):
+    def fake_get(path):
+        if path == "/conversations":
+            return 200, CONVERSATIONS_FIXTURE
+        assert path == "/conversations/c-stuff/messages"
+        return 200, _messages(71)
+
+    with patch.object(runner.tools_dispatch, "agora_get", side_effect=fake_get), \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool(
+            "read_conversation", {"conversation": "stuff"}, {"name": "T"}, "c1")
+    head = result.splitlines()[0]
+    assert "Stuff (c-stuff) -- 71 messages total" in head
+    assert "showing 50 (#22-#71)" in head
+    # The count of what was left out is stated rather than silently dropped.
+    assert "21 older and 0 newer not shown" in head
+    assert "line 70" in result and "line 21" in result
+    assert "line 20" not in result
+
+
+def test_read_conversation_offset_walks_further_back(runner):
+    def fake_get(path):
+        if path == "/conversations":
+            return 200, CONVERSATIONS_FIXTURE
+        return 200, _messages(71)
+
+    with patch.object(runner.tools_dispatch, "agora_get", side_effect=fake_get), \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool(
+            "read_conversation",
+            {"conversation": "c-stuff", "limit": 10, "offset": 50}, {"name": "T"}, "c1")
+    assert "showing 10 (#12-#21)" in result
+    assert "11 older and 50 newer not shown" in result
+    assert "line 20" in result and "line 21" not in result
+
+
+def test_read_conversation_refuses_an_ambiguous_name_instead_of_guessing(runner):
+    dupes = {"conversations": [
+        {"id": "a", "name": "Nova — Cycle 1", "lastMessageAt": "2026-08-01T00:00:00Z"},
+        {"id": "b", "name": "nova — cycle 1", "lastMessageAt": "2026-08-02T00:00:00Z"},
+    ]}
+    with patch.object(runner.tools_dispatch, "agora_get", return_value=(200, dupes)), \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool(
+            "read_conversation", {"conversation": "Nova — Cycle 1"}, {"name": "T"}, "c1")
+    assert "2 conversations are named" in result
+    assert "a | Nova — Cycle 1" in result and "b | nova — cycle 1" in result
+
+
+def test_read_conversation_reports_a_miss_and_an_http_failure(runner):
+    with patch.object(runner.tools_dispatch, "agora_get",
+                      return_value=(200, CONVERSATIONS_FIXTURE)), \
+         patch.object(runner.tools_dispatch, "audit"):
+        missing = runner.execute_tool(
+            "read_conversation", {"conversation": "nope"}, {"name": "T"}, "c1")
+        empty = runner.execute_tool(
+            "read_conversation", {"conversation": ""}, {"name": "T"}, "c1")
+    assert "no conversation with id or name 'nope'" in missing
+    assert "list_conversations" in missing
+    assert "conversation (id or name) is required" in empty
+
+    with patch.object(runner.tools_dispatch, "agora_get", return_value=(503, {})), \
+         patch.object(runner.tools_dispatch, "audit"):
+        broken = runner.execute_tool(
+            "read_conversation", {"conversation": "Stuff"}, {"name": "T"}, "c1")
+    assert "HTTP 503" in broken
+
+
+def test_every_advertised_tool_is_in_the_capability_map(runner):
+    """A tool missing from TOOL_TO_CAPABILITY vanishes from any workflow step
+    that whitelists it.
+
+    `capabilities_for_step` builds the set of capabilities a whitelist keeps
+    by looking each whitelisted tool up in this map; a tool that is not in it
+    contributes nothing, so its capability is switched off and the step loses
+    the very tool it asked for. That fails closed rather than open, which is
+    why nothing has ever caught it — and it is exactly what I did here: I
+    added list_conversations and read_conversation to the schemas and to the
+    map, and only a mutation test told me the map entry was untested.
+
+    scoped_write and save_memory are deliberately absent: the first is gated
+    by active_step alone and the second is ungated (see NO_CAPS).
+    """
+    all_caps = dict.fromkeys(runner.NO_CAPS, True)
+    advertised = {t["name"] for t in runner.client_tool_schemas(all_caps)}
+    ungated = {"scoped_write", "save_memory"}
+    assert (advertised - ungated) <= set(runner.TOOL_TO_CAPABILITY)
+
+
+def test_read_conversation_says_so_plainly_when_the_offset_runs_off_the_end(runner):
+    """Without this the header reads '#1-#0', which is not a range."""
+    def fake_get(path):
+        if path == "/conversations":
+            return 200, CONVERSATIONS_FIXTURE
+        return 200, _messages(5)
+
+    with patch.object(runner.tools_dispatch, "agora_get", side_effect=fake_get), \
+         patch.object(runner.tools_dispatch, "audit"):
+        past = runner.execute_tool(
+            "read_conversation",
+            {"conversation": "c-stuff", "offset": 99}, {"name": "T"}, "c1")
+    assert "5 messages total, none in this window (offset 99 is past the oldest)." in past
+    assert "#1-#0" not in past

@@ -391,7 +391,11 @@ def build_system(persona, conversation=None, heartbeat_extra=None):
             "'<provider>:<model id>' string (e.g. 'anthropic:claude-sonnet-5') — call "
             "list_models first rather than guessing the format. To create a heartbeat "
             "for an existing persona other than yourself, call list_personas first to "
-            "get its id — there is no other way to look one up."
+            "get its id — there is no other way to look one up. "
+            "To read a conversation OTHER than this one — anything the owner refers "
+            "to as \"that other conversation\" — call list_conversations (pass `query` "
+            "to filter by name; there are several hundred) and then read_conversation, "
+            "which takes an id or an exact name and returns the newest messages."
         )
     if caps.get("githubWrite") or caps.get("githubMerge"):
         gh_parts = ["## GitHub write access"]
