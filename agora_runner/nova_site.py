@@ -2384,9 +2384,17 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # rebuilt per request and a changed thread is still sent
                 # whole; what stops is re-sending 57KB to a client that
                 # already has those exact bytes.
+                # `no-cache` is the same header `_send_static` sends and it
+                # is not a cache window either: it means *store this, and
+                # revalidate before every use*. Without it the browser is
+                # left to heuristics, and with no `Last-Modified` to guess
+                # from it may decline to store the response at all -- in
+                # which case it never sends `If-None-Match`, the 304 below
+                # never fires, and this whole change is dead on his phone
+                # while passing every test here.
                 body = json.dumps(comments_payload())
                 etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest()[:16] + '"'
-                self._send_json_or_304(body, etag)
+                self._send_json_or_304(body, etag, cache_control="no-cache")
                 return
             if path == "/api/ask":
                 # Never cached, for `/api/comments`' reason and one more:

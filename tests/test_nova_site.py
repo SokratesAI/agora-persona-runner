@@ -5268,6 +5268,11 @@ def test_the_comments_endpoint_revalidates_to_a_304():
     etag = next(
         line.split(": ", 1)[1] for line in head.splitlines() if line.startswith("ETag: ")
     )
+    # Without this the browser is left to heuristic freshness, and with no
+    # `Last-Modified` to guess from it may never store the response -- so it
+    # would never send `If-None-Match` and the 304 below would never fire on
+    # his phone while passing here.
+    assert "Cache-Control: no-cache" in head
 
     with patch.object(nova_sources, "vault_read_path", return_value=stored):
         status, head, body = _get("/api/comments", f"If-None-Match: {etag}\r\n")
