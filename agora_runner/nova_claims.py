@@ -91,9 +91,14 @@ DONE_KEEP_HOURS = 24
 #: file for everybody. The bound is therefore derived from the producer
 #: instead of chosen for comfort -- the observed range is 21 to 72
 #: characters, and 96 sits above every slug the digest has actually
-#: carried with room to spare, while still being an order of magnitude
-#: below anything that would matter next to the outcome notes the same
-#: rows already hold.
+#: carried with room to spare, while still sitting well under the 466
+#: characters of the longest outcome note in the same live ledger -- so
+#: the slug is not the term that decides the file's size either way.
+#:
+#: The live ledger also corroborates the finding rather than merely
+#: illustrating it: 79 rows, and **the longest slug in any of them is 32
+#: characters**. Not one of the nine long handoff slugs was ever claimed
+#: by anybody, because none of them could be.
 SLUG_MAX = 96
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,%d}$" % (SLUG_MAX - 1))
 
