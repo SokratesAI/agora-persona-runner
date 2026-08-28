@@ -4337,7 +4337,7 @@ describe("the sidebar", () => {
     // groups became collapsible folds later the same day and this list is
     // unchanged by that -- `querySelectorAll` reads the DOM, not the layout,
     // so a link inside a closed `<details>` is still found here.
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/plan", "/conversations", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
+    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/plan", "/projects", "/conversations", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
