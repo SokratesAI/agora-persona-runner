@@ -73,6 +73,7 @@ CHECKS = (
     "cli_features",
     "changelog_watch",
     "cache_health",
+    "hook_cost",
     "heartbeat_health",
     "schedule_health",
     "helm_repo_health",
