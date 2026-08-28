@@ -629,3 +629,38 @@ def test_a_reply_indented_under_a_capture_is_not_a_capture_of_its_own():
     assert board["captureReplies"] == [
         ["Fixed in runner#360 — say the word and the byline goes white too."]
     ]
+
+
+# The owner, issues.md 2026-08-27: *"The Nova app has become extremely slow.
+# Opening, navigating, loading comments, anything."* Navigating is a sidebar
+# press into a board. `warm_cache` deliberately left the boards out on a
+# 2026-08-12 measurement of 0.53s and 0.39s cold; measured against the live
+# pod 2026-08-28, six minutes into a process that had served nothing since
+# it started, `/api/board?name=ideas&limit=30` answered in 5.05s and
+# `/api/board?name=issues` in 3.15s, against 0.03-0.09s warm.
+
+
+def test_the_first_press_on_a_board_after_a_deploy_reads_no_vault(board_md, notes_md):
+    """Both boards, because they are separate cache keys and warming one
+    leaves the other exactly as slow as it was.
+
+    Asserted as "the vault was not read again" rather than as a duration,
+    the same way the journal's warm test is: the five seconds is a bulk
+    fetch plus a parse, and a wall clock over a fixture measures neither.
+    """
+    nova_site.reset_cache()
+
+    def read(path):
+        return notes_md if "/nova/resources/" in path else board_md
+
+    with patch.object(nova_sources, "vault_read_path", side_effect=read) as reader:
+        nova_site.warm_cache()
+        warmed = reader.call_count
+        assert warmed, "the warm built nothing at all"
+        for board in ("issues", "ideas"):
+            status, _, body = _get(f"/api/board?name={board}&limit=1")
+            assert status == 200, board
+            assert json.loads(body)["items"], f"{board} warmed to an empty board"
+            assert reader.call_count == warmed, (
+                f"the first visitor to {board} paid the cold build anyway"
+            )
