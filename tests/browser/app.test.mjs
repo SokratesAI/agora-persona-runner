@@ -4549,6 +4549,49 @@ describe("the costs page", () => {
       "connectNulls must stay off or the gap is drawn through");
   });
 
+  test("the delegated tile adds up the rows, and ignores the era nobody measured", async () => {
+    /* `weighted` on a cycle row is what that session was charged and
+     * excludes the subagents it spawned, so this page understated every
+     * delegating cycle until these two columns existed.
+     *
+     * The denominator is the point of the test. Rows older than
+     * 2026-08-19 carry no attribution and arrive as null -- 265 of the 588
+     * live ones. Counting their `weighted` in the divisor would report a
+     * share of a period nobody was counting delegation in, which is a
+     * smaller number and a false one. Here: 200k delegated against 800k of
+     * measured parent spend is 20.0%, and the 1,000,000 on the unmeasured
+     * row must not move it. */
+    const withSubagents = {
+      ...payload.costs,
+      cycles: [
+        [1786227966684, 20.9, 69, 80, 1000000, null, null],
+        [1786438814000, 16.1, 54, 61, 300000, 12, 100000],
+        [1786449617908, 19.4, 103, 118, 500000, 23, 100000],
+      ],
+    };
+    const window = await loadSite("/costs", { costs: withSubagents });
+    const tiles = [...window.document.querySelectorAll(".tile")].map((t) => ({
+      label: t.querySelector(".tile-label").textContent,
+      value: t.querySelector(".tile-value").textContent,
+      note: t.querySelector(".tile-note") ? t.querySelector(".tile-note").textContent : null,
+    }));
+    const tile = tiles.find((t) => t.label === "Delegated");
+    assert.ok(tile, "the costs page has no tile for delegated spend");
+    assert.equal(tile.value, "200k");
+    assert.match(tile.note, /^20\.0% of spend since /);
+  });
+
+  test("no delegated tile at all when no row was ever measured", async () => {
+    /* A zero here would be a claim -- "these cycles delegated nothing" --
+     * about 265 rows written before anything counted. Absent is the honest
+     * rendering, and it is what the fixture (all three rows unmeasured)
+     * gets. */
+    const window = await loadSite("/costs");
+    const labels = [...window.document.querySelectorAll(".tile-label")]
+      .map((n) => n.textContent);
+    assert.ok(!labels.includes("Delegated"), labels.join(", "));
+  });
+
   test("two series get a legend, so identity is never colour alone", async () => {
     const window = await loadSite("/costs");
     const labels = [...window.document.querySelectorAll(".legend-label")].map((n) => n.textContent);

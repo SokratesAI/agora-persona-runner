@@ -6913,6 +6913,42 @@
     return tile;
   }
 
+  /* What the cycles delegated, added up off the rows.
+   *
+   * A cycle's `weighted` column is what that session was charged and
+   * deliberately excludes the subagents it spawned -- see `_subagent` in
+   * `nova_costs.py`. So every tile and chart on this page understated a
+   * delegating cycle until these columns existed, on the one page the
+   * question "where does the money go" is asked on.
+   *
+   * Two things this deliberately does not do. It does not read
+   * `summary.subagent_weighted`, which is computed from the transcripts on
+   * disk now and counts orphans, so it disagrees with the rows the chart
+   * plots. And it does not divide by the all-time total: rows older than
+   * 2026-08-19 carry no attribution at all and arrive as `null`, so the
+   * denominator is the parent spend of the rows that were actually
+   * measured. Dividing by everything would report a share of a period
+   * nobody was counting in, which is a smaller number and a false one.
+   */
+  function delegatedSpend(payload) {
+    var rows = payload.cycles || [];
+    var tokens = 0, parent = 0, counted = 0, from = null;
+    rows.forEach(function (r) {
+      if (r[6] === null || r[6] === undefined) return;
+      if (from === null) from = r[0];
+      counted += 1;
+      tokens += r[6];
+      parent += r[4] || 0;
+    });
+    if (!counted) return null;
+    return {
+      tokens: tokens,
+      counted: counted,
+      from: from,
+      share: parent + tokens > 0 ? (100 * tokens) / (parent + tokens) : 0,
+    };
+  }
+
   function renderCostTiles(payload) {
     var summary = payload.summary || {};
     var quota = payload.quota || [];
@@ -6923,6 +6959,14 @@
       "Median cycle", fmtTokens(summary.median_weighted), "weighted tokens"
     ));
     row.appendChild(statTile("Median length", fmtMinutes(summary.median_duration_seconds)));
+    var delegated = delegatedSpend(payload);
+    if (delegated) {
+      row.appendChild(statTile(
+        "Delegated",
+        fmtTokens(delegated.tokens),
+        delegated.share.toFixed(1) + "% of spend since " + fmtDay(delegated.from)
+      ));
+    }
     if (latest) {
       row.appendChild(statTile(
         "7-day used",
