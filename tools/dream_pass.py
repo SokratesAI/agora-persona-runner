@@ -582,7 +582,16 @@ def cited_docs(markdown):
     """
     out = []
     for ref in _DOC_REF.findall(markdown):
-        ref = ref.lstrip("./")
+        # A leading `./` only. `lstrip` takes a character *set*, so
+        # `.lstrip("./")` ate the `...` off the house style's elided
+        # citations too -- and `resolve_doc`'s `startswith("...")` branch
+        # then became unreachable from here, which no test caught because
+        # the test called `resolve_doc` directly with a string this
+        # function could no longer produce. A dead branch under a passing
+        # test is the shape worth naming: the test was about the function,
+        # and the defect was in the seam between two of them.
+        if ref.startswith("./"):
+            ref = ref[2:]
         if _PLACEHOLDER.search(ref) or not ref:
             continue
         if ref not in out:

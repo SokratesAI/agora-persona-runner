@@ -565,3 +565,17 @@ def test_dead_refs_with_no_listing_answers_nothing_rather_than_everything():
     # had to be taught once, one function further in.
     docs, mods = dream_pass.dead_refs("`kanban.md` `tools.gone`", None, [])
     assert (docs, mods) == ([], [])
+
+
+def test_an_elided_citation_survives_extraction_and_then_resolves():
+    # End to end through both functions. The tail branch in `resolve_doc`
+    # was unreachable from `cited_docs` while `lstrip("./")` was stripping
+    # the `...` as a character set, and the unit test above could not see
+    # it because it fed `resolve_doc` a string extraction never emitted.
+    refs = dream_pass.cited_docs("read `.../nova/resources/inbox.md` first")
+    assert refs == [".../nova/resources/inbox.md"]
+    assert dream_pass.resolve_doc(refs[0], listing(NOVA + "resources/inbox.md"))
+
+
+def test_a_dot_slash_prefix_is_still_stripped():
+    assert dream_pass.cited_docs("see `./inbox.md`") == ["inbox.md"]
