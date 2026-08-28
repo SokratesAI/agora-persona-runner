@@ -12065,6 +12065,65 @@ describe("the project page", () => {
     assert.equal(window.document.querySelectorAll(".project-pill").length, 1);
   });
 
+  /* Phase 4 -- the conversation per project. */
+
+  const TALKED = Object.assign({}, NOVA, {
+    comments: [
+      { author: "Edvard", stamp: "2026-08-28 10:40",
+        blocks: [{ kind: "p", text: "Is the pool refilling?" }] },
+      { author: "Nova", stamp: "2026-08-28 10:55",
+        blocks: [{ kind: "p", text: "Three times a week." }] },
+    ],
+  });
+
+  test("a project's conversation draws as the same green and purple bubbles", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    const thread = window.document.querySelector(".project-thread");
+    assert.ok(thread, "the project page drew no conversation");
+    const mine = thread.querySelectorAll(".note-msg-mine");
+    const nova = thread.querySelectorAll(".note-msg-nova");
+    assert.equal(mine.length, 1, "his message is not the green one");
+    assert.equal(nova.length, 1, "the cycle's answer is not the purple one");
+  });
+
+  test("a project nobody has said anything about says so and still offers the box", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const thread = window.document.querySelector(".project-thread");
+    assert.match(thread.querySelector(".empty").textContent, /Nova/);
+    assert.ok(thread.querySelector(".item-comment-box"), "there is nowhere to type");
+  });
+
+  test("commenting posts the project name and refetches rather than guessing", async () => {
+    let fetches = 0;
+    const window = await loadSite("/project/Nova", {
+      project: () => { fetches += 1; return TALKED; },
+    });
+    const before = fetches;
+    window.document.querySelector(".project-thread .item-comment-box").value = "one\ntwo";
+    window.document.querySelector(".project-thread .item-comment-send").click();
+    await new Promise((r) => window.setTimeout(r, 0));
+
+    const sent = window.posted.at(-1);
+    assert.equal(sent.url, "/api/project/comment");
+    assert.equal(sent.body.project, "Nova");
+    // Line breaks are kept: unlike a board comment, `comments.md` stores
+    // his text verbatim, so nothing here flattens what he typed.
+    assert.equal(sent.body.text, "one\ntwo");
+    assert.ok(fetches > before, "the page did not refetch after posting");
+  });
+
+  test("an empty box refuses rather than posting nothing", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const before = window.posted.length;
+    window.document.querySelector(".project-thread .item-comment-send").click();
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, before, "an empty comment was sent anyway");
+    assert.match(
+      window.document.querySelector(".project-thread .item-comment-status").textContent,
+      /Nothing to send/,
+    );
+  });
+
   test("the Projects nav tab is the one marked current", async () => {
     const window = await loadSite("/project/Nova", { project: NOVA });
     const on = [...window.document.querySelectorAll(".nav-tab[aria-current]")]

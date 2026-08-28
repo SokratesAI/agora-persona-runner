@@ -61,6 +61,8 @@ from agora_runner.nova_comments import (
     WriteRefused,
     comment_index,
     format_stamp,
+    match_heading,
+    same_project,
     verify_write,
 )
 
@@ -69,25 +71,29 @@ class AckError(Exception):
     """Refusing to write. The message is for a human, so it says what to do."""
 
 
-def _block_bounds(lines, start, end, cycle, stamp):
-    """(first, last) line indexes of the comment `(cycle, stamp)` within [start, end).
+def _block_bounds(lines, start, end, cycle, stamp, project=None):
+    """(first, last) line indexes of the comment `(cycle, project, stamp)` within [start, end).
 
     `first` is its `###` heading; `last` is one past its final non-blank
     line, so trailing blanks stay behind as the gap before whatever came
     after it rather than travelling with the block.
     """
-    from agora_runner.nova_comments import _COMMENT_HEADING_RE, _SECTION_RE
+    from agora_runner.nova_comments import _SECTION_RE
 
     first = None
     for i in range(start, end):
-        heading = _COMMENT_HEADING_RE.match(lines[i])
+        heading = match_heading(lines[i])
         if first is not None and (heading or _SECTION_RE.match(lines[i])):
             last = i
             break
         if not heading:
             continue
-        found = int(heading.group("cycle")) if heading.group("cycle") else None
-        if found == cycle and (heading.group("stamp") or "").strip() == stamp:
+        found_cycle, found_project, found_stamp = heading
+        if (
+            found_cycle == cycle
+            and same_project(found_project, project)
+            and found_stamp == stamp
+        ):
             first = i
     else:
         last = end
@@ -99,10 +105,15 @@ def _block_bounds(lines, start, end, cycle, stamp):
     return first, last
 
 
-def acknowledge(markdown, cycle, stamp, note, note_stamp):
-    """Markdown with `(cycle, stamp)` moved to the top of `## Acknowledged`.
+def acknowledge(markdown, cycle, stamp, note, note_stamp, project=None):
+    """Markdown with `(cycle, project, stamp)` moved to the top of `## Acknowledged`.
 
-    `cycle` is an int, or None for a reply to the Needs Edvard block. The  (not-prose: quoting a literal)
+    `cycle` is an int, or None for a reply to the Needs Edvard block, or  (not-prose: quoting a literal)
+    None with `project` set for a comment on a project thread (idea #92
+    phase 4). A project thread lives in this same file and under these same
+    two headings, so it is acknowledged the same way -- leaving it out would
+    have built a channel with no way to retire anything in it, which is the
+    half of `## New` that makes it a queue rather than a pile. The
     note is appended inside the comment as a `#### Nova` block, which is
     the same shape a live reply uses -- what a cycle did about a comment
     and what it said back are the same kind of thing to whoever reads the
@@ -119,9 +130,9 @@ def acknowledge(markdown, cycle, stamp, note, note_stamp):
     if ack_at is None:
         raise AckError(f"no real {ACKNOWLEDGED_HEADING!r} heading in this file")
 
-    found = _block_bounds(lines, *new_bounds, cycle=cycle, stamp=stamp)
+    found = _block_bounds(lines, *new_bounds, cycle=cycle, stamp=stamp, project=project)
     if found is None:
-        label = "Needs Edvard" if cycle is None else f"Cycle {cycle}"
+        label = _label(cycle, project)
         raise AckError(
             f"no comment on {label} at {stamp!r} under {NEW_HEADING} -- "
             "check the heading in the file; nothing written"
@@ -148,11 +159,18 @@ def acknowledge(markdown, cycle, stamp, note, note_stamp):
         at += 1
     out = "\n".join(rest[:at] + block + [""] + rest[at:])
 
-    _verify(markdown, out, before, cycle, stamp, note)
+    _verify(markdown, out, before, cycle, stamp, note, project)
     return out
 
 
-def _verify(original, updated, before, cycle, stamp, note):
+def _label(cycle, project=None):
+    """How this comment's heading names its target."""
+    if project:
+        return f"Project {project}"
+    return "Needs Edvard" if cycle is None else f"Cycle {cycle}"
+
+
+def _verify(original, updated, before, cycle, stamp, note, project=None):
     """Refuse the write unless exactly the intended change happened.
 
     The frontmatter and the bystanders are `nova_comments.verify_write`,
@@ -166,7 +184,7 @@ def _verify(original, updated, before, cycle, stamp, note):
     must not create or destroy one, so the set of keys is required to be
     conserved exactly, which is stricter than the two writers can be.
     """
-    target = (cycle, stamp)
+    target = (cycle, project, stamp)
     try:
         _, after = verify_write(original, updated, exempt={target})
     except WriteRefused as refused:
@@ -207,6 +225,7 @@ def main(argv=None):
     target.add_argument(
         "--needs", action="store_true", help="a reply to the Needs Edvard block"
     )
+    target.add_argument("--project", help="the project the comment's thread is on")
     parser.add_argument("--stamp", required=True, help="the comment's stamp, verbatim")
     parser.add_argument("--note", default="", help="one line on what you did")
     parser.add_argument("--dry-run", action="store_true", help="check, write nothing")
@@ -218,10 +237,11 @@ def main(argv=None):
     try:
         updated = acknowledge(
             original,
-            None if args.needs else args.cycle,
+            None if (args.needs or args.project) else args.cycle,
             args.stamp.strip(),
             args.note.strip(),
             format_stamp(),
+            project=args.project,
         )
     except AckError as error:
         print(f"refusing: {error}", file=sys.stderr)
@@ -232,7 +252,7 @@ def main(argv=None):
         return 0
     with open(args.path, "w", encoding="utf-8") as handle:
         handle.write(updated)
-    label = "Needs Edvard" if args.needs else f"Cycle {args.cycle}"
+    label = _label(None if args.needs else args.cycle, args.project)
     print(f"moved {label} · {args.stamp} to {ACKNOWLEDGED_HEADING}")
     return 0
 

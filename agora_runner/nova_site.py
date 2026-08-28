@@ -134,10 +134,12 @@ from agora_runner.nova_capture import (
 from agora_runner.nova_comments import (
     add_comment,
     add_needs_comment,
+    add_project_comment,
     clean_comment_text,
     comments_by_cycle,
     format_stamp,
     needs_comments,
+    project_comments,
 )
 from agora_runner.cycle_number import cycle_starts
 from agora_runner.nova_journal import (
@@ -748,6 +750,58 @@ def _project_columns(items):
     return columns
 
 
+#: What `/api/project/comment` refuses in a project name, and why each one
+#: is a danger rather than tidiness. A name goes verbatim into a `###`
+#: heading in `comments.md`, so a line break in it would split that heading
+#: and file the body outside any comment -- the splice class `doc_integrity`
+#: exists to catch, arriving through a supported route. A `·` is the
+#: separator `_PROJECT_HEADING_RE` splits the stamp on, so a name carrying
+#: one parses back as a different, shorter name. The length cap is the
+#: weakest of the three and is here because the field is free text from a
+#: phone with no list to check it against; 120 is well past any project
+#: name and short enough to stay one line. None of this bounds
+#: `board_projects`, which reads names off cells the app never wrote.
+PROJECT_NAME_MAX = 120
+
+
+def _project_thread(markdown, project):
+    """One project's comments, flattened into the shape a bubble needs.
+
+    `[{author, stamp, blocks}]`, oldest first, exactly what
+    `renderRowConversation` in `app.js` already draws for a board row --
+    reused verbatim rather than given a project-shaped variant, because the
+    whole point of the owner's *"just like the comments"* is that these
+    pages read alike, and a second bubble renderer is how they stop doing
+    that a month from now.
+
+    A comment and the replies inside it become sibling messages here. They
+    are nested in the file, because a reply belongs to the comment it
+    answers and that is what stops two cycles writing over each other; on a
+    page they are a conversation and nesting them would draw a thread
+    inside a thread.
+    """
+    out = []
+    for comment in project_comments(markdown, project):
+        out.append({
+            "author": "Edvard",
+            "stamp": comment["stamp"],
+            "blocks": render_blocks(comment["text"]),
+        })
+        for reply in comment.get("replies") or []:
+            # Every reply block sits under a `#### Nova` heading, so the
+            # author is Nova and is written here rather than read off the
+            # reply. `split_replies`'s `author` field is a *role* --
+            # `commentator` for the first block, `cycle` for later ones --
+            # and passing it through would print the word "commentator" on
+            # his page as if it were a name.
+            out.append({
+                "author": "Nova",
+                "stamp": reply.get("stamp") or "",
+                "blocks": render_blocks(reply.get("text") or ""),
+            })
+    return out
+
+
 def project_payload(name=None):
     """One project's board rows, grouped by status (idea #92, phase 3).
 
@@ -788,6 +842,13 @@ def project_payload(name=None):
     result = {"projects": known, "name": matched, "asked": wanted, "boards": {}}
     if not wanted:
         return result
+    # The thread hangs off the name he asked for, not off `matched`, so a
+    # project he has started talking about before filing a row under it
+    # still shows its conversation instead of an empty page. `comments.md`
+    # is read uncached for the same reason `/api/comments` is: it is the
+    # one document he writes to from the app, and a stale thread reads as
+    # a lost message.
+    result["comments"] = _project_thread(comments_markdown(), wanted)
     # An unknown name is answered rather than 404'd: the page shows the
     # index with "no rows are filed under X yet", which is the true and
     # useful thing to say about a project he has typed into one cell and
@@ -3646,6 +3707,56 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             # to it would put a paragraph where a piece of work belongs.
             enqueue_reply(cycle, stamp)
 
+    def _post_project_comment(self, payload):
+        """`/api/project/comment` -- the owner talking about a project (idea #92, phase 4).
+
+        His idea #92 asks for *"somehow a conversation per project or per
+        issue/idea/note to define it more"*. The row-level half of that is
+        `/api/board/comment`; this is the project level, and it writes to
+        `comments.md` because a project is a name on a cell rather than a
+        document with somewhere to append to. `nova_comments.project_comments`
+        carries the reasoning.
+
+        Same two boundaries as `/api/comment` and the same reason they hold:
+        the path is the module-level `COMMENTS_PATH` and there is no target
+        to choose, so the worst a request can do is add a comment to a file
+        Nova reads and the owner can delete. The project name is free text
+        by design -- it is matched against the `Project` cells he types
+        himself -- so it is length-capped rather than allow-listed, and an
+        unknown name is accepted: he can open a thread on a project before
+        the first row is filed under it, which is the order an idea
+        actually arrives in.
+
+        Deliberately no auto-reply. `enqueue_reply` is keyed on a cycle
+        number and a project thread has none; a cycle answers here the way
+        it answers a board row, in its own time.
+        """
+        project = payload.get("project")
+        text = payload.get("text")
+        if not isinstance(text, str):
+            self._send_json(400, {"error": "text must be a string"})
+            return
+        if not isinstance(project, str) or not project.strip():
+            self._send_json(400, {"error": "project must be a name"})
+            return
+        project = project.strip()
+        if len(project) > PROJECT_NAME_MAX:
+            self._send_json(
+                400, {"error": f"project must be at most {PROJECT_NAME_MAX} characters"}
+            )
+            return
+        if "\n" in project or "\r" in project or "·" in project:
+            self._send_json(
+                400, {"error": "project must be one line and must not contain ·"}
+            )
+            return
+        if not clean_comment_text(text):
+            self._send_json(400, {"error": "nothing to comment"})
+            return
+        self._store_comment(
+            lambda: add_project_comment(project, text), text, f"project {project}"
+        )
+
     def _store_comment(self, store, text, label):
         """Write one comment and audit it, whichever target it names. -> ok.
 
@@ -3744,6 +3855,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/pool/decide", "/api/pool/generate",
             "/api/goal/status", "/api/push/subscribe",
+            "/api/project/comment",
         ):
             self._send_json(404, {"error": "not found"})
             return
@@ -3793,6 +3905,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/comment":
             self._post_comment(payload)
+            return
+        if path == "/api/project/comment":
+            self._post_project_comment(payload)
             return
         if path in ("/api/capture/edit", "/api/capture/delete"):
             self._post_amend(payload, delete=path.endswith("delete"))

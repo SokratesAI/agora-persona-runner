@@ -59,6 +59,9 @@ def _boards(monkeypatch):
     # `cached_payload` reaches CouchDB through `_refresh`; the grouping is
     # what is under test, so the cache is stepped over rather than primed.
     monkeypatch.setattr(nova_site, "cached_payload", lambda name, build: build())
+    # The thread is a live vault read and is not what these tests are about;
+    # `test_project_thread.py` holds it to its own behaviour.
+    monkeypatch.setattr(nova_site, "comments_markdown", lambda: "")
 
 
 def test_index_lists_every_project_both_boards_name():
@@ -123,3 +126,134 @@ def test_a_status_nobody_planned_for_lands_at_the_end_rather_than_vanishing():
 def test_project_urls_are_served_the_shell():
     assert "/projects" in nova_site.PAGE_ROUTES
     assert "/project/" in nova_site.PAGE_ROUTE_PREFIXES
+
+
+THREAD = """# Comments
+
+## New
+
+### Project Nova · 2026-08-28 10:40
+
+Is the pool refilling?
+
+#### Nova · 2026-08-28 10:55
+
+Three times a week.
+
+### Cycle 572 · 2026-08-28 10:20
+
+Good measurement.
+
+## Acknowledged
+"""
+
+
+def test_the_project_page_carries_its_own_conversation_and_nobody_elses(monkeypatch):
+    """The bubbles, in the shape `renderRowConversation` already draws.
+
+    A comment and its replies come out as sibling messages rather than
+    nested, because that is a conversation on a page even though it is a
+    reply inside a comment in the file. And a comment keyed on a cycle is
+    not on this page at all -- it belongs to a journal card.
+    """
+    monkeypatch.setattr(nova_site, "comments_markdown", lambda: THREAD)
+    payload = nova_site.project_payload("nova")
+    assert [(m["author"], m["stamp"]) for m in payload["comments"]] == [
+        ("Edvard", "2026-08-28 10:40"),
+        ("Nova", "2026-08-28 10:55"),
+    ]
+    assert payload["comments"][0]["blocks"]
+
+
+def test_a_project_with_a_thread_but_no_rows_still_shows_the_conversation(monkeypatch):
+    """The thread hangs off the name he asked for, not off the matched one.
+
+    A project only becomes "known" once a row carries it in a `Project`
+    cell, so a project he has started talking about and not yet filed
+    anything under has `name: null` -- and reading the thread off that
+    would blank the conversation he is standing in.
+    """
+    monkeypatch.setattr(nova_site, "comments_markdown", lambda: THREAD.replace(
+        "### Project Nova ·", "### Project Newspaper ·"))
+    payload = nova_site.project_payload("Newspaper")
+    assert payload["name"] is None
+    assert [m["author"] for m in payload["comments"]] == ["Edvard", "Nova"]
+
+
+def test_a_project_with_nothing_said_about_it_gets_an_empty_thread(monkeypatch):
+    monkeypatch.setattr(nova_site, "comments_markdown", lambda: THREAD)
+    assert nova_site.project_payload("Agora")["comments"] == []
+
+
+def test_the_index_does_not_pay_for_a_thread_it_cannot_show(monkeypatch):
+    """`/projects` names no project, so there is no thread to read.
+
+    The guard matters because the read is a live vault fetch: doing it
+    before the early return would cost every visit to the index a request
+    for a document it has nothing to do with.
+    """
+    def refuse():
+        raise AssertionError("the index read comments.md")
+
+    monkeypatch.setattr(nova_site, "comments_markdown", refuse)
+    assert "comments" not in nova_site.project_payload()
+
+
+# --- `/api/project/comment`, the write half -------------------------------
+
+
+def _post_project_comment(payload):
+    """The route through the real handler, so the guards under test are the
+    ones a request actually meets."""
+    import json as _json
+    from tests.test_nova_site import _post
+
+    status, _, body = _post("/api/project/comment", payload)
+    return status, _json.loads(body or b"{}")
+
+
+@pytest.fixture
+def _never_writes(monkeypatch):
+    """Any call to the vault writer is a test failure.
+
+    Every case below is a *refusal*, and a refusal that still wrote is the
+    failure worth catching -- a 400 with the comment stored anyway reads
+    identically from the client.
+    """
+    def refuse(*args, **kwargs):
+        raise AssertionError("a refused request wrote to comments.md anyway")
+
+    monkeypatch.setattr(nova_site, "add_project_comment", refuse)
+
+
+@pytest.mark.parametrize("payload, expected", [
+    ({"text": "hi"}, "project must be a name"),
+    ({"project": "   ", "text": "hi"}, "project must be a name"),
+    ({"project": "Nova", "text": 7}, "text must be a string"),
+    ({"project": "Nova", "text": "   "}, "nothing to comment"),
+    ({"project": "N" * 121, "text": "hi"}, "at most"),
+    # A newline would split the `###` heading and file his text outside any
+    # comment; a `·` is the separator the heading parses the stamp on.
+    ({"project": "Nova\nAgora", "text": "hi"}, "one line"),
+    ({"project": "Nova · Agora", "text": "hi"}, "one line"),
+])
+def test_a_name_that_would_damage_the_heading_is_refused(payload, expected, _never_writes):
+    status, body = _post_project_comment(payload)
+    assert status == 400
+    assert expected in body["error"]
+
+
+def test_a_good_comment_is_written_with_the_name_as_typed(monkeypatch):
+    seen = {}
+
+    def store(project, text):
+        seen["project"] = project
+        seen["text"] = text
+        return True, "commented"
+
+    monkeypatch.setattr(nova_site, "add_project_comment", store)
+    status, body = _post_project_comment({"project": "  Sokrates Post  ", "text": "hi"})
+    assert status == 200 and body["ok"]
+    # Trimmed, not normalised: the spelling is his and `project_comments`
+    # already matches case-insensitively.
+    assert seen == {"project": "Sokrates Post", "text": "hi"}
