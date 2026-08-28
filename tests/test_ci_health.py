@@ -102,6 +102,8 @@ def gh(runs=None, jobs=None, fail=None, completed=None,
     return runner
 
 
+# GitHub sends `annotation_level` on every annotation and `_first_annotation`
+# now reads it, so a fixture without one is a fixture simpler than reality.
 BILLING = ("The job was not started because recent account payments have failed "
            "or your spending limit needs to be increased. Please check the "
            "'Billing & plans' section in your settings")
@@ -412,7 +414,7 @@ def test_the_billing_block_this_tool_called_green():
     status, lines = run_check(
         run=gh(history={"Org/repo": [failed(9), failed(8), failed(7)]},
                job_payload={9: [{"id": 900, "steps": []}]},
-               annotations={900: [{"message": BILLING}]}))
+               annotations={900: [{"annotation_level": "failure", "message": BILLING}]}))
     body = "\n".join(lines)
     assert "CANNOT GO GREEN  Org/repo" in body
     assert "recent account payments have failed" in body
@@ -431,7 +433,7 @@ def test_a_billing_block_does_not_veto_a_merge_into_another_repo():
         run=gh(history={"Org/blocked": [failed(9)],
                         "Org/fine": [{"id": 5, "conclusion": "success"}]},
                job_payload={9: [{"id": 900, "steps": []}]},
-               annotations={900: [{"message": BILLING}]}))
+               annotations={900: [{"annotation_level": "failure", "message": BILLING}]}))
     assert status == 0, lines
     body = "\n".join(lines)
     assert "CANNOT GO GREEN  Org/blocked" in body
@@ -464,7 +466,7 @@ def test_one_success_among_the_newest_runs_ends_the_question():
     status, lines = run_check(
         run=gh(history={"Org/repo": [failed(9), {"id": 8, "conclusion": "success"}]},
                job_payload={9: [{"id": 900, "steps": []}]},
-               annotations={900: [{"message": BILLING}]}))
+               annotations={900: [{"annotation_level": "failure", "message": BILLING}]}))
     assert status == 0, lines
     assert "CANNOT GO GREEN" not in "\n".join(lines)
 

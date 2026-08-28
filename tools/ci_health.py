@@ -348,12 +348,22 @@ FAILED_CONCLUSIONS = {"failure", "startup_failure", "timed_out"}
 
 
 def _first_annotation(repo, job_id, run):
-    """The first non-empty check-run annotation on a job, or `None`.
+    """The first `failure`-level check-run annotation on a job, or `None`.
 
-    Same call `tools.agentic_health.start_failure` makes, and for the same
-    reason: when GitHub refuses to start a job it puts the reason here and
-    nowhere else, so `gh run view --log-failed` answers `log not found` on
-    exactly the run you most want to read.
+    Same call `tools.agentic_health._failure_annotation` makes, and for the
+    same reason: when GitHub refuses to start a job it puts the reason here
+    and nowhere else, so `gh run view --log-failed` answers `log not found`
+    on exactly the run you most want to read.
+
+    **The level filter is the part that matters and it was missing here.**
+    This took the first non-empty message of any level, and GitHub stacks
+    routine warnings above the real cause -- the 2026-08-28 `docs-sync` job
+    carries a Node.js 20 deprecation warning first and *"The action
+    'Execute Gemini CLI' has timed out after 20 minutes."* second. Every
+    never-started job in this org happens to carry exactly one annotation
+    today, so this had not misfired yet; that is a fact about today's data,
+    not about the rule. Cycle 598 fixed the twin and my own reviewer caught
+    that this copy had been left behind.
     """
     if job_id is None:
         return None
@@ -361,7 +371,10 @@ def _first_annotation(repo, job_id, run):
     if not isinstance(body, list):
         return None
     for note in body:
-        message = ((note or {}).get("message") or "").strip()
+        note = note or {}
+        if (note.get("annotation_level") or "").lower() != "failure":
+            continue
+        message = (note.get("message") or "").strip()
         if message:
             return message
     return None

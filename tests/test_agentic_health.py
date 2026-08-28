@@ -426,9 +426,23 @@ def test_an_unreadable_jobs_call_keeps_the_failing_verdict_and_says_it_could_not
 
 # --- Cycle 598: a `failing` streak must say *how* the newest run died ---
 
-# The 2026-08-28 `docs-sync` run verbatim: the `agent` job died inside
-# `Execute Gemini CLI`, and GitHub left two annotations on it -- a Node.js
-# deprecation *warning* first, the real cause second.
+# The 2026-08-28 `docs-sync` run: the `agent` job died inside `Execute
+# Gemini CLI`, and GitHub left two annotations on it -- a Node.js
+# deprecation *warning* first, the real cause second. The failure message
+# is that run's exactly; the warning is shortened, because its 40-char SHA
+# and changelog link are not what any assertion here is about.
+#
+# **The four sibling jobs are the point of this fixture, not decoration.**
+# The real payload has five jobs and the failing one sits second, so a
+# single-job list cannot tell "picks the job that failed" apart from
+# "takes the first job" -- my reviewer's finding on the first version.
+_SIBLING_JOBS = [
+    {"id": 95, "name": "activation", "conclusion": "success",
+     "steps": [{"name": "Log runtime features", "conclusion": "skipped"}]},
+    {"id": 96, "name": "detection", "conclusion": "success", "steps": []},
+    {"id": 97, "name": "safe_outputs", "conclusion": "success", "steps": []},
+    {"id": 98, "name": "conclusion", "conclusion": "success", "steps": []},
+]
 _JOB_THAT_DIED_IN_A_STEP = {
     "id": 99,
     "name": "agent",
@@ -460,7 +474,7 @@ def test_a_failing_run_names_the_step_and_quotes_githubs_reason():
                 ("completed", "success", "2026-08-28T03:37:51Z"),
             )
         },
-        jobs_by_run={1000: [_JOB_THAT_DIED_IN_A_STEP]},
+        jobs_by_run={1000: _SIBLING_JOBS[:1] + [_JOB_THAT_DIED_IN_A_STEP] + _SIBLING_JOBS[1:]},
         annotations_by_job={
             99: [
                 {"annotation_level": "warning", "message": _NODE_WARNING},
@@ -488,7 +502,7 @@ def test_a_warning_annotation_is_never_quoted_as_the_cause():
     run = _fake_gh(
         {"o/r": [DOCS_SYNC]},
         {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-28T17:22:23Z"))},
-        jobs_by_run={1000: [_JOB_THAT_DIED_IN_A_STEP]},
+        jobs_by_run={1000: _SIBLING_JOBS[:1] + [_JOB_THAT_DIED_IN_A_STEP] + _SIBLING_JOBS[1:]},
         annotations_by_job={
             99: [
                 {"annotation_level": "warning", "message": _NODE_WARNING},
@@ -506,7 +520,7 @@ def test_a_failing_run_with_no_annotation_still_names_where_it_died():
     run = _fake_gh(
         {"o/r": [DOCS_SYNC]},
         {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-28T17:22:23Z"))},
-        jobs_by_run={1000: [_JOB_THAT_DIED_IN_A_STEP]},
+        jobs_by_run={1000: _SIBLING_JOBS[:1] + [_JOB_THAT_DIED_IN_A_STEP] + _SIBLING_JOBS[1:]},
     )
     results, errors = agentic_health.sweep(["o/r"], run=run)
     report, status = agentic_health.format_report(results, errors, ["o/r"])
