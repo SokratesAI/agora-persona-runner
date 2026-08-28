@@ -156,7 +156,7 @@ class InvokeHandler(BaseHTTPRequestHandler):
             # of the 297 that existed on 2026-08-21 -- so resolving
             # the model off the fetched persona made every Ask on every one
             # of those conversations run the persona's model no matter what
-            # Edvard had picked on the conversation. `personaId` still
+            # the owner had picked on the conversation. `personaId` still
             # carries everything that is genuinely shared (personality,
             # memory, tool grants); only the model is overridden, and a
             # payload without one falls back to the persona exactly as
