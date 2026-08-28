@@ -433,3 +433,19 @@ def test_an_unreadable_cluster_is_a_problem_not_a_clean_answer(monkeypatch):
     assert len(problems) == 1
     assert "upstream unreadable" in problems[0]
     assert "could not read the cluster's API server version" in problems[0]
+
+
+def test_a_pin_ahead_of_its_ceiling_raises_the_exit_code(monkeypatch):
+    # Without this, `ahead` prints its heading and `preflight` still reads
+    # the whole check as clean -- which is the silence this verdict exists
+    # to break. A mutation dropping "ahead" from main's tuple passed until
+    # this test was written (Cycle 589).
+    monkeypatch.setattr(pin_drift, "_repos_to_sweep",
+                        lambda: (["o/r"], [], [], False))
+    monkeypatch.setattr(
+        pin_drift, "sweep",
+        lambda repos: ([{"repo": "o/r", "path": "Dockerfile",
+                         "what": "KUBECTL_VERSION", "pinned": "v1.36.2",
+                         "latest": "v1.35.8", "gap": "ahead",
+                         "source": "the cluster"}], [], []))
+    assert pin_drift.main([]) == 2
