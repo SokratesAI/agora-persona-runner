@@ -157,6 +157,8 @@ from agora_runner.nova_replies import (
 from agora_runner.nova_boards import (
     BOARD_PATHS,
     PRIORITY_LABELS,
+    STATUS_LABELS,
+    board_projects,
     canonical_priority,
     parse_board,
     parse_notes,
@@ -267,8 +269,12 @@ PAGE_ROUTES = (
     "/heartbeats",
     "/catalog",
     "/diag",
+    "/projects",
 )
-PAGE_ROUTE_PREFIXES = ("/cycle/",)
+# `/project/Nova` is a real URL for the same reason `/cycle/49` is: the
+# project page has to survive a bookmark and a cold load, not only a tap
+# on the index. Both are served the same shell and read by `app.js`.
+PAGE_ROUTE_PREFIXES = ("/cycle/", "/project/")
 
 # gzip's header and trailer are a fixed 18 bytes, so a short body comes
 # back *bigger*: `/api/comments` is 15 bytes on the live pod and gzips to
@@ -692,6 +698,110 @@ def board_payload(name):
             for item in mine["items"]
         },
     }
+
+
+#: The order a project page stacks its status columns in. Open work
+#: first, then the two closed buckets, so the top of the page is the
+#: part with something to do. `board_projects` derives the *projects*
+#: from the rows and this deliberately does not derive the *statuses*
+#: the same way: a column order read off the data reorders itself every
+#: time a row changes status, and a board whose columns move is unusable
+#: as a glance. A status not named here still renders -- it lands in an
+#: `other` column at the end rather than being dropped, which is the
+#: same choice `status_key` makes for an emoji it has never seen.
+PROJECT_STATUS_ORDER = (
+    "in-progress",
+    "blocked-on-edvard",
+    "backlog",
+    "done",
+    "outdated",
+)
+
+
+def _project_columns(items):
+    """Group one board's rows into the status columns above.
+
+    Returns a list of `{key, label, items}` and drops a column with
+    nothing in it, so a project with no blocked rows does not render an
+    empty heading. The label comes from `STATUS_LABELS` so the page
+    cannot spell a status differently from the file it was parsed out
+    of -- the drift `STATUS_LABELS` exists to prevent.
+    """
+    buckets = {}
+    for item in items:
+        buckets.setdefault(item.get("statusKey") or "none", []).append(item)
+    columns = []
+    for key in PROJECT_STATUS_ORDER:
+        if buckets.get(key):
+            columns.append({
+                "key": key,
+                "label": STATUS_LABELS.get(key, key),
+                "items": buckets.pop(key),
+            })
+    for key in sorted(buckets):
+        columns.append({
+            "key": key,
+            "label": buckets[key][0].get("status") or key,
+            "items": buckets[key],
+        })
+    return columns
+
+
+def project_payload(name=None):
+    """One project's board rows, grouped by status (idea #92, phase 3).
+
+    The plan is explicit that this phase adds no data: *"`/project/<name>`
+    assembling what already exists ... A kanban view is the board rows
+    grouped by status, which is a rendering of data phase 2 already
+    produced. Nothing here is new data; if it turns out to need new data,
+    that is a signal the phase is wrong."* So this reads the two board
+    payloads the cache already holds and regroups them -- it parses
+    nothing, fetches nothing, and adding a project is still typing a name
+    into a `Project` cell.
+
+    `name` is matched case-insensitively against the project cell,
+    because the cell is free text he types on a phone and `nova` and
+    `Nova` are one project. The name that comes back out is the one
+    spelled on the rows, not the one asked for, so the page's heading
+    reads the way his board reads.
+
+    With no `name`, only `projects` is filled in -- that is the index at
+    `/projects`, and it costs the same two payloads either way.
+    """
+    boards = {}
+    known = []
+    for board in ("issues", "ideas"):
+        payload = cached_payload(board, lambda b=board: board_payload(b))
+        boards[board] = payload
+        for project in board_projects(payload.get("items") or []):
+            if project not in known:
+                known.append(project)
+
+    wanted = (name or "").strip()
+    matched = None
+    for project in known:
+        if project.lower() == wanted.lower():
+            matched = project
+            break
+
+    result = {"projects": known, "name": matched, "asked": wanted, "boards": {}}
+    if not wanted:
+        return result
+    # An unknown name is answered rather than 404'd: the page shows the
+    # index with "no rows are filed under X yet", which is the true and
+    # useful thing to say about a project he has typed into one cell and
+    # not yet used. Returning nothing would make a fresh project look
+    # like a broken link.
+    for board in ("issues", "ideas"):
+        rows = [
+            item for item in (boards[board].get("items") or [])
+            if (item.get("project") or "").strip().lower() == wanted.lower()
+        ]
+        result["boards"][board] = {
+            "total": len(rows),
+            "columns": _project_columns(rows),
+        }
+    return result
 
 
 def costs_payload():
@@ -2197,6 +2307,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # a CACHE_FRESH_SECONDS window would show him a `lastRunAt`
                 # from before the run he is asking about.
                 self._send_json(200, heartbeat_list())
+                return
+            if path == "/api/project":
+                # Not cached itself -- `project_payload` reads the two
+                # board payloads through `cached_payload`, so the caching
+                # already happened one layer down and a second cache here
+                # would only add a window in which a row he just re-filed
+                # is still on the old project page.
+                name = (query.get("name") or [""])[0]
+                self._send_json(200, project_payload(name))
                 return
             if path == "/api/pool":
                 # Not cached, and for `/api/comments`' reason: the owner

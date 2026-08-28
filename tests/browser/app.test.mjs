@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convPersonas, convStatus = 200, hbList, hbStatus = 200, catalog, catalogStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convPersonas, convStatus = 200, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -221,6 +221,14 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
      * `serve` is ever reached. */
     if (url.includes("/api/heartbeats")) {
       return res(hbList || { heartbeats: [] }, hbStatus);
+    }
+    if (url.includes("/api/project")) {
+      // A function, because the index and one project are the same view
+      // over two URLs and a test has to be able to answer the two
+      // differently. No default fixture beyond the empty shape: a board
+      // with no `Project` cell filled in is a real state.
+      const body = typeof project === "function" ? project(url) : project;
+      return res(body || { projects: [], name: null, asked: "", boards: {} }, projectStatus);
     }
     if (url.includes("/api/catalog")) {
       // No default fixture beyond the empty shape, for retro and plan's
@@ -11939,5 +11947,104 @@ describe("the chat dock paints the thread it last read", () => {
     assert.deepEqual(texts(window), ["Seven."]);
     assert.deepEqual(cached(window), { ask: askThread },
       "the corrupt value survived the read that should have replaced it");
+  });
+});
+
+/* The project page -- idea #92, phase 3.
+ *
+ * `/projects` and `/project/<name>` are one view over two URLs, the way
+ * `/` and `/cycle/49` are. What these pin is the half a Python test
+ * cannot reach: the URL is where the project name lives, so the page is
+ * only correct if a bookmarked `/project/Sokrates%20Post` asks the
+ * server for `Sokrates Post`. That decode is invisible from the server
+ * side -- it would answer an unknown-project page perfectly correctly
+ * for a name the owner never typed.
+ */
+describe("the project page", () => {
+  const NOVA = {
+    projects: ["Nova", "Agora"],
+    name: "Nova",
+    asked: "Nova",
+    boards: {
+      issues: {
+        total: 2,
+        columns: [
+          { key: "in-progress", label: "🟡 In progress", items: [
+            { number: 1, title: "One", priority: "🟠 High", priorityKey: "high" },
+          ] },
+          { key: "backlog", label: "⚪ Backlog", items: [
+            { number: 2, title: "Two", priority: "", priorityKey: "" },
+          ] },
+        ],
+      },
+      ideas: { total: 0, columns: [] },
+    },
+  };
+
+  test("a bookmarked project URL asks the server for the decoded name", async () => {
+    let asked = null;
+    await loadSite("/project/Sokrates%20Post", {
+      project: (url) => { asked = url; return NOVA; },
+    });
+    assert.ok(asked, "the page never fetched /api/project");
+    assert.match(asked, /name=Sokrates%20Post/);
+  });
+
+  test("the index asks for no project at all", async () => {
+    let asked = null;
+    await loadSite("/projects", {
+      project: (url) => { asked = url; return { projects: ["Nova"], name: null, asked: "", boards: {} }; },
+    });
+    assert.equal(asked, "/api/project?name=");
+  });
+
+  test("rows are drawn under their status column", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const heads = [...window.document.querySelectorAll(".project-column-head")]
+      .map((el) => el.textContent);
+    assert.deepEqual(heads, ["🟡 In progress · 1", "⚪ Backlog · 1"]);
+    const titles = [...window.document.querySelectorAll(".project-row-title")]
+      .map((el) => el.textContent);
+    assert.deepEqual(titles, ["One", "Two"]);
+  });
+
+  test("a board with no rows for this project draws no section", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const heads = [...window.document.querySelectorAll(".project-board-head")]
+      .map((el) => el.firstChild.textContent);
+    assert.deepEqual(heads, ["Issues · 2"], "the empty Ideas board was drawn anyway");
+  });
+
+  test("a row with no priority draws no chip rather than an empty one", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const rows = window.document.querySelectorAll(".project-row");
+    assert.equal(rows[0].querySelectorAll(".chip.prio").length, 1);
+    assert.equal(rows[1].querySelectorAll(".chip.prio").length, 0);
+  });
+
+  test("the project you are on is the marked pill", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const on = [...window.document.querySelectorAll(".project-pill.on")]
+      .map((el) => el.textContent);
+    assert.deepEqual(on, ["Nova"]);
+    const links = [...window.document.querySelectorAll(".project-pill")]
+      .map((el) => el.getAttribute("href"));
+    assert.deepEqual(links, ["/project/Nova", "/project/Agora"]);
+  });
+
+  test("a project with nothing filed under it says so and still offers the others", async () => {
+    const window = await loadSite("/project/Newspaper", {
+      project: { projects: ["Nova"], name: null, asked: "Newspaper",
+                 boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } } },
+    });
+    assert.match(window.document.querySelector(".empty").textContent, /Newspaper/);
+    assert.equal(window.document.querySelectorAll(".project-pill").length, 1);
+  });
+
+  test("the Projects nav tab is the one marked current", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const on = [...window.document.querySelectorAll(".nav-tab[aria-current]")]
+      .map((el) => el.getAttribute("href"));
+    assert.deepEqual(on, ["/projects"]);
   });
 });
