@@ -95,6 +95,21 @@ called. In-progress runs are skipped and the newest *completed* one
 decides; if every run on record is still going, that is `never-run` with
 a note, not a guess.
 
+**A `failing` verdict now says how it died, and that is Cycle 598.**
+`docs-sync` succeeded on a manual dispatch at 2026-08-28 03:37 UTC and
+then its scheduled run at 17:22 failed. This tool printed *"1 completed
+run(s) in a row ended 'failure'"* -- the same sentence it prints for a
+bug in the prompt, for an exhausted upstream API quota, and for a run
+GitHub killed on a step timeout. The real cause was the third: the Gemini
+free tier refused it mid-run (250,000 input tokens/day on
+`gemini-3.5-flash-lite`) and the step then hit *"The action 'Execute
+Gemini CLI' has timed out after 20 minutes."* Nothing here said so, so
+reading it meant opening the log by hand, which is exactly the
+accidental-noticing this module exists to replace. The jobs payload it
+already fetches names the failing job and step; one more call gets
+GitHub's own failure annotation. Same lesson as `blocked` one level
+further in: a streak counter merges causes.
+
 Exit 2 means at least one agentic workflow is dead in a way a cycle can
 act on -- failing on its own terms, or held down by a block that has
 since lifted and never re-run. Exit 1 means something was unreadable.
@@ -191,19 +206,68 @@ def run_history(workflow, run=None):
     return payload, None
 
 
-def start_failure(repo, run_id, run=None):
-    """`(reason, error)` -- why a failed run never got off the ground, or `(None, None)`.
+def _failure_annotation(repo, job_id, run=None):
+    """The first `failure`-level annotation GitHub left on a job, or `None`.
 
-    A run whose jobs executed steps failed at something somebody wrote. A
-    run where *no* job executed a single step never started, and GitHub
+    **The level filter is the whole function.** The 2026-08-28 `docs-sync`
+    run carries two annotations and the first one is a *warning* about
+    Node.js 20 being deprecated; the second is the actual cause, *"The
+    action 'Execute Gemini CLI' has timed out after 20 minutes."* Taking
+    the first non-empty message -- which is what this module did while
+    only the never-started path used it -- would have published a routine
+    deprecation notice as the reason a workflow is dead.
+
+    Unreadable is `None` rather than an error: the caller always already
+    has a finding, and this is detail on top of it.
+    """
+    if job_id is None:
+        return None
+    code, out, _err = (run or _gh)(
+        ["api", f"repos/{repo}/check-runs/{job_id}/annotations"]
+    )
+    if code != 0:
+        return None
+    try:
+        notes = json.loads(out)
+    except ValueError:
+        return None
+    if not isinstance(notes, list):
+        return None
+    for note in notes:
+        note = note or {}
+        if (note.get("annotation_level") or "").lower() != "failure":
+            continue
+        message = (note.get("message") or "").strip()
+        if message:
+            return message
+    return None
+
+
+def start_failure(repo, run_id, run=None):
+    """`(detail, error)` -- what actually happened to the newest failed run.
+
+    A run where *no* job executed a single step never started, and GitHub
     puts the reason in a check-run annotation rather than in any log --
     which is why `gh run view --log-failed` answers `log not found` on
-    exactly the run you most want to read.
+    exactly the run you most want to read. That is
+    `{"started": False, "reason": ...}`, and it is what turns a `failing`
+    verdict into `blocked`.
+
+    A run that *did* execute steps is `{"started": True, ...}` and stays
+    `failing` -- but Cycle 598 is the third time this module has learned
+    that one number merges causes. `1 completed run(s) in a row ended
+    'failure'` is what a timeout, an exhausted upstream API quota and a
+    genuine bug all print, and they have three different owners. The
+    2026-08-28 run died on *"The action 'Execute Gemini CLI' has timed out
+    after 20 minutes."* after the Gemini free tier refused it mid-run, and
+    reading that took a cycle opening the log by hand -- which is the
+    accidental-noticing this whole module exists to replace. So the failing
+    branch now carries the job, the step and GitHub's own failure
+    annotation, from the payload it was already fetching plus one call.
 
     Two calls, and only on a workflow already known to be failing, so the
     common sweep pays nothing. An unreadable annotation is not an error
-    here: "the job never started" is already the finding, and the quote is
-    detail on top of it.
+    here: the finding is already in hand and the quote is detail on top.
     """
     code, out, err = (run or _gh)(["api", f"repos/{repo}/actions/runs/{run_id}/jobs"])
     if code != 0:
@@ -216,32 +280,63 @@ def start_failure(repo, run_id, run=None):
     jobs = payload.get("jobs") if isinstance(payload, dict) else payload
     if not isinstance(jobs, list) or not jobs:
         return None, "gh returned no job list"
-    if any((job or {}).get("steps") for job in jobs):
-        return None, None
 
-    job_id = (jobs[0] or {}).get("id")
-    quoted = None
-    if job_id is not None:
-        code, out, _err = (run or _gh)(
-            ["api", f"repos/{repo}/check-runs/{job_id}/annotations"]
+    if not any((job or {}).get("steps") for job in jobs):
+        quoted = _failure_annotation(repo, (jobs[0] or {}).get("id"), run=run)
+        if quoted:
+            return {
+                "started": False,
+                "reason": f"the job never started -- GitHub says: {quoted}",
+            }, None
+        return {
+            "started": False,
+            "reason": "the job never started, and GitHub gave no reason on the run",
+        }, None
+
+    # It ran. Name where it died, from the payload already in hand.
+    failed_job = next(
+        (job for job in jobs if (job or {}).get("conclusion") == "failure"), None
+    )
+    detail = {"started": True, "job": None, "step": None, "quote": None}
+    if failed_job is None:
+        return detail, None
+    detail["job"] = failed_job.get("name")
+    steps = failed_job.get("steps")
+    if isinstance(steps, list):
+        detail["step"] = next(
+            (
+                (step or {}).get("name")
+                for step in steps
+                if (step or {}).get("conclusion") == "failure"
+            ),
+            None,
         )
-        if code == 0:
-            try:
-                notes = json.loads(out)
-            except ValueError:
-                notes = []
-            if isinstance(notes, list):
-                quoted = next(
-                    (
-                        (n or {}).get("message", "").strip()
-                        for n in notes
-                        if (n or {}).get("message", "").strip()
-                    ),
-                    None,
-                )
-    if quoted:
-        return f"the job never started -- GitHub says: {quoted}", None
-    return "the job never started, and GitHub gave no reason on the run", None
+    detail["quote"] = _failure_annotation(repo, failed_job.get("id"), run=run)
+    return detail, None
+
+
+def failure_sentence(detail):
+    """The one clause a `failing` verdict gains, or `""` if there is nothing to add.
+
+    Deliberately additive: the streak and the last green date are still
+    the finding, and this says *how* the newest one died so a cycle does
+    not have to open the log to find out whether it is even actionable.
+    """
+    where = ""
+    if detail.get("step") and detail.get("job"):
+        where = f"failed at step '{detail['step']}' in job '{detail['job']}'"
+    elif detail.get("step"):
+        where = f"failed at step '{detail['step']}'"
+    elif detail.get("job"):
+        where = f"failed in job '{detail['job']}'"
+    quote = detail.get("quote")
+    if where and quote:
+        return f"{where} -- GitHub says: {quote}"
+    if where:
+        return where
+    if quote:
+        return f"GitHub says: {quote}"
+    return ""
 
 
 def _as_timestamp(text):
@@ -386,14 +481,18 @@ def sweep(repos, run=None):
             entry = dict(workflow)
             entry.update(verdict_for(workflow, runs))
             if entry["verdict"] == "failing" and entry.get("newest_id"):
-                reason, err = start_failure(entry["repo"], entry["newest_id"], run=run)
+                detail, err = start_failure(entry["repo"], entry["newest_id"], run=run)
                 if err:
                     # Not fatal: the streak is still a true finding. Say the
                     # follow-up could not be made rather than implying it was.
                     entry["note"] += f"; could not check whether it started -- {err}"
-                elif reason:
+                elif detail and detail.get("started"):
+                    sentence = failure_sentence(detail)
+                    if sentence:
+                        entry["note"] += f"; {sentence}"
+                elif detail:
                     entry["verdict"] = "blocked"
-                    entry["blocked_note"] = reason
+                    entry["blocked_note"] = detail["reason"]
                     since, err = block_has_lifted(
                         entry["repo"], entry.get("newest_at"), run=run
                     )
