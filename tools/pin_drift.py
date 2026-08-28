@@ -83,10 +83,9 @@ import argparse
 import base64
 import json
 import re
+import subprocess
 import sys
 import urllib.request
-
-import subprocess
 
 from tools.security_alerts import _gh, _repos_to_sweep
 
@@ -97,6 +96,7 @@ def _kubectl(args):
         ["kubectl"] + args, capture_output=True, text=True, timeout=60
     )
     return proc.returncode, proc.stdout, proc.stderr
+
 
 # `ARG NAME_VERSION=value` in a Dockerfile. The name is the key into
 # UPSTREAM below; a pin whose name is not there is reported as unmatched
