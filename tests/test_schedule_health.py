@@ -469,3 +469,134 @@ def test_the_sweep_actually_collects_the_lateness_it_judges_with():
     assert errors == []
     assert lateness["samples"] == [0, 93]
     assert lateness["floor"] == 93
+
+
+# --- a workflow may declare itself out of scope (Cycle 567) --------------
+
+
+def _marked_stub(created_at, runs, marker_line):
+    """`_deadman_stub`'s shape with one comment line prepended to the file."""
+    import base64
+
+    source = base64.b64encode(
+        marker_line
+        + b'name: d\non:\n  schedule:\n'
+        b'    - cron: "7,37 * * * *"\n'
+        b'  workflow_dispatch:\n'
+    ).decode()
+    return _stub(
+        {
+            "actions/workflows --paginate": (
+                '{"workflows": [{"path": ".github/workflows/nova-deadman.yaml",'
+                '"name": "nova-deadman", "state": "active",'
+                f'"created_at": "{created_at}"}}]}}'
+            ),
+            "contents/": source,
+            "run list": runs,
+        }
+    )
+
+
+REASON = b"# schedule-health: unmonitored: The owner closed this topic on 2026-08-28.\n"
+
+
+def test_the_reason_is_read_out_of_the_workflow_file():
+    assert sh.unmonitored_reason("# schedule-health: unmonitored: because he said so") == (
+        "because he said so"
+    )
+    assert sh.unmonitored_reason("name: x\non:\n  schedule:\n") is None
+    # Not a comment, so not a marker -- a job step echoing the phrase must
+    # not be able to mute the workflow it runs in.
+    assert sh.unmonitored_reason('      - run: echo "schedule-health: unmonitored: x"') is None
+
+
+def test_a_marker_with_no_reason_does_not_mute_anything():
+    """Muting an alarm is precisely the edit that has to say why.
+
+    An empty reason is indistinguishable from a typo, and a mute nobody can
+    read the cause of is how a real absence gets ignored for months.
+    """
+    assert sh.unmonitored_reason("# schedule-health: unmonitored") == ""
+    run = _marked_stub(
+        "2026-08-27T01:51:00Z", "[]", b"# schedule-health: unmonitored\n"
+    )
+    results, errors = sweep_at(run)
+    assert errors == []
+    assert results[0]["verdict"] == "never"
+    assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 2
+
+
+def test_a_declared_workflow_prints_its_finding_and_does_not_raise():
+    """The finding is kept whole and the exit status is not raised.
+
+    Same call `security_alerts` makes on an already-fixed advisory: there is
+    no pull request that fixes a decision, so raising on it makes every cycle
+    re-derive the thing that was decided.
+    """
+    run = _marked_stub("2026-08-27T01:51:00Z", "[]", REASON)
+    results, errors = sweep_at(run)
+    assert errors == []
+    assert results[0]["verdict"] == "unmonitored"
+    report, status = sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])
+    assert status == 0
+    assert "UNMONITORED ON PURPOSE" in report
+    assert "The owner closed this topic" in report
+    # The measurement it was about to raise on is still printed.
+    assert "no scheduled run ever" in report
+
+
+def test_a_marker_cannot_hide_a_broken_instrument():
+    """It downgrades a finding, never an unreadable read.
+
+    A workflow GitHub gave no creation time for is `unreadable`, which is no
+    instrument rather than no problem -- a decision about a *finding* has no
+    authority over that.
+    """
+    run = _marked_stub(None, "[]", REASON)
+    results, errors = sweep_at(run)
+    assert results[0]["verdict"] == "unreadable"
+    assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 1
+
+
+def test_a_declared_workflow_that_is_healthy_still_says_ok():
+    """The marker is not a mute button: an `ok` keeps printing as `ok`,
+    because that measurement is true and worth reading."""
+    run = _marked_stub(
+        "2026-08-27T01:51:00Z", '[{"createdAt": "2026-08-27T15:10:00Z"}]', REASON
+    )
+    results, errors = sweep_at(run)
+    assert results[0]["verdict"] == "ok"
+    assert sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])[1] == 0
+
+
+def test_both_deadman_workflows_in_this_repo_actually_carry_the_marker():
+    """The change is worthless if the two files it was built for lack it.
+
+    Read off disk rather than asserted in prose -- a marker that drifts out
+    of the file puts the closed topic back in front of the next cycle.
+    """
+    import pathlib
+
+    for name in ("nova-deadman.yaml", "nova-deadman-fast.yaml"):
+        path = pathlib.Path(".github/workflows") / name
+        reason = sh.unmonitored_reason(path.read_text())
+        assert reason, f"{name} carries no reason"
+        assert "The owner closed this topic" in reason
+
+
+def test_a_declared_workflow_that_fired_once_and_stopped_is_also_not_raised():
+    """`OVERDUE` is covered as well as `NEVER FIRED`, and it is not symmetry
+    for its own sake: the deadman rungs could each produce one scheduled run
+    and then go quiet, which is the same closed topic arriving under the
+    other verdict. Written after a mutation check found this branch had no
+    test on it."""
+    # One scheduled run 400m before NOW, against a 30-minute cron's 120m window.
+    run = _marked_stub(
+        "2026-08-20T01:51:00Z", '[{"createdAt": "2026-08-27T09:00:00Z"}]', REASON
+    )
+    results, errors = sweep_at(run)
+    assert errors == []
+    assert results[0]["verdict"] == "unmonitored"
+    report, status = sh.format_report(results, errors, ["SokratesAI/agora-persona-runner"])
+    assert status == 0
+    assert "400m ago" in report

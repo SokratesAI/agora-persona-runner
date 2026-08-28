@@ -33,6 +33,15 @@ kept apart on purpose:
 - `OVERDUE` — the workflow has fired before and has not lately.
 - `NEVER FIRED` — the workflow has existed longer than its own window
   and GitHub has never scheduled it at all.
+- `UNMONITORED ON PURPOSE` — the workflow file itself carries
+  `# schedule-health: unmonitored: <reason>`, so the finding is printed
+  with that reason beside it and does **not** raise the exit status. Same
+  call `security_alerts` makes on an already-fixed advisory and
+  `argocd_health` makes on a stale Job failure: there is no pull request
+  that fixes a decision somebody already made, so raising on it makes
+  every cycle re-derive it. Added Cycle 567 for the two `nova-deadman`
+  workflows, which the owner closed as a topic on 2026-08-28 and which were
+  hours away from going red and pulling cycles back onto it.
 
 `OVERDUE` and `NEVER FIRED` are separate because they have different
 causes and different fixes, which is `heartbeat_health`'s `OFF`-versus-
@@ -398,6 +407,39 @@ def measured_floor(samples, without=None):
     return max(DOCUMENTED_FLOOR, max(pool))
 
 
+UNMONITORED_MARKER = "schedule-health: unmonitored"
+
+
+def unmonitored_reason(source):
+    """The reason a workflow gives for opting out of this check, or `None`.
+
+    The owner closed the `nova-deadman` thread on 2026-08-28: *"Stop spending
+    cycles on the nova-deadman alarm investigation -- it's not a priority,
+    dead is fine to know as pure info."* Both deadman workflows are inside
+    their window today and go `NEVER FIRED` within hours, so this check was
+    about to hand every later cycle the exact topic they closed, dressed as an
+    instrument finding rather than as a decision somebody made.
+
+    The marker lives in the workflow file rather than in a list here, which
+    is `heartbeat_health`'s `(disabled` convention and `pin_drift`'s rule
+    that the value is read out of the file it describes. A table of muted
+    paths in this module is a second copy of the truth and goes stale the
+    same way the thing it describes does.
+
+    A marker with no reason after it does **not** mute anything -- muting an
+    alarm is exactly the edit that has to say why, and a silent one would be
+    indistinguishable from a typo.
+    """
+    for line in (source or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        body = stripped.lstrip("#").strip()
+        if body.lower().startswith(UNMONITORED_MARKER):
+            return body[len(UNMONITORED_MARKER) :].strip(" :-") or ""
+    return None
+
+
 def grace_minutes(interval, floor=DOCUMENTED_FLOOR):
     """How late GitHub is allowed to be before lateness becomes a finding."""
     return max(2 * interval, floor)
@@ -539,6 +581,7 @@ def sweep(repos, run=None, now=None):
                 )
             entry = dict(
                 workflow,
+                unmonitored=unmonitored_reason(source),
                 cron=label,
                 crons=[cron for cron, _ in declared],
                 interval=loosest,
@@ -556,6 +599,13 @@ def sweep(repos, run=None, now=None):
         entry["verdict"], entry["note"] = verdict_for(
             entry, now, measured_floor(lateness, without=own)
         )
+        # Only ever downgrades a red. An `ok` keeps saying `ok` because the
+        # measurement is still true and worth printing, and an `unreadable`
+        # keeps raising because a marker is a decision about a *finding* and
+        # cannot be a decision about a broken instrument.
+        if entry.get("unmonitored") and entry["verdict"] in ("never", "overdue"):
+            entry["note"] = f"{entry['note']} -- {entry['unmonitored']}"
+            entry["verdict"] = "unmonitored"
     return results, errors, {
         "samples": sorted(late for _key, late in lateness),
         "floor": measured_floor(lateness),
@@ -568,6 +618,7 @@ def format_report(results, errors, swept, lateness=None):
     never = [r for r in results if r["verdict"] == "never"]
     overdue = [r for r in results if r["verdict"] == "overdue"]
     unreadable = [r for r in results if r["verdict"] == "unreadable"]
+    unmonitored = [r for r in results if r["verdict"] == "unmonitored"]
     ok = [r for r in results if r["verdict"] == "ok"]
 
     for entry in never:
@@ -587,6 +638,9 @@ def format_report(results, errors, swept, lateness=None):
     for entry in unreadable:
         lines.append(f"COULD NOT JUDGE — {entry['repo']} {entry['path']}")
         lines.append(f"      {entry['note']}")
+    for entry in unmonitored:
+        lines.append(f"UNMONITORED ON PURPOSE — {entry['repo']} {entry['path']}")
+        lines.append(f"      {entry['note']}")
     for entry in ok:
         lines.append(f"ok  {entry['repo']}  {entry['path']} — {entry['note']}")
     if not results:
@@ -599,6 +653,13 @@ def format_report(results, errors, swept, lateness=None):
         lines.extend(f"  {blob}" for blob in errors)
 
     lines.append(f"Swept {len(swept)} repo(s): {', '.join(swept)}")
+    if unmonitored:
+        lines.append(
+            f"{len(unmonitored)} workflow(s) declare `# {UNMONITORED_MARKER}: <reason>` "
+            "in their own file and are printed rather than raised. The reason is "
+            "quoted above; deleting that comment line puts the workflow back under "
+            "this check."
+        )
     samples = sorted((lateness or {}).get("samples") or [])
     floor = (lateness or {}).get("floor", DOCUMENTED_FLOOR)
     lines.append(
