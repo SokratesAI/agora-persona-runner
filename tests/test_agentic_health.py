@@ -422,3 +422,133 @@ def test_an_unreadable_jobs_call_keeps_the_failing_verdict_and_says_it_could_not
     assert [r["verdict"] for r in results] == ["failing"]
     assert status == 2
     assert "could not check whether it started" in report
+
+
+# --- Cycle 598: a `failing` streak must say *how* the newest run died ---
+
+# The 2026-08-28 `docs-sync` run: the `agent` job died inside `Execute
+# Gemini CLI`, and GitHub left two annotations on it -- a Node.js
+# deprecation *warning* first, the real cause second. The failure message
+# is that run's exactly; the warning is shortened, because its 40-char SHA
+# and changelog link are not what any assertion here is about.
+#
+# **The four sibling jobs are the point of this fixture, not decoration.**
+# The real payload has five jobs and the failing one sits second, so a
+# single-job list cannot tell "picks the job that failed" apart from
+# "takes the first job" -- my reviewer's finding on the first version.
+_SIBLING_JOBS = [
+    {"id": 95, "name": "activation", "conclusion": "success",
+     "steps": [{"name": "Log runtime features", "conclusion": "skipped"}]},
+    {"id": 96, "name": "detection", "conclusion": "success", "steps": []},
+    {"id": 97, "name": "safe_outputs", "conclusion": "success", "steps": []},
+    {"id": 98, "name": "conclusion", "conclusion": "success", "steps": []},
+]
+_JOB_THAT_DIED_IN_A_STEP = {
+    "id": 99,
+    "name": "agent",
+    "conclusion": "failure",
+    "steps": [
+        {"name": "Checkout PR branch", "conclusion": "skipped"},
+        {"name": "Execute Gemini CLI", "conclusion": "failure"},
+        {"name": "Configure Git credentials", "conclusion": "skipped"},
+    ],
+}
+_TIMED_OUT = "The action 'Execute Gemini CLI' has timed out after 20 minutes."
+_NODE_WARNING = (
+    "Node.js 20 is deprecated. The following actions target Node.js 20 but are "
+    "being forced to run on Node.js 24: actions/create-github-app-token@d72941d."
+)
+
+
+def test_a_failing_run_names_the_step_and_quotes_githubs_reason():
+    """`1 run in a row ended 'failure'` is what a timeout and a bug both print.
+
+    The three causes have three different owners, and the difference was
+    only ever readable by opening the log by hand.
+    """
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {
+            "docs-sync.lock.yml": _runs(
+                ("completed", "failure", "2026-08-28T17:22:23Z"),
+                ("completed", "success", "2026-08-28T03:37:51Z"),
+            )
+        },
+        jobs_by_run={1000: _SIBLING_JOBS[:1] + [_JOB_THAT_DIED_IN_A_STEP] + _SIBLING_JOBS[1:]},
+        annotations_by_job={
+            99: [
+                {"annotation_level": "warning", "message": _NODE_WARNING},
+                {"annotation_level": "failure", "message": _TIMED_OUT},
+            ]
+        },
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["failing"]
+    assert status == 2, "a workflow dying on its own terms is still actionable"
+    assert "failed at step 'Execute Gemini CLI' in job 'agent'" in report
+    assert _TIMED_OUT in report
+    # The streak and the last green date are still the finding.
+    assert "last succeeded 2026-08-28T03:37:51Z" in report
+
+
+def test_a_warning_annotation_is_never_quoted_as_the_cause():
+    """The first annotation on the real run is a Node.js deprecation warning.
+
+    Taking the first non-empty message -- which is what this module did
+    while only the never-started path read annotations -- publishes a
+    routine deprecation notice as the reason a workflow is dead.
+    """
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-28T17:22:23Z"))},
+        jobs_by_run={1000: _SIBLING_JOBS[:1] + [_JOB_THAT_DIED_IN_A_STEP] + _SIBLING_JOBS[1:]},
+        annotations_by_job={
+            99: [
+                {"annotation_level": "warning", "message": _NODE_WARNING},
+                {"annotation_level": "failure", "message": _TIMED_OUT},
+            ]
+        },
+    )
+    results, _errors = agentic_health.sweep(["o/r"], run=run)
+    assert "Node.js 20 is deprecated" not in results[0]["note"]
+    assert _TIMED_OUT in results[0]["note"]
+
+
+def test_a_failing_run_with_no_annotation_still_names_where_it_died():
+    """GitHub does not always leave one. The step name alone is worth having."""
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-28T17:22:23Z"))},
+        jobs_by_run={1000: _SIBLING_JOBS[:1] + [_JOB_THAT_DIED_IN_A_STEP] + _SIBLING_JOBS[1:]},
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert status == 2
+    assert "failed at step 'Execute Gemini CLI' in job 'agent'" in report
+    assert "GitHub says" not in report
+
+
+def test_a_blocked_run_is_unchanged_by_the_failing_detail():
+    """The never-started path keeps its own verdict, its quote and its exit 0."""
+    run = _fake_gh(
+        {"o/r": [DOCS_SYNC]},
+        {"docs-sync.lock.yml": _runs(("completed", "failure", "2026-08-21T05:43:07Z"))},
+        jobs_by_run={1000: [_JOB_THAT_NEVER_STARTED]},
+        annotations_by_job={
+            88: [
+                {
+                    "annotation_level": "failure",
+                    "message": "The job was not started because recent account "
+                    "payments have failed or your spending limit needs to be "
+                    "increased.",
+                }
+            ]
+        },
+    )
+    results, errors = agentic_health.sweep(["o/r"], run=run)
+    report, status = agentic_health.format_report(results, errors, ["o/r"])
+    assert [r["verdict"] for r in results] == ["blocked"]
+    assert status == 0
+    assert "spending limit" in report
+    assert "failed at step" not in report
