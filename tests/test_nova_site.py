@@ -2778,14 +2778,22 @@ def test_gzip_with_q_nought_means_no_gzip(journal_md):
 
 
 def test_a_body_too_small_to_be_worth_it_is_left_alone():
-    """`/api/comments` is 15 bytes on the live pod and gzips to 35.
-    Compression is not free below the threshold, it is negative."""
+    """Compression is not free below the threshold, it is negative.
+
+    The docstring used to say `/api/comments` is 15 bytes on the live pod.
+    It is 195,114 (57,466 gzipped, measured 2026-08-28 21:37 Oslo) -- the
+    endpoint is stubbed empty here precisely so the threshold, not the
+    endpoint, is what this test is about.
+    """
     with patch.object(nova_site, "comments_payload", return_value={}):
         status, head, body = _get("/api/comments", BROWSER_ACCEPT_ENCODING)
     assert status == 200
     assert "Content-Encoding" not in head
     assert len(body) < MIN_COMPRESS_BYTES
-    assert json.loads(body) == {}
+    # `version` is the etag, added by the handler so the client can echo it.
+    served = json.loads(body)
+    served.pop("version")
+    assert served == {}
 
 
 def test_vary_is_sent_even_when_the_response_came_back_plain(journal_md):
@@ -5273,6 +5281,11 @@ def test_the_comments_endpoint_revalidates_to_a_304():
     # would never send `If-None-Match` and the 304 below would never fire on
     # his phone while passing here.
     assert "Cache-Control: no-cache" in head
+    # The client reads the etag off the *payload* (`fetchVersioned` in
+    # app.js) rather than off the header, because it does not trust the
+    # browser's cache to revalidate a poll. A header-only ETag would be a
+    # 304 nothing ever asks for.
+    assert json.loads(body)["version"] == etag
 
     with patch.object(nova_sources, "vault_read_path", return_value=stored):
         status, head, body = _get("/api/comments", f"If-None-Match: {etag}\r\n")

@@ -2392,9 +2392,23 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # which case it never sends `If-None-Match`, the 304 below
                 # never fires, and this whole change is dead on his phone
                 # while passing every test here.
-                body = json.dumps(comments_payload())
-                etag = '"' + hashlib.sha256(body.encode("utf-8")).hexdigest()[:16] + '"'
-                self._send_json_or_304(body, etag, cache_control="no-cache")
+                # `version` is inside the body as well as on the header,
+                # for `_send_board`'s reason: `fetchVersioned` in app.js
+                # reads the etag off the *payload* and echoes it as
+                # `If-None-Match`, because it does not trust the browser's
+                # own cache to revalidate a poll. So the header alone would
+                # have been a 304 nothing ever asks for. The hash is taken
+                # before `version` is inserted -- it cannot cover a field
+                # derived from itself -- which is the same order
+                # `_send_board` uses.
+                payload = comments_payload()
+                etag = '"' + hashlib.sha256(
+                    json.dumps(payload).encode("utf-8")
+                ).hexdigest()[:16] + '"'
+                payload["version"] = etag
+                self._send_json_or_304(
+                    json.dumps(payload), etag, cache_control="no-cache"
+                )
                 return
             if path == "/api/ask":
                 # Never cached, for `/api/comments`' reason and one more:
