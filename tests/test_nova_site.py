@@ -2778,14 +2778,22 @@ def test_gzip_with_q_nought_means_no_gzip(journal_md):
 
 
 def test_a_body_too_small_to_be_worth_it_is_left_alone():
-    """`/api/comments` is 15 bytes on the live pod and gzips to 35.
-    Compression is not free below the threshold, it is negative."""
+    """Compression is not free below the threshold, it is negative.
+
+    The docstring used to say `/api/comments` is 15 bytes on the live pod.
+    It is 195,114 (57,466 gzipped, measured 2026-08-28 21:37 Oslo) -- the
+    endpoint is stubbed empty here precisely so the threshold, not the
+    endpoint, is what this test is about.
+    """
     with patch.object(nova_site, "comments_payload", return_value={}):
         status, head, body = _get("/api/comments", BROWSER_ACCEPT_ENCODING)
     assert status == 200
     assert "Content-Encoding" not in head
     assert len(body) < MIN_COMPRESS_BYTES
-    assert json.loads(body) == {}
+    # `version` is the etag, added by the handler so the client can echo it.
+    served = json.loads(body)
+    served.pop("version")
+    assert served == {}
 
 
 def test_vary_is_sent_even_when_the_response_came_back_plain(journal_md):
@@ -5245,3 +5253,47 @@ def test_push_subscribe_route_answers_502_when_agora_refuses():
         status, _, body = _post("/api/push/subscribe", {"endpoint": "https://example.invalid/x"})
     assert status == 502
     assert "500" in json.loads(body)["error"]
+
+
+def test_the_comments_endpoint_revalidates_to_a_304():
+    """`/api/comments` was the only response on the site with no ETag.
+
+    It is one of `fetchAll`'s three boot requests and it is the largest
+    uncacheable payload the phone pulls -- 195,114 bytes, 57,466 gzipped,
+    measured against the live pod on 2026-08-28. Every other endpoint,
+    including 167KB of `app.js`, already answers a conditional request
+    with a 0-byte 304; this one re-sent the whole thread every time.
+
+    The freshness contract is deliberately unchanged and the second half
+    of this test is what pins that: the body is still rebuilt per request,
+    so a thread that *has* changed comes back 200 with the new bytes
+    rather than a stale 304.
+    """
+    stored = "## New\n\n### Cycle 63 · 2026-08-09 22:40\n\nkeep it up\n\n## Acknowledged\n"
+    with patch.object(nova_sources, "vault_read_path", return_value=stored):
+        status, head, body = _get("/api/comments")
+    assert status == 200
+    etag = next(
+        line.split(": ", 1)[1] for line in head.splitlines() if line.startswith("ETag: ")
+    )
+    # Without this the browser is left to heuristic freshness, and with no
+    # `Last-Modified` to guess from it may never store the response -- so it
+    # would never send `If-None-Match` and the 304 below would never fire on
+    # his phone while passing here.
+    assert "Cache-Control: no-cache" in head
+    # The client reads the etag off the *payload* (`fetchVersioned` in
+    # app.js) rather than off the header, because it does not trust the
+    # browser's cache to revalidate a poll. A header-only ETag would be a
+    # 304 nothing ever asks for.
+    assert json.loads(body)["version"] == etag
+
+    with patch.object(nova_sources, "vault_read_path", return_value=stored):
+        status, head, body = _get("/api/comments", f"If-None-Match: {etag}\r\n")
+    assert status == 304, "an unchanged thread must not re-send the whole file"
+    assert body == b""
+
+    changed = stored.replace("keep it up", "keep it up, and one more thing")
+    with patch.object(nova_sources, "vault_read_path", return_value=changed):
+        status, _, body = _get("/api/comments", f"If-None-Match: {etag}\r\n")
+    assert status == 200, "a changed thread must not be answered 304"
+    assert "one more thing" in json.loads(body)["byCycle"]["63"][0]["text"]

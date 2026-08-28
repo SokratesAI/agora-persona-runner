@@ -3956,9 +3956,14 @@
         : fetchVersioned(digestUrl(), "digest").catch(function () { return null; }),
       // Tolerated the same way the digest is: the journal is the page, and
       // a comments read that fails should cost the bubbles, not the feed.
-      // Not conditional: it is uncached and unversioned on purpose, because
-      // it changes underneath itself while a reply is being written.
-      fetch("/api/comments").then(json).catch(function () { return null; }),
+      // Conditional as of 2026-08-28: the payload carries a `version` now,
+      // so a boot that finds the thread unchanged costs a 304 instead of
+      // 57KB gzipped -- it was the largest uncacheable thing this function
+      // pulled. It is still built fresh on the server on every request, so
+      // "it changes underneath itself while a reply is being written" is
+      // unaffected: the etag moves the moment the payload does, including
+      // for the reply worker's own `replyWaitingSeconds`.
+      fetchVersioned("/api/comments", "comments").catch(function () { return null; }),
     ]);
   }
 

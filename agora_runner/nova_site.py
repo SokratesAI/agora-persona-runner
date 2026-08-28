@@ -2362,13 +2362,53 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 self._send_cached_json("plan", plans_payload)
                 return
             if path == "/api/comments":
-                # Deliberately not cached. It is 6KB and 20-78ms against
-                # the live pod, so there is nothing here to save -- and it
-                # is the one payload that changes underneath itself, from
-                # the reply worker in this same process and from the box
-                # that has just posted. A stale window on this endpoint
-                # would buy nothing and cost a comment looking lost.
-                self._send_json(200, comments_payload())
+                # Still deliberately not cached, and the reason is
+                # unchanged: this is the one payload that changes
+                # underneath itself, from the reply worker in this same
+                # process and from the box that has just posted, so a
+                # CACHE_FRESH_SECONDS window would cost a comment looking
+                # lost. It is built on every request, exactly as before.
+                #
+                # What did change is the sentence that used to sit here --
+                # "it is 6KB and 20-78ms, so there is nothing here to
+                # save". Measured against the live pod 2026-08-28 21:37
+                # Oslo: **195,114 bytes, 57,466 gzipped, 0.40-0.81s**.
+                # `comments.md` is 157KB and grows every cycle, so that
+                # number was a fact with an expiry date and nothing was
+                # reading it. This endpoint is one of `fetchAll`'s three
+                # boot requests and was the only response on the whole
+                # site with no ETag -- every other one, including 167KB of
+                # `app.js`, revalidates to a 0-byte 304.
+                #
+                # An ETag is not a freshness window. The body is still
+                # rebuilt per request and a changed thread is still sent
+                # whole; what stops is re-sending 57KB to a client that
+                # already has those exact bytes.
+                # `no-cache` is the same header `_send_static` sends and it
+                # is not a cache window either: it means *store this, and
+                # revalidate before every use*. Without it the browser is
+                # left to heuristics, and with no `Last-Modified` to guess
+                # from it may decline to store the response at all -- in
+                # which case it never sends `If-None-Match`, the 304 below
+                # never fires, and this whole change is dead on his phone
+                # while passing every test here.
+                # `version` is inside the body as well as on the header,
+                # for `_send_board`'s reason: `fetchVersioned` in app.js
+                # reads the etag off the *payload* and echoes it as
+                # `If-None-Match`, because it does not trust the browser's
+                # own cache to revalidate a poll. So the header alone would
+                # have been a 304 nothing ever asks for. The hash is taken
+                # before `version` is inserted -- it cannot cover a field
+                # derived from itself -- which is the same order
+                # `_send_board` uses.
+                payload = comments_payload()
+                etag = '"' + hashlib.sha256(
+                    json.dumps(payload).encode("utf-8")
+                ).hexdigest()[:16] + '"'
+                payload["version"] = etag
+                self._send_json_or_304(
+                    json.dumps(payload), etag, cache_control="no-cache"
+                )
                 return
             if path == "/api/ask":
                 # Never cached, for `/api/comments`' reason and one more:
