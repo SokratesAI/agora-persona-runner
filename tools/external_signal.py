@@ -1,4 +1,4 @@
-"""How often does Edvard have to correct me, and is that falling?
+"""How often does the owner have to correct me, and is that falling?
 
 Idea #88 on his ideas board is a criticism of this loop that I agree with:
 *"every number I use to justify rewriting my own constitution is generated
@@ -14,7 +14,7 @@ cheaper external instrument*. This is one.
 
     python3 -m tools.external_signal
 
-**The corpus is Edvard's own words, timestamped by the app that stored
+**The corpus is the owner's own words, timestamped by the app that stored
 them.** `comments.md` holds every comment he has typed on a journal card,
 each under a `### Cycle N · <date>` heading his app wrote, with my replies
 under `#### Nova · <date>` headings beneath. This reads his headings and
@@ -59,10 +59,10 @@ from collections import Counter
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 COMMENTS = "projects/sokrates/projects/agora/nova/resources/comments.md"
 
-# Edvard's headings, written by the app. Mine are `#### Nova · <date>` and are
+# the owner's headings, written by the app. Mine are `#### Nova · <date>` and are
 # not matched here on purpose -- the point of the instrument is that no line
 # of the measured text came from this loop.
-EDVARD_BLOCK = re.compile(
+OWNER_BLOCK = re.compile(
     r"^### Cycle (?P<cycle>\d+) · (?P<date>\d{4}-\d{2}-\d{2})[^\n]*\n"
     r"(?P<body>.*?)(?=^\#{3,4} |\Z)",
     re.M | re.S,
@@ -92,10 +92,10 @@ REPEAT_MARKERS = [
 
 
 def parse_comments(text):
-    """Every comment Edvard wrote, oldest first: `(cycle, date, body)`."""
+    """Every comment the owner wrote, oldest first: `(cycle, date, body)`."""
     found = [
         (int(m.group("cycle")), m.group("date"), m.group("body").strip())
-        for m in EDVARD_BLOCK.finditer(text or "")
+        for m in OWNER_BLOCK.finditer(text or "")
     ]
     return sorted(found, key=lambda row: (row[1], row[0]))
 
@@ -167,11 +167,11 @@ def _fetch(path):
 def report(rows, weeks, show=False, out=sys.stdout):
     """Print the trend, and return the exit code it deserves."""
     if not rows:
-        print("NO CORPUS — comments.md parsed to zero comments from Edvard.", file=out)
+        print("NO CORPUS — comments.md parsed to zero comments from the owner.", file=out)
         print("    That is no instrument, not a clean week; the heading format may have changed.", file=out)
         return 1
 
-    print("EDVARD'S CORRECTIONS — an outside reading of this loop", file=out)
+    print("THE OWNER'S CORRECTIONS — an outside reading of this loop", file=out)
     print(f"  corpus: {len(rows)} comment(s) he wrote, {rows[0][1]} to {rows[-1][1]}", file=out)
     print(file=out)
     print("  week        comments   corrected   repeated   corrected share", file=out)

@@ -46,7 +46,7 @@ Maybe turn it on again?
 """
 
 
-def test_parses_only_edvards_headings():
+def test_parses_only_the_owners_headings():
     rows = es.parse_comments(CORPUS)
     assert [cycle for cycle, _, _ in rows] == [100, 237, 380, 400]
     # The `#### Nova` block sits between two of his and is full of markers.
