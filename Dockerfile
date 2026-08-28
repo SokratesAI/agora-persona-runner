@@ -1,5 +1,8 @@
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+# openssh-client is here for issue #122 -- the k3s bootstrap on the home NAS runs
+# over SSH from this pod, and terminal_exec had no ssh binary at all (measured
+# Cycle 572: `which ssh` is empty in both this pod and the bridge pod).
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # kubectl + gh CLI -- used by kubectl_read/github_read/create_pr/merge_pr/
