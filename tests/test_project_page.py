@@ -56,9 +56,19 @@ def _boards(monkeypatch):
         "ideas": {"items": IDEAS},
     }
     monkeypatch.setattr(nova_site, "board_payload", lambda name: payloads[name])
-    # `cached_payload` reaches CouchDB through `_refresh`; the grouping is
-    # what is under test, so the cache is stepped over rather than primed.
-    monkeypatch.setattr(nova_site, "cached_payload", lambda name, build: build())
+    # `cached_payload` reaches CouchDB through `_refresh`, so it is stepped
+    # over -- but it is replaced by something with **its own return shape**,
+    # `(payload, body, etag)`, not by something that returns the payload
+    # alone. The old fake returned the payload, and that is what hid a live
+    # 500 on this endpoint from the day it shipped: `project_payload` bound
+    # the whole tuple and called `.get` on it, and every test passed because
+    # no test ever saw the real shape. A fake that is easier to use than the
+    # function it replaces is not a simplification, it is a second
+    # implementation that the tests agree with instead of the code.
+    monkeypatch.setattr(
+        nova_site, "cached_payload",
+        lambda name, build: (build(), b"", "etag"),
+    )
     # The thread is a live vault read and is not what these tests are about;
     # `test_project_thread.py` holds it to its own behaviour.
     monkeypatch.setattr(nova_site, "comments_markdown", lambda: "")
