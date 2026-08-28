@@ -8178,6 +8178,10 @@
         "Nothing is filed under “" + asked + "” yet."));
       return;
     }
+    // Built before the boards so the jump under the pills can point at it,
+    // appended after them so the reading order does not change.
+    var thread = renderProjectThread(name, payload);
+    feed.appendChild(projectThreadJump(thread, payload));
     var boards = (payload && payload.boards) || {};
     var drew = false;
     var names = { issues: "Issues", ideas: "Ideas" };
@@ -8207,7 +8211,41 @@
     // Below the boards on purpose: the rows are what the project *is* and
     // the conversation is what has been said about them, which is the same
     // order a board row puts its write-up above its thread.
-    feed.appendChild(renderProjectThread(name, payload));
+    feed.appendChild(thread);
+  }
+
+  /* The jump from the top of a project page to its conversation.
+   *
+   * The owner, comments board 2026-08-28, on the first time he opened this
+   * page: *"I see that the comment box is at the bottom making me scroll
+   * all the way down. Not great ui."* The order below it is still right --
+   * the rows are what the project is -- so the fix is a way down, not a
+   * reshuffle. This sits under the project pills, where he already is when
+   * the page paints.
+   *
+   * Its count is the reason it is a button rather than an anchor with a
+   * label: "Conversation · 3" says there is something down there to read,
+   * and "Conversation" alone says the box is empty and he is the first to
+   * say anything. Focusing the box after the scroll is the point -- landing
+   * next to it and still having to tap it is the same complaint one step
+   * smaller. */
+  function projectThreadJump(thread, payload) {
+    var count = ((payload && payload.comments) || []).length;
+    var wrap = el("div", "project-jump-row");
+    var button = el("button", "project-jump",
+      count ? "Conversation · " + count : "Conversation");
+    button.type = "button";
+    button.addEventListener("click", function () {
+      // jsdom implements neither, and the guard is the one the permalink
+      // scroll already carries.
+      if (thread.scrollIntoView) {
+        thread.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      var box = thread.querySelector(".item-comment-box");
+      if (box && box.focus) box.focus();
+    });
+    wrap.appendChild(button);
+    return wrap;
   }
 
   function loadProject(name) {
