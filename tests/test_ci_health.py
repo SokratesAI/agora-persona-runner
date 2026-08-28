@@ -422,6 +422,31 @@ def test_the_billing_block_this_tool_called_green():
     assert status == 0, lines
 
 
+def test_a_warning_annotation_is_never_quoted_as_the_reason():
+    """GitHub stacks routine warnings above the real cause on the same job.
+
+    Cycle 598 fixed exactly this in `agentic_health` and my reviewer found
+    the twin here untouched. Every never-started job in this org carries a
+    single `failure` annotation today, so this had not misfired -- which is
+    a fact about today's data, not about the rule.
+    """
+    noise = (
+        "Node.js 20 is deprecated. The following actions target Node.js 20 "
+        "but are being forced to run on Node.js 24."
+    )
+    status, lines = run_check(
+        run=gh(history={"Org/repo": [failed(9), failed(8), failed(7)]},
+               job_payload={9: [{"id": 900, "steps": []}]},
+               annotations={900: [
+                   {"annotation_level": "warning", "message": noise},
+                   {"annotation_level": "failure", "message": BILLING},
+               ]}))
+    body = "\n".join(lines)
+    assert "Node.js 20 is deprecated" not in body
+    assert "recent account payments have failed" in body
+    assert status == 0, lines
+
+
 def test_a_billing_block_does_not_veto_a_merge_into_another_repo():
     """The reason it does not raise: a red check for six days is one nobody reads.
 
