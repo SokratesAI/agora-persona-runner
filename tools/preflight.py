@@ -1,10 +1,10 @@
 """Run every step-1a status check in one call, and print only what is not clean.
 
-Edvard, capture 2026-08-28: *"I see that the median cycle now consumes much
+The owner, capture 2026-08-28: *"I see that the median cycle now consumes much
 more tokens now than what they used to do at the start of the Nova project,
 earlier in August. Why? Make an effort to optimize your token usage."*
 
-He is right, and Cycle 581 measured where it went. Against the vault cost
+That is right, and Cycle 581 measured where it went. Against the vault cost
 ledger (`nova/resources/cost-ledger.json`, 577 cycles back to 08-03), the
 median cycle cost **1.16M weighted tokens over 08-03..08-10 and 1.74M over
 08-24..08-28** -- half again as much. The decomposition is the useful part,
