@@ -1,3 +1,5 @@
+# schedule-health: unmonitored: The owner closed this topic on 2026-08-28 -- "Stop spending cycles on the nova-deadman alarm investigation, it's not a priority, dead is fine to know as pure info, no autostart backup system needed for this hobby project." The alarm still runs and still alarms; nobody is to spend a cycle on the fact that GitHub does not schedule it.
+#
 # The alarm that survives the box it watches — idea #113, slice 1.
 #
 # Everything that watches this cluster runs on this cluster: one node, no
