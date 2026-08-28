@@ -624,7 +624,7 @@ def resolve_doc(ref, listing):
     # The limitation this design accepts, stated rather than discovered:
     # trying several anchors answers "can a cycle find *a* document by this
     # name", not "is this the right one". `issues.md` and `ideas.md` each
-    # exist twice in this vault -- mine under `nova/resources/`, Edvard's
+    # exist twice in this vault -- mine under `nova/resources/`, the owner's
     # under `projects/nova/` -- and the constitution cites both on purpose,
     # so this cannot tell a citation of one from a citation of the other.
     # Narrowing it would trade the false positive that matters (a bare
