@@ -3837,6 +3837,12 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-board-head { display: flex; align-items: baseline; gap: 0.6rem; font-size: 1rem; }
 .project-board-link { font-size: 0.8rem; color: var(--dim); }
 .project-columns { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-start; }
+/* The conversation about a project (idea #92 phase 4). The bubbles inside
+   it are `.note-msg`, shared with the notes page and the board rows, so
+   this only spaces the section off from the boards above it. */
+.project-thread { margin-top: 1.5rem; }
+.project-thread-head { font-size: 1rem; }
+.project-thread-messages { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 0.8rem; }
 .project-column { flex: 1 1 16rem; min-width: 0; }
 .project-column-head { font-size: 0.8rem; color: var(--dim); margin: 0 0 0.35rem; font-weight: 600; }
 .project-rows { list-style: none; margin: 0; padding: 0; }

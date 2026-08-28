@@ -8063,6 +8063,96 @@
     return wrap;
   }
 
+  /* The conversation about a project -- idea #92, phase 4.
+   *
+   * The owner's idea asks for *"somehow a conversation per project or per
+   * issue/idea/note to define it more"*. The row level of that shipped in
+   * August; this is the project level, and it is the last phase of #92.
+   *
+   * Two things it deliberately reuses rather than reinvents.
+   * `renderRowConversation` draws the bubbles, so a project thread and a
+   * board row thread are the same green and purple on the same page -- his
+   * standing ask is that these read alike. And the thread is stored in
+   * `comments.md`, which every cycle already reads at the top of its hour,
+   * so a message here reaches the next cycle without anything new having to
+   * collect it. That is the test this channel has to pass: the
+   * `Needs Edvard` box was built, shipped and dead because nothing did.  (not-prose: quoting a literal)
+   *
+   * Unlike a board comment, this one may contain line breaks -- the file
+   * stores his text verbatim -- so nothing here flattens what he typed.
+   */
+  function renderProjectThread(name, payload) {
+    var section = el("section", "project-thread");
+    // Its own class rather than `project-board-head`: that one means "a
+    // board section is here", and a test that counts board sections was
+    // already reading it.
+    section.appendChild(el("h2", "project-thread-head", "Conversation"));
+    var messages = (payload && payload.comments) || [];
+    if (!messages.length) {
+      section.appendChild(el("p", "empty",
+        "Nothing said about " + name + " yet."));
+    } else {
+      var thread = el("div", "project-thread-messages");
+      renderRowConversation(thread, messages);
+      section.appendChild(thread);
+    }
+
+    var wrap = el("div", "item-comment");
+    var box = el("textarea", "item-comment-box");
+    box.rows = 2;
+    box.placeholder = "Say something about " + name + "…";
+    var status = el("span", "item-comment-status", "");
+    var send = el("button", "item-comment-send", "Comment");
+    send.type = "button";
+
+    function busy(on) {
+      send.disabled = on;
+      box.disabled = on;
+    }
+
+    send.addEventListener("click", function () {
+      var text = box.value.trim();
+      if (!text) {
+        status.textContent = "Nothing to send.";
+        status.className = "item-comment-status is-error";
+        return;
+      }
+      busy(true);
+      status.textContent = "sending…";
+      status.className = "item-comment-status";
+      fetch("/api/project/comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: name, text: text }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          box.value = "";
+          busy(false);
+          // Refetched rather than appended locally, for the same reason the
+          // board row drops its cached write-up: the page must show what the
+          // file actually holds, not what this tab believes it sent.
+          loadProject(name);
+        })
+        .catch(function (err) {
+          status.textContent = String((err && (err.message || err)) || "failed");
+          status.className = "item-comment-status is-error";
+          busy(false);
+        });
+    });
+
+    wrap.appendChild(box);
+    var actions = el("div", "item-comment-actions");
+    actions.appendChild(status);
+    actions.appendChild(send);
+    wrap.appendChild(actions);
+    section.appendChild(wrap);
+    return section;
+  }
+
   function renderProject(payload) {
     stopPolling();
     markNav();
@@ -8114,6 +8204,10 @@
       feed.appendChild(el("p", "empty",
         "Nothing is filed under “" + name + "” yet."));
     }
+    // Below the boards on purpose: the rows are what the project *is* and
+    // the conversation is what has been said about them, which is the same
+    // order a board row puts its write-up above its thread.
+    feed.appendChild(renderProjectThread(name, payload));
   }
 
   function loadProject(name) {

@@ -120,8 +120,55 @@ _COMMENT_HEADING_RE = re.compile(
 )
 
 
-def _heading_label(cycle):
-    """`None` -> the Needs Edvard block, an int -> that cycle. (not-prose: quoting a literal)"""
+# `### Project Nova · 2026-08-28 10:40` -- idea #92 phase 4, a thread about  # not-prose: quoting a literal
+# a project rather than about a cycle. It gets its own pattern instead of a
+# third branch in the one above, and the separator is `·` alone rather than
+# the loose `[·\-—]` the other two accept: a project name is free text the
+# owner types into a board cell, so `k3s-sentinel` is a name he can plausibly
+# write, and a loose separator would parse it as project `k3s` with the stamp
+# `sentinel · 2026-08-28 10:40`. A `Cycle` or `Needs Edvard` heading cannot  # not-prose: quoting a literal
+# collide that way because neither carries free text.
+_PROJECT_HEADING_RE = re.compile(
+    r"^###[ \t]+Project[ \t]+(?P<project>[^·]+?)"
+    r"[ \t]*(?:·[ \t]*(?P<stamp>.*?))?[ \t]*$",
+    re.IGNORECASE,
+)
+
+
+def match_heading(line):
+    """One comment heading -> `(cycle, project, stamp)`, or `None`.
+
+    The single place that knows a comment can be keyed three ways: on a
+    cycle number, on the digest's `Needs Edvard` block, or on a project.  # not-prose: quoting a literal
+    Everything downstream matches on the tuple rather than on a regex, so
+    adding a fourth key is one function rather than four loops.
+
+    Exactly one of `cycle` and `project` is ever set; both `None` is the
+    `Needs Edvard` block.  # not-prose: quoting a literal
+    """
+    heading = _COMMENT_HEADING_RE.match(line)
+    if heading:
+        cycle = int(heading.group("cycle")) if heading.group("cycle") else None
+        return cycle, None, (heading.group("stamp") or "").strip()
+    heading = _PROJECT_HEADING_RE.match(line)
+    if heading:
+        return None, heading.group("project").strip(), (heading.group("stamp") or "").strip()
+    return None
+
+
+def same_project(a, b):
+    """Two project names naming the same project.
+
+    Case-insensitive for the reason `nova_site.project_payload` is: the
+    cell is free text on a phone, and `nova` and `Nova` are one project.
+    """
+    return (a or "").strip().lower() == (b or "").strip().lower()
+
+
+def _heading_label(cycle, project=None):
+    """The three keys, as they are written in the file. (not-prose: quoting a literal)"""
+    if project:
+        return f"Project {project}"
     return NEEDS_LABEL if cycle is None else f"Cycle {cycle}"
 
 _SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
@@ -192,10 +239,11 @@ def _section_bounds(lines, heading):
     return section_bounds(lines, heading)
 
 
-def insert_comment(markdown, cycle, text, stamp):
+def insert_comment(markdown, cycle, text, stamp, project=None):
     """Add one comment to the top of `## New`, newest first.
 
-    `cycle` is an int, or `None` for a reply to the Needs Edvard block.  # not-prose: quoting a literal
+    `cycle` is an int, or `None` for a reply to the Needs Edvard block --  # not-prose: quoting a literal
+    unless `project` is set, which keys the comment on a project instead.
 
     Newest first matches every other file this loop maintains and means a
     cycle reads the freshest thing the owner said without scrolling. If the
@@ -203,7 +251,7 @@ def insert_comment(markdown, cycle, text, stamp):
     dropped for want of a heading it did not have.
     """
     lines = markdown.split("\n") if markdown else []
-    block = [f"### {_heading_label(cycle)} · {stamp}", ""] + text.split("\n") + [""]
+    block = [f"### {_heading_label(cycle, project)} · {stamp}", ""] + text.split("\n") + [""]
 
     bounds = _section_bounds(lines, NEW_HEADING)
     if bounds is None:
@@ -263,8 +311,8 @@ def split_replies(lines):
     return body, replies
 
 
-def insert_reply(markdown, cycle, stamp, reply, reply_stamp):
-    """Put one reply inside the comment `(cycle, stamp)` names. Returns the
+def insert_reply(markdown, cycle, stamp, reply, reply_stamp, project=None):
+    """Put one reply inside the comment `(cycle, project, stamp)` names. Returns the
     new markdown, or `None` if there is nothing to write it into.
 
     `None` covers both misses and it is deliberate that the caller cannot
@@ -288,7 +336,7 @@ def insert_reply(markdown, cycle, stamp, reply, reply_stamp):
     lines = (markdown or "").split("\n")
     start = None
     for i, line in enumerate(lines):
-        heading = _COMMENT_HEADING_RE.match(line)
+        heading = match_heading(line)
         # A body ends at the next comment *or* at the next `##` section --
         # the last comment in `## New` is bounded by `## Acknowledged`, and
         # missing that would file the reply under the wrong section.
@@ -297,8 +345,12 @@ def insert_reply(markdown, cycle, stamp, reply, reply_stamp):
             break
         if not heading:
             continue
-        found = int(heading.group("cycle")) if heading.group("cycle") else None
-        if found == cycle and (heading.group("stamp") or "").strip() == stamp:
+        found_cycle, found_project, found_stamp = heading
+        if (
+            found_cycle == cycle
+            and same_project(found_project, project)
+            and found_stamp == stamp
+        ):
             start = i + 1
     else:
         end = len(lines)
@@ -318,8 +370,8 @@ def insert_reply(markdown, cycle, stamp, reply, reply_stamp):
     return "\n".join(lines[:end] + block + lines[end:])
 
 
-def add_reply(cycle, stamp, text, reply_stamp=None):
-    """Store Nova's reply to the comment `(cycle, stamp)`. Returns (ok, message).
+def add_reply(cycle, stamp, text, reply_stamp=None, project=None):
+    """Store Nova's reply to the comment `(cycle, project, stamp)`. Returns (ok, message).
 
     Same read-modify-write and same 409 retry as `_store`, and for the same
     reason -- but it cannot share the code, because this one has to give up
@@ -337,26 +389,27 @@ def add_reply(cycle, stamp, text, reply_stamp=None):
         current, rev = vault_read_path_rev(COMMENTS_PATH)
         if current is None:
             return False, "could not read comments"
-        updated = insert_reply(current, cycle, stamp, body, reply_stamp)
+        target = _heading_label(cycle, project)
+        updated = insert_reply(current, cycle, stamp, body, reply_stamp, project)
         if updated is None:
-            return False, f"no comment on cycle {cycle} at {stamp} left to reply to"
+            return False, f"no comment on {target} at {stamp} left to reply to"
         try:
-            _verify_replied(current, updated, cycle, stamp, body)
+            _verify_replied(current, updated, cycle, stamp, body, project)
         except WriteRefused as refused:
-            log(f"nova-comment refused replying to cycle {cycle}: {refused}")
+            log(f"nova-comment refused replying to {target}: {refused}")
             return False, str(refused)
         result = vault_write_path(COMMENTS_PATH, updated, if_rev=rev)
         if result == "written":
-            log(f"nova-comment replied to cycle {cycle} at {stamp}")
+            log(f"nova-comment replied to {target} at {stamp}")
             return True, "replied"
         if "409" not in result:
             break
-    log(f"nova-comment failed replying to cycle {cycle}: {result}")
+    log(f"nova-comment failed replying to {_heading_label(cycle, project)}: {result}")
     return False, f"could not write reply: {result}"
 
 
 def parse_comments(markdown):
-    """Markdown -> [{cycle, stamp, text, reply, replyStamp, acknowledged}].
+    """Markdown -> [{cycle, project, stamp, text, reply, replyStamp, acknowledged}].
 
     Newest-first per section. Order within the file is preserved rather
     than sorted: `## New` is written newest-first and `## Acknowledged`
@@ -373,6 +426,7 @@ def parse_comments(markdown):
         body, replies = split_replies(current["lines"])
         out.append({
             "cycle": current["cycle"],
+            "project": current["project"],
             "stamp": current["stamp"],
             "text": body,
             # `reply`/`replyStamp` are the *first* reply, kept because
@@ -385,12 +439,13 @@ def parse_comments(markdown):
         })
 
     for line in (markdown or "").split("\n"):
-        heading = _COMMENT_HEADING_RE.match(line)
+        heading = match_heading(line)
         if heading and section is not None:
             flush()
             current = {
-                "cycle": int(heading.group("cycle")) if heading.group("cycle") else None,
-                "stamp": (heading.group("stamp") or "").strip(),
+                "cycle": heading[0],
+                "project": heading[1],
+                "stamp": heading[2],
                 "acknowledged": section == "acknowledged",
                 "lines": [],
             }
@@ -443,8 +498,15 @@ def frontmatter(text):
 
 
 def comment_index(markdown):
-    """`{(cycle, stamp): comment}` -- what a write is checked against."""
-    return {(c["cycle"], c["stamp"]): c for c in parse_comments(markdown)}
+    """`{(cycle, project, stamp): comment}` -- what a write is checked against.
+
+    The project is in the key rather than only in the value because two
+    project comments made in the same minute share `(None, stamp)`, which
+    is also what a `Needs Edvard` reply carries. Collapsing them would make  # not-prose: quoting a literal
+    `verify_write` compare one comment against another and either refuse a
+    good write or wave a bad one through.
+    """
+    return {(c["cycle"], c["project"], c["stamp"]): c for c in parse_comments(markdown)}
 
 
 # Every field `parse_comments` reports about a comment. A bystander that
@@ -548,7 +610,7 @@ def verify_write(original, updated, exempt=()):
     return before, after
 
 
-def _verify_added(original, updated, cycle, stamp, body):
+def _verify_added(original, updated, cycle, stamp, body, project=None):
     """Refuse unless `updated` is `original` plus exactly this one comment.
 
     `insert_comment` is string surgery on the one file the owner talks to
@@ -560,11 +622,11 @@ def _verify_added(original, updated, cycle, stamp, body):
     is how the 2026-08-13 one was found, by accident, by a cycle doing
     something else.
     """
-    key = (cycle, stamp)
+    key = (cycle, project, stamp)
     _, after = verify_write(original, updated, exempt={key})
     if key not in after:
         raise WriteRefused(
-            f"the new comment on {_heading_label(cycle)} at {stamp!r} is not "
+            f"the new comment on {_heading_label(cycle, project)} at {stamp!r} is not "
             "readable back -- nothing written"
         )
     if key in comment_index(original):
@@ -576,9 +638,9 @@ def _verify_added(original, updated, cycle, stamp, body):
         raise WriteRefused(f"{key} landed under {ACKNOWLEDGED_HEADING} -- nothing written")
 
 
-def _verify_replied(original, updated, cycle, stamp, reply):
+def _verify_replied(original, updated, cycle, stamp, reply, project=None):
     """Refuse unless exactly the named comment gained exactly this reply."""
-    key = (cycle, stamp)
+    key = (cycle, project, stamp)
     before, after = verify_write(original, updated, exempt={key})
     if key not in before or key not in after:
         raise WriteRefused(f"{key} is not in both versions -- nothing written")
@@ -612,8 +674,8 @@ def _oldest_first(comments):
 def comments_by_cycle(markdown):
     """`{cycle: [comment, ...]}` -- what the site hangs off each card, oldest first.
 
-    Needs Edvard replies are deliberately absent: they belong to no cycle,  # not-prose: quoting a literal
-    and letting `None` through would key a card on it.
+    Needs Edvard replies and project threads are deliberately absent: they  # not-prose: quoting a literal
+    belong to no cycle, and letting `None` through would key a card on it.
     """
     grouped = {}
     for comment in parse_comments(markdown):
@@ -625,7 +687,47 @@ def comments_by_cycle(markdown):
 
 def needs_comments(markdown):
     """`[comment, ...]` -- replies to the Needs Edvard block, oldest first. (not-prose: quoting a literal)"""
-    return _oldest_first([c for c in parse_comments(markdown) if c["cycle"] is None])
+    return _oldest_first([
+        c for c in parse_comments(markdown)
+        if c["cycle"] is None and not c["project"]
+    ])
+
+
+def project_comments(markdown, project):
+    """`[comment, ...]` -- one project's thread, oldest first (idea #92, phase 4).
+
+    The owner's idea #92 asks for *"somehow a conversation per project or
+    per issue/idea/note to define it more"*, and the row-level half of that
+    already exists (`nova_capture.comment_on_row`). This is the project
+    level, and it lives here rather than inline the way a board comment
+    does for one reason: a project has no file. It is a name typed into a
+    `Project` cell on rows spread across two documents, so there is nothing
+    to append a conversation *underneath* -- while `comments.md` is already
+    the file that holds a conversation about something with no home of its
+    own, and step 1a of every cycle reads its `## New` section without
+    being told to. A project thread therefore reaches the next cycle for
+    free, which is the whole test a channel has to pass here: Cycle 58's
+    `Needs Edvard` box was built, shipped and dead because nothing  # not-prose: quoting a literal
+    collected it.
+    """
+    return _oldest_first([
+        c for c in parse_comments(markdown)
+        if c["project"] and same_project(c["project"], project)
+    ])
+
+
+def comments_by_project(markdown):
+    """`{project: [comment, ...]}`, oldest first, keyed on the name as written.
+
+    Case folding happens in `project_comments`, not here: the key is what
+    the owner typed, so a page that groups by it prints his spelling.
+    """
+    grouped = {}
+    for comment in parse_comments(markdown):
+        if not comment["project"]:
+            continue
+        grouped.setdefault(comment["project"], []).append(comment)
+    return {name: _oldest_first(items) for name, items in grouped.items()}
 
 
 def add_needs_comment(text, stamp=None):
@@ -640,6 +742,18 @@ def add_needs_comment(text, stamp=None):
     return _store(None, text, stamp)
 
 
+def add_project_comment(project, text, stamp=None):
+    """Store one comment against `project`. Returns (ok, message).
+
+    The name is stored exactly as given -- it is the owner's spelling of his
+    own project and `project_comments` matches case-insensitively, so
+    normalising it here would only lose information.
+    """
+    if not isinstance(project, str) or not project.strip():
+        return False, "project must be a name"
+    return _store(None, text, stamp, project=project.strip())
+
+
 def add_comment(cycle, text, stamp=None):
     """Store one comment against `cycle`. Returns (ok, message)."""
     try:
@@ -651,9 +765,13 @@ def add_comment(cycle, text, stamp=None):
     return _store(cycle, text, stamp)
 
 
-def _store(cycle, text, stamp=None):
-    """The shared read-modify-write. `cycle` is an int, or None for Needs Edvard. (not-prose: quoting a literal)"""
-    target = _heading_label(cycle).lower()
+def _store(cycle, text, stamp=None, project=None):
+    """The shared read-modify-write.
+
+    `cycle` is an int; `None` with no `project` is the Needs Edvard block;  # not-prose: quoting a literal
+    `project` names a project thread.
+    """
+    target = _heading_label(cycle, project).lower()
     body = clean_comment_text(text)
     if not body:
         return False, "nothing to comment"
@@ -687,9 +805,9 @@ def _store(cycle, text, stamp=None):
             # what is still open is that nothing detects drift between the
             # two, which is filed rather than claimed fixed here.
             current = ""
-        updated = insert_comment(current, cycle, body, stamp)
+        updated = insert_comment(current, cycle, body, stamp, project)
         try:
-            _verify_added(current, updated, cycle, stamp, body)
+            _verify_added(current, updated, cycle, stamp, body, project)
         except WriteRefused as refused:
             log(f"nova-comment refused writing {target}: {refused}")
             return False, str(refused)
