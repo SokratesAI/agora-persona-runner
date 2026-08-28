@@ -538,22 +538,59 @@ _ORG = "SokratesAI"
 # A bare `#12` is the runner: it is this repo, and it is what every entry
 # written before the loop touched a second repo meant.
 _DEFAULT_REPO = "agora-persona-runner"
-_REPO_ALIASES = {
+# The nicknames I actually type. These are shorthand, not repo names, so
+# nothing can derive them -- `bridge` is only `agora-claude-bridge` because
+# that is what I have always meant by it.
+_REPO_NICKNAMES = {
     "runner": "agora-persona-runner",
     "bridge": "agora-claude-bridge",
-    "agora": "agora",
     # Bare `config` appears once, in Cycle 6's `#32, #31, config#2`, and
     # the runner's config repo is what it meant.
     "config": "agora-persona-runner-config",
     "runner-config": "agora-persona-runner-config",
     "bridge-config": "agora-claude-bridge-config",
-    "platform-config": "platform-config",
-    "agora-config": "agora-config",
-    "agora-persona-runner": "agora-persona-runner",
-    "agora-persona-runner-config": "agora-persona-runner-config",
-    "agora-claude-bridge": "agora-claude-bridge",
-    "agora-claude-bridge-config": "agora-claude-bridge-config",
 }
+# Every non-archived repo in the org, read 2026-08-29 with
+# `gh repo list SokratesAI --limit 100 --no-archived --json name`. A repo's
+# own name is always what a `whatsapp-bridge#6` prefix means, so these are
+# identity entries and the map above carries only the shorthand.
+#
+# Measured before this list existed, over the 673 entries the site serves:
+# ten `PR:` references rendered as plain text for want of an entry here --
+# sokrates-docs 6, vault-bridge 2, whatsapp-bridge 1, operator 1. The eleven
+# names hand-listed before it covered eight repos and the org has 23.
+#
+# `.claude` is in the org and deliberately absent: neither `_PR_REF_RE` nor
+# `_PR_QUALIFIER_RE` can match a leading dot, so an entry for it would be
+# unreachable rather than merely unused. A repo created after the date above
+# falls back to plain text, which is the direction every unknown prefix has
+# always failed in.
+_ORG_REPOS = (
+    "agent-runtime",
+    "agora",
+    "agora-claude-bridge",
+    "agora-claude-bridge-config",
+    "agora-config",
+    "agora-persona-runner",
+    "agora-persona-runner-config",
+    "capabilities",
+    "dropbox",
+    "gateway",
+    "operator",
+    "platform-axiology",
+    "platform-config",
+    "platform-memory",
+    "poc-crossplane-template-test",
+    "session-store",
+    "sokrates-cli",
+    "sokrates-docs",
+    "sokrates-docs-config",
+    "vault",
+    "vault-bridge",
+    "whatsapp-bridge",
+)
+_REPO_ALIASES = {name: name for name in _ORG_REPOS}
+_REPO_ALIASES.update(_REPO_NICKNAMES)
 _PR_REF_RE = re.compile(r"(?P<repo>[A-Za-z][A-Za-z0-9-]*)?#(?P<num>\d+)")
 # A parenthetical naming the repo, which three entries use instead of a
 # prefix: `#38 (runner)`, `#40 (SokratesAI/agora)`. It is only ever

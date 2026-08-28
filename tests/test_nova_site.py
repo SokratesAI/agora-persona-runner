@@ -1565,6 +1565,14 @@ def test_a_real_ask_is_not_mistaken_for_an_empty_one(text):
         # A parenthetical naming the repo instead of a prefix.
         ("#38 (runner)", [("#38 (runner)", "agora-persona-runner/pull/38")]),
         ("#40 (SokratesAI/agora)", [("#40 (SokratesAI/agora)", "agora/pull/40")]),
+        # The four prefixes that rendered as plain text before the org
+        # list existed -- measured over the 673 entries the site served
+        # on 2026-08-29: sokrates-docs 6, vault-bridge 2, whatsapp-bridge
+        # 1, operator 1.
+        ("sokrates-docs#4", [("sokrates-docs#4", "sokrates-docs/pull/4")]),
+        ("vault-bridge#4", [("vault-bridge#4", "vault-bridge/pull/4")]),
+        ("whatsapp-bridge#6", [("whatsapp-bridge#6", "whatsapp-bridge/pull/6")]),
+        ("operator#1", [("operator#1", "operator/pull/1")]),
     ],
 )
 def test_a_reference_resolves_to_the_repo_it_names(field, expected):
@@ -1599,6 +1607,24 @@ def test_a_parenthetical_that_names_no_repo_is_left_alone(field):
     spans = parse_pr_refs(field)
     assert [s["text"] for s in spans if s["kind"] == "link"] == [field.split(" ")[0]]
     assert "".join(s["text"] for s in spans) == field
+
+
+def test_every_repo_in_the_org_is_its_own_prefix():
+    """A repo's own name is always what a `whatsapp-bridge#6` prefix means,
+    so the org list is what makes that true rather than a hand-kept subset.
+    Eleven names covering eight repos is what let four real repos render as
+    plain text for weeks."""
+    for name in nova_journal._ORG_REPOS:
+        assert nova_journal._repo_url(name) == "SokratesAI/" + name
+
+
+def test_every_nickname_points_at_a_repo_that_exists():
+    """The shorthand is mine and cannot be derived, so the one thing worth
+    pinning about it is that it does not name a repo the org does not have --
+    a nickname resolving to a dead name is a confidently wrong link, which is
+    exactly what the unrecognised-prefix rule below refuses to produce."""
+    for nickname, target in nova_journal._REPO_NICKNAMES.items():
+        assert target in nova_journal._ORG_REPOS, nickname
 
 
 def test_an_unrecognised_prefix_becomes_no_link_at_all():
