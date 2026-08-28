@@ -49,7 +49,7 @@ def test_is_sha_separates_a_commit_from_a_tag():
     assert not pin_drift.is_sha("v2.98.0")
 
 
-def test_interesting_paths_picks_dockerfiles_and_workflows_only():
+def test_interesting_paths_picks_dockerfiles_workflows_and_crossplane():
     paths = [
         "Dockerfile",
         "offbox/Dockerfile",
@@ -57,6 +57,9 @@ def test_interesting_paths_picks_dockerfiles_and_workflows_only():
         ".github/workflows/build.yaml",
         ".github/workflows/docs.yml",
         ".github/dependabot.yml",
+        "crossplane/githubservice-composition.yaml",
+        "crossplane/claims/service-agora.yml",
+        "crossplane/README.md",
         "README.md",
         "src/Dockerfile.md",
     ]
@@ -65,6 +68,8 @@ def test_interesting_paths_picks_dockerfiles_and_workflows_only():
         ".github/workflows/docs.yml",
         "Dockerfile",
         "Dockerfile.test",
+        "crossplane/claims/service-agora.yml",
+        "crossplane/githubservice-composition.yaml",
         "offbox/Dockerfile",
         "src/Dockerfile.md",
     ]
@@ -103,6 +108,96 @@ def test_pins_in_workflow_reads_uses_lines():
         ("docker/build-push-action", "v5.1.0"),
         ("actions/setup-node", "820762786026740c76f36085b0efc47a31fe5020"),
     ]
+
+
+def test_pins_in_reads_uses_lines_behind_an_escaped_newline():
+    """The Crossplane composition writes a whole workflow as one escaped string.
+
+    Every `uses:` in it is preceded by a literal backslash-n rather than a
+    real newline, so `USES_RE`'s `^` never reaches one and this tool read
+    the file as carrying no pins at all.
+    """
+    text = (
+        'apiVersion: apiextensions.crossplane.io/v1\n'
+        'spec:\n'
+        '  resources:\n'
+        '    - name: source-workflow\n'
+        '      base:\n'
+        '        spec:\n'
+        '          forProvider:\n'
+        '            file: .github/workflows/build.yaml\n'
+        '            content: "name: build\\njobs:\\n  test:\\n'
+        '    steps:\\n      - uses: actions/checkout@v7\\n'
+        '      - uses: docker/build-push-action@v7\\n'
+        '      - run: echo uses: fake/action@v9\\n"\n'
+    )
+    pins = pin_drift.pins_in("o/r", "crossplane/githubservice-composition.yaml", text)
+    assert [(p["what"], p["pinned"], p["kind"]) for p in pins] == [
+        ("actions/checkout", "v7", "template-action"),
+        ("docker/build-push-action", "v7", "template-action"),
+    ]
+
+
+def test_pins_in_does_not_report_the_same_pin_twice_from_one_file():
+    """A composition may pin an action for itself and again in what it writes."""
+    text = (
+        "jobs:\n"
+        "  build:\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@v7\n"
+        '            content: "steps:\\n      - uses: actions/checkout@v7\\n"\n'
+    )
+    pins = pin_drift.pins_in("o/r", "crossplane/x.yaml", text)
+    assert [(p["what"], p["pinned"], p["kind"]) for p in pins] == [
+        ("actions/checkout", "v7", "action"),
+    ]
+
+
+def test_pins_in_still_separates_two_different_refs_of_one_action():
+    """Deduplication is on (action, ref), never on the action alone."""
+    text = (
+        "steps:\n"
+        "      - uses: actions/checkout@v7\n"
+        '  content: "steps:\\n      - uses: actions/checkout@v3\\n"\n'
+    )
+    pins = pin_drift.pins_in("o/r", "crossplane/x.yaml", text)
+    assert [(p["what"], p["pinned"], p["kind"]) for p in pins] == [
+        ("actions/checkout", "v7", "action"),
+        ("actions/checkout", "v3", "template-action"),
+    ]
+
+
+def test_resolve_reads_a_template_action_upstream_like_any_other_action():
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        return 0, "v7.2.3", ""
+
+    pin = {"what": "goreleaser/goreleaser-action", "pinned": "v5",
+           "kind": "template-action"}
+    latest, source, why = pin_drift.resolve(pin, {}, run=run)
+    assert (latest, why) == ("v7.2.3", None)
+    assert source == "goreleaser/goreleaser-action releases"
+
+
+def test_report_marks_a_template_pin_as_stamped_into_new_repos():
+    judged = [
+        {"repo": "SokratesAI/platform-config",
+         "path": "crossplane/githubservice-composition.yaml",
+         "what": "actions/checkout", "pinned": "v3", "latest": "v7",
+         "source": "actions/checkout releases", "gap": "major",
+         "kind": "template-action"},
+        {"repo": "SokratesAI/agora", "path": ".github/workflows/build.yaml",
+         "what": "actions/checkout", "pinned": "v3", "latest": "v7",
+         "source": "actions/checkout releases", "gap": "major",
+         "kind": "action"},
+    ]
+    report = pin_drift.format_report(judged, [], [], [])
+    assert ("      SokratesAI/platform-config  "
+            "crossplane/githubservice-composition.yaml"
+            "  — a template, stamped into every repo it creates") in report
+    assert ("      SokratesAI/agora  .github/workflows/build.yaml\n") in report
 
 
 def _fake_gh(files, releases, trees):
