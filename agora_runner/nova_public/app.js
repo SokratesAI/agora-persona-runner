@@ -6943,7 +6943,6 @@
     if (!counted) return null;
     return {
       tokens: tokens,
-      counted: counted,
       from: from,
       share: parent + tokens > 0 ? (100 * tokens) / (parent + tokens) : 0,
     };
