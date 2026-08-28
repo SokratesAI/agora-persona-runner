@@ -454,6 +454,32 @@ def catalog_payload():
     return catalog_page(parse_catalog(catalog_markdown()))
 
 
+def _drop_legacy_reply(comment):
+    """One comment on its way out of `/api/comments`, without `reply`.
+
+    `parse_comments` derives `reply`/`replyStamp` from `replies[0]` and
+    keeps them because `_verify_replied` and `nova_replies` both mean the
+    auto-reply when they say "the reply". Those are server-side readers.
+    The browser is not one of them: both of its uses are the fallback
+    `if (!(replies && replies.length) && comment.reply)`, which cannot
+    fire against this producer -- an empty `replies` makes `reply` `""`,
+    and a non-empty one makes the first half false. So every byte the
+    field carries on the wire is a second copy of `replies[0].text`.
+
+    Measured against the live pod 2026-08-28: 155 of 159 comments carry a
+    non-empty `reply`, all 155 byte-identical to a text already in their
+    own `replies`, 65,607 bytes of a 258,352-byte `byCycle`. The route is
+    deliberately uncached and `refreshMail` fetches it on every
+    navigation, so that quarter is paid again on every page the owner
+    opens -- which is what he reported as the app being slow to load
+    comments.
+
+    Dropped here rather than in `parse_comments` because the server-side
+    readers above are real and this is only about the wire.
+    """
+    return {k: v for k, v in comment.items() if k not in ("reply", "replyStamp")}
+
+
 def comments_payload():
     """Every comment, grouped by the cycle it is about.
 
@@ -508,10 +534,13 @@ def comments_payload():
             # the line disappear as if the answer had arrived.
             comment["replyFailed"] = asked_at is None and key in gave_up
     return {
-        "byCycle": {str(cycle): items for cycle, items in grouped.items()},
+        "byCycle": {
+            str(cycle): [_drop_legacy_reply(c) for c in items]
+            for cycle, items in grouped.items()
+        },
         # Replies to the digest's Needs Edvard block, which belong to no  (not-prose: quoting a literal)
         # cycle and so cannot ride in `byCycle`.
-        "needs": needs_comments(markdown),
+        "needs": [_drop_legacy_reply(c) for c in needs_comments(markdown)],
     }
 
 
