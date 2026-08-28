@@ -455,7 +455,12 @@ AGORA = "projects/sokrates/projects/agora/"
 
 
 def listing(*paths):
-    return set(paths)
+    """A listing that passes `read_listing`'s control, plus whatever is given.
+
+    The three constitution documents are always present, because a listing
+    without them is refused outright as truncated.
+    """
+    return set(paths) | set(dream_pass._LISTING_CONTROL)
 
 
 def test_a_citation_resolves_under_a_different_anchor_than_the_obvious_one():
@@ -517,7 +522,8 @@ def test_constitution_mode_reads_every_file_it_is_given(tmp_path, capsys):
     b = tmp_path / "personality.md"
     b.write_text("read `inbox.md`")
     lst = tmp_path / "listing.txt"
-    lst.write_text(NOVA + "resources/inbox.md\n")
+    lst.write_text("\n".join(dream_pass._LISTING_CONTROL) + "\n"
+                   + NOVA + "resources/inbox.md\n")
     rc = dream_pass.main(["--mode", "constitution", "--file", str(a),
                           "--file", str(b), "--vault-listing", str(lst)])
     assert rc == 0
@@ -531,13 +537,15 @@ def test_constitution_mode_reads_every_file_it_is_given(tmp_path, capsys):
 def test_constitution_mode_exits_1_on_an_empty_vault_listing(tmp_path, capsys):
     # An empty listing and a healthy vault look identical to `resolve_doc`
     # and mean opposite things, so this may not read as "everything dead".
+    # It is refused by the control check now, which is the stronger reason —
+    # an empty file is a truncated listing, just fully truncated.
     a = tmp_path / "identity.md"
     a.write_text("read `inbox.md`")
     lst = tmp_path / "listing.txt"
     lst.write_text("\n\n")
     assert dream_pass.main(["--mode", "constitution", "--file", str(a),
                             "--vault-listing", str(lst)]) == 1
-    assert "empty vault listing" in capsys.readouterr().err
+    assert "unusable vault listing" in capsys.readouterr().err
 
 
 def test_constitution_mode_refuses_proposal(tmp_path, capsys):
@@ -579,3 +587,77 @@ def test_an_elided_citation_survives_extraction_and_then_resolves():
 
 def test_a_dot_slash_prefix_is_still_stripped():
     assert dream_pass.cited_docs("see `./inbox.md`") == ["inbox.md"]
+
+
+# --- the two guaranteed-positive results my reviewer found on runner#482 ----
+
+def test_a_checkout_with_no_tools_directory_cannot_answer_about_modules(tmp_path):
+    # Handed only the bridge and platform-config checkouts, the first
+    # version reported every `tools.<name>` in prompt.md dead — and would
+    # have, whether or not those modules existed.
+    (tmp_path / "bridge").mkdir()
+    _, dead = dream_pass.dead_refs("`tools.lint_entry`", listing(),
+                                   [str(tmp_path / "bridge")])
+    assert dead == []
+    out = dream_pass.constitution_report("prompt.md", "`tools.lint_entry`",
+                                         listing(), [str(tmp_path / "bridge")])
+    assert "CANNOT CHECK modules" in out
+
+
+def test_a_checkout_that_does_have_tools_still_answers(tmp_path):
+    # The control for the test above: without this, "cannot check" could be
+    # the answer in every case and both tests would still pass.
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "lint_entry.py").write_text("")
+    _, dead = dream_pass.dead_refs("`tools.lint_entry` `tools.gone`",
+                                   listing(), [str(tmp_path)])
+    assert dead == ["gone"]
+
+
+def test_a_truncated_vault_listing_is_refused_rather_than_read_as_rot(tmp_path):
+    # `vault_tool.py ls` reports omitted files on stderr, and the documented
+    # redirect captures stdout only, so a short listing is invisible here.
+    lst = tmp_path / "listing.txt"
+    lst.write_text(NOVA + "resources/identity.md\n")
+    try:
+        dream_pass.read_listing(str(lst))
+    except ValueError as exc:
+        assert "personality.md" in str(exc)
+    else:
+        raise AssertionError("a listing missing two of the three was accepted")
+
+
+def test_a_complete_vault_listing_is_accepted(tmp_path):
+    lst = tmp_path / "listing.txt"
+    lst.write_text("\n".join(dream_pass._LISTING_CONTROL) + "\n")
+    assert dream_pass.read_listing(str(lst)) == set(dream_pass._LISTING_CONTROL)
+
+
+def test_main_refuses_a_truncated_listing_with_a_reason(tmp_path, capsys):
+    a = tmp_path / "identity.md"
+    a.write_text("read `inbox.md`")
+    lst = tmp_path / "listing.txt"
+    lst.write_text(NOVA + "resources/inbox.md\n")
+    assert dream_pass.main(["--mode", "constitution", "--file", str(a),
+                            "--vault-listing", str(lst)]) == 1
+    assert "unusable vault listing" in capsys.readouterr().err
+
+
+def test_a_dot_dot_slash_citation_resolves(tmp_path):
+    refs = dream_pass.cited_docs("see `../resources/inbox.md`")
+    assert refs == ["resources/inbox.md"]
+    assert dream_pass.resolve_doc(refs[0], listing(NOVA + "resources/inbox.md"))
+
+
+def test_a_report_filename_format_in_a_subdirectory_is_not_a_citation():
+    # `^NNN` was anchored to the whole ref, so this one described a naming
+    # convention and could only ever come back dead.
+    assert dream_pass.cited_docs("`reports/NNN-report-first-last.md`") == []
+
+
+def test_an_empty_listing_object_is_not_reported_as_no_listing_at_all():
+    # `if not listing` could not tell "none given" from "given and empty",
+    # and they mean opposite things.
+    out = dream_pass.constitution_report("identity.md", "`kanban.md`", set(), [])
+    assert "CANNOT CHECK documents" not in out
+    assert "DEAD DOCUMENT (1)" in out
