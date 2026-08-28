@@ -70,7 +70,37 @@ DONE_KEEP_HOURS = 24
 #: something. The rule exists because the whole mechanism is string
 #: equality: `Confirm-Deploy` and `confirm-deploy` are two claims on one
 #: item, and both cycles would be told they had it.
-SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,47}$")
+#:
+#: The ceiling was 47 trailing characters, so 48 in all, and nothing had
+#: ever written down what danger that number was holding back. Measured
+#: Cycle 591 against the live `journal-digest.md`: of the fourteen
+#: handoff slugs in **Next cycle**, **nine were 49 to 72 characters and
+#: `take` refused every one of them**. That is not a slug convention
+#: being enforced -- the producer never agreed to it. `prompt.md` tells
+#: the cycle writing the handoff to mint a slug "specific enough that two
+#: cycles reading the same list would never invent it for two different
+#: items", which pushes toward longer, and states no maximum at all. So
+#: the guard was rejecting the majority of the things it exists to
+#: protect, and a cycle that hit the refusal worked the item unclaimed --
+#: which at three overlapping cycles is the duplicate-work failure the
+#: ledger was built to end, arriving through the ledger itself.
+#:
+#: A cap does have a real danger behind it, which is why this raises it
+#: rather than removing it: the slug is a key in one document that every
+#: claim in this loop reads and rewrites, so an unbounded one bloats the
+#: file for everybody. The bound is therefore derived from the producer
+#: instead of chosen for comfort -- the observed range is 21 to 72
+#: characters, and 96 sits above every slug the digest has actually
+#: carried with room to spare, while still sitting well under the 466
+#: characters of the longest outcome note in the same live ledger -- so
+#: the slug is not the term that decides the file's size either way.
+#:
+#: The live ledger also corroborates the finding rather than merely
+#: illustrating it: 79 rows, and **the longest slug in any of them is 32
+#: characters**. Not one of the nine long handoff slugs was ever claimed
+#: by anybody, because none of them could be.
+SLUG_MAX = 96
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,%d}$" % (SLUG_MAX - 1))
 
 OPEN = "open"
 DONE = "done"
@@ -255,7 +285,8 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
     """
     if not SLUG_RE.match(item or ""):
         raise ClaimError(
-            f"{item!r} is not a claim slug: lowercase, digits and hyphens, 3-48 chars"
+            f"{item!r} is not a claim slug: lowercase, digits and hyphens, "
+            f"3-{SLUG_MAX} chars"
         )
     if not isinstance(cycle, int) or cycle <= 0:
         raise ClaimError(f"cycle must be a positive integer, got {cycle!r}")
