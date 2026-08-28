@@ -826,7 +826,12 @@ def project_payload(name=None):
     boards = {}
     known = []
     for board in ("issues", "ideas"):
-        payload = cached_payload(board, lambda b=board: board_payload(b))
+        # `cached_payload` answers `(payload, body, etag)`, not the payload.
+        # Binding the whole tuple is what made every request to this endpoint
+        # 500 with `'tuple' object has no attribute 'get'` from the day the
+        # page shipped -- and no test could see it, because the fixture
+        # replaced `cached_payload` with one that returns the payload alone.
+        payload, _body, _etag = cached_payload(board, lambda b=board: board_payload(b))
         boards[board] = payload
         for project in board_projects(payload.get("items") or []):
             if project not in known:
