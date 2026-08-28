@@ -664,3 +664,33 @@ def test_the_first_press_on_a_board_after_a_deploy_reads_no_vault(board_md, note
             assert reader.call_count == warmed, (
                 f"the first visitor to {board} paid the cold build anyway"
             )
+
+
+def test_the_projects_page_shares_one_cache_key_with_the_board_route(board_md, notes_md):
+    """Two spellings of one key is two builds and one of them uneditable.
+
+    `/projects` read `cached_payload("issues", ...)` while `/api/board`
+    read `cached_payload("board:issues", ...)`, over the identical
+    `board_payload("issues")`. So the warm reached one and not the other,
+    and all five `invalidate("board:" + target)` call sites missed the
+    `/projects` copy -- a row edited from the app stayed stale there.
+
+    Asserted on the cache keys rather than on a read count, because a
+    read count cannot tell one key warmed twice from two keys warmed
+    once, and the second is the bug.
+    """
+    nova_site.reset_cache()
+
+    def read(path):
+        return notes_md if "/nova/resources/" in path else board_md
+
+    with patch.object(nova_sources, "vault_read_path", side_effect=read):
+        nova_site.warm_cache()
+        warmed = set(nova_site._cache)
+        status, _, _ = _get("/api/project")
+    assert status == 200
+    assert set(nova_site._cache) - warmed == set(), (
+        f"/api/project built {sorted(set(nova_site._cache) - warmed)}, "
+        "which the warm did not reach"
+    )
+    assert {"board:issues", "board:ideas"} <= warmed
