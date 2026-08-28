@@ -11744,3 +11744,200 @@ describe("what changed since you last looked", () => {
       "the line vanished when he navigated back to the feed");
   });
 });
+
+/* The dock paints before the network answers.
+ *
+ * His `issues.md` #111, 2026-08-27, rated High: *"It takes 4-5 seconds to
+ * load the conversation when i open the chat bubble. Please do this
+ * background loading when i open the Nova app or use some local storage for
+ * it."*
+ *
+ * Measured from inside the cluster on 2026-08-28, five reads each: `/api/ask`
+ * answered in 0.52s to 2.04s, `/api/conversations/thread` in 0.03s to 0.08s.
+ * His phone reaches those over Tailscale on top of that, so the panel really
+ * did open onto "loading…" and stay there.
+ *
+ * What is worth pinning is not that a cache exists -- it is the three ways a
+ * cache of a live thread goes wrong: painting somebody else's thread, acting
+ * on a stale `waiting` flag, and never being overwritten by the answer that
+ * arrives a second later. A fixture whose promise never settles is how the
+ * first of those is testable at all: it holds the dock in the exact state he
+ * complains about, so anything on screen came from the device.
+ */
+describe("the chat dock paints the thread it last read", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const texts = (window) => [...window.document.querySelectorAll("#chat-thread .ask-text")]
+    .map((n) => n.textContent);
+  const cached = (window) => JSON.parse(window.localStorage.getItem("nova.chatThreads.v1") || "null");
+
+  const askThread = {
+    conversationId: "c-ask",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+  };
+  /** A read that never answers -- the seconds he is complaining about. */
+  const never = () => new Promise(() => {});
+
+  function store(window, key, payload) {
+    const held = JSON.parse(window.localStorage.getItem("nova.chatThreads.v1") || "{}");
+    held[key] = payload;
+    window.localStorage.setItem("nova.chatThreads.v1", JSON.stringify(held));
+  }
+
+  test("opening onto a server that has not answered still shows him the thread", async () => {
+    const window = await loadSite("/", {
+      ask: never,
+      install: (w) => store(w, "ask", askThread),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), ["Seven."],
+      "the dock waited for the network with a cached thread on the device");
+  });
+
+  test("the answer paints over the cached copy", async () => {
+    const fresh = {
+      conversationId: "c-ask",
+      waiting: false,
+      messages: [
+        { id: "1", sender: "Nova Answers", text: "Seven." },
+        { id: "2", sender: "Edvard", text: "and the roof?" },
+      ],
+    };
+    const window = await loadSite("/", {
+      ask: fresh,
+      install: (w) => store(w, "ask", askThread),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), ["Seven.", "and the roof?"]);
+  });
+
+  test("a read writes the cache, so the next page load has something to paint", async () => {
+    const window = await loadSite("/", { ask: askThread });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(cached(window), { ask: askThread });
+  });
+
+  /* The failure this is really about: `waiting` says an answer is being
+   * written, and a poll fires off the back of it. A cache is minutes or hours
+   * old, so a `waiting: true` in it is a question that was answered long ago
+   * -- and a dock that trusted it would poll ASK_POLL_MAX times on every open
+   * for an answer already on screen. The cached body is painted; only the
+   * network answer decides whether to poll. */
+  test("a stale waiting flag in the cache does not start a poll", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      ask: never,
+      install: (w) => {
+        store(w, "ask", { conversationId: "c-ask", waiting: true,
+          messages: [{ id: "1", sender: "Edvard", text: "q" }] });
+        timers = captureTimers(w);
+      },
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), ["q"], "nothing was painted from the cache");
+    assert.equal(timers.queued.length, 0,
+      "the dock started a poll on a waiting flag it read off the device");
+  });
+
+  test("a cache for another thread is not painted over the one he opened", async () => {
+    const window = await loadSite("/", {
+      ask: never,
+      install: (w) => store(w, "conv:c-1", {
+        conversationId: "c-1", waiting: false,
+        messages: [{ id: "9", sender: "Claude", text: "Two coats." }],
+      }),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), [],
+      "the dock painted a different conversation into the ask thread");
+  });
+
+  /* The switcher is the other door into a thread, and it is the one where a
+   * cache earns the most: `switchTo` blanks the panel and paints "loading…"
+   * by design, so without this the second thread he opens is the slow one
+   * again. Three mutations survived my first pass here -- the switcher paint,
+   * the empty-thread guard and the key `cacheThread` writes under -- and each
+   * of the three tests below is the one that catches its own. */
+  const LIST = {
+    conversations: [
+      { id: "c-ask", name: "Nova Ask", personaName: "Nova", model: "m",
+        tags: ["nova-ask"], updatedAt: "2026-08-26T08:00:00.000Z" },
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], updatedAt: "2026-08-25T20:00:00.000Z" },
+    ],
+  };
+
+  /** Open the dock, open the switcher, tap the one conversation row. */
+  async function switchToRoofing(window) {
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+  }
+
+  test("switching to a cached thread paints it instead of the loading line", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: LIST,
+      convThread: never,
+      install: (w) => store(w, "conv:c-1", {
+        conversationId: "c-1", waiting: false,
+        messages: [{ id: "9", sender: "Claude", text: "Two coats." }],
+      }),
+    });
+    await switchToRoofing(window);
+    assert.deepEqual(texts(window), ["Two coats."],
+      "the switcher showed the loading line with that thread on the device");
+  });
+
+  test("reading a conversation caches it under that conversation, not under the ask thread", async () => {
+    const roofing = { conversationId: "c-1", waiting: false,
+      messages: [{ id: "9", sender: "Claude", text: "Two coats." }] };
+    const window = await loadSite("/", {
+      ask: askThread, convList: LIST, convThread: () => roofing,
+    });
+    await switchToRoofing(window);
+    assert.deepEqual(cached(window), { ask: askThread, "conv:c-1": roofing },
+      "the ask thread it opened on was dropped when the conversation was cached");
+  });
+
+  /* A thread with no messages is indistinguishable from a thread that has not
+   * loaded, so painting it would take the "loading…" line down and leave him
+   * looking at a blank panel with nothing saying a fetch was running. */
+  test("a cached thread with nothing in it leaves the loading line up", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: LIST,
+      convThread: never,
+      install: (w) => store(w, "conv:c-1", { conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    await switchToRoofing(window);
+    assert.equal(window.document.querySelector("#chat-thread .empty").textContent, "loading…");
+  });
+
+  /* Corrupt reads as empty rather than as absent, and the second assertion is
+   * the one that matters: if it read as absent the write would be skipped too,
+   * and one unparseable value would leave the dock uncached forever. */
+  test("a corrupt cache reads as no cache and is overwritten by the next read", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      install: (w) => w.localStorage.setItem("nova.chatThreads.v1", "{not json"),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), ["Seven."]);
+    assert.deepEqual(cached(window), { ask: askThread },
+      "the corrupt value survived the read that should have replaced it");
+  });
+});

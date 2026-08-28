@@ -10385,6 +10385,80 @@
       if (isOpen) thread.scrollTop = thread.scrollHeight;
     }
 
+    /* The thread he last read, kept on the device so opening the dock paints
+     * before the network answers.
+     *
+     * His `issues.md` #111, 2026-08-27: *"It takes 4-5 seconds to load the
+     * conversation when i open the chat bubble. Please do this background
+     * loading when i open the Nova app or use some local storage for it."*
+     * Measured from inside the cluster on 2026-08-28, five reads each:
+     * `/api/ask` answered in 0.52s-2.04s and `/api/conversations/thread` in
+     * 0.03s-0.08s. So the wait is the ask thread and the round trip to it,
+     * and his phone reaches that over Tailscale on top -- the dock really
+     * did open onto "loading…" and sit there.
+     *
+     * **One entry per thread, and no cap on how many.** I built the
+     * single-entry version first and its own test caught why it does not
+     * work: opening the dock reads the remembered thread and would overwrite
+     * the entry, so every thread he switches to in the switcher is the slow
+     * one again. The size is measured rather than feared -- the live `/api/ask`
+     * body is 7,785 bytes and a conversation thread 3,043, against 40
+     * conversations in the store on 2026-08-28, so caching every thread he
+     * has is around 300KB of a 5MB origin budget. `setItem` is wrapped for
+     * `rememberSource`'s reason anyway: a full or disabled store must leave
+     * the dock working, not throw out of the paint.
+     *
+     * **The cached body is painted and never acted on.** `waiting` is what
+     * starts a poll, and a stale `true` would poll a thread that was
+     * answered an hour ago; `loadThread` fires immediately after this and
+     * the network answer is what governs. */
+    var CHAT_THREADS_KEY = "nova.chatThreads.v1";
+
+    function sourceKey() {
+      return source.kind === "conv" ? "conv:" + source.id : "ask";
+    }
+
+    function readThreads() {
+      var store = localStore();
+      if (!store) return null;
+      try {
+        var parsed = JSON.parse(store.getItem(CHAT_THREADS_KEY) || "null");
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch (err) {
+        // Corrupt: read as empty, not as absent. `null` is reserved for "there
+        // is no store", and returning it here would make `cacheThread` skip
+        // the write -- so one unparseable value would kill the cache for good
+        // instead of being overwritten by the next thread that loads.
+        return {};
+      }
+    }
+
+    function cacheThread(payload) {
+      var store = localStore();
+      if (!store) return;
+      // Not null: `readThreads` only returns null when there is no store, and
+      // that is the line above.
+      var held = readThreads();
+      held[sourceKey()] = payload;
+      try {
+        store.setItem(CHAT_THREADS_KEY, JSON.stringify(held));
+      } catch (err) { /* full or disabled: the dock still works */ }
+    }
+
+    /* True when it painted. An empty cached thread returns false rather than
+     * painting nothing, so the "loading…" line still appears for a thread
+     * that genuinely has no messages yet -- painting zero messages over the
+     * placeholder would show him a blank panel with no sign a fetch was
+     * running. */
+    function paintCached() {
+      var held = readThreads();
+      if (!held) return false;
+      var body = held[sourceKey()];
+      if (!body || !(body.messages || []).length) return false;
+      paint(body);
+      return true;
+    }
+
     function stopChatPoll() {
       if (pollHandle !== null) {
         clearTimeout(pollHandle);
@@ -10409,6 +10483,7 @@
           .then(function (payload) {
             if (token !== sourceToken) return;
             paint(payload);
+            cacheThread(payload);
             if (payload.waiting) pollChat(attempts + 1);
           })
           // A failed poll is not a failed answer, same as `pollAsk`.
@@ -10425,6 +10500,7 @@
         .then(function (payload) {
           if (token !== sourceToken) return;
           paint(payload);
+          cacheThread(payload);
           if (payload.waiting) pollChat(0);
         })
         .catch(function (err) {
@@ -10755,7 +10831,9 @@
       lastCount = 0;
       titleEl.textContent = source.name;
       thread.textContent = "";
-      thread.appendChild(el("p", "empty", "loading…"));
+      // Only the thread the cache actually holds paints instantly; every
+      // other row in the switcher still shows the placeholder.
+      if (!paintCached()) thread.appendChild(el("p", "empty", "loading…"));
       loadThread();
     }
 
@@ -11047,6 +11125,11 @@
       // `display: none` element is 0, and a box measured shut collapses to
       // its padding.
       growChatBox();
+      /* Paint what he last read before the fetch, then let the fetch paint
+       * over it. `loaded` is the guard: once the dock has been painted this
+       * page load the DOM is already ahead of the cache, and repainting from
+       * it would put an older thread back on screen. */
+      if (!loaded) paintCached();
       loadThread();
     }
 
