@@ -2374,7 +2374,7 @@ describe("commenting on a cycle", () => {
     assert.equal(reply.parentElement, answered.parentElement);
     assert.equal(
       reply.querySelector(".comment-body").textContent,
-      payload.comments.byCycle["55"][0].reply,
+      payload.comments.byCycle["55"][0].replies[0].text,
     );
     assert.equal(reply.querySelector(".comment-stamp").textContent, "2026-08-09 13:12");
   });
@@ -2391,7 +2391,7 @@ describe("commenting on a cycle", () => {
     const copy = JSON.parse(JSON.stringify(payload.comments));
     const comment = copy.byCycle["55"][0];
     comment.replies = [
-      { author: "commentator", stamp: "2026-08-09 13:12", text: comment.reply },
+      { author: "commentator", stamp: "2026-08-09 13:12", text: comment.replies[0].text },
       { author: "cycle", stamp: "2026-08-09 14:20", text: "Cycle 56: boarded it." },
     ];
     const w = await loadSite("/", { comments: copy });
@@ -2502,8 +2502,16 @@ describe("commenting on a cycle", () => {
   test("an old cached app.js payload with only `reply` still paints one bubble", async () => {
     // `replies` is new. A browser holding yesterday's app.js against today's
     // server is not a case worth breaking, and the fallback is two lines.
+    // The old shape is built here rather than derived from the fixture: the
+    // server stopped sending `reply` at all (it was `replies[0]` again, a
+    // quarter of an uncached payload fetched on every navigation), so
+    // deleting `replies` from today's fixture leaves nothing to fall back
+    // *to* and the test would pass while pinning nothing.
     const copy = JSON.parse(JSON.stringify(payload.comments));
-    delete copy.byCycle["55"][0].replies;
+    const old = copy.byCycle["55"][0];
+    old.reply = old.replies[0].text;
+    old.replyStamp = old.replies[0].stamp;
+    delete old.replies;
     const card = cardFor(await loadSite("/", { comments: copy }), 55);
     assert.equal(card.querySelectorAll(".comment-reply").length, 1);
     assert.equal(card.querySelector(".comment-waiting"), null);

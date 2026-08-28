@@ -38,7 +38,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_capture, nova_journal, nova_replies, nova_site, nova_sources, vault
+from agora_runner import nova_capture, nova_comments, nova_journal, nova_replies, nova_site, nova_sources, vault
 from agora_runner.config import OSLO
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.vault import VaultFiles
@@ -3015,10 +3015,52 @@ def test_the_comments_endpoint_says_which_replies_are_still_coming():
     assert status == 200
     payload = json.loads(body)
     assert payload["byCycle"]["57"][0]["replyPending"] is True
-    assert payload["byCycle"]["57"][0]["reply"] == ""
+    # "no reply yet" and "the reply, once" are both read off `replies` now;
+    # the legacy `reply` mirror of `replies[0]` does not go on the wire.
+    assert payload["byCycle"]["57"][0]["replies"] == []
     answered = payload["byCycle"]["55"][0]
     assert answered["replyPending"] is False
-    assert answered["reply"] == "here you go"
+    assert [r["text"] for r in answered["replies"]] == ["here you go"]
+
+
+def test_the_comments_payload_does_not_send_the_first_reply_twice():
+    """`reply`/`replyStamp` are `replies[0]` again, and the page reads `replies`.
+
+    Measured on the live pod 2026-08-28: 155 of 159 comments carried a
+    `reply` byte-identical to a text already in their own `replies`, a
+    quarter of the payload. The route is uncached and the page fetches it
+    on every navigation, so the copy was paid on every page the owner
+    opened. `parse_comments` still derives both fields -- `_verify_replied`
+    and `nova_replies` read them server-side -- so this pins the wire, not
+    the parser.
+    """
+    stored = (
+        "## New\n\n"
+        "### Needs Edvard \u00b7 2026-08-09 08:20\n\ngo ahead\n\n"
+        "#### Nova \u00b7 2026-08-09 08:22\n\non it\n\n"
+        "### Cycle 55 \u00b7 2026-08-09 13:10\n\nalready answered\n\n"
+        "#### Nova \u00b7 2026-08-09 13:12\n\nhere you go\n"
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={}), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    comment = json.loads(body)["byCycle"]["55"][0]
+    assert "reply" not in comment and "replyStamp" not in comment
+    # The reply itself is still there, once, where the page reads it.
+    assert [r["text"] for r in comment["replies"]] == ["here you go"]
+    # The parser this endpoint is built on still answers both, so the
+    # server-side readers of `reply` are untouched by the wire change.
+    parsed = nova_comments.parse_comments(stored)
+    assert any(c["reply"] == "here you go" for c in parsed)
+    # `needs` is the other list on this payload and carries the same
+    # comments, so it takes the same treatment -- mutation-checked, because
+    # stripping only `byCycle` passed the whole suite.
+    needs = json.loads(body)["needs"]
+    assert [n["text"] for n in needs] == ["go ahead"]
+    assert "reply" not in needs[0] and "replyStamp" not in needs[0]
+    assert [r["text"] for r in needs[0]["replies"]] == ["on it"]
 
 
 def test_a_long_wait_is_flagged_rather_than_called_a_reply_being_written():
