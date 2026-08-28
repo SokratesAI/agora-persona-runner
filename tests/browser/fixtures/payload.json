@@ -529,7 +529,9 @@
       "minutes",
       "turns",
       "toolCalls",
-      "weighted"
+      "weighted",
+      "subagentTurns",
+      "subagentWeighted"
     ],
     "quotaColumns": [
       "at",
@@ -544,21 +546,27 @@
         20.9,
         69,
         80,
-        1204348
+        1204348,
+        null,
+        null
       ],
       [
         1786438814000,
         16.1,
         54,
         61,
-        866112
+        866112,
+        null,
+        null
       ],
       [
         1786449617908,
         19.4,
         103,
         118,
-        1911430
+        1911430,
+        null,
+        null
       ]
     ],
     "quota": [
