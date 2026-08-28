@@ -557,8 +557,8 @@ _REPO_NICKNAMES = {
 #
 # Measured before this list existed, over the 673 entries the site serves:
 # ten `PR:` references rendered as plain text for want of an entry here --
-# sokrates-docs 6, vault-bridge 2, whatsapp-bridge 1, operator 1. The eleven
-# names hand-listed before it covered eight repos and the org has 23.
+# sokrates-docs 6, vault-bridge 2, whatsapp-bridge 1, operator 1. The twelve
+# names hand-listed before it resolved to seven repos and the org has 23.
 #
 # `.claude` is in the org and deliberately absent: neither `_PR_REF_RE` nor
 # `_PR_QUALIFIER_RE` can match a leading dot, so an entry for it would be

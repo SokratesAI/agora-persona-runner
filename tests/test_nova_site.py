@@ -1568,11 +1568,12 @@ def test_a_real_ask_is_not_mistaken_for_an_empty_one(text):
         # The four prefixes that rendered as plain text before the org
         # list existed -- measured over the 673 entries the site served
         # on 2026-08-29: sokrates-docs 6, vault-bridge 2, whatsapp-bridge
-        # 1, operator 1.
-        ("sokrates-docs#4", [("sokrates-docs#4", "sokrates-docs/pull/4")]),
+        # 1, operator 1. The PR numbers are the ones those references
+        # actually carry in the journal.
+        ("sokrates-docs#12", [("sokrates-docs#12", "sokrates-docs/pull/12")]),
         ("vault-bridge#4", [("vault-bridge#4", "vault-bridge/pull/4")]),
-        ("whatsapp-bridge#6", [("whatsapp-bridge#6", "whatsapp-bridge/pull/6")]),
-        ("operator#1", [("operator#1", "operator/pull/1")]),
+        ("whatsapp-bridge#4", [("whatsapp-bridge#4", "whatsapp-bridge/pull/4")]),
+        ("operator#2", [("operator#2", "operator/pull/2")]),
     ],
 )
 def test_a_reference_resolves_to_the_repo_it_names(field, expected):
@@ -1609,20 +1610,22 @@ def test_a_parenthetical_that_names_no_repo_is_left_alone(field):
     assert "".join(s["text"] for s in spans) == field
 
 
-def test_every_repo_in_the_org_is_its_own_prefix():
-    """A repo's own name is always what a `whatsapp-bridge#6` prefix means,
-    so the org list is what makes that true rather than a hand-kept subset.
-    Eleven names covering eight repos is what let four real repos render as
-    plain text for weeks."""
+def test_every_name_in_the_list_resolves_to_itself():
+    """`_ORG_REPOS` is built into `_REPO_ALIASES` by a comprehension, so this
+    pins that construction and nothing about GitHub. It cannot see a name in
+    the list that the org does not have -- the list is a snapshot and there is
+    no offline instrument for its accuracy, which is filed rather than
+    pretended away here."""
     for name in nova_journal._ORG_REPOS:
         assert nova_journal._repo_url(name) == "SokratesAI/" + name
 
 
-def test_every_nickname_points_at_a_repo_that_exists():
+def test_every_nickname_points_at_a_name_in_the_list():
     """The shorthand is mine and cannot be derived, so the one thing worth
-    pinning about it is that it does not name a repo the org does not have --
-    a nickname resolving to a dead name is a confidently wrong link, which is
-    exactly what the unrecognised-prefix rule below refuses to produce."""
+    pinning about it is that it does not point somewhere the list has never
+    heard of -- a nickname resolving to a dead name is a confidently wrong
+    link, which is exactly what the unrecognised-prefix rule below refuses to
+    produce. Like the test above, this compares two things in this file."""
     for nickname, target in nova_journal._REPO_NICKNAMES.items():
         assert target in nova_journal._ORG_REPOS, nickname
 
