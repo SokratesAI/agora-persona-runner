@@ -12086,6 +12086,42 @@ describe("the project page", () => {
     assert.equal(nova.length, 1, "the cycle's answer is not the purple one");
   });
 
+  /* His complaint, comments board 2026-08-28: the box is at the bottom and
+   * he has to scroll the whole page to reach it. These pin the two halves
+   * of the answer -- the button is above the boards, and it focuses the box
+   * rather than merely landing him beside it. jsdom implements no
+   * scrollIntoView, so the focus is the observable half here; the guard in
+   * app.js is what keeps the missing method from throwing before it. */
+  test("the way down to the conversation sits above the boards and counts it", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    const jump = window.document.querySelector(".project-jump");
+    assert.ok(jump, "there is no way down to the conversation");
+    assert.equal(jump.textContent, "Conversation · 2");
+    const feed = window.document.querySelector("#feed");
+    const kids = [...feed.children];
+    const jumpAt = kids.indexOf(jump.parentNode);
+    const boardAt = kids.findIndex((n) => n.classList.contains("project-board"));
+    const threadAt = kids.findIndex((n) => n.classList.contains("project-thread"));
+    assert.ok(jumpAt >= 0 && boardAt >= 0 && threadAt >= 0, "the page is missing a section");
+    assert.ok(jumpAt < boardAt, "the jump is not above the boards");
+    assert.ok(boardAt < threadAt, "the boards stopped coming before the conversation");
+  });
+
+  test("the jump puts the cursor in the box, not just the box on screen", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    window.document.querySelector(".project-jump").click();
+    assert.equal(
+      window.document.activeElement,
+      window.document.querySelector(".project-thread .item-comment-box"),
+      "the jump landed him beside the box without opening it",
+    );
+  });
+
+  test("with nothing said yet the way down says so rather than showing a zero", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    assert.equal(window.document.querySelector(".project-jump").textContent, "Conversation");
+  });
+
   test("a project nobody has said anything about says so and still offers the box", async () => {
     const window = await loadSite("/project/Nova", { project: NOVA });
     const thread = window.document.querySelector(".project-thread");
