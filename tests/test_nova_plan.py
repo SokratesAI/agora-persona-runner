@@ -820,3 +820,33 @@ def test_a_block_carrying_two_status_lines_ends_up_with_one_the_page_agrees_with
     assert out.count("status:") == 1
     rows, _ = _fenced(out, {"goal": _goal})
     assert rows["goal"][0]["status"] == "approved"
+
+
+def test_setting_an_arbitrary_field_replaces_it_in_place():
+    """`now:` is edited by the same surgery as `status:` since Cycle 563 —
+    the number the scoreboard shows is written by the instrument, not typed."""
+    from agora_runner.nova_plan import set_field_in_goals
+
+    out = set_field_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "now", 8.2)
+    assert "now: 8.2" in out
+    assert "now: 3" not in out
+    # The rest of the block, and his prose, are untouched.
+    assert "measure: things per week" in out
+    assert "Prose under G1 that nothing parses." in out
+    assert out.count("now:") == GOALS_WITH_BLOCKS.count("now:")
+
+
+def test_a_field_name_or_value_the_fence_could_not_parse_back_is_refused():
+    """A newline in the value would write a second field the caller never
+    asked for and still return a string, which reads as success."""
+    from agora_runner.nova_plan import set_field_in_goals
+
+    assert set_field_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "now", "3\nmeasure: x") is None
+    assert set_field_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "no w", "3") is None
+    assert set_field_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "", "3") is None
+
+
+def test_a_status_that_is_not_a_status_is_still_refused_through_the_wrapper():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    assert set_status_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "settled") is None

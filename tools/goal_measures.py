@@ -31,8 +31,22 @@ a board row's `Updated` date as its closing date, because a row carries no
 other date -- that is the same approximation the 2026-08-24 review made and
 wrote down. Nothing is rounded into a headline that hides it.
 
-Exit 0 printed a report, exit 1 could not read something it needed. It never
-writes: the review edits `goals.md` and this tells it what to write.
+Exit 0 printed a report, exit 1 could not read something it needed.
+
+By default it never writes: the review edits `goals.md` and this tells it what
+to write. **`--write` is Cycle 563 and exists because that review has never
+run.** The Monday heartbeat that types these numbers in has fired zero times
+since it was created, so on 2026-08-28 all four instrumented goals had drifted
+from the instrument -- G1 8.2 against a written 7.8, G3 4 against 5, G4 2
+against 1, G5 48% against 41 -- and those four wrong numbers were the
+scoreboard at the top of `/plan`, which is the page the owner reads and the
+"graphs" half of issue #96. A number a human has to retype weekly is a number
+that goes stale the first week nobody does. `--write` puts the measurement
+into each instrumented goal's `now:` field in the `--goals` file, in place,
+and leaves a goal with no instrument alone -- writing a guess there would be
+exactly the drift this is fixing. It does not touch the vault: the caller does
+the read-modify-write with an `if_rev` guard, so this stays runnable from
+either pod and holds no credentials.
 """
 
 from __future__ import annotations
@@ -53,7 +67,7 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_goal_history import goal_key
-from agora_runner.nova_plan import _fenced, _goal
+from agora_runner.nova_plan import _fenced, _goal, set_field_in_goals
 
 SITE = os.environ.get(
     "NOVA_SITE_SELF_URL", "http://nova-site.agents.svc.cluster.local:8083"
@@ -311,6 +325,48 @@ def render(rows, since, until, problems):
     return "\n".join(lines)
 
 
+def write_back(path, text, rows):
+    """Put each measured value into its goal's `now:`, in place. Returns a report.
+
+    Only a goal that has an instrument *and* whose written number differs is
+    touched, so a run that changes nothing writes nothing -- which matters
+    because the caller wraps this in a compare-and-swap against a file the
+    owner edits from his phone, and a no-op write is a real chance to lose
+    his edit for nothing.
+
+    A goal whose fence `set_field_in_goals` refuses -- a name that moved, two
+    blocks claiming it, an unterminated fence -- is named in the report rather
+    than skipped quietly. That is the failure this whole tool exists to stop:
+    a number that is silently not what it says it is.
+    """
+    lines, changed = [], 0
+    for row in rows:
+        goal, value = row["goal"], row["value"]
+        if value is None:
+            continue
+        written = goal.get("now", "")
+        if _as_number(written) == _as_number(value):
+            continue
+        amended = set_field_in_goals(text, goal.get("name"), "now", value)
+        if amended is None:
+            lines.append(f"  ! {row['key']}: could not edit that goal's fence, left at {written or '(none)'}")
+            continue
+        text, changed = amended, changed + 1
+        lines.append(f"  {row['key']}  now: {written or '(none)'} -> {value}")
+    if not changed:
+        # Not "everything already agrees" when a fence refused the edit --
+        # that sentence would report a clean run over the exact failure this
+        # is here to surface. Caught by its own test, not by reading it.
+        head = ("WROTE NOTHING — every instrumented goal already carries its measured number"
+                if not lines else "WROTE NOTHING")
+        return "\n".join([head] + lines)
+    try:
+        open(path, "w", encoding="utf-8").write(text)
+    except OSError as exc:
+        return f"COULD NOT WRITE {path}: {exc}"
+    return "\n".join([f"WROTE {changed} value(s) into {path}"] + lines)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=" ".join(__doc__.split("\n\n")[0].split()))
@@ -322,6 +378,9 @@ def main(argv=None):
     parser.add_argument("--entries", type=int, default=400,
                         help="how many journal entries to read (default 400)")
     parser.add_argument("--site", default=SITE)
+    parser.add_argument("--write", action="store_true",
+                        help="write each measured value into the --goals file's "
+                             "own `now:` field, in place (default: report only)")
     args = parser.parse_args(argv)
 
     until = args.until or (
@@ -381,7 +440,10 @@ def main(argv=None):
         value, detail = measurer(window, boards, since, until, prs)
         rows.append({"key": key, "goal": goal, "value": value, "detail": detail})
 
-    print(render(rows, since, until, problems))
+    report = render(rows, since, until, problems)
+    if args.write:
+        report += "\n\n" + write_back(args.goals, text, rows)
+    print(report)
     return 0
 
 
