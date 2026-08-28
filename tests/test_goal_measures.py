@@ -201,3 +201,81 @@ class TestRender:
     def test_a_problem_is_printed_rather_than_swallowed(self):
         out = gm.render([], "2026-08-22", "2026-08-28", ["gh fell over"])
         assert "! gh fell over" in out
+
+
+GOALS_FOR_WRITE = """# Goals
+
+```goal
+name: G1 — one
+measure: things per week
+now: 3
+target: 1
+direction: down
+```
+
+Prose he wrote that nothing parses.
+
+```goal
+name: G2 — two
+measure: a judgement
+now: 3
+target: 0
+direction: down
+```
+"""
+
+
+def _mrow(key, name, value, now):
+    return {"key": key, "goal": {"name": name, "now": now, "unit": ""},
+            "value": value, "detail": ""}
+
+
+class TestWriteBack:
+    def test_a_drifted_measured_value_lands_in_the_fence(self, tmp_path):
+        path = tmp_path / "goals.md"
+        path.write_text(GOALS_FOR_WRITE, encoding="utf-8")
+        report = gm.write_back(str(path), GOALS_FOR_WRITE,
+                               [_mrow("G1", "G1 — one", 8.2, "3")])
+        written = path.read_text(encoding="utf-8")
+        assert "now: 8.2" in written
+        assert "Prose he wrote that nothing parses." in written
+        assert "WROTE 1 value(s)" in report
+        assert "now: 3 -> 8.2" in report
+
+    def test_a_goal_with_no_instrument_is_left_alone(self, tmp_path):
+        path = tmp_path / "goals.md"
+        path.write_text(GOALS_FOR_WRITE, encoding="utf-8")
+        report = gm.write_back(str(path), GOALS_FOR_WRITE,
+                               [_mrow("G2", "G2 — two", None, "3")])
+        assert path.read_text(encoding="utf-8") == GOALS_FOR_WRITE
+        assert "WROTE NOTHING" in report
+
+    def test_an_already_correct_number_writes_nothing_at_all(self, tmp_path):
+        """The caller wraps this in a compare-and-swap against a file he edits
+        from his phone; a no-op write is a real chance to lose his edit."""
+        path = tmp_path / "goals.md"
+        path.write_text("untouched", encoding="utf-8")
+        report = gm.write_back(str(path), GOALS_FOR_WRITE,
+                               [_mrow("G1", "G1 — one", 3.0, "3")])
+        assert path.read_text(encoding="utf-8") == "untouched"
+        assert "WROTE NOTHING" in report
+
+    def test_a_goal_whose_fence_moved_is_named_not_skipped_quietly(self, tmp_path):
+        path = tmp_path / "goals.md"
+        path.write_text("untouched", encoding="utf-8")
+        report = gm.write_back(str(path), GOALS_FOR_WRITE,
+                               [_mrow("G9", "G9 — renamed", 1.0, "3")])
+        assert path.read_text(encoding="utf-8") == "untouched"
+        assert "G9: could not edit that goal's fence" in report
+        # And it must not also claim every goal already agrees — that
+        # sentence would report a clean run over the one real failure.
+        assert "already carries its measured number" not in report
+
+    def test_two_goals_both_land_in_one_file(self, tmp_path):
+        path = tmp_path / "goals.md"
+        path.write_text(GOALS_FOR_WRITE, encoding="utf-8")
+        gm.write_back(str(path), GOALS_FOR_WRITE,
+                      [_mrow("G1", "G1 — one", 8.2, "3"),
+                       _mrow("G2", "G2 — two", 9.0, "3")])
+        written = path.read_text(encoding="utf-8")
+        assert "now: 8.2" in written and "now: 9.0" in written

@@ -551,13 +551,25 @@ WRITE_ATTEMPTS = 3
 def set_status_in_goals(markdown, name, status):
     """Set one goal's `status:` inside its own ```goal fence. `None` if it moved.
 
+    A thin wrapper over `set_field_in_goals` since Cycle 563, which needed the
+    same surgery for `now:` and had no business copying five careful rules
+    about duplicate blocks and unterminated fences to get it.
+    """
+    if status not in GOAL_STATUSES:
+        return None
+    return set_field_in_goals(markdown, name, "status", status)
+
+
+def set_field_in_goals(markdown, name, field, value):
+    """Set one field inside one goal's ```goal fence. `None` if it moved.
+
     **The edit is inside the fence and touches nothing else in the file.**
     `goals.md` is 23KB of the owner's prose and my weekly reviews, and the
-    fenced block is the one part of it anything parses -- so a status tap
-    rewrites six words of machine-readable data and leaves every sentence
-    alone. That is also why `status` lives in the block rather than as a
-    tick in a heading: a heading is prose a cycle rewrites, and this has to
-    survive that.
+    fenced block is the one part of it anything parses -- so a status tap,
+    or a measured `now:`, rewrites six words of machine-readable data and
+    leaves every sentence alone. That is also why these live in the block
+    rather than in a heading: a heading is prose a cycle rewrites, and this
+    has to survive that.
 
     The goal is addressed by `name`, which is the block's own required
     field and the string the row on the page is drawn from. A block whose
@@ -565,12 +577,17 @@ def set_status_in_goals(markdown, name, status):
     failed, the address moved -- which is `reply_under_capture`'s contract
     and gets `reply_under_capture`'s 409.
 
-    An existing `status:` line is replaced in place so the block keeps its
-    field order; a block with none gets one appended as its last line,
+    An existing line for the field is replaced in place so the block keeps
+    its field order; a block with none gets one appended as its last line,
     which is where a reader looking for "what did he say about this"
     expects it and where it cannot be mistaken for part of `measure`.
     """
-    if status not in GOAL_STATUSES:
+    field = (field or "").strip()
+    value = str("" if value is None else value).strip()
+    # A field name that is not a bare word, or a value carrying a newline,
+    # would write something `_goal` cannot parse back -- and the caller would
+    # be told it succeeded. Refusing is the same `None` as a name that moved.
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field) or "\n" in value:
         return None
     wanted = (name or "").strip()
     if not wanted:
@@ -579,7 +596,7 @@ def set_status_in_goals(markdown, name, status):
     lines = (markdown or "").split("\n")
     opener = _fence_open_re("goal")
     name_re = re.compile(r"^(?P<indent>[ \t]*)name:[ \t]*(?P<value>.*?)[ \t]*$")
-    status_re = re.compile(r"^(?P<indent>[ \t]*)status:[ \t]*.*$")
+    field_re = re.compile(r"^(?P<indent>[ \t]*)" + re.escape(field) + r":[ \t]*.*$")
 
     # Every block that claims this name, not the first. Two goals sharing a
     # `name:` render as two identical rows he can tap separately, and
@@ -616,20 +633,20 @@ def set_status_in_goals(markdown, name, status):
 
     match, close, body = hits[0]
     indent = name_re.match(lines[match]).group("indent")
-    # Every `status:` line in the block, not the first. `_goal` builds its
+    # Every line for this field in the block, not the first. `_goal` builds its
     # row with a plain dict assignment over all the lines, so on a block
     # that already carries two the *last* one is what the page renders --
     # rewriting only the first would return 200 and change nothing he can
     # see. Collapsing them also leaves the block with one answer in it,
     # which is the only shape either side can agree on.
-    written = [i for i in body if status_re.match(lines[i])]
+    written = [i for i in body if field_re.match(lines[i])]
     if written:
         for i in written:
-            lines[i] = f"{indent}status: {status}"
+            lines[i] = f"{indent}{field}: {value}"
         for i in reversed(written[1:]):
             del lines[i]
         return "\n".join(lines)
-    lines.insert(close, f"{indent}status: {status}")
+    lines.insert(close, f"{indent}{field}: {value}")
     return "\n".join(lines)
 
 
