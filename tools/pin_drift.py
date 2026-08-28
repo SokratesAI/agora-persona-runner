@@ -53,6 +53,19 @@ blindness; Cycle 588 is this. Reading every `crossplane/*.ya?ml` costs
 about 11 seconds on `platform-config` (4.3s to 15.7s, measured), which
 is the price of not finding the next one by accident.
 
+**`KUBECTL_VERSION` is judged against the cluster, not against upstream.**
+Kubernetes supports `kubectl` within one minor of `kube-apiserver`, so the
+newest kubectl that exists is the wrong ceiling for a pin the loop actually
+runs against this cluster. Until Cycle 589 this compared it to
+`dl.k8s.io/release/stable.txt`, and on 2026-08-28 it reported `v1.36.2` as
+"a minor behind v1.37.0" and asked for a bump -- against an API server at
+`v1.34.4+k3s1`, where kubectl already prints *"version difference between
+client (1.36) and server (1.34) exceeds the supported minor version skew of
++/-1"* on every single invocation. The check was reading a real number and
+pointing it the wrong way. The ceiling is now `stable-<major>.<server minor
++ 1>.txt`, read after one `kubectl version -o json`; a cluster this cannot
+read is a problem line and exit 1, never a clean answer.
+
 **A patch gap is not a finding.** Semver makes a patch release
 backwards-compatible and upstreams publish them continuously, so "behind
 by a patch" fires on almost every run and a check that always fires is
@@ -70,10 +83,20 @@ import argparse
 import base64
 import json
 import re
+import subprocess
 import sys
 import urllib.request
 
 from tools.security_alerts import _gh, _repos_to_sweep
+
+
+def _kubectl(args):
+    """Run `kubectl` and return `(exit_code, stdout, stderr)`."""
+    proc = subprocess.run(
+        ["kubectl"] + args, capture_output=True, text=True, timeout=60
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
 
 # `ARG NAME_VERSION=value` in a Dockerfile. The name is the key into
 # UPSTREAM below; a pin whose name is not there is reported as unmatched
@@ -107,7 +130,7 @@ EMBEDDED_USES_RE = re.compile(
 # only so the report can say where the pin actually lands.
 ACTION_KINDS = ("action", "template-action")
 
-K8S_STABLE = "https://dl.k8s.io/release/stable.txt"
+K8S_STABLE_MINOR = "https://dl.k8s.io/release/stable-%d.%d.txt"
 
 # Said by two paths and matched on by the caller, so it lives here rather
 # than being written out twice and drifting.
@@ -115,7 +138,8 @@ NO_RELEASES = "%s publishes no releases, so there is no upstream version "\
               "to compare against"
 
 # Dockerfile ARG name -> where its upstream release lives.
-#   ("k8s", None)          the Kubernetes stable channel
+#   ("k8s", None)          the newest kubectl this cluster's API server
+#                          supports -- not the newest kubectl there is
 #   ("release", "o/r")     the latest GitHub release of that repo
 UPSTREAM = {
     "KUBECTL_VERSION": ("k8s", None),
@@ -163,12 +187,20 @@ def version_parts(text):
 
 
 def gap(pinned, latest):
-    """`"major"`, `"minor"`, `"patch"`, `"current"`, or None if unorderable.
+    """`"major"`, `"minor"`, `"patch"`, `"ahead"`, `"current"`, or None.
 
     Compared only as deep as the *pin* is written. `actions/checkout@v4`
     says nothing about a minor, so against `v7.0.1` the answer is a major
     gap and against `v4.9.0` it is `current` -- the floating tag really
     does move within its major, so there is nothing there to bump.
+
+    `"ahead"` is a pin *past* what it is compared against, and it read as
+    `current` until Cycle 589. That was harmless while every comparison was
+    against an upstream latest, where being ahead is nearly impossible. It
+    stopped being harmless once `KUBECTL_VERSION` started being judged
+    against a ceiling the cluster sets: `v1.36.2` against a supported
+    `v1.35.x` is the actual defect, and reporting it as `current` is the
+    same silence the check exists to break.
     """
     low, high = version_parts(pinned), version_parts(latest)
     if low is None or high is None:
@@ -181,7 +213,7 @@ def gap(pinned, latest):
         if low[index] < high[index]:
             return name
         if low[index] > high[index]:
-            return "current"
+            return "ahead"
     return "current"
 
 
@@ -249,12 +281,56 @@ def pins_in(repo, path, text):
     return found
 
 
-def latest_k8s(opener=urllib.request.urlopen):
+def _read(url, opener):
     try:
-        with opener(K8S_STABLE, timeout=30) as response:
+        with opener(url, timeout=30) as response:
             return response.read().decode("utf-8").strip(), None
     except Exception as exc:  # noqa: BLE001 -- any network shape is "unreadable"
-        return None, f"could not reach {K8S_STABLE}: {exc}"
+        return None, f"could not reach {url}: {exc}"
+
+
+def server_minor(run=None):
+    """`((major, minor), gitVersion, why)` for the API server this pod talks to.
+
+    `minor` comes back as `"34"` on upstream and `"34+"` on some
+    distributions, so it is read with a regex rather than `int()`.
+    """
+    code, out, err = (run or _kubectl)(["version", "-o", "json"])
+    if code != 0:
+        blob = (err or out or "").strip()
+        return None, None, blob.splitlines()[0] if blob else f"kubectl exited {code}"
+    try:
+        server = json.loads(out)["serverVersion"]
+        major = int(re.match(r"\d+", str(server["major"])).group())
+        minor = int(re.match(r"\d+", str(server["minor"])).group())
+    except Exception as exc:  # noqa: BLE001 -- any shape here is unreadable
+        return None, None, f"could not read serverVersion out of kubectl: {exc}"
+    return (major, minor), server.get("gitVersion", f"v{major}.{minor}"), None
+
+
+def latest_k8s(opener=urllib.request.urlopen, run=None):
+    """The newest kubectl release this cluster's API server supports.
+
+    **Not the newest kubectl that exists**, which is what this asked until
+    Cycle 589 and is the wrong question. Kubernetes supports kubectl within
+    one minor of `kube-apiserver` in either direction. This cluster answers
+    `v1.34.4+k3s1`; the pin was `v1.36.2` and the upstream stable channel
+    said `v1.37.0`, so the check was reporting "a minor behind" and asking
+    for a bump that widens a skew kubectl itself already warns about on
+    every invocation: *"version difference between client (1.36) and server
+    (1.34) exceeds the supported minor version skew of +/-1"*. The ceiling
+    is therefore server-minor plus one, read from that minor's own stable
+    channel; if that minor has not been published yet, the server's own.
+    """
+    where, git_version, why = server_minor(run)
+    if where is None:
+        return None, f"could not read the cluster's API server version -- {why}"
+    major, minor = where
+    for candidate in (minor + 1, minor):
+        latest, read_why = _read(K8S_STABLE_MINOR % (major, candidate), opener)
+        if latest:
+            return latest, None
+    return None, f"could not reach {K8S_STABLE_MINOR % (major, minor + 1)} -- {read_why}"
 
 
 def latest_release(repo, run=None):
@@ -288,7 +364,8 @@ def resolve(pin, cache, run=None, opener=urllib.request.urlopen):
         key = target
     if key not in cache:
         if key[0] == "k8s":
-            cache[key] = latest_k8s(opener) + ("the Kubernetes stable channel",)
+            cache[key] = latest_k8s(opener, run) + (
+                "the newest minor this cluster's API server supports",)
         else:
             cache[key] = latest_release(key[1], run) + (f"{key[1]} releases",)
     latest, why, source = cache[key]
@@ -377,6 +454,17 @@ def format_report(judged, excluded, problems, notes):
                 stamped = "  — a template, stamped into every repo it creates" \
                     if is_template else ""
                 lines.append(f"      {repo}  {path}{times}{stamped}")
+    ahead = [p for p in judged if p["gap"] == "ahead"]
+    if ahead:
+        lines.append(
+            f"PINNED PAST WHAT IT IS JUDGED AGAINST — {len(_group(ahead))} "
+            "pin(s) are ahead, which is drift in the other direction."
+        )
+        for (what, pinned, latest), pins in sorted(_group(ahead).items()):
+            lines.append(f"  {what}: pinned {pinned}, ceiling {latest} "
+                         f"(ahead, per {pins[0]['source']})")
+            for repo, path in sorted({(p["repo"], p["path"]) for p in pins}):
+                lines.append(f"      {repo}  {path}")
     patch = [p for p in judged if p["gap"] == "patch"]
     if patch:
         lines.append("Behind by a patch only, which is not a finding — semver "
@@ -387,8 +475,8 @@ def format_report(judged, excluded, problems, notes):
                          f"({len(pins)} file(s))")
     current = [p for p in judged if p["gap"] == "current"]
     lines.append(
-        f"Judged {len(judged)} pin(s): {len(behind)} behind, {len(patch)} "
-        f"patch-only, {len(current)} current."
+        f"Judged {len(judged)} pin(s): {len(behind)} behind, {len(ahead)} "
+        f"ahead, {len(patch)} patch-only, {len(current)} current."
     )
     skipped = {}
     for pin in excluded:
@@ -434,7 +522,7 @@ def main(argv=None):
     # one of them is actionable, and `security_alerts`' contract is that 2
     # means "go and do something" -- returning 1 here would hide a real
     # bump behind a pin whose upstream nobody has configured yet.
-    if any(p["gap"] in ("major", "minor") for p in judged):
+    if any(p["gap"] in ("major", "minor", "ahead") for p in judged):
         return 2
     if unreadable:
         return 1
