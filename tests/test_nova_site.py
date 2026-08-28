@@ -3529,7 +3529,8 @@ def test_a_warm_that_cannot_reach_the_vault_costs_only_the_warm():
     # list is the code under test, and a test that reads it back agrees
     # with whatever it says. A third payload added here should fail this
     # and be looked at.
-    assert attempted == ["journal", "digest"], "the payload behind the failing one was skipped"
+    assert attempted == ["journal", "digest", "board:issues", "board:ideas"], \
+        "the payload behind the failing one was skipped"
     assert "journal" not in nova_site._cache, "a failed build must not be cached"
 
 
@@ -3545,6 +3546,7 @@ def test_nothing_is_warmed_that_the_request_path_will_not_read_back():
     to check -- an assertion restating the list would move with it.
     """
     served = set()
+    prefixes = set()
     for node in ast.walk(ast.parse(inspect.getsource(nova_site))):
         if not isinstance(node, ast.Call):
             continue
@@ -3554,14 +3556,32 @@ def test_nothing_is_warmed_that_the_request_path_will_not_read_back():
         first = node.args[0] if node.args else None
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             served.add(first.value)
+        # `_send_board` builds its key as `"board:" + name`, so the literal
+        # the handler reads back is a prefix rather than a whole name. A
+        # scanner that only understood whole names would report every
+        # warmed board as unread and the fix would be to stop warming them.
+        elif (
+            isinstance(first, ast.BinOp)
+            and isinstance(first.op, ast.Add)
+            and isinstance(first.left, ast.Constant)
+            and isinstance(first.left.value, str)
+        ):
+            prefixes.add(first.left.value)
     # A scanner that finds nothing agrees with any list at all, which is
     # the shape of vacuous guard this suite already bans elsewhere.
     assert "journal" in served and "digest" in served, (
         f"the handler scan found {sorted(served)} -- it is no longer reading the request path"
     )
+    assert "board:" in prefixes, (
+        f"the handler scan found prefixes {sorted(prefixes)} -- it is no longer reading /api/board"
+    )
     warmed = {name for name, _ in nova_site.WARM_PAYLOADS}
-    assert warmed <= served, (
-        f"{sorted(warmed - served)} is built at startup and no handler reads it back"
+    unread = {
+        n for n in warmed
+        if n not in served and not any(n.startswith(p) for p in prefixes)
+    }
+    assert not unread, (
+        f"{sorted(unread)} is built at startup and no handler reads it back"
     )
 
 

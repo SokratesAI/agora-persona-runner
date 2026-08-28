@@ -1251,6 +1251,10 @@ def cached_entry(name, build):
 WARM_PAYLOADS = (
     ("journal", journal_payload),
     ("digest", digest_payload),
+    # The cache key `_send_board` builds, spelled out rather than derived,
+    # so the scanner in the test has a literal to compare against.
+    ("board:issues", lambda: board_payload("issues")),
+    ("board:ideas", lambda: board_payload("ideas")),
 )
 
 
@@ -1285,9 +1289,23 @@ def warm_cache():
     warm what the page asks for. What matters is what the page asks for
     *and* reads from here, and those are not the same list.
 
-    Boards are also not warmed: they are fetched on a sidebar press rather
-    than at startup, and measured 0.53s and 0.39s cold, which is a wait
-    nobody has reported.
+    Boards were left out of this list on the same measurement, and the
+    measurement has since moved by an order of magnitude. On 2026-08-12
+    they were 0.53s and 0.39s cold, "a wait nobody has reported". Measured
+    against the live pod 2026-08-28, six minutes into a process that had
+    served nothing since it started: `/api/board?name=ideas&limit=30`
+    answered in **5.05s**, and `/api/board?name=issues` in **3.15s**,
+    against 0.03-0.09s on every request after. The boards grew; the
+    justification did not follow them. The owner reported it as "The Nova
+    app has become extremely slow. Opening, navigating, loading comments,
+    anything" (`issues.md`, 2026-08-27), and *navigating* is this: a
+    sidebar press into a board, five seconds, on the first press after
+    almost any cycle merges.
+
+    So they are warmed now, and the general lesson is worth more than the
+    two lines: **an exclusion justified by a number needs the number
+    re-read, not the reasoning re-read.** Nothing here was wrong when it
+    was written and nothing about it looked stale afterwards.
 
     Sequential, on one thread, and never on the request path. Serving is
     already underway when this starts, so a visitor arriving mid-warm is
