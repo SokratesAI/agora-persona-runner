@@ -397,6 +397,42 @@ def client_tool_schemas(caps, active_step=None):
         })
     if caps.get("manageAgora"):
         tools.append({
+            "name": "list_conversations",
+            "description": (
+                "List Agora's conversations -- id, name, and when each was last spoken in, "
+                "newest first. This is how you reach a conversation OTHER than the one you "
+                "are in: without it, a request like 'read that other conversation about X' "
+                "has no answer. Pass `query` to keep only the conversations whose name "
+                "contains it (case-insensitive); there are several hundred, so filter when "
+                "you can name the one you want. Then call read_conversation."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": [],
+            },
+        })
+        tools.append({
+            "name": "read_conversation",
+            "description": (
+                "Read the messages of another Agora conversation. `conversation` takes "
+                "either its id or its exact name (case-insensitive) -- a name that matches "
+                "more than one conversation is refused with the candidates listed, so use "
+                "list_conversations first when you are unsure. Returns the NEWEST `limit` "
+                "messages (default 50) and always says how many there are in total and "
+                "which slice you got; raise `limit` or set `offset` to walk further back."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "conversation": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                },
+                "required": ["conversation"],
+            },
+        })
+        tools.append({
             "name": "list_personas",
             "description": (
                 "List every existing persona (id, name, model, capabilities). Call this "
@@ -573,6 +609,8 @@ TOOL_TO_CAPABILITY = {
     "kubectl_read": "kubectlRead",
     "github_read": "githubRead",
     "terminal_exec": "terminalExec",
+    "list_conversations": "manageAgora",
+    "read_conversation": "manageAgora",
     "list_personas": "manageAgora",
     "list_models": "manageAgora",
     "create_persona": "manageAgora",

@@ -411,6 +411,93 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             status, _ = agora_internal("PATCH", f"/personas/{persona_id}", {"sharedMemory": memory})
             audit(persona_name, conversation_id, "save_memory", f"{len(memory)} chars")
             return "memory saved" if status == 200 else f"save failed ({status})"
+        if name == "list_conversations":
+            query = str(args.get("query", "") or "").strip().lower()
+            status, body = agora_get("/conversations")
+            audit(persona_name, conversation_id, "list_conversations", query)
+            if status != 200:
+                return f"[list_conversations failed: HTTP {status}]"
+            rows = body.get("conversations", []) or []
+            total = len(rows)
+            if query:
+                rows = [c for c in rows if query in str(c.get("name", "")).lower()]
+            # lastMessageAt is absent on a conversation nobody has spoken in
+            # yet -- sort those to the bottom rather than crashing on None.
+            rows.sort(key=lambda c: str(c.get("lastMessageAt") or ""), reverse=True)
+            lines = [
+                f"{c.get('id')} | {c.get('name')} | {c.get('lastMessageAt') or 'never'}"
+                for c in rows
+            ]
+            if not lines:
+                return f"[no conversation name contains {query!r} -- {total} exist]"
+            header = (
+                f"{len(lines)} of {total} conversations match {query!r}:"
+                if query else f"{total} conversations:"
+            )
+            return "\n".join([header] + lines)
+        if name == "read_conversation":
+            wanted = str(args.get("conversation", "") or "").strip()
+            if not wanted:
+                return "[read_conversation error: conversation (id or name) is required]"
+            status, body = agora_get("/conversations")
+            if status != 200:
+                return f"[read_conversation failed: HTTP {status} listing conversations]"
+            rows = body.get("conversations", []) or []
+            target = next((c for c in rows if str(c.get("id")) == wanted), None)
+            if target is None:
+                # Name resolution is deliberately exact-and-case-insensitive
+                # rather than substring: a substring match on "Nova" would
+                # silently pick one of ~500 cycle conversations.
+                matches = [
+                    c for c in rows
+                    if str(c.get("name", "")).strip().lower() == wanted.lower()
+                ]
+                if not matches:
+                    return (f"[no conversation with id or name {wanted!r} -- "
+                            f"call list_conversations to find it]")
+                if len(matches) > 1:
+                    listed = "\n".join(
+                        f"{c.get('id')} | {c.get('name')}" for c in matches)
+                    return (f"[{len(matches)} conversations are named {wanted!r} -- "
+                            f"call read_conversation again with one of these ids:\n{listed}]")
+                target = matches[0]
+            cid = str(target.get("id"))
+            status, body = agora_get(f"/conversations/{cid}/messages")
+            audit(persona_name, conversation_id, "read_conversation", target.get("name", cid))
+            if status != 200:
+                return f"[read_conversation failed: HTTP {status} reading {cid}]"
+            messages = body.get("messages", []) or []
+            total = len(messages)
+            try:
+                limit = int(args.get("limit") or 50)
+            except (TypeError, ValueError):
+                limit = 50
+            try:
+                offset = int(args.get("offset") or 0)
+            except (TypeError, ValueError):
+                offset = 0
+            limit = max(1, limit)
+            offset = max(0, offset)
+            # Newest-first slicing, expressed from the end: offset 0 is the
+            # newest message. Written this way so "the last 50" needs no
+            # arithmetic from the caller, which is the common case.
+            end = total - offset
+            start = max(0, end - limit)
+            window = messages[start:end] if end > 0 else []
+            older = start
+            newer = max(0, total - end)
+            if not window:
+                # offset past the oldest message, or an empty conversation.
+                return (f"{target.get('name')} ({cid}) -- {total} messages total, "
+                        f"none in this window (offset {offset} is past the oldest).")
+            head = (f"{target.get('name')} ({cid}) -- {total} messages total, "
+                    f"showing {len(window)} (#{start + 1}-#{end}); "
+                    f"{older} older and {newer} newer not shown.")
+            lines = [
+                f"[{m.get('ts', '')}] {m.get('sender', '?')}: {m.get('text', '')}"
+                for m in window
+            ]
+            return "\n".join([head] + lines)
         if name == "list_personas":
             status, body = agora_get("/personas")
             audit(persona_name, conversation_id, "list_personas", "")
