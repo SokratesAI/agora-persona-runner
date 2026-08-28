@@ -552,6 +552,21 @@ def _org_alert(repo, number, package="brace-expansion"):
     return alert
 
 
+def _summarised_org_alerts(*raw):
+    """The org view in the shape `org_alerts` actually returns.
+
+    The raw payloads above are what GitHub sends; everything downstream of
+    `org_alerts` sees the `_summarise` shape. Building the fixture by
+    running the module's own parser is deliberate -- a hand-written dict
+    here would drift from what production produces, and the fold below
+    feeds straight into `fix_landed` and the report, which read every one
+    of those fields.
+    """
+    state, alerts = security_alerts.org_alerts("o", run=_runner(0, json.dumps(list(raw))))
+    assert state == OK
+    return alerts
+
+
 def test_the_org_view_carries_the_repo_and_the_alert_number():
     body = json.dumps([_org_alert("o/a", 2), _org_alert("o/b", 7, "left-pad")])
     state, alerts = security_alerts.org_alerts("o", run=_runner(0, body))
@@ -635,13 +650,166 @@ def test_main_never_exits_clean_when_the_two_views_disagree(monkeypatch, capsys)
     monkeypatch.setattr(security_alerts, "alerts_for", lambda repo: (OK, []))
     monkeypatch.setattr(security_alerts, "verify_landed", lambda results: None)
     monkeypatch.setattr(security_alerts, "_orgs_from_workspace", lambda: ["o"])
+    # Built before `org_alerts` is patched: the helper runs the real one.
+    org_view = _summarised_org_alerts(_org_alert("o/a", 2))
+    monkeypatch.setattr(security_alerts, "org_alerts", lambda org: (OK, org_view))
+    # 2, not 1: the alert the org view holds is folded back into the sweep
+    # (Cycle 583), so there is something to act on rather than only an
+    # instrument that cannot be believed. It said 1 and printed "No open
+    # security alerts" until 2026-08-28, which is the bug that fold fixes.
+    assert security_alerts.main([]) == 2
+    out = capsys.readouterr().out
+    assert "No open security alerts" not in out
+    assert "the per-repo sweep did not" in out
+
+
+# --- the org-only alert is put back into the sweep (Cycle 583) ---
+#
+# The cross-check above fired for real on 2026-08-28 at 15:33, on the same
+# repo and the same alert as 08-27. It worked, and the report still led
+# with "No open security alerts" and still named the repo on the answered
+# list, because the warning is printed after a report built only from the
+# per-repo sweep. The second view has to be a source, not just an audit.
+
+
+def test_an_org_only_alert_is_put_back_into_the_repo_it_belongs_to():
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (OK, _summarised_org_alerts(_org_alert("o/a", 2)))}
+    folded = security_alerts.fold_in_org_only(results, org_views)
+    assert folded == [("o/a", 2)]
+    assert [a["number"] for a in results["o/a"][1]] == [2]
+    assert results["o/a"][1][0]["org_only"] is True
+    # The restored alert must look like every other one, or the report and
+    # `fix_landed` would need a second shape to know about.
+    assert "repo" not in results["o/a"][1][0]
+    assert results["o/a"][1][0]["package"] == "brace-expansion"
+
+
+def test_the_headline_cannot_read_clean_while_the_org_view_holds_an_alert():
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (OK, _summarised_org_alerts(_org_alert("o/a", 2)))}
+    before, _ = format_report({"o/a": (OK, [])})
+    assert any("No open security alerts" in line for line in before)
+    security_alerts.fold_in_org_only(results, org_views)
+    lines, code = format_report(results)
+    blob = "\n".join(lines)
+    assert "No open security alerts" not in blob
+    assert code == 2
+    assert "brace-expansion" in blob
+
+
+def test_a_folded_alert_says_the_per_repo_route_missed_it():
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (OK, _summarised_org_alerts(_org_alert("o/a", 2)))}
+    security_alerts.fold_in_org_only(results, org_views)
+    lines, _ = format_report(results)
+    assert any("seen only in the org-wide alert list" in line for line in lines)
+
+
+def test_an_alert_both_views_have_is_not_added_twice():
+    results = {"o/a": (OK, [{"number": 2, "package": "brace-expansion"}])}
+    org_views = {"o": (OK, _summarised_org_alerts(_org_alert("o/a", 2)))}
+    assert security_alerts.fold_in_org_only(results, org_views) == []
+    assert len(results["o/a"][1]) == 1
+
+
+def test_a_repo_outside_the_sweep_is_not_folded_in():
+    # Same boundary as the cross-check: an org alert on a repo that was
+    # never swept is not a missing alert, it is a repo outside the sweep,
+    # and inventing a results row for it would report an archived repo as
+    # something this loop can fix.
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (OK, _summarised_org_alerts(_org_alert("o/archived", 2)))}
+    assert security_alerts.fold_in_org_only(results, org_views) == []
+    assert results == {"o/a": (OK, [])}
+
+
+def test_a_repo_the_sweep_could_not_read_is_not_folded_into():
+    results = {"o/a": (DISABLED, "Dependabot alerts are disabled")}
+    org_views = {"o": (OK, _summarised_org_alerts(_org_alert("o/a", 2)))}
+    assert security_alerts.fold_in_org_only(results, org_views) == []
+    assert results["o/a"] == (DISABLED, "Dependabot alerts are disabled")
+
+
+def test_an_unreadable_org_view_folds_nothing_in():
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (ERROR, "gh exited 1")}
+    assert security_alerts.fold_in_org_only(results, org_views) == []
+    assert results["o/a"][1] == []
+
+
+def test_a_folded_alert_gets_the_same_already_fixed_measurement(monkeypatch):
+    # This is what actually happened on 08-28: the missing alert was real
+    # and its fix was already on the default branch. It has to reach
+    # `fix_landed` like any other alert, or the report would call a patched
+    # branch actionable and every cycle would re-derive that it is not.
+    results = {"o/a": (OK, [])}
+    org_views = {"o": (OK, _summarised_org_alerts(_org_alert("o/a", 2)))}
+    security_alerts.fold_in_org_only(results, org_views)
+    lockfile = json.dumps(
+        {"packages": {"node_modules/brace-expansion": {"version": "2.1.4"}}}
+    )
+    security_alerts.verify_landed(results, run=_runner(0, lockfile))
+    lines, code = format_report(results)
+    blob = "\n".join(lines)
+    assert code == 0
+    assert "ALREADY FIXED ON THE DEFAULT BRANCH" in blob
+    assert "seen only in the org-wide alert list" in blob
+
+
+def test_main_folds_the_org_view_in_and_still_reports_the_disagreement(
+    monkeypatch, capsys
+):
     monkeypatch.setattr(
         security_alerts,
-        "org_alerts",
-        lambda org: (OK, [dict(_org_alert("o/a", 2), repo="o/a")]),
+        "_repos_to_sweep",
+        lambda run=None: (["o/a"], [], [], False),
     )
+    monkeypatch.setattr(security_alerts, "_orgs_from_workspace", lambda: ["o"])
+    monkeypatch.setattr(security_alerts, "alerts_for", lambda repo, run=None: (OK, []))
+    # Built before `org_alerts` is patched: the helper runs the real one.
+    org_view = _summarised_org_alerts(_org_alert("o/a", 2))
+    monkeypatch.setattr(
+        security_alerts, "org_alerts", lambda org, run=None: (OK, org_view)
+    )
+    monkeypatch.setattr(
+        security_alerts, "fix_landed", lambda repo, alert, run=None: (False, "")
+    )
+    code = security_alerts.main([])
+    blob = capsys.readouterr().out
+    assert code == 2
+    assert "OPEN SECURITY ALERTS" in blob
+    assert "No open security alerts" not in blob
+    assert "the per-repo sweep did not" in blob
+
+
+def test_main_verifies_a_folded_alert_rather_than_reporting_it_unmeasured(
+    monkeypatch, capsys
+):
+    # Order, specifically: the fold has to happen before `verify_landed`,
+    # or an alert only the org view saw would always be actionable because
+    # nothing ever measured it. That is how 08-28's real case would have
+    # been reported -- an already-patched branch called a live finding.
+    monkeypatch.setattr(
+        security_alerts,
+        "_repos_to_sweep",
+        lambda run=None: (["o/a"], [], [], False),
+    )
+    monkeypatch.setattr(security_alerts, "_orgs_from_workspace", lambda: ["o"])
+    monkeypatch.setattr(security_alerts, "alerts_for", lambda repo, run=None: (OK, []))
+    org_view = _summarised_org_alerts(_org_alert("o/a", 2))
+    monkeypatch.setattr(
+        security_alerts, "org_alerts", lambda org, run=None: (OK, org_view)
+    )
+    monkeypatch.setattr(
+        security_alerts,
+        "fix_landed",
+        lambda repo, alert, run=None: (True, "default branch resolves 2.1.4"),
+    )
+    # 1, not 2: nothing to fix, but the per-repo route lied, so the
+    # instrument still says it cannot be believed.
     assert security_alerts.main([]) == 1
     out = capsys.readouterr().out
-    # Both the clean-looking per-repo line and the contradiction of it.
-    assert "No open security alerts" in out
+    assert "ALREADY FIXED ON THE DEFAULT BRANCH" in out
+    assert "OPEN SECURITY ALERTS" not in out
     assert "the per-repo sweep did not" in out

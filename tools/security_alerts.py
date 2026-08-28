@@ -88,6 +88,21 @@ now reads `/orgs/{org}/dependabot/alerts` -- the same alerts, a different
 route -- and `cross_check` reports any alert one view has and the other
 does not, in either direction. It never reads as clean.
 
+**Detecting the disagreement was not enough -- Cycle 583.** The same false
+clean happened again on 2026-08-28 at 15:33, on the same repo and the same
+alert, and the cross-check caught it exactly as designed. The report still
+led with `No open security alerts` and still named `SokratesAI/agora` on
+the answered list, because the warning is a line printed *after* a report
+built only from the per-repo sweep. The line `tools.preflight` chose to
+summarise this check by was the sweep footnote, so the one-line view of
+that morning said nothing about a high-severity alert at all. So
+`fold_in_org_only` now puts
+an org-only alert back into the per-repo results before anything is
+verified or formatted: it gets the same `fix_landed` measurement, it is
+ranked with everything else, and it says on its own line that the per-repo
+route missed it. The headline cannot say clean while either view holds an
+alert.
+
 Exit status: 0 when every repo answered and nothing needs acting on, 1
 when anything was unreadable, alerts are disabled somewhere, or the two
 views disagree, 2 when there is an open alert whose fix is not already on
@@ -379,6 +394,16 @@ def format_report(results):
             f"-> {alert['patched']}  ({alert['manifest']})"
         )
         lines.append(f"      {detail}")
+        # The alert is here because the org-wide list had it and the
+        # per-repo route did not. Worth printing on the alert rather than
+        # only in the cross-check footnote: the reader is looking at the
+        # one line that says what to do, and the fact that this repo's
+        # own answer was wrong belongs next to it.
+        if alert.get("org_only"):
+            lines.append(
+                "      seen only in the org-wide alert list — the per-repo "
+                "route did not return it, so this repo's own answer is wrong"
+            )
         if alert["url"]:
             lines.append(f"      {alert['url']}")
 
@@ -569,6 +594,50 @@ def org_alerts(org, run=None):
     return OK, out_alerts
 
 
+def fold_in_org_only(results, org_views):
+    """Add alerts only the org-wide list saw into the per-repo results.
+
+    `cross_check` below detects that the two views disagree and says so in
+    a warning line under the report. That is not enough, and 2026-08-28 is
+    the proof: `SokratesAI/agora`'s open high-severity `brace-expansion`
+    alert was missing from the per-repo sweep, so the report's own headline
+    read `No open security alerts` with that repo on the answered list, and
+    the only thing that contradicted it was a `⚠` four lines further down.
+    A cycle reading the summary — which is exactly what `tools.preflight`
+    prints — was told the org was clean.
+
+    So the second view is a *source*, not just an audit. An alert the org
+    list holds for a repo this sweep read is put back into that repo's
+    results before anything is verified or formatted, which means it gets
+    the same `fix_landed` measurement as any other alert and lands in the
+    same ranked list. It carries `org_only` so the report can say the
+    per-repo route did not return it, because that is a fact about the
+    instrument the reader needs whether or not the alert itself matters.
+
+    Call this *after* `cross_check`, which reads the raw disagreement, and
+    *before* `verify_landed`. Only repos this sweep actually read are
+    touched, for `cross_check`'s reason: an org alert on a repo that was
+    never swept is not a missing alert, it is a repo outside the sweep.
+    """
+    folded = []
+    for org in sorted(org_views):
+        state, payload = org_views[org]
+        if state != OK:
+            continue
+        for alert in payload:
+            repo = alert["repo"]
+            if repo not in results or results[repo][0] != OK:
+                continue
+            existing = results[repo][1]
+            if any(a.get("number") == alert.get("number") for a in existing):
+                continue
+            restored = {k: v for k, v in alert.items() if k != "repo"}
+            restored["org_only"] = True
+            existing.append(restored)
+            folded.append((repo, alert.get("number")))
+    return folded
+
+
 def cross_check(results, org_views):
     """`(lines, disagreed)` -- do the two views of the same alerts agree?
 
@@ -701,12 +770,16 @@ def main(argv=None):
         repos, unplaceable, notes, incomplete = _repos_to_sweep()
 
     results = {repo: alerts_for(repo) for repo in repos}
-    verify_landed(results)
     # Same rule as the sweep itself: the orgs are whatever this workspace's
     # checkouts name, so nothing here hardcodes one and an owner that is a
     # user rather than an org never gets asked an org-only question.
     org_views = {org: org_alerts(org) for org in _orgs_from_workspace()}
+    # Order matters. `cross_check` has to read the raw disagreement, so it
+    # runs first; the fold then repairs the sweep so `verify_landed` and
+    # `format_report` see every alert either view knows about.
     disagreement, disagreed = cross_check(results, org_views)
+    fold_in_org_only(results, org_views)
+    verify_landed(results)
     lines, code = format_report(results)
     for line in lines:
         print(line)
