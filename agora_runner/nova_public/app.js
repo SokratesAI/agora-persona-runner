@@ -780,6 +780,28 @@
     return node;
   }
 
+  /* How a persona is named in a picker.
+   *
+   * Two suffixes, both money-or-meaning rather than decoration. `(metered)`
+   * says this one spends the prepaid API balance. `(on a schedule)` says
+   * this one wakes up on its own and is therefore not something you start a
+   * conversation with and wait on -- the owner, issues board #119: the app
+   * is called Nova and one of the personas inside it is also called Nova,
+   * *"and it is easy to lose track of which 'Nova' a sentence means: the
+   * product, or the one persona."* The label is the cheap half of that; a
+   * rename of either is the expensive half and is his call, not mine.
+   *
+   * Two pickers show personas -- the switcher's new-conversation form and
+   * the standalone ask form -- and they had drifted to `(metered)` and
+   * `(metered API)`. One function so a third picker cannot drift again.
+   */
+  function personaLabel(p) {
+    var label = p.name;
+    if (p.scheduled) label += " (on a schedule)";
+    if (p.metered) label += " (metered)";
+    return label;
+  }
+
   /* An attach button for any composer on this site.
    *
    * the owner, comments board 2026-08-21: *"How do i send a screenshot?"* He
@@ -8889,7 +8911,7 @@
     fetchPage("/api/conversations/personas")
       .then(function (payload) {
         (payload.personas || []).forEach(function (p) {
-          var opt = el("option", "", p.name + (p.metered ? " (metered API)" : ""));
+          var opt = el("option", "", personaLabel(p));
           opt.value = p.id;
           who.appendChild(opt);
         });
@@ -11059,8 +11081,8 @@
             // the subscription (`identity.md` rule 9), so it is labelled
             // rather than hidden -- the server sends the flag for exactly
             // this, and hiding it would make the choice for him silently.
-            option.textContent = persona.name +
-              (persona.metered ? " (metered)" : "");
+            // `personaLabel` carries that and the `(on a schedule)` half.
+            option.textContent = personaLabel(persona);
             who.appendChild(option);
           });
           note.textContent = "";

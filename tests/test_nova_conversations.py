@@ -31,7 +31,8 @@ MODEL_CATALOG = [
 
 
 def _fakes(conversations=None, messages=None, personas=None, create_id="c-new",
-           list_status=200, models=None, model_status=200):
+           list_status=200, models=None, model_status=200,
+           heartbeats=None, heartbeat_status=200):
     calls = []
 
     def fake_get(path):
@@ -40,6 +41,8 @@ def _fakes(conversations=None, messages=None, personas=None, create_id="c-new",
             return list_status, {"conversations": conversations or []}
         if path == "/personas":
             return 200, {"personas": personas or []}
+        if path == "/heartbeats":
+            return heartbeat_status, {"heartbeats": heartbeats or []}
         if path == "/models":
             return model_status, {"models": models if models is not None else MODEL_CATALOG}
         if path.startswith("/conversations/"):
@@ -225,6 +228,58 @@ def test_a_metered_persona_is_labelled_rather_than_hidden():
     rows = payload["personas"]
     assert [r["name"] for r in rows] == ["Nova Answers", "Zed"]
     assert [r["metered"] for r in rows] == [False, True]
+
+
+# `scheduled` -- 2026-08-28, his issues.md #119: the app is called Nova and
+# one of the personas inside it is also called Nova, *"and it is easy to
+# lose track of which 'Nova' a sentence means: the product, or the one
+# persona."* The separator is not the name, it is which of them wakes up on
+# its own, and only the heartbeat registry knows that.
+
+def test_a_persona_with_a_live_heartbeat_is_marked_scheduled():
+    """Capabilities cannot draw this line -- Claude and Opus hold every
+    capability Nova holds and neither of them wakes on its own. An enabled
+    heartbeat is the thing that actually does the waking."""
+    (payload, calls) = _run(
+        convs.personas,
+        personas=[
+            {"id": "p-nova", "name": "Nova", "model": "claude-cli:claude-opus-5"},
+            {"id": "p-claude", "name": "Claude", "model": "claude-cli:claude-sonnet-5"},
+        ],
+        heartbeats=[
+            {"personaId": "p-nova", "name": "Nova", "enabled": True},
+            {"personaId": "p-nova", "name": "Nova — retrospective", "enabled": True},
+        ],
+    )
+    flags = {r["name"]: r["scheduled"] for r in payload["personas"]}
+    assert flags == {"Nova": True, "Claude": False}
+    assert ("GET", "/heartbeats", None) in calls
+
+
+def test_a_disabled_heartbeat_does_not_make_a_persona_scheduled():
+    """The four `Workflow trial` personas each carry a heartbeat that is
+    switched off. Marking those as scheduled would say the opposite of what
+    the label means -- nothing is waking them."""
+    (payload, _calls) = _run(
+        convs.personas,
+        personas=[{"id": "p-trial", "name": "Workflow trial",
+                   "model": "claude-cli:claude-haiku-4-5-20251001"}],
+        heartbeats=[{"personaId": "p-trial", "name": "trial", "enabled": False}],
+    )
+    assert payload["personas"][0]["scheduled"] is False
+
+
+def test_an_unreadable_heartbeat_list_still_returns_the_pickable_personas():
+    """This is the only route he can start a conversation from, and #118 was
+    that route being unusable for a day. A missing label is a worse picker;
+    a raise here is no picker at all."""
+    (payload, _calls) = _run(
+        convs.personas,
+        personas=[{"id": "p-nova", "name": "Nova", "model": "claude-cli:claude-opus-5"}],
+        heartbeat_status=503,
+    )
+    assert [r["name"] for r in payload["personas"]] == ["Nova"]
+    assert payload["personas"][0]["scheduled"] is False
 
 
 # `watching(id)` -- 2026-08-26. The switcher half of his 2026-08-25 capture:
