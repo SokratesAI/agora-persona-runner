@@ -42,6 +42,17 @@ while the real question is whether that line still gets security fixes.
 That is a different question with a different source, and it is already
 boarded as idea #151.
 
+**It reads the Crossplane composition that creates a repo, as well as
+the repos.** `platform-config/crossplane/githubservice-composition.yaml`
+holds the whole of `.github/workflows/build.yaml` as one escaped string,
+so it is neither in `.github/workflows/` nor on lines this tool could
+match, and it read as carrying no pins at all -- while being the file
+that stamps CI into every repo the platform creates. Cycle 587 found it
+six versions behind by an accidental grep, bumped it, and filed the
+blindness; Cycle 588 is this. Reading every `crossplane/*.ya?ml` costs
+about 11 seconds on `platform-config` (4.3s to 15.7s, measured), which
+is the price of not finding the next one by accident.
+
 **A patch gap is not a finding.** Semver makes a patch release
 backwards-compatible and upstreams publish them continuously, so "behind
 by a patch" fires on almost every run and a check that always fires is
@@ -70,6 +81,31 @@ from tools.security_alerts import _gh, _repos_to_sweep
 DOCKER_PIN_RE = re.compile(r"^\s*ARG\s+([A-Z0-9_]+_VERSION)\s*=\s*(\S+)", re.MULTILINE)
 USES_RE = re.compile(r"^\s*-?\s*uses:\s*([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)@(v?[0-9][\w.-]*)",
                      re.MULTILINE)
+
+# The same pin, written inside a quoted string rather than on a line of
+# its own. `platform-config/crossplane/githubservice-composition.yaml`
+# carries the whole of `.github/workflows/build.yaml` as one escaped
+# double-quoted scalar, so every `uses:` in it sits behind a literal
+# backslash-n and `^` never reaches it -- this tool read that file's
+# pins as absent for its whole life. Cycle 587 found the file was six
+# versions behind by an accidental grep while sweeping eleven repos by
+# hand, bumped it, and filed the blindness rather than the pin. This is
+# what watches it now, and it matters more than an ordinary workflow
+# does: the composition is what stamps CI into every repo the platform
+# creates, so a stale pin here is not one repo behind, it is every
+# future repo born behind.
+#
+# Matching the escape is deliberate rather than parsing the YAML and
+# re-parsing each string value as YAML: the embedded document is full of
+# `${{ }}` and is not this tool's to understand. It needs the version,
+# not the structure.
+EMBEDDED_USES_RE = re.compile(
+    r"\\n\s*-?\s*uses:\s*([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)@(v?[0-9][\w.-]*)"
+)
+
+# Both are action pins and resolve the same way; the kind is kept apart
+# only so the report can say where the pin actually lands.
+ACTION_KINDS = ("action", "template-action")
 
 K8S_STABLE = "https://dl.k8s.io/release/stable.txt"
 
@@ -169,6 +205,8 @@ def interesting_paths(paths):
             out.append(path)
         elif path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
             out.append(path)
+        elif path.startswith("crossplane/") and name.endswith((".yml", ".yaml")):
+            out.append(path)
     return sorted(out)
 
 
@@ -198,6 +236,16 @@ def pins_in(repo, path, text):
         for action, ref in USES_RE.findall(text):
             found.append({"repo": repo, "path": path, "what": action,
                           "pinned": ref, "kind": "action"})
+        seen = {(p["what"], p["pinned"]) for p in found}
+        for action, ref in EMBEDDED_USES_RE.findall(text):
+            # A file can hold the same pin both ways -- a composition
+            # that pins an action for itself and again inside the
+            # workflow it writes. One question, reported once.
+            if (action, ref) in seen:
+                continue
+            seen.add((action, ref))
+            found.append({"repo": repo, "path": path, "what": action,
+                          "pinned": ref, "kind": "template-action"})
     return found
 
 
@@ -231,7 +279,7 @@ def resolve(pin, cache, run=None, opener=urllib.request.urlopen):
     Twenty files pinning `actions/checkout` are one upstream question, so
     the cache is keyed on the upstream rather than on the pin.
     """
-    if pin["kind"] == "action":
+    if pin["kind"] in ACTION_KINDS:
         key = ("release", pin["what"])
     else:
         target = UPSTREAM.get(pin["what"])
@@ -319,11 +367,16 @@ def format_report(judged, excluded, problems, notes):
                          f"({severity} behind, per {pins[0]['source']})")
             places = {}
             for pin in pins:
-                places[(pin["repo"], pin["path"])] = \
-                    places.get((pin["repo"], pin["path"]), 0) + 1
-            for (repo, path), count in sorted(places.items()):
+                key = (pin["repo"], pin["path"],
+                       pin.get("kind") == "template-action")
+                places[key] = places.get(key, 0) + 1
+            for (repo, path, is_template), count in sorted(places.items()):
                 times = f"  ({count} uses)" if count > 1 else ""
-                lines.append(f"      {repo}  {path}{times}")
+                # Without this the line reads as one repo's own CI being
+                # behind, which is the cheap reading and the wrong one.
+                stamped = "  — a template, stamped into every repo it creates" \
+                    if is_template else ""
+                lines.append(f"      {repo}  {path}{times}{stamped}")
     patch = [p for p in judged if p["gap"] == "patch"]
     if patch:
         lines.append("Behind by a patch only, which is not a finding — semver "
