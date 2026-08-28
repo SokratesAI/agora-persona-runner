@@ -27,6 +27,7 @@ convention: `decide_turn` speaks only when the last visible message came
 from him, so any other sender writes a message nothing ever answers.
 """
 
+from agora_runner.audit import narration_passage
 from agora_runner.http_util import agora_get, agora_internal, agora_public
 from agora_runner.log import log
 
@@ -46,28 +47,65 @@ MAX_NAME_CHARS = 200
 NOVA_ASK_TAG = "nova-ask"
 
 
+def keep_only_live_passages(rows):
+    """Drop the mid-turn passages of every turn except the one still running.
+
+    A passage is worth seeing while it is the newest thing in the thread --
+    that is the whole point, the answer arriving instead of four minutes of
+    nothing. Once the turn's real reply lands underneath it, it is the same
+    words a second time and it costs the thread its whole visible tail: one
+    Nova cycle writes hundreds of them, and `MAX_THREAD` is 40, so a day-old
+    cycle would push every actual sentence he wrote off the page.
+
+    So partials survive only in the run at the very end of the thread, after
+    the last settled message. `nova_ask.thread` imports this rather than
+    keeping a second copy -- the rule is one rule, and the two pages
+    disagreeing about it is the bug this function exists to not have.
+    """
+    last_settled = -1
+    for i, row in enumerate(rows):
+        if not row.get("partial"):
+            last_settled = i
+    return [row for i, row in enumerate(rows)
+            if i > last_settled or not row.get("partial")]
+
+
 def _visible(messages):
     """Drop narration of the machinery, keep the conversation.
 
     Same filter as `nova_ask.thread` and `turns.build_history`: activity,
     thinking, forgotten and system messages are how the loop talks to
     itself, not what he said or what was said back.
+
+    One activity message is kept, and it is the reason this is a loop rather
+    than the comprehension it used to be. A persona's reply is written in
+    passages with tool calls between them, and each passage is pushed into
+    the conversation the moment it is written -- so the answer is already
+    arriving here, in pieces, while the turn runs. Dropping those passages
+    with the tool chips is what made a four-minute turn look like nothing
+    followed by one block of text (issue #129). `audit.narration_passage`
+    is the test; `partial` marks them for the page, which draws them as the
+    reply taking shape rather than as separate finished messages.
     """
-    return [
-        {
+    out = []
+    for m in messages:
+        if m.get("forgotten") or m.get("system") or m.get("thinking"):
+            continue
+        passage = narration_passage(m)
+        if m.get("activity") and passage is None:
+            continue
+        out.append({
             "id": m.get("id"),
             "sender": m.get("sender") or "",
-            "text": m.get("text") or "",
+            "text": passage if passage is not None else (m.get("text") or ""),
             # Agora's `/messages` calls this `ts`; `createdAt` is accepted
             # too so a caller holding a message from `/conversations` (which
             # does use `createdAt`) is not silently undated. Measured
             # against the live store, Cycle 441.
             "createdAt": m.get("ts") or m.get("createdAt") or "",
-        }
-        for m in messages
-        if not (m.get("forgotten") or m.get("system")
-                or m.get("activity") or m.get("thinking"))
-    ]
+            "partial": passage is not None,
+        })
+    return out
 
 
 def conversations():
@@ -130,8 +168,13 @@ def thread(conversation_id, limit=MAX_THREAD):
         f"/conversations/{conversation_id}/messages?limit={int(limit)}")
     if status != 200:
         raise RuntimeError(f"conversation fetch returned {status}")
-    messages = _visible(detail.get("messages", []))
-    waiting = bool(messages) and messages[-1]["sender"] == "Edvard"
+    messages = keep_only_live_passages(_visible(detail.get("messages", [])))
+    # Blind to the partial passages `_visible` now keeps, for the reason
+    # `nova_ask.thread` spells out: a passage arriving mid-turn is evidence
+    # the turn is still running, and reading it as "answered" would stop the
+    # page polling before the real reply lands.
+    settled = [m for m in messages if not m.get("partial")]
+    waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
     return {
         "conversationId": conversation_id,
         "messages": messages[-int(limit):],

@@ -572,3 +572,82 @@ def test_set_model_reports_a_missing_conversation_as_gone():
          patch.object(convs, "agora_public", public):
         ok, message = convs.set_model("c-1", "claude-cli:claude-sonnet-5")
     assert (ok, message) == (False, "that conversation is gone")
+
+
+def test_a_passage_the_persona_wrote_mid_turn_is_kept_and_marked_partial():
+    """Issue #129. The reply is written in passages with tool calls between
+    them and each one is pushed into the conversation as it is written --
+    so the answer is already arriving here while the turn runs. Dropping
+    those with the tool chips is what made a four-minute turn look like
+    nothing followed by one block of text.
+
+    The text comes off `activity.detail`, not off the message's own `text`:
+    Agora prefixes that with the capability name for its own search, so
+    rendering it would put "assistant_text: " in front of every paragraph.
+    """
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "how many pods?"},
+        {"id": "b", "sender": "Nova", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods"}},
+        {"id": "c", "sender": "Nova", "text": "assistant_text: Counting them now.",
+         "activity": {"capability": "assistant_text", "detail": "Counting them now."}},
+    ])
+    assert [m["id"] for m in payload["messages"]] == ["a", "c"]
+    assert payload["messages"][1]["text"] == "Counting them now."
+    assert payload["messages"][1]["partial"] is True
+    assert payload["messages"][0]["partial"] is False
+
+
+def test_a_mid_turn_passage_does_not_stop_the_page_polling():
+    """The one way this change could do damage. `waiting` used to read the
+    last visible sender, and a passage from the persona arriving mid-turn
+    would read as "answered" -- the page would stop polling and never draw
+    the real reply. A partial means the turn is still going."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "and?"},
+        {"id": "b", "sender": "Nova", "text": "assistant_text: working on it",
+         "activity": {"capability": "assistant_text", "detail": "working on it"}},
+    ])
+    assert payload["messages"][-1]["partial"] is True
+    assert payload["waiting"] is True
+
+
+def test_an_empty_passage_is_still_dropped_as_machinery():
+    """`report_text` strips before sending, so a blank one should not exist
+    -- but a whitespace-only detail must not become an empty bubble."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Nova", "text": "assistant_text:   ",
+         "activity": {"capability": "assistant_text", "detail": "   "}},
+        {"id": "b", "sender": "Nova", "text": "done"},
+    ])
+    assert [m["id"] for m in payload["messages"]] == ["b"]
+
+
+def test_a_legacy_boolean_activity_flag_is_still_dropped():
+    """Messages written before Agora carried the activity object at all --
+    `activity: true` and nothing else. `narration_passage` must not read a
+    capability off a bool and must not crash trying."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Nova", "text": "Bash: ls", "activity": True},
+        {"id": "b", "sender": "Nova", "text": "done"},
+    ])
+    assert [m["id"] for m in payload["messages"]] == ["b"]
+
+
+def test_a_finished_turns_passages_do_not_survive_its_reply():
+    """The half of issue #129 that would have made the page worse. One Nova
+    cycle writes hundreds of passages and `MAX_THREAD` is 40 -- keeping the
+    old ones would push every sentence he actually wrote off the page, and
+    they are the same words as the reply that landed under them anyway."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "how many pods?"},
+        {"id": "b", "sender": "Nova", "text": "assistant_text: counting",
+         "activity": {"capability": "assistant_text", "detail": "counting"}},
+        {"id": "c", "sender": "Nova", "text": "Seven."},
+        {"id": "d", "sender": "Edvard", "text": "and now?"},
+        {"id": "e", "sender": "Nova", "text": "assistant_text: counting again",
+         "activity": {"capability": "assistant_text", "detail": "counting again"}},
+    ])
+    # "b" belonged to a turn that finished; "e" is the turn running now.
+    assert [m["id"] for m in payload["messages"]] == ["a", "c", "d", "e"]
+    assert payload["waiting"] is True

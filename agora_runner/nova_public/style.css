@@ -2742,6 +2742,9 @@ body.has-full-chart { overflow: hidden; }
 .chat-actions .attach-btn { margin-left: auto; }
 
 .ask-pending { color: var(--dim); font-style: italic; }
+/* A passage the answer is still being written in -- issue #129. Softened,
+   not hidden: it is real text and he asked to see the work as it happens. */
+.ask-partial { opacity: 0.75; }
 
 /* The roadmap's five as a ranked strip, above the argument for them.
  * Same box as `.goal-board` deliberately -- one idiom for "the answer,

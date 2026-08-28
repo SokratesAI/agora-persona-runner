@@ -8755,9 +8755,16 @@
    * `.ask-text` keeps `white-space: pre-wrap`, and both that and
    * `overflow-wrap` inherit into the paragraphs, so a plain answer wraps
    * exactly as it did before. */
+  /* `message.partial` is a passage written on the way to the answer rather
+   * than the answer (issue #129) -- the server keeps them now, so a turn
+   * that takes four minutes shows its paragraphs as they are written
+   * instead of nothing at all. Drawn as an ordinary bubble on purpose: it
+   * IS what was said, just not the last thing that will be. The class only
+   * softens it, so the finished reply still reads as the finished reply. */
   function askMessage(message) {
     var mine = message.sender === "Edvard";
-    var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs"));
+    var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs")
+      + (message.partial ? " ask-partial" : ""));
     row.appendChild(el("div", "ask-who", mine ? "You" : message.sender || "Nova Answers"));
     var body = el("div", "ask-text");
     appendRichText(body, null, message.text);
