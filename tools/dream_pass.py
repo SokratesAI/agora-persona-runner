@@ -571,7 +571,7 @@ _MOD_REF = re.compile(r"`tools\.([a-z0-9_]+)`")
 # `<seq>-cycle-<n>.md`, `NNN-report-<first>-<last>.md` and friends are
 # filename *formats* being described, not files being cited. Resolving one
 # is meaningless and calling it dead is a guaranteed positive.
-_PLACEHOLDER = re.compile(r"[<>]|^NNN")
+_PLACEHOLDER = re.compile(r"[<>]|(?:^|/)NNN")
 
 
 def cited_docs(markdown):
@@ -590,9 +590,9 @@ def cited_docs(markdown):
         # function could no longer produce. A dead branch under a passing
         # test is the shape worth naming: the test was about the function,
         # and the defect was in the seam between two of them.
-        if ref.startswith("./"):
-            ref = ref[2:]
-        if _PLACEHOLDER.search(ref) or not ref:
+        while ref.startswith(("./", "../")):
+            ref = ref[2:] if ref.startswith("./") else ref[3:]
+        if _PLACEHOLDER.search(ref):
             continue
         if ref not in out:
             out.append(ref)
@@ -608,10 +608,43 @@ def cited_modules(markdown):
     return out
 
 
+# A positive control on the listing itself. Every one of these is a document
+# this loop reads at the start of every cycle, so a listing that does not hold
+# all three is not a listing of this vault -- it is truncated, scoped to the
+# wrong subtree, or written by an `ls` that failed halfway. That last one is
+# real rather than theoretical: `vault_tool.py ls` prints "up to 500 file(s)
+# omitted from this listing" to **stderr**, and the documented
+# `ls 'projects/' > listing.txt` captures stdout only, so a 500-file-short
+# listing is byte-indistinguishable from a complete one at this end. Without
+# this check those 500 absences are reported as dead citations -- a positive
+# result guaranteed by the instrument rather than found in the data, which is
+# the failure `checkable` exists to prevent one corpus over. My reviewer on
+# runner#482 found it, and the refusal is deliberate: a partial answer here
+# sends a cycle to edit its own constitution.
+_LISTING_CONTROL = (
+    _NOVA + "resources/identity.md",
+    _NOVA + "resources/personality.md",
+    _NOVA + "resources/prompt.md",
+)
+
+
 def read_listing(path):
-    """The set of vault paths in a `vault_tool.py ls` dump."""
+    """The set of vault paths in a `vault_tool.py ls` dump.
+
+    Raises `ValueError` if the dump does not hold the three documents this
+    pass reads, which is the weakest check that still separates a real
+    listing from a truncated or mis-scoped one.
+    """
     with open(path, encoding="utf-8") as fh:
-        return {line.strip() for line in fh if line.strip()}
+        listing = {line.strip() for line in fh if line.strip()}
+    missing = [q for q in _LISTING_CONTROL if q not in listing]
+    if missing:
+        raise ValueError(
+            "%d path(s) this vault must hold are absent, so the listing is "
+            "truncated or scoped to the wrong subtree and every citation it "
+            "cannot answer for would be reported dead: %s"
+            % (len(missing), ", ".join(missing)))
+    return listing
 
 
 def resolve_doc(ref, listing):
@@ -639,6 +672,19 @@ def resolve_doc(ref, listing):
     return None
 
 
+def modules_checkable(repos):
+    """Can any given checkout answer whether a `tools.<name>` exists?
+
+    Only if one of them holds a `tools/` directory. This is `checkable`'s
+    rule for the bullet corpus applied to the module corpus, and the
+    reviewer on runner#482 found it missing: handed only the bridge and
+    platform-config checkouts -- neither of which has a `tools/` -- the
+    first version reported every `tools.<name>` in `prompt.md` dead, and
+    would have reported them dead whether or not they existed.
+    """
+    return any(os.path.isdir(os.path.join(root, "tools")) for root in repos)
+
+
 def dead_refs(markdown, listing, repos):
     """(dead_docs, dead_modules) -- citations nothing given can resolve.
 
@@ -647,10 +693,10 @@ def dead_refs(markdown, listing, repos):
     states: an unanswerable question is not a positive result.
     """
     dead_docs = []
-    if listing:
+    if listing is not None:
         dead_docs = [r for r in cited_docs(markdown) if not resolve_doc(r, listing)]
     dead_mods = []
-    if repos:
+    if modules_checkable(repos):
         for name in cited_modules(markdown):
             if not resolves("tools/%s.py" % name, repos):
                 dead_mods.append(name)
@@ -663,16 +709,18 @@ def constitution_report(name, markdown, listing, repos):
     dead_docs, dead_mods = dead_refs(markdown, listing, repos)
     out = ["%s — %d document citation(s), %d tools module(s)"
            % (name, len(docs), len(mods))]
-    if not listing:
-        out.append("  CANNOT CHECK documents — no --vault-listing given, so a "
+    if listing is None:
+        out.append("  CANNOT CHECK documents — no vault listing given, so a "
                    "missing one would look identical to a present one")
     else:
         out.append("  DEAD DOCUMENT (%d) — no anchor in the vault holds this, "
                    "so a cycle told to read it gets [not found]" % len(dead_docs))
         for ref in dead_docs:
             out.append("    %s" % ref)
-    if not repos:
-        out.append("  CANNOT CHECK modules — no --repo given")
+    if not modules_checkable(repos):
+        out.append("  CANNOT CHECK modules — no checkout given holds a "
+                   "`tools/` directory, so every citation would read dead "
+                   "whether or not the module exists")
     else:
         out.append("  DEAD MODULE (%d) — cited as tools.<name>, no such file "
                    "in any checkout given" % len(dead_mods))
@@ -700,6 +748,10 @@ def _constitution(args):
             listing = read_listing(args.vault_listing)
         except OSError as exc:
             print("cannot read %s: %s" % (args.vault_listing, exc), file=sys.stderr)
+            return 1
+        except ValueError as exc:
+            print("unusable vault listing %s: %s" % (args.vault_listing, exc),
+                  file=sys.stderr)
             return 1
         if not listing:
             print("empty vault listing: %s" % args.vault_listing, file=sys.stderr)
