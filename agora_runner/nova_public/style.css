@@ -3818,3 +3818,35 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .chat-row-edit-delete { margin-left: auto; color: var(--bad, #c0392b); }
 .chat-row-edit-note { font-size: 0.75rem; color: var(--dim); margin: 0; }
 .chat-row-edit-note:empty { display: none; }
+
+/* The project page -- idea #92 phase 3. Columns wrap rather than scroll
+ * sideways: this is opened on a phone first, and a kanban that scrolls
+ * horizontally hides the columns after the first one behind a gesture
+ * nothing on the page suggests. */
+.project-index { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
+.project-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  text-decoration: none;
+  color: inherit;
+}
+.project-pill.on { border-color: var(--accent); color: var(--accent); }
+.project-board { margin-bottom: 1.5rem; }
+.project-board-head { display: flex; align-items: baseline; gap: 0.6rem; font-size: 1rem; }
+.project-board-link { font-size: 0.8rem; color: var(--dim); }
+.project-columns { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-start; }
+.project-column { flex: 1 1 16rem; min-width: 0; }
+.project-column-head { font-size: 0.8rem; color: var(--dim); margin: 0 0 0.35rem; font-weight: 600; }
+.project-rows { list-style: none; margin: 0; padding: 0; }
+.project-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+.project-row-num { color: var(--dim); font-size: 0.8rem; }
+.project-row-title { flex: 1 1 8rem; min-width: 0; }

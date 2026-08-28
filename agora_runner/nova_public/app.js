@@ -69,6 +69,17 @@
     if (path === "/heartbeats") return { view: "heartbeats", cycle: null, board: null };
     if (path === "/catalog") return { view: "catalog", cycle: null, board: null };
     if (path === "/diag") return { view: "diag", cycle: null, board: null };
+    if (path === "/projects") return { view: "projects", cycle: null, board: null, project: null };
+    // `/project/Nova` -- idea #92 phase 3. Decoded here rather than left
+    // raw because a project name is free text the owner types into a
+    // board cell, so `Sokrates Post` reaches this as `Sokrates%20Post`
+    // and would otherwise be looked up under a name no row carries.
+    var project = /^\/project\/(.+)$/.exec(path);
+    if (project) {
+      var name = project[1];
+      try { name = decodeURIComponent(name); } catch (e) { /* leave it raw */ }
+      return { view: "project", cycle: null, board: null, project: name };
+    }
     return { view: "journal", cycle: null, board: null };
   }
 
@@ -85,6 +96,9 @@
     // third one turning the chain into a nested ternary made worth doing.
     var want = here.view === "board"
       ? "/" + here.board
+      // Both project views highlight the one nav tab there is. A tab per
+      // project would be a nav that grows every time he files a row.
+      : here.view === "project" || here.view === "projects" ? "/projects"
       : here.view === "journal" ? "/" : "/" + here.view;
     var tabs = navEl ? navEl.querySelectorAll(".nav-tab") : [];
     for (var i = 0; i < tabs.length; i++) {
@@ -7973,6 +7987,130 @@
     return wrap;
   }
 
+  /* The project page -- idea #92, phase 3.
+   *
+   * The owner's idea: *"each project has their own page that shows a
+   * Kanban board, maybe a list of issues, notes and ideas"*. The plan he
+   * approved is explicit that this phase invents no data: *"A kanban view
+   * is the board rows grouped by status, which is a rendering of data
+   * phase 2 already produced."* So everything drawn here came off the
+   * `Project` column phase 2 added, and `/api/project` regroups the same
+   * two board payloads the Issues and Ideas pages already read.
+   *
+   * One view over two URLs, the way the journal is: `/projects` is the
+   * index and `/project/<name>` is one project. They share a render
+   * because the index is just the page with no project chosen -- and the
+   * project list is drawn on both, so a project with nothing filed under
+   * it is one tap from the one that has everything.
+   */
+  function renderProjectColumn(board, column) {
+    var wrap = el("div", "project-column");
+    wrap.appendChild(el("h3", "project-column-head",
+      column.label + " · " + column.items.length));
+    var list = el("ul", "project-rows");
+    for (var i = 0; i < column.items.length; i++) {
+      var item = column.items[i];
+      var row = el("li", "project-row");
+      row.appendChild(el("span", "project-row-num", "#" + item.number));
+      row.appendChild(el("span", "project-row-title", item.title));
+      // Only when there is one. A `## Done` row carries no priority cell
+      // at all, so an unconditional chip would draw an empty coloured pill
+      // on every finished row.
+      if (item.priority) {
+        row.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
+      }
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  function renderProjectIndex(payload) {
+    var here = route(window.location.pathname);
+    var wrap = el("div", "project-index");
+    var projects = (payload && payload.projects) || [];
+    for (var i = 0; i < projects.length; i++) {
+      var name = projects[i];
+      var link = el("a", "project-pill", name);
+      link.setAttribute("href", "/project/" + encodeURIComponent(name));
+      if (here.project && here.project.toLowerCase() === name.toLowerCase()) {
+        link.className = "project-pill on";
+      }
+      wrap.appendChild(link);
+    }
+    return wrap;
+  }
+
+  function renderProject(payload) {
+    stopPolling();
+    markNav();
+    var name = (payload && payload.name) || "";
+    var asked = (payload && payload.asked) || "";
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(el("p", "status-line",
+      name ? name : "Projects"));
+    feed.textContent = "";
+    feed.appendChild(renderProjectIndex(payload));
+
+    if (!asked) {
+      feed.appendChild(el("p", "empty", "Pick a project."));
+      return;
+    }
+    // Asked for a name no row carries. Said plainly rather than 404'd:
+    // he types the project into a board cell, so a name with nothing
+    // under it is a project he has not filed anything to yet, which is
+    // not the same thing as a broken link.
+    if (!name) {
+      feed.appendChild(el("p", "empty",
+        "Nothing is filed under “" + asked + "” yet."));
+      return;
+    }
+    var boards = (payload && payload.boards) || {};
+    var drew = false;
+    var names = { issues: "Issues", ideas: "Ideas" };
+    var order = ["issues", "ideas"];
+    for (var b = 0; b < order.length; b++) {
+      var key = order[b];
+      var board = boards[key];
+      if (!board || !board.total) continue;
+      drew = true;
+      var section = el("section", "project-board");
+      var head = el("h2", "project-board-head", names[key] + " · " + board.total);
+      var link = el("a", "project-board-link", "open board");
+      link.setAttribute("href", "/" + key);
+      head.appendChild(link);
+      section.appendChild(head);
+      var cols = el("div", "project-columns");
+      for (var c = 0; c < board.columns.length; c++) {
+        cols.appendChild(renderProjectColumn(key, board.columns[c]));
+      }
+      section.appendChild(cols);
+      feed.appendChild(section);
+    }
+    if (!drew) {
+      feed.appendChild(el("p", "empty",
+        "Nothing is filed under “" + name + "” yet."));
+    }
+  }
+
+  function loadProject(name) {
+    fetchPage("/api/project?name=" + encodeURIComponent(name || ""))
+      .then(function (payload) {
+        // The same in-flight guard every other page fetch carries: two
+        // taps in quick succession leave two fetches running and the
+        // loser must not paint over the winner.
+        var view = route(window.location.pathname).view;
+        if (view !== "project" && view !== "projects") return;
+        renderProject(payload);
+      })
+      .catch(function (err) {
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the project: " + err));
+      });
+  }
+
   function loadPool() {
     fetchPage("/api/pool")
       .then(function (payload) {
@@ -9671,6 +9809,10 @@
     }
     if (here.view === "pool") {
       loadPool();
+      return;
+    }
+    if (here.view === "projects" || here.view === "project") {
+      loadProject(here.project);
       return;
     }
     if (here.view === "costs") {
