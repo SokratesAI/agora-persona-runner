@@ -130,7 +130,6 @@ EMBEDDED_USES_RE = re.compile(
 # only so the report can say where the pin actually lands.
 ACTION_KINDS = ("action", "template-action")
 
-K8S_STABLE = "https://dl.k8s.io/release/stable.txt"
 K8S_STABLE_MINOR = "https://dl.k8s.io/release/stable-%d.%d.txt"
 
 # Said by two paths and matched on by the caller, so it lives here rather
