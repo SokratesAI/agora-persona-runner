@@ -6,6 +6,10 @@ four majors behind, and a drift finding hidden behind exit 1 because one
 unrelated pin had no upstream configured.
 """
 
+import contextlib
+import io
+import json
+
 import pytest
 
 from tools import pin_drift
@@ -30,7 +34,10 @@ def test_version_parts_keeps_absent_components_absent():
         ("2.96.0", "v2.98.0", "minor"),
         ("1.2.3", "1.2.9", "patch"),
         ("1.2.3", "1.2.3", "current"),
-        ("2.0.0", "1.9.9", "current"),    # ahead is not behind
+        # Was "current" until Cycle 589 taught KUBECTL_VERSION a ceiling it
+        # can be past. Ahead is still not behind -- it is now its own
+        # verdict rather than being folded into clean.
+        ("2.0.0", "1.9.9", "ahead"),
         ("main", "v7.0.1", None),
     ],
 )
@@ -221,7 +228,8 @@ def _fake_gh(files, releases, trees):
 
 
 def test_sweep_judges_a_real_gap_and_excludes_a_sha(monkeypatch):
-    monkeypatch.setattr(pin_drift, "latest_k8s", lambda opener=None: ("v1.37.0", None))
+    monkeypatch.setattr(pin_drift, "latest_k8s",
+                        lambda opener=None, run=None: ("v1.37.0", None))
     run = _fake_gh(
         files={
             ("o/r", "Dockerfile"): "ARG KUBECTL_VERSION=v1.36.2\n",
@@ -314,3 +322,114 @@ def test_nothing_judged_is_no_instrument_not_no_drift(monkeypatch):
                         lambda: (["o/r"], [], [], False))
     monkeypatch.setattr(pin_drift, "sweep", lambda repos: ([], [], []))
     assert pin_drift.main([]) == 1
+
+
+# --- KUBECTL_VERSION is judged against the cluster, not against upstream ---
+# Cycle 589. The check reported v1.36.2 as "a minor behind v1.37.0" and asked
+# for a bump, against an API server at v1.34.4+k3s1 that kubectl already warns
+# is two minors away. The ceiling belongs to the cluster.
+
+def _fake_kubectl(major, minor, code=0, err=""):
+    def run(args):
+        assert args == ["version", "-o", "json"]
+        if code != 0:
+            return code, "", err
+        return 0, json.dumps({
+            "serverVersion": {"major": major, "minor": minor,
+                              "gitVersion": f"v{major}.{minor}.4+k3s1"},
+        }), ""
+    return run
+
+
+def _fake_opener(published):
+    def opener(url, timeout=None):
+        if url not in published:
+            raise OSError("HTTP Error 404: Not Found")
+        return contextlib.closing(io.BytesIO(published[url].encode()))
+    return opener
+
+
+def test_latest_k8s_ceiling_is_one_minor_past_the_api_server():
+    # The server's own minor is published here on purpose. Without it the
+    # order of the two candidates does not matter -- 1.34 404s and 1.35
+    # answers either way -- and a mutation swapping them passed.
+    latest, why = pin_drift.latest_k8s(
+        opener=_fake_opener({
+            "https://dl.k8s.io/release/stable-1.34.txt": "v1.34.9",
+            "https://dl.k8s.io/release/stable-1.35.txt": "v1.35.8",
+            "https://dl.k8s.io/release/stable-1.37.txt": "v1.37.0",
+        }),
+        run=_fake_kubectl("1", "34"),
+    )
+    assert (latest, why) == ("v1.35.8", None)
+
+
+def test_latest_k8s_falls_back_to_the_server_minor_when_the_next_is_unpublished():
+    latest, why = pin_drift.latest_k8s(
+        opener=_fake_opener({"https://dl.k8s.io/release/stable-1.34.txt": "v1.34.9"}),
+        run=_fake_kubectl("1", "34"),
+    )
+    assert (latest, why) == ("v1.34.9", None)
+
+
+def test_server_minor_reads_a_plus_suffixed_minor():
+    where, git_version, why = pin_drift.server_minor(_fake_kubectl("1", "34+"))
+    assert (where, why) == ((1, 34), None)
+    assert git_version == "v1.34+.4+k3s1"
+
+
+def test_latest_k8s_says_it_could_not_read_rather_than_guessing():
+    latest, why = pin_drift.latest_k8s(
+        opener=_fake_opener({"https://dl.k8s.io/release/stable.txt": "v1.37.0"}),
+        run=_fake_kubectl("1", "34", code=1, err="Unable to connect to the server"),
+    )
+    assert latest is None
+    assert "could not read the cluster's API server version" in why
+    assert "Unable to connect" in why
+
+
+def test_gap_calls_a_pin_past_its_ceiling_ahead_not_current():
+    assert pin_drift.gap("v1.36.2", "v1.35.8") == "ahead"
+    # The floating-tag reading is unchanged: v4 says nothing about a minor.
+    assert pin_drift.gap("v4", "v4.9.0") == "current"
+    assert pin_drift.gap("v1.35.8", "v1.35.8") == "current"
+
+
+def test_sweep_and_report_raise_a_kubectl_pin_that_is_ahead(monkeypatch):
+    monkeypatch.setattr(pin_drift, "latest_k8s",
+                        lambda opener=None, run=None: ("v1.35.8", None))
+    run = _fake_gh(
+        files={("o/r", "Dockerfile"): "ARG KUBECTL_VERSION=v1.36.2\n"},
+        releases={},
+        trees={"o/r": ["Dockerfile"]},
+    )
+    judged, excluded, problems = pin_drift.sweep(["o/r"], run=run)
+
+    assert problems == []
+    assert [(p["what"], p["gap"]) for p in judged] == [("KUBECTL_VERSION", "ahead")]
+
+    report = pin_drift.format_report(judged, excluded, problems, [])
+    assert "PINNED PAST WHAT IT IS JUDGED AGAINST" in report
+    assert "KUBECTL_VERSION: pinned v1.36.2, ceiling v1.35.8" in report
+    assert "      o/r  Dockerfile" in report
+    assert "3 behind" not in report
+    assert "Judged 1 pin(s): 0 behind, 1 ahead, 0 patch-only, 0 current." in report
+
+
+def test_an_unreadable_cluster_is_a_problem_not_a_clean_answer(monkeypatch):
+    monkeypatch.setattr(
+        pin_drift, "latest_k8s",
+        lambda opener=None, run=None: (None, "could not read the cluster's "
+                                             "API server version — nope"),
+    )
+    run = _fake_gh(
+        files={("o/r", "Dockerfile"): "ARG KUBECTL_VERSION=v1.36.2\n"},
+        releases={},
+        trees={"o/r": ["Dockerfile"]},
+    )
+    judged, excluded, problems = pin_drift.sweep(["o/r"], run=run)
+
+    assert judged == []
+    assert len(problems) == 1
+    assert "upstream unreadable" in problems[0]
+    assert "could not read the cluster's API server version" in problems[0]
