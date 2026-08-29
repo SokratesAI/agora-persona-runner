@@ -184,6 +184,24 @@ def test_the_three_silences_the_site_can_return_are_told_apart():
         assert "unrecognised" not in reason
 
 
+def test_the_retried_refusal_token_reaches_the_reader_whole():
+    # Cross-repo contract with `cronjobs/nova-alive-ping.yaml` in
+    # platform-config. The ping now asks four times before giving up, because a
+    # single instant refusal is what a k3s NetworkPolicy REJECT looks like when
+    # a brand-new Job pod's IP has not reached the controller's ipset yet. The
+    # attempt count is appended to the slug rather than kept in a pod log that
+    # expires, so an off-box reader with no cluster access can tell a real
+    # outage from that race -- which only works if this reproduces it verbatim
+    # instead of reading a longer slug as a token it does not recognise.
+    token = ("unknown:URLError-urlopen_error_[Errno_111]_Connection_refused"
+             "-after-4-tries")
+    verdict, reason = assess_heartbeats(token)
+    assert verdict == "UNKNOWN"
+    assert reason.endswith("-after-4-tries")
+    assert "Connection_refused" in reason
+    assert "unrecognised" not in reason
+
+
 def test_a_bare_unknown_says_the_manifest_predates_the_reason():
     # `hb=unknown` with nothing after it is still legal and still never clean,
     # but it now means something specific: the cluster is running a ping older
