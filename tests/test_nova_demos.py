@@ -713,7 +713,12 @@ def test_the_site_records_who_asked_for_a_demo_and_publishes_it():
     browser = ("User-Agent: Mozilla/5.0 (Linux; Android 10; K) "
                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 "
                "Mobile Safari/537.36\r\n")
+    # The durable half runs off-thread and writes the vault, so it is
+    # patched out here and tested on its own below. Recording who asked is
+    # the in-memory question and it is what this test is about.
+    durable = []
     with patch.object(nova_site, "_demo_registry", lambda: registry), \
+         patch.object(nova_site, "_start_durable_open", durable.append), \
          patch.object(nova_site, "_demo_opener",
                       lambda: type("O", (), {"open": lambda self, r, timeout: _Up()})()):
         # A cycle's own proof-it-works probe first: it must be served and
@@ -722,10 +727,14 @@ def test_the_site_records_who_asked_for_a_demo_and_publishes_it():
                     "User-Agent: Python-urllib/3.11\r\n")[0] == 200
         assert "bakeoff" not in json.loads(
             _get("/api/demo/activity")[2])["last_seen"]
+        assert durable == []
         assert _get("/demo/bakeoff/", browser)[0] == 200
     seen = json.loads(_get("/api/demo/activity")[2])
     assert "bakeoff" in seen["last_seen"]
     assert seen["started_at"] <= seen["last_seen"]["bakeoff"]
+    # And the browser open asks for the durable mark, which is the half
+    # that survives this pod rolling.
+    assert durable == ["bakeoff"]
 
 
 def test_a_request_for_a_slug_nobody_registered_is_not_someone_looking():
@@ -1169,3 +1178,143 @@ def test_list_says_which_clock_a_row_is_on():
     # And on the right rows: the waiting one is listed first.
     assert printed.index("no recorded open") < printed.index("nobody has asked")
     assert state  # the registry really was read
+
+
+def test_mark_opened_writes_once_and_only_for_a_registered_slug():
+    """The durable half of `no_recorded_open` -- Cycle 608, idea #134.
+
+    `mark_opened` is called from the site's request path, so "already
+    marked" has to be answerable without a write; that is what the second
+    call asserts. An unregistered slug returns False rather than inventing
+    a row -- a request for a slug nobody registered is not somebody looking
+    at a demo, which is the same call `_serve_demo` already makes one frame
+    up.
+    """
+    from datetime import datetime
+
+    from agora_runner.nova_demos import OPENED_AT, mark_opened
+
+    registry = {"demos": [{"slug": "roadmap", "port": 5174}]}
+    when = datetime(2026, 8, 29, 4, 40, 0)
+    assert mark_opened(registry, "roadmap", now=when) is True
+    assert registry["demos"][0][OPENED_AT] == "2026-08-29T04:40:00"
+    # A second open must not rewrite the stamp: the field records the first
+    # time anyone looked, and a caller that sees False skips the vault write.
+    assert mark_opened(registry, "roadmap", now=datetime(2026, 8, 29, 9, 0)) is False
+    assert registry["demos"][0][OPENED_AT] == "2026-08-29T04:40:00"
+    assert mark_opened(registry, "never-registered", now=when) is False
+    assert len(registry["demos"]) == 1
+
+
+def test_no_recorded_open_survives_a_site_roll_once_the_mark_is_written():
+    """The bug Cycle 606 filed and Cycle 608 fixed.
+
+    `last_seen` lives in the nova-site pod's memory, so a roll empties it
+    and a demo the owner opened yesterday reads as never opened -- which
+    moves it off the two-hour idle clock onto the eighteen-hour one and
+    makes `tools.demo list` print "no recorded open" about a hand-off that
+    landed. The registry survives the roll, so the mark does.
+
+    `activity` here is a freshly rolled site: it answers, and its
+    `last_seen` is empty. That is the exact state the old code got wrong.
+    """
+    from agora_runner.nova_demos import OPENED_AT, no_recorded_open
+
+    rolled = {"started_at": 1000.0, "last_seen": {}}
+    assert no_recorded_open({"slug": "roadmap"}, rolled) is True
+    opened = {"slug": "roadmap", OPENED_AT: "2026-08-29T04:40:00"}
+    assert no_recorded_open(opened, rolled) is False
+    # And the mark does not let it answer when there is no site to ask.
+    # `idle_seconds` returns None there and nothing is reaped either way;
+    # claiming otherwise would be a statement about a clock this cannot read.
+    assert no_recorded_open(opened, None) is False
+
+
+def test_the_durable_open_mark_is_written_once_with_the_revision_it_read():
+    """`_record_durable_open` -- the vault half, called synchronously here.
+
+    Three things in one test because they are one behaviour: it writes the
+    mark, it carries the `rev` it read so a cycle allocating a port in
+    between loses nothing, and it does not write a second time.
+    """
+    from agora_runner.nova_demos import dumps as demo_dumps
+
+    writes = []
+    registry = demo_dumps({"demos": [
+        {"slug": "roadmap", "host": "10.42.0.71", "port": 5174, "pid": 63440},
+    ]})
+    nova_site._demo_opened_marked.discard("roadmap")
+    try:
+        with patch.object(nova_site, "vault_read_path_rev",
+                          lambda path: (registry, "9-abc")), \
+             patch.object(nova_site, "vault_write_path",
+                          lambda path, content, if_rev=None: writes.append(
+                              (path, content, if_rev))):
+            nova_site._record_durable_open("roadmap")
+            nova_site._record_durable_open("roadmap")
+    finally:
+        nova_site._demo_opened_marked.discard("roadmap")
+    assert len(writes) == 1
+    path, content, if_rev = writes[0]
+    assert path == nova_site.DEMOS_PATH
+    assert if_rev == "9-abc"
+    written = json.loads(content)["demos"][0]
+    assert written["opened_at"]
+    # Everything else the row carried has to come back: this is a full
+    # overwrite of the document that also allocates ports.
+    assert written["port"] == 5174 and written["pid"] == 63440
+
+
+def test_a_failed_durable_write_lets_the_next_request_try_again():
+    """A lost compare-and-swap must not mark the slug done forever.
+
+    `tools.demo` writes this same document to allocate ports, so losing the
+    swap is ordinary rather than exceptional. The demo simply stays on the
+    long clock until some later asset on the page wins -- which is where it
+    was before this existed.
+    """
+    from agora_runner.nova_demos import dumps as demo_dumps
+
+    registry = demo_dumps({"demos": [{"slug": "roadmap", "port": 5174}]})
+    attempts = []
+
+    def _boom(path, content, if_rev=None):
+        attempts.append(if_rev)
+        raise RuntimeError("409 conflict")
+
+    nova_site._demo_opened_marked.discard("roadmap")
+    try:
+        with patch.object(nova_site, "vault_read_path_rev",
+                          lambda path: (registry, "9-abc")), \
+             patch.object(nova_site, "vault_write_path", _boom):
+            nova_site._record_durable_open("roadmap")
+            assert "roadmap" not in nova_site._demo_opened_marked
+            nova_site._record_durable_open("roadmap")
+    finally:
+        nova_site._demo_opened_marked.discard("roadmap")
+    assert len(attempts) == 2
+
+
+def test_a_row_already_marked_costs_no_write_at_all():
+    """The registry, not this process, is the memory -- that is the point.
+
+    A pod that rolled has an empty `_demo_opened_marked`, so the first
+    browser request after a roll re-enters here. Reading the mark off the
+    document it just fetched is what stops that becoming a write per roll.
+    """
+    from agora_runner.nova_demos import dumps as demo_dumps
+
+    registry = demo_dumps({"demos": [
+        {"slug": "roadmap", "port": 5174, "opened_at": "2026-08-29T04:40:00"},
+    ]})
+    writes = []
+    nova_site._demo_opened_marked.discard("roadmap")
+    try:
+        with patch.object(nova_site, "vault_read_path_rev",
+                          lambda path: (registry, "9-abc")), \
+             patch.object(nova_site, "vault_write_path",
+                          lambda *a, **kw: writes.append(a)):
+            nova_site._record_durable_open("roadmap")
+    finally:
+        nova_site._demo_opened_marked.discard("roadmap")
+    assert writes == []

@@ -199,9 +199,11 @@ from agora_runner.nova_idea_pool import (
 )
 from agora_runner.nova_catalog import catalog_page, parse_catalog
 from agora_runner.heartbeat_liveness import liveness
-from agora_runner.nova_demos import (DEMOS_PATH, load as load_demos,
-                                     lookup as lookup_demo, opened_by_a_person)
-from agora_runner.vault import vault_read_path
+from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
+                                     dumps as dumps_demos, load as load_demos,
+                                     lookup as lookup_demo, mark_opened,
+                                     opened_by_a_person)
+from agora_runner.vault import vault_read_path, vault_read_path_rev, vault_write_path
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
@@ -1137,6 +1139,83 @@ def _demo_registry():
     with _demo_registry_lock:
         _demo_registry_cache.update(at=now, text=text)
     return text
+
+
+#: Slugs this process has already written a durable `opened_at` for, or has
+#: tried to and is not going to try again this second. It is a cache of a
+#: fact that cannot go back -- a demo does not become unopened -- so a stale
+#: entry can only cost a write that was already unnecessary.
+_demo_opened_marked = set()
+_demo_opened_lock = threading.Lock()
+
+
+def _record_durable_open(slug):
+    """Write `opened_at` into the registry row for `slug`, once, off-thread.
+
+    `_demo_last_seen` above answers *how recently* somebody looked and lives
+    in this pod's memory on purpose -- forty assets a page, one CouchDB
+    document. **Whether anyone has ever looked is a different question and
+    the memory is the wrong place for it**: a site roll wiped it, so every
+    demo went back to "no recorded open" and off the two-hour idle clock
+    onto the eighteen-hour one, and `tools.demo list` -- the one thing that
+    says whether a hand-over actually reached the owner -- printed "no
+    recorded open" about a demo he had opened. Cycle 606 filed it; this is
+    it fixed.
+
+    Three things it is careful about, in the order they bite.
+
+    **It is one write per slug per process, not per request.** The set is
+    claimed before the vault is touched, so the forty assets of a demo page
+    produce one attempt between them.
+
+    **It runs on its own thread and never on the request's.** A vault write
+    is a CouchDB round trip against `vault.py`'s 60s timeout, and the thing
+    waiting is a browser loading a demo. Failing has to be free.
+
+    **A lost compare-and-swap is not retried here.** `tools.demo` writes
+    this same document to allocate ports, and re-reading and re-applying
+    inside a request handler is how a proxy grows a retry loop against a
+    document a cycle is holding. The slug is dropped from the set instead,
+    so the next asset on the same page tries again -- and if the whole page
+    loses, the demo simply stays on the long clock, which is where it was
+    before this existed and is the safe direction.
+    """
+    with _demo_opened_lock:
+        if slug in _demo_opened_marked:
+            return
+        _demo_opened_marked.add(slug)
+    try:
+        text, rev = vault_read_path_rev(DEMOS_PATH)
+        registry = load_demos(text)
+        if not mark_opened(registry, slug):
+            return
+        vault_write_path(DEMOS_PATH, dumps_demos(registry), if_rev=rev)
+    except Exception as e:
+        log(f"nova-site could not record the open of demo {slug!r}: {e}")
+        with _demo_opened_lock:
+            _demo_opened_marked.discard(slug)
+        return
+    # The cached registry text predates the write by definition, and
+    # `_serve_demo` reads `opened_at` off it to decide whether to call this
+    # at all. Left alone it would re-enter for `DEMO_REGISTRY_TTL` seconds
+    # and be stopped only by the set above -- which is correct and is also
+    # the guard, not the answer.
+    with _demo_registry_lock:
+        _demo_registry_cache.update(at=0.0, text=None)
+
+
+def _start_durable_open(slug):
+    """Run `_record_durable_open` off the request thread.
+
+    One line, and it is its own function so that a test of the proxy can
+    replace the *spawning* without replacing what gets spawned. Patching
+    `_record_durable_open` itself still starts a thread, and a thread that
+    outlives the test has outlived the test's patches -- which is the exact
+    failure `tests/conftest.py`'s teardown check exists to catch, and which
+    it caught here on the first run.
+    """
+    threading.Thread(target=_record_durable_open, args=(slug,),
+                     daemon=True).start()
 
 
 def _demo_opener():
@@ -2610,6 +2689,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if opened_by_a_person(self.headers.get("User-Agent")):
             with _demo_last_seen_lock:
                 _demo_last_seen[slug] = time.time()
+            # And the durable half, which survives this pod. `demo` came out
+            # of a cache up to `DEMO_REGISTRY_TTL` seconds old, so this test
+            # is only an optimisation -- `_record_durable_open` re-reads and
+            # is the thing that decides.
+            if not demo.get(OPENED_AT) and slug not in _demo_opened_marked:
+                _start_durable_open(slug)
         # `.get`, not `[...]`, because this route is dispatched above
         # `do_GET`'s `try` -- a hand-edited registry row missing either
         # field would be a traceback and a dropped connection rather than

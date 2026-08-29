@@ -391,10 +391,12 @@ def no_recorded_open(entry, activity):
     `last_seen` lives in that pod's memory, so a site roll wipes it and a
     two-day-old demo would otherwise read as instantly reapable. Only the
     *threshold* the caller compares against changes. That is also why a
-    demo that was opened before a roll comes back here as `True`: after the
-    roll the site genuinely cannot tell, and the safe direction is the long
-    clock, because the cost of being wrong is one of thirty ports and the
-    cost of the other error is the link going dead in the owner's hand.
+    demo that was opened before a roll used to come back here as `True`:
+    after the roll the site genuinely could not tell, and the safe direction
+    is the long clock, because the cost of being wrong is one of thirty
+    ports and the cost of the other error is the link going dead in the
+    owner's hand. The durable mark below is what removed that case; the safe
+    direction still governs everything it does not cover.
 
     The numbers above were measured against the comments board on
     2026-08-29 and are not derivable from anything in this repo, so treat
@@ -404,9 +406,27 @@ def no_recorded_open(entry, activity):
     `False` when the site did not answer at all -- `idle_seconds` returns
     `None` there and nothing is reaped on idle either way, so this never
     decides anything in that case.
+
+    **The durable mark is checked first and it is what makes the paragraph
+    above smaller than it was.** `mark_opened` writes `opened_at` into the
+    registry row the first time a browser asks for a demo, and the registry
+    survives a site roll, so "opened before a roll" no longer comes back
+    here as `True`. What still does is a demo opened before Cycle 608
+    shipped this -- those rows carry no `opened_at` and never will -- and a
+    demo whose first open happened while the vault write was losing a
+    compare-and-swap. Both fall back to the in-memory answer, which is the
+    old behaviour and still errs onto the long clock.
+
+    `activity` is still required to be present: with no site to ask, the
+    caller learns nothing about *when* anyone looked, `idle_seconds` returns
+    `None`, and nothing is reaped on idle either way. Answering `False`
+    there on the strength of `opened_at` alone would be a claim about a
+    clock this cannot read.
     """
     activity = activity or {}
     if activity.get("started_at") is None:
+        return False
+    if entry.get(OPENED_AT):
         return False
     return activity.get("last_seen", {}).get(entry.get("slug")) is None
 
@@ -523,3 +543,38 @@ def promotion_claim(name, description, demo_url, directory, today):
         f"    {description}",
         "",
     ])
+
+
+#: The registry key holding the durable "a person has opened this" mark.
+#: An ISO-8601 local timestamp, written once and never cleared, because the
+#: question it answers is about history and history does not go back.
+OPENED_AT = "opened_at"
+
+
+def mark_opened(registry, slug, now=None):
+    """Record that a person has opened `slug`. True if that changed anything.
+
+    `no_recorded_open` below is the thing this exists for. Until now the
+    only evidence of an open was `nova_site._demo_last_seen`, which lives in
+    the site pod's memory -- so every site roll made every demo look
+    unopened again and moved it from the two-hour idle clock onto the
+    eighteen-hour one. Cycle 606 filed that as a known residual and Cycle
+    608 is fixing it: the cost of leaving it is one of thirty ports, which
+    is small, but it is also the one signal `tools.demo list` prints to say
+    whether the hand-off this whole roadmap is for has actually happened.
+    A field that goes back to "no recorded open" after a deploy cannot
+    answer that.
+
+    Writing once is the whole design. This is a CouchDB document and a demo
+    page is forty assets, so a mark written per request would be the cost
+    `nova_site.DEMO_REGISTRY_TTL` exists to avoid; returning False when the
+    field is already there is what lets the caller skip the write entirely.
+    It is deliberately *not* a second `last_seen` -- how recently somebody
+    looked stays in memory, where it is cheap and where losing it on a roll
+    is handled by `idle_seconds`' floor.
+    """
+    entry = lookup(registry, slug)
+    if entry is None or entry.get(OPENED_AT):
+        return False
+    entry[OPENED_AT] = (now or datetime.now()).isoformat(timespec="seconds")
+    return True
