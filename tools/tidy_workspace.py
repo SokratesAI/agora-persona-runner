@@ -1343,6 +1343,8 @@ def _sweep_demos(idle_minutes=None):
     holds one of thirty ports forever, and a demo nobody has asked for in
     two hours holds one too. This step is the only thing that runs every
     cycle from the pod the demos live in, so it is where the button goes.
+    A demo nobody has opened yet is on the longer `--unopened` clock, so
+    this sweep cannot kill a link handed over overnight.
 
     **It cannot misfire from the runner pod.** `tools.demo` reads the
     registry by shelling `/app/bridge/vault_tool.py`, which exists only on
@@ -1360,7 +1362,11 @@ def _sweep_demos(idle_minutes=None):
 
     idle = demo_cli.DEFAULT_IDLE_MINUTES if idle_minutes is None else idle_minutes
     try:
-        demo_cli.cmd_reap(argparse.Namespace(idle=idle))
+        # `unopened` is the longer clock for a demo nobody has opened yet, and
+        # it has to be passed explicitly: `cmd_reap` reads it off the
+        # namespace, and argparse is not involved on this path.
+        demo_cli.cmd_reap(argparse.Namespace(
+            idle=idle, unopened=demo_cli.DEFAULT_UNOPENED_MINUTES))
     except Exception as e:
         print("could not sweep demos: %s -- a stale demo may still be holding "
               "a port" % (str(e)[:200],))

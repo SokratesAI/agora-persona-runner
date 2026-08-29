@@ -9,6 +9,8 @@ unknown slug, dead upstream, missing trailing slash -- rather than at a
 200 that a static file server would also have produced.
 """
 
+import io
+from contextlib import redirect_stdout
 import json
 import urllib.error
 from datetime import datetime
@@ -33,7 +35,16 @@ from tests.test_nova_site import _get, _post
 
 
 def _args(**kw):
-    """A stand-in for the argparse namespace these subcommands receive."""
+    """A stand-in for the argparse namespace these subcommands receive.
+
+    `unopened` gets a default because every production caller supplies one
+    -- argparse for the CLI, `tools.tidy_workspace._sweep_demos` explicitly
+    -- and spelling it on every older test would say nothing about them.
+    A test that cares about that clock passes it.
+    """
+    from tools import demo as _demo_cli
+
+    kw.setdefault("unopened", _demo_cli.DEFAULT_UNOPENED_MINUTES)
     return type("Args", (), kw)()
 
 
@@ -699,10 +710,19 @@ def test_the_site_records_who_asked_for_a_demo_and_publishes_it():
         def __exit__(self, *a):
             return False
 
+    browser = ("User-Agent: Mozilla/5.0 (Linux; Android 10; K) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 "
+               "Mobile Safari/537.36\r\n")
     with patch.object(nova_site, "_demo_registry", lambda: registry), \
          patch.object(nova_site, "_demo_opener",
                       lambda: type("O", (), {"open": lambda self, r, timeout: _Up()})()):
-        assert _get("/demo/bakeoff/")[0] == 200
+        # A cycle's own proof-it-works probe first: it must be served and
+        # must not count. Then the owner's phone, which must.
+        assert _get("/demo/bakeoff/",
+                    "User-Agent: Python-urllib/3.11\r\n")[0] == 200
+        assert "bakeoff" not in json.loads(
+            _get("/api/demo/activity")[2])["last_seen"]
+        assert _get("/demo/bakeoff/", browser)[0] == 200
     seen = json.loads(_get("/api/demo/activity")[2])
     assert "bakeoff" in seen["last_seen"]
     assert seen["started_at"] <= seen["last_seen"]["bakeoff"]
@@ -987,3 +1007,165 @@ def test_a_symlink_into_a_doomed_slot_is_still_doomed(tmp_path):
     link.symlink_to(slot)
     env = {"CLAUDE_CONCURRENT_ROOT": str(tmp_path / "slots")}
     assert ephemeral_reason(str(link), environ=env) is not None
+
+
+# ---------------------------------------------------------------------------
+# A demo nobody has opened *yet* is not idle (idea #134/#135, Cycle 606).
+
+
+def test_no_recorded_open_separates_waiting_from_gone_quiet():
+    """The two cases `idle_seconds` cannot tell apart on its own."""
+    from agora_runner.nova_demos import no_recorded_open
+
+    now = datetime.now().timestamp()
+    activity = {"started_at": now - 3600, "last_seen": {"seen": now - 60}}
+    assert no_recorded_open({"slug": "waiting"}, activity) is True
+    assert no_recorded_open({"slug": "seen"}, activity) is False
+
+
+def test_no_recorded_open_is_false_when_the_site_did_not_answer():
+    """No answer is not evidence of anything, and `idle_seconds` returns
+    None there anyway, so nothing is reaped on either clock."""
+    from agora_runner.nova_demos import no_recorded_open
+
+    assert no_recorded_open({"slug": "waiting"}, None) is False
+    assert no_recorded_open({"slug": "waiting"}, {"last_seen": {}}) is False
+
+
+def test_reap_idle_spares_a_demo_that_has_not_been_opened_yet():
+    """The bug this fixes: a link handed over overnight died before morning.
+
+    Both rows are three hours old and past the two-hour idle clock. The one
+    somebody opened is reaped; the one waiting to be opened is not.
+    """
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    started = datetime.fromtimestamp(now - 3 * 3600).isoformat()
+    state, _read, _write = _fake_registry([
+        {"slug": "waiting", "host": "10.42.0.56", "port": 5174, "pid": 4242,
+         "started_at": started},
+        {"slug": "quiet", "host": "10.42.0.56", "port": 5175, "pid": 4243,
+         "started_at": started},
+    ])
+    activity = {"started_at": now - 6 * 3600,
+                "last_seen": {"quiet": now - 3 * 3600}}
+    signalled = []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(idle=120, unopened=720)) == 0
+    assert [d["slug"] for d in state["registry"]["demos"]] == ["waiting"]
+    assert signalled and signalled[0][0] == 4243
+
+
+def test_reap_still_stops_a_demo_nobody_ever_opened_once_its_own_clock_runs_out():
+    """The longer clock is longer, not absent -- a port is still bounded."""
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    state, _read, _write = _fake_registry([
+        {"slug": "waiting", "host": "10.42.0.56", "port": 5174, "pid": 4242,
+         "started_at": datetime.fromtimestamp(now - 13 * 3600).isoformat()},
+    ])
+    activity = {"started_at": now - 20 * 3600, "last_seen": {}}
+    signalled = []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(idle=120, unopened=720)) == 0
+    assert state["registry"]["demos"] == []
+    assert signalled and signalled[0][0] == 4242
+
+
+def test_tidy_workspace_passes_the_unopened_clock_through():
+    """`_sweep_demos` builds the namespace by hand, so a missing key here is
+    an AttributeError in the one caller that runs every cycle."""
+    import argparse as _argparse
+
+    from tools import demo as demo_cli
+    from tools import tidy_workspace
+
+    seen = {}
+    with patch.object(demo_cli, "cmd_reap", lambda ns: seen.update(vars(ns))), \
+         patch.object(demo_cli, "_cleanup_temps", lambda: None):
+        tidy_workspace._sweep_demos()
+    assert seen == {"idle": demo_cli.DEFAULT_IDLE_MINUTES,
+                    "unopened": demo_cli.DEFAULT_UNOPENED_MINUTES}
+    assert _argparse  # the namespace really is one
+
+
+def test_the_unopened_default_is_long_enough_to_cross_a_night():
+    """The number is a measurement, not a preference, so pin what it is for.
+
+    Across 2026-08-10 to 2026-08-28 the owner's own comments show eight
+    consecutive nights of silence running 6.0h to 11.9h (median 10.7h), and
+    none of his 161 comments falls between midnight and 05:00 Oslo. A
+    default that cannot cross the longest of those puts us back where we
+    started: a link handed over at 03:00 dead before he wakes.
+    """
+    from tools import demo as demo_cli
+
+    longest_night_minutes = int(11.9 * 60)
+    # And with real margin over it, not six minutes: eight samples do not
+    # bound the longest night he will ever have.
+    assert demo_cli.DEFAULT_UNOPENED_MINUTES > longest_night_minutes * 1.4
+    assert demo_cli.DEFAULT_UNOPENED_MINUTES > longest_night_minutes
+    # And it is a *longer* clock than the idle one, not a second name for it.
+    assert demo_cli.DEFAULT_UNOPENED_MINUTES > demo_cli.DEFAULT_IDLE_MINUTES
+
+
+def test_only_a_browser_counts_as_somebody_opening_a_demo():
+    """A cycle's own proof-it-works fetch must not start the idle clock.
+
+    This is the failure that made the fix above pointless in the only flow
+    that uses it: Cycle 606 started a demo for the owner to open in the
+    morning, fetched it once through the public route to prove it served,
+    and thereby recorded it as opened.
+    """
+    from agora_runner.nova_demos import opened_by_a_person
+
+    assert opened_by_a_person(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36") is True
+    for probe in ("Python-urllib/3.11", "curl/8.5.0", "kube-probe/1.29",
+                  "Go-http-client/1.1", "", None):
+        assert opened_by_a_person(probe) is False, probe
+
+
+def test_list_says_which_clock_a_row_is_on():
+    """`cmd_list`'s two messages mean opposite things to whoever reads them,
+    and nothing pinned which one a row gets."""
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    started = datetime.fromtimestamp(now - 3600).isoformat()
+    state, _read, _write = _fake_registry([
+        {"slug": "waiting", "host": "10.42.0.56", "port": 5174, "pid": 4242,
+         "started_at": started},
+        {"slug": "quiet", "host": "10.42.0.56", "port": 5175, "pid": 4243,
+         "started_at": started},
+    ])
+    activity = {"started_at": now - 2 * 3600,
+                "last_seen": {"quiet": now - 1800}}
+    out = io.StringIO()
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         redirect_stdout(out):
+        assert demo_cli.cmd_list(_args()) == 0
+    printed = out.getvalue()
+    assert "no recorded open" in printed
+    assert "nobody has asked for it" in printed
+    # And on the right rows: the waiting one is listed first.
+    assert printed.index("no recorded open") < printed.index("nobody has asked")
+    assert state  # the registry really was read

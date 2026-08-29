@@ -334,6 +334,82 @@ def idle_seconds(entry, activity, now):
     return max(0.0, now - max(last, floor))
 
 
+
+def opened_by_a_person(user_agent):
+    """True when this request for a demo came from somebody's browser.
+
+    `no_recorded_open` below only works if "opened" means a person opened it,
+    and the site cannot ask. This is the narrow version of that question:
+    every browser in use sends a `User-Agent` containing `Mozilla`, for
+    historical reasons nobody is going to undo, and nothing else here does
+    -- `python3 -m urllib`, `curl`, `kube-probe` and `Go-http-client` all
+    announce themselves.
+
+    **It exists because the check that proves a demo works defeats the
+    clock that keeps it alive.** `prompt.md` requires a cycle to fetch its
+    own demo through the real public route before handing over the link,
+    and Cycle 606 did exactly that: one `urllib` GET, and the demo it had
+    just started for the owner to open in the morning was recorded as
+    already opened and put back on the two-hour idle clock. Shipping
+    `no_recorded_open` without this would have been a guard that reports itself
+    working and guards nothing, in the one flow that uses it.
+
+    Wrong in the safe direction on purpose. A real open that is not counted
+    leaves the demo on the *longer* unopened clock and costs nothing; a
+    probe counted as an open is the failure above.
+    """
+    return "Mozilla" in (user_agent or "")
+
+
+def no_recorded_open(entry, activity):
+    """True when the site has no record of anyone asking for this demo.
+
+    Named for what it can actually see. It was `never_opened` for one
+    commit, and my reviewer was right that the name asserts a fact about
+    history this cannot know: after a site roll it says `True` about a demo
+    the owner has opened twenty times.
+
+    `idle_seconds` above answers *how long* since anyone looked, and it
+    cannot tell these two apart, because both come back as "no recorded
+    request":
+
+    - a demo that was opened in a meeting and has gone quiet since, and
+    - a demo that has been handed over and not opened yet.
+
+    They want opposite treatment and the second one is the whole point of
+    the feature. `reap --idle 120` stopping the first is the port hygiene
+    idea #136 asked for; stopping the second guarantees that a link handed
+    over at 03:00 is dead before the owner wakes -- and every one of his 161
+    comments between 2026-08-10 and 2026-08-28 falls between 05:00 and
+    23:00 Oslo, none at all between midnight and 05:00. So roughly half of
+    this loop's cycles could never complete the hand-off this roadmap is
+    for, which is why three cycles running wrote "wait for a morning" into
+    the handoff instead of doing it.
+
+    **The measurement of the age does not change and must not.**
+    `idle_seconds` floors the clock at the site's own start time because
+    `last_seen` lives in that pod's memory, so a site roll wipes it and a
+    two-day-old demo would otherwise read as instantly reapable. Only the
+    *threshold* the caller compares against changes. That is also why a
+    demo that was opened before a roll comes back here as `True`: after the
+    roll the site genuinely cannot tell, and the safe direction is the long
+    clock, because the cost of being wrong is one of thirty ports and the
+    cost of the other error is the link going dead in the owner's hand.
+
+    The numbers above were measured against the comments board on
+    2026-08-29 and are not derivable from anything in this repo, so treat
+    them as an observation with a date on it rather than a fact this code
+    can re-check.
+
+    `False` when the site did not answer at all -- `idle_seconds` returns
+    `None` there and nothing is reaped on idle either way, so this never
+    decides anything in that case.
+    """
+    activity = activity or {}
+    if activity.get("started_at") is None:
+        return False
+    return activity.get("last_seen", {}).get(entry.get("slug")) is None
+
 # ---------------------------------------------------------------------------
 # Promotion -- idea #138, "keep this" turns a demo into a real service.
 #
