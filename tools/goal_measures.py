@@ -60,22 +60,19 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner.config import OSLO
 from agora_runner.nova_goal_history import goal_key
 from agora_runner.nova_plan import _fenced, _goal, set_field_in_goals
 
 SITE = os.environ.get(
     "NOVA_SITE_SELF_URL", "http://nova-site.agents.svc.cluster.local:8083"
 )
-
-OSLO = ZoneInfo("Europe/Oslo")
-
 
 def today_oslo(now=None):
     """Today's date in Oslo, as `YYYY-MM-DD`.
@@ -86,9 +83,19 @@ def today_oslo(now=None):
     `datetime.now(timezone.utc) + timedelta(hours=2)`, which is Oslo only
     from late March to late October -- in winter Oslo is UTC+1, and between
     22:00 and 23:00 UTC the extra hour rolls the date forward a day, so the
-    window ended tomorrow and started a day early. `ZoneInfo` is what the
-    rest of this loop uses (`tools.claim`, `tools.put_entry`,
-    `tools.top_board_rows`, `tools.doc_owners`).
+    window ended tomorrow and started a day early.
+
+    `OSLO` comes from `agora_runner.config` rather than a fifth
+    `ZoneInfo("Europe/Oslo")` of our own, which is what `tools.lint_entry`
+    and `tools.roll_needs_edvard` already do. That constant is guarded and
+    falls back to UTC on an image with no tzdata; a bare `ZoneInfo` there
+    would raise at import, before `main` can return the exit 1 this tool's
+    docstring promises. Cycle 611 measured `ZoneInfo("Europe/Oslo")`
+    resolving on both the bridge pod and the runner pod, so the fallback is
+    not live today -- but note it would make this window silently UTC rather
+    than loudly broken, and `agora_runner/catalog_build.py` still carries a
+    comment saying the image has no tzdata. The two disagree; the
+    measurement is this one.
     """
     return (now or datetime.now(timezone.utc)).astimezone(OSLO).date().isoformat()
 
