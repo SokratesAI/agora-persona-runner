@@ -555,10 +555,16 @@ def comments_payload():
         },
         # Replies to the digest's Needs Edvard block, which belong to no  (not-prose: quoting a literal)
         # cycle and so cannot ride in `byCycle`.
-        # Same key on this list rather than only on `byCycle` -- the legacy
-        # block is unrendered today, but a payload whose two lists disagree
-        # about which fields a comment has is the trap `_drop_legacy_reply`
-        # was mutation-checked against, one field later.
+        # Same key on this list rather than only on `byCycle`, so the one
+        # field a reader could act on is on both. **Not because the two
+        # lists otherwise agree -- they do not, and the comment here used to
+        # say they did.** `needs` items carry no `replyPending`,
+        # `replyWaiting`, `replyWaitingSeconds` or `replyFailed` either:
+        # those are set inside the loop above, which walks `grouped` alone.
+        # So this narrows an existing disagreement rather than preventing a
+        # new one, and the honest reason to do it is that `relayed` is a
+        # claim about who wrote the text, which is true of a comment
+        # wherever it is listed.
         "needs": [
             dict(_drop_legacy_reply(c), relayed=is_relayed(c.get("text")))
             for c in needs_comments(markdown)
