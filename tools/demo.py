@@ -26,8 +26,15 @@ from the `put` is "start over", never "force it". Same mechanism and same
 reasoning as `claims.json`; see `agora_runner/nova_demos.py` for why the
 registry is its own document rather than rows inside that ledger.
 
+**A demo's files have to live outside this turn's workspace.** `start`
+refuses a directory under `/data/workspace-concurrent/`, because the bridge
+removes a concurrent turn's slot in its own `finally` while the dev server
+-- started in its own session on purpose -- keeps running and serving the
+hole it left. Scaffold under `/data/workspace/demos/<slug>` instead.
+
 Exit codes: **0 did what it says, 2 the request is refused (slug taken, no
-free port, no such demo), 1 something is wrong.**
+free port, no such demo, a directory this turn deletes), 1 something is
+wrong.**
 """
 
 import argparse
@@ -59,6 +66,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     claim_path,
     dumps,
     entries,
+    ephemeral_reason,
     idle_seconds,
     load,
     lookup,
@@ -192,6 +200,14 @@ def cmd_start(args):
     directory = os.path.abspath(args.directory)
     if not os.path.isdir(directory):
         print(f"no such directory: {directory}", file=sys.stderr)
+        return 2
+    # A demo has to outlive the cycle that started it -- that is the whole
+    # point of `start_new_session` below -- and a directory inside this
+    # turn's own workspace does not. See `nova_demos.ephemeral_reason`.
+    doomed = ephemeral_reason(directory, args.slug)
+    if doomed:
+        print(f"refusing to serve a directory this turn deletes: {doomed}",
+              file=sys.stderr)
         return 2
     # **Reserve the port before spawning anything.** The first version
     # spawned first and wrote the registry after, and the compare-and-swap

@@ -35,6 +35,7 @@ This is that place; it is not a second one.
 """
 
 import json
+import os
 import re
 from datetime import datetime
 
@@ -55,6 +56,19 @@ PORT_MAX = 5203
 #: is string equality, so `Foo` and `foo` must not be two demos. Also the
 #: slug lands in a URL path, so nothing here may need escaping.
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
+
+#: The root every concurrent turn gets its own private workspace under, and
+#: the reason `ephemeral_reason` exists. `agora-claude-bridge`'s
+#: `_run_cli_once` ends with `if slot: shutil.rmtree(workspace)` -- always,
+#: win or lose -- so anything a cycle writes in there is gone the moment
+#: that cycle's turn ends, which is every twenty minutes.
+CONCURRENT_ROOT = "/data/workspace-concurrent"
+
+#: Where a demo's files should live instead: outside any per-turn slot, on
+#: the same persistent volume, and not a checkout `tidy_workspace` sweeps.
+#: `tools.demo`'s own docstring has used this path in its example since the
+#: command was written; nothing enforced it.
+DURABLE_ROOT = "/data/workspace/demos"
 
 #: What `vault_tool.py get` prints for a path holding no document. It exits
 #: 0 and prints this, so the first caller is handed a sentence rather than
@@ -100,6 +114,36 @@ def lookup(registry, slug):
         if demo.get("slug") == slug:
             return demo
     return None
+
+
+def ephemeral_reason(directory, slug="<slug>", concurrent_root=CONCURRENT_ROOT):
+    """Why serving `directory` would hand out a link that dies, or None.
+
+    Measured Cycle 605, because the failure is silent in the worst way. A
+    demo's dev server is spawned with `start_new_session`, so it outlives
+    the cycle that started it on purpose -- but a concurrent turn's
+    workspace is `shutil.rmtree`'d in the bridge's own `finally`, always.
+    The process therefore survives with its content gone: `python3 -m
+    http.server` kept answering on a deleted directory and served a stdlib
+    404 error page, while `verdict` -- which asks whether the pid is alive,
+    not whether the files are -- still read the row as `running`. So the
+    registry says running, the link answers, and the demo is not there.
+
+    Path containment is a prefix test on the normalised path rather than a
+    `startswith` on the raw string: `/data/workspace-concurrent-notes` is
+    not inside `/data/workspace-concurrent`, and a raw prefix says it is.
+    """
+    root = os.path.normpath(concurrent_root)
+    path = os.path.normpath(os.path.abspath(directory))
+    if path != root and not path.startswith(root + os.sep):
+        return None
+    return (
+        f"{path} is inside {root}, which this turn deletes when it ends -- "
+        f"the dev server would outlive it and serve an empty directory, and "
+        f"the registry would still read `running`. Put the demo's files "
+        f"somewhere that survives the turn, e.g. {DURABLE_ROOT}/{slug}, and "
+        f"start it from there."
+    )
 
 
 def _free_port(registry):

@@ -845,3 +845,81 @@ def test_reap_idle_keeps_the_port_registered_when_it_cannot_signal():
          patch.object(demo_cli.os, "killpg", _refuse):
         assert demo_cli.cmd_reap(_args(idle=1)) == 1
     assert wrote == []
+
+
+# --- a demo does not survive the *cycle* it runs in either (Cycle 605) ---
+
+def test_a_concurrent_workspace_directory_is_named_as_doomed():
+    """The predicate, at the exact shape the bridge deletes.
+
+    `_run_cli_once` ends `if slot: shutil.rmtree(workspace)`, so every path
+    under the concurrent root goes when the turn does -- and the dev server,
+    deliberately in its own session, does not.
+    """
+    from agora_runner.nova_demos import ephemeral_reason
+
+    why = ephemeral_reason(
+        "/data/workspace-concurrent/7-135015072507584/agora-persona-runner/demo",
+        "bakeoff")
+    assert why is not None
+    assert "/data/workspace-concurrent" in why
+    # It has to say where to put it instead, or the refusal is a dead end.
+    assert "/data/workspace/demos/bakeoff" in why
+
+
+def test_a_durable_directory_is_not_refused():
+    """The control. A predicate that refuses everything pins nothing."""
+    from agora_runner.nova_demos import ephemeral_reason
+
+    assert ephemeral_reason("/data/workspace/demos/bakeoff", "bakeoff") is None
+    assert ephemeral_reason("/data/workspace/agora-persona-runner") is None
+    assert ephemeral_reason("/tmp/scratch") is None
+
+
+def test_containment_is_a_path_test_and_not_a_string_prefix():
+    """`/data/workspace-concurrent-notes` is not inside the concurrent root.
+
+    A `startswith` on the raw string says it is, and would refuse a
+    perfectly durable directory while claiming a measured reason.
+    """
+    from agora_runner.nova_demos import ephemeral_reason
+
+    assert ephemeral_reason("/data/workspace-concurrent-notes/demo") is None
+    # ...and the traversal in the other direction still resolves.
+    assert ephemeral_reason(
+        "/data/workspace-concurrent/7-1/../7-2/demo") is not None
+
+
+def test_start_refuses_a_directory_this_turn_deletes(tmp_path, capsys):
+    """End to end: nothing is registered and nothing is spawned.
+
+    The registry write is the part that matters. A refusal that still
+    allocated a port would leak one every time.
+    """
+    from tools import demo as demo_cli
+
+    state = {"registry": {"demos": []}}
+    spawned = []
+
+    def _read():
+        return json.loads(json.dumps(state["registry"])), "/tmp/fake.rev"
+
+    def _write(registry, rev):
+        state["registry"] = json.loads(json.dumps(registry))
+
+    doomed = tmp_path / "slot" / "demo"
+    doomed.mkdir(parents=True)
+    args = type("A", (), {"slug": "alpha", "directory": str(doomed),
+                          "cmd": ""})()
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.84"), \
+         patch.object(demo_cli.subprocess, "Popen",
+                      lambda *a, **kw: spawned.append(a)), \
+         patch.object(demo_cli, "ephemeral_reason",
+                      lambda d, slug="<slug>": "it is doomed"):
+        code = demo_cli.cmd_start(args)
+    assert code == 2
+    assert state["registry"]["demos"] == []
+    assert spawned == []
+    assert "it is doomed" in capsys.readouterr().err
