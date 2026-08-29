@@ -807,8 +807,16 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     waiting = [r for r in ranked if r.get("waiting") and not r.get("replyHeldBy")]
     held_replies = [r for r in list(ranked) + list(closed_waiting)
                     if r.get("waiting") and r.get("replyHeldBy")]
-    named = [f"{r['board']} #{r['number']}{_reply_claim(r)}" for r in waiting]
-    named += [f"{r['board']} #{r['number']} ({r['status']}){_reply_claim(r)}"
+    # A closed row never reaches `_line`, so this list is the only place its
+    # relay mark can appear. Without it the mark would exist on the open half
+    # of the fix and silently not on the closed half -- which is the shape
+    # `closed_rows_waiting` itself was built to end.
+    def mark(row):
+        return " (relayed)" if row.get("relayed") else ""
+    named = [f"{r['board']} #{r['number']}{mark(r)}{_reply_claim(r)}"
+             for r in waiting]
+    named += [f"{r['board']} #{r['number']} ({r['status']}){mark(r)}"
+              f"{_reply_claim(r)}"
               for r in closed_waiting if not r.get("replyHeldBy")]
     if named:
         out.append(f"  {len(named)} row(s) waiting on a reply from you: "

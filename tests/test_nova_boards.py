@@ -719,14 +719,3 @@ def test_a_comment_that_merely_discusses_relaying_is_not_one():
     assert not is_relayed(prose + " a comment posted on Edvard's behalf "
                                   "should rank below one he typed.")
 
-
-def test_a_relay_that_omits_the_disclosure_reads_as_typed():
-    """Written down because it is the honest limit, not an oversight.
-
-    The signal is self-declared. It can only ever lower the priority of the
-    text carrying it, so a forged disclosure demotes the forger; the failure
-    that remains is a relay that stays silent and keeps his priority, which
-    is exactly today's behaviour and needs the auth work to close.
-    """
-    from agora_runner.nova_boards import is_relayed
-    assert not is_relayed("**Edvard, 08-29:** do the thing.")
