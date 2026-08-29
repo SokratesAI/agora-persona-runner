@@ -3884,3 +3884,18 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 }
 .project-row-num { color: var(--dim); font-size: 0.8rem; }
 .project-row-title { flex: 1 1 8rem; min-width: 0; }
+
+/* An answer arrived in a conversation he has not opened since. The row is
+   already first in the list; this is the second half of his 2026-08-29
+   capture, and the tag carries the word so the colour is not the message. */
+.conv-row.conv-unread { border-color: var(--accent, #7aa2f7); }
+.conv-unread-tag {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: var(--accent, #7aa2f7);
+  color: #10131a;
+  vertical-align: middle;
+}

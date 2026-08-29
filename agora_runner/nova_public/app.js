@@ -9119,9 +9119,16 @@
     }
     var list = el("div", "conv-list");
     rows.forEach(function (row) {
-      var card = el("button", "conv-row" + (row.cycleThread ? " conv-cycle" : ""));
+      var card = el("button", "conv-row" + (row.cycleThread ? " conv-cycle" : "")
+        + (row.unread ? " conv-unread" : ""));
       card.setAttribute("type", "button");
-      card.appendChild(el("div", "conv-name", row.name));
+      // His capture, 2026-08-29: unread answers at the top of the list and
+      // highlighted. The server has already sorted them there; the word is
+      // here rather than a bare dot because a reader who does not know the
+      // colour code has not been told anything (personality.md).
+      var name = el("div", "conv-name", row.name);
+      if (row.unread) name.appendChild(el("span", "conv-unread-tag", "New reply"));
+      card.appendChild(name);
       var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
       if (meta) card.appendChild(el("div", "conv-meta", meta));
       // `fmtStamp` takes milliseconds and lives further down the file; an
