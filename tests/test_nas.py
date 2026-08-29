@@ -442,6 +442,18 @@ def test_the_curl_config_never_asks_curl_to_follow_a_redirect():
     assert "location" not in nas._curl_config("http://x/y", ("A: b",))
 
 
+def test_no_config_entry_is_broken_by_a_raw_newline_inside_its_quotes():
+    # A real newline inside a quoted value ends the entry, and curl then drops
+    # every line after it in silence -- the first live run over SSH came back
+    # with a real body, no status code and no API key header, which is what a
+    # working service also looks like. `\n` here must be the two characters
+    # curl unescapes, not the one character Python would.
+    cfg = nas._curl_config("http://x/y", ("A: b",))
+    for line in cfg.splitlines():
+        assert line.count('"') in (0, 2), line
+    assert '\\n%{http_code}' in cfg
+
+
 def test_a_401_over_ssh_reads_as_a_refused_key_not_a_dead_service():
     run = _FakeRun(stdout="\n401")
     with pytest.raises(nas.Unreachable) as exc:

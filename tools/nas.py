@@ -206,7 +206,13 @@ def _curl_config(url, headers=()):
     """
     lines = [f'url = "{url}"']
     lines += [f'header = "{h}"' for h in headers]
-    lines += ['max-time = 15', 'silent', 'show-error', 'write-out = "\n%{http_code}"']
+    # The two characters backslash-n, not a newline: this is a value inside a
+    # quoted string in a curl config file, and a real newline there ends the
+    # entry. Measured on the NAS -- with a real newline curl kept the `url`
+    # line, silently dropped every line after it, and returned a body with no
+    # status code and no API key header, which reads exactly like a service
+    # that answered.
+    lines += ['max-time = 15', 'silent', 'show-error', 'write-out = "\\n%{http_code}"']
     return "\n".join(lines) + "\n"
 
 
