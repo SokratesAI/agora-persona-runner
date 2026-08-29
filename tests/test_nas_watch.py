@@ -42,15 +42,35 @@ def _get_returning(by_service):
     return get
 
 
-def _run(get, conf=None, ssh=HOP, env=None):
+def _run(get, conf=None, ssh=HOP, env=None, unlocked=False, config=None):
+    """Run the check. `unlocked`/`config` stand in for nzbget.
+
+    nzbget defaults to "locked, no credential in the environment", which is
+    the live state of the pods today and contributes nothing to the status --
+    so every *arr test below reads as if nzbget were not there, which is what
+    those tests are about.
+    """
     out = io.StringIO()
     conf = _conf("sonarr", "radarr") if conf is None else conf
+
+    def _unlocked(hop, **kwargs):
+        if isinstance(unlocked, Exception):
+            raise unlocked
+        return unlocked
+
+    def _config(hop, credential, **kwargs):
+        if isinstance(config, Exception):
+            raise config
+        return config or {}
+
     status = nas_watch.report(
         env=env or {},
         out=out,
         get=get,
         ssh=ssh,
         run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no subprocess in tests")),
+        unlocked=_unlocked,
+        config=_config,
     )
     return status, out.getvalue()
 
@@ -144,3 +164,138 @@ def test_the_endpoint_is_on_the_read_only_allowlist():
     # unless the path is listed -- and listing it is what keeps this module
     # read-only.
     assert nas_watch.NOTIFICATION_PATH in nas.READ_ONLY
+
+
+# --- nzbget -----------------------------------------------------------------
+#
+# The two questions are separate on purpose and the tests keep them separate:
+# whether the control interface is locked needs no credential and runs every
+# cycle, and whether an extension is configured is behind that lock. The
+# failure this guards against is the second one quietly reading as clean when
+# it never ran at all.
+
+CLEAN = {"sonarr": [], "radarr": []}
+
+
+def test_nzbget_locked_and_no_credential_is_clean_and_says_what_it_skipped():
+    status, text = _run(_get_returning(CLEAN), unlocked=False)
+    assert status == 0
+    assert "NZBGET CONTROL IS LOCKED" in text
+    assert "NOT JUDGED  nzbget's extension list" in text
+    assert "NZBGET_USER" in text and "NZBGET_PASS" in text
+
+
+def test_nzbget_answering_without_a_credential_raises():
+    status, text = _run(_get_returning(CLEAN), unlocked=True)
+    assert status == 2
+    assert "NZBGET CONTROL IS OPEN" in text
+    assert "saveconfig" in text
+    # It must not then claim anything about the extension list it never read.
+    assert "No extension or script task is configured" not in text
+
+
+def test_an_extension_raises_and_names_the_setting_and_the_script_dir():
+    status, text = _run(
+        _get_returning(CLEAN),
+        unlocked=False,
+        env={"NZBGET_USER": "admin", "NZBGET_PASS": "x"},
+        config={"category2.extensions": "Evil.py", "scriptdir": "/downloads/scripts", "controlip": "0.0.0.0"},
+    )
+    assert status == 2
+    assert "CODE EXECUTION CONFIGURED" in text
+    assert "category2.extensions = Evil.py" in text
+    assert "/downloads/scripts" in text
+
+
+def test_a_scheduler_task_that_runs_a_script_raises():
+    status, text = _run(
+        _get_returning(CLEAN),
+        unlocked=False,
+        env={"NZBGET_USER": "admin", "NZBGET_PASS": "x"},
+        config={"task1.command": "Script", "task1.param": "wipe.sh"},
+    )
+    assert status == 2
+    assert "task1.command = Script" in text
+
+
+def test_an_empty_extension_list_is_a_real_negative_not_a_finding():
+    # This is the live shape measured on the NAS on 2026-08-30: every
+    # Extensions key present and empty. It must read as clean, or the check
+    # is red forever and stops being read.
+    status, text = _run(
+        _get_returning(CLEAN),
+        unlocked=False,
+        env={"NZBGET_USER": "admin", "NZBGET_PASS": "x"},
+        config={"extensions": "", "category1.extensions": "", "category2.extensions": "",
+                "scriptdir": "/downloads/scripts", "scriptorder": "", "scriptpausequeue": "no"},
+    )
+    assert status == 0
+    assert "No extension or script task is configured; 6 setting(s) read." in text
+
+
+def test_scriptdir_alone_is_not_a_finding():
+    # ScriptDir says where scripts are found, not that one runs. If this
+    # raised, the check would be red on the box's default configuration.
+    status, _ = _run(
+        _get_returning(CLEAN),
+        unlocked=False,
+        env={"NZBGET_USER": "admin", "NZBGET_PASS": "x"},
+        config={"scriptdir": "/downloads/scripts"},
+    )
+    assert status == 0
+
+
+def test_an_unreachable_nzbget_is_1_and_never_reads_as_locked():
+    status, text = _run(_get_returning(CLEAN), unlocked=nas.Unreachable("no answer"))
+    assert status == 1
+    assert "UNREADABLE  nzbget" in text
+    assert "NZBGET CONTROL IS LOCKED" not in text
+
+
+def test_a_refused_credential_is_1_rather_than_an_empty_config():
+    status, text = _run(
+        _get_returning(CLEAN),
+        unlocked=False,
+        env={"NZBGET_USER": "admin", "NZBGET_PASS": "wrong"},
+        config=nas.Unreachable("nzbget refused the control credential (401)"),
+    )
+    assert status == 1
+    assert "refused the control credential" in text
+    assert "No extension or script task is configured" not in text
+
+
+def test_an_arr_finding_still_raises_when_nzbget_is_clean():
+    status, text = _run(
+        _get_returning({"sonarr": [{"name": "n", "implementation": "CustomScript"}], "radarr": []}),
+        unlocked=False,
+    )
+    assert status == 2
+    assert "CODE EXECUTION CONFIGURED" in text
+    assert "NZBGET CONTROL IS LOCKED" in text
+
+
+def test_no_hop_judges_nothing_at_all_including_nzbget():
+    out = io.StringIO()
+    status = nas_watch.report(
+        env={}, out=out, get=_get_returning(CLEAN), ssh=None,
+        unlocked=lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not probe with no hop")),
+    )
+    assert status == 0
+    assert "CANNOT SEE FROM THIS POD" in out.getvalue()
+    assert "NZBGET" not in out.getvalue()
+
+
+def test_nzbget_is_still_judged_when_no_arr_can_be_configured(monkeypatch):
+    # The *arrs need a discovered API key and nzbget does not, so whatever
+    # broke them does not reach it -- and an open control interface must not
+    # be lost behind an unrelated failure on the line above.
+    monkeypatch.setattr(nas, "config", lambda env=None, ssh=None, run=None: {})
+    out = io.StringIO()
+    status = nas_watch.report(
+        env={}, out=out, get=_get_returning({}), ssh=HOP,
+        unlocked=lambda *a, **k: True,
+        config=lambda *a, **k: {},
+    )
+    assert status == 2
+    assert "SERVICES UNREADABLE" in out.getvalue()
+    assert "NZBGET CONTROL IS OPEN" in out.getvalue()

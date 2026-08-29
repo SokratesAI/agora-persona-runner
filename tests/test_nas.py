@@ -567,3 +567,86 @@ def test_a_value_that_could_break_out_of_the_quotes_is_refused_rather_than_writt
             nas._curl_config(bad)
     with pytest.raises(ValueError):
         nas._curl_config("http://x/y", ('X-Api-Key: k"\nurl = http://evil/',))
+
+
+# --- nzbget transport -------------------------------------------------------
+
+
+def _hop_returning(*answers):
+    """A fake `_fetch_over_ssh` that serves `(body, status)` in order."""
+    calls = []
+    queue = list(answers)
+
+    def fetch(ssh, url, headers=(), run=None):
+        calls.append((url, tuple(headers)))
+        return queue.pop(0)
+
+    fetch.calls = calls
+    return fetch
+
+
+def test_nzbget_read_only_refuses_saveconfig():
+    # The write that would set an extension must not be reachable from here
+    # at all, and the allowlist is the thing that guarantees it.
+    assert "/jsonrpc/saveconfig" not in nas.NZBGET_READ_ONLY
+    with pytest.raises(ValueError):
+        nas._nzbget_url("/jsonrpc/saveconfig")
+
+
+def test_nzbget_unlocked_reads_401_as_locked(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("", 401)))
+    assert nas.nzbget_unlocked({"host": "h"}) is False
+
+
+def test_nzbget_unlocked_reads_200_as_open(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("{}", 200)))
+    assert nas.nzbget_unlocked({"host": "h"}) is True
+
+
+def test_nzbget_unlocked_refuses_to_guess_at_any_other_status(monkeypatch):
+    # A 500 or a captive portal's 302 is neither open nor locked, and calling
+    # it "locked" is the answer that hides an open control interface.
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("", 500)))
+    with pytest.raises(nas.Unreachable):
+        nas.nzbget_unlocked({"host": "h"})
+
+
+def test_nzbget_config_folds_names_and_sends_basic_auth(monkeypatch):
+    fetch = _hop_returning(('{"result":[{"Name":"ControlIp","Value":"0.0.0.0"}]}', 200))
+    monkeypatch.setattr(nas, "_fetch_over_ssh", fetch)
+    conf = nas.nzbget_config({"host": "h"}, ("admin", "pw"))
+    # Folded, because the running box serves `ControlIp` where the docs say
+    # `ControlIP` and a check that misses one letter reads as a clean check.
+    assert conf == {"controlip": "0.0.0.0"}
+    assert fetch.calls[0][1] == ("Authorization: Basic YWRtaW46cHc=",)
+
+
+def test_nzbget_config_reports_a_refused_credential_as_unreachable(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("", 401)))
+    with pytest.raises(nas.Unreachable, match="refused the control credential"):
+        nas.nzbget_config({"host": "h"}, ("admin", "pw"))
+
+
+def test_nzbget_config_refuses_a_200_that_is_not_a_config(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("<html>login</html>", 200)))
+    with pytest.raises(nas.Unreachable):
+        nas.nzbget_config({"host": "h"}, ("admin", "pw"))
+
+
+def test_nzbget_credential_needs_both_halves():
+    assert nas.nzbget_credential({"NZBGET_USER": "admin", "NZBGET_PASS": "pw"}) == ("admin", "pw")
+    assert nas.nzbget_credential({"NZBGET_USER": "admin"}) is None
+    assert nas.nzbget_credential({"NZBGET_PASS": "pw"}) is None
+    assert nas.nzbget_credential({}) is None
+
+
+def test_nzbget_unlocked_sends_no_credential_at_all(monkeypatch):
+    # The whole value of this probe is that it needs nothing handed in, so a
+    # credential leaking into it would make it silently stop measuring "can
+    # anyone get in" and start measuring "can we get in".
+    fetch = _hop_returning(("", 401))
+    monkeypatch.setattr(nas, "_fetch_over_ssh", fetch)
+    nas.nzbget_unlocked({"host": "h"})
+    url, headers = fetch.calls[0]
+    assert headers == ()
+    assert "@" not in url
