@@ -2,6 +2,8 @@
 the eighteen step-1a checks read the three fields that say so."""
 import datetime
 import json
+import pytest
+from unittest import mock
 
 from tools import workload_health as wh
 
@@ -459,3 +461,96 @@ def test_an_unreadable_meminfo_never_reads_as_clean(capsys, monkeypatch):
 
     assert wh.main([], runner=runner, now=NOW) == 1
     assert "COULD NOT READ" in capsys.readouterr().out
+
+
+# --- attribution: where the host's memory went -------------------------------
+
+MEMINFO_FULL_HOST = {
+    "MemTotal": 7931600.0, "MemAvailable": 246232.0,
+    "AnonPages": 7006024.0, "Cached": 180084.0, "Buffers": 1480.0,
+    "SUnreclaim": 188596.0, "KernelStack": 26800.0, "PageTables": 63716.0,
+    "SwapTotal": 2097148.0, "SwapFree": 132.0,
+}
+
+
+def _top(rows, returncode=0, stderr=""):
+    def runner(args, **kwargs):
+        assert args[:3] == ["kubectl", "top", "pods"]
+        return type("P", (), {"returncode": returncode,
+                              "stdout": "\n".join(rows), "stderr": stderr})()
+    return runner
+
+
+def test_pod_working_set_sums_the_memory_column():
+    rows = ["agents  a  10m  252Mi", "infra  b  1m  192Mi"]
+    (total, counted), why = wh.read_pod_working_set(runner=_top(rows))
+    assert why is None
+    assert counted == 2
+    assert total == pytest.approx(444.0)
+
+
+def test_no_pod_rows_is_no_instrument_not_zero():
+    total, why = wh.read_pod_working_set(runner=_top([]))
+    assert total is None
+    assert "no Pod rows" in why
+
+
+def test_attribution_names_the_memory_outside_every_pod():
+    lines = wh.attribution(MEMINFO_FULL_HOST, (2086.0, 42))
+    joined = "\n".join(lines)
+    # 7006024kB anon = 6841.8Mi; minus 2086Mi of Pods leaves ~4756Mi.
+    assert "6842Mi anonymous" in joined
+    assert "~4756Mi of anonymous memory outside every Pod cgroup" in joined
+    assert "42 Pod(s) account for 2086Mi" in joined
+    assert "lower bound" in joined
+
+
+def test_attribution_says_so_when_the_pod_split_is_unreadable():
+    lines = wh.attribution(MEMINFO_FULL_HOST, None)
+    joined = "\n".join(lines)
+    assert "6842Mi anonymous" in joined
+    assert "unmeasured" in joined
+    assert "outside every Pod cgroup" not in joined
+
+
+def test_attribution_never_raises_on_its_own(capsys):
+    """A host using memory is not a finding, and there is no PR that fixes it."""
+    meminfo = dict(MEMINFO_FULL_HOST, MemAvailable=6000000.0, SwapFree=2000000.0)
+
+    def runner(args, **kwargs):
+        if args[:3] == ["kubectl", "top", "pods"]:
+            return type("P", (), {"returncode": 0, "stdout": "a b 1m 100Mi", "stderr": ""})()
+        if "pods" in args:
+            body = {"items": [{"metadata": {"namespace": "agents", "name": "p"},
+                               "spec": {"containers": []}, "status": {"phase": "Running"}}]}
+        elif "nodes" in args:
+            body = {"items": [{"metadata": {"name": "server1"},
+                               "status": {"capacity": {"memory": "7931600Ki"}}}]}
+        else:
+            body = {"items": []}
+        return type("P", (), {"returncode": 0, "stdout": json.dumps(body), "stderr": ""})()
+
+    with mock.patch.object(wh, "read_meminfo", lambda *a, **k: (meminfo, None)):
+        assert wh.main([], runner=runner, now=NOW) == 0
+    assert "outside every Pod cgroup" in capsys.readouterr().out
+
+
+def test_a_reading_off_the_wrong_machine_is_never_broken_down(capsys):
+    """If meminfo is a container's view, a breakdown of it is worse than none."""
+    def runner(args, **kwargs):
+        assert args[:3] != ["kubectl", "top", "pods"], "must not attribute an unattributed reading"
+        if "pods" in args:
+            body = {"items": [{"metadata": {"namespace": "agents", "name": "p"},
+                               "spec": {"containers": []}, "status": {"phase": "Running"}}]}
+        elif "nodes" in args:
+            body = {"items": [{"metadata": {"name": "server1"},
+                               "status": {"capacity": {"memory": "999Ki"}}}]}
+        else:
+            body = {"items": []}
+        return type("P", (), {"returncode": 0, "stdout": json.dumps(body), "stderr": ""})()
+
+    with mock.patch.object(wh, "read_meminfo", lambda *a, **k: (MEMINFO_FULL_HOST, None)):
+        assert wh.main([], runner=runner, now=NOW) == 1
+    out = capsys.readouterr().out
+    assert "CANNOT ATTRIBUTE MEMORY" in out
+    assert "MEMORY WENT" not in out
