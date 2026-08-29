@@ -114,13 +114,14 @@ DEFAULT_IDLE_MINUTES = 120
 #: that cross 03:00. Still bounded, because a demo that is never going to be
 #: opened should not hold a port forever either.
 #:
-#: **Known residual, filed rather than fixed:** `last_seen` lives in the
-#: site pod's memory, so a roll makes every quiet demo look unopened and
-#: moves it onto this clock instead of the two-hour one. That trades port
-#: hygiene for the hand-off, deliberately -- the cost is one of thirty
-#: ports, the other error is a dead link in the owner's hand. The real fix
-#: is a durable "has been opened" mark in the registry, which is a write
-#: from the site and wants its own cycle.
+#: **The durable mark closed most of this, Cycle 608.** `last_seen` still
+#: lives in the site pod's memory, but the first browser request now writes
+#: `opened_at` into the registry row, which survives the roll -- see
+#: `nova_demos.mark_opened`. What is left on this clock and cannot be fixed
+#: is a row written before that shipped, and one whose write lost the
+#: compare-and-swap to a cycle allocating a port. Both land on the long
+#: clock, which is the safe direction: the cost is one of thirty ports, and
+#: the other error is a dead link in the owner's hand.
 DEFAULT_UNOPENED_MINUTES = 1080
 
 
