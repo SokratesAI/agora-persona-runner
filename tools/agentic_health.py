@@ -507,9 +507,14 @@ def _runs_to_judge(completed):
     because Cycle 618 dispatched it by hand at 03:37 and that run went
     green.
 
-    The dispatch result is never dropped, only demoted to `aside`: it is
-    real evidence about whether the workflow *can* pass, which is a
-    different question from whether it *is* passing.
+    The `aside` names the newest run when that run is not a scheduled
+    one, because that is the case where the two answers visibly
+    disagree and a reader would otherwise wonder where the green went.
+    It is a demotion and not a claim of completeness: an older
+    non-scheduled run buried further down the window is excluded from
+    the streak and is not named. Widening it to every such run would be
+    a list nobody reads, and the numbers it would carry are already one
+    `gh run list` away.
     """
     scheduled = [r for r in completed if (r or {}).get("event") == "schedule"]
     if not scheduled:

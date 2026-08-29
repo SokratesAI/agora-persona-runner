@@ -621,7 +621,16 @@ def test_the_follow_up_asks_about_the_scheduled_run_not_the_dispatch():
 
 def test_a_workflow_with_no_scheduled_runs_is_still_judged_on_what_it_has():
     """Not every agentic workflow has a `schedule`; dropping those would
-    make this tool blind to the ones that only ever run on an event."""
+    make this tool blind to the ones that only ever run on an event.
+
+    My reviewer read this as decorative, on the grounds that it passes
+    against the pre-fix code too -- which is true, because the fallback
+    branch *is* the old behaviour. It is not decorative, and the
+    mutation that shows it is the forward one rather than the revert:
+    make `_runs_to_judge` return the scheduled list unconditionally and
+    this is the only test in the file that fails, on an `IndexError`
+    from an empty window.
+    """
     verdict = agentic_health.verdict_for(
         {"repo": "r", "path": "x.lock.yml"},
         _mixed(
