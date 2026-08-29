@@ -6,6 +6,7 @@ The one that carries the row is `test_supported_line_with_no_upstream_gap_is_sti
 whole difference between "up to date" and "still supported".
 """
 
+import base64
 import datetime as dt
 
 import pytest
@@ -131,8 +132,8 @@ def test_multi_stage_repeats_are_one_finding_with_both_places():
         {"repo": "o/s", "path": "Dockerfile", "image": "node", "tag": "20"},
     ]
     groups = eol_watch.group(members)
-    assert list(groups) == [("node", "20")]
-    assert eol_watch._places(groups[("node", "20")]) == [
+    assert list(groups) == [("image", "node", "20")]
+    assert eol_watch._places(groups[("image", "node", "20")]) == [
         "o/r  Dockerfile", "o/s  Dockerfile"]
 
 
@@ -293,7 +294,7 @@ def _run_main(monkeypatch, judged_out, not_judged_out=(), problems=()):
 def test_main_exits_2_on_a_line_out_of_support(monkeypatch, capsys):
     _, dead = judged("node", "20")
     assert _run_main(monkeypatch, [dead]) == 2
-    assert "BASE IMAGE SUPPORT" in capsys.readouterr().out
+    assert "RUNTIME SUPPORT" in capsys.readouterr().out
 
 
 def test_main_exits_0_only_when_something_was_judged_and_all_supported(
@@ -321,3 +322,121 @@ def test_main_exits_1_when_the_catalogue_is_unreadable(monkeypatch, capsys):
                         lambda *a, **k: (None, "could not reach it"))
     assert eol_watch.main(["--repo", "o/r"]) == 1
     assert "no instrument" in capsys.readouterr().out
+
+
+# --- Workflow toolchain pins (Cycle 622).
+#
+# `SokratesAI/operator` pinned Go 1.25 in four places: one `FROM` line and
+# three `setup-go` steps. This tool read the first and reported it as the
+# whole answer, so a repo could move its Dockerfile onto a supported line
+# and keep building and testing on a dead one with nothing saying so.
+
+WORKFLOW = """\
+jobs:
+  test:
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: something else entirely
+        with:
+          api-version: 2
+"""
+
+
+def test_a_workflow_version_pin_is_read_like_a_from_line():
+    pins = eol_watch.toolchain_pins("o/r", ".github/workflows/build.yaml",
+                                    WORKFLOW)
+    assert [(p["image"], p["tag"]) for p in pins] == [("node", "20")]
+    assert all(p["kind"] == "toolchain" for p in pins)
+
+
+def test_a_version_key_this_file_does_not_install_is_not_a_runtime_pin():
+    # My reviewer's finding on runner#523, with its own input. The
+    # endoflife.date catalogue's short names collide with ordinary
+    # workflow keys -- `app` is istio, `vault` is hashicorp-vault,
+    # `server` is claimed by two products -- so resolving in the map is
+    # not enough on its own. `app-version: "1.28.0"` in a release job
+    # resolved to Istio 1.28, which really is past its end of life, and
+    # printed a fabricated finding with a real product name and a real
+    # date on it. Only a runtime the file itself installs is read.
+    text = """\
+      - name: Bump version
+        env:
+          app-version: "1.28.0"
+          vault-version: "1.15"
+"""
+    assert eol_watch.toolchain_pins("o/r", "w", text) == []
+    # And the same key does count once the file says it installs it.
+    installed = "      - uses: actions/setup-app@v1\n" + text
+    assert [p["image"] for p in eol_watch.toolchain_pins("o/r", "w", installed)] \
+        == ["app"]
+
+
+def test_a_third_party_setup_action_counts_the_same_as_githubs():
+    text = ("      - uses: ruby/setup-ruby@v1\n"
+            "        with:\n"
+            "          ruby-version: \"3.1\"\n")
+    assert [(p["image"], p["tag"]) for p in eol_watch.toolchain_pins(
+        "o/r", "w", text)] == [("ruby", "3.1")]
+
+
+def test_a_value_that_names_no_version_is_not_read_as_one():
+    # `node-version-file: .nvmrc` points at a file this does not read, so
+    # there is nothing in *this* file to judge.
+    assert "nvmrc" not in str(eol_watch.toolchain_pins("o/r", "w", WORKFLOW))
+
+
+def test_the_key_must_end_at_version_and_not_merely_contain_it():
+    # This value is contrived on purpose. Every real `*-version-file:`
+    # value in the wild -- `.nvmrc`, `go.mod`, `.python-version` -- starts
+    # with a letter or a dot, so the "must start with a digit" rule
+    # already refuses them and a realistic fixture cannot tell that rule
+    # apart from the `-version:` anchor. Only a digit-leading value can
+    # show which one is doing the work, and the anchor has to be the one:
+    # a file name is not a version however it happens to be spelled.
+    text = "          node-version-file: 20-lts.txt\n"
+    assert eol_watch.toolchain_pins("o/r", "w", text) == []
+
+
+TREE = ".github/workflows/build.yaml"
+
+
+def test_sweep_judges_a_dead_toolchain_pin_and_drops_a_key_that_is_not_one():
+    def run(args):
+        if any("git/trees" in a for a in args):
+            return 0, TREE, ""
+        return 0, base64.b64encode(WORKFLOW.encode()).decode(), ""
+
+    judged_, not_judged, problems = eol_watch.sweep(
+        ["o/r"], PRODUCTS, TODAY, 180, run=run)
+    assert problems == []
+    # `api-version: 2` names no product, so it is not a runtime pin at all
+    # and is dropped rather than printed as an unanswerable question.
+    assert not_judged == []
+    assert [(i["image"], i["tag"], i["verdict"]) for i in judged_] == [
+        ("node", "20", "eol")]
+    assert judged_[0]["path"] == ".github/workflows/build.yaml"
+
+
+def test_the_report_writes_a_workflow_pin_the_way_the_file_writes_it():
+    _, pin = judged("node", "20", kind="toolchain")
+    report = eol_watch.format_report([pin], [], [], [], 180)
+    assert "node-version: 20" in report
+    assert "node:20" not in report
+    assert "1 workflow version pin(s)" in report
+
+
+def test_a_from_line_and_a_workflow_pin_of_one_version_stay_apart():
+    # Same runtime, same version, two notations in two kinds of file. One
+    # group would print one of them under the other's spelling.
+    groups = eol_watch.group([
+        {"repo": "o/r", "path": "Dockerfile", "image": "node", "tag": "20"},
+        {"repo": "o/r", "path": ".github/workflows/b.yaml", "image": "node",
+         "tag": "20", "kind": "toolchain"},
+    ])
+    assert len(groups) == 2
