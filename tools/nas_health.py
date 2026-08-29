@@ -1,6 +1,6 @@
 """Is the owner's home NAS up, and are Sonarr and Radarr answering on it?
 
-Cycle 638, on my own capture -- *"The NAS is the one thing the owner calls
+Cycle 637, on my own capture -- *"The NAS is the one thing the owner calls
 highest priority and the only part of this system nothing checks
 automatically"*. `tools.nas` can already ask the NAS real questions, and it
 works: Cycle 631 measured `nas status` returning live versions. What did not
@@ -14,7 +14,7 @@ owns can each see only one of them:
 * **Reachability.** A TCP connect to the NAS's SSH port and the banner it
   answers with. Needs nothing but a route, so it runs on the bridge pod --
   where `tools.preflight` actually runs -- and it is the half that answers
-  "is the box up". Measured Cycle 638 from the bridge pod: 0.059s to a
+  "is the box up". Measured Cycle 637 from the bridge pod: 0.059s to a
   `SSH-2.0-OpenSSH_8.2` banner. **Time it and print the time**, because a
   refusal that returns in ~0.0002s came from this pod's own kernel (the
   `allow-nas-ssh-egress` NetworkPolicy) and a refusal with real latency came
