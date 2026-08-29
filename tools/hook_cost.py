@@ -65,12 +65,17 @@ WRAPPER_CHARS = 45
 # magnitude.
 CHARS_PER_TOKEN = 4.0
 
-# Thresholds, both derived from the first measurement rather than chosen
-# for comfort (Cycle 602, eight cycles of 50+ turns): the worst carried
-# share was 0.62% and the largest single injection was 106 characters. A
-# hook problem worth a cycle's attention looks like an order of magnitude
-# more than that, and the wedge case in the 2.1.247 changelog is
-# megabytes. Both sit clear of measured-normal and clear of broken.
+# Thresholds, both derived from measurement rather than chosen for
+# comfort. Re-taken Cycle 604 on the six newest cycles of 50+ turns,
+# because the numbers this comment first carried (0.62% and 106
+# characters) came from a draft that counted transcript rows as turns and
+# judged subagent transcripts, and both of those are now fixed: the worst
+# carried share is 0.97% and the largest single injection is 321
+# characters. A hook problem worth a cycle's attention looks like an order
+# of magnitude more than that, and the wedge case in the 2.1.247 changelog
+# is megabytes. Both thresholds sit clear of measured-normal and clear of
+# broken, under either reading — which is the point of leaving an order of
+# magnitude of headroom rather than tuning to the last measurement.
 MAX_CARRIED_SHARE = 5.0
 MAX_SINGLE_CHARS = 10000
 
