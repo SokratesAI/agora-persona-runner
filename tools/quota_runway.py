@@ -149,7 +149,8 @@ def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_M
         f"that none of them can do any work."
     )
     lines.append(
-        "  The lever is cadence, and it is Edvard's. Slowing the heartbeat "
+        "  The lever is cadence, and `tools.cadence_control` now pulls it. "
+        "Slowing the heartbeat "
         f"enough to stretch {remaining_pct:.0f}% over {hours_to_reset:.1f}h means "
         f"about {_needed_cadence(remaining_pct, hours_to_reset, pct_per_day, spend_cadence_minutes):.0f} "
         "minutes between cycles."
