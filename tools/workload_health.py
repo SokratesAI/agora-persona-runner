@@ -437,7 +437,7 @@ def read_meminfo(path=MEMINFO):
     try:
         with open(path, encoding="utf-8") as handle:
             raw = handle.read()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         return None, f"could not read {path}: {exc}"
     fields = {}
     for line in raw.splitlines():
@@ -486,8 +486,12 @@ def largest_limit(pods):
 def memory_headroom(meminfo, nodes, pods):
     """Can this host still start the largest container it is configured to run?
 
-    Returns (lines, actionable, judged). `judged` is False when the reading
-    cannot be attributed to a host, which is not a clean bill of health.
+    Returns (lines, actionable, judged). `judged` is False either when the
+    reading cannot be attributed to a host or when the host matched and
+    `MemAvailable` is absent. Both are "no instrument", not a clean bill of
+    health, and `main` turns either into an exit 1 -- but they print
+    different sentences, because a reading about the wrong machine and a
+    missing field on the right one have different fixes.
     """
     total = meminfo.get("MemTotal", 0) / 1024
     available = meminfo.get("MemAvailable")
@@ -511,7 +515,12 @@ def memory_headroom(meminfo, nodes, pods):
 
     biggest, where = largest_limit(pods)
     if available is None:
-        lines.append(f"CANNOT ATTRIBUTE MEMORY — {MEMINFO} carries no MemAvailable")
+        # A different failure from an unattributable reading, and it does not
+        # get to borrow that sentence: the host matched, one field is absent.
+        lines.append(
+            f"CANNOT JUDGE MEMORY — {host} matched, but {MEMINFO} carries no "
+            "MemAvailable, which is the only field that says what can still be "
+            "allocated.")
         return lines, False, False
     available_mib = available / 1024
 

@@ -274,6 +274,13 @@ def test_read_deployments_takes_the_grace_off_the_pod_template():
 #
 # server1 was at 487Mi of 7746Mi available with swap 0.0% free while the
 # control plane fell over, and none of the checks read either number.
+#
+# MEMINFO below is a real /proc/meminfo read off that host, but it is the
+# *baseline* one: MemAvailable 451752 kB is 441Mi and SwapFree is the
+# healthy value, so nothing here is the incident until a test says so.
+# Each test overrides the one field it is about -- SwapFree=224 for the
+# exhausted case -- because a fixture that is already red cannot show that
+# a verdict fired for the reason it names.
 
 MEMINFO = """MemTotal:        7931600 kB
 MemFree:          178804 kB
@@ -396,11 +403,32 @@ def test_missing_memavailable_is_not_judged():
 
 
 def test_report_without_headroom_is_unchanged():
-    # The 26 tests above call report/3; adding a fourth argument must not
-    # change what any of them assert.
+    # 21 call sites above pass report() three positional arguments. This
+    # pins that adding a fourth kept them working; it deliberately says
+    # nothing about the memory verdict, which the tests above cover.
     lines, status = wh.report([_pod()], [], NOW)
     assert status == 0
     assert not any("MEMORY" in line for line in lines)
+
+
+def test_a_missing_memavailable_says_so_rather_than_blaming_attribution():
+    # A host we matched, missing one field, is not the same failure as a
+    # reading that belongs to some other machine, and it must not borrow
+    # that sentence.
+    fields = _meminfo()
+    del fields["MemAvailable"]
+    lines, _, judged = wh.memory_headroom(fields, NODES, [_pod_with_limit(64)])
+    assert judged is False
+    assert "CANNOT ATTRIBUTE MEMORY" not in " ".join(lines)
+    assert "MemAvailable" in " ".join(lines)
+
+
+def test_a_meminfo_that_is_not_text_is_unreadable_not_a_crash(tmp_path):
+    path = tmp_path / "meminfo"
+    path.write_bytes(b"MemTotal: 1 kB\n\xff\xfe not utf-8\n")
+    fields, why = wh.read_meminfo(str(path))
+    assert fields is None
+    assert "could not read" in why
 
 
 def test_an_unattributable_reading_makes_main_exit_1(capsys, monkeypatch):
