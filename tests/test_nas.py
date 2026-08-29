@@ -14,6 +14,8 @@ import json
 import urllib.error
 import urllib.request
 import pathlib
+import subprocess
+import types
 
 import pytest
 
@@ -142,11 +144,18 @@ def test_one_configured_service_is_enough():
 
 def test_main_with_nothing_configured_names_the_four_values_and_exits_1():
     out = io.StringIO()
-    assert nas.main(["status"], env={}, out=out) == 1
+    # `ssh=None` is "there is no hop", stated rather than inherited from
+    # whichever pod runs the suite -- the runner pod has ssh and a key, the
+    # bridge pod has neither, and a test that reads either of those is a test
+    # whose result depends on where it ran.
+    assert nas.main(["status"], env={}, out=out, ssh=None) == 1
     text = out.getvalue()
     for value in ("SONARR_URL", "SONARR_API_KEY", "RADARR_URL", "RADARR_API_KEY"):
         assert value in text
-    assert "Tailscale" in text  # it says whose step is missing, not just what
+    # It names which half is missing rather than only what to set: on this pod
+    # the answer is usually the ssh binary, not a value he forgot.
+    assert "ssh" in text
+    assert "port 22" in text
 
 
 # --- time -------------------------------------------------------------------
@@ -385,3 +394,128 @@ def test_a_series_with_no_title_does_not_crash_the_line():
 def test_a_window_shorter_than_a_day_is_refused_rather_than_silently_empty():
     with pytest.raises(SystemExit):
         nas.main(["calendar", "--days", "0"], env={"SONARR_URL": "http://s", "SONARR_API_KEY": "k"}, out=io.StringIO())
+
+
+# --- the SSH transport (Cycle 631) -------------------------------------------
+#
+# The point of every test below is that nothing derived from Edvard's typing
+# reaches a shell, and that a failure over SSH is reported as the same kind of
+# thing a failure over HTTP was.
+
+
+class _FakeRun:
+    """Stands in for `subprocess.run`, recording argv and stdin."""
+
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+        self.calls = []
+
+    def __call__(self, argv, input=None, capture_output=None, text=None, timeout=None):
+        self.calls.append({"argv": argv, "input": input, "timeout": timeout})
+        return types.SimpleNamespace(stdout=self.stdout, returncode=self.returncode, stderr=self.stderr)
+
+
+SSH_HOP = {"host": "10.0.0.1", "user": "nova", "key": "/etc/nas-ssh/id_ed25519"}
+SSH_CONF = {"url": "http://127.0.0.1:8989", "key": "deadbeef" * 4, "ssh": SSH_HOP}
+
+
+def test_the_remote_command_is_a_constant_and_carries_nothing_variable():
+    run = _FakeRun(stdout='[{"title": "x"}]\n200')
+    nas._get("sonarr", SSH_CONF, "/api/v3/series/lookup", {"term": "bake off; rm -rf /"}, run=run)
+    argv = run.calls[0]["argv"]
+    # The last argument is what a shell on the far side will parse. It must be
+    # the same string on every call this module ever makes.
+    assert argv[-1] == "curl --config -"
+    joined = " ".join(argv)
+    assert "rm -rf" not in joined
+    assert "8989" not in joined  # not even the URL is on the command line
+    assert SSH_CONF["key"] not in joined  # and the key is not visible in `ps`
+    # All of it went in on stdin instead.
+    assert "term=bake+off%3B+rm+-rf+%2F" in run.calls[0]["input"]
+    assert f"header = \"X-Api-Key: {SSH_CONF['key']}\"" in run.calls[0]["input"]
+
+
+def test_the_curl_config_never_asks_curl_to_follow_a_redirect():
+    # `_NoRedirect` above exists because urllib copies the API key onto a
+    # redirect target. curl's default is not to follow one, so the guarantee
+    # here is that nothing ever turns that default off.
+    assert "location" not in nas._curl_config("http://x/y", ("A: b",))
+
+
+def test_a_401_over_ssh_reads_as_a_refused_key_not_a_dead_service():
+    run = _FakeRun(stdout="\n401")
+    with pytest.raises(nas.Unreachable) as exc:
+        nas._get("sonarr", SSH_CONF, "/api/v3/system/status", run=run)
+    assert "refused the API key" in str(exc.value)
+
+
+def test_a_200_that_is_not_json_is_not_an_answer():
+    run = _FakeRun(stdout="<html>login</html>\n200")
+    with pytest.raises(nas.Unreachable) as exc:
+        nas._get("sonarr", SSH_CONF, "/api/v3/system/status", run=run)
+    assert "not JSON" in str(exc.value)
+
+
+def test_ssh_failing_to_connect_is_named_as_ssh_not_as_the_service():
+    run = _FakeRun(returncode=255, stderr="Permission denied (publickey).")
+    with pytest.raises(nas.Unreachable) as exc:
+        nas._get("sonarr", SSH_CONF, "/api/v3/system/status", run=run)
+    assert "ssh to 10.0.0.1 failed" in str(exc.value)
+    assert "publickey" in str(exc.value)
+
+
+def test_a_hang_is_a_timeout_rather_than_a_stuck_cycle():
+    def hang(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="ssh", timeout=25)
+
+    with pytest.raises(nas.Unreachable) as exc:
+        nas._get("sonarr", SSH_CONF, "/api/v3/system/status", run=hang)
+    assert "did not answer within" in str(exc.value)
+
+
+def test_ssh_config_needs_both_a_binary_and_a_key_and_says_no_otherwise():
+    assert nas.ssh_config({}, exists=lambda p: True, which=lambda n: None) is None
+    assert nas.ssh_config({}, exists=lambda p: False, which=lambda n: "/usr/bin/ssh") is None
+    got = nas.ssh_config({}, exists=lambda p: True, which=lambda n: "/usr/bin/ssh")
+    assert got == nas.SSH_DEFAULTS
+    over = nas.ssh_config(
+        {"NAS_SSH_HOST": "nas.local", "NAS_SSH_USER": "root", "NAS_SSH_KEY": "/k"},
+        exists=lambda p: True,
+        which=lambda n: "/usr/bin/ssh",
+    )
+    assert over == {"host": "nas.local", "user": "root", "key": "/k"}
+
+
+def test_discover_key_reads_the_key_off_initialize_js():
+    run = _FakeRun(stdout="window.Sonarr = {\n  apiKey: 'b1d0b473c3eb4475af67f86ea729d846',\n};\n200")
+    assert nas.discover_key("sonarr", SSH_HOP, run=run) == "b1d0b473c3eb4475af67f86ea729d846"
+    assert "8989/initialize.js" in run.calls[0]["input"]
+    # No API key header on this one -- the whole point is that it needs none.
+    assert "X-Api-Key" not in run.calls[0]["input"]
+
+
+def test_discover_key_returns_none_rather_than_guessing_when_the_page_is_locked():
+    assert nas.discover_key("sonarr", SSH_HOP, run=_FakeRun(stdout="\n401")) is None
+    assert nas.discover_key("sonarr", SSH_HOP, run=_FakeRun(stdout="no key here\n200")) is None
+    assert nas.discover_key("plex", SSH_HOP, run=_FakeRun(stdout="\n200")) is None
+
+
+def test_config_over_ssh_fills_in_loopback_and_a_discovered_key():
+    run = _FakeRun(stdout="apiKey: 'aaaabbbbccccdddd'\n200")
+    conf = nas.config({}, ssh=SSH_HOP, run=run)
+    assert conf["sonarr"]["url"] == "http://127.0.0.1:8989"
+    assert conf["radarr"]["url"] == "http://127.0.0.1:7878"
+    assert conf["sonarr"]["key"] == "aaaabbbbccccdddd"
+    assert conf["sonarr"]["ssh"] == SSH_HOP
+
+
+def test_an_explicit_env_key_beats_discovery():
+    run = _FakeRun(stdout="apiKey: 'aaaabbbbccccdddd'\n200")
+    conf = nas.config({"SONARR_API_KEY": "mine"}, ssh=SSH_HOP, run=run)
+    assert conf["sonarr"]["key"] == "mine"
+
+
+def test_without_a_hop_config_is_exactly_what_it_always_was():
+    assert nas.config({}, ssh=None) == {}
+    conf = nas.config({"SONARR_URL": "nas:8989", "SONARR_API_KEY": "k"}, ssh=None)
+    assert conf == {"sonarr": {"url": "http://nas:8989", "key": "k"}}
