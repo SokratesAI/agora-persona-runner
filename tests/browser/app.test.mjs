@@ -2348,6 +2348,37 @@ describe("commenting on a cycle", () => {
     assert.ok(!shown[1].classList.contains("is-acknowledged"));
   });
 
+  /* A comment Sokrates posted on his behalf is not one he typed, and the
+   * drawer is where he actually reads them. `top_board_rows` has demoted a
+   * relayed board comment since Cycle 626; this is the same fact in the
+   * place it is read. The server sets `relayed` off the disclosure sentence
+   * (`nova_boards.is_relayed`). */
+  test("a relayed comment is marked as relayed and one he typed is not", async () => {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["55"][0].relayed = true;
+    const w = await loadSite("/", { comments: copy });
+    const relayed = cardFor(w, 55).querySelector(".comment:not(.comment-reply)");
+    const mark = relayed.querySelector(".comment-relay");
+    assert.ok(mark, "a relayed comment carries no mark");
+    // Symbol and word together: a reader who does not know the arrow still
+    // reads the sentence.
+    assert.ok(/relayed by Sokrates/.test(mark.textContent), mark.textContent);
+    // The negative is what makes the mark mean anything. Cycle 57's fixture
+    // comments are his own, and they must stay unmarked.
+    assert.equal(cardFor(w, 57).querySelectorAll(".comment-relay").length, 0);
+  });
+
+  /* An app.js cached from before this shipped talks to the new server and
+   * back; neither direction may paint the mark on a comment that has no
+   * claim to it. Here it is the new page against an old payload -- the
+   * field simply absent, not false. */
+  test("a payload with no relayed field marks nothing", async () => {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    Object.values(copy.byCycle).forEach((items) => items.forEach((c) => { delete c.relayed; }));
+    const w = await loadSite("/", { comments: copy });
+    assert.equal(w.document.querySelectorAll(".comment-relay").length, 0);
+  });
+
   test("a comment's paragraph breaks survive to the page", () => {
     // A comment is prose. Joining its paragraphs would be rewriting him.
     // Nova's reply is a `.comment` too now (a sibling, same indentation),

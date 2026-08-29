@@ -262,7 +262,8 @@
           "replyPending": false,
           "replyWaiting": false,
           "replyWaitingSeconds": 0,
-          "replyFailed": false
+          "replyFailed": false,
+          "relayed": false
         },
         {
           "cycle": 57,
@@ -274,7 +275,8 @@
           "replyPending": false,
           "replyWaiting": false,
           "replyWaitingSeconds": 0,
-          "replyFailed": false
+          "replyFailed": false,
+          "relayed": false
         }
       ],
       "55": [
@@ -294,7 +296,8 @@
           "replyPending": false,
           "replyWaiting": false,
           "replyWaitingSeconds": 0,
-          "replyFailed": false
+          "replyFailed": false,
+          "relayed": false
         }
       ]
     },

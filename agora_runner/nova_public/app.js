@@ -2129,6 +2129,15 @@
         var head = el("p", "comment-meta");
         head.appendChild(el("span", "comment-stamp", comment.stamp || ""));
         if (comment.acknowledged) head.appendChild(el("span", "comment-ack", "read"));
+        /* A comment Sokrates posted on his behalf, not one he typed.
+         * The server reads the disclosure sentence the relay opens with
+         * (`nova_boards.is_relayed`); the ranking already demotes these,
+         * and this is the same fact where he actually reads them. Symbol
+         * and word together, never the arrow alone -- a reader who does
+         * not know the code still reads the sentence. */
+        if (comment.relayed) {
+          head.appendChild(el("span", "comment-relay", "↩ relayed by Sokrates"));
+        }
         item.appendChild(head);
         // The text is the owner's own prose and the server sends it as plain
         // text, so each blank-line-separated paragraph becomes its own <p>.
