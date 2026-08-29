@@ -168,10 +168,21 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         if not latest:
             unjudged.append((service, f"upstream {repo} could not be read -- {why_not}"))
             continue
-        judged.append(service)
         age = _age_phrase(build_age_days(info.get("buildTime"), now=now))
         line = f"{service} {running} ({age}) against {repo} {latest}"
-        if pin_drift.gap(running, latest) == "major":
+        verdict = pin_drift.gap(running, latest)
+        if verdict is None:
+            # A version string with no leading number -- `nightly`, `develop`,
+            # a docker tag someone typed by hand. `gap` answers None, which is
+            # not "major", so testing for equality alone would file it under
+            # "not a major behind" and clear it. An unjudged version must
+            # never read as a judged one; that is the contract in the
+            # docstring and I broke it in my own first draft.
+            unjudged.append((service, f"version {running!r} cannot be compared against "
+                                      f"{repo} {latest}"))
+            continue
+        judged.append(service)
+        if verdict == "major":
             behind.append(line)
         else:
             current.append(line)

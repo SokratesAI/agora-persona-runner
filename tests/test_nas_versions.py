@@ -170,6 +170,26 @@ def test_unreadable_upstream_exits_one_rather_than_clearing(monkeypatch):
     assert "MAJOR VERSION BEHIND" not in text
 
 
+def test_an_uncomparable_version_string_exits_one_rather_than_clearing(monkeypatch):
+    """`nightly` is not a version and must not be filed as "not a major behind".
+
+    `pin_drift.gap` answers None for a string with no leading number. My first
+    draft tested `== "major"` and sent everything else to the cleared bucket,
+    so an app on a `nightly` tag came out looking current. I found this by
+    running `gap` over the shapes it would actually see rather than by
+    re-reading the code.
+    """
+    _patch_config(monkeypatch, _conf("sonarr"))
+    code, text = _run(("sonarr",), {"sonarr": _status("nightly")},
+                      {"Sonarr/Sonarr": "v4.0.19.2979"})
+    assert code == 1
+    assert "CANNOT JUDGE" in text
+    assert "cannot be compared" in text
+    assert "NOT A MAJOR BEHIND" not in text
+    # It is not counted as judged either -- a partial sweep must say so.
+    assert "Judged the running version of 0 service(s) of 1" in text
+
+
 def test_a_behind_app_still_raises_when_another_is_unreadable(monkeypatch):
     """A real finding must outrank an incomplete sweep, not hide behind it."""
     _patch_config(monkeypatch, _conf("sonarr", "radarr"))
