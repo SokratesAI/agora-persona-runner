@@ -7997,6 +7997,42 @@ def test_conversation_readers_only_advertised_with_manage_agora(runner):
     assert not ({"list_conversations", "read_conversation"} & names_off)
 
 
+# 2026-08-29 (Cycle 613) -- the grant above was too wide. Reading a
+# conversation is read-only and `manageAgora` also hands out create_persona,
+# create_heartbeat, create_conversation and create_workflow, so the only way
+# to let a chat persona answer "read that other conversation" was to make it
+# a platform admin. `conversationRead` is the narrow grant; `manageAgora`
+# still implies it so nothing that works today stops working.
+
+
+def test_conversation_read_capability_grants_the_readers_and_nothing_else(runner):
+    caps = dict(runner.NO_CAPS, conversationRead=True)
+    names = {t["name"] for t in runner.client_tool_schemas(caps)}
+    assert {"list_conversations", "read_conversation"} <= names
+    creators = {
+        "create_persona",
+        "create_conversation",
+        "create_heartbeat",
+        "create_workflow",
+        "list_personas",
+        "list_models",
+    }
+    assert not (creators & names)
+
+
+def test_manage_agora_still_implies_conversation_read(runner):
+    caps = dict(runner.NO_CAPS, manageAgora=True, conversationRead=False)
+    names = {t["name"] for t in runner.client_tool_schemas(caps)}
+    assert {"list_conversations", "read_conversation"} <= names
+
+
+def test_whitelisting_read_conversation_keeps_the_narrow_grant(runner):
+    persona = {"capabilities": dict(runner.NO_CAPS, conversationRead=True)}
+    caps = runner.capabilities_for_step(persona, {"toolWhitelist": ["read_conversation"]})
+    assert caps["conversationRead"] is True
+    assert caps["manageAgora"] is False
+
+
 def test_list_conversations_sorts_newest_first_and_survives_a_never_used_row(runner):
     with patch.object(runner.tools_dispatch, "agora_get",
                       return_value=(200, CONVERSATIONS_FIXTURE)), \
