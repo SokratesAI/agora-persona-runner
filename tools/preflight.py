@@ -76,6 +76,7 @@ CHECKS = (
     "cache_health",
     "hook_cost",
     "heartbeat_health",
+    "cycle_postmortem",
     "schedule_health",
     "helm_repo_health",
     "argocd_health",
