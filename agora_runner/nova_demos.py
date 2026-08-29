@@ -35,6 +35,7 @@ This is that place; it is not a second one.
 """
 
 import json
+import os
 import re
 from datetime import datetime
 
@@ -55,6 +56,36 @@ PORT_MAX = 5203
 #: is string equality, so `Foo` and `foo` must not be two demos. Also the
 #: slug lands in a URL path, so nothing here may need escaping.
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
+
+#: The fallback shared checkout, matching `agora-claude-bridge`'s
+#: `config.CLAUDE_WORKSPACE`. Only used to derive a root when the
+#: environment says nothing, which is the case in a unit test.
+DEFAULT_WORKSPACE = "/data/workspace"
+
+
+def concurrent_root(environ=None):
+    """Where a per-turn workspace lives, derived the way the bridge derives it.
+
+    `agora-claude-bridge`'s `_concurrent_root` is
+    `CLAUDE_CONCURRENT_ROOT or CLAUDE_WORKSPACE.rstrip("/") + "-concurrent"`,
+    and both of those are environment variables set on the pod this runs in.
+    So this reads the same rule off the same environment rather than keeping
+    a copy of today's answer: my reviewer pointed out that the literal
+    `/data/workspace-concurrent` this used to hold would go quietly wrong the
+    moment either variable moved, and `_workspace_for`'s own docstring
+    records that this convention already moved once, on 2026-08-23.
+    """
+    env = os.environ if environ is None else environ
+    override = env.get("CLAUDE_CONCURRENT_ROOT")
+    if override:
+        return override
+    return env.get("CLAUDE_WORKSPACE", DEFAULT_WORKSPACE).rstrip("/") + "-concurrent"
+
+#: Where a demo's files should live instead: outside any per-turn slot, on
+#: the same persistent volume, and not a checkout `tidy_workspace` sweeps.
+#: `tools.demo`'s own docstring has used this path in its example since the
+#: command was written; nothing enforced it.
+DURABLE_ROOT = "/data/workspace/demos"
 
 #: What `vault_tool.py get` prints for a path holding no document. It exits
 #: 0 and prints this, so the first caller is handed a sentence rather than
@@ -100,6 +131,54 @@ def lookup(registry, slug):
         if demo.get("slug") == slug:
             return demo
     return None
+
+
+def ephemeral_reason(directory, slug="<slug>", environ=None):
+    """Why serving `directory` would hand out a link that dies, or None.
+
+    Measured Cycle 605, because the failure is silent in the worst way. A
+    demo's dev server is spawned with `start_new_session`, so it outlives
+    the cycle that started it on purpose -- but a concurrent turn's
+    workspace is `shutil.rmtree`'d in the bridge's own `finally`, always.
+    The process therefore survives with its content gone: `python3 -m
+    http.server` kept answering on a deleted directory and served a stdlib
+    404 error page, while `verdict` -- which asks whether the pid is alive,
+    not whether the files are -- still read the row as `running`. So the
+    registry says running, the link answers, and the demo is not there.
+
+    Two roots count, and the second is the one that cannot go stale: the
+    derived `concurrent_root`, and `$NOVA_WORKSPACE` itself whenever the
+    bridge handed this turn a private one. The second needs no derivation at
+    all -- it is the directory this turn was given, read off the environment
+    the bridge exported -- so it still answers if the path convention moves
+    again.
+
+    Containment is a prefix test on the *resolved* path: `realpath`, not
+    `abspath`, because a symlink at a durable path pointing into a slot is
+    still storage that vanishes, and my reviewer found that `abspath` calls
+    it safe. And it compares against `root + os.sep` rather than raw, so
+    `/data/workspace-concurrent-notes` is not read as inside
+    `/data/workspace-concurrent`.
+    """
+    env = os.environ if environ is None else environ
+    roots = [concurrent_root(env)]
+    mine = env.get("NOVA_WORKSPACE", "")
+    shared = env.get("CLAUDE_WORKSPACE", DEFAULT_WORKSPACE)
+    if mine and os.path.normpath(mine) != os.path.normpath(shared):
+        roots.append(mine)
+    path = os.path.realpath(directory)
+    root = next((os.path.realpath(r) for r in roots
+                 if path == os.path.realpath(r)
+                 or path.startswith(os.path.realpath(r) + os.sep)), None)
+    if root is None:
+        return None
+    return (
+        f"{path} is inside {root}, which this turn deletes when it ends -- "
+        f"the dev server would outlive it and serve an empty directory, and "
+        f"the registry would still read `running`. Put the demo's files "
+        f"somewhere that survives the turn, e.g. {DURABLE_ROOT}/{slug}, and "
+        f"start it from there."
+    )
 
 
 def _free_port(registry):

@@ -845,3 +845,145 @@ def test_reap_idle_keeps_the_port_registered_when_it_cannot_signal():
          patch.object(demo_cli.os, "killpg", _refuse):
         assert demo_cli.cmd_reap(_args(idle=1)) == 1
     assert wrote == []
+
+
+# --- a demo does not survive the *cycle* it runs in either (Cycle 605) ---
+
+def test_a_concurrent_workspace_directory_is_named_as_doomed():
+    """The predicate, at the exact shape the bridge deletes.
+
+    `_run_cli_once` ends `if slot: shutil.rmtree(workspace)`, so every path
+    under the concurrent root goes when the turn does -- and the dev server,
+    deliberately in its own session, does not.
+    """
+    from agora_runner.nova_demos import ephemeral_reason
+
+    why = ephemeral_reason(
+        "/data/workspace-concurrent/7-135015072507584/agora-persona-runner/demo",
+        "bakeoff", environ={"CLAUDE_WORKSPACE": "/data/workspace"})
+    assert why is not None
+    assert "/data/workspace-concurrent" in why
+    # It has to say where to put it instead, or the refusal is a dead end.
+    assert "/data/workspace/demos/bakeoff" in why
+
+
+def test_a_durable_directory_is_not_refused():
+    """The control. A predicate that refuses everything pins nothing."""
+    from agora_runner.nova_demos import ephemeral_reason
+
+    env = {"CLAUDE_WORKSPACE": "/data/workspace"}
+    assert ephemeral_reason("/data/workspace/demos/bakeoff", "bakeoff",
+                            environ=env) is None
+    assert ephemeral_reason("/data/workspace/agora-persona-runner",
+                            environ=env) is None
+    assert ephemeral_reason("/tmp/scratch", environ=env) is None
+
+
+def test_containment_is_a_path_test_and_not_a_string_prefix():
+    """`/data/workspace-concurrent-notes` is not inside the concurrent root.
+
+    A `startswith` on the raw string says it is, and would refuse a
+    perfectly durable directory while claiming a measured reason.
+    """
+    from agora_runner.nova_demos import ephemeral_reason
+
+    env = {"CLAUDE_WORKSPACE": "/data/workspace"}
+    assert ephemeral_reason("/data/workspace-concurrent-notes/demo",
+                            environ=env) is None
+    # ...and the traversal in the other direction still resolves.
+    assert ephemeral_reason("/data/workspace-concurrent/7-1/../7-2/demo",
+                            environ=env) is not None
+
+
+def test_start_refuses_a_directory_this_turn_deletes(tmp_path, capsys):
+    """End to end: nothing is registered and nothing is spawned.
+
+    The registry write is the part that matters. A refusal that still
+    allocated a port would leak one every time.
+    """
+    from tools import demo as demo_cli
+
+    state = {"registry": {"demos": []}}
+    spawned = []
+
+    def _read():
+        return json.loads(json.dumps(state["registry"])), "/tmp/fake.rev"
+
+    def _write(registry, rev):
+        state["registry"] = json.loads(json.dumps(registry))
+
+    doomed = tmp_path / "slot" / "demo"
+    doomed.mkdir(parents=True)
+    args = type("A", (), {"slug": "alpha", "directory": str(doomed),
+                          "cmd": ""})()
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.84"), \
+         patch.object(demo_cli.subprocess, "Popen",
+                      lambda *a, **kw: spawned.append(a)), \
+         patch.object(demo_cli, "ephemeral_reason",
+                      lambda d, slug="<slug>": "it is doomed"):
+        code = demo_cli.cmd_start(args)
+    assert code == 2
+    assert state["registry"]["demos"] == []
+    assert spawned == []
+    assert "it is doomed" in capsys.readouterr().err
+
+
+def test_the_root_is_derived_from_the_environment_the_bridge_sets():
+    """Not a copy of today's answer -- the bridge's own rule, re-read.
+
+    `_concurrent_root` in `agora-claude-bridge` is
+    `CLAUDE_CONCURRENT_ROOT or CLAUDE_WORKSPACE + "-concurrent"`. A literal
+    here agrees with that until either variable moves, and then it silently
+    calls a doomed directory durable.
+    """
+    from agora_runner.nova_demos import concurrent_root, ephemeral_reason
+
+    assert concurrent_root({"CLAUDE_WORKSPACE": "/srv/box"}) == "/srv/box-concurrent"
+    assert concurrent_root({"CLAUDE_CONCURRENT_ROOT": "/elsewhere",
+                            "CLAUDE_WORKSPACE": "/srv/box"}) == "/elsewhere"
+    # ...and the refusal follows it there.
+    assert ephemeral_reason(
+        "/elsewhere/7-1/demo",
+        environ={"CLAUDE_CONCURRENT_ROOT": "/elsewhere"}) is not None
+    assert ephemeral_reason(
+        "/data/workspace-concurrent/7-1/demo",
+        environ={"CLAUDE_CONCURRENT_ROOT": "/elsewhere",
+                 "CLAUDE_WORKSPACE": "/srv/box"}) is None
+
+
+def test_this_turns_own_workspace_is_refused_however_the_root_is_named():
+    """The clause that cannot go stale: NOVA_WORKSPACE is read, not derived.
+
+    The bridge exports the directory it handed this turn. If it is not the
+    shared checkout it is a per-turn slot, whatever it is called.
+    """
+    from agora_runner.nova_demos import ephemeral_reason
+
+    env = {"CLAUDE_WORKSPACE": "/data/workspace",
+           "NOVA_WORKSPACE": "/somewhere/entirely/else/9-2"}
+    assert ephemeral_reason("/somewhere/entirely/else/9-2/demo",
+                            environ=env) is not None
+    # A serialized turn gets the shared checkout as NOVA_WORKSPACE, and that
+    # one is never torn down -- refusing it would refuse every demo.
+    assert ephemeral_reason(
+        "/data/workspace/demos/bakeoff",
+        environ={"CLAUDE_WORKSPACE": "/data/workspace",
+                 "NOVA_WORKSPACE": "/data/workspace"}) is None
+
+
+def test_a_symlink_into_a_doomed_slot_is_still_doomed(tmp_path):
+    """`abspath` calls this durable; `realpath` does not. Reviewer's finding.
+
+    The storage is what vanishes, so the resolved path is the one that
+    answers the question.
+    """
+    from agora_runner.nova_demos import ephemeral_reason
+
+    slot = tmp_path / "slots" / "7-1" / "demo"
+    slot.mkdir(parents=True)
+    link = tmp_path / "durable"
+    link.symlink_to(slot)
+    env = {"CLAUDE_CONCURRENT_ROOT": str(tmp_path / "slots")}
+    assert ephemeral_reason(str(link), environ=env) is not None
