@@ -36,16 +36,19 @@ PRODUCTS = [
 ]
 
 
-def judged(image, tag, within_days=eol_watch.DEFAULT_WITHIN_DAYS):
+def judged(image, tag, within_days=eol_watch.DEFAULT_WITHIN_DAYS,
+           products=PRODUCTS, **extra):
     entry = {"repo": "o/r", "path": "Dockerfile", "image": image, "tag": tag}
-    mapping = eol_watch.image_map(PRODUCTS)
-    where = eol_watch.judge(entry, PRODUCTS, mapping, TODAY, within_days)
+    entry.update(extra)
+    mapping, ambiguous = eol_watch.image_map(products)
+    where = eol_watch.judge(entry, products, mapping, TODAY, within_days,
+                            ambiguous)
     return where, entry
 
 
 def test_image_map_is_read_off_the_api_not_typed_in():
     # The purl wins, and the alias covers a product that publishes none.
-    mapping = eol_watch.image_map(PRODUCTS)
+    mapping, _ = eol_watch.image_map(PRODUCTS)
     assert mapping["node"] == "nodejs"
     assert mapping["alpine"] == "alpine-linux"
     assert "totally-made-up" not in mapping
@@ -158,3 +161,163 @@ def test_sweep_reports_a_repo_it_could_not_list_as_a_problem():
         ["o/r"], PRODUCTS, TODAY, 180, run=run)
     assert (judged_, not_judged) == ([], [])
     assert problems and "could not list" in problems[0]
+
+
+# --- Findings from my reviewer on runner#506, each with the input it named.
+
+def test_an_exact_version_resolves_to_the_line_it_refines():
+    # The reviewer's severest finding. endoflife.date tracks Node by major,
+    # so `node:20.11.0-alpine` matched no release name and fell out as NOT
+    # JUDGED, which never raises — a run could exit 0 with a dead line in it.
+    where, entry = judged("node", "20.11.0-alpine")
+    assert where == "judged"
+    assert entry["verdict"] == "eol"
+    assert entry["version"] == "20.11.0"
+
+
+def test_a_prefix_match_is_component_wise_not_string_wise():
+    products = [{
+        "name": "python", "aliases": [], "identifiers": [],
+        "releases": [
+            {"name": "3.1", "isEol": True, "eolFrom": "2012-04-09"},
+            {"name": "3.12", "isEol": False, "eolFrom": "2028-10-31"},
+        ],
+    }]
+    # `3.1` is a string prefix of `3.12.7` and is a different Python.
+    _, entry = judged("python", "3.12.7-slim", products=products)
+    assert entry["verdict"] == "supported"
+    assert entry["eol"] == "2028-10-31"
+
+
+def test_a_tag_too_coarse_for_any_single_line_is_still_refused():
+    # The other direction, unchanged: `node:2` sits above 20, 22, 24, 26.
+    where, entry = judged("node", "2")
+    assert where == "not-judged"
+    assert "publishes no release line" in entry["reason"]
+
+
+def test_an_image_name_two_products_claim_maps_to_neither():
+    products = [
+        {"name": "couchbase-server", "aliases": [],
+         "identifiers": [{"id": "pkg:docker/library/server"}],
+         "releases": [{"name": "7", "isEol": True, "eolFrom": "2020-01-01"}]},
+        {"name": "authentik", "aliases": [],
+         "identifiers": [{"id": "pkg:docker/goauthentik/server"}],
+         "releases": [{"name": "7", "isEol": False, "eolFrom": "2030-01-01"}]},
+    ]
+    mapping, ambiguous = eol_watch.image_map(products)
+    assert "server" not in mapping
+    assert ambiguous["server"] == ["authentik", "couchbase-server"]
+    where, entry = judged("ghcr.io/sokratesai/server", "7", products=products)
+    assert where == "not-judged"
+    assert "not decidable" in entry["reason"]
+    assert "authentik" in entry["reason"]
+
+
+def test_a_stronger_source_still_beats_a_weaker_one():
+    # A purl claim is not made ambiguous by an unrelated product's alias.
+    products = [
+        {"name": "nodejs", "aliases": [],
+         "identifiers": [{"id": "pkg:docker/library/node"}], "releases": []},
+        {"name": "something-else", "aliases": ["node"], "identifiers": [],
+         "releases": []},
+    ]
+    mapping, ambiguous = eol_watch.image_map(products)
+    assert mapping["node"] == "nodejs"
+    assert "node" not in ambiguous
+
+
+@pytest.mark.parametrize(
+    "extra,fragment",
+    [
+        ({"digest": True}, "hardened form"),
+        ({"templated": True}, "build argument"),
+        ({}, "follows `latest`"),
+    ],
+)
+def test_an_untagged_from_says_which_of_the_three_it_is(extra, fragment):
+    # All three parse as tag=None. Calling a digest pin "follows latest" is
+    # false about the most tightly pinned form there is.
+    _, entry = judged("node", None, **extra)
+    assert fragment in entry["reason"]
+
+
+def test_base_images_marks_the_digest_and_arg_forms():
+    text = ("FROM python@sha256:abc123\n"
+            "FROM node:${NODE_VERSION}\n"
+            "FROM python:3.12-slim\n")
+    found = eol_watch.base_images("o/r", "Dockerfile", text)
+    # Keyed by position, not by image: two of these three are `python`.
+    assert (found[0]["image"], found[0]["digest"]) == ("python", True)
+    assert (found[1]["image"], found[1]["templated"]) == ("node", True)
+    assert (found[2]["image"], found[2]["tag"]) == ("python", "3.12-slim")
+    assert found[2]["digest"] is False and found[2]["templated"] is False
+
+
+def test_a_tagged_image_is_not_dropped_for_matching_a_stage_alias():
+    # The fixture has to contain a *tagged* image whose own token equals a
+    # stage alias, or the assertion holds whether or not the tag is checked.
+    # My first version used `sokratesai/base` and `otherorg/base`, neither of
+    # which equals `base`, and the mutation that drops the tag check passed.
+    text = ("FROM node:24 AS base\n"
+            "FROM base\n"
+            "FROM base:2\n")
+    found = [(f["image"], f["tag"]) for f in
+             eol_watch.base_images("o/r", "Dockerfile", text)]
+    assert ("base", "2") in found        # a real image that shares the name
+    assert ("base", None) not in found   # that one really is the stage
+    assert ("node", "24") in found
+
+
+def test_a_catalogue_with_no_products_is_a_problem_not_an_empty_sweep():
+    class Body:
+        def read(self): return b'{"result": null}'
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    products, why = eol_watch.catalogue(opener=lambda *a, **k: Body())
+    assert products is None
+    assert "no products" in why
+
+
+# --- main()'s exit contract, which had no coverage at all.
+
+def _run_main(monkeypatch, judged_out, not_judged_out=(), problems=()):
+    monkeypatch.setattr(eol_watch, "catalogue", lambda *a, **k: (PRODUCTS, None))
+    monkeypatch.setattr(eol_watch, "sweep",
+                        lambda *a, **k: (list(judged_out),
+                                         list(not_judged_out), list(problems)))
+    return eol_watch.main(["--repo", "o/r"])
+
+
+def test_main_exits_2_on_a_line_out_of_support(monkeypatch, capsys):
+    _, dead = judged("node", "20")
+    assert _run_main(monkeypatch, [dead]) == 2
+    assert "BASE IMAGE SUPPORT" in capsys.readouterr().out
+
+
+def test_main_exits_0_only_when_something_was_judged_and_all_supported(
+        monkeypatch, capsys):
+    _, live = judged("node", "24")
+    assert _run_main(monkeypatch, [live]) == 0
+    # Nothing judged is no instrument, not no finding.
+    assert _run_main(monkeypatch, []) == 1
+    assert "no instrument" in capsys.readouterr().out
+
+
+def test_main_exits_1_when_something_was_unreadable(monkeypatch):
+    _, live = judged("node", "24")
+    assert _run_main(monkeypatch, [live], problems=["o/r: could not list"]) == 1
+
+
+def test_a_finding_outranks_an_incomplete_sweep(monkeypatch):
+    # pin_drift's call: both are true, only one is actionable.
+    _, dead = judged("node", "20")
+    assert _run_main(monkeypatch, [dead], problems=["o/s: could not list"]) == 2
+
+
+def test_main_exits_1_when_the_catalogue_is_unreadable(monkeypatch, capsys):
+    monkeypatch.setattr(eol_watch, "catalogue",
+                        lambda *a, **k: (None, "could not reach it"))
+    assert eol_watch.main(["--repo", "o/r"]) == 1
+    assert "no instrument" in capsys.readouterr().out

@@ -95,29 +95,55 @@ def catalogue(opener=urllib.request.urlopen):
     except Exception as exc:  # noqa: BLE001 -- any network shape is "unreadable"
         return None, f"could not reach {CATALOGUE}: {exc}"
     try:
-        return json.loads(body)["result"], None
+        result = json.loads(body)["result"]
     except (ValueError, KeyError, TypeError) as exc:
         return None, f"{CATALOGUE} did not answer with a product list: {exc}"
+    if not isinstance(result, list) or not result:
+        return None, (f"{CATALOGUE} answered with no products, so there is "
+                      "nothing to judge against")
+    return result, None
 
 
 def image_map(products):
-    """Docker image name -> endoflife.date product name, read off the API.
+    """`(mapping, ambiguous)` -- docker image name -> product, read off the API.
 
     Three sources, most specific first: the `pkg:docker/...` purls the
     catalogue publishes, then the product's own name, then its aliases.
-    `setdefault` keeps the first, so a purl always beats an alias.
+    A later, weaker source never overrides a stronger one.
+
+    **A name two products both claim maps to neither.** On the live
+    catalogue `.../server` is claimed by both `couchbase-server` and
+    `authentik`, and `.../base` by both `istio` and `discourse`, so a
+    first-wins map answers `authentik` for an image called `server`
+    purely because of the order the API returned its products in -- and
+    would silently answer differently the day that order changes. Those
+    names come back in `ambiguous` instead, and `judge` declines them by
+    name rather than guessing. This was my reviewer's finding on
+    runner#506 and I had written `setdefault` precisely because it looked
+    like the careful choice.
     """
-    mapping = {}
-    for product in products:
-        for identifier in product.get("identifiers") or []:
-            ident = identifier.get("id") or ""
-            if ident.startswith("pkg:docker/"):
-                mapping.setdefault(ident.rsplit("/", 1)[-1], product["name"])
-    for product in products:
-        mapping.setdefault(product["name"], product["name"])
-        for alias in product.get("aliases") or []:
-            mapping.setdefault(alias, product["name"])
-    return mapping
+    claims = {}
+    for rank, source in enumerate(("purl", "name", "alias")):
+        for product in products:
+            if source == "purl":
+                names = [(i.get("id") or "").rsplit("/", 1)[-1]
+                         for i in product.get("identifiers") or []
+                         if (i.get("id") or "").startswith("pkg:docker/")]
+            elif source == "name":
+                names = [product["name"]]
+            else:
+                names = list(product.get("aliases") or [])
+            for name in names:
+                if not name:
+                    continue
+                held = claims.get(name)
+                if held is None or held[0] > rank:
+                    claims[name] = (rank, {product["name"]})
+                elif held[0] == rank:
+                    held[1].add(product["name"])
+    mapping = {n: sorted(p)[0] for n, (_, p) in claims.items() if len(p) == 1}
+    ambiguous = {n: sorted(p) for n, (_, p) in claims.items() if len(p) > 1}
+    return mapping, ambiguous
 
 
 def base_images(repo, path, text):
@@ -134,39 +160,89 @@ def base_images(repo, path, text):
     }
     found = []
     for match in FROM_RE.finditer(text):
-        image = match.group("image")
-        if image.lower() in stages:
+        image, tag = match.group("image"), match.group("tag")
+        # A stage reference never carries a tag, so requiring `tag is None`
+        # stops a real image whose last path segment happens to equal a
+        # stage alias from being dropped as one.
+        if tag is None and image.lower() in stages:
             continue
-        found.append({"repo": repo, "path": path, "image": image,
-                      "tag": match.group("tag")})
+        # What the regex stopped at tells the three untagged forms apart.
+        # `FROM node:${NODE_VERSION}` stops at the `:` because `${` is not a
+        # tag, so the marker is on the rest of the line, not in the match.
+        rest = text[match.end():].split("\n", 1)[0]
+        found.append({"repo": repo, "path": path, "image": image, "tag": tag,
+                      "digest": tag is None and rest.startswith("@"),
+                      "templated": tag is None and "$" in rest})
     return found
 
 
 def _release_for(product, version):
-    """The catalogue release whose name is `version`, or the closest parent.
+    """The catalogue release whose name is `version`, or the line above it.
 
-    `python:3.12` names a release directly; `python:3` does not, and the
-    honest answer there is that the tag pins no single support window
-    rather than a guess at which 3.x it resolves to today.
+    Two directions, and only one of them is an honest refusal.
+
+    **Too coarse is ambiguous and is refused.** `python:3` sits above
+    every 3.x line, so there is no single support window to report and a
+    guess at which one it resolves to today would be an invention.
+
+    **Too precise is not ambiguous and used to be refused anyway**, which
+    was the reviewer's finding on runner#506 and would have made this
+    tool quietly useless on the more careful pinning style. endoflife.date
+    tracks each product at the vendor's own granularity -- Node by major,
+    Python by minor -- so `node:20.11.0` and `python:3.12.7` matched no
+    release name and fell out as NOT JUDGED, which never raises. A run
+    could therefore exit 0 with a dead exact-pinned line in it: the exact
+    "green while it sat there" failure this tool exists to end, one level
+    down inside the tool. An exact version is a *refinement* of exactly
+    one line, so it resolves to the longest release name that is a
+    component-wise prefix of it. Component-wise matters: `3.1` is a
+    string prefix of `3.12.7` and is a different Python.
     """
-    for release in product.get("releases") or []:
+    releases = product.get("releases") or []
+    for release in releases:
         if release.get("name") == version:
             return release
-    return None
+    parts = version.split(".")
+    best = None
+    for release in releases:
+        name = release.get("name") or ""
+        bits = name.split(".")
+        if len(bits) < len(parts) and parts[:len(bits)] == bits:
+            if best is None or len(bits) > len((best.get("name") or "").split(".")):
+                best = release
+    return best
 
 
-def judge(image, products, mapping, today, within_days):
+def judge(image, products, mapping, today, within_days, ambiguous=None):
     """Fill one image dict with a verdict, or a reason it was not judged."""
-    product_name = mapping.get(image["image"].rsplit("/", 1)[-1].lower())
+    short = image["image"].rsplit("/", 1)[-1].lower()
+    product_name = mapping.get(short)
     if product_name is None:
-        image["reason"] = ("endoflife.date publishes no product for this "
-                           "image, so it has no support window to read")
+        claimed = (ambiguous or {}).get(short)
+        if claimed:
+            image["reason"] = ("endoflife.date has %d products claiming the "
+                               "image name `%s` (%s), so which support "
+                               "window this means is not decidable from the "
+                               "catalogue" % (len(claimed), short,
+                                              ", ".join(claimed)))
+        else:
+            image["reason"] = ("endoflife.date publishes no product for this "
+                               "image, so it has no support window to read")
         return "not-judged"
 
     tag = image["tag"]
     if not tag:
-        image["reason"] = ("no tag, so this follows `latest` and pins no "
-                           "line at all")
+        # A digest pin is the opposite of floating, and saying it follows
+        # `latest` would be false about the most tightly pinned form there
+        # is -- the reviewer's finding on runner#506. `FROM_RE`'s tag group
+        # cannot contain `@` or `$`, so both land here with tag None and
+        # only the source line can tell them apart.
+        image["reason"] = (
+            "pinned to a digest, which names no version line to look up — "
+            "that is the hardened form, not drift" if image.get("digest")
+            else "pinned through a build argument, so the line it resolves "
+                 "to is not written in this file" if image.get("templated")
+            else "no tag, so this follows `latest` and pins no line at all")
         return "not-judged"
     leading = LEADING_VERSION_RE.match(tag)
     if not leading:
@@ -217,7 +293,7 @@ def _days(eol, today):
 
 def sweep(repos, products, today, within_days, run=None):
     """`(judged, not_judged, problems)` across every repo given."""
-    mapping = image_map(products)
+    mapping, ambiguous = image_map(products)
     judged, not_judged, problems = [], [], []
     for repo in repos:
         paths, why = _tree(repo, run)
@@ -232,7 +308,8 @@ def sweep(repos, products, today, within_days, run=None):
                 problems.append(f"{repo}: could not read {path} — {why}")
                 continue
             for image in base_images(repo, path, text):
-                where = judge(image, products, mapping, today, within_days)
+                where = judge(image, products, mapping, today, within_days,
+                              ambiguous)
                 (judged if where == "judged" else not_judged).append(image)
     return judged, not_judged, problems
 
