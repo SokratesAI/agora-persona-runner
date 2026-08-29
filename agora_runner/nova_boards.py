@@ -838,7 +838,7 @@ _RELAY_RE = re.compile(
 #
 # Measured 2026-08-29 across both live board files: 351 author notes, of
 # which 4 match, every one at offset 42 -- immediately after its own
-# `**Edvard, 08-29:**` marker, in the opening clause. Nothing in the
+# `**<owner>, 08-29:**` marker, in the opening clause. Nothing in the
 # corpus matches later than that, so 300 is chosen with room rather than
 # fitted to the data, and today's negative is a real negative rather than
 # one the window guaranteed.
@@ -852,17 +852,19 @@ def is_relayed(text):
     posts to these boards through the same `POST /api/board/comment` route
     a cycle uses, and that route takes `author` as free text with nothing
     behind it. So a comment Sokrates writes on the owner's behalf arrives
-    signed `Edvard`, and everything downstream treats it as the owner
-    typing. Sokrates has been compensating by hand, opening each one with
-    *"Sokrates here (Claude, posting on Edvard's behalf, not Edvard typing
-    this himself)"*, which is honest and is the only signal that exists.
+    signed with the owner's name, and everything downstream treats it as
+    the owner typing. Sokrates has been compensating by hand, opening each
+    one with a sentence disclosing that Claude is posting on the owner's
+    behalf and that the owner is not typing it himself -- which is honest,
+    and is the only signal that exists.
 
     His ask, relayed on `issues.md` 2026-08-29: *"a Sokrates comment
-    relaying something Edvard actually said should not automatically
-    inherit the same 'unread comment from Edvard jumps the queue, act now'
-    treatment a comment genuinely typed by him gets, even when accurately
-    relaying him. Sokrates being right about what Edvard wants is not the
-    same guarantee as Edvard having typed it himself."*
+    relaying something [the owner] actually said should not automatically
+    inherit the same 'unread comment from [the owner] jumps the queue, act
+    now' treatment a comment genuinely typed by him gets, even when
+    accurately relaying him. Sokrates being right about what [the owner]
+    wants is not the same guarantee as [the owner] having typed it
+    himself."*
 
     **This is self-declared and proves nothing, and that is fine here
     because of which way it points.** Reading the disclosure can only ever

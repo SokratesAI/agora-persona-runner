@@ -46,10 +46,11 @@ board is the list a cycle reads *first*, and it had no slugs at all.
 
 **A comment that says Sokrates relayed it does not jump the queue.** The
 owner's ask, relayed on `issues.md` 2026-08-29: *"Sokrates being right
-about what Edvard wants is not the same guarantee as Edvard having typed
-it himself, and the priority system should reflect that distinction, not
-collapse it."* The comment API takes `author` as free text, so a relay
-arrives signed `Edvard` and every rule here read it as him. A relayed
+about what [the owner] wants is not the same guarantee as [the owner]
+having typed it himself, and the priority system should reflect that
+distinction, not collapse it."* The comment API takes `author` as free
+text, so a relay arrives signed with his name and every rule here read it
+as him. A relayed
 comment still counts as waiting and is still listed as owed a reply -- it
 just ranks on its own rating instead of above every rating. The signal is
 the disclosure sentence Sokrates writes by hand, which proves nothing and
@@ -507,10 +508,10 @@ def rank(rows):
         # being handled.
         # **And a comment that says it was relayed does not jump the
         # queue at all.** His ask, relayed on `issues.md` 2026-08-29:
-        # *"a Sokrates comment relaying something Edvard actually said
-        # should not automatically inherit the same 'unread comment from
-        # Edvard jumps the queue, act now' treatment a comment genuinely
-        # typed by him gets."* The raise above exists because a question
+        # *"a Sokrates comment relaying something [the owner] actually
+        # said should not automatically inherit the same 'unread comment
+        # from [the owner] jumps the queue, act now' treatment a comment
+        # genuinely typed by him gets."* The raise above exists because a question
         # he typed stops existing the moment somebody answers it; a relay
         # is Sokrates deciding what is worth passing on, which is a
         # judgement rather than a fact about what the owner wants now.

@@ -1241,9 +1241,9 @@ def test_the_capture_block_prints_how_to_board_one():
 
 # A Sokrates relay ranks below a comment the owner typed himself.
 # His ask, relayed on `issues.md` 2026-08-29: *"a Sokrates comment relaying
-# something Edvard actually said should not automatically inherit the same
-# 'unread comment from Edvard jumps the queue, act now' treatment a comment
-# genuinely typed by him gets."*
+# something [the owner] actually said should not automatically inherit the
+# same 'unread comment from [the owner] jumps the queue, act now' treatment
+# a comment genuinely typed by him gets."*
 
 RELAY = ("Sokrates here (Claude, posting on Edvard's behalf, not Edvard "
          "typing this himself): ")
