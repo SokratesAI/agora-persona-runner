@@ -17,7 +17,10 @@ both bind `0.0.0.0`, and both serve their API key unauthenticated from
 `/initialize.js`. With authentication deliberately off, the app's own patch
 level is the remaining control on that surface.
 
-**Nothing in this loop could see it before this file.** `tools.pin_drift` and
+**Nothing in this loop judged it before this file.** The string was visible --
+`tools.nas_health` prints `sonarr 3.0.9.1549` every cycle through `nas.status`
+-- and no cycle ever compared it against anything, which is the half that
+turns a number into a finding. `tools.pin_drift` and
 `tools.eol_watch` read version strings out of files in GitHub repos -- a `FROM`
 line, an `ARG *_VERSION`, a `uses:` ref -- and `tools.running_images` reads the
 live Kubernetes cluster. The NAS containers are in neither place: they are
@@ -63,9 +66,10 @@ and exits 1, because an unjudged version must not look like a current one.
 Exit status, the same three meanings as every check in `tools.preflight`:
 
 * **2** -- an app on the NAS is a major version behind its own project.
-* **1** -- something that should have been readable was not: a service was
-  unconfigured, refused its key, answered something that is not a status
-  object, carried no version, or its upstream release could not be read.
+* **1** -- something that should have been readable was not: a service never
+  came back from key discovery, refused its key, answered something that is
+  not a status object, carried no version, carried a version string that
+  cannot be compared, or its upstream release could not be read.
 * **0** -- no app swept is a major behind its own project, and the report
   names what it swept and how old each build is.
 
@@ -138,11 +142,23 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         print("SERVICES UNREADABLE -- the SSH hop exists but no *arr service could be "
               "configured through it.", file=out)
         print(nas.UNCONFIGURED_HELP, file=out)
-        print("Judged 0 of 2 service(s). An unreadable service is not a clean sweep.", file=out)
+        print(f"Judged 0 of {len(nas.SERVICES)} service(s). An unreadable service is not a "
+              "clean sweep.", file=out)
         return 1
 
     status = 0
     judged, behind, current, unjudged = [], [], [], []
+    # `nas.config` drops a service whose key discovery failed -- `discover_key`
+    # swallows an unreachable app and returns None, and `config` continues past
+    # it. So iterating `conf_all` alone means one transient failure fetching
+    # sonarr's `/initialize.js` silently removes sonarr from the sweep, and a
+    # denominator of `len(conf_all)` then reports "1 of 1" over it. The total is
+    # what `tools.nas` says exists, never what came back. My reviewer found this
+    # by making one service undiscoverable: the four-year-old Sonarr this file
+    # exists to find disappeared, and the report exited 0.
+    for service in sorted(set(nas.SERVICES) - set(conf_all)):
+        unjudged.append((service, "no configuration came back for it -- its API key could not "
+                                  "be discovered, so it was never asked"))
     for service in sorted(conf_all):
         try:
             info = get(service, conf_all[service], STATUS_PATH)
@@ -216,7 +232,7 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         print(f"NO APP IS A MAJOR BEHIND ITS OWN PROJECT on {len(judged)} service(s): "
               f"{', '.join(judged) or 'none'}.", file=out)
 
-    print(f"Judged the running version of {len(judged)} service(s) of {len(conf_all)}, read "
+    print(f"Judged the running version of {len(judged)} service(s) of {len(nas.SERVICES)}, read "
           "over the SSH hop. nzbget is not judged -- its version is behind its password -- "
           "and Plex is not judged at all. A minor or patch gap is printed and does not "
           "raise.", file=out)

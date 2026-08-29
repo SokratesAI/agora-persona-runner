@@ -97,26 +97,26 @@ def test_a_minor_gap_is_printed_and_does_not_raise(monkeypatch):
     rule to `("major", "minor")` left the whole suite green. A threshold test
     has to sit on the boundary it is claiming.
     """
-    _patch_config(monkeypatch, _conf("sonarr"))
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
     code, text = _run(
-        ("sonarr",),
-        {"sonarr": _status("4.0.14.2939")},
-        {"Sonarr/Sonarr": "v4.2.0.2979"},
+        ("sonarr", "radarr"),
+        {"sonarr": _status("4.0.14.2939"), "radarr": _status("6.3.0.10514")},
+        {"Sonarr/Sonarr": "v4.2.0.2979", "Radarr/Radarr": "v6.3.0.10514"},
     )
     assert code == 0
     assert "MAJOR VERSION BEHIND" not in text
     assert "NOT A MAJOR BEHIND" in text
     assert "sonarr 4.0.14.2939" in text
-    assert "NO APP IS A MAJOR BEHIND ITS OWN PROJECT on 1 service(s)" in text
+    assert "NO APP IS A MAJOR BEHIND ITS OWN PROJECT on 2 service(s)" in text
 
 
 def test_a_patch_gap_is_printed_and_does_not_raise(monkeypatch):
     """The other side of the same threshold, one step in."""
-    _patch_config(monkeypatch, _conf("radarr"))
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
     code, text = _run(
-        ("radarr",),
-        {"radarr": _status("6.3.0.10500")},
-        {"Radarr/Radarr": "v6.3.1.10514"},
+        ("sonarr", "radarr"),
+        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10500")},
+        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.1.10514"},
     )
     assert code == 0
     assert "NOT A MAJOR BEHIND" in text
@@ -136,6 +136,11 @@ def test_unreadable_status_exits_one_and_is_not_skipped(monkeypatch):
     assert "radarr" in text and "connection refused" in text
     # One of two judged: a partial sweep must never read as a clean one.
     assert "Judged the running version of 1 service(s) of 2" in text
+    # And the headline that says everything is fine must not be printed beside
+    # a CANNOT JUDGE. Weakening that guard to `if not behind:` left all
+    # thirteen tests green; the exit code held and only the prose lied, and
+    # the prose is what gets read. My reviewer found it.
+    assert "NO APP IS A MAJOR BEHIND" not in text
 
 
 def test_status_that_is_not_an_object_exits_one(monkeypatch):
@@ -179,15 +184,15 @@ def test_an_uncomparable_version_string_exits_one_rather_than_clearing(monkeypat
     running `gap` over the shapes it would actually see rather than by
     re-reading the code.
     """
-    _patch_config(monkeypatch, _conf("sonarr"))
-    code, text = _run(("sonarr",), {"sonarr": _status("nightly")},
-                      {"Sonarr/Sonarr": "v4.0.19.2979"})
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
+    code, text = _run(("sonarr", "radarr"),
+                      {"sonarr": _status("nightly"), "radarr": _status("6.3.0.10514")},
+                      {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"})
     assert code == 1
     assert "CANNOT JUDGE" in text
     assert "cannot be compared" in text
-    assert "NOT A MAJOR BEHIND" not in text
     # It is not counted as judged either -- a partial sweep must say so.
-    assert "Judged the running version of 0 service(s) of 1" in text
+    assert "Judged the running version of 1 service(s) of 2" in text
 
 
 def test_a_behind_app_still_raises_when_another_is_unreadable(monkeypatch):
@@ -227,6 +232,53 @@ def test_build_age_days_reads_a_z_stamp_and_shrugs_at_junk():
     # the age is context and must never change a status.
     assert nas_versions.build_age_days("not a date", now=NOW) is None
     assert nas_versions.build_age_days(None, now=NOW) is None
+
+
+def test_a_service_that_never_configured_is_unjudged_not_absent(monkeypatch):
+    """`nas.config` drops a service whose key discovery failed -- silently.
+
+    One transient failure fetching an app's `/initialize.js` removes it from
+    the mapping entirely. Before my reviewer found this, the loop iterated
+    what came back and divided by it, so the four-year-old Sonarr this file
+    exists to find disappeared and the report exited 0 saying "1 of 1".
+    """
+    _patch_config(monkeypatch, _conf("radarr"))
+    code, text = _run(("radarr",), {"radarr": _status("6.3.0.10514")},
+                      {"Radarr/Radarr": "v6.3.0.10514"})
+    assert code == 1
+    assert "CANNOT JUDGE" in text
+    assert "sonarr" in text and "never asked" in text
+    assert "Judged the running version of 1 service(s) of 2" in text
+    assert "NO APP IS A MAJOR BEHIND" not in text
+
+
+def test_an_unreadable_build_date_says_so_in_the_report(monkeypatch):
+    """A missing `buildTime` must not read as "built today".
+
+    `build_age_days` was tested directly and `_age_phrase` was not reached
+    through `report()` at all, so replacing "build date unreadable" with
+    "built 0 day(s) ago" left the suite green -- the exact inverse of the
+    finding, on the line that carries the strongest sentence in the report.
+    """
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
+    code, text = _run(
+        ("sonarr", "radarr"),
+        {"sonarr": {"version": "3.0.9.1549"}, "radarr": _status("6.3.0.10514")},
+        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
+    )
+    assert code == 2
+    assert "build date unreadable" in text
+    assert "built 0 day(s) ago" not in text
+
+
+def test_the_status_path_is_one_nas_will_actually_fetch():
+    """Every test here fakes `get`, so nothing else pins this.
+
+    `nas._get` raises ValueError -- not Unreachable, so uncaught -- on a path
+    outside `READ_ONLY`. If that list were ever trimmed the check would die
+    with a traceback while this whole suite stayed green.
+    """
+    assert nas_versions.STATUS_PATH in nas.READ_ONLY
 
 
 def test_upstream_table_covers_every_service_nas_knows_about():
