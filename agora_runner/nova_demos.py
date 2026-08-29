@@ -338,7 +338,7 @@ def idle_seconds(entry, activity, now):
 def opened_by_a_person(user_agent):
     """True when this request for a demo came from somebody's browser.
 
-    `never_opened` above only works if "opened" means a person opened it,
+    `no_recorded_open` below only works if "opened" means a person opened it,
     and the site cannot ask. This is the narrow version of that question:
     every browser in use sends a `User-Agent` containing `Mozilla`, for
     historical reasons nobody is going to undo, and nothing else here does
@@ -351,7 +351,7 @@ def opened_by_a_person(user_agent):
     and Cycle 606 did exactly that: one `urllib` GET, and the demo it had
     just started for the owner to open in the morning was recorded as
     already opened and put back on the two-hour idle clock. Shipping
-    `never_opened` without this would have been a guard that reports itself
+    `no_recorded_open` without this would have been a guard that reports itself
     working and guards nothing, in the one flow that uses it.
 
     Wrong in the safe direction on purpose. A real open that is not counted
@@ -361,8 +361,13 @@ def opened_by_a_person(user_agent):
     return "Mozilla" in (user_agent or "")
 
 
-def never_opened(entry, activity):
-    """True when nothing has ever asked for this demo through the site.
+def no_recorded_open(entry, activity):
+    """True when the site has no record of anyone asking for this demo.
+
+    Named for what it can actually see. It was `never_opened` for one
+    commit, and my reviewer was right that the name asserts a fact about
+    history this cannot know: after a site roll it says `True` about a demo
+    the owner has opened twenty times.
 
     `idle_seconds` above answers *how long* since anyone looked, and it
     cannot tell these two apart, because both come back as "no recorded
@@ -390,6 +395,11 @@ def never_opened(entry, activity):
     roll the site genuinely cannot tell, and the safe direction is the long
     clock, because the cost of being wrong is one of thirty ports and the
     cost of the other error is the link going dead in the owner's hand.
+
+    The numbers above were measured against the comments board on
+    2026-08-29 and are not derivable from anything in this repo, so treat
+    them as an observation with a date on it rather than a fact this code
+    can re-check.
 
     `False` when the site did not answer at all -- `idle_seconds` returns
     `None` there and nothing is reaped on idle either way, so this never

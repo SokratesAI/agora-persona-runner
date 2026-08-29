@@ -9,6 +9,8 @@ unknown slug, dead upstream, missing trailing slash -- rather than at a
 200 that a static file server would also have produced.
 """
 
+import io
+from contextlib import redirect_stdout
 import json
 import urllib.error
 from datetime import datetime
@@ -1011,23 +1013,23 @@ def test_a_symlink_into_a_doomed_slot_is_still_doomed(tmp_path):
 # A demo nobody has opened *yet* is not idle (idea #134/#135, Cycle 606).
 
 
-def test_never_opened_separates_waiting_from_gone_quiet():
+def test_no_recorded_open_separates_waiting_from_gone_quiet():
     """The two cases `idle_seconds` cannot tell apart on its own."""
-    from agora_runner.nova_demos import never_opened
+    from agora_runner.nova_demos import no_recorded_open
 
     now = datetime.now().timestamp()
     activity = {"started_at": now - 3600, "last_seen": {"seen": now - 60}}
-    assert never_opened({"slug": "waiting"}, activity) is True
-    assert never_opened({"slug": "seen"}, activity) is False
+    assert no_recorded_open({"slug": "waiting"}, activity) is True
+    assert no_recorded_open({"slug": "seen"}, activity) is False
 
 
-def test_never_opened_is_false_when_the_site_did_not_answer():
+def test_no_recorded_open_is_false_when_the_site_did_not_answer():
     """No answer is not evidence of anything, and `idle_seconds` returns
     None there anyway, so nothing is reaped on either clock."""
-    from agora_runner.nova_demos import never_opened
+    from agora_runner.nova_demos import no_recorded_open
 
-    assert never_opened({"slug": "waiting"}, None) is False
-    assert never_opened({"slug": "waiting"}, {"last_seen": {}}) is False
+    assert no_recorded_open({"slug": "waiting"}, None) is False
+    assert no_recorded_open({"slug": "waiting"}, {"last_seen": {}}) is False
 
 
 def test_reap_idle_spares_a_demo_that_has_not_been_opened_yet():
@@ -1113,6 +1115,9 @@ def test_the_unopened_default_is_long_enough_to_cross_a_night():
     from tools import demo as demo_cli
 
     longest_night_minutes = int(11.9 * 60)
+    # And with real margin over it, not six minutes: eight samples do not
+    # bound the longest night he will ever have.
+    assert demo_cli.DEFAULT_UNOPENED_MINUTES > longest_night_minutes * 1.4
     assert demo_cli.DEFAULT_UNOPENED_MINUTES > longest_night_minutes
     # And it is a *longer* clock than the idle one, not a second name for it.
     assert demo_cli.DEFAULT_UNOPENED_MINUTES > demo_cli.DEFAULT_IDLE_MINUTES
@@ -1134,3 +1139,33 @@ def test_only_a_browser_counts_as_somebody_opening_a_demo():
     for probe in ("Python-urllib/3.11", "curl/8.5.0", "kube-probe/1.29",
                   "Go-http-client/1.1", "", None):
         assert opened_by_a_person(probe) is False, probe
+
+
+def test_list_says_which_clock_a_row_is_on():
+    """`cmd_list`'s two messages mean opposite things to whoever reads them,
+    and nothing pinned which one a row gets."""
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    started = datetime.fromtimestamp(now - 3600).isoformat()
+    state, _read, _write = _fake_registry([
+        {"slug": "waiting", "host": "10.42.0.56", "port": 5174, "pid": 4242,
+         "started_at": started},
+        {"slug": "quiet", "host": "10.42.0.56", "port": 5175, "pid": 4243,
+         "started_at": started},
+    ])
+    activity = {"started_at": now - 2 * 3600,
+                "last_seen": {"quiet": now - 1800}}
+    out = io.StringIO()
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         redirect_stdout(out):
+        assert demo_cli.cmd_list(_args()) == 0
+    printed = out.getvalue()
+    assert "no recorded open" in printed
+    assert "nobody has asked for it" in printed
+    # And on the right rows: the waiting one is listed first.
+    assert printed.index("no recorded open") < printed.index("nobody has asked")
+    assert state  # the registry really was read

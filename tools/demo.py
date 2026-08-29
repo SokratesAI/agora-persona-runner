@@ -70,7 +70,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     idle_seconds,
     load,
     lookup,
-    never_opened,
+    no_recorded_open,
     promotion_branch,
     promotion_claim,
     register,
@@ -106,12 +106,22 @@ DEFAULT_IDLE_MINUTES = 120
 #: the thing being protected is a link handed over while the owner is
 #: asleep: across 2026-08-10 to 08-28 he wrote 161 comments and not one
 #: falls between midnight and 05:00 Oslo, and the eight most recent nights
-#: of silence ran 6.0h to 11.9h (median 10.7h). Two hours cannot cross any
-#: of them, so at a 20-minute cadence roughly half of all cycles could not
-#: complete the hand-off idea #135 exists for. Still bounded, because an
-#: unopened demo that is never going to be opened should not hold a port
-#: forever either.
-DEFAULT_UNOPENED_MINUTES = 720
+#: of silence ran 6.0h to 11.9h (median 10.7h). Eighteen rather than twelve
+#: because twelve sat six minutes above the longest night I had *happened*
+#: to measure, on eight samples -- a margin that thin is a coincidence
+#: dressed as a decision, and one slightly longer night reproduces the whole
+#: bug. Eighteen is the 75th percentile of all seventeen gaps in that window
+#: that cross 03:00. Still bounded, because a demo that is never going to be
+#: opened should not hold a port forever either.
+#:
+#: **Known residual, filed rather than fixed:** `last_seen` lives in the
+#: site pod's memory, so a roll makes every quiet demo look unopened and
+#: moves it onto this clock instead of the two-hour one. That trades port
+#: hygiene for the hand-off, deliberately -- the cost is one of thirty
+#: ports, the other error is a dead link in the owner's hand. The real fix
+#: is a durable "has been opened" mark in the registry, which is a write
+#: from the site and wants its own cycle.
+DEFAULT_UNOPENED_MINUTES = 1080
 
 
 def fetch_activity(url=ACTIVITY_URL, timeout=10):
@@ -394,8 +404,8 @@ def cmd_list(args):
         age = idle_seconds(demo, activity, now) if state == ALIVE else None
         if age is None:
             seen = ""
-        elif never_opened(demo, activity):
-            seen = f"  [not opened yet, {int(age // 60)} min after hand-over]"
+        elif no_recorded_open(demo, activity):
+            seen = f"  [no recorded open, {int(age // 60)} min after hand-over]"
         else:
             seen = f"  [nobody has asked for it in {int(age // 60)} min]"
         print(f"{PUBLIC_BASE}/{demo['slug']}/  [{VERDICT_TEXT[state]}]{seen}")
@@ -426,7 +436,7 @@ def cmd_reap(args):
     that is genuinely running here and that nobody has asked for in that
     long. A demo nobody has opened *yet* is measured the same way and
     judged against `--unopened` instead, which is long enough to cross a
-    night -- see `nova_demos.never_opened` for why those two are different
+    night -- see `nova_demos.no_recorded_open` for why those two are different
     questions. The site is the only thing that knows -- every request for a demo
     goes through its proxy -- so this is the one subcommand that needs the
     network, and it does nothing on idle when the site does not answer.
@@ -452,10 +462,10 @@ def cmd_reap(args):
             if age is None:
                 continue
             # A demo nobody has opened *yet* is on its own, longer clock --
-            # see `nova_demos.never_opened`. Reaping it on the idle clock is
+            # see `nova_demos.no_recorded_open`. Reaping it on the idle clock is
             # what makes an overnight hand-off impossible, which is the one
             # thing the whole roadmap is for.
-            waiting = never_opened(demo, activity)
+            waiting = no_recorded_open(demo, activity)
             limit = (args.unopened if waiting else args.idle) * 60
             if age < limit:
                 continue
