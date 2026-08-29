@@ -210,6 +210,34 @@ class TestFetchMerged:
         assert argv[argv.index("--search") + 1] == "merged:2026-08-22..2026-08-28"
 
 
+class TestCollectMerges:
+    def _fetch(self, table, monkeypatch):
+        monkeypatch.setattr(gm, "fetch_merged",
+                            lambda repo, since, until: table[repo])
+
+    def test_every_repos_merges_are_pooled(self, monkeypatch):
+        self._fetch({"a": ([{"number": 1}], None), "b": ([{"number": 2}], None)},
+                    monkeypatch)
+        prs, problems = gm.collect_merges(("a", "b"), "2026-08-22", "2026-08-28")
+        assert [r["number"] for r in prs] == [1, 2]
+        assert problems == []
+
+    def test_one_unreadable_repo_voids_the_pool_rather_than_shrinking_it(self, monkeypatch):
+        """The bug measured 2026-08-29: a dropped repo made G1 read 2.0 for 7.1."""
+        self._fetch({"a": ([{"number": 1}], None), "b": (None, "b: cannot count")},
+                    monkeypatch)
+        prs, problems = gm.collect_merges(("a", "b"), "2026-08-22", "2026-08-28")
+        assert prs is None
+        assert problems == ["b: cannot count"]
+
+    def test_a_later_failure_is_still_reported_after_an_earlier_one(self, monkeypatch):
+        self._fetch({"a": (None, "a: cannot count"), "b": (None, "b: cannot count")},
+                    monkeypatch)
+        prs, problems = gm.collect_merges(("a", "b"), "2026-08-22", "2026-08-28")
+        assert prs is None
+        assert problems == ["a: cannot count", "b: cannot count"]
+
+
 class TestRender:
     def _goal(self, name, now, unit=""):
         return {"name": name, "now": now, "unit": unit}

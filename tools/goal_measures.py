@@ -198,6 +198,33 @@ def fetch_merged(repo, since, until, limit=1000):
     return inside, None
 
 
+def collect_merges(repos, since, until):
+    """Every merge across `repos` in the window, or `None` if one could not be read.
+
+    **`None` rather than a short list, and that is the whole point of this
+    function existing.** The caller used to `continue` past a repo
+    `fetch_merged` refused, so a repo it could not count was counted as zero
+    and G1 -- a ratio over all of them -- published a smaller number with
+    nothing on it saying so. Measured 2026-08-29: the runner repo saturated
+    its page, dropped out, and G1 printed 2.0 against a real 7.1 on the
+    scoreboard at the top of `/plan`. A numerator missing one of its terms is
+    wrong, not low, so the honest answer is no answer.
+
+    Returns `(prs, problems)`. `problems` always names every repo that failed,
+    whether or not an earlier one already did -- one unreadable repo must not
+    hide the next one's reason.
+    """
+    prs, problems, failed = [], [], False
+    for repo in repos:
+        merged, error = fetch_merged(repo, since, until)
+        if error:
+            problems.append(error)
+            failed = True
+            continue
+        prs.extend(merged)
+    return (None if failed else prs), problems
+
+
 def entry_text(entry):
     """Every word of an entry's prose, lowercased, as one string."""
     parts = []
@@ -435,21 +462,8 @@ def main(argv=None):
             problems.append(error)
         boards.append(rows)
 
-    # A repo this cannot count must not be quietly counted as zero. G1 is a
-    # ratio over every repo in REPOS, so dropping one shrinks the numerator
-    # and publishes a smaller number with no mark on it -- measured
-    # 2026-08-29, when the runner repo saturated its page and G1 printed 2.0
-    # against a real 7.1, a four-fold collapse overnight that read as a fact
-    # about the week. `None` here is what makes `measure_g1` refuse.
-    prs = []
-    for repo in REPOS:
-        merged, error = fetch_merged(repo, since, until)
-        if error:
-            problems.append(error)
-            prs = None
-            continue
-        if prs is not None:
-            prs.extend(merged)
+    prs, merge_problems = collect_merges(REPOS, since, until)
+    problems.extend(merge_problems)
 
     rows = []
     for goal in goals:
