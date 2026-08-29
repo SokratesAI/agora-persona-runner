@@ -54,6 +54,7 @@ is `GET /api/v3/calendar?start=&end=`, and Sonarr's episode carries
 """
 
 import argparse
+import base64
 import datetime as dt
 import json
 import os
@@ -143,6 +144,20 @@ READ_ONLY = {
 }
 
 SERVICES = ("sonarr", "radarr")
+
+# nzbget is the third media service on the NAS and it is not an *arr: no API
+# key, no `/api/v3`, and a JSON-RPC control interface behind HTTP basic auth.
+# It is here rather than in `SERVICES` because every function above that takes
+# a service assumes the *arr shape, and widening that shape to fit one
+# different service would make three call sites lie about what they accept.
+NZBGET_PORT = 6789
+
+# The nzbget half of the read-only boundary, and the same rule as `READ_ONLY`
+# above: exactly the two paths this module calls and nothing else. Both are
+# reads. The one that matters by its absence is `/jsonrpc/saveconfig`, which
+# is how a caller sets `Extensions` -- that is the write this module must
+# never be able to make, so it is not on the list.
+NZBGET_READ_ONLY = {"/jsonrpc/version", "/jsonrpc/config"}
 
 _UNSET = object()  # `ssh=None` means "no hop"; not passing it at all means "find out"
 
@@ -238,6 +253,90 @@ def _fetch_over_ssh(ssh, url, headers=(), run=subprocess.run):
         return body, int(code)
     except ValueError as exc:
         raise Unreachable(f"could not read a status code off curl's output: {out[:120]!r}") from exc
+
+
+def nzbget_credential(env=None):
+    """`(user, password)` for nzbget's control interface, or `None`.
+
+    There is no discovery path for this one and the absence is measured, not
+    assumed. Sonarr and Radarr hand out their API key on an unauthenticated
+    `/initialize.js`, which is what `discover_key` below reads; nzbget's
+    equivalent is `/jsonrpc/config`, and that is behind the very credential we
+    would be trying to find. The other obvious route -- reading
+    `nzbget.conf` off the NAS filesystem through the SSH hop -- is closed:
+    `curl` on that box is built without the `file` protocol and answers
+    `Protocol "file" not supported or disabled in libcurl` (measured Cycle
+    640 against `file:///volume1/docker/nzbget/nzbget.conf`).
+
+    So the credential has to be handed in, and when it has not been, the
+    caller says which check it could not run rather than guessing at a
+    password. Nothing in this repo carries a default to try: a list of vendor
+    default passwords in source is a credential-stuffing list, and it would
+    also be the wrong instrument -- `nzbget_unlocked` below answers "is the
+    lock on" without needing to open it.
+    """
+    env = os.environ if env is None else env
+    user = (env.get("NZBGET_USER") or "").strip()
+    password = (env.get("NZBGET_PASS") or "").strip()
+    return (user, password) if user and password else None
+
+
+def _nzbget_url(path, port=None):
+    if path not in NZBGET_READ_ONLY:
+        raise ValueError(f"{path} is not a read-only endpoint this tool may call")
+    return f"http://127.0.0.1:{port or NZBGET_PORT}{path}"
+
+
+def nzbget_unlocked(ssh, port=None, run=subprocess.run):
+    """Does nzbget's control interface answer with no credential at all?
+
+    Returns `True` if it does, `False` if it refuses. Raises `Unreachable` if
+    it did not answer in a way that separates the two.
+
+    This is the whole check that needs no password, and it is the one worth
+    having: nzbget binds `0.0.0.0` and its JSON-RPC carries `saveconfig`, so a
+    caller that gets in without a credential can set `ScriptDir` and
+    `Extensions` and have the NAS run an executable on every download. A 401
+    is therefore the healthy answer and the only healthy answer.
+
+    Note what a 401 does *not* say: it says the lock is on, not that the key
+    is hard to guess. The strength of the password is a separate question and
+    this cannot see it -- measuring it would mean trying passwords, which is
+    not a thing a monitoring check should do to its owner's box.
+    """
+    body, code = _fetch_over_ssh(ssh, _nzbget_url("/jsonrpc/version", port), run=run)
+    if code in (401, 403):
+        return False
+    if code == 200:
+        return True
+    raise Unreachable(f"nzbget answered {code} on /jsonrpc/version, which is neither open nor locked")
+
+
+def nzbget_config(ssh, credential, port=None, run=subprocess.run):
+    """nzbget's full configuration as `{name: value}`, read over the hop.
+
+    `/jsonrpc/config` returns `{"result": [{"Name":..., "Value":...}, ...]}`.
+    Names are folded to lower case here because nzbget is inconsistent about
+    them across versions -- the running box serves `ControlIp` where its own
+    documentation says `ControlIP` -- and a check that misses a setting
+    because of one letter reads exactly like a check that found nothing.
+    """
+    user, password = credential
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    body, code = _fetch_over_ssh(
+        ssh, _nzbget_url("/jsonrpc/config", port), headers=(f"Authorization: Basic {token}",), run=run
+    )
+    if code in (401, 403):
+        raise Unreachable(f"nzbget refused the control credential ({code})")
+    if code != 200:
+        raise Unreachable(f"nzbget answered {code} on /jsonrpc/config")
+    try:
+        rows = json.loads(body)["result"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise Unreachable(f"nzbget answered {len(body)} bytes that are not a JSON-RPC config") from exc
+    if not isinstance(rows, list):
+        raise Unreachable(f"nzbget's config is {type(rows).__name__}, not a list")
+    return {str(r.get("Name", "")).lower(): str(r.get("Value", "")) for r in rows if isinstance(r, dict)}
 
 
 def discover_key(service, ssh, run=subprocess.run):

@@ -36,10 +36,32 @@ legitimate action is a check that stops being read. The claim this makes is
 narrow and it is the one it can defend: *nothing on the NAS is configured to
 run a command on an event.*
 
+**nzbget is the third service and it is judged differently, because it is a
+different shape.** Cycle 640 measured it: it binds `0.0.0.0:6789`, its
+JSON-RPC carries `saveconfig`, and `ScriptDir` plus `Extensions` make it run
+an executable on every download -- the same code-execution surface as
+`CustomScript`, reached through a different door. Unlike the two *arr apps it
+has a lock on that door, so there are two questions here and only one of them
+needs a password:
+
+* **Is the lock on?** `/jsonrpc/version` with no credential must answer 401.
+  If it ever answers 200, anything on the LAN can call `saveconfig`, and that
+  is a raise. This needs nothing handed in and runs every cycle.
+* **Is an extension configured?** That is `/jsonrpc/config`, which is behind
+  the lock, so it runs only when `NZBGET_USER` and `NZBGET_PASS` are in the
+  environment. When they are not, it prints what it did not judge and does
+  **not** raise -- an unprovisioned credential is a fact about this pod, not a
+  finding about the NAS, and a check that is red from the day it ships is one
+  nobody reads.
+
+A 401 says the lock is on. It does not say the key is hard to guess, and this
+deliberately does not try to find out: measuring password strength means
+trying passwords against the owner's own box, which is not a thing a
+monitoring check should do.
+
 **Two things it does not see, said here rather than discovered later.** It
 reads current state, so a row added and removed between two cycles leaves no
-trace here. And it judges Sonarr and Radarr only -- nzbget has no comparable
-list and is not reached by `tools.nas`.
+trace here. And Plex is on that box too and is not judged at all.
 
 Exit status, the same three meanings as every check in `tools.preflight`:
 
@@ -91,7 +113,8 @@ def _executes(row):
     return (row.get("implementation") or "").strip() in EXECUTES
 
 
-def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None):
+def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
+           unlocked=nas.nzbget_unlocked, config=nas.nzbget_config):
     """Print the report and return the exit status."""
     hop = nas.ssh_config(env) if ssh is nas._UNSET else ssh
     if hop is None:
@@ -104,11 +127,15 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None):
 
     conf_all = nas.config(env, ssh=hop) if run is None else nas.config(env, ssh=hop, run=run)
     if not conf_all:
-        print("SERVICES UNREADABLE -- the SSH hop exists but no service could be configured "
+        print("SERVICES UNREADABLE -- the SSH hop exists but no *arr service could be configured "
               "through it.", file=out)
         print(nas.UNCONFIGURED_HELP, file=out)
-        print("Judged 0 service(s) of 2. An unreadable service is not a clean sweep.", file=out)
-        return 1
+        print("Judged 0 of 2 *arr service(s). An unreadable service is not a clean sweep.", file=out)
+        # nzbget is still judged. It needs no API key, so the thing that made
+        # the other two unreadable does not reach it, and an open control
+        # interface is exactly the finding that must not be lost to an
+        # unrelated failure one line above it.
+        return max(1, _nzbget(hop, out, env=env, run=run, unlocked=unlocked, config=config))
 
     status = 0
     judged = []
@@ -160,15 +187,79 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None):
     print(f"Judged the notification list of {len(judged)} service(s) of {len(conf_all)}, read "
           "over the SSH hop. This is current state only: a notification added and removed "
           "between two cycles leaves no trace here.", file=out)
+
+    status = max(status, _nzbget(hop, out, env=env, run=run, unlocked=unlocked, config=config))
     return status
 
 
-def main(argv=None, env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None):
+def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=nas.nzbget_config):
+    """The nzbget half. Returns its own exit status; see the module docstring."""
+    kwargs = {} if run is None else {"run": run}
+    try:
+        open_to_anyone = unlocked(hop, **kwargs)
+    except nas.Unreachable as exc:
+        print(f"UNREADABLE  nzbget: {exc}", file=out)
+        return 1
+
+    if open_to_anyone:
+        print("NZBGET CONTROL IS OPEN -- /jsonrpc answers with no credential, and it carries "
+              "saveconfig.", file=out)
+        print("  Anything that can reach 127.0.0.1:6789 can set ScriptDir and Extensions, which "
+              "makes the NAS run an executable on every download.", file=out)
+        return 2
+
+    print("NZBGET CONTROL IS LOCKED -- /jsonrpc refuses an unauthenticated call. That is the "
+          "lock being on, not the key being strong.", file=out)
+
+    credential = nas.nzbget_credential(env)
+    if credential is None:
+        print("  NOT JUDGED  nzbget's extension list -- reading it needs NZBGET_USER and "
+              "NZBGET_PASS in this pod's environment and neither is set.", file=out)
+        print("  This does not raise: an unprovisioned credential is a fact about this pod, not "
+              "a finding about the NAS.", file=out)
+        return 0
+
+    try:
+        conf = config(hop, credential, **kwargs)
+    except nas.Unreachable as exc:
+        print(f"UNREADABLE  nzbget: {exc}", file=out)
+        return 1
+
+    configured = [(name, value) for name, value in sorted(conf.items())
+                  if _runs_a_script(name) and value.strip()]
+    if configured:
+        print("CODE EXECUTION CONFIGURED -- nzbget is set to run a script.", file=out)
+        for name, value in configured:
+            print(f"  nzbget: {name} = {value}", file=out)
+        print(f"    scripts are looked up in ScriptDir = {conf.get('scriptdir', '(unset)')}", file=out)
+        print("  Ask him before removing it -- he may have added it himself.", file=out)
+        return 2
+
+    print(f"  No extension or script task is configured; {len(conf)} setting(s) read.", file=out)
+    return 0
+
+
+def _runs_a_script(name):
+    """Does this nzbget setting name something that gets executed?
+
+    Matched by shape rather than by a fixed list, because the settings that
+    carry a script are per-category and per-feed and per-scheduler-task --
+    `Category3.Extensions`, `Feed2.Extensions`, `Task1.Command` -- so a fixed
+    list would silently stop covering the box the day he adds a fifth
+    category. `ScriptDir` itself is deliberately not here: it says where
+    scripts are found, not that any runs, and it is printed beside a finding
+    instead.
+    """
+    return name.endswith("extensions") or name.endswith("script") or name.endswith(".command")
+
+
+def main(argv=None, env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
+         unlocked=nas.nzbget_unlocked, config=nas.nzbget_config):
     argparse.ArgumentParser(
         prog="python3 -m tools.nas_watch",
         description=__doc__.split("\n")[0],
     ).parse_args(argv)
-    return report(env=env, out=out, get=get, ssh=ssh, run=run)
+    return report(env=env, out=out, get=get, ssh=ssh, run=run, unlocked=unlocked, config=config)
 
 
 if __name__ == "__main__":
