@@ -57,12 +57,53 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
 USER_AGENT = "nova-nas/1"
+
+# The SSH transport. Cycle 631.
+#
+# Everything above was written for a direct HTTP call from a pod to the NAS,
+# and that call cannot be made: `allow-nas-ssh-egress` in the `agents`
+# namespace opens port 22 and nothing else, so `:8989` is refused by my own
+# kernel in 0.000000s (measured Cycle 630, and again this cycle). Port 22 is
+# open and a sealed key is already mounted at `/etc/nas-ssh/id_ed25519` on the
+# runner pod, and the NAS has `curl`. So the request is made *on the NAS*,
+# over the one port that is open, instead of waiting for a NetworkPolicy and a
+# Tailscale grant that nobody has asked for.
+#
+# Two things this deliberately does not do. It does not put the URL or the API
+# key on a remote command line: the remote command is the constant string
+# `curl --config -` and everything else arrives on stdin, so nothing derived
+# from a search term the owner typed is ever parsed by a shell, and the key is
+# not visible in `ps` to the other accounts on that box. And it does not
+# follow redirects -- the `_NoRedirect` opener above exists because urllib
+# copies headers onto a redirect target, and curl's default of not following
+# one is the same guarantee, so the config below never says `location`.
+SSH_DEFAULTS = {"host": "100.89.37.25", "user": "nova", "key": "/etc/nas-ssh/id_ed25519"}
+
+# Loopback on the NAS itself, which is where the SSH session lands.
+LOOPBACK_PORTS = {"sonarr": 8989, "radarr": 7878}
+
+SSH_OPTS = (
+    "-o", "BatchMode=yes",
+    # The runner pod mounts a read-only home, so ssh cannot write a
+    # known_hosts file at all; pinning the host key would have to happen in
+    # the sealed secret beside the private key, and it does not today. The
+    # hop is tailnet-only (port 22 is the single thing the NetworkPolicy
+    # opens) and this is worth naming rather than hiding: it is trust in
+    # WireGuard's peer keys standing in for trust in an SSH host key.
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "ConnectTimeout=10",
+    "-o", "LogLevel=ERROR",
+)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -98,6 +139,8 @@ READ_ONLY = {
 
 SERVICES = ("sonarr", "radarr")
 
+_UNSET = object()  # `ssh=None` means "no hop"; not passing it at all means "find out"
+
 
 class NotConfigured(Exception):
     """A service has no URL or no API key set."""
@@ -111,7 +154,114 @@ class NothingToSearchFor(Exception):
     """The search term had no letters or digits in it."""
 
 
-def config(env=None):
+def ssh_config(env=None, exists=os.path.exists, which=shutil.which):
+    """The SSH hop to the NAS, or `None` if this pod has no way to make it.
+
+    Two things have to be true and both are measurements rather than
+    settings: an `ssh` binary on `PATH` (the bridge pod has none, the runner
+    pod does) and a readable private key. Host, user and key path each take
+    an env override so nothing here is pinned to one box, but they default to
+    the values that are already true today -- the tailnet address is in the
+    vault write-up, not a secret, and the key itself stays a sealed secret in
+    the cluster.
+    """
+    env = os.environ if env is None else env
+    key = (env.get("NAS_SSH_KEY") or SSH_DEFAULTS["key"]).strip()
+    if not which("ssh") or not exists(key):
+        return None
+    return {
+        "host": (env.get("NAS_SSH_HOST") or SSH_DEFAULTS["host"]).strip(),
+        "user": (env.get("NAS_SSH_USER") or SSH_DEFAULTS["user"]).strip(),
+        "key": key,
+    }
+
+
+def _run_ssh(ssh, stdin, timeout=25, run=subprocess.run):
+    """Run the one remote command, feeding it `stdin`. Returns its stdout.
+
+    The remote command is a constant. Everything variable travels on stdin,
+    which is the whole reason a shell on the far side cannot be made to do
+    anything with it.
+    """
+    argv = ["ssh", "-i", ssh["key"], *SSH_OPTS, f"{ssh['user']}@{ssh['host']}", "curl --config -"]
+    try:
+        done = run(argv, input=stdin, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise Unreachable(f"the NAS did not answer within {timeout}s") from exc
+    except OSError as exc:
+        raise Unreachable(f"could not start ssh: {exc}") from exc
+    if done.returncode == 255:
+        raise Unreachable(f"ssh to {ssh['host']} failed: {(done.stderr or '').strip() or 'no detail'}")
+    if done.returncode != 0:
+        raise Unreachable(f"curl on the NAS exited {done.returncode}: {(done.stderr or '').strip()}")
+    return done.stdout
+
+
+def _curl_config(url, headers=()):
+    """A curl config file, as text, carrying the URL and headers on stdin.
+
+    `write-out` puts the status code on its own last line, because curl's
+    exit status alone does not separate a 401 from a 200 and this module
+    reports "refused the API key" differently from "answered 500".
+    """
+    for value in (url, *headers):
+        # A quote, a backslash or a newline in a value ends or re-opens the
+        # entry, which is the same class of bug as the one measured on the NAS
+        # below -- curl keeps going and drops what it did not understand. The
+        # URL is built by `urlencode` and the key is hex, so nothing reaches
+        # here with one today; the values are still env-overridable and an
+        # allowlist that trusts its inputs is not one.
+        if any(c in value for c in '"\\\n\r'):
+            raise ValueError(f"a curl config value cannot carry a quote, a backslash or a newline: {value!r}")
+    lines = [f'url = "{url}"']
+    lines += [f'header = "{h}"' for h in headers]
+    # The two characters backslash-n, not a newline: this is a value inside a
+    # quoted string in a curl config file, and a real newline there ends the
+    # entry. Measured on the NAS -- with a real newline curl kept the `url`
+    # line, silently dropped every line after it, and returned a body with no
+    # status code and no API key header, which reads exactly like a service
+    # that answered.
+    lines += ['max-time = 15', 'silent', 'show-error', 'write-out = "\\n%{http_code}"']
+    return "\n".join(lines) + "\n"
+
+
+def _fetch_over_ssh(ssh, url, headers=(), run=subprocess.run):
+    """`(body, status)` for one GET made on the NAS."""
+    out = _run_ssh(ssh, _curl_config(url, headers), run=run)
+    body, _, code = out.rpartition("\n")
+    try:
+        return body, int(code)
+    except ValueError as exc:
+        raise Unreachable(f"could not read a status code off curl's output: {out[:120]!r}") from exc
+
+
+def discover_key(service, ssh, run=subprocess.run):
+    """Read a service's API key off its own unauthenticated `/initialize.js`.
+
+    This is not a clever trick and it is not a new exposure: Cycle 630
+    measured that Sonarr and Radarr serve that file to anyone who loads the
+    page, and the owner was told exactly that and chose on 2026-08-29 to leave
+    both apps without a login. So the key is already readable by every device
+    on the LAN, and reading it from the box I already hold SSH on adds
+    nothing. `SONARR_API_KEY` in the environment still wins, so the day he
+    puts a login on these, this stops being the path.
+
+    Returns the key, or `None` if the page did not carry one.
+    """
+    port = LOOPBACK_PORTS.get(service)
+    if not port:
+        return None
+    try:
+        body, code = _fetch_over_ssh(ssh, f"http://127.0.0.1:{port}/initialize.js", run=run)
+    except Unreachable:
+        return None
+    if code != 200:
+        return None
+    found = re.search(r"""apiKey:\s*['"]([0-9a-fA-F]{16,})['"]""", body)
+    return found.group(1) if found else None
+
+
+def config(env=None, ssh=_UNSET, run=subprocess.run):
     """The four values this tool needs, read from the environment.
 
     Returns `{service: {"url":..., "key":...}}` for services that have
@@ -121,19 +271,28 @@ def config(env=None):
     security is Tailscale's rather than a certificate on a home box.
     """
     env = os.environ if env is None else env
+    ssh = ssh_config(env) if ssh is _UNSET else ssh
     out = {}
     for name in SERVICES:
         url = (env.get(f"{name.upper()}_URL") or "").strip().rstrip("/")
         key = (env.get(f"{name.upper()}_API_KEY") or "").strip()
+        if ssh:
+            # Over SSH the request is made on the NAS, so the service's own
+            # loopback address is the right one and the env URL is only an
+            # override for a box that runs these on other ports.
+            url = url or f"http://127.0.0.1:{LOOPBACK_PORTS[name]}"
+            key = key or (discover_key(name, ssh, run=run) or "")
         if not url or not key:
             continue
         if "://" not in url:
             url = "http://" + url
         out[name] = {"url": url, "key": key}
+        if ssh:
+            out[name]["ssh"] = ssh
     return out
 
 
-def _get(service, conf, path, params=None, opener=None):
+def _get(service, conf, path, params=None, opener=None, run=subprocess.run):
     """The only function here that touches the network.
 
     Hardcodes GET, refuses a path outside `READ_ONLY`, and never sends a
@@ -144,6 +303,8 @@ def _get(service, conf, path, params=None, opener=None):
         raise ValueError(f"{path} is not a read-only endpoint this tool may call")
     query = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
     url = conf["url"] + path + (f"?{query}" if query else "")
+    if conf.get("ssh"):
+        return _get_over_ssh(service, conf, url, run=run)
     req = urllib.request.Request(
         url,
         method="GET",
@@ -164,6 +325,31 @@ def _get(service, conf, path, params=None, opener=None):
         # A captive portal or a proxy answers 200 with HTML. A 200 is not
         # the measurement; JSON that parses is the cheapest thing only the
         # real service produces.
+        raise Unreachable(f"{service} answered {len(body)} bytes that are not JSON") from exc
+
+
+def _get_over_ssh(service, conf, url, run=subprocess.run):
+    """The same request as `_get`, made on the NAS instead of from this pod.
+
+    It reports through the same `Unreachable` exception and makes the same
+    two judgements: 401/403 is a refused key rather than a dead service, and
+    a 200 that is not JSON is not an answer -- a captive portal or a Synology
+    login page returns 200 with HTML, and JSON that parses is the cheapest
+    thing only the real service produces.
+    """
+    body, code = _fetch_over_ssh(
+        conf["ssh"],
+        url,
+        headers=(f"X-Api-Key: {conf['key']}", f"User-Agent: {USER_AGENT}", "Accept: application/json"),
+        run=run,
+    )
+    if code in (401, 403):
+        raise Unreachable(f"{service} refused the API key ({code})")
+    if code >= 400:
+        raise Unreachable(f"{service} answered {code} on {url}")
+    try:
+        return json.loads(body)
+    except ValueError as exc:
         raise Unreachable(f"{service} answered {len(body)} bytes that are not JSON") from exc
 
 
@@ -345,13 +531,18 @@ def status(conf_all, get=_get):
 
 
 UNCONFIGURED_HELP = (
-    "Nothing on this NAS is reachable yet, and that is expected rather than broken.\n"
-    "Step 1 of the NAS write-up in the vault -- research/nas-voice-front-end-2026-08.md\n"
-    "-- is the owner's own and physical: Tailscale on the NAS itself, the node tagged,\n"
-    "one narrow grant to the agents namespace. Then four values make this tool work:\n"
-    "  SONARR_URL / SONARR_API_KEY   RADARR_URL / RADARR_API_KEY\n"
-    "The key is Settings -> General -> API Key in each app. The URL may be a bare\n"
-    "host:port; it gets http:// because the transport security here is Tailscale's."
+    "Nothing on this NAS is reachable from here, and it is worth knowing which half\n"
+    "is missing before changing anything.\n"
+    "  * On the runner pod this should just work: it has ssh, and the sealed key at\n"
+    "    /etc/nas-ssh/id_ed25519. The request is then made on the NAS itself, and the\n"
+    "    API key is read off each app's own unauthenticated /initialize.js.\n"
+    "  * On the bridge pod there is no ssh binary at all, so this cannot run there.\n"
+    "  * A direct HTTP call is not the path today: allow-nas-ssh-egress in the agents\n"
+    "    namespace opens port 22 and nothing else, so :8989 and :7878 are refused by\n"
+    "    this pod's own kernel before a packet leaves.\n"
+    "Overrides, all optional: NAS_SSH_HOST / NAS_SSH_USER / NAS_SSH_KEY for the hop,\n"
+    "and SONARR_URL / SONARR_API_KEY / RADARR_URL / RADARR_API_KEY to skip discovery\n"
+    "or to reach a box that is not behind SSH at all."
 )
 
 
@@ -362,7 +553,7 @@ def _at_least_one_day(raw):
     return days
 
 
-def main(argv=None, env=None, get=_get, out=sys.stdout):
+def main(argv=None, env=None, get=_get, out=sys.stdout, ssh=_UNSET):
     parser = argparse.ArgumentParser(prog="python3 -m tools.nas", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status", help="is each service reachable")
@@ -372,7 +563,7 @@ def main(argv=None, env=None, get=_get, out=sys.stdout):
     air.add_argument("term", nargs="+")
     args = parser.parse_args(argv)
 
-    conf_all = config(env)
+    conf_all = config(env, ssh=ssh)
     if not conf_all:
         print(UNCONFIGURED_HELP, file=out)
         return 1
