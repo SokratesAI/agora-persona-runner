@@ -60,6 +60,7 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
@@ -72,6 +73,24 @@ from agora_runner.nova_plan import _fenced, _goal, set_field_in_goals
 SITE = os.environ.get(
     "NOVA_SITE_SELF_URL", "http://nova-site.agents.svc.cluster.local:8083"
 )
+
+OSLO = ZoneInfo("Europe/Oslo")
+
+
+def today_oslo(now=None):
+    """Today's date in Oslo, as `YYYY-MM-DD`.
+
+    The window this bounds is handed to GitHub as a `merged:<since>..<until>`
+    qualifier and matched against the journal's own Oslo dates, so "today"
+    has to be Oslo's today and not the pod's UTC one. This was
+    `datetime.now(timezone.utc) + timedelta(hours=2)`, which is Oslo only
+    from late March to late October -- in winter Oslo is UTC+1, and between
+    22:00 and 23:00 UTC the extra hour rolls the date forward a day, so the
+    window ended tomorrow and started a day early. `ZoneInfo` is what the
+    rest of this loop uses (`tools.claim`, `tools.put_entry`,
+    `tools.top_board_rows`, `tools.doc_owners`).
+    """
+    return (now or datetime.now(timezone.utc)).astimezone(OSLO).date().isoformat()
 
 # The repos a merged pull request can land in. The 2026-08-24 review counted
 # these five by hand; naming them here is what makes next week's count the
@@ -425,9 +444,7 @@ def main(argv=None):
                              "own `now:` field, in place (default: report only)")
     args = parser.parse_args(argv)
 
-    until = args.until or (
-        datetime.now(timezone.utc) + timedelta(hours=2)
-    ).date().isoformat()
+    until = args.until or today_oslo()
     try:
         since = (date.fromisoformat(until) - timedelta(days=args.days - 1)).isoformat()
     except ValueError:
