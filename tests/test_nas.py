@@ -421,7 +421,7 @@ class _FakeRun:
 
 
 SSH_HOP = {"host": "10.0.0.1", "user": "nova", "key": "/etc/nas-ssh/id_ed25519"}
-SSH_CONF = {"url": "http://127.0.0.1:8989", "key": "deadbeef" * 4, "ssh": SSH_HOP}
+SSH_CONF = {"url": "http://127.0.0.1:8989", "key": "deadbeef" * 4, "ssh": SSH_HOP}  # gitleaks:allow — fabricated
 
 
 def test_the_remote_command_is_a_constant_and_carries_nothing_variable():
@@ -509,8 +509,8 @@ def test_discover_key_reads_the_key_off_initialize_js():
     # the correct outcome: that key being readable by anyone on the LAN is a
     # decision the owner made about his LAN, and it is not the same decision
     # as putting it in a git history.
-    run = _FakeRun(stdout="window.Sonarr = {\n  apiKey: '0123456789abcdef0123456789abcdef',\n};\n200")
-    assert nas.discover_key("sonarr", SSH_HOP, run=run) == "0123456789abcdef0123456789abcdef"
+    run = _FakeRun(stdout="window.Sonarr = {\n  apiKey: '0123456789abcdef0123456789abcdef',\n};\n200")  # gitleaks:allow — fabricated
+    assert nas.discover_key("sonarr", SSH_HOP, run=run) == "0123456789abcdef0123456789abcdef"  # gitleaks:allow — fabricated
     assert "8989/initialize.js" in run.calls[0]["input"]
     # No API key header on this one -- the whole point is that it needs none.
     assert "X-Api-Key" not in run.calls[0]["input"]
