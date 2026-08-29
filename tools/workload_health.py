@@ -60,6 +60,15 @@ replacement starts, and `restartCount` on the new Pod is 0. That case is
 covered by the availability verdict and not by this one, which is exactly
 why the two are separate.
 
+**Readiness is judged on the waiting reason, never on the Pod phase.** My
+first version skipped `Pending` wholesale, to avoid firing on a Pod that
+was merely a few seconds old — and that silently swallowed
+`ImagePullBackOff`, which is `Pending`, permanent, and exactly the kind of
+thing this exists to catch. `ContainerCreating` and `PodInitializing` are
+the transient reasons; everything else raises whatever phase it is in. A
+Pod that cannot be scheduled at all has no container statuses to read, so
+that one case is judged on the Pod's own `PodScheduled` condition.
+
 A workload scaled to 0 replicas on purpose — `whatsapp-bridge` is parked
 there until 1 September — has nothing unavailable about it and is not
 raised.
@@ -74,6 +83,7 @@ import datetime
 import json
 import subprocess
 import sys
+import zoneinfo
 
 #: Margin over a workload's own termination grace, for image pull and
 #: container start. Small next to the 2880s grace it is added to; it exists
@@ -83,6 +93,26 @@ START_MARGIN = datetime.timedelta(minutes=5)
 
 #: A container that exits 0 because its work is done is not a failure.
 BENIGN_TERMINATION = {"Completed"}
+
+#: Rule 7: anything a person reads is Oslo, never raw UTC. Kubernetes
+#: stamps everything in UTC and this report exists so a person can
+#: reconstruct an outage timeline -- "OOMKilled at 06:42 Oslo" is the
+#: sentence it has to support, and handing over the UTC value makes the
+#: reader do the conversion that got Cycle 446's report two hours wrong.
+OSLO = zoneinfo.ZoneInfo("Europe/Oslo")
+
+#: A container that died once and came back had a bad moment. One that has
+#: died many times and died again just now is in a loop, and the two want
+#: different sentences -- merging them is the failure `agentic_health` had
+#: to learn one layer down, where a streak counter read as a diagnosis.
+#: The threshold is 2 because a single OOMKill leaves restartCount at 1.
+REPEATING = 2
+
+#: Waiting reasons that mean "give it a moment", not "this is broken".
+#: Everything else — ImagePullBackOff, CrashLoopBackOff, ErrImagePull,
+#: CreateContainerConfigError — is a state a Pod stays in until somebody
+#: acts, so it raises regardless of the phase it wears.
+TRANSIENT_WAITING = {"ContainerCreating", "PodInitializing"}
 
 #: How recently a container must have died for its death to still be news,
 #: given it has come back up since. Three cycles at the 20-minute cadence.
@@ -128,6 +158,7 @@ def read_pods(runner=subprocess.run):
             "name": meta.get("name") or "?",
             "phase": status.get("phase") or "Unknown",
             "containers": status.get("containerStatuses") or [],
+            "conditions": status.get("conditions") or [],
             "limits": limits,
         })
     return pods, None
@@ -183,6 +214,14 @@ def _parse(stamp):
         return None
 
 
+def _oslo(stamp):
+    """A UTC stamp from Kubernetes, as Oslo local time for a person to read."""
+    at = _parse(stamp)
+    if at is None:
+        return stamp or "an unrecorded time"
+    return f"{at.astimezone(OSLO):%Y-%m-%d %H:%M} Oslo"
+
+
 def _duration(seconds):
     seconds = int(seconds)
     if seconds < 60:
@@ -202,53 +241,84 @@ def deaths(pods, now, window=RECENT_DEATH):
     fresh, old = [], []
     for pod in pods:
         for container in pod["containers"]:
-            for where in ("lastState", "state"):
-                term = (container.get(where) or {}).get("terminated") or {}
-                reason = term.get("reason")
-                if not reason or reason in BENIGN_TERMINATION:
-                    continue
-                ready = bool(container.get("ready"))
-                at = _parse(term.get("finishedAt"))
-                recent = at is None or (now - at) <= window
-                row = {
-                    "namespace": pod["namespace"],
-                    "pod": pod["name"],
-                    "container": container.get("name") or "?",
-                    "reason": reason,
-                    "exit_code": term.get("exitCode"),
-                    "at": term.get("finishedAt") or "",
-                    "restarts": container.get("restartCount") or 0,
-                    "limit": pod["limits"].get(container.get("name") or "?"),
-                    "ready": ready,
-                }
-                (fresh if (not ready or recent) else old).append(row)
+            # A container that died, restarted and died again carries BOTH
+            # `state.terminated` and `lastState.terminated`. It is one
+            # container and must be one row -- reporting it twice makes the
+            # heading's count a count of deaths under the word "containers".
+            # `state` is the newer of the two, so it wins.
+            current = (container.get("state") or {}).get("terminated") or {}
+            previous = (container.get("lastState") or {}).get("terminated") or {}
+            term = current if current.get("reason") else previous
+            reason = term.get("reason")
+            if not reason or reason in BENIGN_TERMINATION:
+                continue
+            also = previous.get("reason") if current.get("reason") else None
+            if also in BENIGN_TERMINATION or also == reason:
+                also = None
+            ready = bool(container.get("ready"))
+            at = _parse(term.get("finishedAt"))
+            recent = at is None or (now - at) <= window
+            row = {
+                "namespace": pod["namespace"],
+                "pod": pod["name"],
+                "container": container.get("name") or "?",
+                "reason": reason,
+                "also": also,
+                "exit_code": term.get("exitCode"),
+                "at": term.get("finishedAt") or "",
+                "restarts": container.get("restartCount") or 0,
+                "limit": pod["limits"].get(container.get("name") or "?"),
+                "ready": ready,
+            }
+            (fresh if (not ready or recent) else old).append(row)
     return fresh, old
 
 
 def not_ready(pods):
     """Pods that are meant to be serving and are not.
 
-    `Succeeded` is a finished Job's Pod and `Pending` on a Pod with no
-    container statuses yet is a scheduler snapshot, not a failure — both
-    are excluded so this does not fire on the normal life of a CronJob.
+    `Succeeded` is a finished Job's Pod and is excluded. Everything else is
+    judged on the container's waiting *reason* rather than on the Pod's
+    phase, because `ImagePullBackOff` is `Pending` and permanent while
+    `ContainerCreating` is `Pending` and over in seconds.
+
+    A Pod that was never scheduled has no container statuses at all, so it
+    cannot be judged that way; its own `PodScheduled` condition is read
+    instead.
     """
     found = []
     for pod in pods:
-        if pod["phase"] in ("Succeeded", "Pending"):
+        if pod["phase"] == "Succeeded":
             continue
         for container in pod["containers"]:
             if container.get("ready"):
                 continue
             waiting = (container.get("state") or {}).get("waiting") or {}
+            reason = waiting.get("reason") or ""
+            if reason in TRANSIENT_WAITING:
+                continue
             found.append({
                 "namespace": pod["namespace"],
                 "pod": pod["name"],
                 "container": container.get("name") or "?",
                 "phase": pod["phase"],
-                "reason": waiting.get("reason") or "not ready",
+                "reason": reason or "not ready",
                 "message": (waiting.get("message") or "").strip(),
                 "restarts": container.get("restartCount") or 0,
             })
+        if pod["containers"]:
+            continue
+        for cond in pod["conditions"]:
+            if cond.get("type") == "PodScheduled" and cond.get("status") == "False":
+                found.append({
+                    "namespace": pod["namespace"],
+                    "pod": pod["name"],
+                    "container": "-",
+                    "phase": pod["phase"],
+                    "reason": cond.get("reason") or "not scheduled",
+                    "message": (cond.get("message") or "").strip(),
+                    "restarts": 0,
+                })
     return found
 
 
@@ -297,6 +367,12 @@ def unavailable(deployments, now):
             past.append(row)
             continue
         row["down"] = now - since
+        # A stamp in the future is clock skew, not a rollout that started
+        # later than now. Treating it as inside the budget would make an
+        # outage read as a healthy deploy, which is the quiet direction.
+        if row["down"] < datetime.timedelta(0):
+            past.append(row)
+            continue
         (rolling if row["down"] <= budget else past).append(row)
     return past, rolling
 
@@ -306,18 +382,33 @@ def report(pods, deployments, now):
     actionable = False
 
     deaths_found, old_deaths = deaths(pods, now)
-    if deaths_found:
+    looping = [d for d in deaths_found if d["restarts"] >= REPEATING]
+    once = [d for d in deaths_found if d["restarts"] < REPEATING]
+
+    def _death_line(d):
+        limit = f", memory limit {d['limit']}" if d["limit"] else ""
+        state = "up again" if d["ready"] else "still down"
+        also = f", previously {d['also']}" if d.get("also") else ""
+        return (f"  {d['namespace']}/{d['pod']} [{d['container']}] — {d['reason']}"
+                f" (exit {d['exit_code']}) at {_oslo(d['at'])}, {d['restarts']} restart(s),"
+                f" {state}{limit}{also}")
+
+    if looping:
         actionable = True
         lines.append(
-            f"CONTAINER DIED — {len(deaths_found)} container(s) ended on something "
+            f"CRASH LOOPING — {len(looping)} container(s) have died repeatedly and died "
+            "again just now. This is a state, not an event, and it stays loud until "
+            "somebody fixes it — there is deliberately no way to mute it here.")
+        for d in sorted(looping, key=lambda d: -d["restarts"]):
+            lines.append(_death_line(d))
+
+    if once:
+        actionable = True
+        lines.append(
+            f"CONTAINER DIED — {len(once)} container(s) ended on something "
             "other than a clean exit and the record is still on the Pod.")
-        for d in sorted(deaths_found, key=lambda d: (d["namespace"], d["pod"])):
-            limit = f", memory limit {d['limit']}" if d["limit"] else ""
-            state = "up again" if d["ready"] else "still down"
-            lines.append(
-                f"  {d['namespace']}/{d['pod']} [{d['container']}] — {d['reason']}"
-                f" (exit {d['exit_code']}) at {d['at']} UTC, {d['restarts']} restart(s),"
-                f" {state}{limit}")
+        for d in sorted(once, key=lambda d: (d["namespace"], d["pod"])):
+            lines.append(_death_line(d))
 
     stuck = not_ready(pods)
     if stuck:
@@ -361,7 +452,7 @@ def report(pods, deployments, now):
         for d in sorted(old_deaths, key=lambda d: (d["namespace"], d["pod"])):
             lines.append(
                 f"  {d['namespace']}/{d['pod']} [{d['container']}] — {d['reason']}"
-                f" (exit {d['exit_code']}) at {d['at']} UTC, {d['restarts']} restart(s)")
+                f" (exit {d['exit_code']}) at {_oslo(d['at'])}, {d['restarts']} restart(s)")
 
     healed = healed_restarts(pods, deaths_found + old_deaths)
     if healed:

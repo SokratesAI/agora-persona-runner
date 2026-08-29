@@ -8,13 +8,12 @@ from tools import workload_health as wh
 NOW = datetime.datetime(2026, 8, 29, 8, 0, tzinfo=datetime.timezone.utc)
 
 
-def _pod(namespace="agents", name="p", phase="Running", containers=(), limits=None):
-    statuses = []
-    for c in containers:
-        statuses.append(c)
+def _pod(namespace="agents", name="p", phase="Running", containers=(), limits=None,
+         conditions=()):
     return {
         "namespace": namespace, "name": name, "phase": phase,
-        "containers": list(statuses), "limits": dict(limits or {}),
+        "containers": list(containers), "conditions": list(conditions),
+        "limits": dict(limits or {}),
     }
 
 
@@ -44,7 +43,7 @@ def test_oomkill_on_a_container_that_is_down_raises():
     lines, status = wh.report(pods, [], NOW)
     assert status == 2
     body = "\n".join(lines)
-    assert "CONTAINER DIED" in body
+    assert "CRASH LOOPING" in body
     assert "OOMKilled" in body and "memory limit 256Mi" in body
 
 
@@ -79,6 +78,59 @@ def test_a_clean_exit_is_not_a_death():
     lines, status = wh.report(pods, [], NOW)
     assert status == 0
     assert "CONTAINER DIED" not in "\n".join(lines)
+
+
+def test_one_container_that_died_twice_is_one_row_not_two():
+    # Died, restarted, died again: both `state` and `lastState` are terminated.
+    pods = [_pod(containers=[{
+        "name": "c", "ready": False, "restartCount": 2,
+        "lastState": _terminated("OOMKilled", 137, "2026-08-29T07:50:00Z"),
+        "state": _terminated("Error", 1, "2026-08-29T07:58:00Z"),
+    }])]
+    fresh, old = wh.deaths(pods, NOW)
+    assert len(fresh) + len(old) == 1
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 2
+    body = "\n".join(lines)
+    assert "1 container(s) have died repeatedly" in body
+    # The newer death is the verdict; the older one is context beside it.
+    assert "Error" in body and "previously OOMKilled" in body
+
+
+def test_imagepullbackoff_raises_even_though_the_pod_is_pending():
+    pods = [_pod(phase="Pending", containers=[{
+        "name": "c", "ready": False, "restartCount": 0,
+        "state": {"waiting": {"reason": "ImagePullBackOff",
+                              "message": "Back-off pulling image"}}}])]
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 2
+    assert "ImagePullBackOff" in "\n".join(lines)
+
+
+def test_containercreating_is_transient_and_stays_quiet():
+    pods = [_pod(phase="Pending", containers=[{
+        "name": "c", "ready": False, "restartCount": 0,
+        "state": {"waiting": {"reason": "ContainerCreating"}}}])]
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 0
+    assert "NOT READY" not in "\n".join(lines)
+
+
+def test_a_pod_that_cannot_be_scheduled_raises_with_no_container_statuses():
+    pods = [_pod(phase="Pending", containers=[], conditions=[
+        {"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+         "message": "0/1 nodes are available: 1 Insufficient memory."}])]
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 2
+    body = "\n".join(lines)
+    assert "Unschedulable" in body and "Insufficient memory" in body
+
+
+def test_a_transition_time_in_the_future_is_not_read_as_a_rollout():
+    deps = [_deployment(grace=2880, since="2026-08-29T09:00:00Z")]
+    lines, status = wh.report([_pod()], deps, NOW)
+    assert status == 2
+    assert "NOBODY SERVING" in "\n".join(lines)
 
 
 def test_a_crashlooping_container_is_not_ready_and_raises():
@@ -120,11 +172,42 @@ def test_the_budget_comes_off_the_object_not_a_constant():
 
 
 def test_a_workload_parked_at_zero_replicas_is_not_unavailable():
-    deps = [_deployment(name="whatsapp-bridge", replicas=0,
+    # On the live cluster a settled scaled-to-0 Deployment reports
+    # Available=True, so `available is not False` already excludes it. The
+    # case the replicas guard actually exists for is the transition: a
+    # Deployment scaled to 0 that has not yet flipped its condition back,
+    # which would otherwise read as an outage that can never end.
+    deps = [_deployment(name="whatsapp-bridge", replicas=0, available=False,
                         since="2026-08-01T00:00:00Z", grace=30)]
     lines, status = wh.report([_pod()], deps, NOW)
     assert status == 0
     assert "whatsapp-bridge" not in "\n".join(lines)
+
+
+def test_a_settled_zero_replica_workload_reports_available_and_is_ignored():
+    deps = [_deployment(name="ollama", replicas=0, available=True, since="", grace=30)]
+    lines, status = wh.report([_pod()], deps, NOW)
+    assert status == 0
+    assert "ollama" not in "\n".join(lines)
+
+
+def test_a_single_death_is_not_called_a_crash_loop():
+    pods = [_pod(containers=[_container(ready=True, restarts=1,
+                                        last=_terminated("OOMKilled", 137, "2026-08-29T07:45:00Z"))])]
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 2
+    body = "\n".join(lines)
+    assert "CONTAINER DIED" in body and "CRASH LOOPING" not in body
+
+
+def test_timestamps_a_person_reads_are_oslo_not_utc():
+    # 07:45 UTC on 2026-08-29 is 09:45 in Oslo (CEST, UTC+2).
+    pods = [_pod(containers=[_container(ready=True, restarts=1,
+                                        last=_terminated("OOMKilled", 137, "2026-08-29T07:45:00Z"))])]
+    lines, _ = wh.report(pods, [], NOW)
+    body = "\n".join(lines)
+    assert "09:45 Oslo" in body
+    assert "07:45" not in body
 
 
 def test_unavailable_with_no_transition_time_is_the_loud_case():
