@@ -72,6 +72,19 @@ class TestG1:
         assert value is None
         assert "no denominator" in detail
 
+    def test_a_repo_that_could_not_be_counted_refuses_the_ratio(self):
+        """A numerator missing a repo is wrong, not merely low.
+
+        The caller used to `continue` past a repo `fetch_merged` refused and
+        divide anyway. Measured 2026-08-29: that printed G1 as 2.0 against a
+        real 7.1 — a four-fold overnight collapse that read as a fact about
+        the week, on the scoreboard at the top of `/plan`.
+        """
+        boards = [[_row(1, "done", "08-27")]]
+        value, detail = gm.measure_g1([], boards, "2026-08-22", "2026-08-28", None)
+        assert value is None
+        assert "could not be read" in detail
+
 
 class TestG3:
     def test_a_correction_phrase_is_counted_once_per_entry(self):
@@ -168,6 +181,60 @@ class TestFetchMerged:
         got, error = gm.fetch_merged("r", "2026-08-22", "2026-08-28")
         assert got is None
         assert "failed" in error
+
+    def test_github_is_asked_for_the_window_rather_than_the_newest_page(self, monkeypatch):
+        """The window has to be in the query, or a busy repo cannot be counted.
+
+        Measured 2026-08-29: `agora-persona-runner` merged 213 PRs in seven
+        days against a 200-row page, so every row came back in-window and the
+        count was unreachable. Scoping the search server-side is what makes a
+        full page mean "there may be more" instead of "the window is bigger
+        than the page".
+        """
+        seen = {}
+
+        class Done:
+            returncode = 0
+            stdout = "[]"
+            stderr = ""
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return Done()
+
+        monkeypatch.setattr(gm.subprocess, "run", fake_run)
+        gm.fetch_merged("r", "2026-08-22", "2026-08-28")
+        argv = seen["argv"]
+        assert "--search" in argv
+        assert argv[argv.index("--search") + 1] == "merged:2026-08-22..2026-08-28"
+
+
+class TestCollectMerges:
+    def _fetch(self, table, monkeypatch):
+        monkeypatch.setattr(gm, "fetch_merged",
+                            lambda repo, since, until: table[repo])
+
+    def test_every_repos_merges_are_pooled(self, monkeypatch):
+        self._fetch({"a": ([{"number": 1}], None), "b": ([{"number": 2}], None)},
+                    monkeypatch)
+        prs, problems = gm.collect_merges(("a", "b"), "2026-08-22", "2026-08-28")
+        assert [r["number"] for r in prs] == [1, 2]
+        assert problems == []
+
+    def test_one_unreadable_repo_voids_the_pool_rather_than_shrinking_it(self, monkeypatch):
+        """The bug measured 2026-08-29: a dropped repo made G1 read 2.0 for 7.1."""
+        self._fetch({"a": ([{"number": 1}], None), "b": (None, "b: cannot count")},
+                    monkeypatch)
+        prs, problems = gm.collect_merges(("a", "b"), "2026-08-22", "2026-08-28")
+        assert prs is None
+        assert problems == ["b: cannot count"]
+
+    def test_a_later_failure_is_still_reported_after_an_earlier_one(self, monkeypatch):
+        self._fetch({"a": (None, "a: cannot count"), "b": (None, "b: cannot count")},
+                    monkeypatch)
+        prs, problems = gm.collect_merges(("a", "b"), "2026-08-22", "2026-08-28")
+        assert prs is None
+        assert problems == ["a: cannot count", "b: cannot count"]
 
 
 class TestRender:
