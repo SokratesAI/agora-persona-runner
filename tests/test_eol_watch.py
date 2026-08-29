@@ -6,6 +6,7 @@ The one that carries the row is `test_supported_line_with_no_upstream_gap_is_sti
 whole difference between "up to date" and "still supported".
 """
 
+import base64
 import datetime as dt
 
 import pytest
@@ -131,8 +132,8 @@ def test_multi_stage_repeats_are_one_finding_with_both_places():
         {"repo": "o/s", "path": "Dockerfile", "image": "node", "tag": "20"},
     ]
     groups = eol_watch.group(members)
-    assert list(groups) == [("node", "20")]
-    assert eol_watch._places(groups[("node", "20")]) == [
+    assert list(groups) == [("image", "node", "20")]
+    assert eol_watch._places(groups[("image", "node", "20")]) == [
         "o/r  Dockerfile", "o/s  Dockerfile"]
 
 
@@ -321,3 +322,81 @@ def test_main_exits_1_when_the_catalogue_is_unreadable(monkeypatch, capsys):
                         lambda *a, **k: (None, "could not reach it"))
     assert eol_watch.main(["--repo", "o/r"]) == 1
     assert "no instrument" in capsys.readouterr().out
+
+
+# --- Workflow toolchain pins (Cycle 622).
+#
+# `SokratesAI/operator` pinned Go 1.25 in four places: one `FROM` line and
+# three `setup-go` steps. This tool read the first and reported it as the
+# whole answer, so a repo could move its Dockerfile onto a supported line
+# and keep building and testing on a dead one with nothing saying so.
+
+WORKFLOW = """\
+jobs:
+  test:
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: something else entirely
+        with:
+          api-version: 2
+"""
+
+
+def test_a_workflow_version_pin_is_read_like_a_from_line():
+    pins = eol_watch.toolchain_pins("o/r", ".github/workflows/build.yaml",
+                                    WORKFLOW)
+    assert [(p["image"], p["tag"]) for p in pins] == [
+        ("node", "20"), ("api", "2")]
+    assert all(p["kind"] == "toolchain" for p in pins)
+
+
+def test_a_version_file_pin_names_no_version_here_and_is_not_read():
+    # `node-version-file: .nvmrc` points at a file this does not read, so
+    # there is nothing in *this* file to judge. Reading it as a pin would
+    # invent one.
+    assert "nvmrc" not in str(eol_watch.toolchain_pins("o/r", "w", WORKFLOW))
+
+
+TREE = ".github/workflows/build.yaml"
+
+
+def test_sweep_judges_a_dead_toolchain_pin_and_drops_a_key_that_is_not_one():
+    def run(args):
+        if any("git/trees" in a for a in args):
+            return 0, TREE, ""
+        return 0, base64.b64encode(WORKFLOW.encode()).decode(), ""
+
+    judged_, not_judged, problems = eol_watch.sweep(
+        ["o/r"], PRODUCTS, TODAY, 180, run=run)
+    assert problems == []
+    # `api-version: 2` names no product, so it is not a runtime pin at all
+    # and is dropped rather than printed as an unanswerable question.
+    assert not_judged == []
+    assert [(i["image"], i["tag"], i["verdict"]) for i in judged_] == [
+        ("node", "20", "eol")]
+    assert judged_[0]["path"] == ".github/workflows/build.yaml"
+
+
+def test_the_report_writes_a_workflow_pin_the_way_the_file_writes_it():
+    _, pin = judged("node", "20", kind="toolchain")
+    report = eol_watch.format_report([pin], [], [], [], 180)
+    assert "node-version: 20" in report
+    assert "node:20" not in report
+    assert "1 workflow version pin(s)" in report
+
+
+def test_a_from_line_and_a_workflow_pin_of_one_version_stay_apart():
+    # Same runtime, same version, two notations in two kinds of file. One
+    # group would print one of them under the other's spelling.
+    groups = eol_watch.group([
+        {"repo": "o/r", "path": "Dockerfile", "image": "node", "tag": "20"},
+        {"repo": "o/r", "path": ".github/workflows/b.yaml", "image": "node",
+         "tag": "20", "kind": "toolchain"},
+    ])
+    assert len(groups) == 2

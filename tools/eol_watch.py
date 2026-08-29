@@ -84,6 +84,28 @@ FROM_RE = re.compile(
 # names no version line at all.
 LEADING_VERSION_RE = re.compile(r"\A(\d+(?:\.\d+)*)")
 
+# `  go-version: "1.25"` in a workflow step. A runtime is pinned in two
+# shapes in this org and this reads the second: a `FROM` line pins what
+# the image is built on, and a `setup-*` action pins what CI builds and
+# tests with. They are the same question and drift apart independently --
+# `SokratesAI/operator` pinned Go 1.25 in one Dockerfile and three
+# workflow steps, and only the Dockerfile was ever read.
+#
+# The key's own prefix is the lookup: `go-version` -> `go`, `node-version`
+# -> `node`, and both already resolve in the catalogue map above, so this
+# needs no table of which action means which runtime -- which is the rule
+# the module docstring states about the image map. A `-version:` key whose
+# prefix names no product is not a runtime pin and falls out.
+#
+# `go-version-file: go.mod` deliberately does not match: the version is
+# not written in this file, so there is nothing here to judge.
+TOOLCHAIN_RE = re.compile(
+    r"^\s*(?P<lang>[a-z][a-z0-9]*)-version:\s*"
+    r"[\"']?(?P<version>[0-9][^\"'\s#]*)",
+    re.MULTILINE)
+
+WORKFLOW_DIR = ".github/workflows/"
+
 DEFAULT_WITHIN_DAYS = 180
 
 
@@ -173,6 +195,24 @@ def base_images(repo, path, text):
         found.append({"repo": repo, "path": path, "image": image, "tag": tag,
                       "digest": tag is None and rest.startswith("@"),
                       "templated": tag is None and "$" in rest})
+    return found
+
+
+def toolchain_pins(repo, path, text):
+    """Every `<runtime>-version:` pin in one workflow file, as dicts.
+
+    Shaped exactly like `base_images` so `judge` needs no second branch:
+    `image` carries the runtime token the catalogue map is keyed by, and
+    `tag` carries the version. `kind` is what the report reads to say
+    where the pin lives, since `go-version: 1.25` is not a `FROM` line
+    and printing it as one would be a lie about a real place in a file.
+    """
+    found = []
+    for match in TOOLCHAIN_RE.finditer(text):
+        found.append({"repo": repo, "path": path, "kind": "toolchain",
+                      "image": match.group("lang"),
+                      "tag": match.group("version"),
+                      "digest": False, "templated": False})
     return found
 
 
@@ -301,13 +341,28 @@ def sweep(repos, products, today, within_days, run=None):
             problems.append(f"{repo}: could not list the repo — {why}")
             continue
         for path in paths:
-            if not path.rsplit("/", 1)[-1].startswith("Dockerfile"):
+            name = path.rsplit("/", 1)[-1]
+            is_dockerfile = name.startswith("Dockerfile")
+            is_workflow = (path.startswith(WORKFLOW_DIR)
+                           and name.endswith((".yml", ".yaml")))
+            if not (is_dockerfile or is_workflow):
                 continue
             text, why = read_file(repo, path, run)
             if text is None:
                 problems.append(f"{repo}: could not read {path} — {why}")
                 continue
-            for image in base_images(repo, path, text):
+            if is_dockerfile:
+                pins = base_images(repo, path, text)
+            else:
+                # A `-version:` key whose prefix names no product is not a
+                # runtime pin -- `api-version`, `schema-version` -- so it is
+                # dropped rather than reported NOT JUDGED. That is the
+                # opposite call to the one made on a `FROM` line, and the
+                # difference is that every `FROM` line really is a base
+                # image, so an unmappable one is a gap worth printing.
+                pins = [p for p in toolchain_pins(repo, path, text)
+                        if p["image"] in mapping or p["image"] in ambiguous]
+            for image in pins:
                 where = judge(image, products, mapping, today, within_days,
                               ambiguous)
                 (judged if where == "judged" else not_judged).append(image)
@@ -324,7 +379,7 @@ def group(images):
     """
     groups = {}
     for image in images:
-        key = (image["image"], image["tag"])
+        key = (image.get("kind", "image"), image["image"], image["tag"])
         groups.setdefault(key, []).append(image)
     return groups
 
@@ -338,6 +393,18 @@ def _places(members):
             seen.add(where)
             out.append(where)
     return out
+
+
+def _pin(image):
+    """How one pin is written where it lives.
+
+    A `FROM` line and a `setup-*` step pin the same runtime in two
+    different notations, and printing a workflow step as `go:1.25` would
+    name a line that appears nowhere in the file the report sends you to.
+    """
+    if image.get("kind") == "toolchain":
+        return "%s-version: %s" % (image["image"], image["tag"])
+    return "%s:%s" % (image["image"], image["tag"] or "")
 
 
 def _variant(image):
@@ -357,9 +424,9 @@ def format_report(judged, not_judged, problems, notes, within_days):
             when = ("ended %s, %d day(s) ago" % (image["eol"], -image["days"])
                     if image["verdict"] == "eol"
                     else "ends %s, in %d day(s)" % (image["eol"], image["days"]))
-            out.append("  %s:%s — %s security support %s%s"
-                       % (image["image"], image["tag"], image["product"],
-                          when, _variant(image)))
+            out.append("  %s — %s security support %s%s"
+                       % (_pin(image), image["product"], when,
+                          _variant(image)))
             for place in _places(members):
                 out.append("      %s" % place)
     ok = group([i for i in judged if i["verdict"] == "supported"])
@@ -369,25 +436,27 @@ def format_report(judged, not_judged, problems, notes, within_days):
                    "what you get to see:" % len(ok))
         for members in sorted(ok.values(), key=lambda m: m[0]["days"]):
             image = members[0]
-            out.append("  %s:%s — %s until %s, %d day(s) left%s"
-                       % (image["image"], image["tag"], image["product"],
-                          image["eol"], image["days"], _variant(image)))
+            out.append("  %s — %s until %s, %d day(s) left%s"
+                       % (_pin(image), image["product"], image["eol"],
+                          image["days"], _variant(image)))
             out.append("      %s" % ", ".join(_places(members)))
     for members in sorted(group(not_judged).values(),
-                          key=lambda m: (m[0]["image"], m[0]["tag"] or "")):
+                          key=lambda m: (m[0].get("kind", "image"),
+                                         m[0]["image"], m[0]["tag"] or "")):
         image = members[0]
-        out.append("NOT JUDGED  %s%s — %s"
-                   % (image["image"], f":{image['tag']}" if image["tag"] else "",
-                      image["reason"]))
+        out.append("NOT JUDGED  %s — %s" % (_pin(image), image["reason"]))
         out.append("      %s" % ", ".join(_places(members)))
     for problem in problems:
         out.append("PROBLEM  %s" % problem)
     out.extend(notes)
-    out.append("Judged %d distinct base image line(s) across %d FROM line(s) "
-               "against endoflife.date, notice window %d day(s); %d not "
-               "judged. A tag variant such as `-alpine` or `-slim` is a "
-               "second line this cannot read and is never judged."
-               % (len(group(judged)), len(judged), within_days,
+    froms = sum(1 for i in judged if i.get("kind") != "toolchain")
+    steps = len(judged) - froms
+    out.append("Judged %d distinct runtime line(s) across %d FROM line(s) and "
+               "%d workflow version pin(s) against endoflife.date, notice "
+               "window %d day(s); %d not judged. A tag variant such as "
+               "`-alpine` or `-slim` is a second line this cannot read and is "
+               "never judged."
+               % (len(group(judged)), froms, steps, within_days,
                   len(group(not_judged))))
     return "\n".join(out)
 
@@ -434,7 +503,7 @@ def main(argv=None):
     if unreadable:
         return 1
     if not judged:
-        print("No base image line was judged at all, which is no instrument "
+        print("No runtime line was judged at all, which is no instrument "
               "rather than no finding.")
         return 1
     return 0
