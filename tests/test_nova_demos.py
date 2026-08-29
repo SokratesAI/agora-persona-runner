@@ -1248,8 +1248,9 @@ def test_the_durable_open_mark_is_written_once_with_the_revision_it_read():
         with patch.object(nova_site, "vault_read_path_rev",
                           lambda path: (registry, "9-abc")), \
              patch.object(nova_site, "vault_write_path",
-                          lambda path, content, if_rev=None: writes.append(
-                              (path, content, if_rev))):
+                          lambda path, content, if_rev=None: (
+                              writes.append((path, content, if_rev))
+                              or "written")):
             nova_site._record_durable_open("roadmap")
             nova_site._record_durable_open("roadmap")
     finally:
@@ -1265,7 +1266,21 @@ def test_the_durable_open_mark_is_written_once_with_the_revision_it_read():
     assert written["port"] == 5174 and written["pid"] == 63440
 
 
-def test_a_failed_durable_write_lets_the_next_request_try_again():
+@pytest.mark.parametrize("outcome", [
+    # The real shape of a lost swap, and the one the first version of this
+    # test got wrong: `vault_write_path` RETURNS `FAILED(...)`, it does not
+    # raise. `vault.py`'s own docstring calls that the write contract, and
+    # every other caller in this repo branches on the string. Writing the
+    # handler as if a conflict were an exception left the slug marked and
+    # silently reproduced the bug the whole change exists to fix -- my
+    # reviewer found it, and this is the case that pins it.
+    "FAILED(409 conflict: demos.json changed since it was read)",
+    "FAILED(500)",
+    # And a genuine exception -- CouchDB unreachable, say -- which must land
+    # in the same place rather than escaping onto a bare thread.
+    RuntimeError("connection refused"),
+])
+def test_a_failed_durable_write_lets_the_next_request_try_again(outcome):
     """A lost compare-and-swap must not mark the slug done forever.
 
     `tools.demo` writes this same document to allocate ports, so losing the
@@ -1278,15 +1293,17 @@ def test_a_failed_durable_write_lets_the_next_request_try_again():
     registry = demo_dumps({"demos": [{"slug": "roadmap", "port": 5174}]})
     attempts = []
 
-    def _boom(path, content, if_rev=None):
+    def _fail(path, content, if_rev=None):
         attempts.append(if_rev)
-        raise RuntimeError("409 conflict")
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
     nova_site._demo_opened_marked.discard("roadmap")
     try:
         with patch.object(nova_site, "vault_read_path_rev",
                           lambda path: (registry, "9-abc")), \
-             patch.object(nova_site, "vault_write_path", _boom):
+             patch.object(nova_site, "vault_write_path", _fail):
             nova_site._record_durable_open("roadmap")
             assert "roadmap" not in nova_site._demo_opened_marked
             nova_site._record_durable_open("roadmap")

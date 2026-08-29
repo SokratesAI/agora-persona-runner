@@ -1189,9 +1189,18 @@ def _record_durable_open(slug):
         registry = load_demos(text)
         if not mark_opened(registry, slug):
             return
-        vault_write_path(DEMOS_PATH, dumps_demos(registry), if_rev=rev)
+        # **A lost swap is a return value here, not an exception**, and my
+        # reviewer caught this version writing the `except` branch as if it
+        # were both. `vault_write_path` answers `"written"` or a
+        # `"FAILED(...)"` string -- `vault.py`'s own contract, and the one
+        # every other caller in this repo branches on -- so a 409 would have
+        # returned normally, left the slug marked, and silently reproduced
+        # the exact bug this function exists to fix.
+        result = vault_write_path(DEMOS_PATH, dumps_demos(registry), if_rev=rev)
     except Exception as e:
-        log(f"nova-site could not record the open of demo {slug!r}: {e}")
+        result = f"FAILED({e})"
+    if result != "written":
+        log(f"nova-site could not record the open of demo {slug!r}: {result}")
         with _demo_opened_lock:
             _demo_opened_marked.discard(slug)
         return
