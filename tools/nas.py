@@ -81,7 +81,7 @@ USER_AGENT = "nova-nas/1"
 # Two things this deliberately does not do. It does not put the URL or the API
 # key on a remote command line: the remote command is the constant string
 # `curl --config -` and everything else arrives on stdin, so nothing derived
-# from a search term Edvard typed is ever parsed by a shell, and the key is
+# from a search term the owner typed is ever parsed by a shell, and the key is
 # not visible in `ps` to the other accounts on that box. And it does not
 # follow redirects -- the `_NoRedirect` opener above exists because urllib
 # copies headers onto a redirect target, and curl's default of not following
@@ -204,6 +204,15 @@ def _curl_config(url, headers=()):
     exit status alone does not separate a 401 from a 200 and this module
     reports "refused the API key" differently from "answered 500".
     """
+    for value in (url, *headers):
+        # A quote, a backslash or a newline in a value ends or re-opens the
+        # entry, which is the same class of bug as the one measured on the NAS
+        # below -- curl keeps going and drops what it did not understand. The
+        # URL is built by `urlencode` and the key is hex, so nothing reaches
+        # here with one today; the values are still env-overridable and an
+        # allowlist that trusts its inputs is not one.
+        if any(c in value for c in '"\\\n\r'):
+            raise ValueError(f"a curl config value cannot carry a quote, a backslash or a newline: {value!r}")
     lines = [f'url = "{url}"']
     lines += [f'header = "{h}"' for h in headers]
     # The two characters backslash-n, not a newline: this is a value inside a
@@ -231,7 +240,7 @@ def discover_key(service, ssh, run=subprocess.run):
 
     This is not a clever trick and it is not a new exposure: Cycle 630
     measured that Sonarr and Radarr serve that file to anyone who loads the
-    page, and Edvard was told exactly that and chose on 2026-08-29 to leave
+    page, and the owner was told exactly that and chose on 2026-08-29 to leave
     both apps without a login. So the key is already readable by every device
     on the LAN, and reading it from the box I already hold SSH on adds
     nothing. `SONARR_API_KEY` in the environment still wins, so the day he

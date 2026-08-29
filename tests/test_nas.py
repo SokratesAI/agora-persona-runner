@@ -123,22 +123,27 @@ def test_a_401_says_the_key_was_refused():
 
 
 # --- configuration ----------------------------------------------------------
+#
+# Every `config` call below passes `ssh=None`. Without it the result depends on
+# which pod ran the suite -- the runner pod has ssh and the sealed key, so
+# `config({})` there opens a real connection to the NAS and comes back with two
+# services configured, and these same assertions would fail on that pod alone.
 
 
 def test_config_needs_both_a_url_and_a_key():
-    assert nas.config({"SONARR_URL": "http://nas:8989"}) == {}
-    assert nas.config({"SONARR_API_KEY": "k"}) == {}
-    assert nas.config({"SONARR_URL": "http://nas:8989", "SONARR_API_KEY": "k"}) == {
+    assert nas.config({"SONARR_URL": "http://nas:8989"}, ssh=None) == {}
+    assert nas.config({"SONARR_API_KEY": "k"}, ssh=None) == {}
+    assert nas.config({"SONARR_URL": "http://nas:8989", "SONARR_API_KEY": "k"}, ssh=None) == {
         "sonarr": {"url": "http://nas:8989", "key": "k"}
     }
 
 
 def test_config_accepts_a_bare_host_and_trims_a_trailing_slash():
-    assert nas.config({"RADARR_URL": "nas:7878/", "RADARR_API_KEY": "k"})["radarr"]["url"] == "http://nas:7878"
+    assert nas.config({"RADARR_URL": "nas:7878/", "RADARR_API_KEY": "k"}, ssh=None)["radarr"]["url"] == "http://nas:7878"
 
 
 def test_one_configured_service_is_enough():
-    conf = nas.config({"RADARR_URL": "http://nas:7878", "RADARR_API_KEY": "k"})
+    conf = nas.config({"RADARR_URL": "http://nas:7878", "RADARR_API_KEY": "k"}, ssh=None)
     assert set(conf) == {"radarr"}
 
 
@@ -398,7 +403,7 @@ def test_a_window_shorter_than_a_day_is_refused_rather_than_silently_empty():
 
 # --- the SSH transport (Cycle 631) -------------------------------------------
 #
-# The point of every test below is that nothing derived from Edvard's typing
+# The point of every test below is that nothing derived from the owner's typing
 # reaches a shell, and that a failure over SSH is reported as the same kind of
 # thing a failure over HTTP was.
 
@@ -531,3 +536,11 @@ def test_without_a_hop_config_is_exactly_what_it_always_was():
     assert nas.config({}, ssh=None) == {}
     conf = nas.config({"SONARR_URL": "nas:8989", "SONARR_API_KEY": "k"}, ssh=None)
     assert conf == {"sonarr": {"url": "http://nas:8989", "key": "k"}}
+
+
+def test_a_value_that_could_break_out_of_the_quotes_is_refused_rather_than_written():
+    for bad in ('http://x/"y', "http://x/\\y", "http://x/y\nurl = http://evil/"):
+        with pytest.raises(ValueError):
+            nas._curl_config(bad)
+    with pytest.raises(ValueError):
+        nas._curl_config("http://x/y", ('X-Api-Key: k"\nurl = http://evil/',))
