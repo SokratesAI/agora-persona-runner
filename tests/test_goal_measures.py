@@ -6,6 +6,7 @@ loop has now shipped twice.
 """
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -346,3 +347,43 @@ class TestWriteBack:
                        _mrow("G2", "G2 — two", 9.0, "3")])
         written = path.read_text(encoding="utf-8")
         assert "now: 8.2" in written and "now: 9.0" in written
+
+
+class TestTodayInOslo:
+    """The window's end date. It used to be UTC plus a flat two hours, which
+    is Oslo for seven months of the year and a day wrong in the other five.
+    """
+
+    def test_winter_late_evening_does_not_roll_the_date_forward(self):
+        # 22:30 UTC on a January night is 23:30 in Oslo, still the 15th.
+        # The old `+2h` made it 00:30 on the 16th, so the window ended
+        # tomorrow and `merged:<since>..<until>` reached a day too far.
+        utc = datetime(2026, 1, 15, 22, 30, tzinfo=timezone.utc)
+        assert gm.today_oslo(utc) == "2026-01-15"
+
+    def test_summer_late_evening_still_rolls_forward(self):
+        # The other side of the same boundary: in August Oslo really is
+        # UTC+2, so 22:30 UTC is 00:30 on the 30th and the date does move.
+        # Without this the fix could be "always use UTC", which is wrong
+        # in the opposite direction for five months.
+        utc = datetime(2026, 8, 29, 22, 30, tzinfo=timezone.utc)
+        assert gm.today_oslo(utc) == "2026-08-30"
+
+    def test_winter_midday_is_unremarkable(self):
+        utc = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+        assert gm.today_oslo(utc) == "2026-01-15"
+
+    def test_main_takes_its_default_window_end_from_today_oslo(self, tmp_path, monkeypatch, capsys):
+        """The helper above being right is worth nothing if `main` does not
+        call it. Nothing tested `main` at all, so a revert of that one line
+        would have failed no test — the same shape as a guard that guards
+        nothing.
+        """
+        path = tmp_path / "goals.md"
+        path.write_text(GOALS_FOR_WRITE, encoding="utf-8")
+        monkeypatch.setattr(gm, "today_oslo", lambda now=None: "2026-01-15")
+        monkeypatch.setattr(gm, "fetch_entries", lambda limit, site=None: ([], None))
+        monkeypatch.setattr(gm, "fetch_board", lambda name, site=None: ([], None))
+        monkeypatch.setattr(gm, "collect_merges", lambda repos, since, until: ({}, []))
+        assert gm.main(["--goals", str(path)]) == 0
+        assert "2026-01-09 to 2026-01-15" in capsys.readouterr().out

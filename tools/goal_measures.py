@@ -66,12 +66,38 @@ from datetime import date, datetime, timedelta, timezone
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner.config import OSLO
 from agora_runner.nova_goal_history import goal_key
 from agora_runner.nova_plan import _fenced, _goal, set_field_in_goals
 
 SITE = os.environ.get(
     "NOVA_SITE_SELF_URL", "http://nova-site.agents.svc.cluster.local:8083"
 )
+
+def today_oslo(now=None):
+    """Today's date in Oslo, as `YYYY-MM-DD`.
+
+    The window this bounds is handed to GitHub as a `merged:<since>..<until>`
+    qualifier and matched against the journal's own Oslo dates, so "today"
+    has to be Oslo's today and not the pod's UTC one. This was
+    `datetime.now(timezone.utc) + timedelta(hours=2)`, which is Oslo only
+    from late March to late October -- in winter Oslo is UTC+1, and between
+    22:00 and 23:00 UTC the extra hour rolls the date forward a day, so the
+    window ended tomorrow and started a day early.
+
+    `OSLO` comes from `agora_runner.config` rather than a fifth
+    `ZoneInfo("Europe/Oslo")` of our own, which is what `tools.lint_entry`
+    and `tools.roll_needs_edvard` already do. That constant is guarded and
+    falls back to UTC on an image with no tzdata; a bare `ZoneInfo` there
+    would raise at import, before `main` can return the exit 1 this tool's
+    docstring promises. Cycle 611 measured `ZoneInfo("Europe/Oslo")`
+    resolving on both the bridge pod and the runner pod, so the fallback is
+    not live today -- but note it would make this window silently UTC rather
+    than loudly broken, and `agora_runner/catalog_build.py` still carries a
+    comment saying the image has no tzdata. The two disagree; the
+    measurement is this one.
+    """
+    return (now or datetime.now(timezone.utc)).astimezone(OSLO).date().isoformat()
 
 # The repos a merged pull request can land in. The 2026-08-24 review counted
 # these five by hand; naming them here is what makes next week's count the
@@ -425,9 +451,7 @@ def main(argv=None):
                              "own `now:` field, in place (default: report only)")
     args = parser.parse_args(argv)
 
-    until = args.until or (
-        datetime.now(timezone.utc) + timedelta(hours=2)
-    ).date().isoformat()
+    until = args.until or today_oslo()
     try:
         since = (date.fromisoformat(until) - timedelta(days=args.days - 1)).isoformat()
     except ValueError:
