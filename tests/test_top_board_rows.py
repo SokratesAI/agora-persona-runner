@@ -1237,3 +1237,77 @@ def test_the_capture_block_prints_how_to_board_one():
     positions = [body.index("--index 3  "), body.index("--index 0  ")]
     assert positions == sorted(positions)
     assert _capture_board_help([]) == []
+
+
+# A Sokrates relay ranks below a comment the owner typed himself.
+# His ask, relayed on `issues.md` 2026-08-29: *"a Sokrates comment relaying
+# something Edvard actually said should not automatically inherit the same
+# 'unread comment from Edvard jumps the queue, act now' treatment a comment
+# genuinely typed by him gets."*
+
+RELAY = ("Sokrates here (Claude, posting on Edvard's behalf, not Edvard "
+         "typing this himself): ")
+
+
+def test_a_relayed_comment_does_not_jump_the_queue():
+    """The whole ask: this raise is what must not fire on a relay."""
+    relayed = board((10, "relayed", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "relayed", f"Problem.\n\n**Edvard, 08-29:** {RELAY}do the thing."))
+    other = board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE))
+    rows = (top_board_rows.open_rows(relayed, "issue")
+            + top_board_rows.open_rows(other, "idea"))
+    top = top_board_rows.rank(rows)[0]
+    assert (top["board"], top["number"]) == ("idea", 64)
+
+
+def test_a_typed_comment_still_outranks_a_relayed_one():
+    """Both waiting, so only the relay flag can separate them."""
+    text = board((10, "relayed", BACKLOG, "2026-08-01", LOW),
+                 (11, "typed", BACKLOG, "2026-08-02", LOW)) + details(
+        (10, "relayed", f"P.\n\n**Edvard, 08-29:** {RELAY}do the thing."),
+        (11, "typed", "P.\n\n**Edvard, 08-29:** what about this?"))
+    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    assert [r["number"] for r in ranked] == [11, 10]
+
+
+def test_a_relayed_comment_is_still_owed_a_reply():
+    """It sinks in the ranking; it does not stop being an unanswered question."""
+    text = board((10, "relayed", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "relayed", f"P.\n\n**Edvard, 08-29:** {RELAY}do the thing."))
+    rows = top_board_rows.open_rows(text, "issue")
+    assert rows[0]["waiting"] is True
+    assert rows[0]["relayed"] is True
+    out = top_board_rows.render(rows)
+    assert "1 row(s) waiting on a reply from you" in out
+    assert "💬 UNANSWERED (relayed)" in out
+
+
+def test_the_newest_note_decides_even_when_an_older_one_was_relayed():
+    """The flag is read off the comment that is waiting, not off the thread."""
+    text = board((10, "mixed", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "mixed", f"P.\n\n**Edvard, 08-28:** {RELAY}first.\n\n"
+                      "**Nova, 08-28 (Cycle 600):** done.\n\n"
+                      "**Edvard, 08-29:** and now this?"))
+    rows = top_board_rows.open_rows(text, "issue")
+    assert rows[0]["waiting"] is True
+    assert rows[0]["relayed"] is False
+
+
+def test_a_relayed_capture_is_marked_and_sinks_within_the_section():
+    text = with_captures(board(), f"{RELAY}the relayed one", "the one he typed")
+    captures = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["relayed"] for c in captures] == [True, False]
+    out = top_board_rows.render([], captures=captures)
+    assert "UNPROCESSED CAPTURES FROM EDVARD (2, 1 of them relayed by Sokrates)" in out
+    assert "↩ RELAYED, not typed by him" in out
+    # Typed first, relayed second, whatever order they sit in the file.
+    assert out.index("the one he typed") < out.index("↩ RELAYED")
+
+
+def test_a_capture_he_typed_himself_carries_no_relay_note():
+    text = with_captures(board(), "just me typing")
+    captures = top_board_rows.unboarded_captures(text, "issue")
+    assert captures[0]["relayed"] is False
+    out = top_board_rows.render([], captures=captures)
+    assert "UNPROCESSED CAPTURES FROM EDVARD (1) —" in out
+    assert "RELAYED" not in out

@@ -44,6 +44,18 @@ cycles is three cycles doing it. The ledger and its compare-and-swap are
 `agora_runner.nova_claims`, which already existed for handoff slugs; the
 board is the list a cycle reads *first*, and it had no slugs at all.
 
+**A comment that says Sokrates relayed it does not jump the queue.** The
+owner's ask, relayed on `issues.md` 2026-08-29: *"Sokrates being right
+about what Edvard wants is not the same guarantee as Edvard having typed
+it himself, and the priority system should reflect that distinction, not
+collapse it."* The comment API takes `author` as free text, so a relay
+arrives signed `Edvard` and every rule here read it as him. A relayed
+comment still counts as waiting and is still listed as owed a reply -- it
+just ranks on its own rating instead of above every rating. The signal is
+the disclosure sentence Sokrates writes by hand, which proves nothing and
+does not need to: it can only ever lower the priority of the text
+carrying it. See `nova_boards.is_relayed`.
+
 **A waiting row carries a second slug, `[reply-claim: ...]`, and it is not
 the row's.** This tool tells a cycle to answer him *"even if you do not
 take it as this cycle's work"* (`prompt.md` step 1a), so replying and
@@ -74,7 +86,7 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
-    BLOCKED_STATUS, BOARD_PATHS, _CLOSED_STATUS_KEYS, parse_board,
+    BLOCKED_STATUS, BOARD_PATHS, _CLOSED_STATUS_KEYS, is_relayed, parse_board,
     split_capture_done, split_capture_priority, status_key,
     unanswered_comment_bodies,
 )
@@ -251,6 +263,13 @@ def unboarded_captures(markdown, board):
             continue
         priority, text = split_capture_priority(rest)
         captures.append({"board": board, "priority": priority, "text": text,
+                         # A capture is the same signal as a comment, one
+                         # file over, and the same distinction applies: a
+                         # bullet that says Sokrates typed it is not the
+                         # owner typing it. It stays in the section -- it is
+                         # still unprocessed and still owed an answer -- and
+                         # sinks within it.
+                         "relayed": is_relayed(text),
                          # The two halves of the reply address: which bullet,
                          # and proof it has not moved. `original` is his own
                          # sentence, rating prefix and all, and *not* any
@@ -289,6 +308,11 @@ def open_rows(markdown, board):
             # same markdown the rows come from, so a row and its thread can
             # never be sourced from two different reads of the file.
             "waiting": item["number"] in waiting,
+            # Whether that comment says of itself that Sokrates relayed it.
+            # Read off the comment body, not the row, because the row does
+            # not change identity -- one thread can hold a relayed note and
+            # a typed one, and it is the newest that decides the queue jump.
+            "relayed": is_relayed(waiting.get(item["number"], "")),
             "slug": slug_for_row(board, item["number"]),
             # Named after his comment, not after the row -- see
             # `slug_for_comment`. `None` on a row nobody is waiting on, so
@@ -412,6 +436,7 @@ def closed_rows_waiting(markdown, board):
         "status": item["status"],
         "updated": item["updated"],
         "waiting": True,
+        "relayed": is_relayed(waiting.get(item["number"], "")),
         "replySlug": _reply_slug(board, item["number"], waiting),
     } for item in parse_board(markdown or "")["items"]
         if (item["done"] or item["statusKey"] in _CLOSED)
@@ -480,7 +505,21 @@ def rank(rows):
         # this claim was added to prevent. The row still ranks on its own
         # rating; it just stops jumping the queue on a question that is
         # being handled.
-        0 if r.get("waiting") and not r.get("replyHeldBy") else 1,
+        # **And a comment that says it was relayed does not jump the
+        # queue at all.** His ask, relayed on `issues.md` 2026-08-29:
+        # *"a Sokrates comment relaying something Edvard actually said
+        # should not automatically inherit the same 'unread comment from
+        # Edvard jumps the queue, act now' treatment a comment genuinely
+        # typed by him gets."* The raise above exists because a question
+        # he typed stops existing the moment somebody answers it; a relay
+        # is Sokrates deciding what is worth passing on, which is a
+        # judgement rather than a fact about what the owner wants now.
+        # The row keeps `waiting` and still appears in the reply list, so
+        # a reply is still owed -- it just ranks on its own rating like
+        # every other row. See `nova_boards.is_relayed` for why acting on
+        # a self-declared signal is safe in this direction only.
+        0 if r.get("waiting") and not r.get("replyHeldBy")
+        and not r.get("relayed") else 1,
         1 if r.get("statusKey") == _BLOCKED else 0,
         _RANK.get(r["priorityKey"], len(_RANK)),
         age_key(r["updated"]),
@@ -495,8 +534,13 @@ def _line(row):
     # that explains the order is worth more than one appended as a footnote
     # to a line whose position it already decided.
     if row.get("waiting"):
+        # `(relayed)` rides on the same mark rather than getting its own,
+        # because it modifies exactly what that mark means: a reply is
+        # owed, and this one did not move the row up the list.
+        relayed = " (relayed)" if row.get("relayed") else ""
         waiting = (f"🔒 REPLY HELD by cycle {row['replyHeldBy']}  "
-                   if row.get("replyHeldBy") else "💬 UNANSWERED  ")
+                   if row.get("replyHeldBy")
+                   else f"💬 UNANSWERED{relayed}  ")
     else:
         waiting = ""
     if row.get("statusKey") == _BLOCKED:
@@ -584,6 +628,9 @@ def _capture_line(capture):
     # would invite a cycle to go and rate something that has nowhere to
     # put a rating.
     held = f"🔒 HELD by cycle {capture['heldBy']}  " if capture.get("heldBy") else ""
+    # Printed ahead of the rating for the same reason `_line` prints the
+    # comment mark there: it is part of why the line sits where it does.
+    held += "↩ RELAYED, not typed by him  " if capture.get("relayed") else ""
     claim = _claim_tag(capture)
     if capture["board"] == "note":
         return f"notes.md  {held}{capture['text']}{claim}"
@@ -703,8 +750,21 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         # Held captures sink within the section for the same reason held rows
         # sink within the ranking. The section is otherwise unsorted, so this
         # is the only ordering it has ever had.
-        captures = sorted(captures, key=lambda c: 1 if c.get("heldBy") else 0)
-        out.append(f"UNPROCESSED CAPTURES FROM EDVARD ({len(captures)}) — "
+        # Relayed captures sink above the held ones and below the typed
+        # ones. The section still outranks the board -- an unprocessed
+        # capture is unprocessed whoever typed it -- so this orders within
+        # the section rather than removing anything from it.
+        captures = sorted(captures, key=lambda c: (
+            1 if c.get("heldBy") else 0, 1 if c.get("relayed") else 0))
+        relayed = sum(1 for c in captures if c.get("relayed"))
+        # The old header said "FROM EDVARD" of every bullet in the section,
+        # which is the collapse his ask names: Sokrates relaying him
+        # accurately is still not him. The count is spelled out rather than
+        # the header softened for all of them, because most of these really
+        # are his and reading them as second-hand would be the same error
+        # pointing the other way.
+        note = f", {relayed} of them relayed by Sokrates" if relayed else ""
+        out.append(f"UNPROCESSED CAPTURES FROM EDVARD ({len(captures)}{note}) — "
                    "these outrank every row below. Take one, or say why not:")
         out.extend("  -> " + _capture_line(c) for c in captures)
         out.append("")

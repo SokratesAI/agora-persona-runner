@@ -694,3 +694,39 @@ def test_the_projects_page_shares_one_cache_key_with_the_board_route(board_md, n
         "which the warm did not reach"
     )
     assert {"board:issues", "board:ideas"} <= warmed
+
+
+# `is_relayed` — a comment that says of itself that Sokrates typed it.
+
+def test_the_live_disclosure_sentence_is_recognised():
+    from agora_runner.nova_boards import is_relayed
+    assert is_relayed("**Edvard, 08-29:** Sokrates here (Claude, posting on "
+                      "Edvard's behalf, not Edvard typing this himself): "
+                      "decision on the auth proposal.")
+
+
+def test_an_ordinary_comment_is_not_a_relay():
+    from agora_runner.nova_boards import is_relayed
+    assert not is_relayed("**Edvard, 08-29:** what about this?")
+    assert not is_relayed("")
+    assert not is_relayed(None)
+
+
+def test_a_comment_that_merely_discusses_relaying_is_not_one():
+    """The window is what separates these two, and this is why it exists."""
+    from agora_runner.nova_boards import RELAY_WINDOW, is_relayed
+    prose = "x" * RELAY_WINDOW
+    assert not is_relayed(prose + " a comment posted on Edvard's behalf "
+                                  "should rank below one he typed.")
+
+
+def test_a_relay_that_omits_the_disclosure_reads_as_typed():
+    """Written down because it is the honest limit, not an oversight.
+
+    The signal is self-declared. It can only ever lower the priority of the
+    text carrying it, so a forged disclosure demotes the forger; the failure
+    that remains is a relay that stays silent and keeps his priority, which
+    is exactly today's behaviour and needs the auth work to close.
+    """
+    from agora_runner.nova_boards import is_relayed
+    assert not is_relayed("**Edvard, 08-29:** do the thing.")

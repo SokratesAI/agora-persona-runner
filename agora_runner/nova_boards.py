@@ -824,6 +824,63 @@ def unanswered_comments(markdown):
     return sorted(unanswered_comment_bodies(markdown), reverse=True)
 
 
+_RELAY_RE = re.compile(
+    r"posting\s+(?:on|as)\s+(?:Edvard'?s?|his)\s+behalf"
+    r"|on\s+Edvard'?s?\s+behalf"
+    r"|not\s+Edvard\s+typing\s+this\s+himself",
+    re.IGNORECASE,
+)
+
+# How far into a comment the disclosure has to sit to count. The cap is
+# what stops a comment that merely *talks about* the relay pattern from
+# being read as one -- these boards discuss this mechanism at length, and
+# the write-ups are long.
+#
+# Measured 2026-08-29 across both live board files: 351 author notes, of
+# which 4 match, every one at offset 42 -- immediately after its own
+# `**Edvard, 08-29:**` marker, in the opening clause. Nothing in the
+# corpus matches later than that, so 300 is chosen with room rather than
+# fitted to the data, and today's negative is a real negative rather than
+# one the window guaranteed.
+RELAY_WINDOW = 300
+
+
+def is_relayed(text):
+    """Does this text say, in its own opening, that it is a relay?
+
+    Sokrates -- the Claude Code session the owner works with directly --
+    posts to these boards through the same `POST /api/board/comment` route
+    a cycle uses, and that route takes `author` as free text with nothing
+    behind it. So a comment Sokrates writes on the owner's behalf arrives
+    signed `Edvard`, and everything downstream treats it as the owner
+    typing. Sokrates has been compensating by hand, opening each one with
+    *"Sokrates here (Claude, posting on Edvard's behalf, not Edvard typing
+    this himself)"*, which is honest and is the only signal that exists.
+
+    His ask, relayed on `issues.md` 2026-08-29: *"a Sokrates comment
+    relaying something Edvard actually said should not automatically
+    inherit the same 'unread comment from Edvard jumps the queue, act now'
+    treatment a comment genuinely typed by him gets, even when accurately
+    relaying him. Sokrates being right about what Edvard wants is not the
+    same guarantee as Edvard having typed it himself."*
+
+    **This is self-declared and proves nothing, and that is fine here
+    because of which way it points.** Reading the disclosure can only ever
+    *lower* the priority of the text carrying it, never raise it -- so a
+    forged disclosure demotes the forger, and the honest failure mode is a
+    relay that omits the sentence and keeps the owner's priority, which is
+    exactly today's behaviour. That asymmetry is why this half of the ask
+    ships without waiting on the authentication half (my issue #15): an
+    unauthenticated signal is safe to act on when acting on it costs the
+    claimant something.
+
+    It is deliberately not a general "who wrote this" answer. It says one
+    thing -- the text announces itself as relayed -- and a caller wanting
+    identity should wait for the auth work rather than read this as it.
+    """
+    return bool(_RELAY_RE.search((text or "")[:RELAY_WINDOW]))
+
+
 def unanswered_comment_bodies(markdown):
     """`{number: his last unanswered comment, verbatim}` for every waiting row.
 
