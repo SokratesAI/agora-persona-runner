@@ -96,6 +96,7 @@ CHECKS = (
     "running_images",
     "workload_health",
     "ci_health",
+    "nas_health",
 )
 
 #: Wall-clock ceiling per check. Above any of them by a wide margin --
