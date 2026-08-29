@@ -325,7 +325,7 @@ def idle_seconds(entry, activity, now):
     is the registry's own answer and it survives the roll, so flooring at
     the site's start throws away a fact that was never in danger. Measured
     Cycle 609 against the live site: the `roadmap` demo handed over at
-    01:43 Oslo read `[no recorded open, 9 min after hand-over]` at 05:06,
+    03:43 Oslo read `[no recorded open, 9 min after hand-over]` at 05:06,
     because `nova-site` had rolled ten minutes earlier -- and it rolls on
     every merge, several times an hour. An 18-hour bound whose clock
     restarts every twenty minutes never fires. That is the shape this loop
@@ -410,11 +410,16 @@ def no_recorded_open(entry, activity):
     for, which is why three cycles running wrote "wait for a morning" into
     the handoff instead of doing it.
 
-    **The measurement of the age does not change and must not.**
-    `idle_seconds` floors the clock at the site's own start time because
-    `last_seen` lives in that pod's memory, so a site roll wipes it and a
-    two-day-old demo would otherwise read as instantly reapable. Only the
-    *threshold* the caller compares against changes. That is also why a
+    **The measurement of the age changes with this answer, and Cycle 609
+    is when that became true.** This paragraph used to say the opposite --
+    that only the *threshold* changes and `idle_seconds` always floors the
+    clock at the site's own start time, because `last_seen` lives in that
+    pod's memory and a roll would otherwise make a two-day-old demo read as
+    instantly reapable. That floor is still right for a row carrying
+    `opened_at`, and it is wrong for a row without one: there is no wiped
+    record to protect, and flooring anyway restarted the 18-hour clock on
+    every deploy, so the bound never fired. `idle_seconds` has the
+    measurement. That is also why a
     demo that was opened before a roll used to come back here as `True`:
     after the roll the site genuinely could not tell, and the safe direction
     is the long clock, because the cost of being wrong is one of thirty

@@ -435,10 +435,14 @@ def cmd_reap(args):
 
     `--idle <minutes>` adds the second half: stop and deregister a demo
     that is genuinely running here and that nobody has asked for in that
-    long. A demo nobody has opened *yet* is measured the same way and
-    judged against `--unopened` instead, which is long enough to cross a
-    night -- see `nova_demos.no_recorded_open` for why those two are different
-    questions. The site is the only thing that knows -- every request for a demo
+    long. A demo nobody has opened *yet* is judged against `--unopened`
+    instead, which is long enough to cross a night -- see
+    `nova_demos.no_recorded_open` for why those two are different questions.
+    It is also measured differently, which this docstring denied until
+    Cycle 609: its age runs from the hand-over rather than from the site's
+    own start time, because the floor that protects an opened demo's lost
+    `last_seen` has nothing to protect here and restarted the long clock on
+    every deploy. `nova_demos.idle_seconds` carries the reasoning. The site is the only thing that knows -- every request for a demo
     goes through its proxy -- so this is the one subcommand that needs the
     network, and it does nothing on idle when the site does not answer.
     """

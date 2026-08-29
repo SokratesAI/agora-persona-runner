@@ -772,11 +772,15 @@ def test_idle_is_measured_from_the_site_restart_not_from_a_forgotten_request():
 def test_an_unopened_demo_ages_from_its_hand_over_not_from_the_site_roll():
     """The 18-hour bound has to be reachable, and the floor made it not.
 
-    Measured Cycle 609 on the live site: `roadmap`, handed over at 01:43
+    Measured Cycle 609 on the live site: `roadmap`, handed over at 03:43
     Oslo, read `[no recorded open, 9 min after hand-over]` at 05:06 because
     `nova-site` had rolled ten minutes earlier. It rolls on every merge, so
     `DEFAULT_UNOPENED_MINUTES` could never be reached and a demo nobody
     opens holds its port forever.
+
+    The registry writes a naive local stamp and the bridge pod runs UTC, so
+    the row itself reads `01:43:38`; the Oslo time above is that converted.
+    Nothing here does that arithmetic -- the fixture builds its own clock.
 
     The floor protects a record a roll destroys. A row with no `opened_at`
     has no such record -- "nobody has ever asked for this" is the
@@ -786,7 +790,7 @@ def test_an_unopened_demo_ages_from_its_hand_over_not_from_the_site_roll():
     from agora_runner.nova_demos import idle_seconds
 
     now = datetime.now().timestamp()
-    waited = 3 * 3600 + 23 * 60
+    waited = 1 * 3600 + 23 * 60
     demo = {"slug": "roadmap",
             "started_at": datetime.fromtimestamp(now - waited).isoformat(
                 timespec="seconds")}
