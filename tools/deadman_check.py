@@ -386,7 +386,7 @@ def main() -> int:
             # because this is the line the failed run is judged by: `gh run
             # view` shows it beside the non-zero exit, and a reader who stops
             # there used to be told only that something was unreadable.
-            print(f"NOT CLEAN: the ping is healthy but its heartbeat verdict is "
+            print("NOT CLEAN: the ping is healthy but its heartbeat verdict is "
                   f"unreadable -- {hb_reason}", file=sys.stderr)
             return 1
         return 2 if hb_verdict == "BAD" else 0
