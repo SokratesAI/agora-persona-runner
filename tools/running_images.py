@@ -6,8 +6,15 @@ Kubernetes actually runs — only the ones our Dockerfiles build."*
 `tools.pin_drift` and `tools.eol_watch` both read files in GitHub repos:
 a `FROM` line, an `ARG *_VERSION`, a `uses:` ref. Neither has ever looked
 at an image that runs on this cluster without being built here, and there
-are six of those -- four `:latest` tags, our own runtime on a branch tag
-in two places, and the CouchDB holding the vault.
+are five of those live on this cluster today -- four `:latest` tags and
+our own runtime on a branch tag.
+
+The row that filed this counted six, by reading `platform-config`, and the
+two counts differ on purpose rather than by mistake: it saw
+`sokrates-agent-runtime:main` in two manifests where the cluster has one
+live object using it, and a `curlimages/curl:latest` init Job that has
+since run and been collected. Same question, two vantage points -- the
+boundary paragraph below is the honest version of that.
 
     python3 -m tools.running_images
 
@@ -259,6 +266,28 @@ def _places(members):
     return sorted(out)
 
 
+def _short_digest(ref, keep=12):
+    """`name@sha256:abc123…` — the name plus enough digest to tell two apart.
+
+    Printing the name alone was my reviewer's finding on runner#514 and it
+    was worse than untidy. `group` keys on the whole reference, so the same
+    image pinned to two different digests is correctly two entries — and
+    stripping the digest rendered them as the same string twice, which
+    reads as a duplicated line rather than as the finding it is. That is
+    live here: `ghcr.io/sokratesai/vault-bridge` runs `63b9c5db…` in
+    `agents` and `fcf9610d…` in `obsidian`, and "two consumers of one
+    image are on unreconciled pins" is exactly what this tool is for.
+    """
+    name, _, digest = ref.partition("@")
+    if not digest:
+        return name
+    algorithm, _, hexits = digest.partition(":")
+    if not hexits:
+        return ref
+    tail = "…" if len(hexits) > keep else ""
+    return "%s@%s:%s%s" % (name, algorithm, hexits[:keep], tail)
+
+
 def format_report(images, resolved, problems):
     out = []
     by_verdict = {"mutable": [], "version": [], "digest": []}
@@ -294,8 +323,8 @@ def format_report(images, resolved, problems):
         out.append("PINNED BY DIGEST — %d reference(s), which is the shape "
                    "this check is looking for:" % len(digested))
         for ref, members in sorted(digested.items()):
-            name = ref.split("@", 1)[0]
-            out.append("  %s — %s" % (name, ", ".join(_places(members))))
+            out.append("  %s — %s" % (_short_digest(ref),
+                                      ", ".join(_places(members))))
 
     for problem in problems:
         out.append("PROBLEM  %s" % problem)

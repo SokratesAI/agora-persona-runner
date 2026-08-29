@@ -170,3 +170,28 @@ def test_one_image_in_two_places_is_one_finding():
     assert "MUTABLE IMAGE — 1 image reference(s)" in report
     assert "agents/deployment a" in report
     assert "agents/cronjob b" in report
+
+
+def test_two_digests_under_one_name_are_told_apart():
+    """My reviewer's finding on runner#514.
+
+    `ghcr.io/sokratesai/vault-bridge` runs one digest in `agents` and a
+    different one in `obsidian`. Printing the name alone rendered those two
+    correct groups as the same string twice, which reads as a duplicated
+    line rather than as "two consumers are on unreconciled pins".
+    """
+    ref = "ghcr.io/sokratesai/vault-bridge@sha256:"
+    images = [{"ref": ref + "63b9c5db" + "0" * 56, "kind": "deployment",
+               "name": "newspaper", "namespace": "agents", "container": "c"},
+              {"ref": ref + "fcf9610d" + "1" * 56, "kind": "deployment",
+               "name": "vault-bridge", "namespace": "obsidian",
+               "container": "c"}]
+    report = ri.format_report(images, {}, [])
+    printed = [l for l in report.splitlines() if "vault-bridge@" in l]
+    assert len(printed) == 2
+    assert printed[0] != printed[1]
+    assert "63b9c5db" in report and "fcf9610d" in report
+
+
+def test_a_reference_with_no_digest_is_printed_whole():
+    assert ri._short_digest("prom/prometheus:latest") == "prom/prometheus:latest"
