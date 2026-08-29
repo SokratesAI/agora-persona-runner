@@ -395,7 +395,16 @@ def client_tool_schemas(caps, active_step=None):
                 "required": ["target", "text"],
             },
         })
-    if caps.get("manageAgora"):
+    # Reading another conversation is read-only, and until now the only way
+    # to grant it was `manageAgora`, which also hands out create_persona,
+    # create_heartbeat and create_workflow. So the owner's "read that other
+    # conversation" -- issue #125, which he called the most basic thing a
+    # persona should do -- cost a platform-admin grant, and the six chat
+    # personas that should have it (Haiku, Plain assistant, Study buddy,
+    # Devil's advocate, Marcus, Trainer) have none of it. `conversationRead`
+    # is that grant on its own. `manageAgora` still implies it, so no persona
+    # holding it today loses a tool.
+    if caps.get("conversationRead") or caps.get("manageAgora"):
         tools.append({
             "name": "list_conversations",
             "description": (
@@ -432,6 +441,7 @@ def client_tool_schemas(caps, active_step=None):
                 "required": ["conversation"],
             },
         })
+    if caps.get("manageAgora"):
         tools.append({
             "name": "list_personas",
             "description": (
@@ -609,8 +619,9 @@ TOOL_TO_CAPABILITY = {
     "kubectl_read": "kubectlRead",
     "github_read": "githubRead",
     "terminal_exec": "terminalExec",
-    "list_conversations": "manageAgora",
-    "read_conversation": "manageAgora",
+    # A tuple means "any one of these grants it" -- see capabilities_for_step.
+    "list_conversations": ("conversationRead", "manageAgora"),
+    "read_conversation": ("conversationRead", "manageAgora"),
     "list_personas": "manageAgora",
     "list_models": "manageAgora",
     "create_persona": "manageAgora",
@@ -622,6 +633,17 @@ TOOL_TO_CAPABILITY = {
     "merge_pr": "githubMerge",
     "nova_capture": "novaCapture",
 }
+
+
+def _cap_keys(entry):
+    """A TOOL_TO_CAPABILITY value is one capability key, or a tuple of keys
+    any one of which grants the tool. Only the two conversation-read tools
+    take a tuple today: `conversationRead` is the narrow grant and
+    `manageAgora` keeps implying it, so nothing that works now stops."""
+    return (entry,) if isinstance(entry, str) else tuple(entry)
+
+
+_ALL_CAP_KEYS = {k for entry in TOOL_TO_CAPABILITY.values() for k in _cap_keys(entry)}
 
 
 def capabilities_for_step(persona, step):
@@ -640,9 +662,12 @@ def capabilities_for_step(persona, step):
     whitelist = step.get("toolWhitelist") or []
     if whitelist:
         cap_keys_present = {
-            cap_key for tool, cap_key in TOOL_TO_CAPABILITY.items() if tool in whitelist
+            cap_key
+            for tool, entry in TOOL_TO_CAPABILITY.items()
+            if tool in whitelist
+            for cap_key in _cap_keys(entry)
         }
-        for cap_key in set(TOOL_TO_CAPABILITY.values()):
+        for cap_key in _ALL_CAP_KEYS:
             if cap_key not in cap_keys_present:
                 caps[cap_key] = False
     return caps
