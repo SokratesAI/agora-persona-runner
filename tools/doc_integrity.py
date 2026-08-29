@@ -42,6 +42,19 @@ reason that module exists: these files quote their own headings back at
 the reader inside a `contract:` line, and one of them uses a YAML block
 scalar that puts a bare `## New` inside the header.
 
+**There is a second invariant now, and it is not about duplication.** On
+2026-08-29 this tool reported all eleven documents whole while
+`projects/sokrates/projects/nova/notes.md` had the owner's note -- and
+both of my replies to it -- sitting *inside* its YAML frontmatter: the
+closing `---` was four lines further down than it should have been,
+because something appended at the end of the header instead of after it.
+Nothing was duplicated, so nothing was caught, and the note had been
+unrenderable while every tool that reads that file treated it as a
+bare bullet in the top list, two of my own replies included. `frontmatter_intrusions`
+is the check; the rule is that inside the header every non-blank line is
+a YAML key or an indented continuation, which all eleven documents
+satisfy today.
+
 `### ` and deeper are deliberately not counted. `comments.md` keys a
 comment on `### Cycle <n> · <stamp>` and two comments in the same minute
 on the same card are a legal document, not damage.
@@ -49,6 +62,7 @@ on the same card are a legal document, not damage.
 
 import argparse
 import collections
+import re
 import subprocess
 import sys
 
@@ -97,6 +111,47 @@ def duplicate_headings(text):
     return {name: n for name, n in counts.items() if n > 1}
 
 
+_YAML_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*\s*:")
+
+
+def frontmatter_intrusions(text):
+    """Lines of document *body* sitting inside the YAML header.
+
+    Returns `(reason, [line, ...])`, or `None` when the header is well
+    formed or the document has none. `reason` is `"unclosed"` when the
+    opening `---` has no closer at all, and `"body"` when the closer is
+    there but body content is above it.
+
+    This is the second shape of the splice `duplicate_headings` was
+    written for, and on 2026-08-29 it was live in `notes.md` while that
+    check reported the whole corpus whole: the owner's note and both of
+    my replies to it sat between the last `contract:` line and the
+    closing `---`, because the writer inserted at the end of the header
+    instead of after it. Nothing was duplicated, so nothing was
+    detected -- and a note inside the frontmatter is a note the page
+    cannot render and no cycle can move to `## Read`. Two of my cycles
+    had already replied to it in there.
+
+    The rule is deliberately the weakest one that catches it: inside the
+    header every non-blank line must be a YAML key or an indented
+    continuation. Measured against all eleven documents in `PATHS` on
+    2026-08-29 -- every one passes, so a top-level YAML sequence (`- x`
+    under a key), which this would flag, is not something these files
+    actually contain.
+    """
+    lines = (text or "").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return None
+    closer = next((i for i, line in enumerate(lines[1:], 1)
+                   if line.strip() == "---"), None)
+    if closer is None:
+        return "unclosed", []
+    bad = [line for line in lines[1:closer]
+           if line.strip() and not line[:1].isspace()
+           and not _YAML_KEY_RE.match(line)]
+    return ("body", bad) if bad else None
+
+
 def _fetch(path):
     """`vault_tool.py get` as text, or `None` if it did not really return one.
 
@@ -120,7 +175,8 @@ def _fetch(path):
 def check(paths=PATHS, fetch=_fetch):
     """`(damaged, unreadable, clean)` -- three lists, in report order.
 
-    `damaged` entries are `(path, {heading: count})`. Taking `fetch` as an
+    `damaged` entries are `(path, {heading: count}, header)`, where `header`
+    is `frontmatter_intrusions`' answer. Taking `fetch` as an
     argument is what lets the tests run without a vault client; nothing
     else passes it.
     """
@@ -131,17 +187,32 @@ def check(paths=PATHS, fetch=_fetch):
             unreadable.append(path)
             continue
         found = duplicate_headings(text)
-        (damaged.append((path, found)) if found else clean.append(path))
+        header = frontmatter_intrusions(text)
+        if found or header:
+            damaged.append((path, found, header))
+        else:
+            clean.append(path)
     return damaged, unreadable, clean
 
 
 def report(damaged, unreadable, clean, out=sys.stdout):
     """Print the finding, and return the exit code it deserves."""
-    for path, found in damaged:
+    for path, found, header in damaged:
         print(f"SPLICED — {path}", file=out)
         for name, n in sorted(found.items(), key=lambda item: -item[1]):
             print(f"    {name!r} appears {n} times outside the frontmatter", file=out)
-        print("    A second copy of the document, or of one of its sections, is inside this file.", file=out)
+        if header and header[0] == "unclosed":
+            print("    The opening `---` has no closing `---`: the whole document is its own YAML header.", file=out)
+        elif header:
+            print(f"    {len(header[1])} line(s) of document body are INSIDE the YAML frontmatter:", file=out)
+            for line in header[1]:
+                # Whole, untruncated. This prints only on a damaged document,
+                # and the lines are the finding -- a cap here would be a number
+                # I invented to make a rare report tidier.
+                print(f"        {line}", file=out)
+            print("    The closing `---` is below them, so the page cannot render them and no tool can move them.", file=out)
+        if found:
+            print("    A second copy of the document, or of one of its sections, is inside this file.", file=out)
         print("    Read it before writing to it — a write on top of this makes the damage permanent.", file=out)
     for path in unreadable:
         print(f"COULD NOT READ — {path}", file=out)
