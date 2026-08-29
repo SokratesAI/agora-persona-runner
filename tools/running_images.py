@@ -197,13 +197,16 @@ def read_workloads(runner=subprocess.run):
 
 
 def read_pods(runner=subprocess.run):
-    """`(owned_images, resolved, problems)` from the live Pods.
+    """`(unowned_images, resolved, problems)` from the live Pods.
 
     `resolved` maps an image reference to the digests actually pulled for
-    it, which is the half of the question a manifest cannot answer.
-    Owned Pods are returned separately from free-standing ones: a
-    ReplicaSet's Pod is its Deployment's image and reporting both is one
-    question asked twice.
+    it, which is the half of the question a manifest cannot answer, and it
+    is built from every Pod including the owned ones -- the digest running
+    under a Deployment's tag comes from that Deployment's own Pod.
+
+    Only Pods with **no** owner come back as images, because a ReplicaSet's
+    Pod is its Deployment's image and reporting both is one question asked
+    twice.
     """
     body, why = _run(runner, ["kubectl", "get", "pods", "-A", "-o", "json"])
     if why:
@@ -211,8 +214,9 @@ def read_pods(runner=subprocess.run):
     free, resolved = [], {}
     for item in body.get("items") or []:
         meta = item.get("metadata") or {}
-        statuses = (item.get("status") or {}).get("containerStatuses") or []
-        statuses += (item.get("status") or {}).get("initContainerStatuses") or []
+        status_block = item.get("status") or {}
+        statuses = (list(status_block.get("containerStatuses") or [])
+                    + list(status_block.get("initContainerStatuses") or []))
         for status in statuses:
             image_id = (status or {}).get("imageID") or ""
             ref = (status or {}).get("image")
