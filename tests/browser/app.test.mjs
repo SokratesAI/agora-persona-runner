@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convPersonas, convStatus = 200, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -210,8 +210,13 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       if (body && typeof body.then === "function") return body;
       return res(body || { conversationId: null, messages: [], waiting: false }, convStatus);
     }
+    /* The route is gone from the server (#119, the app is Nova-only), so
+     * the honest stub is the 404 a live site would send -- and it records
+     * the ask, because the branch below would answer this URL with the
+     * conversation *list* and the page would look like it worked. */
     if (url.includes("/api/conversations/personas")) {
-      return res(convPersonas || { personas: [] }, convStatus);
+      window.askedForPersonas = true;
+      return res({ error: "not found" }, 404);
     }
     if (url.includes("/api/conversations")) {
       return res(convList || { conversations: [] }, convStatus);
@@ -10773,56 +10778,30 @@ describe("the conversations page", () => {
     assert.equal(window.document.querySelector(".ask-form"), null);
   });
 
-  test("a persona that wakes on its own says so in the picker", async () => {
-    // His issues board #119, 2026-08-28: the app is called Nova and one of
-    // the personas inside it is also called Nova, "and it is easy to lose
-    // track of which 'Nova' a sentence means: the product, or the one
-    // persona." The label is the cheap half of that. The flag comes off
-    // Agora's heartbeat registry, so what it says is not "this one is
-    // special" but "this one will answer you without being asked".
+  test("the new-conversation form offers no persona and posts only a name", async () => {
+    // His issues board #119, 2026-08-29: "drop the Agora multi-persona chat
+    // picker from the Nova app entirely, the app should be Nova only, no
+    // Claude/Opus/Gemini/Haiku/Study buddy tabs inside it." The server picks
+    // the persona now, so a `personaId` in this body would be the picker
+    // surviving underneath the screen that no longer shows it.
     const window = await loadSite("/conversations", {
       convList: TWO,
-      convPersonas: { personas: [
-        { id: "p-1", name: "Claude", model: "claude-cli:claude-sonnet-5",
-          metered: false, scheduled: false },
-        { id: "p-2", name: "Nova", model: "claude-cli:claude-opus-5",
-          metered: false, scheduled: true },
-      ] },
       convThread: () => ({ conversationId: "c-new", waiting: false, messages: [] }),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const options = [...window.document.querySelectorAll(".conv-new-who option")];
-    assert.deepEqual(options.map((o) => o.textContent),
-      ["Claude", "Nova (on a schedule)"]);
-  });
-
-  test("starting a conversation posts the name and the persona, then opens it", async () => {
-    const window = await loadSite("/conversations", {
-      convList: TWO,
-      convPersonas: { personas: [
-        { id: "p-1", name: "Claude", model: "claude-cli:claude-sonnet-5", metered: false },
-        { id: "p-2", name: "Zed", model: "anthropic:claude-opus-5", metered: true },
-      ] },
-      convThread: () => ({ conversationId: "c-new", waiting: false, messages: [] }),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const options = [...window.document.querySelectorAll(".conv-new-who option")];
-    // identity.md rule 9 is about not *defaulting* onto the prepaid API.
-    // The metered persona is offered and says so; the first option -- the
-    // one a thumb lands on -- is a subscription one.
-    assert.deepEqual(options.map((o) => o.textContent),
-      ["Claude", "Zed (metered)"]);
+    assert.equal(window.document.querySelector(".conv-new-who"), null,
+      "the persona picker should be gone from the new-conversation form");
+    assert.ok(!window.askedForPersonas,
+      "the page should no longer ask for a persona list");
 
     window.document.querySelector(".conv-new-name").value = "Roofing quote";
-    window.document.querySelector(".conv-new-who").value = "p-1";
     window.postReply = { ok: true, conversationId: "c-new" };
     window.document.querySelector(".conv-new").dispatchEvent(new window.Event("submit"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
-      [["/api/conversations/new", { name: "Roofing quote", personaId: "p-1" }]]);
+      [["/api/conversations/new", { name: "Roofing quote" }]]);
     assert.ok(window.document.querySelector(".ask-form"),
       "a new conversation should open straight into its thread");
   });
@@ -11611,7 +11590,6 @@ describe("holding a conversation in the switcher opens edit options", () => {
 
   test("the new-conversation control starts a thread and opens it", async () => {
     const window = await openSwitcher({
-      convPersonas: { personas: [{ id: "p-1", name: "Nova", model: "m", metered: false }] },
       convThread: () => ({ messages: [], waiting: false }),
     });
     window.postReply = { ok: true, result: "c-9" };
@@ -11620,16 +11598,17 @@ describe("holding a conversation in the switcher opens edit options", () => {
     await tick();
     const form = window.document.querySelector("#chat-list .chat-row-edit");
     assert.ok(form, "the new-conversation control opened no form");
-    // Guard: the persona list is fetched when the form opens, and an empty
-    // one would leave `personaId` blank while the assertion below still read
-    // the right URL.
-    assert.equal(form.querySelector(".chat-row-edit-folder").value, "p-1",
-      "the form did not load the personas");
+    // #119 again: no persona control in the switcher's form either, and the
+    // Start button is live immediately rather than waiting on a list that is
+    // no longer fetched.
+    assert.equal(form.querySelector(".chat-row-edit-folder"), null,
+      "the switcher form should offer no persona");
+    assert.equal(form.querySelector(".chat-row-edit-save").disabled, false);
     form.querySelector(".chat-row-edit-name").value = "Gutters";
     form.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
     await tick();
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
-      [["/api/conversations/new", { name: "Gutters", personaId: "p-1" }]]);
+      [["/api/conversations/new", { name: "Gutters" }]]);
     assert.equal(window.document.getElementById("chat-title").textContent, "Gutters");
   });
 });

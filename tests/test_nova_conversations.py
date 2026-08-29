@@ -191,16 +191,28 @@ def test_an_overlong_message_is_refused_before_the_call():
     assert result[0] is False and calls == []
 
 
-def test_a_new_conversation_carries_the_chosen_persona_and_answers_its_id():
-    (result, calls) = _run(lambda: convs.create("Roofing", "p-9"))
+def test_a_new_conversation_always_goes_to_nova_and_answers_its_id():
+    """No persona argument any more -- his issues.md #119, 2026-08-29:
+    *"drop the Agora multi-persona chat picker from the Nova app entirely,
+    the app should be Nova only"*. The id Agora is sent is the one persona
+    the app talks to, not anything the page chose."""
+    (result, calls) = _run(lambda: convs.create("Roofing"))
     assert result == (True, "c-new")
     created = [c for c in calls if c[0] == "POST" and c[1] == "/conversations"]
-    assert created[0][2] == {"name": "Roofing", "personaId": "p-9"}
+    assert created[0][2] == {"name": "Roofing",
+                             "personaId": convs.ANSWER_PERSONA_ID}
 
 
-def test_a_create_with_no_name_or_no_persona_never_reaches_agora():
-    for bad in [("", "p-9"), ("  ", "p-9"), ("Roofing", ""), ("Roofing", None)]:
-        (result, calls) = _run(lambda b=bad: convs.create(*b))
+def test_the_one_persona_is_the_same_id_nova_ask_answers_on():
+    """Two modules name this persona and only one may own the literal. A
+    second copy is a thread that opens against a persona nothing answers."""
+    from agora_runner import nova_ask
+    assert nova_ask.ANSWER_PERSONA_ID == convs.ANSWER_PERSONA_ID
+
+
+def test_a_create_with_no_name_never_reaches_agora():
+    for bad in ["", "  ", None]:
+        (result, calls) = _run(lambda b=bad: convs.create(b))
         assert result[0] is False
         assert calls == []
 
@@ -212,74 +224,8 @@ def test_a_create_that_answers_without_an_id_is_a_failure_not_a_success():
     def internal(method, path, payload=None):
         return 201, {"conversation": {}}
     with patch.object(convs, "agora_internal", side_effect=internal):
-        ok, message = convs.create("Roofing", "p-9")
+        ok, message = convs.create("Roofing")
     assert ok is False and "id" in message
-
-
-def test_a_metered_persona_is_labelled_rather_than_hidden():
-    """identity.md rule 9 forbids *defaulting* onto the prepaid API, not
-    seeing it. Labelling is what lets him choose knowingly; hiding would
-    make the choice for him silently, and sorting the metered ones last
-    is what stops one being the option his thumb lands on."""
-    (payload, _calls) = _run(convs.personas, personas=[
-        {"id": "p-a", "name": "Zed", "model": "anthropic:claude-opus-5"},
-        {"id": "p-b", "name": "Nova Answers", "model": "claude-cli:claude-sonnet-5"},
-    ])
-    rows = payload["personas"]
-    assert [r["name"] for r in rows] == ["Nova Answers", "Zed"]
-    assert [r["metered"] for r in rows] == [False, True]
-
-
-# `scheduled` -- 2026-08-28, his issues.md #119: the app is called Nova and
-# one of the personas inside it is also called Nova, *"and it is easy to
-# lose track of which 'Nova' a sentence means: the product, or the one
-# persona."* The separator is not the name, it is which of them wakes up on
-# its own, and only the heartbeat registry knows that.
-
-def test_a_persona_with_a_live_heartbeat_is_marked_scheduled():
-    """Capabilities cannot draw this line -- Claude and Opus hold every
-    capability Nova holds and neither of them wakes on its own. An enabled
-    heartbeat is the thing that actually does the waking."""
-    (payload, calls) = _run(
-        convs.personas,
-        personas=[
-            {"id": "p-nova", "name": "Nova", "model": "claude-cli:claude-opus-5"},
-            {"id": "p-claude", "name": "Claude", "model": "claude-cli:claude-sonnet-5"},
-        ],
-        heartbeats=[
-            {"personaId": "p-nova", "name": "Nova", "enabled": True},
-            {"personaId": "p-nova", "name": "Nova — retrospective", "enabled": True},
-        ],
-    )
-    flags = {r["name"]: r["scheduled"] for r in payload["personas"]}
-    assert flags == {"Nova": True, "Claude": False}
-    assert ("GET", "/heartbeats", None) in calls
-
-
-def test_a_disabled_heartbeat_does_not_make_a_persona_scheduled():
-    """The four `Workflow trial` personas each carry a heartbeat that is
-    switched off. Marking those as scheduled would say the opposite of what
-    the label means -- nothing is waking them."""
-    (payload, _calls) = _run(
-        convs.personas,
-        personas=[{"id": "p-trial", "name": "Workflow trial",
-                   "model": "claude-cli:claude-haiku-4-5-20251001"}],
-        heartbeats=[{"personaId": "p-trial", "name": "trial", "enabled": False}],
-    )
-    assert payload["personas"][0]["scheduled"] is False
-
-
-def test_an_unreadable_heartbeat_list_still_returns_the_pickable_personas():
-    """This is the only route he can start a conversation from, and #118 was
-    that route being unusable for a day. A missing label is a worse picker;
-    a raise here is no picker at all."""
-    (payload, _calls) = _run(
-        convs.personas,
-        personas=[{"id": "p-nova", "name": "Nova", "model": "claude-cli:claude-opus-5"}],
-        heartbeat_status=503,
-    )
-    assert [r["name"] for r in payload["personas"]] == ["Nova"]
-    assert payload["personas"][0]["scheduled"] is False
 
 
 # `watching(id)` -- 2026-08-26. The switcher half of his 2026-08-25 capture:

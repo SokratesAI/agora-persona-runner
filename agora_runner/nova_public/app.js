@@ -780,28 +780,6 @@
     return node;
   }
 
-  /* How a persona is named in a picker.
-   *
-   * Two suffixes, both money-or-meaning rather than decoration. `(metered)`
-   * says this one spends the prepaid API balance. `(on a schedule)` says
-   * this one wakes up on its own and is therefore not something you start a
-   * conversation with and wait on -- the owner, issues board #119: the app
-   * is called Nova and one of the personas inside it is also called Nova,
-   * *"and it is easy to lose track of which 'Nova' a sentence means: the
-   * product, or the one persona."* The label is the cheap half of that; a
-   * rename of either is the expensive half and is his call, not mine.
-   *
-   * Two pickers show personas -- the switcher's new-conversation form and
-   * the standalone ask form -- and they had drifted to `(metered)` and
-   * `(metered API)`. One function so a third picker cannot drift again.
-   */
-  function personaLabel(p) {
-    var label = p.name;
-    if (p.scheduled) label += " (on a schedule)";
-    if (p.metered) label += " (metered)";
-    return label;
-  }
-
   /* An attach button for any composer on this site.
    *
    * the owner, comments board 2026-08-21: *"How do i send a screenshot?"* He
@@ -9084,36 +9062,23 @@
     name.setAttribute("type", "text");
     name.setAttribute("placeholder", "What is it about?");
     name.setAttribute("aria-label", "Conversation name");
-    var who = el("select", "conv-new-who");
-    who.setAttribute("aria-label", "Who you are talking to");
     var go = el("button", "ask-send", "Start");
     go.setAttribute("type", "submit");
     var status = el("p", "ask-status");
     form.appendChild(name);
-    form.appendChild(who);
     form.appendChild(go);
     form.appendChild(status);
     host.appendChild(form);
 
-    fetchPage("/api/conversations/personas")
-      .then(function (payload) {
-        (payload.personas || []).forEach(function (p) {
-          var opt = el("option", "", personaLabel(p));
-          opt.value = p.id;
-          who.appendChild(opt);
-        });
-      })
-      .catch(function () { status.textContent = "could not load the personas"; });
-
     form.addEventListener("submit", function (event) {
       event.preventDefault();
-      if (!name.value.trim() || !who.value) return;
+      if (!name.value.trim()) return;
       go.disabled = true;
       status.textContent = "starting…";
       fetch("/api/conversations/new", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.value.trim(), personaId: who.value }),
+        body: JSON.stringify({ name: name.value.trim() }),
       })
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (result) {
@@ -11222,12 +11187,12 @@
 
     /* The form behind "New conversation".
      *
-     * A thread needs a persona as well as a name -- `nova_conversations.create`
-     * refuses without one -- so this is a form rather than a prompt. The
-     * persona list is fetched when the form opens rather than with the
-     * conversation list, because most openings of the switcher are him
-     * picking a thread and paying for a second request every time would
-     * make the common case slower to serve the rare one.
+     * A name and nothing else. Every new thread is with Nova -- the owner,
+     * issues board #119 on 2026-08-29: *"drop the Agora multi-persona chat
+     * picker from the Nova app entirely, the app should be Nova only, no
+     * Claude/Opus/Gemini/Haiku/Study buddy tabs inside it"*. Threads he
+     * already has with those personas still open from the list; what is
+     * gone is starting another one.
      */
     function newForm(done) {
       var wrap = el("div", "chat-row-edit");
@@ -11238,16 +11203,10 @@
       name.setAttribute("aria-label", "Conversation name");
       wrap.appendChild(name);
 
-      var who = document.createElement("select");
-      who.className = "chat-row-edit-folder";
-      who.setAttribute("aria-label", "Who are you talking to?");
-      wrap.appendChild(who);
-
-      var note = el("p", "chat-row-edit-note", "loading…");
+      var note = el("p", "chat-row-edit-note", "");
       var foot = el("div", "chat-row-edit-foot");
       var save = el("button", "chat-row-edit-save", "Start");
       save.setAttribute("type", "button");
-      save.disabled = true;
       var cancel = el("button", "chat-row-edit-cancel", "Cancel");
       cancel.setAttribute("type", "button");
       foot.appendChild(save);
@@ -11256,29 +11215,7 @@
       wrap.appendChild(note);
 
       cancel.addEventListener("click", function () { done(false); });
-
-      fetchPage("/api/conversations/personas")
-        .then(function (payload) {
-          var rows = payload.personas || [];
-          if (!rows.length) throw new Error("no personas to talk to");
-          rows.forEach(function (persona) {
-            var option = document.createElement("option");
-            option.value = persona.id;
-            // A metered persona spends the prepaid API balance rather than
-            // the subscription (`identity.md` rule 9), so it is labelled
-            // rather than hidden -- the server sends the flag for exactly
-            // this, and hiding it would make the choice for him silently.
-            // `personaLabel` carries that and the `(on a schedule)` half.
-            option.textContent = personaLabel(persona);
-            who.appendChild(option);
-          });
-          note.textContent = "";
-          save.disabled = false;
-          name.focus();
-        })
-        .catch(function (err) {
-          note.textContent = "Could not load personas: " + err.message;
-        });
+      name.focus();
 
       save.addEventListener("click", function () {
         var wanted = name.value.trim();
@@ -11289,7 +11226,7 @@
         save.disabled = true;
         cancel.disabled = true;
         note.textContent = "starting…";
-        chatWrite("/api/conversations/new", { name: wanted, personaId: who.value })
+        chatWrite("/api/conversations/new", { name: wanted })
           .then(function (id) {
             // A create that answers 200 without an id is the one failure
             // this form cannot recover from silently: `switchTo` would open

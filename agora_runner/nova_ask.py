@@ -36,12 +36,11 @@ every other conversation.
 """
 
 from agora_runner.audit import narration_passage
-from agora_runner.nova_conversations import keep_only_live_passages
+from agora_runner.nova_conversations import ANSWER_PERSONA_ID, keep_only_live_passages
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.log import log
 
 
-ANSWER_PERSONA_ID = "8972a54d-cafa-4f07-a527-d8686cea51ca"
 ANSWER_PERSONA_NAME = "Nova Answers"
 ASK_CONVERSATION_NAME = "Nova — Questions"
 

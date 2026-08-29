@@ -174,7 +174,6 @@ from agora_runner.nova_conversations import (
     create as conversation_create,
     folder_create as conversation_folder_create,
     move as conversation_move,
-    personas as conversation_personas,
     remove as conversation_remove,
     rename as conversation_rename,
     send as conversation_send,
@@ -2556,9 +2555,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 wanted = (query.get("id") or [""])[0]
                 self._send_json(200, conversation_thread(wanted))
                 return
-            if path == "/api/conversations/personas":
-                self._send_json(200, conversation_personas())
-                return
             if path == "/api/push/key":
                 # Agora owns the VAPID keypair and the subscription store;
                 # this site only needs its own origin to appear in that
@@ -3592,17 +3588,21 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                         {"ok": ok, "message": message})
 
     def _post_conversation_new(self, payload):
-        """`/api/conversations/new` -- start a thread with a chosen persona.
+        """`/api/conversations/new` -- start a thread with Nova.
 
         Answers with the new id so the page can open it without re-listing.
+
+        No `personaId` is read any more, and one sent is ignored rather than
+        honoured: `issues.md` #119 makes this app Nova-only, and a route that
+        still accepted an id would be the picker surviving underneath the
+        screen that no longer offers it.
         """
         name = payload.get("name")
-        persona_id = payload.get("personaId")
-        if not isinstance(name, str) or not isinstance(persona_id, str):
-            self._send_json(400, {"error": "name and personaId must be strings"})
+        if not isinstance(name, str):
+            self._send_json(400, {"error": "name must be a string"})
             return
         try:
-            ok, message = conversation_create(name, persona_id)
+            ok, message = conversation_create(name)
         except Exception as e:
             log(f"nova-site conversations/new failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
@@ -3617,7 +3617,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             is_error=not ok,
         )
         bad_input = not ok and message.startswith(
-            ("a conversation needs", "that name is longer", "pick who"))
+            ("a conversation needs", "that name is longer"))
         # `result`, not `conversationId`: the page's one chat writer reads
         # `result.result` off every `/api/conversations/*` write, and this
         # route answering under a name of its own is why a conversation he
