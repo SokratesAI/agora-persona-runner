@@ -20,6 +20,29 @@ the three fields that say a container died and that nobody is serving.
 written by a subagent, and Cycle 592 already measured that one of those
 came back falsely clean while a pod crash-looped.
 
+**Cycle 616 added the layer under all of that: the host's own memory.**
+Everything above reads what a *container* did — a death, a restart, a
+Deployment with nobody serving. None of it can see the machine those
+containers are competing for. On 2026-08-29 server1 had **487Mi of 7746Mi
+available and 0Mi of 2048Mi swap free**, the k3s control plane restarted at
+07:52 Oslo, ten pods across every namespace went with it, and `crossplane`
+and `crossplane-rbac-manager` exited 1 on leader-election lease timeouts
+against an API server that could not answer. All I could have reported was
+the wreckage. So it reads `/proc/meminfo` — not `kubectl top node`, which
+counts reclaimable page cache as used and cannot see swap at all — and
+asks one question: **can this host still start the largest container it is
+configured to run?** That threshold is read off the cluster rather than
+chosen, the same call `read_deployments` makes on the drain budget; a
+number I picked would be a number nobody could argue with.
+
+**And it checks that the reading is the host's before it judges it.**
+`/proc/meminfo` in a pod is the host's only because nothing here mounts
+lxcfs — measured, MemTotal 7931600 kB against server1's capacity of
+7931600Ki. If that stops being true the file starts describing a
+container and every percentage would be about the wrong machine while
+looking perfectly reasonable, so the equality is asserted against the
+node's own capacity and an unmatched reading exits 1 rather than 0.
+
 **It reads the live cluster, never git** — the same call `helm_repo_health`
 and `argocd_health` make, and for the same reason: a manifest ArgoCD has
 not synced is not what is running.
