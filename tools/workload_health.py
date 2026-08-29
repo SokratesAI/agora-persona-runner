@@ -469,6 +469,86 @@ def read_node_capacity(runner=subprocess.run):
     return nodes, None
 
 
+def read_pod_working_set(runner=subprocess.run):
+    """Sum of every Pod's memory working set in MiB, or (None, why).
+
+    `kubectl top` rather than the Pod spec on purpose: requests and limits say
+    what a Pod is *allowed*, and the question here is what it is *using*.
+    """
+    try:
+        proc = runner(["kubectl", "top", "pods", "-A", "--no-headers"],
+                      capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl top failed: {exc}"
+    if proc.returncode != 0:
+        return None, f"kubectl top failed: {proc.stderr.strip() or proc.stdout.strip()}"
+    total, counted = 0.0, 0
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        mib = _mib(parts[3])
+        if mib is None:
+            continue
+        total += mib
+        counted += 1
+    if not counted:
+        # A working kubectl that returned no rows is no instrument, not zero.
+        return None, "kubectl top returned no Pod rows"
+    return (total, counted), None
+
+
+def attribution(meminfo, pod_working_set):
+    """Where the host's memory went, as lines. Context, never a verdict.
+
+    `memory_headroom` above says the host is full and stops there, which
+    points a reader at the Pods -- the only thing every other check in this
+    file can see. On 2026-08-29 that was the wrong direction: pods were using
+    2,086Mi of a 7,745Mi host and `AnonPages` was 6,842Mi, so ~4,756Mi of
+    anonymous process memory belonged to something outside every Pod cgroup.
+    Three cycles re-derived that split by hand before it was written down.
+
+    It does not raise. There is no pull request that fixes "the host is using
+    memory", and a line that goes red on a normal machine is one nobody reads
+    -- the same call `security_alerts` makes on an already-fixed advisory.
+    """
+    anon = meminfo.get("AnonPages")
+    if anon is None:
+        return ["MEMORY  cannot attribute: /proc/meminfo carries no AnonPages."]
+    anon_mib = anon / 1024
+    cache_mib = (meminfo.get("Cached", 0) + meminfo.get("Buffers", 0)) / 1024
+    slab_mib = (meminfo.get("SUnreclaim", 0) + meminfo.get("KernelStack", 0)
+                + meminfo.get("PageTables", 0)) / 1024
+    lines = [
+        f"MEMORY WENT  {anon_mib:.0f}Mi anonymous process memory, "
+        f"{cache_mib:.0f}Mi page cache (reclaimable), "
+        f"{slab_mib:.0f}Mi unreclaimable kernel (slab, stacks, page tables)."]
+    if pod_working_set is None:
+        lines.append(
+            "  Could not split that by Pod: kubectl top was unreadable, so "
+            "whether this is the workloads or the host is unmeasured here.")
+        return lines
+    pods_mib, counted = pod_working_set
+    outside = anon_mib - pods_mib
+    if outside <= 0:
+        # The two numbers come from different instruments and overlap: a Pod's
+        # working set counts page cache its cgroup holds, which is not anonymous.
+        # So they can cross, and "-120Mi outside every Pod cgroup" is a sentence
+        # with no meaning -- say what was measured instead of subtracting anyway.
+        lines.append(
+            f"  {counted} Pod(s) account for {pods_mib:.0f}Mi of working set, which is "
+            "at or above the anonymous total — the Pods are holding page cache as "
+            "well, so this host has no measurable memory outside its Pod cgroups.")
+        return lines
+    lines.append(
+        f"  {counted} Pod(s) account for {pods_mib:.0f}Mi of working set, leaving "
+        f"~{outside:.0f}Mi of anonymous memory outside every Pod cgroup — "
+        "processes on the host itself (k3s, containerd, anything hand-run). "
+        "A Pod's working set counts some page cache too, so that figure is a "
+        "lower bound on the host's own share, not an exact one.")
+    return lines
+
+
 def largest_limit(pods):
     """The biggest single container memory limit anywhere, as (MiB, where)."""
     biggest, where = None, ""
@@ -693,6 +773,13 @@ def main(argv=None, runner=subprocess.run, now=None):
         print(f"COULD NOT READ  {why}")
         return 1
     headroom = memory_headroom(meminfo, nodes, pods)
+    # Deliberately after `headroom`: if the reading could not be attributed to
+    # a host, every number below it is about the wrong machine and printing a
+    # breakdown of it would be worse than printing nothing.
+    if headroom[2]:
+        working_set, _ = read_pod_working_set(runner)
+        headroom = (headroom[0] + attribution(meminfo, working_set),
+                    headroom[1], headroom[2])
 
     lines, status = report(
         pods, deployments, now or datetime.datetime.now(datetime.timezone.utc),
