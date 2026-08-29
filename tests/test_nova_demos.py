@@ -708,10 +708,19 @@ def test_the_site_records_who_asked_for_a_demo_and_publishes_it():
         def __exit__(self, *a):
             return False
 
+    browser = ("User-Agent: Mozilla/5.0 (Linux; Android 10; K) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 "
+               "Mobile Safari/537.36\r\n")
     with patch.object(nova_site, "_demo_registry", lambda: registry), \
          patch.object(nova_site, "_demo_opener",
                       lambda: type("O", (), {"open": lambda self, r, timeout: _Up()})()):
-        assert _get("/demo/bakeoff/")[0] == 200
+        # A cycle's own proof-it-works probe first: it must be served and
+        # must not count. Then the owner's phone, which must.
+        assert _get("/demo/bakeoff/",
+                    "User-Agent: Python-urllib/3.11\r\n")[0] == 200
+        assert "bakeoff" not in json.loads(
+            _get("/api/demo/activity")[2])["last_seen"]
+        assert _get("/demo/bakeoff/", browser)[0] == 200
     seen = json.loads(_get("/api/demo/activity")[2])
     assert "bakeoff" in seen["last_seen"]
     assert seen["started_at"] <= seen["last_seen"]["bakeoff"]
@@ -1107,3 +1116,21 @@ def test_the_unopened_default_is_long_enough_to_cross_a_night():
     assert demo_cli.DEFAULT_UNOPENED_MINUTES > longest_night_minutes
     # And it is a *longer* clock than the idle one, not a second name for it.
     assert demo_cli.DEFAULT_UNOPENED_MINUTES > demo_cli.DEFAULT_IDLE_MINUTES
+
+
+def test_only_a_browser_counts_as_somebody_opening_a_demo():
+    """A cycle's own proof-it-works fetch must not start the idle clock.
+
+    This is the failure that made the fix above pointless in the only flow
+    that uses it: Cycle 606 started a demo for the owner to open in the
+    morning, fetched it once through the public route to prove it served,
+    and thereby recorded it as opened.
+    """
+    from agora_runner.nova_demos import opened_by_a_person
+
+    assert opened_by_a_person(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36") is True
+    for probe in ("Python-urllib/3.11", "curl/8.5.0", "kube-probe/1.29",
+                  "Go-http-client/1.1", "", None):
+        assert opened_by_a_person(probe) is False, probe

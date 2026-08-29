@@ -335,6 +335,32 @@ def idle_seconds(entry, activity, now):
 
 
 
+def opened_by_a_person(user_agent):
+    """True when this request for a demo came from somebody's browser.
+
+    `never_opened` above only works if "opened" means a person opened it,
+    and the site cannot ask. This is the narrow version of that question:
+    every browser in use sends a `User-Agent` containing `Mozilla`, for
+    historical reasons nobody is going to undo, and nothing else here does
+    -- `python3 -m urllib`, `curl`, `kube-probe` and `Go-http-client` all
+    announce themselves.
+
+    **It exists because the check that proves a demo works defeats the
+    clock that keeps it alive.** `prompt.md` requires a cycle to fetch its
+    own demo through the real public route before handing over the link,
+    and Cycle 606 did exactly that: one `urllib` GET, and the demo it had
+    just started for the owner to open in the morning was recorded as
+    already opened and put back on the two-hour idle clock. Shipping
+    `never_opened` without this would have been a guard that reports itself
+    working and guards nothing, in the one flow that uses it.
+
+    Wrong in the safe direction on purpose. A real open that is not counted
+    leaves the demo on the *longer* unopened clock and costs nothing; a
+    probe counted as an open is the failure above.
+    """
+    return "Mozilla" in (user_agent or "")
+
+
 def never_opened(entry, activity):
     """True when nothing has ever asked for this demo through the site.
 

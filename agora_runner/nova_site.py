@@ -199,7 +199,8 @@ from agora_runner.nova_idea_pool import (
 )
 from agora_runner.nova_catalog import catalog_page, parse_catalog
 from agora_runner.heartbeat_liveness import liveness
-from agora_runner.nova_demos import DEMOS_PATH, load as load_demos, lookup as lookup_demo
+from agora_runner.nova_demos import (DEMOS_PATH, load as load_demos,
+                                     lookup as lookup_demo, opened_by_a_person)
 from agora_runner.vault import vault_read_path
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
@@ -2601,8 +2602,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # deliberately -- a demo that is being watched while its dev server
         # is briefly failing is still being watched, and reaping it because
         # its own 502s did not count is the wrong answer.
-        with _demo_last_seen_lock:
-            _demo_last_seen[slug] = time.time()
+        # And only a browser counts. A cycle fetching its own demo through
+        # this route to prove it works -- which `prompt.md` requires before
+        # the link is handed over -- would otherwise record the demo as
+        # already opened and put it back on the short idle clock. See
+        # `nova_demos.opened_by_a_person`.
+        if opened_by_a_person(self.headers.get("User-Agent")):
+            with _demo_last_seen_lock:
+                _demo_last_seen[slug] = time.time()
         # `.get`, not `[...]`, because this route is dispatched above
         # `do_GET`'s `try` -- a hand-edited registry row missing either
         # field would be a traceback and a dropped connection rather than
