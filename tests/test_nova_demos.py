@@ -1090,3 +1090,20 @@ def test_tidy_workspace_passes_the_unopened_clock_through():
     assert seen == {"idle": demo_cli.DEFAULT_IDLE_MINUTES,
                     "unopened": demo_cli.DEFAULT_UNOPENED_MINUTES}
     assert _argparse  # the namespace really is one
+
+
+def test_the_unopened_default_is_long_enough_to_cross_a_night():
+    """The number is a measurement, not a preference, so pin what it is for.
+
+    Across 2026-08-10 to 2026-08-28 the owner's own comments show eight
+    consecutive nights of silence running 6.0h to 11.9h (median 10.7h), and
+    none of his 161 comments falls between midnight and 05:00 Oslo. A
+    default that cannot cross the longest of those puts us back where we
+    started: a link handed over at 03:00 dead before he wakes.
+    """
+    from tools import demo as demo_cli
+
+    longest_night_minutes = int(11.9 * 60)
+    assert demo_cli.DEFAULT_UNOPENED_MINUTES > longest_night_minutes
+    # And it is a *longer* clock than the idle one, not a second name for it.
+    assert demo_cli.DEFAULT_UNOPENED_MINUTES > demo_cli.DEFAULT_IDLE_MINUTES
