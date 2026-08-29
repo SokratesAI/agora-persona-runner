@@ -515,7 +515,8 @@ def test_attribution_says_so_when_the_pod_split_is_unreadable():
 
 def test_attribution_never_raises_on_its_own(capsys):
     """A host using memory is not a finding, and there is no PR that fixes it."""
-    meminfo = dict(MEMINFO_FULL_HOST, MemAvailable=6000000.0, SwapFree=2000000.0)
+    meminfo = dict(MEMINFO_FULL_HOST, MemAvailable=6000000.0, AnonPages=900000.0,
+                   Cached=800000.0, SwapFree=2000000.0)
 
     def runner(args, **kwargs):
         if args[:3] == ["kubectl", "top", "pods"]:
@@ -554,3 +555,11 @@ def test_a_reading_off_the_wrong_machine_is_never_broken_down(capsys):
     out = capsys.readouterr().out
     assert "CANNOT ATTRIBUTE MEMORY" in out
     assert "MEMORY WENT" not in out
+
+
+def test_pods_above_the_anonymous_total_never_print_a_negative():
+    """The two numbers come from different instruments and can cross."""
+    lines = wh.attribution(MEMINFO_FULL_HOST, (9000.0, 42))
+    joined = "\n".join(lines)
+    assert "-" not in joined.split("account for")[1]
+    assert "no measurable memory outside its Pod cgroups" in joined

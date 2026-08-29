@@ -530,6 +530,16 @@ def attribution(meminfo, pod_working_set):
         return lines
     pods_mib, counted = pod_working_set
     outside = anon_mib - pods_mib
+    if outside <= 0:
+        # The two numbers come from different instruments and overlap: a Pod's
+        # working set counts page cache its cgroup holds, which is not anonymous.
+        # So they can cross, and "-120Mi outside every Pod cgroup" is a sentence
+        # with no meaning -- say what was measured instead of subtracting anyway.
+        lines.append(
+            f"  {counted} Pod(s) account for {pods_mib:.0f}Mi of working set, which is "
+            "at or above the anonymous total — the Pods are holding page cache as "
+            "well, so this host has no measurable memory outside its Pod cgroups.")
+        return lines
     lines.append(
         f"  {counted} Pod(s) account for {pods_mib:.0f}Mi of working set, leaving "
         f"~{outside:.0f}Mi of anonymous memory outside every Pod cgroup — "
@@ -768,7 +778,7 @@ def main(argv=None, runner=subprocess.run, now=None):
     # breakdown of it would be worse than printing nothing.
     if headroom[2]:
         working_set, _ = read_pod_working_set(runner)
-        headroom = (list(headroom[0]) + attribution(meminfo, working_set),
+        headroom = (headroom[0] + attribution(meminfo, working_set),
                     headroom[1], headroom[2])
 
     lines, status = report(
