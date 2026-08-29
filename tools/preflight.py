@@ -81,6 +81,7 @@ CHECKS = (
     "helm_repo_health",
     "argocd_health",
     "crossplane_health",
+    "running_images",
     "ci_health",
 )
 
