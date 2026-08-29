@@ -70,6 +70,7 @@ CHECKS = (
     "doc_integrity",
     "cli_pin",
     "pin_drift",
+    "eol_watch",
     "cli_features",
     "changelog_watch",
     "cache_health",
