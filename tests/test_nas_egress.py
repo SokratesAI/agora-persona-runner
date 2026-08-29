@@ -58,9 +58,9 @@ def _get_returning(by_service):
     return get
 
 
-def _report(by_service, ssh=HOP):
+def _report(by_service, ssh=HOP, get=None):
     """Run the report against canned lists, with `nas.config` stubbed out."""
-    get = _get_returning(by_service)
+    get = _get_returning(by_service) if get is None else get
     out = io.StringIO()
     conf = _conf(*sorted(by_service))
     original = nas.config
@@ -81,7 +81,12 @@ def test_local_hosts_are_local(host):
     assert nas_egress.classify(host) == nas_egress.LOCAL
 
 
-@pytest.mark.parametrize("host", ["8.8.8.8", "93.184.216.34", "2001:4860:4860::8888"])
+@pytest.mark.parametrize("host", [
+    "8.8.8.8", "93.184.216.34", "2001:4860:4860::8888",
+    # A trailing dot is legal FQDN notation and `ip_address` refuses it, so
+    # these used to fall through to the name branch and come out unjudged.
+    "8.8.8.8.", "93.184.216.34.", " 8.8.8.8 ",
+])
 def test_public_addresses_are_off_lan(host):
     assert nas_egress.classify(host) == nas_egress.OFF_LAN
 
@@ -188,6 +193,15 @@ def test_no_configurable_service_is_not_a_clean_sweep():
 
 
 def test_it_only_ever_asks_for_the_download_client_endpoint():
-    get = _get_returning({"sonarr": [_client()]})
-    _report({"sonarr": [_client()]})
+    """The path actually requested, not just the constant's presence.
+
+    The first version of this asserted only that the constant was in
+    `nas.READ_ONLY`, which the `tools/nas.py` diff guarantees unconditionally.
+    My reviewer mutated `report()` to request the notification endpoint
+    instead and all 30 tests still passed, so it protected nothing.
+    """
+    get = _get_returning({"sonarr": [_client()], "radarr": [_client()]})
+    _report({"sonarr": [_client()], "radarr": [_client()]}, get=get)
+    assert get.asked == [("radarr", nas_egress.DOWNLOAD_CLIENT_PATH),
+                         ("sonarr", nas_egress.DOWNLOAD_CLIENT_PATH)]
     assert nas_egress.DOWNLOAD_CLIENT_PATH in nas.READ_ONLY

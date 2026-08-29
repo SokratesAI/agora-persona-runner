@@ -107,14 +107,19 @@ def classify(host):
     """
     # `str()` rather than a bare `.strip()`: this reads a home box's JSON and a
     # numeric or null `host` must classify, not raise.
-    host = str(host or "").strip()
+    # The trailing dot is stripped before the address is parsed, not after.
+    # `8.8.8.8.` is a legal way to write a fully-qualified name, and
+    # `ip_address` refuses it -- so parsing first sent a globally routable
+    # address into the name branch, where it has no letter in it and came out
+    # `UNJUDGED`. A real finding downgraded to a shrug; my reviewer caught it.
+    host = str(host or "").strip().rstrip(".")
     if not host:
         return UNJUDGED
     try:
         return OFF_LAN if ipaddress.ip_address(host).is_global else LOCAL
     except ValueError:
         pass
-    lowered = host.lower().rstrip(".")
+    lowered = host.lower()
     if not any(char.isalpha() for char in lowered):
         # Not an address and not a hostname either -- a bare `6789` is
         # malformed config, and reading it as a dotless LAN name would clear
