@@ -869,6 +869,18 @@ a.status-sub:hover .status-pr { color: var(--text); }
   padding: 0 0.45rem;
 }
 
+/* Set apart from `.comment-ack` rather than sharing it: "read" is a state
+   of the conversation and this is a claim about who wrote the thing, so
+   collapsing them into one chip style would be the collapse the marker
+   exists to undo. Same pill shape, no uppercasing -- it is a sentence. */
+.comment-relay {
+  font-size: 0.68rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 0.45rem;
+  color: var(--dim);
+}
+
 .comment-body { margin: 0 0 0.5rem; color: var(--text); }
 .comment-body:last-child { margin-bottom: 0; }
 

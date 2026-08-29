@@ -162,6 +162,7 @@ from agora_runner.nova_boards import (
     STATUS_LABELS,
     board_projects,
     canonical_priority,
+    is_relayed,
     parse_board,
     parse_notes,
     priority_key,
@@ -535,6 +536,18 @@ def comments_payload():
             # And when it is not coming at all, say so rather than letting
             # the line disappear as if the answer had arrived.
             comment["replyFailed"] = asked_at is None and key in gave_up
+            # Whether the comment says of itself that Sokrates relayed it.
+            #
+            # `top_board_rows` already reads this to stop a relayed board
+            # comment taking the rank-above-every-rating key (Cycle 626).
+            # The drawer did not: a comment Sokrates posts on the owner's
+            # behalf renders here byte-identically to one he typed, so the
+            # one place he actually reads these was the one place that
+            # still collapsed the two. Same signal, same asymmetry -- see
+            # `nova_boards.is_relayed` for why a self-declared marker is
+            # safe to act on when acting on it only ever demotes the
+            # claimant.
+            comment["relayed"] = is_relayed(comment.get("text"))
     return {
         "byCycle": {
             str(cycle): [_drop_legacy_reply(c) for c in items]
@@ -542,7 +555,14 @@ def comments_payload():
         },
         # Replies to the digest's Needs Edvard block, which belong to no  (not-prose: quoting a literal)
         # cycle and so cannot ride in `byCycle`.
-        "needs": [_drop_legacy_reply(c) for c in needs_comments(markdown)],
+        # Same key on this list rather than only on `byCycle` -- the legacy
+        # block is unrendered today, but a payload whose two lists disagree
+        # about which fields a comment has is the trap `_drop_legacy_reply`
+        # was mutation-checked against, one field later.
+        "needs": [
+            dict(_drop_legacy_reply(c), relayed=is_relayed(c.get("text")))
+            for c in needs_comments(markdown)
+        ],
     }
 
 

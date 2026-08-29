@@ -5346,3 +5346,38 @@ def test_the_comments_endpoint_revalidates_to_a_304():
         status, _, body = _get("/api/comments", f"If-None-Match: {etag}\r\n")
     assert status == 200, "a changed thread must not be answered 304"
     assert "one more thing" in json.loads(body)["byCycle"]["63"][0]["text"]
+
+
+def test_a_relayed_comment_is_marked_on_the_wire():
+    """A comment Sokrates posted on his behalf is not one he typed.
+
+    `top_board_rows` has read this since Cycle 626 to stop a relayed board
+    comment jumping the queue. The drawer is where he actually reads these
+    and it rendered the two identically, which is the half of his ask that
+    needs no authentication -- see `nova_boards.is_relayed` for why a
+    self-declared marker is safe here.
+
+    Both lists on the payload are asserted: stripping `reply` from
+    `byCycle` alone passed the whole suite once already.
+    """
+    relay = (
+        "Sokrates here (Claude, posting on Edvard's behalf, not Edvard "
+        "typing this himself): he says ship it.\n"
+    )
+    stored = (
+        "## New\n\n"
+        "### Needs Edvard · 2026-08-09 08:20\n\n" + relay + "\n"
+        "### Cycle 55 · 2026-08-09 13:10\n\nI typed this one myself\n\n"
+        "### Cycle 56 · 2026-08-09 13:20\n\n" + relay
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={}), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["byCycle"]["56"][0]["relayed"] is True
+    # The negative is the half that makes the marker mean anything: a
+    # comment he typed must not carry it.
+    assert payload["byCycle"]["55"][0]["relayed"] is False
+    assert payload["needs"][0]["relayed"] is True
