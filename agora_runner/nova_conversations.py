@@ -30,6 +30,7 @@ from him, so any other sender writes a message nothing ever answers.
 from agora_runner.audit import narration_passage
 from agora_runner.http_util import agora_get, agora_internal, agora_public
 from agora_runner.log import log
+from agora_runner.nova_conversation_reads import is_unread, load_reads
 
 
 # Newest N messages rendered when a thread is opened. `nova_ask.MAX_THREAD`
@@ -151,10 +152,20 @@ def conversations():
             "cycleThread": any(
                 str(t).startswith("evolve-cycle:") for t in (c.get("tags") or [])),
         })
+    # His capture, 2026-08-29: *"the conversations that has unread answers
+    # are at the top of the list of conversations, also highlighted."* The
+    # markers are ours, because Agora's listing carries no read state at all
+    # -- see `nova_conversation_reads` for the measurement and for why an
+    # unmarked conversation counts as read.
+    since, seen = load_reads()
+    for row in rows:
+        row["unread"] = is_unread(row["id"], row["updatedAt"], since, seen)
     # An ISO-8601 string from Agora, so a plain reverse sort is
     # chronological. A row with no timestamp sorts last rather than first:
-    # an undated conversation is not fresh news.
-    rows.sort(key=lambda r: r["updatedAt"] or "", reverse=True)
+    # an undated conversation is not fresh news. Unread rows go above the
+    # rest and stay newest-first among themselves, which is what he asked
+    # for -- the ordering rule is not replaced, it gains a first key.
+    rows.sort(key=lambda r: (r["unread"], r["updatedAt"] or ""), reverse=True)
     return {"conversations": rows, "folders": _folder_rows(),
             "models": _model_rows()}
 
@@ -184,6 +195,11 @@ def thread(conversation_id, limit=MAX_THREAD):
         "conversationId": conversation_id,
         "messages": messages[-int(limit):],
         "waiting": waiting,
+        # What the caller stamps as seen. Settled only, for `waiting`'s
+        # reason one line up: a passage arriving mid-turn is the reply still
+        # being written, and marking it seen would clear the highlight
+        # before the answer exists.
+        "newestAt": settled[-1]["createdAt"] if settled else "",
     }
 
 

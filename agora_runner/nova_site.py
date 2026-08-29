@@ -103,7 +103,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
@@ -170,6 +170,7 @@ from agora_runner.nova_boards import (
     split_capture_priority,
     split_detail_conversation,
 )
+from agora_runner.nova_conversation_reads import mark_seen as mark_conversation_seen
 from agora_runner.nova_conversations import (
     conversations as conversation_list,
     create as conversation_create,
@@ -2579,7 +2580,23 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # second kind of matching for a query parameter would be a
                 # cost with no reader.
                 wanted = (query.get("id") or [""])[0]
-                self._send_json(200, conversation_thread(wanted))
+                payload = conversation_thread(wanted)
+                # Opening a thread is what marks it seen. It is here rather
+                # than inside `conversation_thread` so the reader stays a
+                # reader: this route is the only caller that means "he is
+                # looking at it", and the dock's own poller comes through it.
+                # `mark_seen` no-ops unless a new message has actually
+                # arrived, so a thread sitting open costs no vault writes.
+                try:
+                    mark_conversation_seen(
+                        wanted, payload.get("newestAt"),
+                        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+                except Exception as e:
+                    # Never an error to him: a marker that did not store
+                    # leaves the row highlighted, which is the harmless
+                    # direction, and the thread he asked for is already built.
+                    log(f"nova-site conversation marker failed: {e}")
+                self._send_json(200, payload)
                 return
             if path == "/api/push/key":
                 # Agora owns the VAPID keypair and the subscription store;
