@@ -153,6 +153,47 @@ def test_a_ping_that_could_not_read_the_site_is_never_an_alarm():
     assert verdict == "UNKNOWN"
 
 
+def test_an_unknown_that_says_why_carries_the_reason_through():
+    # The whole point of the change. Three of the fast rung's last four runs
+    # failed printing only "unreadable", and the reason -- a refused connection
+    # from `obsidian` to nova-site:8083 -- was in a CronJob pod log that
+    # expires. The slug is reproduced verbatim rather than re-worded, because
+    # the reader off-box has no second source for it.
+    verdict, reason = assess_heartbeats(
+        "unknown:URLError-urlopen_error_[Errno_111]_Connection_refused"
+    )
+    assert verdict == "UNKNOWN"
+    assert "URLError-urlopen_error_[Errno_111]_Connection_refused" in reason
+    # And it is read as a reason rather than falling through to the
+    # unrecognised-token branch, which would also print the slug -- inside a
+    # repr, under a line saying this watchdog does not know what it is looking
+    # at. That branch passing for this token is a real answer wearing the face
+    # of a parse failure.
+    assert "unrecognised" not in reason
+    assert "could not read /api/health" in reason
+
+
+def test_the_three_silences_the_site_can_return_are_told_apart():
+    # A missing block, a block reporting its own error and an empty list all
+    # wore one `unknown` before. Each is a different thing to go and look at.
+    for slug in ("no-heartbeats-block", "heartbeats-list-empty",
+                 "heartbeats-error-agora_said_503"):
+        verdict, reason = assess_heartbeats(f"unknown:{slug}")
+        assert verdict == "UNKNOWN"
+        assert reason.endswith(f": {slug}")
+        assert "unrecognised" not in reason
+
+
+def test_a_bare_unknown_says_the_manifest_predates_the_reason():
+    # `hb=unknown` with nothing after it is still legal and still never clean,
+    # but it now means something specific: the cluster is running a ping older
+    # than the reason slug, which is a fact about the manifest and not about
+    # the site.
+    verdict, reason = assess_heartbeats("unknown")
+    assert verdict == "UNKNOWN"
+    assert "did not say" in reason
+
+
 def test_a_token_this_does_not_recognise_is_unknown_not_clean():
     # A future manifest writing something else must not read as healthy.
     verdict, reason = assess_heartbeats("hb")
