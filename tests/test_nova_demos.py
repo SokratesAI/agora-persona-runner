@@ -33,7 +33,16 @@ from tests.test_nova_site import _get, _post
 
 
 def _args(**kw):
-    """A stand-in for the argparse namespace these subcommands receive."""
+    """A stand-in for the argparse namespace these subcommands receive.
+
+    `unopened` gets a default because every production caller supplies one
+    -- argparse for the CLI, `tools.tidy_workspace._sweep_demos` explicitly
+    -- and spelling it on every older test would say nothing about them.
+    A test that cares about that clock passes it.
+    """
+    from tools import demo as _demo_cli
+
+    kw.setdefault("unopened", _demo_cli.DEFAULT_UNOPENED_MINUTES)
     return type("Args", (), kw)()
 
 
@@ -987,3 +996,97 @@ def test_a_symlink_into_a_doomed_slot_is_still_doomed(tmp_path):
     link.symlink_to(slot)
     env = {"CLAUDE_CONCURRENT_ROOT": str(tmp_path / "slots")}
     assert ephemeral_reason(str(link), environ=env) is not None
+
+
+# ---------------------------------------------------------------------------
+# A demo nobody has opened *yet* is not idle (idea #134/#135, Cycle 606).
+
+
+def test_never_opened_separates_waiting_from_gone_quiet():
+    """The two cases `idle_seconds` cannot tell apart on its own."""
+    from agora_runner.nova_demos import never_opened
+
+    now = datetime.now().timestamp()
+    activity = {"started_at": now - 3600, "last_seen": {"seen": now - 60}}
+    assert never_opened({"slug": "waiting"}, activity) is True
+    assert never_opened({"slug": "seen"}, activity) is False
+
+
+def test_never_opened_is_false_when_the_site_did_not_answer():
+    """No answer is not evidence of anything, and `idle_seconds` returns
+    None there anyway, so nothing is reaped on either clock."""
+    from agora_runner.nova_demos import never_opened
+
+    assert never_opened({"slug": "waiting"}, None) is False
+    assert never_opened({"slug": "waiting"}, {"last_seen": {}}) is False
+
+
+def test_reap_idle_spares_a_demo_that_has_not_been_opened_yet():
+    """The bug this fixes: a link handed over overnight died before morning.
+
+    Both rows are three hours old and past the two-hour idle clock. The one
+    somebody opened is reaped; the one waiting to be opened is not.
+    """
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    started = datetime.fromtimestamp(now - 3 * 3600).isoformat()
+    state, _read, _write = _fake_registry([
+        {"slug": "waiting", "host": "10.42.0.56", "port": 5174, "pid": 4242,
+         "started_at": started},
+        {"slug": "quiet", "host": "10.42.0.56", "port": 5175, "pid": 4243,
+         "started_at": started},
+    ])
+    activity = {"started_at": now - 6 * 3600,
+                "last_seen": {"quiet": now - 3 * 3600}}
+    signalled = []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(idle=120, unopened=720)) == 0
+    assert [d["slug"] for d in state["registry"]["demos"]] == ["waiting"]
+    assert signalled and signalled[0][0] == 4243
+
+
+def test_reap_still_stops_a_demo_nobody_ever_opened_once_its_own_clock_runs_out():
+    """The longer clock is longer, not absent -- a port is still bounded."""
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    state, _read, _write = _fake_registry([
+        {"slug": "waiting", "host": "10.42.0.56", "port": 5174, "pid": 4242,
+         "started_at": datetime.fromtimestamp(now - 13 * 3600).isoformat()},
+    ])
+    activity = {"started_at": now - 20 * 3600, "last_seen": {}}
+    signalled = []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(idle=120, unopened=720)) == 0
+    assert state["registry"]["demos"] == []
+    assert signalled and signalled[0][0] == 4242
+
+
+def test_tidy_workspace_passes_the_unopened_clock_through():
+    """`_sweep_demos` builds the namespace by hand, so a missing key here is
+    an AttributeError in the one caller that runs every cycle."""
+    import argparse as _argparse
+
+    from tools import demo as demo_cli
+    from tools import tidy_workspace
+
+    seen = {}
+    with patch.object(demo_cli, "cmd_reap", lambda ns: seen.update(vars(ns))), \
+         patch.object(demo_cli, "_cleanup_temps", lambda: None):
+        tidy_workspace._sweep_demos()
+    assert seen == {"idle": demo_cli.DEFAULT_IDLE_MINUTES,
+                    "unopened": demo_cli.DEFAULT_UNOPENED_MINUTES}
+    assert _argparse  # the namespace really is one

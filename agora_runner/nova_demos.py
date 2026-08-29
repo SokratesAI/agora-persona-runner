@@ -334,6 +334,46 @@ def idle_seconds(entry, activity, now):
     return max(0.0, now - max(last, floor))
 
 
+
+def never_opened(entry, activity):
+    """True when nothing has ever asked for this demo through the site.
+
+    `idle_seconds` above answers *how long* since anyone looked, and it
+    cannot tell these two apart, because both come back as "no recorded
+    request":
+
+    - a demo that was opened in a meeting and has gone quiet since, and
+    - a demo that has been handed over and not opened yet.
+
+    They want opposite treatment and the second one is the whole point of
+    the feature. `reap --idle 120` stopping the first is the port hygiene
+    idea #136 asked for; stopping the second guarantees that a link handed
+    over at 03:00 is dead before the owner wakes -- and every one of his 161
+    comments between 2026-08-10 and 2026-08-28 falls between 05:00 and
+    23:00 Oslo, none at all between midnight and 05:00. So roughly half of
+    this loop's cycles could never complete the hand-off this roadmap is
+    for, which is why three cycles running wrote "wait for a morning" into
+    the handoff instead of doing it.
+
+    **The measurement of the age does not change and must not.**
+    `idle_seconds` floors the clock at the site's own start time because
+    `last_seen` lives in that pod's memory, so a site roll wipes it and a
+    two-day-old demo would otherwise read as instantly reapable. Only the
+    *threshold* the caller compares against changes. That is also why a
+    demo that was opened before a roll comes back here as `True`: after the
+    roll the site genuinely cannot tell, and the safe direction is the long
+    clock, because the cost of being wrong is one of thirty ports and the
+    cost of the other error is the link going dead in the owner's hand.
+
+    `False` when the site did not answer at all -- `idle_seconds` returns
+    `None` there and nothing is reaped on idle either way, so this never
+    decides anything in that case.
+    """
+    activity = activity or {}
+    if activity.get("started_at") is None:
+        return False
+    return activity.get("last_seen", {}).get(entry.get("slug")) is None
+
 # ---------------------------------------------------------------------------
 # Promotion -- idea #138, "keep this" turns a demo into a real service.
 #
