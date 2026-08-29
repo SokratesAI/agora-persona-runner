@@ -164,13 +164,24 @@ def assess_heartbeats(token: str | None) -> tuple[str, str]:
       too old to carry the token. This is never an alarm and never clean: the
       cluster is demonstrably up (it pinged) and this watchdog simply cannot
       say anything about the heartbeats on it.
+
+    An UNKNOWN carries *why* when the ping said why. `hb=unknown` on its own is
+    all this ever got, and three of the fast rung's last four runs failed on it
+    saying only "unreadable" -- the reason (a refused connection from `obsidian`
+    to nova-site:8083) was in a CronJob pod log that expires, so reading it took
+    a cluster round trip nobody off-box can make. The ping now writes
+    `hb=unknown:<slug>` and the slug is reproduced here verbatim.
     """
     if token is None:
         return "UNKNOWN", "the ping carries no hb= token: the cluster is running an older manifest"
     if token == "ok":
         return "OK", "every heartbeat is firing"
     if token == "unknown":
-        return "UNKNOWN", "the ping could not read /api/health on nova-site"
+        return "UNKNOWN", ("the ping could not read /api/health on nova-site and did not say "
+                           "why: the cluster is running a manifest older than the reason slug")
+    if token.startswith("unknown:"):
+        slug = token[len("unknown:"):]
+        return "UNKNOWN", f"the ping could not read /api/health on nova-site: {slug}"
     if token.startswith("bad("):
         return "BAD", f"the cluster reported {token[4:].split(')', 1)[0]} heartbeat(s) not firing, first: {token.split(':', 1)[-1]}"
     return "UNKNOWN", f"unrecognised hb= token {token!r}"
@@ -371,8 +382,12 @@ def main() -> int:
         # channel check above, and as every other tool in this directory. The
         # cluster is up; what is missing is this watchdog's second answer.
         if hb_verdict == "UNKNOWN":
-            print("NOT CLEAN: the ping is healthy but its heartbeat verdict is unreadable",
-                  file=sys.stderr)
+            # The reason goes on this line as well as the HEARTBEATS one above,
+            # because this is the line the failed run is judged by: `gh run
+            # view` shows it beside the non-zero exit, and a reader who stops
+            # there used to be told only that something was unreadable.
+            print("NOT CLEAN: the ping is healthy but its heartbeat verdict is "
+                  f"unreadable -- {hb_reason}", file=sys.stderr)
             return 1
         return 2 if hb_verdict == "BAD" else 0
 
