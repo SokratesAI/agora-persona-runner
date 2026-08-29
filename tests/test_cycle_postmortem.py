@@ -188,3 +188,100 @@ def test_the_report_counts_every_verdict_even_the_ones_that_do_not_raise():
         607, None)
     assert "1 failed" in report and "1 lost" in report and "1 silent" in report
     assert "Cycle 360" in report
+
+
+# --- the tail, which is where the freshest failure lives ---------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from tools.cycle_postmortem import MESSAGE_LIMIT, entryless  # noqa: E402
+
+
+def paths(*cycles):
+    return [f"{i:03d}-cycle-{n}.md" for i, n in enumerate(cycles, start=1)]
+
+
+def test_a_loop_that_stopped_writing_an_hour_ago_is_found():
+    """The failure my reviewer found, and the one that costs most.
+
+    `cycle_health.missing_cycles` returns interior gaps only, so a run of
+    cycles that all died *after* the newest entry leaves no gap at all --
+    a live outage read as "nothing to act on" and exited 0.
+    """
+    assert entryless(paths(596, 597, 598), newest=605) == [599, 600, 601, 602, 603, 604]
+
+
+def test_the_newest_cycle_is_never_reported_because_it_is_me_asking():
+    assert entryless(paths(600), newest=601) == []
+
+
+def test_an_interior_gap_and_a_tail_gap_are_both_reported():
+    assert entryless(paths(10, 12), newest=15) == [11, 13, 14]
+
+
+def test_a_journal_with_nothing_in_it_reports_no_gaps_rather_than_all_of_them():
+    """An empty listing is `journal_paths` returning `None` -> exit 1.
+    Reaching here with an empty list must not invent 605 findings."""
+    assert entryless([], newest=605) == []
+
+
+# --- a cycle that is still going is not a cycle that died --------------
+
+def now_utc():
+    return datetime(2026, 8, 29, 4, 0, tzinfo=timezone.utc)
+
+
+def conversation_last_spoke(minutes_ago):
+    stamp = (now_utc() - timedelta(minutes=minutes_ago)).isoformat().replace(
+        "+00:00", "Z")
+    return {"id": "x", "lastMessageAt": stamp}
+
+
+def test_a_tail_cycle_with_no_outcome_that_just_spoke_is_still_running():
+    """Three cycles overlap, so the newest few legitimately have no
+    closing line. Calling those `cut off` reports the loop working as a
+    failure, every single run."""
+    row = judge(606, conversation_last_spoke(2), [message("Bash: ...")],
+                now=now_utc())
+    assert row["verdict"] == "still running"
+
+
+def test_a_tail_cycle_that_went_quiet_long_ago_is_cut_off_not_still_running():
+    row = judge(606, conversation_last_spoke(300), [message("Bash: ...")],
+                now=now_utc())
+    assert row["verdict"] == "cut off"
+
+
+def test_an_unparseable_last_message_time_reads_as_stopped_not_as_running():
+    row = judge(606, {"id": "x", "lastMessageAt": "whenever"},
+                [message("Bash: ...")], now=now_utc())
+    assert row["verdict"] == "cut off"
+
+
+def test_a_conversation_at_the_read_limit_is_unreadable_not_cut_off():
+    """Agora answers with the *oldest* N, so a longer conversation loses
+    the closing line the whole measurement rests on -- and a truncated
+    read is indistinguishable from a real one by the last message alone."""
+    row = judge(600, {"id": "x"}, [message("Bash: ...")] * MESSAGE_LIMIT,
+                now=now_utc())
+    assert row["verdict"] == "unreadable"
+
+
+# --- what "explained" means -------------------------------------------
+
+def test_an_unrecognised_closing_line_raises_rather_than_reading_as_clean():
+    """The contract is that 0 means every gap in the window is explained,
+    and `unjudged` is by its own name the opposite. The day Agora grows a
+    third outcome word must not be a silent one."""
+    _, status = format_report([row(600, "unjudged")], 607, None)
+    assert status == 2
+
+
+def test_a_run_that_stopped_with_no_outcome_raises():
+    _, status = format_report([row(600, "cut off")], 607, None)
+    assert status == 2
+
+
+def test_a_cycle_that_is_still_running_never_raises():
+    _, status = format_report([row(606, "still running")], 607, None)
+    assert status == 0
