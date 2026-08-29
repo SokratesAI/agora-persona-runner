@@ -37,6 +37,11 @@ from agora_runner.log import log
 # between his phone and a year of transcript.
 MAX_THREAD = 40
 
+# The one persona this app talks to. `nova_ask` re-exports it under its
+# own name; it lives here because `nova_ask` already imports from this
+# module and the other direction would be a cycle.
+ANSWER_PERSONA_ID = "8972a54d-cafa-4f07-a527-d8686cea51ca"
+
 MAX_MESSAGE_CHARS = 4000
 MAX_NAME_CHARS = 200
 
@@ -206,8 +211,15 @@ def send(conversation_id, text):
     return True, message_id
 
 
-def create(name, persona_id):
+def create(name):
     """(ok, id-or-message). Starting a new thread from the page.
+
+    Always with `ANSWER_PERSONA_ID`. There is no longer anyone else to
+    start one with: `issues.md` #119, 2026-08-29 -- *"drop the Agora
+    multi-persona chat picker from the Nova app entirely, the app should
+    be Nova only, no Claude/Opus/Gemini/Haiku/Study buddy tabs inside
+    it"*. The threads he already has with those personas are untouched
+    and still open from the list; what is gone is starting a new one.
 
     No tag is written. `nova_ask` tags its one conversation because it has
     to find that same thread again next time; a conversation he starts here
@@ -219,11 +231,9 @@ def create(name, persona_id):
     name = name.strip()
     if len(name) > MAX_NAME_CHARS:
         return False, f"that name is longer than {MAX_NAME_CHARS} characters"
-    if not isinstance(persona_id, str) or not persona_id.strip():
-        return False, "pick who you are talking to"
     status, created = agora_internal("POST", "/conversations", {
         "name": name,
-        "personaId": persona_id.strip(),
+        "personaId": ANSWER_PERSONA_ID,
     })
     if status not in (200, 201):
         log(f"nova_conversations: create failed HTTP {status}")
@@ -233,72 +243,6 @@ def create(name, persona_id):
         log("nova_conversations: create response carried no conversation id")
         return False, "the conversation store answered without an id"
     return True, new_id
-
-
-def personas():
-    """Who he can start a conversation with.
-
-    The provider string is passed through so the page can show it. A
-    metered `anthropic:` persona is a real thing in this store and
-    `identity.md` rule 9 forbids *defaulting* onto it, not seeing it -- so
-    it is labelled rather than hidden, which is what lets him make the
-    choice knowingly instead of having it made for him silently.
-
-    `scheduled` is the same move for a different confusion, and it is his,
-    `issues.md` #119 on 2026-08-28: the app is called Nova and one of the
-    personas inside it is also called Nova, so *"it is easy to lose track
-    of which 'Nova' a sentence means: the product, or the one persona."*
-    The honest separator is not the name -- it is that some of these wake
-    up on their own and the rest only answer when he types. Capabilities
-    cannot tell them apart (Claude and Opus hold every capability Nova
-    holds, plus one), so it is read off Agora's heartbeat registry, which
-    is the thing that actually does the waking. Today that marks Nova, the
-    build loop, and K3s Sentinel, the nightly cluster scan.
-
-    A heartbeat listing that fails degrades to no flag rather than to no
-    picker: this is the only route he can start a conversation from, and
-    `issues.md` #118 was that route being unusable for a day.
-    """
-    status, body = agora_get("/personas")
-    if status != 200:
-        raise RuntimeError(f"persona listing returned {status}")
-    scheduled = _personas_with_a_live_heartbeat()
-    rows = [
-        {
-            "id": p.get("id"),
-            "name": p.get("name") or "(unnamed)",
-            "model": p.get("model") or "",
-            "metered": str(p.get("model") or "").startswith("anthropic:"),
-            "scheduled": p.get("id") in scheduled,
-        }
-        for p in body.get("personas", [])
-        if p.get("id")
-    ]
-    rows.sort(key=lambda r: (r["metered"], r["name"].lower()))
-    return {"personas": rows}
-
-
-def _personas_with_a_live_heartbeat():
-    """Which personas wake on their own, by id.
-
-    Only an *enabled* heartbeat counts. A disabled one is a schedule
-    nobody is running -- the four `Workflow trial` personas each carry
-    one -- and marking those as scheduled would say the opposite of what
-    the label means.
-    """
-    try:
-        status, body = agora_get("/heartbeats")
-    except Exception as err:                        # pragma: no cover - network
-        log(f"nova_conversations: heartbeat listing failed: {err}")
-        return set()
-    if status != 200:
-        log(f"nova_conversations: heartbeat listing returned {status}")
-        return set()
-    return {
-        hb.get("personaId")
-        for hb in (body.get("heartbeats") or [])
-        if hb.get("enabled") and hb.get("personaId")
-    }
 
 
 def watching(conversation_id):
@@ -379,10 +323,9 @@ def _model_rows():
     worth not losing the list.
 
     `metered` comes straight from Agora's catalog rather than being derived
-    here. `nova_conversations.personas` derives it from an `anthropic:`
-    prefix because a persona row carries no such flag; the model catalog
-    does, and re-deriving it would be a second copy of the rule that pays
-    for the whole prepaid balance if it drifts.
+    from an `anthropic:` prefix here: the catalog carries the flag, and
+    re-deriving it would be a second copy of the rule that pays for the
+    whole prepaid balance if it drifts.
     """
     status, body = agora_get("/models")
     if status != 200:

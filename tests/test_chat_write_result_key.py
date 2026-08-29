@@ -59,7 +59,7 @@ def chat_write_paths():
 # each one calls. The store is stubbed: this test is about the envelope the
 # handler puts around a success, not about what the store does with it.
 ROUTE_FIXTURES = {
-    "/api/conversations/new": ({"name": "STUFF", "personaId": "p1"}, "conversation_create"),
+    "/api/conversations/new": ({"name": "STUFF"}, "conversation_create"),
     "/api/conversations/rename": ({"id": "c1", "name": "STUFF"}, "conversation_rename"),
     "/api/conversations/move": ({"id": "c1", "folderId": "f1"}, "conversation_move"),
     "/api/conversations/model": ({"id": "c1", "model": "claude-cli:claude-sonnet-5"},
@@ -105,7 +105,7 @@ def test_new_conversation_hands_the_page_the_id_it_navigates_to(stubbed_store):
     so an id that is not a usable string is a 404 he cannot get out of
     except by reloading.
     """
-    status, _, body = _post("/api/conversations/new", {"name": "STUFF", "personaId": "p1"})
+    status, _, body = _post("/api/conversations/new", {"name": "STUFF"})
     assert status == 200
     handed = json.loads(body)[chat_write_key()]
     assert isinstance(handed, str) and handed == MADE
@@ -113,9 +113,9 @@ def test_new_conversation_hands_the_page_the_id_it_navigates_to(stubbed_store):
 
 def test_a_refused_write_hands_the_page_nothing_to_navigate_to(monkeypatch):
     """`ok: false` must not carry a truthy id -- the page throws on the message."""
-    monkeypatch.setattr(nova_site, "conversation_create", lambda *a, **k: (False, "pick who to talk to"))
+    monkeypatch.setattr(nova_site, "conversation_create", lambda *a, **k: (False, "a conversation needs a name"))
     monkeypatch.setattr(nova_site, "audit", lambda *a, **k: None)
-    status, _, body = _post("/api/conversations/new", {"name": "STUFF", "personaId": "p1"})
+    status, _, body = _post("/api/conversations/new", {"name": "STUFF"})
     answered = json.loads(body)
     assert status == 400
     assert answered["ok"] is False
