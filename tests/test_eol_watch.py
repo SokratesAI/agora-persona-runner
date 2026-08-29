@@ -351,9 +351,38 @@ jobs:
 def test_a_workflow_version_pin_is_read_like_a_from_line():
     pins = eol_watch.toolchain_pins("o/r", ".github/workflows/build.yaml",
                                     WORKFLOW)
-    assert [(p["image"], p["tag"]) for p in pins] == [
-        ("node", "20"), ("api", "2")]
+    assert [(p["image"], p["tag"]) for p in pins] == [("node", "20")]
     assert all(p["kind"] == "toolchain" for p in pins)
+
+
+def test_a_version_key_this_file_does_not_install_is_not_a_runtime_pin():
+    # My reviewer's finding on runner#523, with its own input. The
+    # endoflife.date catalogue's short names collide with ordinary
+    # workflow keys -- `app` is istio, `vault` is hashicorp-vault,
+    # `server` is claimed by two products -- so resolving in the map is
+    # not enough on its own. `app-version: "1.28.0"` in a release job
+    # resolved to Istio 1.28, which really is past its end of life, and
+    # printed a fabricated finding with a real product name and a real
+    # date on it. Only a runtime the file itself installs is read.
+    text = """\
+      - name: Bump version
+        env:
+          app-version: "1.28.0"
+          vault-version: "1.15"
+"""
+    assert eol_watch.toolchain_pins("o/r", "w", text) == []
+    # And the same key does count once the file says it installs it.
+    installed = "      - uses: actions/setup-app@v1\n" + text
+    assert [p["image"] for p in eol_watch.toolchain_pins("o/r", "w", installed)] \
+        == ["app"]
+
+
+def test_a_third_party_setup_action_counts_the_same_as_githubs():
+    text = ("      - uses: ruby/setup-ruby@v1\n"
+            "        with:\n"
+            "          ruby-version: \"3.1\"\n")
+    assert [(p["image"], p["tag"]) for p in eol_watch.toolchain_pins(
+        "o/r", "w", text)] == [("ruby", "3.1")]
 
 
 def test_a_value_that_names_no_version_is_not_read_as_one():

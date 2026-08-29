@@ -94,8 +94,19 @@ LEADING_VERSION_RE = re.compile(r"\A(\d+(?:\.\d+)*)")
 # The key's own prefix is the lookup: `go-version` -> `go`, `node-version`
 # -> `node`, and both already resolve in the catalogue map above, so this
 # needs no table of which action means which runtime -- which is the rule
-# the module docstring states about the image map. A `-version:` key whose
-# prefix names no product is not a runtime pin and falls out.
+# the module docstring states about the image map.
+#
+# **Resolving in the catalogue is not enough on its own, and that was my
+# reviewer's finding on this change.** The catalogue is 300-odd products
+# and its short names collide with ordinary workflow keys: `app` resolves
+# to istio, `vault` to hashicorp-vault, `server` and `base` are claimed by
+# two products each. So `app-version: "1.28.0"` in a release job -- which
+# is about nothing at all -- resolved to Istio 1.28, which really is past
+# its end of life, and printed a fabricated finding with a real product
+# name and a real date on it. The narrowing is read out of the same file:
+# a `<x>-version:` key counts only when that file also runs a
+# `setup-<x>` action, which is the workflow itself declaring which
+# runtimes it installs. Still no table -- the file is the source.
 #
 # `go-version-file: go.mod` deliberately does not match: the version is
 # not written in this file, so there is nothing here to judge.
@@ -103,6 +114,10 @@ TOOLCHAIN_RE = re.compile(
     r"^\s*(?P<lang>[a-z][a-z0-9]*)-version:\s*"
     r"[\"']?(?P<version>[0-9][^\"'\s#]*)",
     re.MULTILINE)
+
+# `uses: actions/setup-go@v7`, `uses: ruby/setup-ruby@v1`. The owner is
+# not matched, so a third-party setup action counts the same as GitHub's.
+SETUP_ACTION_RE = re.compile(r"uses:\s*\S*setup-([a-z][a-z0-9]*)@")
 
 WORKFLOW_DIR = ".github/workflows/"
 
@@ -202,16 +217,24 @@ def toolchain_pins(repo, path, text):
     """Every `<runtime>-version:` pin in one workflow file, as dicts.
 
     Shaped exactly like `base_images` so `judge` needs no second branch:
+    Only a key whose runtime this file also installs with a `setup-*`
+    action is read. Without that the catalogue's own short names collide
+    with ordinary workflow keys and the tool invents findings -- see the
+    comment on `TOOLCHAIN_RE`.
+
     `image` carries the runtime token the catalogue map is keyed by, and
     `tag` carries the version. `kind` is what the report reads to say
     where the pin lives, since `go-version: 1.25` is not a `FROM` line
     and printing it as one would be a lie about a real place in a file.
     """
+    installs = set(SETUP_ACTION_RE.findall(text))
     found = []
     for match in TOOLCHAIN_RE.finditer(text):
+        lang = match.group("lang")
+        if lang not in installs:
+            continue
         found.append({"repo": repo, "path": path, "kind": "toolchain",
-                      "image": match.group("lang"),
-                      "tag": match.group("version"),
+                      "image": lang, "tag": match.group("version"),
                       "digest": False, "templated": False})
     return found
 
