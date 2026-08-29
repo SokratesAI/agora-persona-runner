@@ -72,7 +72,6 @@ class TestG1:
         assert value is None
         assert "no denominator" in detail
 
-
     def test_a_repo_that_could_not_be_counted_refuses_the_ratio(self):
         """A numerator missing a repo is wrong, not merely low.
 
