@@ -294,7 +294,7 @@ def _run_main(monkeypatch, judged_out, not_judged_out=(), problems=()):
 def test_main_exits_2_on_a_line_out_of_support(monkeypatch, capsys):
     _, dead = judged("node", "20")
     assert _run_main(monkeypatch, [dead]) == 2
-    assert "BASE IMAGE SUPPORT" in capsys.readouterr().out
+    assert "RUNTIME SUPPORT" in capsys.readouterr().out
 
 
 def test_main_exits_0_only_when_something_was_judged_and_all_supported(
@@ -356,11 +356,22 @@ def test_a_workflow_version_pin_is_read_like_a_from_line():
     assert all(p["kind"] == "toolchain" for p in pins)
 
 
-def test_a_version_file_pin_names_no_version_here_and_is_not_read():
+def test_a_value_that_names_no_version_is_not_read_as_one():
     # `node-version-file: .nvmrc` points at a file this does not read, so
-    # there is nothing in *this* file to judge. Reading it as a pin would
-    # invent one.
+    # there is nothing in *this* file to judge.
     assert "nvmrc" not in str(eol_watch.toolchain_pins("o/r", "w", WORKFLOW))
+
+
+def test_the_key_must_end_at_version_and_not_merely_contain_it():
+    # This value is contrived on purpose. Every real `*-version-file:`
+    # value in the wild -- `.nvmrc`, `go.mod`, `.python-version` -- starts
+    # with a letter or a dot, so the "must start with a digit" rule
+    # already refuses them and a realistic fixture cannot tell that rule
+    # apart from the `-version:` anchor. Only a digit-leading value can
+    # show which one is doing the work, and the anchor has to be the one:
+    # a file name is not a version however it happens to be spelled.
+    text = "          node-version-file: 20-lts.txt\n"
+    assert eol_watch.toolchain_pins("o/r", "w", text) == []
 
 
 TREE = ".github/workflows/build.yaml"

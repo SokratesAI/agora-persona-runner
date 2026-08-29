@@ -417,7 +417,7 @@ def format_report(judged, not_judged, problems, notes, within_days):
     out = []
     bad = group([i for i in judged if i["verdict"] in ("eol", "soon")])
     if bad:
-        out.append("BASE IMAGE SUPPORT — %d line(s) are out of support or "
+        out.append("RUNTIME SUPPORT — %d line(s) are out of support or "
                    "close to it." % len(bad))
         for members in sorted(bad.values(), key=lambda m: m[0]["days"]):
             image = members[0]
