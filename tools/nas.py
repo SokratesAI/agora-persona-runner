@@ -141,6 +141,11 @@ READ_ONLY = {
     # the same reason as the four above: this set is the only thing that
     # decides what this module may ask for.
     "/api/v3/notification",
+    # Read by `tools.nas_egress`, which asks where each app is configured to
+    # send its downloads. A GET, listed here for the same reason as the five
+    # above: this set is the only thing that decides what this module may ask
+    # for.
+    "/api/v3/downloadclient",
 }
 
 SERVICES = ("sonarr", "radarr")
