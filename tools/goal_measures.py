@@ -161,11 +161,23 @@ def fetch_board(name, site=SITE):
     return payload.get("items") or [], None
 
 
-def fetch_merged(repo, since, until, limit=200):
-    """Pull requests on `repo` merged inside the window, as numbers."""
+def fetch_merged(repo, since, until, limit=1000):
+    """Pull requests on `repo` merged inside the window, as numbers.
+
+    **The window is applied by GitHub, not here.** Asking for the newest
+    `limit` merges and filtering locally cannot count a repo that merges
+    more than `limit` in a window, and this loop reached that on its own
+    source: measured 2026-08-29, `SokratesAI/agora-persona-runner` merged
+    213 pull requests in seven days against the old `--limit 200`, so the
+    page was full of in-window rows and the true count was unreachable.
+    `--search merged:<since>..<until>` makes GitHub do the filtering, so
+    the page holds only what is being counted and a full page means "there
+    may be more", not "the window is bigger than the page".
+    """
     try:
         done = subprocess.run(
             ["gh", "pr", "list", "--repo", repo, "--state", "merged",
+             "--search", f"merged:{since}..{until}",
              "--limit", str(limit), "--json", "number,mergedAt"],
             capture_output=True, text=True, timeout=120,
         )
@@ -205,6 +217,9 @@ def in_window(entries, since, until):
 def measure_g1(entries_window, boards, since, until, prs):
     """Merged pull requests per board row closed, over the window."""
     del entries_window
+    if prs is None:
+        return None, ("a repo in the count could not be read, and a ratio "
+                      "missing part of its numerator is wrong rather than low")
     year = since[:4]
     closed = [
         row for board in boards for row in board
@@ -420,13 +435,21 @@ def main(argv=None):
             problems.append(error)
         boards.append(rows)
 
+    # A repo this cannot count must not be quietly counted as zero. G1 is a
+    # ratio over every repo in REPOS, so dropping one shrinks the numerator
+    # and publishes a smaller number with no mark on it -- measured
+    # 2026-08-29, when the runner repo saturated its page and G1 printed 2.0
+    # against a real 7.1, a four-fold collapse overnight that read as a fact
+    # about the week. `None` here is what makes `measure_g1` refuse.
     prs = []
     for repo in REPOS:
         merged, error = fetch_merged(repo, since, until)
         if error:
             problems.append(error)
+            prs = None
             continue
-        prs.extend(merged)
+        if prs is not None:
+            prs.extend(merged)
 
     rows = []
     for goal in goals:
