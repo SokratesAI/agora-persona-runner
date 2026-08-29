@@ -552,3 +552,108 @@ def test_a_blocked_run_is_unchanged_by_the_failing_detail():
     assert status == 0
     assert "spending limit" in report
     assert "failed at step" not in report
+
+
+def _mixed(*triples):
+    """`(event, conclusion, createdAt)` runs, newest first, all completed."""
+    return [
+        {
+            "status": "completed",
+            "conclusion": c,
+            "createdAt": t,
+            "event": e,
+            "databaseId": 2000 + i,
+        }
+        for i, (e, c, t) in enumerate(triples)
+    ]
+
+
+def test_a_green_manual_dispatch_does_not_reset_a_dead_schedule():
+    """The real `docs-sync` history on 2026-08-29, and the bug it exposed.
+
+    Every scheduled run since 08-07 failed; Cycle 618 dispatched it by
+    hand on 08-28 and that run went green. Counting the dispatch made a
+    three-week outage print as one day old -- and this module's own
+    report is what asks a cycle to dispatch, so the recommended action
+    was blinding the instrument that recommended it.
+    """
+    verdict = agentic_health.verdict_for(
+        {"repo": "SokratesAI/sokrates-docs", "path": "x.lock.yml"},
+        _mixed(
+            ("schedule", "failure", "2026-08-28T17:22:23Z"),
+            ("workflow_dispatch", "success", "2026-08-28T03:37:51Z"),
+            ("schedule", "failure", "2026-08-21T05:43:07Z"),
+            ("schedule", "failure", "2026-08-14T06:23:17Z"),
+        ),
+    )
+    assert verdict["verdict"] == "failing"
+    assert verdict["failures"] == 3
+    assert verdict["last_good"] is None
+    assert "never succeeded in the newest 3 scheduled run(s)" in verdict["note"]
+
+
+def test_a_green_dispatch_is_reported_rather_than_dropped():
+    """It is real evidence the workflow *can* pass -- demoted, never lost."""
+    verdict = agentic_health.verdict_for(
+        {"repo": "r", "path": "x.lock.yml"},
+        _mixed(
+            ("workflow_dispatch", "success", "2026-08-28T03:37:51Z"),
+            ("schedule", "failure", "2026-08-21T05:43:07Z"),
+        ),
+    )
+    assert verdict["verdict"] == "failing"
+    assert "workflow_dispatch that ended 'success'" in verdict["note"]
+    assert "2026-08-28T03:37:51Z" in verdict["note"]
+
+
+def test_the_follow_up_asks_about_the_scheduled_run_not_the_dispatch():
+    """`newest_id` feeds the did-it-even-start call, so it must be a red one."""
+    verdict = agentic_health.verdict_for(
+        {"repo": "r", "path": "x.lock.yml"},
+        _mixed(
+            ("workflow_dispatch", "success", "2026-08-28T03:37:51Z"),
+            ("schedule", "failure", "2026-08-21T05:43:07Z"),
+        ),
+    )
+    assert verdict["newest_id"] == 2001
+    assert verdict["newest_at"] == "2026-08-21T05:43:07Z"
+
+
+def test_a_workflow_with_no_scheduled_runs_is_still_judged_on_what_it_has():
+    """Not every agentic workflow has a `schedule`; dropping those would
+    make this tool blind to the ones that only ever run on an event.
+
+    My reviewer read this as decorative, on the grounds that it passes
+    against the pre-fix code too -- which is true, because the fallback
+    branch *is* the old behaviour. It is not decorative, and the
+    mutation that shows it is the forward one rather than the revert:
+    make `_runs_to_judge` return the scheduled list unconditionally and
+    this is the only test in the file that fails, on an `IndexError`
+    from an empty window.
+    """
+    verdict = agentic_health.verdict_for(
+        {"repo": "r", "path": "x.lock.yml"},
+        _mixed(
+            ("workflow_dispatch", "failure", "2026-08-28T03:37:51Z"),
+            ("issues", "failure", "2026-08-21T05:43:07Z"),
+        ),
+    )
+    assert verdict["verdict"] == "failing"
+    assert verdict["failures"] == 2
+    assert "2 completed run(s) in a row" in verdict["note"]
+
+
+def test_a_green_schedule_is_healthy_even_under_a_red_dispatch():
+    """The mirror of the headline case: a cycle's own failed hand-run must
+    not report a schedule that is actually firing green as dead."""
+    verdict = agentic_health.verdict_for(
+        {"repo": "r", "path": "x.lock.yml"},
+        _mixed(
+            ("workflow_dispatch", "failure", "2026-08-28T09:00:00Z"),
+            ("schedule", "success", "2026-08-28T03:00:00Z"),
+        ),
+    )
+    assert verdict["verdict"] == "healthy"
+    assert verdict["failures"] == 0
+    assert "last scheduled run succeeded" in verdict["note"]
+    assert "workflow_dispatch that ended 'failure'" in verdict["note"]
