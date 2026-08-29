@@ -110,6 +110,24 @@ already fetches names the failing job and step; one more call gets
 GitHub's own failure annotation. Same lesson as `blocked` one level
 further in: a streak counter merges causes.
 
+**A manual dispatch no longer decides the verdict, and that is Cycle
+622.** A workflow with a `schedule` is judged on its scheduled runs
+alone. `schedule_health` learned this one layer down -- it judges "only
+against runs GitHub started itself", because manual dispatches are
+precisely what made a dead workflow look alive -- and this module did
+not. Measured on `docs-sync`: every scheduled run since 2026-08-07 has
+failed and not one has succeeded, while this printed *"1 completed
+run(s) in a row ended 'failure'; last succeeded 2026-08-28"*, and the
+handoff written off that sentence called a three-week outage a new
+failure. The green run was Cycle 618's own `workflow_dispatch`. Note
+the shape, because it is worse than an ordinary blind spot: the report
+above asks a cycle to *dispatch the workflow* as the recommended
+action, so the fix this tool suggested was resetting the counter this
+tool judges by. The dispatch result is demoted, never dropped -- it is
+real evidence about whether the workflow *can* pass, which is a
+different question from whether it *is* passing -- and a workflow with
+no scheduled runs on record is still judged on everything it has.
+
 Exit 2 means at least one agentic workflow is dead in a way a cycle can
 act on -- failing on its own terms, or held down by a block that has
 since lifted and never re-run. Exit 1 means something was unreadable.
@@ -428,41 +446,89 @@ def verdict_for(workflow, runs):
         )
         return {"verdict": "never-run", "note": note, "failures": 0, "last_good": None}
 
+    judged, kind, aside = _runs_to_judge(completed)
+    label = "completed" if kind == "any" else "scheduled"
+
     last_good = next(
-        (r["createdAt"] for r in completed if r.get("conclusion") == "success"), None
+        (r["createdAt"] for r in judged if r.get("conclusion") == "success"), None
     )
-    if completed[0].get("conclusion") == "success":
+    if judged[0].get("conclusion") == "success":
         return {
             "verdict": "healthy",
-            "note": f"last completed run succeeded, {completed[0]['createdAt']} (UTC)",
+            "note": _with_aside(
+                f"last {label} run succeeded, {judged[0]['createdAt']} (UTC)", aside
+            ),
             "failures": 0,
             "last_good": last_good,
         }
 
     streak = 0
-    for entry in completed:
+    for entry in judged:
         if entry.get("conclusion") == "success":
             break
         streak += 1
     tail = (
         f"last succeeded {last_good} (UTC)"
         if last_good
-        else f"never succeeded in the newest {len(completed)} run(s)"
+        else f"never succeeded in the newest {len(judged)} {label} run(s)"
     )
     return {
         "verdict": "failing",
-        "note": (
-            f"{streak} completed run(s) in a row ended "
-            f"'{completed[0].get('conclusion')}'; {tail}"
+        "note": _with_aside(
+            f"{streak} {label} run(s) in a row ended "
+            f"'{judged[0].get('conclusion')}'; {tail}",
+            aside,
         ),
         "failures": streak,
         "last_good": last_good,
         # The caller needs the newest red run to ask whether it ever started,
         # and its date to ask whether whatever stopped it is still stopping
         # anything.
-        "newest_id": completed[0].get("databaseId"),
-        "newest_at": completed[0].get("createdAt"),
+        "newest_id": judged[0].get("databaseId"),
+        "newest_at": judged[0].get("createdAt"),
     }
+
+
+
+def _runs_to_judge(completed):
+    """`(runs, kind, aside)` -- which runs decide the verdict, and why.
+
+    A workflow with a `schedule` on it is judged on its scheduled runs
+    alone. `schedule_health` learned this one layer down and this module
+    did not: a manual dispatch is a cycle running the workflow by hand,
+    and this module's own report is what asks a cycle to do that, so
+    letting a green dispatch reset the streak means the recommended
+    action blinds the instrument that recommended it.
+
+    Measured Cycle 622 on `docs-sync`: every scheduled run since
+    2026-08-07 has failed and not one has succeeded, while this printed
+    "1 completed run(s) in a row ended 'failure'; last succeeded
+    2026-08-28" -- a three-week outage rendered as yesterday's blip,
+    because Cycle 618 dispatched it by hand at 03:37 and that run went
+    green.
+
+    The dispatch result is never dropped, only demoted to `aside`: it is
+    real evidence about whether the workflow *can* pass, which is a
+    different question from whether it *is* passing.
+    """
+    scheduled = [r for r in completed if (r or {}).get("event") == "schedule"]
+    if not scheduled:
+        return completed, "any", ""
+    newest = completed[0]
+    if newest.get("event") == "schedule":
+        return scheduled, "schedule", ""
+    return (
+        scheduled,
+        "schedule",
+        f"judged on scheduled runs only -- the newest run is a "
+        f"{newest.get('event')} that ended '{newest.get('conclusion')}' "
+        f"on {newest.get('createdAt')} (UTC)",
+    )
+
+
+def _with_aside(note, aside):
+    """Append the demoted dispatch sentence, when there is one."""
+    return f"{note}; {aside}" if aside else note
 
 
 def sweep(repos, run=None):
