@@ -135,6 +135,11 @@ READ_ONLY = {
     "/api/v3/calendar",
     "/api/v3/series",
     "/api/v3/series/lookup",
+    # Read by `tools.nas_watch`, which asks the two apps whether anything is
+    # configured to run a command when an event fires. A GET, listed here for
+    # the same reason as the four above: this set is the only thing that
+    # decides what this module may ask for.
+    "/api/v3/notification",
 }
 
 SERVICES = ("sonarr", "radarr")

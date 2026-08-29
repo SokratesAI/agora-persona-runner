@@ -45,10 +45,19 @@ def test_the_allowlist_grants_nothing_the_module_does_not_call():
     # with no allowlist check at all. This one reads the source and fails if
     # the two ever drift -- which they had: two movie paths were granted and
     # never called.
+    #
+    # It reads the whole `tools/` package rather than `nas.py` alone, because
+    # a grant's caller may be a sibling module -- `/api/v3/notification` is
+    # allowed here and called by `tools.nas_watch`. The invariant is that a
+    # granted path has a caller somewhere, not that `nas.py` is the caller.
     source = pathlib.Path(nas.__file__).read_text()
     body = source.split("READ_ONLY = {", 1)[1].split("}", 1)[1]
+    siblings = "".join(
+        f.read_text() for f in sorted(pathlib.Path(nas.__file__).parent.glob("*.py"))
+        if f.name != "nas.py"
+    )
     for path in nas.READ_ONLY:
-        assert f'"{path}"' in body, f"{path} is allowed but never called"
+        assert f'"{path}"' in body + siblings, f"{path} is allowed but never called"
 
 
 def test_a_redirect_is_refused_rather_than_followed():
@@ -309,7 +318,12 @@ def test_the_library_is_asked_before_the_metadata_provider():
 def test_airing_without_sonarr_configured_is_a_named_failure_not_a_crash():
     out = io.StringIO()
     env = {"RADARR_URL": "http://r", "RADARR_API_KEY": "k"}
-    assert nas.main(["airing", "anything"], env=env, get=_library_get(), out=out) == 1
+    # `ssh=None` is not decoration: `ssh_config` reads the real filesystem, so
+    # on a pod that has an ssh client and the sealed key mounted this call
+    # discovers a live Sonarr and the test measures nothing. That is not
+    # hypothetical -- it started happening on the bridge pod the day the key
+    # was mounted there (Cycle 638).
+    assert nas.main(["airing", "anything"], env=env, get=_library_get(), out=out, ssh=None) == 1
     assert "SONARR_URL" in out.getvalue()
 
 
@@ -342,9 +356,13 @@ def test_status_reports_each_service_separately():
 
 def test_status_exits_0_only_when_everything_answered():
     env = {"SONARR_URL": "http://s", "SONARR_API_KEY": "k"}
-    assert nas.main(["status"], env=env, get=lambda *a, **k: {"version": "4.0"}, out=io.StringIO()) == 1
+    # `ssh=None` for the same reason as the test above: without it, a pod with
+    # the SSH hop available configures both services from the NAS itself and
+    # the "only Sonarr is configured" half of this test cannot fail.
+    get = lambda *a, **k: {"version": "4.0"}
+    assert nas.main(["status"], env=env, get=get, out=io.StringIO(), ssh=None) == 1
     env["RADARR_URL"], env["RADARR_API_KEY"] = "http://r", "k"
-    assert nas.main(["status"], env=env, get=lambda *a, **k: {"version": "4.0"}, out=io.StringIO()) == 0
+    assert nas.main(["status"], env=env, get=get, out=io.StringIO(), ssh=None) == 0
 
 
 # --- the fixes the reviewer found ------------------------------------------
