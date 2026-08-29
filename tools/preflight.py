@@ -64,7 +64,19 @@ import sys
 #: can skim -- `top_board_rows` prints the pick itself and has to be read in
 #: full, and `tidy_workspace` moves files. Collapsing either would hide the
 #: thing the step exists to show.
+#:
+#: `cadence_control` is here and it is the one entry that *acts* -- it moves
+#: Nova's own heartbeat interval so the seven-day window lands on zero, which
+#: is the owner's 2026-08-29 capture. It is here rather than in its own step for
+#: the reason that makes it dynamic at all: a controller a cycle has to
+#: remember to run is not a controller, and this is the one call every cycle
+#: already makes. It earns the place by satisfying the contract above rather
+#: than by being a check -- one skimmable status line, and 0/1/2 meaning the
+#: same three things they mean for everything else. Two cycles running it at
+#: once is safe by construction and not by luck: the second sees the first's
+#: change against a burn rate still earned at the old interval and holds.
 CHECKS = (
+    "cadence_control",
     "security_alerts",
     "agentic_health",
     "doc_integrity",
