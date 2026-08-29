@@ -750,18 +750,57 @@ def test_idle_is_measured_from_the_site_restart_not_from_a_forgotten_request():
     demo has a recorded request, so measuring from `started_at` alone would
     call a two-day-old demo idle for two days and reap it instantly -- while
     somebody had it open. The site's own start time is the floor.
+
+    The demo here carries `opened_at`, because that is the case the floor is
+    for: a record of somebody looking, which the roll destroyed. The row
+    without one is the test below, and it must not be floored.
     """
     from agora_runner.nova_demos import idle_seconds
 
     two_days = 2 * 24 * 3600
     now = datetime.now().timestamp()
     demo = {"slug": "bakeoff",
+            "opened_at": "2026-08-27T10:00:00",
             "started_at": datetime.fromtimestamp(now - two_days).isoformat(
                 timespec="seconds")}
     fresh_site = {"started_at": now - 60, "last_seen": {}}
     assert idle_seconds(demo, fresh_site, now) == pytest.approx(60, abs=2)
     old_site = {"started_at": now - two_days - 60, "last_seen": {}}
     assert idle_seconds(demo, old_site, now) == pytest.approx(two_days, abs=2)
+
+
+def test_an_unopened_demo_ages_from_its_hand_over_not_from_the_site_roll():
+    """The 18-hour bound has to be reachable, and the floor made it not.
+
+    Measured Cycle 609 on the live site: `roadmap`, handed over at 03:43
+    Oslo, read `[no recorded open, 9 min after hand-over]` at 05:06 because
+    `nova-site` had rolled ten minutes earlier. It rolls on every merge, so
+    `DEFAULT_UNOPENED_MINUTES` could never be reached and a demo nobody
+    opens holds its port forever.
+
+    The registry writes a naive local stamp and the bridge pod runs UTC, so
+    the row itself reads `01:43:38`; the Oslo time above is that converted.
+    Nothing here does that arithmetic -- the fixture builds its own clock.
+
+    The floor protects a record a roll destroys. A row with no `opened_at`
+    has no such record -- "nobody has ever asked for this" is the
+    registry's own answer and it survived the roll -- so nothing is being
+    protected and the clock runs from the hand-over.
+    """
+    from agora_runner.nova_demos import idle_seconds
+
+    now = datetime.now().timestamp()
+    waited = 1 * 3600 + 23 * 60
+    demo = {"slug": "roadmap",
+            "started_at": datetime.fromtimestamp(now - waited).isoformat(
+                timespec="seconds")}
+    just_rolled = {"started_at": now - 600, "last_seen": {}}
+    assert idle_seconds(demo, just_rolled, now) == pytest.approx(waited, abs=2)
+
+    # A request the site does remember still wins over the hand-over: that
+    # is somebody asking, and it is later than the start by construction.
+    asked = {"started_at": now - 600, "last_seen": {"roadmap": now - 120}}
+    assert idle_seconds(demo, asked, now) == pytest.approx(120, abs=2)
 
 
 def test_idle_is_unknown_rather_than_zero_when_the_site_did_not_answer():
@@ -1093,6 +1132,73 @@ def test_reap_still_stops_a_demo_nobody_ever_opened_once_its_own_clock_runs_out(
         assert demo_cli.cmd_reap(_args(idle=120, unopened=720)) == 0
     assert state["registry"]["demos"] == []
     assert signalled and signalled[0][0] == 4242
+
+
+def test_a_site_roll_does_not_restart_the_unopened_clock():
+    """The test above passes with the bug in, because its site is old.
+
+    `tools.tidy_workspace` calls `cmd_reap` with these defaults every
+    cycle, and `nova-site` rolls on every merge -- several times an hour on
+    a busy night. With the clock floored at the site's start, a demo handed
+    over nineteen hours ago read as ten minutes old and was never stopped.
+    The site here rolled ten minutes ago, which is the state that used to
+    hide it.
+    """
+    from tools import demo as demo_cli
+
+    now = datetime.now().timestamp()
+    state, _read, _write = _fake_registry([
+        {"slug": "waiting", "host": "10.42.0.56", "port": 5174, "pid": 4242,
+         "started_at": datetime.fromtimestamp(now - 19 * 3600).isoformat()},
+    ])
+    activity = {"started_at": now - 600, "last_seen": {}}
+    signalled = []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(
+            idle=demo_cli.DEFAULT_IDLE_MINUTES,
+            unopened=demo_cli.DEFAULT_UNOPENED_MINUTES)) == 0
+    assert state["registry"]["demos"] == []
+    assert signalled and signalled[0][0] == 4242
+
+
+def test_a_site_roll_still_spares_a_demo_somebody_opened():
+    """The other direction, and the reason the floor stays for opened rows.
+
+    Same freshly rolled site, same nineteen-hour-old demo -- but this one
+    carries the durable mark, so it is on the two-hour idle clock and its
+    `last_seen` really was destroyed by the roll. Ageing it from the
+    hand-over would stop a demo the owner opened and walked away from for
+    ten minutes.
+    """
+    from tools import demo as demo_cli
+    from agora_runner.nova_demos import OPENED_AT
+
+    now = datetime.now().timestamp()
+    state, _read, _write = _fake_registry([
+        {"slug": "watched", "host": "10.42.0.56", "port": 5174, "pid": 4242,
+         OPENED_AT: "2026-08-28T10:00:00",
+         "started_at": datetime.fromtimestamp(now - 19 * 3600).isoformat()},
+    ])
+    activity = {"started_at": now - 600, "last_seen": {}}
+    signalled = []
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.56"), \
+         patch.object(demo_cli, "pid_alive", lambda pid: True), \
+         patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
+         patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
+         patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
+        assert demo_cli.cmd_reap(_args(
+            idle=demo_cli.DEFAULT_IDLE_MINUTES,
+            unopened=demo_cli.DEFAULT_UNOPENED_MINUTES)) == 0
+    assert [d["slug"] for d in state["registry"]["demos"]] == ["watched"]
+    assert signalled == []
 
 
 def test_tidy_workspace_passes_the_unopened_clock_through():

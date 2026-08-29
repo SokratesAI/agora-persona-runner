@@ -318,6 +318,28 @@ def idle_seconds(entry, activity, now):
     since the earliest moment I could have noticed, and the clock restarts
     on a roll rather than the demo dying under it.
 
+    **That floor is wrong for a demo nobody has opened, and applying it
+    there made `DEFAULT_UNOPENED_MINUTES` unreachable.** The floor exists to
+    protect a record a roll destroys. For a row carrying no durable
+    `opened_at` there is no such record: "nobody has ever asked for this"
+    is the registry's own answer and it survives the roll, so flooring at
+    the site's start throws away a fact that was never in danger. Measured
+    Cycle 609 against the live site: the `roadmap` demo handed over at
+    03:43 Oslo read `[no recorded open, 9 min after hand-over]` at 05:06,
+    because `nova-site` had rolled ten minutes earlier -- and it rolls on
+    every merge, several times an hour. An 18-hour bound whose clock
+    restarts every twenty minutes never fires. That is the shape this loop
+    keeps paying for: a guard that reports itself working while guarding
+    nothing.
+
+    So the unopened clock runs from `started_at`, which is when the link
+    was handed over and is the moment the 18 hours was derived against. The
+    cost of getting this wrong in the other direction is bounded and known:
+    a row written before Cycle 608's durable mark shipped, which really was
+    opened, now ages from its hand-over instead of from the last roll, and
+    can be stopped 18 hours later. That is one of thirty ports against a
+    link that otherwise holds one forever.
+
     Returns None when the answer is unknowable -- no site start time, or a
     row with no readable `started_at` and no recorded request. None is not
     zero and callers must not reap on it.
@@ -329,6 +351,8 @@ def idle_seconds(entry, activity, now):
     last = activity.get("last_seen", {}).get(entry.get("slug"))
     if last is None:
         last = started_epoch(entry)
+        if last is not None and not entry.get(OPENED_AT):
+            return max(0.0, now - last)
     if last is None:
         return None
     return max(0.0, now - max(last, floor))
@@ -386,11 +410,16 @@ def no_recorded_open(entry, activity):
     for, which is why three cycles running wrote "wait for a morning" into
     the handoff instead of doing it.
 
-    **The measurement of the age does not change and must not.**
-    `idle_seconds` floors the clock at the site's own start time because
-    `last_seen` lives in that pod's memory, so a site roll wipes it and a
-    two-day-old demo would otherwise read as instantly reapable. Only the
-    *threshold* the caller compares against changes. That is also why a
+    **The measurement of the age changes with this answer, and Cycle 609
+    is when that became true.** This paragraph used to say the opposite --
+    that only the *threshold* changes and `idle_seconds` always floors the
+    clock at the site's own start time, because `last_seen` lives in that
+    pod's memory and a roll would otherwise make a two-day-old demo read as
+    instantly reapable. That floor is still right for a row carrying
+    `opened_at`, and it is wrong for a row without one: there is no wiped
+    record to protect, and flooring anyway restarted the 18-hour clock on
+    every deploy, so the bound never fired. `idle_seconds` has the
+    measurement. That is also why a
     demo that was opened before a roll used to come back here as `True`:
     after the roll the site genuinely could not tell, and the safe direction
     is the long clock, because the cost of being wrong is one of thirty
