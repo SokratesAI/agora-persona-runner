@@ -82,6 +82,7 @@ CHECKS = (
     "argocd_health",
     "crossplane_health",
     "running_images",
+    "workload_health",
     "ci_health",
 )
 
