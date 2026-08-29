@@ -121,6 +121,19 @@ TRANSIENT_WAITING = {"ContainerCreating", "PodInitializing"}
 RECENT_DEATH = datetime.timedelta(hours=1)
 
 
+#: Below this share of swap left, the kernel has no overflow to spend: the
+#: next spike is an OOM kill rather than a slowdown. Swap is the shock
+#: absorber, so "nearly full" is the finding and "full" is too late --
+#: measured on server1 on 2026-08-29, swap was 224kB of 2GiB free while the
+#: control plane was falling over.
+SWAP_NEARLY_GONE = 0.10
+
+#: Where the host's memory is read from. This is `/proc/meminfo` rather than
+#: `kubectl top node` on purpose: `top` reports the root cgroup's working set,
+#: which counts reclaimable page cache as used and cannot see swap at all.
+MEMINFO = "/proc/meminfo"
+
+
 def _run(runner, args):
     try:
         proc = runner(args, capture_output=True, text=True, timeout=120)
@@ -377,7 +390,145 @@ def unavailable(deployments, now):
     return past, rolling
 
 
-def report(pods, deployments, now):
+def _mib(quantity):
+    """A Kubernetes memory quantity as MiB, or None if it is not one."""
+    if not quantity:
+        return None
+    text = str(quantity).strip()
+    for suffix, factor in (("Ki", 1 / 1024), ("Mi", 1), ("Gi", 1024), ("Ti", 1024 * 1024),
+                           ("K", 1000 / 1048576), ("M", 1000 ** 2 / 1048576),
+                           ("G", 1000 ** 3 / 1048576), ("T", 1000 ** 4 / 1048576)):
+        if text.endswith(suffix):
+            try:
+                return float(text[: -len(suffix)]) * factor
+            except ValueError:
+                return None
+    try:
+        return float(text) / 1048576
+    except ValueError:
+        return None
+
+
+def read_meminfo(path=MEMINFO):
+    """`/proc/meminfo` as {name: kB}, or (None, why)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        return None, f"could not read {path}: {exc}"
+    fields = {}
+    for line in raw.splitlines():
+        name, _, rest = line.partition(":")
+        parts = rest.split()
+        if not parts:
+            continue
+        try:
+            fields[name.strip()] = float(parts[0])
+        except ValueError:
+            continue
+    if "MemTotal" not in fields:
+        return None, f"{path} carries no MemTotal"
+    return fields, None
+
+
+def read_node_capacity(runner=subprocess.run):
+    """{node name: memory capacity in kB}, or (None, why)."""
+    body, why = _run(runner, ["kubectl", "get", "nodes", "-o", "json"])
+    if why:
+        return None, why
+    nodes = {}
+    for item in body.get("items") or []:
+        name = (item.get("metadata") or {}).get("name") or "?"
+        capacity = ((item.get("status") or {}).get("capacity") or {}).get("memory")
+        mib = _mib(capacity)
+        if mib is not None:
+            nodes[name] = mib
+    return nodes, None
+
+
+def largest_limit(pods):
+    """The biggest single container memory limit anywhere, as (MiB, where)."""
+    biggest, where = None, ""
+    for pod in pods:
+        for container, quantity in (pod.get("limits") or {}).items():
+            mib = _mib(quantity)
+            if mib is None:
+                continue
+            if biggest is None or mib > biggest:
+                biggest = mib
+                where = f"{pod['namespace']}/{pod['name']} [{container}]"
+    return biggest, where
+
+
+def memory_headroom(meminfo, nodes, pods):
+    """Can this host still start the largest container it is configured to run?
+
+    Returns (lines, actionable, judged). `judged` is False when the reading
+    cannot be attributed to a host, which is not a clean bill of health.
+    """
+    total = meminfo.get("MemTotal", 0) / 1024
+    available = meminfo.get("MemAvailable")
+    lines = []
+
+    # Neither pod this loop runs in mounts lxcfs, so `/proc/meminfo` is the
+    # host's -- measured 2026-08-29, MemTotal 7931600 kB against server1's
+    # capacity of 7931600Ki. That equality is the whole proof, so it is
+    # checked rather than remembered: if some future runtime starts faking
+    # meminfo per container, this reads a container's memory and calls it a
+    # node's, and every number below would be wrong while looking right.
+    host = next((name for name, mib in nodes.items() if abs(mib - total) < 1), None)
+    if host is None:
+        lines.append(
+            "CANNOT ATTRIBUTE MEMORY — /proc/meminfo says "
+            f"{total:.0f}Mi total, which matches no node's capacity "
+            f"({', '.join(f'{n} {m:.0f}Mi' for n, m in sorted(nodes.items())) or 'none read'}). "
+            "That means this is a container's view, not the host's, and every "
+            "headroom number below would be about the wrong machine.")
+        return lines, False, False
+
+    biggest, where = largest_limit(pods)
+    if available is None:
+        lines.append(f"CANNOT ATTRIBUTE MEMORY — {MEMINFO} carries no MemAvailable")
+        return lines, False, False
+    available_mib = available / 1024
+
+    actionable = False
+    if biggest is None:
+        lines.append(
+            f"MEMORY  {host}: {available_mib:.0f}Mi of {total:.0f}Mi available. "
+            "No container here sets a memory limit, so there is no configured "
+            "size to judge that against.")
+    elif available_mib < biggest:
+        actionable = True
+        lines.append(
+            f"NODE OUT OF MEMORY — {host} has {available_mib:.0f}Mi available of "
+            f"{total:.0f}Mi ({available_mib / total * 100:.1f}%), which is less than the "
+            f"largest container limit configured on it ({biggest:.0f}Mi, {where}). "
+            "The next time that workload rolls, the host cannot fit it.")
+    else:
+        lines.append(
+            f"MEMORY  {host}: {available_mib:.0f}Mi of {total:.0f}Mi available "
+            f"({available_mib / total * 100:.1f}%), above the largest configured "
+            f"container limit ({biggest:.0f}Mi, {where}).")
+
+    swap_total = meminfo.get("SwapTotal", 0) / 1024
+    swap_free = meminfo.get("SwapFree", 0) / 1024
+    if swap_total <= 0:
+        lines.append(f"SWAP    {host}: none configured, so there is no overflow to judge.")
+    elif swap_free < swap_total * SWAP_NEARLY_GONE:
+        actionable = True
+        lines.append(
+            f"SWAP EXHAUSTED — {host} has {swap_free:.0f}Mi free of {swap_total:.0f}Mi "
+            f"({swap_free / swap_total * 100:.1f}%). Swap is the overflow that turns a "
+            "memory spike into a slowdown; with it gone the next spike is a kill.")
+    else:
+        lines.append(
+            f"SWAP    {host}: {swap_free:.0f}Mi free of {swap_total:.0f}Mi "
+            f"({swap_free / swap_total * 100:.1f}%).")
+    return lines, actionable, True
+
+
+def report(pods, deployments, now, headroom=None):
     lines = []
     actionable = False
 
@@ -463,6 +614,15 @@ def report(pods, deployments, now):
             lines.append(
                 f"  {h['namespace']}/{h['pod']} [{h['container']}] — {h['restarts']} restart(s)")
 
+    if headroom is not None:
+        head_lines, head_actionable, judged = headroom
+        lines.extend(head_lines)
+        actionable = actionable or head_actionable
+        if not judged:
+            # Unattributable is not clean. Raising here would merge it with a
+            # real finding, so it is left to main to turn into an exit 1.
+            pass
+
     lines.append(
         f"Read {len(pods)} Pod(s) and {len(deployments)} Deployment(s) from the live "
         "cluster, not from git.")
@@ -492,10 +652,24 @@ def main(argv=None, runner=subprocess.run, now=None):
         print(f"COULD NOT READ  {why}")
         return 1
 
+    meminfo, why = read_meminfo()
+    if why:
+        print(f"COULD NOT READ  {why}")
+        return 1
+    nodes, why = read_node_capacity(runner)
+    if why:
+        print(f"COULD NOT READ  {why}")
+        return 1
+    headroom = memory_headroom(meminfo, nodes, pods)
+
     lines, status = report(
-        pods, deployments, now or datetime.datetime.now(datetime.timezone.utc))
+        pods, deployments, now or datetime.datetime.now(datetime.timezone.utc),
+        headroom=headroom)
     for line in lines:
         print(line)
+    # A reading that could not be attributed to a host never reads as clean.
+    if not headroom[2] and status == 0:
+        return 1
     return status
 
 

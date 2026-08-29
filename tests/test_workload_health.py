@@ -268,3 +268,166 @@ def test_read_deployments_takes_the_grace_off_the_pod_template():
     assert deps[0]["grace"] == 2880
     assert deps[0]["available"] is False
     assert deps[0]["strategy"] == "Recreate"
+
+
+# --- Cycle 616: does this host still have room to start what it runs? -----
+#
+# server1 was at 487Mi of 7746Mi available with swap 0.0% free while the
+# control plane fell over, and none of the checks read either number.
+
+MEMINFO = """MemTotal:        7931600 kB
+MemFree:          178804 kB
+MemAvailable:     451752 kB
+Cached:           402464 kB
+SwapTotal:       2097148 kB
+SwapFree:        1500000 kB
+"""
+
+NODES = {"server1": 7931600 / 1024}
+
+
+def _meminfo(**overrides):
+    fields = {}
+    for line in MEMINFO.splitlines():
+        name, _, rest = line.partition(":")
+        fields[name.strip()] = float(rest.split()[0])
+    fields.update(overrides)
+    return fields
+
+
+def _pod_with_limit(mib, name="big"):
+    return _pod(name=name, limits={"c": f"{mib}Mi"})
+
+
+def test_mib_reads_every_suffix_kubernetes_writes():
+    assert wh._mib("1Gi") == 1024
+    assert wh._mib("512Mi") == 512
+    assert wh._mib("1048576Ki") == 1024
+    assert wh._mib("1048576") == 1  # bare bytes
+    assert wh._mib(None) is None
+    assert wh._mib("not-a-size") is None
+
+
+def test_read_meminfo_parses_the_file(tmp_path):
+    path = tmp_path / "meminfo"
+    path.write_text(MEMINFO)
+    fields, why = wh.read_meminfo(str(path))
+    assert why is None
+    assert fields["MemAvailable"] == 451752
+    assert fields["SwapTotal"] == 2097148
+
+
+def test_read_meminfo_without_memtotal_is_unreadable(tmp_path):
+    path = tmp_path / "meminfo"
+    path.write_text("Cached: 1 kB\n")
+    fields, why = wh.read_meminfo(str(path))
+    assert fields is None
+    assert "MemTotal" in why
+
+
+def test_a_meminfo_that_matches_no_node_is_not_judged():
+    # If a runtime ever fakes /proc/meminfo per container, this reads a
+    # container's memory and would call it the host's.
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemTotal=2097152), NODES, [_pod_with_limit(256)])
+    assert judged is False
+    assert actionable is False
+    assert "CANNOT ATTRIBUTE MEMORY" in lines[0]
+
+
+def test_available_below_the_largest_configured_limit_raises():
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=451752), NODES, [_pod_with_limit(2048)])
+    assert judged is True
+    assert actionable is True
+    assert any("NODE OUT OF MEMORY" in line for line in lines)
+
+
+def test_available_above_the_largest_configured_limit_is_quiet():
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=451752), NODES, [_pod_with_limit(64)])
+    assert actionable is False
+    assert any(line.startswith("MEMORY ") for line in lines)
+
+
+def test_the_threshold_is_the_biggest_limit_not_the_first_one():
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=451752), NODES,
+        [_pod_with_limit(64, name="small"), _pod_with_limit(2048, name="big")])
+    assert actionable is True
+    assert "agents/big [c]" in " ".join(lines)
+
+
+def test_no_container_sets_a_limit_so_there_is_nothing_to_judge_against():
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=1), NODES, [_pod()])
+    assert judged is True
+    assert actionable is False
+    assert "no configured size" in " ".join(lines).lower() or "No container here sets" in " ".join(lines)
+
+
+def test_swap_nearly_gone_raises_on_its_own():
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(SwapFree=224), NODES, [_pod_with_limit(64)])
+    assert actionable is True
+    assert any("SWAP EXHAUSTED" in line for line in lines)
+
+
+def test_swap_with_room_left_does_not_raise():
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(SwapFree=1500000), NODES, [_pod_with_limit(64)])
+    assert actionable is False
+    assert any(line.startswith("SWAP ") for line in lines)
+
+
+def test_a_host_with_no_swap_at_all_is_not_a_finding():
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(SwapTotal=0, SwapFree=0), NODES, [_pod_with_limit(64)])
+    assert actionable is False
+    assert "none configured" in " ".join(lines)
+
+
+def test_missing_memavailable_is_not_judged():
+    fields = _meminfo()
+    del fields["MemAvailable"]
+    _, actionable, judged = wh.memory_headroom(fields, NODES, [_pod_with_limit(64)])
+    assert judged is False
+    assert actionable is False
+
+
+def test_report_without_headroom_is_unchanged():
+    # The 26 tests above call report/3; adding a fourth argument must not
+    # change what any of them assert.
+    lines, status = wh.report([_pod()], [], NOW)
+    assert status == 0
+    assert not any("MEMORY" in line for line in lines)
+
+
+def test_an_unattributable_reading_makes_main_exit_1(capsys, monkeypatch):
+    monkeypatch.setattr(wh, "read_meminfo", lambda *a, **k: (_meminfo(MemTotal=2097152), None))
+
+    def runner(args, **kwargs):
+        if "pods" in args:
+            body = {"items": [{"metadata": {"namespace": "agents", "name": "p"},
+                               "spec": {"containers": []}, "status": {"phase": "Running"}}]}
+        elif "nodes" in args:
+            body = {"items": [{"metadata": {"name": "server1"},
+                               "status": {"capacity": {"memory": "7931600Ki"}}}]}
+        else:
+            body = {"items": []}
+        return type("P", (), {"returncode": 0, "stdout": json.dumps(body), "stderr": ""})()
+
+    assert wh.main([], runner=runner, now=NOW) == 1
+    assert "CANNOT ATTRIBUTE MEMORY" in capsys.readouterr().out
+
+
+def test_an_unreadable_meminfo_never_reads_as_clean(capsys, monkeypatch):
+    monkeypatch.setattr(wh, "read_meminfo", lambda *a, **k: (None, "could not read /proc/meminfo"))
+
+    def runner(args, **kwargs):
+        body = {"items": [{"metadata": {"namespace": "agents", "name": "p"},
+                           "spec": {"containers": []}, "status": {"phase": "Running"}}]}
+        return type("P", (), {"returncode": 0, "stdout": json.dumps(body), "stderr": ""})()
+
+    assert wh.main([], runner=runner, now=NOW) == 1
+    assert "COULD NOT READ" in capsys.readouterr().out
