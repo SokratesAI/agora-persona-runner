@@ -130,6 +130,7 @@ CHECKS = (
     "helm_repo_health",
     "argocd_health",
     "crossplane_health",
+    "claim_drift",
     "running_images",
     "workload_health",
     "ci_health",
