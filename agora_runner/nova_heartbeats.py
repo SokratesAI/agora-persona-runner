@@ -118,7 +118,8 @@ def heartbeats():
             "id": hid,
             "name": h.get("name") or "(unnamed)",
             "personaId": h.get("personaId") or "",
-            "personaName": names.get(h.get("personaId")) or "",
+            "personaName": nova_conversations.visible_persona_name(
+                h.get("personaId"), names.get(h.get("personaId"))),
             "conversationId": h.get("conversationId") or "",
             "schedule": h.get("schedule") or "",
             "task": h.get("task") or "",

@@ -90,6 +90,32 @@ def test_the_curator_name_comes_off_the_personas_list():
     assert row["updatedAt"] == "2026-08-20T13:24:25.848Z"
 
 
+def test_nova_itself_is_not_written_onto_the_row():
+    """Idea #95, slice 4. 687 of the 700 conversations in the live store
+    carry this one persona, so "Nova" was on the meta line of nearly every
+    row in an app that is Nova-only. The 13 answered by somebody else are
+    the only ones where the name says anything."""
+    mine = dict(LIVE_ROW, personas=[
+        {"personaId": convs.NOVA_PERSONA_ID, "role": "curator", "name": "Nova"}])
+    (payload, _calls) = _run(convs.conversations, conversations=[mine])
+    row = payload["conversations"][0]
+    assert row["personaName"] == ""
+    # The model still reaches the row: this blanks a name, it does not blank
+    # the meta line, and `app.js` joins what is left with `.filter(Boolean)`.
+    assert row["model"] == "claude-cli:claude-sonnet-5"
+
+
+def test_a_second_persona_also_called_nova_keeps_its_name():
+    """Matched on the id, not the string. Two distinct personas in the live
+    store are both named "Nova" -- 08ffac94 on 687 conversations and
+    8972a54d on 2 -- and the second one genuinely is not me."""
+    other = dict(LIVE_ROW, personas=[
+        {"personaId": "8972a54d-cafa-4f07-a527-d8686cea51ca",
+         "role": "curator", "name": "Nova"}])
+    (payload, _calls) = _run(convs.conversations, conversations=[other])
+    assert payload["conversations"][0]["personaName"] == "Nova"
+
+
 def test_archived_conversations_are_left_out():
     """414 of the 454 threads in the live store are archived cycle
     conversations. A list that carries them is not a list he can use."""
