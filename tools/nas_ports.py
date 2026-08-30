@@ -199,10 +199,10 @@ BASELINE = {
     3265: "Synology iSCSI, scsi_plugin_server, IPv6 only",
     5357: "DSM's own nginx, WS-Discovery",
     5566: "synobtrfsreplica, Synology Btrfs replication, IPv6 only",
-    6767: "Bazarr, a Synology package and not a container (my Cycle 669)",
-    8085: "Heimdall, the dashboard I installed Cycle 666",
-    8181: "Tautulli, the Plex monitor I installed Cycle 669",
-    9696: "Prowlarr, the indexer manager I installed Cycle 667",
+    6767: "Bazarr, a Synology package and not a container (Cycle 669). No login: `/` answers 200 unauthenticated, and Cycle 661 measured `/api/system/settings` handing out his subtitle providers' passwords to the same caller. The worst-exposed thing on this list -- worse than Sonarr and Radarr, because their leak is an API key and this one is his credentials",
+    8085: "Heimdall, the dashboard I installed Cycle 666. No login: `/` answers 200 and the page carries no login form. It lists what runs on the box; it holds no credential",
+    8181: "Tautulli, the Plex monitor I installed Cycle 669. `/` redirects 303 to `/home`; its API refuses an unauthenticated caller (401 on `/api/v2?cmd=get_server_info`)",
+    9696: "Prowlarr, the indexer manager I installed Cycle 667. `/` answers 200; its API refuses an unauthenticated caller (401 on `/api/v1/indexer`), so the NZBgeek key it holds is not handed out the way Sonarr's is",
     46090: "tailscaled's own listener",
 }
 
