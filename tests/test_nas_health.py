@@ -58,6 +58,17 @@ def _refuses(exc=None, delay=0.0):
 HOP = {"host": "10.0.0.9", "user": "nova", "key": "/etc/nas-ssh/id_ed25519"}
 
 
+def _locked(_hop):
+    """nzbget answering that its control interface is locked. `False` is the
+    healthy answer there and this check reads neither branch -- it reads that
+    the call returned rather than raised."""
+    return False
+
+
+def _plex(_hop):
+    return "1.41.6.9685-d301f511a"
+
+
 # --- the reachability half --------------------------------------------------
 
 
@@ -123,12 +134,13 @@ def test_a_service_that_is_down_exits_2_even_though_the_box_answered():
         "RADARR_API_KEY": "b",
     }
     out = io.StringIO()
-    code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get)
+    code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
+                           nzbget=_locked, plex=_plex)
     assert code == 2
     body = out.getvalue()
     assert "SERVICE DOWN" in body
     assert "REACHABLE" in body  # the box was up; only the app was not
-    assert "2 service(s)" in body
+    assert "4 service(s) of 4" in body  # all four were judged; one of them is down
 
 
 def test_both_services_answering_is_a_clean_sweep():
@@ -142,12 +154,13 @@ def test_both_services_answering_is_a_clean_sweep():
         "RADARR_API_KEY": "b",
     }
     out = io.StringIO()
-    code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get)
+    code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
+                           nzbget=_locked, plex=_plex)
     assert code == 0
     body = out.getvalue()
     assert "SERVICES OK" in body
     assert "4.3.2.6857" in body
-    assert "2 service(s)" in body
+    assert "4 service(s) of 4" in body
 
 
 def test_a_hop_that_configures_nothing_is_unreadable_not_clean():
@@ -159,12 +172,93 @@ def test_a_hop_that_configures_nothing_is_unreadable_not_clean():
         raise FileNotFoundError("no ssh here")
 
     out = io.StringIO()
-    code = nas_health.main([], env={}, out=out, connect=_answers(), ssh=HOP, run=run)
+    code = nas_health.main([], env={}, out=out, connect=_answers(), ssh=HOP, run=run,
+                           nzbget=_locked, plex=_plex)
     assert code == 1
-    assert "SERVICES UNREADABLE" in out.getvalue()
+    body = out.getvalue()
+    assert "SERVICES UNREADABLE" in body
+    # Neither of these needs an API key, so a failed discovery must not turn a
+    # live nzbget into an unjudged one.
+    assert "nzbget answered over the hop" in body
+    assert "2 service(s) of 4" in body
 
 
 def test_the_host_is_named_even_with_no_hop_and_an_override_wins():
     out = io.StringIO()
     nas_health.main([], env={"NAS_SSH_HOST": "10.9.9.9"}, out=out, connect=_answers(), ssh=None)
     assert "10.9.9.9" in out.getvalue()
+
+
+# --- the two services that answer with no credential -------------------------
+
+
+def test_a_dead_nzbget_exits_2_even_though_the_arr_apps_are_fine():
+    # This is the whole point of Cycle 648's change: before it, nzbget could be
+    # down and this check said "2 service(s)" and exited 0.
+    def get(name, conf, path, **kw):
+        return {"version": "4.3.2.6857"}
+
+    def dead(_hop):
+        raise nas.Unreachable("curl on the NAS exited 7: connection refused")
+
+    env = {
+        "SONARR_URL": "http://127.0.0.1:8989",
+        "SONARR_API_KEY": "a",
+        "RADARR_URL": "http://127.0.0.1:7878",
+        "RADARR_API_KEY": "b",
+    }
+    out = io.StringIO()
+    code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
+                           nzbget=dead, plex=_plex)
+    assert code == 2
+    body = out.getvalue()
+    assert "nzbget did not answer over the hop" in body
+    assert "4 service(s) of 4" in body
+
+
+def test_a_dead_plex_exits_2():
+    def get(name, conf, path, **kw):
+        return {"version": "4.3.2.6857"}
+
+    def dead(_hop):
+        raise nas.Unreachable("plex answered 000 on /identity")
+
+    env = {
+        "SONARR_URL": "http://127.0.0.1:8989",
+        "SONARR_API_KEY": "a",
+        "RADARR_URL": "http://127.0.0.1:7878",
+        "RADARR_API_KEY": "b",
+    }
+    out = io.StringIO()
+    code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
+                           nzbget=_locked, plex=dead)
+    assert code == 2
+    assert "plex did not answer over the hop" in out.getvalue()
+
+
+def test_an_unlocked_nzbget_is_still_alive_here_and_does_not_raise():
+    # `nas_watch` owns that verdict. If this check raised on it too, the same
+    # finding would have to be cleared in two places.
+    def get(name, conf, path, **kw):
+        return {"version": "4.3.2.6857"}
+
+    env = {
+        "SONARR_URL": "http://127.0.0.1:8989",
+        "SONARR_API_KEY": "a",
+        "RADARR_URL": "http://127.0.0.1:7878",
+        "RADARR_API_KEY": "b",
+    }
+    out = io.StringIO()
+    code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
+                           nzbget=lambda _hop: True, plex=_plex)
+    assert code == 0
+    assert "4 service(s) of 4" in out.getvalue()
+
+
+def test_no_hop_says_all_four_went_unjudged():
+    out = io.StringIO()
+    code = nas_health.main([], env={}, out=out, connect=_answers(), ssh=None)
+    assert code == 0
+    body = out.getvalue()
+    assert "none of the 4 service(s)" in body
+    assert "0 service(s) of 4" in body
