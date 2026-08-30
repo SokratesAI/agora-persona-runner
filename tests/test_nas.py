@@ -907,3 +907,146 @@ def test_a_movie_sorts_above_the_same_days_episodes_not_two_hours_into_it():
     # film with no time on the 20th -- the day is the Oslo day, not the UTC one.
     assert nas._sort_key("2026-10-20") < nas._sort_key("2026-10-19T23:00:00Z")
     assert nas._sort_key("2026-10-19T18:00:00Z") < nas._sort_key("2026-10-20")
+
+
+# --- bazarr -----------------------------------------------------------------
+#
+# The fifth app on that box, added Cycle 661. Two seams and one boundary: the
+# key comes off an unauthenticated front page, the version comes out of a
+# `{"data": {...}}` envelope, and `/api/system/settings` -- which that same key
+# opens, and which returns his subtitle providers' passwords in plaintext --
+# must not be reachable from this module at all.
+
+#: A fabricated key, not the one on his box. Bazarr publishes its real key in
+#: the HTML of its own unauthenticated front page -- which is the finding this
+#: module reports -- and putting that string in a test fixture would commit a
+#: live credential to a public-history repo on top of it. Cycle 661 did
+#: exactly that and the secret scan caught it before the merge.
+BAZARR_INDEX = (
+    '<!DOCTYPE html><html><head><title>Bazarr</title></head><body>'
+    '<script>window.Bazarr = JSON.parse(`{"apiKey": '
+    '"deadbeefcafe0123deadbeefcafe0123", "baseUrl": "", "canUpdate": false}`);'  # gitleaks:allow -- fabricated, not his key
+    '</script></body></html>'
+)
+
+BAZARR_RELEASES = (
+    '{"data": ['
+    '{"name": "v1.6.1-beta.34", "date": "2026-08-20", "prerelease": true, "current": false},'
+    '{"name": "v1.6.0", "date": "2026-07-04", "prerelease": false, "current": false},'
+    '{"name": "v1.5.6", "date": "2026-02-26", "prerelease": false, "current": false}'
+    ']}'
+)
+
+
+def test_bazarr_read_only_refuses_the_settings_endpoint():
+    # The one that matters by its absence. `/api/system/settings` answers 200
+    # to the key this module can read, and the body carries credentials.
+    with pytest.raises(ValueError):
+        nas._bazarr_url("/api/system/settings")
+
+
+def test_bazarr_read_only_refuses_the_status_endpoint():
+    # Not a security boundary like the one above -- `/api/system/status` does
+    # not answer on that box, and a path this module cannot name is a path no
+    # later edit can quietly start waiting on.
+    with pytest.raises(ValueError):
+        nas._bazarr_url("/api/system/status")
+
+
+def test_bazarr_key_comes_off_the_unauthenticated_front_page(monkeypatch):
+    fetch = _hop_returning((BAZARR_INDEX, 200))
+    monkeypatch.setattr(nas, "_fetch_over_ssh", fetch)
+    assert nas.bazarr_key({"host": "h"}) == "deadbeefcafe0123deadbeefcafe0123"  # gitleaks:allow -- fabricated, not his key
+    url, headers = fetch.calls[0]
+    assert headers == ()  # the page is served to anyone; that is the finding
+    assert url == f"http://127.0.0.1:{nas.BAZARR_PORT}/"
+
+
+def test_bazarr_key_missing_raises_rather_than_returning_none(monkeypatch):
+    # `discover_key` answers None because a missing key there is one of two
+    # *arr apps going unconfigured. Here it has to be distinguishable from an
+    # unreadable release list, so it raises.
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("<html>login</html>", 200)))
+    with pytest.raises(nas.Unreachable, match="no `apiKey`"):
+        nas.bazarr_key({"host": "h"})
+
+
+def test_bazarr_key_refuses_a_non_200(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("", 500)))
+    with pytest.raises(nas.Unreachable, match="500"):
+        nas.bazarr_key({"host": "h"})
+
+
+def test_bazarr_standing_reads_the_release_list_and_sends_the_key(monkeypatch):
+    fetch = _hop_returning((BAZARR_INDEX, 200), (BAZARR_RELEASES, 200))
+    monkeypatch.setattr(nas, "_fetch_over_ssh", fetch)
+    newest, date, current, listed = nas.bazarr_standing({"host": "h"}, env={})
+    # The beta row is dropped: being behind a prerelease is not a finding.
+    assert (newest, date, current, listed) == ("v1.6.0", "2026-07-04", False, 2)
+    url, headers = fetch.calls[1]
+    assert url == f"http://127.0.0.1:{nas.BAZARR_PORT}/api/system/releases"
+    assert headers == ("X-API-KEY: deadbeefcafe0123deadbeefcafe0123",)  # gitleaks:allow -- fabricated, not his key
+
+
+def test_bazarr_standing_is_current_when_a_stable_row_is_flagged(monkeypatch):
+    body = ('{"data": [{"name": "v1.6.0", "date": "2026-07-04", '
+            '"prerelease": false, "current": true}]}')
+    monkeypatch.setattr(nas, "_fetch_over_ssh",
+                        _hop_returning((BAZARR_INDEX, 200), (body, 200)))
+    assert nas.bazarr_standing({"host": "h"}, env={})[2] is True
+
+
+def test_bazarr_standing_prefers_a_key_from_the_environment(monkeypatch):
+    # The day he puts a login on it, the front page stops being the path.
+    fetch = _hop_returning((BAZARR_RELEASES, 200))
+    monkeypatch.setattr(nas, "_fetch_over_ssh", fetch)
+    nas.bazarr_standing({"host": "h"}, env={"BAZARR_API_KEY": "handed-in"})
+    assert len(fetch.calls) == 1  # the front page was never asked for
+    assert fetch.calls[0][1] == ("X-API-KEY: handed-in",)
+
+
+def test_bazarr_standing_refuses_a_non_200(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh",
+                        _hop_returning((BAZARR_INDEX, 200), ("", 401)))
+    with pytest.raises(nas.Unreachable, match="401"):
+        nas.bazarr_standing({"host": "h"}, env={})
+
+
+def test_bazarr_standing_refuses_a_200_that_is_not_json(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh",
+                        _hop_returning((BAZARR_INDEX, 200), ("<html>login", 200)))
+    with pytest.raises(nas.Unreachable, match="not JSON"):
+        nas.bazarr_standing({"host": "h"}, env={})
+
+
+def test_bazarr_standing_refuses_json_with_no_data_list(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh",
+                        _hop_returning((BAZARR_INDEX, 200), ('{"data": {}}', 200)))
+    with pytest.raises(nas.Unreachable, match="no `data` list"):
+        nas.bazarr_standing({"host": "h"}, env={})
+
+
+def test_bazarr_standing_refuses_a_list_of_prereleases_only(monkeypatch):
+    # An all-beta window carries no published release to be behind, and
+    # answering "current" over it would be a verdict from no evidence.
+    body = '{"data": [{"name": "v1.6.1-beta.34", "prerelease": true, "current": true}]}'
+    monkeypatch.setattr(nas, "_fetch_over_ssh",
+                        _hop_returning((BAZARR_INDEX, 200), (body, 200)))
+    with pytest.raises(nas.Unreachable, match="no published release"):
+        nas.bazarr_standing({"host": "h"}, env={})
+
+
+def test_bazarr_standing_refuses_a_row_with_no_name(monkeypatch):
+    body = '{"data": [{"date": "2026-07-04", "prerelease": false, "current": false}]}'
+    monkeypatch.setattr(nas, "_fetch_over_ssh",
+                        _hop_returning((BAZARR_INDEX, 200), (body, 200)))
+    with pytest.raises(nas.Unreachable, match="no `name`"):
+        nas.bazarr_standing({"host": "h"}, env={})
+
+
+def test_bazarr_is_in_the_media_inventory_and_not_in_services():
+    # `SERVICES` is the *arr shape; `MEDIA_SERVICES` is what runs on the box.
+    assert "bazarr" in nas.MEDIA_SERVICES
+    assert "bazarr" not in nas.SERVICES
+    assert len(nas.MEDIA_SERVICES) == 5
+

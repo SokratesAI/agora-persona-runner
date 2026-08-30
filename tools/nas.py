@@ -186,6 +186,38 @@ PLEX_PORT = 32400
 # on this list, so there is no path from here to his media or his account.
 PLEX_READ_ONLY = {"/identity"}
 
+# Bazarr is the fifth media service on that box and the fourth shape. Like
+# Plex it is a Synology package rather than a docker-compose container --
+# `/volume1/@appstore/bazarr/share/bazarr`, measured Cycle 661 -- so it is
+# nowhere in `/volume1/docker/docker-compose.yml` and `nas.config` was never
+# going to find it. Like Sonarr and Radarr it hands its API key to anyone who
+# loads its front page, but from the index HTML itself rather than from an
+# `/initialize.*` file, which is why `discover_key` does not cover it. It is
+# not in `SERVICES` for the same reason nzbget and plex are not: every
+# function that takes a service assumes the *arr `/api/v3` shape.
+BAZARR_PORT = 6767
+
+# The whole Bazarr surface this module may touch: the front page, which is
+# where the key is, and the status object, which carries the running version.
+#
+# `/api/system/settings` is deliberately absent and it is the one that matters
+# by its absence. Measured Cycle 661: it answers 200 to that same
+# unauthenticated-to-obtain key and returns his subtitle providers' usernames,
+# passwords and session cookies in plaintext. Nothing here may be able to ask
+# for it -- a check that reads a credential puts it in a log, and this loop's
+# logs are read by a language model and written into a vault.
+# `/api/system/status` is deliberately absent too, and for a duller reason:
+# it is where the running version string lives and **it does not answer.**
+# Measured Cycle 661, five reads minutes apart on the same box: one 200 in
+# 0.016s, and four still waiting at 15s, 25s, 45s and 90s. That endpoint asks
+# Sonarr and Radarr for their versions to fill in its own reply (both come
+# back `unknown` here, and Bazarr's health check says it cannot see either
+# app's root directory), so a cold call blocks on somebody else's timeout.
+# A check that waits 45s and fails every cycle is the check nobody reads, so
+# the standing below is read from `/api/system/releases` instead, which
+# answered in under a second on every attempt.
+BAZARR_READ_ONLY = {"/", "/api/system/releases"}
+
 # Everything on that box this loop knows about, in one place.
 #
 # `SERVICES` above is narrower on purpose -- it is the set of *arr apps whose
@@ -198,7 +230,7 @@ PLEX_READ_ONLY = {"/identity"}
 # missing is the one they are all measured against: how many things run on
 # that box. It is here so a check can say "2 of 4" without hand-copying a 4
 # that nothing keeps true.
-MEDIA_SERVICES = SERVICES + ("nzbget", "plex")
+MEDIA_SERVICES = SERVICES + ("nzbget", "plex", "bazarr")
 
 _UNSET = object()  # `ssh=None` means "no hop"; not passing it at all means "find out"
 
@@ -327,6 +359,83 @@ def plex_version(ssh, port=None, run=subprocess.run):
     if not version:
         raise Unreachable("plex's /identity carried no `version` attribute")
     return version
+
+
+def _bazarr_url(path, port=None):
+    if path not in BAZARR_READ_ONLY:
+        raise ValueError(f"{path} is not a read-only endpoint this tool may call")
+    return f"http://127.0.0.1:{port or BAZARR_PORT}{path}"
+
+
+def bazarr_key(ssh, port=None, run=subprocess.run):
+    """Bazarr's API key, read off its own unauthenticated front page.
+
+    Same standing as `discover_key` and for the same reason: this is not a
+    trick and it is not a new exposure. Bazarr serves `/` with no login and
+    embeds `window.Bazarr = JSON.parse(`{"apiKey": ...}`)` in it, so every
+    device on that LAN already has this key; reading it from the box I already
+    hold SSH on adds nothing. `BAZARR_API_KEY` in the environment wins, so the
+    day he puts a login on it this stops being the path.
+
+    Raises `Unreachable` rather than returning None when the page did not
+    carry one -- `nas_versions` has to be able to tell "no key" from "no
+    version", and a None here would collapse them.
+    """
+    body, code = _fetch_over_ssh(ssh, _bazarr_url("/", port), run=run)
+    if code != 200:
+        raise Unreachable(f"bazarr answered {code} on /")
+    found = _API_KEY.search(body)
+    if not found:
+        raise Unreachable("bazarr's front page carried no `apiKey`")
+    return found.group(1)
+
+
+def bazarr_standing(ssh, port=None, key=None, env=None, run=subprocess.run):
+    """`(newest, date, current, listed)` -- is Bazarr running its own newest release?
+
+    Raises `Unreachable` when Bazarr did not answer in a way that carries an
+    opinion. No "assume it is fine" branch, the same contract `plex_version`
+    holds: an unreadable app must never come back looking like a current one.
+
+    **This asks Bazarr about itself rather than comparing two strings.**
+    `/api/system/releases` returns the project's newest published releases and
+    flags the one the box is running with `"current": true` -- so the verdict
+    is Bazarr's own, taken against the release list Bazarr itself fetched, and
+    there is no version parsing here to get wrong. `current` is False on every
+    row when the running build is older than the whole window, which is what
+    the NAS answers today: five rows back to `v1.5.4` and none of them it.
+
+    `newest` and `date` are the newest non-prerelease row, for the report to
+    print. `listed` is how many stable rows were read, so a one-row answer can
+    never read like a five-row one.
+    """
+    env = os.environ if env is None else env
+    key = (key or (env.get("BAZARR_API_KEY") or "").strip()
+           or bazarr_key(ssh, port, run=run))
+    body, code = _fetch_over_ssh(
+        ssh, _bazarr_url("/api/system/releases", port),
+        headers=(f"X-API-KEY: {key}",), run=run,
+    )
+    if code != 200:
+        raise Unreachable(f"bazarr answered {code} on /api/system/releases")
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:
+        raise Unreachable(f"bazarr answered {len(body)} bytes that are not JSON") from exc
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise Unreachable("bazarr's /api/system/releases carried no `data` list")
+    # Prereleases are dropped rather than judged: that repo's release list is
+    # almost entirely `-beta` tags within the next train, and being behind a
+    # beta is not a finding.
+    stable = [r for r in rows if isinstance(r, dict) and not r.get("prerelease")]
+    if not stable:
+        raise Unreachable("bazarr's /api/system/releases carried no published release")
+    newest = str(stable[0].get("name") or "").strip()
+    if not newest:
+        raise Unreachable("bazarr's newest published release carried no `name`")
+    current = any(bool(r.get("current")) for r in stable)
+    return newest, str(stable[0].get("date") or "").strip(), current, len(stable)
 
 
 def nzbget_credential(env=None, ssh=None, run=subprocess.run):

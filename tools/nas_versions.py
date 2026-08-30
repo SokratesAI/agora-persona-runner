@@ -54,14 +54,34 @@ age alone needs a threshold in days that I would be inventing, and a version
 comparison already answers the question with the project's own opinion in it.
 So the age is context, and the gap is the verdict.
 
-**Three things it does not judge, said here rather than discovered later.**
+**Two things it does not judge, said here rather than discovered later.**
 nzbget is on that box and is not here: its version is behind its password
 (`/jsonrpc/version` answers 401 unauthenticated, measured Cycle 640), so
 reading it needs `NZBGET_USER`/`NZBGET_PASS` handed in, and a check that is
-`NOT JUDGED` on every normal cycle is one nobody reads. Plex was in this list
-until Cycle 645 and is now judged -- see below. And an upstream release this
-pod cannot read is never cleared: it prints and exits 1, because an unjudged
-version must not look like a current one.
+`NOT JUDGED` on every normal cycle is one nobody reads. And an upstream
+release this pod cannot read is never cleared: it prints and exits 1, because
+an unjudged version must not look like a current one.
+
+Plex was in that list until Cycle 645 and **Bazarr until Cycle 661**; both are
+judged now. Bazarr is the fifth app on that box, it is not in
+`/volume1/docker/docker-compose.yml` at all (it is a Synology package, like
+Plex), and nothing in this loop had ever read its version -- `nas.config`
+sweeps the compose services and closed honestly on a denominator one short.
+Bazarr is judged differently from the other four and it is the one exception
+in this file: **by its own `current` flag, not by a version comparison.** The
+endpoint carrying its running version answered once in five reads (Cycle 661;
+see `nas.BAZARR_READ_ONLY` for the measurement and the reason), and a check
+that waits and fails every cycle is the one nobody reads. `/api/system/releases`
+answers in under a second and already holds the answer -- Bazarr fetches its
+own project's release list and flags the row it is running. Measured Cycle 661
+on the NAS: five stable rows back to `v1.5.4`, newest `v1.6.0` from
+2026-07-04, and **`current` false on every one of them**.
+
+It serves its API key out of the HTML of its own unauthenticated front page,
+which is how this reads it at all. That key also opens `/api/system/settings`,
+which returns his subtitle providers' usernames and passwords in plaintext --
+which is why `nas.BAZARR_READ_ONLY` does not contain that path and nothing
+here can ask for it.
 
 **Plex is judged now, and it is a different shape from the two *arr apps in
 three ways worth naming before the code says it.** It is a Synology package
@@ -213,7 +233,8 @@ def _age_phrase(days):
 
 def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
            latest_release=pin_drift.latest_release, now=None,
-           plex_running=nas.plex_version, plex_latest=plex_upstream):
+           plex_running=nas.plex_version, plex_latest=plex_upstream,
+           bazarr_standing=nas.bazarr_standing):
     """Print the report and return the exit status."""
     hop = nas.ssh_config(env) if ssh is nas._UNSET else ssh
     if hop is None:
@@ -240,6 +261,10 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
     # and it is judged against a different upstream, so adding it to a
     # "2 of 2" would make that sentence mean two different things.
     plex_behind, plex_current = [], []
+    # Bazarr is counted on its own line for the same reason, and it is the
+    # fifth service on that box rather than a fourth *arr: a Synology package
+    # with its own API shape and its own upstream.
+    bazarr_behind, bazarr_current = [], []
     # `nas.unconfigured` is the shared form of this: one transient failure
     # fetching sonarr's `/initialize.js` silently removes sonarr from the
     # sweep, and a denominator of `len(conf_all)` then reports "1 of 1" over
@@ -296,6 +321,8 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
 
     plex_judged = _judge_plex(hop, run, plex_running, plex_latest, plex_behind,
                               plex_current, unjudged)
+    bazarr_judged = _judge_bazarr(hop, run, bazarr_standing, bazarr_behind,
+                                  bazarr_current, unjudged)
 
     if behind:
         print("MAJOR VERSION BEHIND -- an app on the NAS is running a major line its own "
@@ -319,6 +346,18 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
               "package. Nothing here will do it for him.", file=out)
         status = 2
 
+    if bazarr_behind:
+        print("BAZARR IS BEHIND ITS OWN PUBLISHED RELEASES -- this is Bazarr's own "
+              "verdict on itself, read off the release list it fetches, not a comparison "
+              "made here.", file=out)
+        for line in bazarr_behind:
+            print(f"  {line}", file=out)
+        print("  Bazarr has no login either, and it publishes its API key in the HTML of "
+              "its own front page -- which is enough to reach `/api/system/settings`, "
+              "where his subtitle providers' passwords are stored in plaintext. The fix "
+              "is his: update the Synology package.", file=out)
+        status = 2
+
     if unjudged:
         print("CANNOT JUDGE -- neither cleared nor raised:", file=out)
         for service, why in unjudged:
@@ -330,6 +369,11 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         for line in plex_current:
             print(f"  {line}", file=out)
 
+    if bazarr_current:
+        print("BAZARR IS ON ITS NEWEST PUBLISHED RELEASE -- printed, not raised:", file=out)
+        for line in bazarr_current:
+            print(f"  {line}", file=out)
+
     if current:
         # Deliberately not "on its current major": a minor gap and a build
         # ahead of the newest release both land here, and calling either of
@@ -338,16 +382,20 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         for line in current:
             print(f"  {line}", file=out)
 
-    if not behind and not plex_behind and not unjudged:
+    if not behind and not plex_behind and not bazarr_behind and not unjudged:
         print(f"NO APP IS BEHIND ITS OWN RELEASE TRAIN on {len(judged)} service(s): "
-              f"{', '.join(judged) or 'none'}, and plex.", file=out)
+              f"{', '.join(judged) or 'none'}, plus plex and bazarr.", file=out)
 
     plex_phrase = "plus plex" if plex_judged else "and plex could NOT be judged"
+    bazarr_phrase = "plus bazarr" if bazarr_judged else "and bazarr could NOT be judged"
     print(f"Judged the running version of {len(judged)} service(s) of {len(nas.SERVICES)} "
-          f"{plex_phrase}, read over the SSH hop. nzbget is not judged -- its version is "
+          f"{plex_phrase} {bazarr_phrase}, read over the SSH hop -- {len(nas.MEDIA_SERVICES)} "
+          "app(s) run on that box. nzbget is the one not judged -- its version is "
           "behind its password. For sonarr and radarr a minor or patch gap is printed and "
-          "does not raise; for plex the train is the major.minor pair, so a minor gap "
-          "raises and only a patch is printed.", file=out)
+          "does not raise; for plex the train is the major.minor pair, so a "
+          "minor gap raises and only a patch is printed. Bazarr is judged by its own "
+          "`current` flag rather than by a version comparison -- the endpoint carrying "
+          "its version does not answer.", file=out)
     return status
 
 
@@ -381,6 +429,41 @@ def _judge_plex(hop, run, plex_running, plex_latest, behind, current, unjudged):
     # `ahead` are not. Spelled as the raising set rather than as "not patch",
     # so a verdict this function has never seen cannot fall through to clean.
     (behind if verdict in ("major", "minor") else current).append(line)
+    return True
+
+
+def _judge_bazarr(hop, run, bazarr_standing, behind, current, unjudged):
+    """Judge Bazarr into the caller's lists. Returns whether it got a verdict.
+
+    Read here rather than inside the *arr loop for the same reason Plex is:
+    `nas.config` never sees it (a Synology package, not a compose service),
+    its key comes off its front page rather than an `/initialize.*` file, and
+    it answers under `/api` rather than `/api/v3`.
+
+    **It is also the only one of the five judged without a version comparison,
+    and that is deliberate rather than a shortcut.** The endpoint carrying the
+    running version does not answer on that box -- one 200 in five reads,
+    Cycle 661, see `nas.BAZARR_READ_ONLY` -- while `/api/system/releases`
+    answers in under a second and already carries the answer: Bazarr fetches
+    its own project's release list and flags the row it is running. So the
+    verdict is Bazarr's own opinion of itself. Measured Cycle 661 on the NAS:
+    five stable rows back to `v1.5.4` (2026-01-04), newest `v1.6.0`
+    (2026-07-04), and `current` false on every one of them -- the running
+    build is older than that whole window.
+    """
+    try:
+        newest, date, is_current, listed = (
+            bazarr_standing(hop) if run is None else bazarr_standing(hop, run=run))
+    except nas.Unreachable as exc:
+        unjudged.append(("bazarr", f"its release standing is unreadable -- {exc}"))
+        return False
+    when = f" ({date})" if date else ""
+    if is_current:
+        current.append(f"bazarr is running the newest published release, {newest}{when}, "
+                       f"by its own reckoning over {listed} stable row(s)")
+    else:
+        behind.append(f"bazarr is running none of the {listed} newest published "
+                      f"release(s) it lists; the newest is {newest}{when}")
     return True
 
 
