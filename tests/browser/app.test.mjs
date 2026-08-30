@@ -8974,6 +8974,97 @@ describe("the chat dock", () => {
       "the box cannot be focused at all, so he can never type");
   });
 
+  /* Sticking to the bottom only when he is already there -- his capture on
+   * `issues.md`, 2026-08-30: *"Chat auto-scrolls to the bottom every time a
+   * new message arrives even if I've scrolled up to reread something --
+   * annoying, should only stick to bottom if I was already near it."*
+   *
+   * These three need faked layout and would be worthless without it, which
+   * is the whole reason the helper is here rather than inline. jsdom runs no
+   * layout, so `scrollHeight` and `clientHeight` are 0 on every element, and
+   * `atBottom` therefore answers true for every position -- a test written
+   * against the real jsdom numbers passes identically on the old code that
+   * always jumped and on the new code that does not. `scrollable` hands the
+   * thread what a browser would have measured: 1000px of messages in a 200px
+   * panel, so the bottom of it is `scrollTop` 800. */
+  function scrollable(node, scrollHeight, clientHeight) {
+    Object.defineProperty(node, "scrollHeight", { configurable: true, get: () => scrollHeight });
+    Object.defineProperty(node, "clientHeight", { configurable: true, get: () => clientHeight });
+    return node;
+  }
+
+  /** A thread that is one message longer on every poll, and never done, so a
+   *  repaint is guaranteed to have happened between two `fire()` calls. */
+  function growingThread() {
+    let turn = 0;
+    return () => {
+      turn += 1;
+      const messages = [{ id: "q", sender: "Edvard", text: "q" }];
+      for (let i = 0; i < turn; i += 1) {
+        messages.push({ id: "a" + i, sender: "Nova Answers", text: "answer " + i });
+      }
+      return { conversationId: "c", waiting: true, messages };
+    };
+  }
+
+  function threadTexts(window) {
+    return [...window.document.querySelectorAll("#chat-thread .ask-text")].length;
+  }
+
+  test("an answer arriving while he has scrolled up leaves him on the message he was rereading", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: growingThread(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    const before = threadTexts(window);
+    thread.scrollTop = 120;
+    await timers.fire();
+    assert.ok(threadTexts(window) > before,
+      "no new message was painted, so this test could not have failed");
+    assert.equal(thread.scrollTop, 120,
+      "a new message threw him back to the bottom while he was reading an older one");
+  });
+
+  test("an answer arriving while he is at the bottom still follows it down", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: growingThread(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    const before = threadTexts(window);
+    thread.scrollTop = 800;
+    await timers.fire();
+    assert.ok(threadTexts(window) > before,
+      "no new message was painted, so this test could not have failed");
+    assert.equal(thread.scrollTop, 1000,
+      "the newest answer arrived off screen for someone who was watching for it");
+  });
+
+  /* The other direction, and the one that would have made the fix worse than
+   * the bug. `renderAskThread` empties the container, and emptying it resets
+   * `scrollTop` to 0 -- so a fix that merely dropped the jump would have sent
+   * him to the *top* of the thread on every poll. */
+  test("a poll does not throw him to the top of the thread either", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: growingThread(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 450;
+    await timers.fire();
+    assert.notEqual(thread.scrollTop, 0, "the repaint put him at the top of the thread");
+  });
+
   /* The growing composer -- his capture, issues.md 2026-08-25: *"make the
    * input field start at one line, then when the content is two lines it
    * gets tall enough to fit two lines and dynamicly scales up to 10 lines
