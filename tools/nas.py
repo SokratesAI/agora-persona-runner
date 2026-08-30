@@ -151,6 +151,11 @@ READ_ONLY = {
 
 SERVICES = ("sonarr", "radarr")
 
+# Radarr's three release dates, in the order the API declares them. Read as a
+# set of candidates, never as a priority order -- the first one present is not
+# the one a row is on the calendar for. See `_movie_date`.
+RELEASE_FIELDS = ("inCinemas", "digitalRelease", "physicalRelease")
+
 # nzbget is the third media service on the NAS and it is not an *arr: no API
 # key, no `/api/v3`, and a JSON-RPC control interface behind HTTP basic auth.
 # It is here rather than in `SERVICES` because every function above that takes
@@ -647,7 +652,7 @@ def calendar(conf_all, days=7, get=_get, today=None):
     "Radarr is off".
     """
     start, end = _window(days, today)
-    lines, failures = [], []
+    dated, failures = [], []
     for name in SERVICES:
         conf = conf_all.get(name)
         if not conf:
@@ -665,10 +670,15 @@ def calendar(conf_all, days=7, get=_get, today=None):
             failures.append(str(exc))
             continue
         for row in rows or []:
-            line = _episode_line(row) if name == "sonarr" else _movie_line(row)
+            if name == "sonarr":
+                key, line = _sort_key(row.get("airDateUtc")), _episode_line(row)
+            else:
+                when = _movie_date(row, start, end)
+                key, line = _sort_key(when), _movie_line(row, start, end)
             if line:
-                lines.append(line)
-    return lines, failures
+                dated.append((key, line))
+    dated.sort()
+    return [line for _, line in dated], failures
 
 
 def _episode_line(ep):
@@ -679,16 +689,69 @@ def _episode_line(ep):
     return f"{when}  {series} {code} — {ep.get('title') or 'untitled'} ({have})"
 
 
-def _movie_line(movie):
-    # All three release fields are `date-time` in the spec, not date-only, and
-    # any of them may be absent. Slicing the first present one to ten
-    # characters gets both halves wrong: it shows the UTC calendar day while
-    # every other line here is Oslo, and a film on the calendar for its
-    # digital release still carries a cinema date from months earlier, which
-    # would sort to the top of a seven-day window.
-    dates = [_to_oslo_date(movie.get(k)) for k in ("inCinemas", "digitalRelease", "physicalRelease")]
-    present = sorted(d for d in dates if d)
-    when = present[0] if present else "date unknown"
+def _sort_key(stamp):
+    """What a calendar row sorts on: its instant, never its printed form.
+
+    Every line here used to be ordered by `sorted(lines)` in `main`, which
+    compares the *rendered* text -- so `07 Oct` sorted above `16 Sep`, and a
+    movie's ISO date landed wherever its leading digits happened to fall. Over
+    a seven-day window that is almost always right by accident, because the
+    rows share a month; over thirty it is nonsense, and I only saw it by
+    running `--days 60` against his live NAS.
+
+    Sonarr hands out a UTC `date-time`, which is converted here so the order
+    matches the Oslo times the rows print. Radarr's dates have already been
+    folded to an Oslo day by `_to_oslo_date` and are returned untouched --
+    re-parsing one would read its midnight as UTC and shift the row two hours
+    into the day it is not on. Both are ISO, so lexicographic order is
+    chronological order across the two, and `2026-10-20` sorts above
+    `2026-10-20T06:00...` because it is a prefix of it, which puts a film with
+    no time above that day's timed episodes.
+
+    Anything missing or unparseable sorts last rather than to the top: a row
+    with no date is the least useful one on the page, not the most urgent.
+    """
+    if not stamp:
+        return "9999"
+    if "T" not in stamp:
+        return stamp if stamp[:1].isdigit() else "9999"
+    try:
+        parsed = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return stamp if stamp[:1].isdigit() else "9999"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(OSLO).isoformat()
+
+
+def _movie_date(movie, start=None, end=None):
+    """The release date a film is on this calendar *for*.
+
+    All three release fields are `date-time` in the spec, not date-only, and
+    any of them may be absent. Slicing the first present one to ten characters
+    gets both halves wrong: it shows the UTC calendar day while every other
+    line here is Oslo, and a film on the calendar for its digital release
+    still carries a cinema date from months earlier.
+
+    Taking the earliest present date has the same fault in a quieter form, and
+    it is what this did until now: Radarr put `Hadestown: The Musical` in a
+    window starting 30 August 2026 and the row printed `2026-07-23`, a date
+    five weeks before the window it was selected for. Radarr matched *some*
+    release on the window, so when a window is given, the date to show is the
+    earliest one inside it -- that is the fact that put the row on the page.
+    With no window (a direct call) the earliest present date is still the
+    answer, which is what `_movie_line`'s own test asserts.
+    """
+    dates = sorted(d for d in (_to_oslo_date(movie.get(k)) for k in RELEASE_FIELDS) if d)
+    if start and end:
+        inside = [d for d in dates if start <= d <= end]
+        if inside:
+            return inside[0]
+    return dates[0] if dates else None
+
+
+def _movie_line(movie, start=None, end=None):
+    when = _movie_date(movie, start, end) or "date unknown"
     have = "have it" if movie.get("hasFile") else "not downloaded"
     return f"{when}  {movie.get('title') or 'untitled'} ({movie.get('year') or '?'}) ({have})"
 
@@ -839,7 +902,9 @@ def main(argv=None, env=None, get=_get, out=sys.stdout, ssh=_UNSET):
 
     if args.cmd == "calendar":
         lines, failures = calendar(conf_all, days=args.days, get=get)
-        for line in sorted(lines):
+        # `calendar` returns them in date order. Sorting again here is what
+        # put October above September.
+        for line in lines:
             print(line, file=out)
         if not lines and not failures:
             print(f"nothing airing or releasing in the next {args.days} day(s).", file=out)
