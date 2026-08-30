@@ -208,3 +208,36 @@ def test_source_revision_runs_even_when_only_names_one_check(monkeypatch):
     names = [r[0] for r in seen["r"]]
     assert names == ["source_revision", "doc_integrity"]
     assert seen["r"][0][1] == 2
+
+
+def test_a_git_that_hangs_does_not_take_the_whole_sweep_down(monkeypatch, tmp_path):
+    # Only the first git call used to be guarded, so a `git fetch` that hit its
+    # timeout would raise out of source_revision, out of main(), and lose every
+    # other check's result along with it.
+    import subprocess
+
+    def boom(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=60)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    code, report = preflight.source_revision(directory=str(tmp_path))
+    assert code == 0
+    assert "CANNOT SEE" in report
+
+
+def test_a_fetch_that_fails_still_measures_against_the_local_ref(tmp_path):
+    upstream, up_run = _repo(tmp_path, "upstream")
+    import subprocess
+    work = tmp_path / "work"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work)], check=True)
+    (upstream / "f").write_text("two")
+    up_run("commit", "-qam", "two")
+    subprocess.run(["git", "-C", str(work), "fetch", "-q", "origin", "main"], check=True)
+    # Break the remote so the fetch inside source_revision cannot succeed.
+    subprocess.run(["git", "-C", str(work), "remote", "set-url", "origin",
+                    str(tmp_path / "gone")], check=True)
+
+    code, report = preflight.source_revision(directory=str(work))
+    assert code == 2, report
+    assert "fetch failed" in report
+    assert "BEHIND origin/main by 1 commit(s)" in report

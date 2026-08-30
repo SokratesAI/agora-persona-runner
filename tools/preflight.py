@@ -221,16 +221,20 @@ def source_revision(directory=None, fetch=True):
     """
     directory = directory or os.path.dirname(tools_dir())
 
-    def git(*args):
-        return subprocess.run(["git", "-C", directory] + list(args),
-                              capture_output=True, text=True, timeout=60)
+    failed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
 
-    try:
-        inside = git("rev-parse", "--is-inside-work-tree")
-    except (OSError, subprocess.SubprocessError) as exc:
-        return 0, f"CANNOT SEE -- git is not usable here ({exc.__class__.__name__})."
+    def git(*args):
+        """Never raises. A git that hangs or is missing must not take the sweep down with it."""
+        try:
+            return subprocess.run(["git", "-C", directory] + list(args),
+                                  capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return failed
+
+    inside = git("rev-parse", "--is-inside-work-tree")
     if inside.returncode != 0:
-        return 0, f"CANNOT SEE -- {directory} is not a git checkout, so there is no revision to name."
+        return 0, (f"CANNOT SEE -- {directory} is not a usable git checkout, so there is "
+                   f"no revision to name.")
 
     head = git("rev-parse", "--short", "HEAD").stdout.strip() or "?"
     branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "?"
