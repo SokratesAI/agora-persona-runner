@@ -96,6 +96,22 @@ NOTIFICATION_PATH = "/api/v3/notification"
 #: raising on it would blur the one claim this check makes.
 EXECUTES = frozenset({"CustomScript"})
 
+#: The same question asked of Tautulli, whose API names its agents in its own
+#: vocabulary: `scripts` is the agent that takes a path under its script
+#: folder and runs it when an event fires. Every other agent it ships --
+#: Discord, Pushover, Telegram, a webhook -- posts somewhere and is printed
+#: rather than raised, for the same reason `Webhook` is absent from `EXECUTES`
+#: above.
+TAUTULLI_EXECUTES = frozenset({"scripts"})
+
+
+def _tautulli_label(row):
+    """`friendly name | agent` for a Tautulli notifier, tolerant of a thin row."""
+    name = (row.get("friendly_name") or "").strip() or "(unnamed)"
+    agent = (row.get("agent_label") or row.get("agent_name") or "").strip() or "(no agent)"
+    return f"{name} | {agent}"
+
+
 
 def _row_label(row):
     """`name | implementation` for a notification, tolerant of a thin row.
@@ -115,7 +131,8 @@ def _executes(row):
 
 def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
            unlocked=nas.nzbget_unlocked, config=nas.nzbget_config,
-           credential=nas.nzbget_credential):
+           credential=nas.nzbget_credential, key=nas.tautulli_key,
+           notifiers=nas.tautulli_notifiers):
     """Print the report and return the exit status."""
     hop = nas.ssh_config(env) if ssh is nas._UNSET else ssh
     if hop is None:
@@ -137,8 +154,12 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         # unrelated failure one line above it.
         nzb_status, nzb_judged = _nzbget(hop, out, env=env, run=run, credential=credential, unlocked=unlocked,
                                          config=config)
-        _print_sweep(0, nzb_judged, out)
-        return max(1, nzb_status)
+        # Tautulli is judged here for the same reason nzbget is: its key comes
+        # off its own config file rather than out of `nas.config`, so whatever
+        # made the two *arr apps unreadable does not reach it.
+        tau_status, tau_judged = _tautulli(hop, out, env=env, run=run, key=key, notifiers=notifiers)
+        _print_sweep(0, nzb_judged, tau_judged, out)
+        return max(1, nzb_status, tau_status)
 
     status = 0
     judged = []
@@ -209,17 +230,27 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
 
     nzb_status, nzb_judged = _nzbget(hop, out, env=env, run=run, credential=credential, unlocked=unlocked, config=config)
     status = max(status, nzb_status)
-    _print_sweep(len(judged), nzb_judged, out)
+    tau_status, tau_judged = _tautulli(hop, out, env=env, run=run, key=key, notifiers=notifiers)
+    status = max(status, tau_status)
+    _print_sweep(len(judged), nzb_judged, tau_judged, out)
     return status
 
 
 # Every place on the NAS that can be configured to run a command: the two *arr
-# notification lists, plus nzbget's extension settings. `nas.SERVICES` is the
-# *arr pair only, so counting the sweep against it counts two thirds of the box.
-SURFACES = len(nas.SERVICES) + 1
+# notification lists, nzbget's extension settings, and Tautulli's notification
+# agents. `nas.SERVICES` is the *arr pair only, so counting the sweep against it
+# counts half the box.
+#
+# Tautulli is the fourth and it was missing for two cycles: I installed it on that
+# box myself in Cycle 669, it has a Script notification agent that runs an
+# executable on every event, and nothing here asked it anything. That is this
+# check's own founding lesson pointed back at me -- the denominator is what
+# exists, not what answered -- and the denominator moved the day I added a
+# service, not the day I noticed.
+SURFACES = len(nas.SERVICES) + 2
 
 
-def _print_sweep(arr_judged, nzbget_judged, out):
+def _print_sweep(arr_judged, nzbget_judged, tautulli_judged, out):
     """The one line `tools.preflight` shows for this check.
 
     It has to carry nzbget, and until Cycle 646 it did not. The summary said
@@ -234,13 +265,16 @@ def _print_sweep(arr_judged, nzbget_judged, out):
     answered** -- and here the unjudged third is the one carrying the remote
     code-execution path.
     """
-    judged = arr_judged + (1 if nzbget_judged else 0)
+    judged = arr_judged + (1 if nzbget_judged else 0) + (1 if tautulli_judged else 0)
     print(f"Judged the code-execution surface of {judged} service(s) of {SURFACES}, read over "
           "the SSH hop. This is current state only: a notification added and removed between "
           "two cycles leaves no trace here.", file=out)
     if not nzbget_judged:
         print("  nzbget's extension list is one of those surfaces and was not judged -- so this "
               "is not a clean sweep of the box, whatever the exit status says.", file=out)
+    if not tautulli_judged:
+        print("  Tautulli's notification agents are one of those surfaces and were not judged -- "
+              "so this is not a clean sweep of the box, whatever the exit status says.", file=out)
 
 
 def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=nas.nzbget_config,
@@ -302,6 +336,48 @@ def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=n
     return 0, True
 
 
+def _tautulli(hop, out, env=None, run=None, key=nas.tautulli_key, notifiers=nas.tautulli_notifiers):
+    """The Tautulli half. Returns `(exit status, was its notifier list judged)`.
+
+    The second element is the same distinction `_nzbget` draws: an unreadable
+    key is a fact about this pod's reach, not a finding about the NAS, so it
+    does not raise -- and it is also not a judgement of the list, so it must
+    not be counted as one in the sweep line.
+    """
+    kwargs = {} if run is None else {"run": run}
+    try:
+        found = key(hop, env=env, **kwargs)
+    except nas.Unreachable as exc:
+        print(f"  NOT JUDGED  Tautulli's notification agents -- its key could not be read: {exc}.",
+              file=out)
+        print("  This does not raise: an unreadable key is a fact about this pod, not a finding "
+              "about the NAS.", file=out)
+        return 0, False
+
+    try:
+        rows = notifiers(hop, found, **kwargs)
+    except nas.Unreachable as exc:
+        print(f"UNREADABLE  tautulli: {exc}", file=out)
+        return 1, False
+
+    executing = [row for row in rows if (row.get("agent_name") or "").strip() in TAUTULLI_EXECUTES]
+    other = [row for row in rows if row not in executing]
+    if other:
+        print(f"Tautulli also has {len(other)} notification agent(s) that post somewhere rather "
+              "than run something on the NAS:", file=out)
+        for row in other:
+            print(f"  tautulli: {_tautulli_label(row)}", file=out)
+    if executing:
+        print("CODE EXECUTION CONFIGURED -- Tautulli is set to run a script on an event.", file=out)
+        for row in executing:
+            print(f"  tautulli: {_tautulli_label(row)}", file=out)
+        print("  Ask him before removing it -- he may have added it himself.", file=out)
+        return 2, True
+
+    print(f"  Tautulli has no script notification agent; {len(rows)} agent(s) read.", file=out)
+    return 0, True
+
+
 def _runs_a_script(name):
     """Does this nzbget setting name something that gets executed?
 
@@ -318,13 +394,14 @@ def _runs_a_script(name):
 
 def main(argv=None, env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
          unlocked=nas.nzbget_unlocked, config=nas.nzbget_config,
-         credential=nas.nzbget_credential):
+         credential=nas.nzbget_credential, key=nas.tautulli_key,
+         notifiers=nas.tautulli_notifiers):
     argparse.ArgumentParser(
         prog="python3 -m tools.nas_watch",
         description=__doc__.split("\n")[0],
     ).parse_args(argv)
     return report(env=env, out=out, get=get, ssh=ssh, run=run, unlocked=unlocked, config=config,
-                  credential=credential)
+                  credential=credential, key=key, notifiers=notifiers)
 
 
 if __name__ == "__main__":
