@@ -139,6 +139,7 @@ CHECKS = (
     "nas_egress",
     "nas_versions",
     "nas_ports",
+    "nas_privilege",
     "survey",
 )
 
