@@ -396,3 +396,13 @@ def test_verbose_does_not_report_every_clean_check_as_unclean():
     out = io.StringIO()
     preflight.render(results, stream=out, verbose=True)
     assert "1 check(s) did not come back clean" in out.getvalue()
+
+
+def test_a_one_line_caveat_is_not_printed_under_itself():
+    # `source_revision` with no git checkout exits 0 and its whole report is
+    # one `CANNOT SEE` line, so the collapsed summary and the caveat are the
+    # same sentence. Printing it indented under itself says nothing new.
+    only = "CANNOT SEE -- /x is not a usable git checkout, so there is 1 unknown."
+    _, text = render([("source_revision", 0, only + "\n", 0.1)])
+    assert text.count(only) == 1
+    assert "could not fully judge" not in text

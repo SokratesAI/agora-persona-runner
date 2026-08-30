@@ -364,7 +364,12 @@ def render(results, stream=sys.stdout, verbose=False):
         word = STATUS_WORD.get(code, f"EXIT {code}")
         print(f"{name:20}{word:12}{seconds:>6.1f}  {summary_line(output)}", file=stream)
         if code == 0:
-            caveats = caveat_lines(output)
+            # A caveat that is *already* the summary line is not repeated: a
+            # one-line report -- `source_revision` with no git checkout says
+            # only `CANNOT SEE -- ...` and exits 0 -- would otherwise print
+            # itself twice, once collapsed and once indented under itself.
+            summary = summary_line(output)
+            caveats = [line for line in caveat_lines(output) if line != summary]
             if caveats:
                 caveated += 1
             for line in caveats:
