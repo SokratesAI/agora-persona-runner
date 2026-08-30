@@ -148,17 +148,16 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
 
     status = 0
     judged, behind, current, unjudged = [], [], [], []
-    # `nas.config` drops a service whose key discovery failed -- `discover_key`
-    # swallows an unreachable app and returns None, and `config` continues past
-    # it. So iterating `conf_all` alone means one transient failure fetching
-    # sonarr's `/initialize.js` silently removes sonarr from the sweep, and a
-    # denominator of `len(conf_all)` then reports "1 of 1" over it. The total is
-    # what `tools.nas` says exists, never what came back. My reviewer found this
-    # by making one service undiscoverable: the four-year-old Sonarr this file
-    # exists to find disappeared, and the report exited 0.
-    for service in sorted(set(nas.SERVICES) - set(conf_all)):
-        unjudged.append((service, "no configuration came back for it -- its API key could not "
-                                  "be discovered, so it was never asked"))
+    # `nas.unconfigured` is the shared form of this: one transient failure
+    # fetching sonarr's `/initialize.js` silently removes sonarr from the
+    # sweep, and a denominator of `len(conf_all)` then reports "1 of 1" over
+    # it. My reviewer found it here by making one service undiscoverable --
+    # the four-year-old Sonarr this file exists to find disappeared and the
+    # report exited 0 -- and Cycle 643 found the same shape still live in
+    # `tools.nas_watch` and `tools.nas_egress`, which is why the reconciliation
+    # moved into `tools.nas` rather than being written a third time.
+    for service in nas.unconfigured(conf_all):
+        unjudged.append((service, nas.UNDISCOVERED_REASON))
     for service in sorted(conf_all):
         try:
             info = get(service, conf_all[service], STATUS_PATH)

@@ -120,7 +120,8 @@ def test_an_unreadable_service_is_1_and_never_reads_as_empty():
                           "radarr": []})
     status, text = _run(get)
     assert status == 1
-    assert "UNREADABLE  sonarr" in text
+    assert "CANNOT JUDGE" in text
+    assert "sonarr" in text
     # It judged one of two, and says so, so a partial sweep cannot be read as
     # a clean one.
     assert "1 service(s) of 2" in text
@@ -299,3 +300,20 @@ def test_nzbget_is_still_judged_when_no_arr_can_be_configured(monkeypatch):
     assert status == 2
     assert "SERVICES UNREADABLE" in out.getvalue()
     assert "NZBGET CONTROL IS OPEN" in out.getvalue()
+
+
+def test_a_service_whose_key_discovery_failed_is_not_a_clean_sweep(monkeypatch):
+    """One unasked app must not read as "no code execution configured".
+
+    `nas.config` drops a service whose API-key discovery failed. With a
+    denominator of `len(conf_all)` this check printed "NO CODE EXECUTION
+    CONFIGURED on 1 service(s)" and "1 of 1" and exited 0 while sonarr -- the
+    app that would carry a Custom Script -- was never asked at all.
+    """
+    monkeypatch.setattr(nas, "config", lambda env=None, ssh=None, run=None: _conf("radarr"))
+    status, text = _run(_get_returning({"radarr": []}))
+    assert status == 1
+    assert "CANNOT JUDGE" in text
+    assert "sonarr" in text
+    assert "NO CODE EXECUTION CONFIGURED" not in text
+    assert "Judged the notification list of 1 service(s) of 2" in text

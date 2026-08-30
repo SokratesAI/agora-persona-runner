@@ -168,30 +168,44 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None):
         print("SERVICES UNREADABLE -- the SSH hop exists but no *arr service could be configured "
               "through it.", file=out)
         print(nas.UNCONFIGURED_HELP, file=out)
-        print("Judged 0 of 2 service(s). An unreadable service is not a clean sweep.", file=out)
+        print(f"Judged 0 of {len(nas.SERVICES)} service(s). An unreadable service is not a "
+              "clean sweep.", file=out)
         return 1
 
     status = 0
     judged = []
+    unreadable = []
     buckets = {LOCAL: [], OFF_LAN: [], UNJUDGED: []}
+    for service in nas.unconfigured(conf_all):
+        # The denominator is what `tools.nas` says exists, never what came
+        # back: `nas.config` drops a service whose key discovery failed, so
+        # counting its result reports "1 of 1" over an app nobody asked.
+        unreadable.append((service, nas.UNDISCOVERED_REASON))
+        status = max(status, 1)
     for service in sorted(conf_all):
         try:
             rows = get(service, conf_all[service], DOWNLOAD_CLIENT_PATH)
         except nas.Unreachable as exc:
-            print(f"UNREADABLE  {service}: {exc}", file=out)
+            unreadable.append((service, str(exc)))
             status = max(status, 1)
             continue
         if not isinstance(rows, list):
             # A proxy or a login page can answer 200 with JSON that is not a
             # list. `[]` and "something that is not a list" are opposite
             # findings and only one of them is "no download clients".
-            print(f"UNREADABLE  {service}: {DOWNLOAD_CLIENT_PATH} answered "
-                  f"{type(rows).__name__}, not a list", file=out)
+            unreadable.append((service, f"{DOWNLOAD_CLIENT_PATH} answered "
+                                        f"{type(rows).__name__}, not a list"))
             status = max(status, 1)
             continue
         judged.append(service)
         for row in rows:
             buckets[classify(_field(row, "host"))].append((service, row))
+
+    if unreadable:
+        print("CANNOT JUDGE -- these services were never asked, so nothing below is a claim "
+              "about them:", file=out)
+        for service, why in sorted(unreadable):
+            print(f"  {service}: {why}", file=out)
 
     if buckets[OFF_LAN]:
         print("DOWNLOAD CLIENT OFF THE LAN -- an app on the NAS is configured to hand its "
@@ -216,11 +230,13 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None):
         for service, row in buckets[LOCAL]:
             print(f"  {service}: {_row_label(row)}", file=out)
 
-    if not buckets[OFF_LAN] and not buckets[UNJUDGED]:
+    if not buckets[OFF_LAN] and not buckets[UNJUDGED] and not unreadable:
+        # Guarded on `unreadable` too: an everything-is-fine headline printed
+        # directly under a service nobody asked is the finding inverted.
         print(f"EVERY DOWNLOAD CLIENT IS ON HIS OWN NETWORK on {len(judged)} service(s): "
               f"{', '.join(judged) or 'none'}.", file=out)
 
-    print(f"Judged the download clients of {len(judged)} service(s) of {len(conf_all)}, read "
+    print(f"Judged the download clients of {len(judged)} service(s) of {len(nas.SERVICES)}, read "
           "over the SSH hop. This is current state only, and it judges where a destination is "
           "rather than whether it can be trusted.", file=out)
     return status

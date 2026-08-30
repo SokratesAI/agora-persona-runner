@@ -136,6 +136,7 @@ def test_a_second_lan_client_does_not_raise():
     status, text = _report({
         "sonarr": [_client(), _client(name="sab", host="192.168.0.50", port=8080,
                                       implementation="Sabnzbd")],
+        "radarr": [_client()],
     })
     assert status == 0
     assert "sab | Sabnzbd -> 192.168.0.50:8080" in text
@@ -154,7 +155,8 @@ def test_an_unreadable_service_is_not_an_empty_list():
         "radarr": [_client()],
     })
     assert status == 1
-    assert "UNREADABLE  sonarr: refused the key" in text
+    assert "CANNOT JUDGE" in text
+    assert "sonarr: refused the key" in text
     assert "Judged the download clients of 1 service(s) of 2" in text
 
 
@@ -205,3 +207,29 @@ def test_it_only_ever_asks_for_the_download_client_endpoint():
     assert get.asked == [("radarr", nas_egress.DOWNLOAD_CLIENT_PATH),
                          ("sonarr", nas_egress.DOWNLOAD_CLIENT_PATH)]
     assert nas_egress.DOWNLOAD_CLIENT_PATH in nas.READ_ONLY
+
+
+def test_a_service_whose_key_discovery_failed_is_not_a_clean_sweep():
+    """The bug this file's denominator used to hide, and the reason it matters.
+
+    `nas.config` drops a service whose API-key discovery failed, so one
+    transient fetch of sonarr's `/initialize.js` removed sonarr from the sweep
+    entirely -- and with a denominator of `len(conf_all)` the report printed
+    "1 of 1", said every download client was on his own network, and exited 0
+    over an app it had never asked. Radarr answering cleanly must not clear
+    sonarr.
+    """
+    status, text = _report({"radarr": [_client()]})
+    assert status == 1
+    assert "CANNOT JUDGE" in text
+    assert "sonarr" in text
+    assert "EVERY DOWNLOAD CLIENT IS ON HIS OWN NETWORK" not in text
+    assert "Judged the download clients of 1 service(s) of 2" in text
+
+
+def test_an_off_lan_row_still_outranks_a_service_that_was_never_asked():
+    """A real finding must not be demoted to 1 by an unasked service beside it."""
+    status, text = _report({"radarr": [_client(host="8.8.8.8")]})
+    assert status == 2
+    assert "DOWNLOAD CLIENT OFF THE LAN" in text
+    assert "sonarr" in text
