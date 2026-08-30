@@ -85,9 +85,14 @@ printed in the declared order regardless, so two runs are comparable.
 """
 import argparse
 import concurrent.futures
+import datetime as dt
+import hashlib
+import json
 import os
+import re
 import subprocess
 import sys
+from zoneinfo import ZoneInfo
 
 #: The step-1a status checks, in the order `prompt.md` lists them.
 #:
@@ -216,6 +221,114 @@ def summary_line(output):
 
 CAVEAT_MARKERS = ("NOT JUDGED", "NOT ASKED", "CANNOT JUDGE", "CANNOT SEE",
                   "CANNOT READ", "COULD NOT READ", "UNREADABLE")
+
+
+#: How long a *standing* finding may go without being reproduced in full.
+#: The owner, comments board 2026-08-30: *"It is a bit heavy to check this
+#: system every day... So spending that many tokens is wasteful."* Measured on
+#: this morning's sweep: eight of the twenty-six checks exited non-zero, every
+#: one of them a finding I cannot close from this loop -- server1's memory
+#: (issue #131), the two NAS apps waiting on his upgrade, a Dependabot alert
+#: that is already fixed and unrescanned, goreleaser v5. Between them they are
+#: ~120 lines reproduced verbatim, at a 40-minute cadence, roughly 36 times a
+#: day, and then carried in context for the ~90 turns that follow.
+#:
+#: This does not drop any of them and does not touch a single exit code. A
+#: finding that has not changed since the last sweep collapses to one line
+#: naming when it was first seen and when its full text last printed; the row
+#: above it still says ACT, `--verbose` still prints it whole, and after this
+#: many hours it prints in full again whether or not it changed. The rule is
+#: the owner's own (`personality.md`): an interface problem gets an interface,
+#: never less data.
+REPRINT_HOURS = 24.0
+
+#: Where the "have I already printed this" record lives. Not in the checkout:
+#: concurrent cycles each get their own `git worktree`, so a per-tree file
+#: would make every cycle the first one. Not in `/data/workspace` either --
+#: `tools.tidy_workspace` archives loose files at that root. `preflight` is
+#: run from the bridge pod, whose `/data/claude-home` persists across cycles.
+#: A run with no readable record simply prints everything, which is the safe
+#: direction to fail in.
+STATE_PATH = os.environ.get(
+    "NOVA_PREFLIGHT_STATE",
+    os.path.join(os.path.expanduser("~"), ".nova-preflight-state.json"),
+)
+
+
+def finding_shape(output):
+    """A digit-blind fingerprint of a check's output, plus its line count.
+
+    Exact text will not do. Most of these findings carry a number that moves
+    every single run -- `1853Mi available`, `built 1334 day(s) ago`, an elapsed
+    time -- so an exact comparison would say "changed" every cycle and this
+    whole mechanism would never fire once.
+
+    So digits are blinded and **the line count is compared separately and
+    exactly**. That is the part that keeps it honest: a second alert, a third
+    unhealthy pod, a newly-missing module all *add a line*, and a change in
+    line count is never collapsed. What a digit-blind match does forgive is
+    the same finding restated with a different number in it, which is the
+    case this exists for.
+
+    It is not a free ride even then: `REPRINT_HOURS` puts the full text back
+    in front of me on a fixed clock regardless of whether anything moved.
+    """
+    lines = [l.rstrip() for l in output.splitlines() if l.strip()]
+    blinded = "\n".join(re.sub(r"\d+", "#", l) for l in lines)
+    return len(lines), hashlib.sha256(blinded.encode("utf-8")).hexdigest()[:16]
+
+
+def load_state(path=None):
+    """The record of what has already been printed. Unreadable is empty, never fatal."""
+    try:
+        with open(path or STATE_PATH) as fh:
+            state = json.load(fh)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state, path=None):
+    """Best effort. A read-only home must not take the sweep down with it."""
+    path = path or STATE_PATH
+    try:
+        with open(path, "w") as fh:
+            json.dump(state, fh)
+    except OSError:
+        pass
+
+
+def _oslo(stamp):
+    try:
+        moment = dt.datetime.fromtimestamp(stamp, dt.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return "an unreadable time"
+    return moment.astimezone(ZoneInfo("Europe/Oslo")).strftime("%Y-%m-%d %H:%M Oslo")
+
+
+def repeat_verdict(name, code, output, state, now):
+    """(collapse?, one line about it, the state entry to keep) for one check.
+
+    `state` is read, never mutated here -- the caller decides what to persist,
+    so a `--verbose` run cannot quietly reset everybody's reprint clock.
+    """
+    count, shape = finding_shape(output)
+    entry = state.get(name) or {}
+    same = entry.get("shape") == shape and entry.get("lines") == count
+    first_seen = entry.get("first_seen", now) if same else now
+    printed = entry.get("printed_at", 0.0) if same else 0.0
+    hours = (now - printed) / 3600.0
+
+    if code == 0 or not same or hours >= REPRINT_HOURS:
+        return False, "", {"shape": shape, "lines": count,
+                           "first_seen": first_seen, "printed_at": now}
+
+    due = REPRINT_HOURS - hours
+    return True, (f"UNCHANGED since {_oslo(first_seen)} ({count} line(s)); full text "
+                  f"last printed {hours:.1f}h ago and prints again in {due:.1f}h. "
+                  f"--verbose for it now."), {"shape": shape, "lines": count,
+                                              "first_seen": first_seen,
+                                              "printed_at": printed}
 
 
 def caveat_lines(output):
@@ -354,10 +467,21 @@ def source_revision(directory=None, fetch=True):
                    f"{fetched} -- every check on main exists here.")
     return 0, f"Current: {where}, level with origin/main{fetched}."
 
-def render(results, stream=sys.stdout, verbose=False):
-    """Print the collapsed report. `results` is a list of (name, code, output, seconds)."""
+def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep=None):
+    """Print the collapsed report. `results` is a list of (name, code, output, seconds).
+
+    `state` is the repeat record from `load_state`; pass `None` to disable the
+    repeat collapse entirely, which is what `--verbose` and `--no-state` do.
+    `keep` is an optional dict this fills with the record to persist, so the
+    caller owns the write and a run that printed nothing in full cannot mark
+    everything as printed.
+    """
+    import time as _time
+
+    now = _time.time() if now is None else now
     worst = 0
     noisy = []
+    repeated = []
     print(f"{'check':20}{'verdict':12}{'s':>6}  summary", file=stream)
     caveated = 0
     for name, code, output, seconds in results:
@@ -375,6 +499,16 @@ def render(results, stream=sys.stdout, verbose=False):
                 caveated += 1
             for line in caveats:
                 print(f"{'':32}  {line}", file=stream)
+        if code != 0 and state is not None and not verbose:
+            collapse, note, entry = repeat_verdict(name, code, output, state, now)
+            if keep is not None:
+                keep[name] = entry
+            if collapse:
+                print(f"{'':32}  {note}", file=stream)
+                repeated.append(name)
+                continue
+        elif state is not None and keep is not None:
+            keep[name] = repeat_verdict(name, code, output, state, now)[2]
         if code != 0 or verbose:
             noisy.append((name, code, output))
 
@@ -390,8 +524,18 @@ def render(results, stream=sys.stdout, verbose=False):
         print("Every check exited 0 -- nothing to act on, and each line above "
               "names what its check swept.", file=stream)
     else:
-        print(f"{unclean} check(s) did not come back clean; their full output is "
-              f"above, unabridged. Overall exit {worst}.", file=stream)
+        shown = unclean - len(repeated)
+        where = (f"their full output is above, unabridged"
+                 if not repeated else
+                 f"{shown} of them printed in full above, unabridged, and "
+                 f"{len(repeated)} collapsed to a single line as unchanged")
+        print(f"{unclean} check(s) did not come back clean; {where}. "
+              f"Overall exit {worst}.", file=stream)
+    if repeated:
+        print(f"{len(repeated)} standing finding(s) were not reproduced because nothing in "
+              f"them changed since the last sweep: {', '.join(repeated)}. Their rows above "
+              f"still carry their real verdict, the exit code still counts them, and "
+              f"`--verbose` prints them in full.", file=stream)
     if caveated:
         print(f"{caveated} check(s) exited 0 over a scope they could not fully judge; "
               f"their caveats are the indented lines above. Exit 0 is the right "
@@ -410,6 +554,8 @@ def main(argv=None):
                         help="skip the git fetch in the source_revision check")
     parser.add_argument("--verbose", action="store_true",
                         help="reproduce every check in full, clean ones included")
+    parser.add_argument("--no-state", action="store_true",
+                        help="print every finding in full, ignoring what was printed last sweep")
     args = parser.parse_args(argv)
 
     names = list(args.only or CHECKS)
@@ -436,7 +582,12 @@ def main(argv=None):
         for future in concurrent.futures.as_completed(futures):
             results[futures[future]] = future.result()
 
-    return render(results, verbose=args.verbose)
+    state = None if (args.no_state or args.verbose) else load_state()
+    keep = {} if state is not None else None
+    worst = render(results, verbose=args.verbose, state=state, keep=keep)
+    if keep:
+        save_state(keep)
+    return worst
 
 
 if __name__ == "__main__":
