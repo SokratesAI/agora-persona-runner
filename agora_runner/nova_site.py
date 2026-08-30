@@ -281,7 +281,11 @@ PAGE_ROUTES = (
 # `/project/Nova` is a real URL for the same reason `/cycle/49` is: the
 # project page has to survive a bookmark and a cold load, not only a tap
 # on the index. Both are served the same shell and read by `app.js`.
-PAGE_ROUTE_PREFIXES = ("/cycle/", "/project/")
+# `/conversation/<id>` is the URL a push notification opens. Until
+# 2026-08-30 a notification click focused whatever Nova tab happened to
+# be open and navigated nowhere, so the owner landed on the issues page
+# he had left open and lost the message he had just read.
+PAGE_ROUTE_PREFIXES = ("/cycle/", "/project/", "/conversation/")
 
 # gzip's header and trailer are a fixed 18 bytes, so a short body comes
 # back *bigger*: `/api/comments` is 15 bytes on the live pod and gzips to
