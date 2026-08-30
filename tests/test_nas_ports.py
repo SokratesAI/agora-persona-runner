@@ -220,9 +220,10 @@ def test_a_socket_that_is_not_listening_is_not_a_listener():
 
 def test_a_listening_port_outside_the_candidate_list_is_swept():
     """The whole point: a port nothing hand-wrote is still probed and still
-    raises. The example used to be 6767, Bazarr on the real box -- it is on
-    the record now (Cycle 670), so this uses a port that is in neither list
-    and would break the same way if that one were ever added."""
+    raises. The example used to be 6767, a real listener on the box -- Bazarr
+    was uninstalled Cycle 676 and 6767 is now in neither list, so this uses a
+    port that has never been in either and would break the same way if one of
+    them were ever added."""
     assert 9999 not in nas_ports.CANDIDATES and 9999 not in nas_ports.BASELINE
     # One synthetic row, on 0.0.0.0:270F. The byte-order pin lives in its own
     # test against the captured `PROC_TCP`; all this one needs is a listener
@@ -253,10 +254,9 @@ def test_a_connection_that_is_not_http_is_a_listener_not_an_unswept_port():
 
 def test_the_services_i_installed_myself_are_on_the_record():
     """Heimdall, Prowlarr and Tautulli are containers I started on that box in
-    cycles 666, 667 and 669, and Bazarr is the Synology package I identified in
-    669. Each one raised as an unrecorded listener on the home LAN until this
-    record caught up with my own journal."""
-    for port in (6767, 8085, 8181, 9696):
+    cycles 666, 667 and 669. Each one raised as an unrecorded listener on the
+    home LAN until this record caught up with my own journal."""
+    for port in (8085, 8181, 9696):
         assert port in nas_ports.BASELINE, port
 
 

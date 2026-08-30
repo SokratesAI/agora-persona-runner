@@ -25,7 +25,7 @@ owns can each see only one of them:
   `curl` made *on* the NAS, because port 8989 is not open from here. Needs an
   `ssh` binary and the sealed key, which today exist on the runner pod and
   not on the bridge pod.
-* **The other three services on that box.** nzbget, Plex and Bazarr also run
+* **The other two services on that box.** nzbget and Plex also run
   there and were judged by nothing here until Cycle 648: this check printed *"Judged 1
   host and 2 service(s) on it"* with no denominator, so a dead nzbget and a
   dead Plex both read as a clean NAS. Neither needs a credential to answer
@@ -113,19 +113,19 @@ def probe(host, port=22, timeout=10.0, connect=socket.create_connection):
 #: probe list *and* what the summary line names, deliberately in one place --
 #: a second copy of it here would be the duplication this whole check is about.
 #: The return value of each call is thrown away on purpose: see the docstring.
-CREDENTIAL_FREE = ("nzbget", "plex", "bazarr")
+CREDENTIAL_FREE = ("nzbget", "plex")
 
 
-def liveness(hop, nzbget, plex, bazarr):
-    """Probe nzbget, Plex and Bazarr over the hop. Returns `(lines, judged, status)`.
+def liveness(hop, nzbget, plex):
+    """Probe nzbget and Plex over the hop. Returns `(lines, judged, status)`.
 
     `judged` means a verdict was reached, up or down -- the same meaning
     `nas.status` gives it for the two *arr apps, so the summary line's
-    denominator answers "did I look at all five" and the `SERVICE DOWN`
+    denominator answers "did I look at all four" and the `SERVICE DOWN`
     heading answers "were they up". A service that raises `Unreachable` is
     down and is the same 2 as a dead Sonarr, because it is the same finding.
     """
-    calls = {"nzbget": nzbget, "plex": plex, "bazarr": bazarr}
+    calls = {"nzbget": nzbget, "plex": plex}
     lines, judged, status = [], 0, 0
     for name in CREDENTIAL_FREE:
         judged += 1
@@ -140,8 +140,7 @@ def liveness(hop, nzbget, plex, bazarr):
 
 
 def report(env=None, out=sys.stdout, connect=socket.create_connection, get=nas._get, ssh=nas._UNSET,
-           run=None, nzbget=nas.nzbget_unlocked, plex=nas.plex_version,
-           bazarr=nas.bazarr_key):
+           run=None, nzbget=nas.nzbget_unlocked, plex=nas.plex_version):
     """Print the report and return the exit status."""
     hop = nas.ssh_config(env) if ssh is nas._UNSET else ssh
     # The host is knowable without a hop: `ssh_config` returns None when this
@@ -191,7 +190,7 @@ def report(env=None, out=sys.stdout, connect=socket.create_connection, get=nas._
                 print(f"  {line}", file=out)
         # Outside the `conf_all` branch on purpose: neither of these needs an
         # API key, so a key discovery that failed must not take them with it.
-        alive_lines, alive_judged, alive_status = liveness(hop, nzbget, plex, bazarr)
+        alive_lines, alive_judged, alive_status = liveness(hop, nzbget, plex)
         services_judged += alive_judged
         status = max(status, alive_status)
         print(file=out)
@@ -211,21 +210,20 @@ def report(env=None, out=sys.stdout, connect=socket.create_connection, get=nas._
           "Reachability is a TCP connect plus the SSH banner; the services are read over the "
           "hop, not over a direct HTTP call, because port 8989 is not open from here. "
           f"{', '.join(CREDENTIAL_FREE)} are judged alive only -- "
-          "tools.nas_watch owns nzbget's lock and tools.nas_versions owns the plex and "
-          "bazarr versions.",
+          "tools.nas_watch owns nzbget's lock and tools.nas_versions owns the plex "
+          "version.",
           file=out)
     return status
 
 
 def main(argv=None, env=None, out=sys.stdout, connect=socket.create_connection, get=nas._get,
-         ssh=nas._UNSET, run=None, nzbget=nas.nzbget_unlocked, plex=nas.plex_version,
-         bazarr=nas.bazarr_key):
+         ssh=nas._UNSET, run=None, nzbget=nas.nzbget_unlocked, plex=nas.plex_version):
     argparse.ArgumentParser(
         prog="python3 -m tools.nas_health",
         description=__doc__.split("\n")[0],
     ).parse_args(argv)
     return report(env=env, out=out, connect=connect, get=get, ssh=ssh, run=run,
-                  nzbget=nzbget, plex=plex, bazarr=bazarr)
+                  nzbget=nzbget, plex=plex)
 
 
 if __name__ == "__main__":

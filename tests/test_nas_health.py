@@ -69,12 +69,6 @@ def _plex(_hop):
     return "1.41.6.9685-d301f511a"
 
 
-def _bazarr(_hop):
-    """Bazarr's key read off its front page. Like `_plex` above, this check
-    reads that the call returned rather than what it returned."""
-    return "deadbeefcafe0123deadbeefcafe0123"  # gitleaks:allow -- fabricated, not his key
-
-
 # --- the reachability half --------------------------------------------------
 
 
@@ -141,12 +135,12 @@ def test_a_service_that_is_down_exits_2_even_though_the_box_answered():
     }
     out = io.StringIO()
     code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
-                           nzbget=_locked, plex=_plex, bazarr=_bazarr)
+                           nzbget=_locked, plex=_plex)
     assert code == 2
     body = out.getvalue()
     assert "SERVICE DOWN" in body
     assert "REACHABLE" in body  # the box was up; only the app was not
-    assert "5 service(s) of 5" in body  # all five were judged; one of them is down
+    assert "4 service(s) of 4" in body  # all four were judged; one of them is down
 
 
 def test_both_services_answering_is_a_clean_sweep():
@@ -161,12 +155,12 @@ def test_both_services_answering_is_a_clean_sweep():
     }
     out = io.StringIO()
     code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
-                           nzbget=_locked, plex=_plex, bazarr=_bazarr)
+                           nzbget=_locked, plex=_plex)
     assert code == 0
     body = out.getvalue()
     assert "SERVICES OK" in body
     assert "4.3.2.6857" in body
-    assert "5 service(s) of 5" in body
+    assert "4 service(s) of 4" in body
 
 
 def test_a_hop_that_configures_nothing_is_unreadable_not_clean():
@@ -179,14 +173,14 @@ def test_a_hop_that_configures_nothing_is_unreadable_not_clean():
 
     out = io.StringIO()
     code = nas_health.main([], env={}, out=out, connect=_answers(), ssh=HOP, run=run,
-                           nzbget=_locked, plex=_plex, bazarr=_bazarr)
+                           nzbget=_locked, plex=_plex)
     assert code == 1
     body = out.getvalue()
     assert "SERVICES UNREADABLE" in body
     # Neither of these needs an API key, so a failed discovery must not turn a
     # live nzbget into an unjudged one.
     assert "nzbget answered over the hop" in body
-    assert "3 service(s) of 5" in body
+    assert "2 service(s) of 4" in body
 
 
 def test_the_host_is_named_even_with_no_hop_and_an_override_wins():
@@ -215,11 +209,11 @@ def test_a_dead_nzbget_exits_2_even_though_the_arr_apps_are_fine():
     }
     out = io.StringIO()
     code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
-                           nzbget=dead, plex=_plex, bazarr=_bazarr)
+                           nzbget=dead, plex=_plex)
     assert code == 2
     body = out.getvalue()
     assert "nzbget did not answer over the hop" in body
-    assert "5 service(s) of 5" in body
+    assert "4 service(s) of 4" in body
 
 
 def test_a_dead_plex_exits_2():
@@ -237,7 +231,7 @@ def test_a_dead_plex_exits_2():
     }
     out = io.StringIO()
     code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
-                           nzbget=_locked, plex=dead, bazarr=_bazarr)
+                           nzbget=_locked, plex=dead)
     assert code == 2
     assert "plex did not answer over the hop" in out.getvalue()
 
@@ -256,15 +250,15 @@ def test_an_unlocked_nzbget_is_still_alive_here_and_does_not_raise():
     }
     out = io.StringIO()
     code = nas_health.main([], env=env, out=out, connect=_answers(), ssh=HOP, get=get,
-                           nzbget=lambda _hop: True, plex=_plex, bazarr=_bazarr)
+                           nzbget=lambda _hop: True, plex=_plex)
     assert code == 0
-    assert "5 service(s) of 5" in out.getvalue()
+    assert "4 service(s) of 4" in out.getvalue()
 
 
-def test_no_hop_says_all_five_went_unjudged():
+def test_no_hop_says_all_four_went_unjudged():
     out = io.StringIO()
     code = nas_health.main([], env={}, out=out, connect=_answers(), ssh=None)
     assert code == 0
     body = out.getvalue()
-    assert "none of the 5 service(s)" in body
-    assert "0 service(s) of 5" in body
+    assert "none of the 4 service(s)" in body
+    assert "0 service(s) of 4" in body
