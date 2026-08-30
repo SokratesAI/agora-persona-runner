@@ -207,12 +207,14 @@ from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
 from agora_runner.vault import vault_read_path, vault_read_path_rev, vault_write_path
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
+from agora_runner.nova_next import next_payload
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
 from agora_runner.nova_push import store_subscription, vapid_key
 from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_runtimes import attach_runtimes
 from agora_runner.nova_sources import (
+    claims_ledger_json,
     board_markdown,
     catalog_markdown,
     comments_markdown,
@@ -981,6 +983,31 @@ def retros_payload():
     a page opened once a week is the wrong side of that trade.
     """
     return shape_retros(retro_ledger_json())
+
+
+def next_up_payload():
+    """What happens next, for the one reader who cannot run the tool.
+
+    The owner, 2026-08-30 survey: *"I have no idea on your plan for the
+    next cycle or what different projects are currently prioritised"*.
+    Both halves are answered by `tools/top_board_rows.py` at the start of
+    every cycle and neither has ever left the terminal.
+
+    Three reads rather than the two board payloads the cache already
+    holds, and that is deliberate: the ranking needs the board *markdown*
+    (an unanswered comment is read off the write-up under the row, which
+    the list payload does not carry), so reusing the cached payload would
+    mean re-deriving `waiting` from a different shape of the same file --
+    two answers to one question, which is the drift this repo keeps
+    paying for. Cached like the rest at 15 seconds, which is short enough
+    that a claim taken mid-cycle shows up while he is looking at it.
+    """
+    return next_payload(
+        board_markdown("issues")[0],
+        board_markdown("ideas")[0],
+        claims_ledger_json(),
+        datetime.now(OSLO),
+    )
 
 
 def plans_payload():
@@ -2512,6 +2539,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/plan":
                 self._send_cached_json("plan", plans_payload)
+                return
+            if path == "/api/next":
+                self._send_cached_json("next", next_up_payload)
                 return
             if path == "/api/comments":
                 # Still deliberately not cached, and the reason is

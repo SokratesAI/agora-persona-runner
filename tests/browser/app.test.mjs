@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -185,6 +185,13 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // Friday, so "nothing supplied" has to mean the empty page rather
       // than a body no live server has ever sent.
       return res(retro || { scoreKeys: [], range: [1, 10], retros: [] }, retroStatus);
+    }
+    if (url.includes("/api/next")) {
+      // Defaults to the empty shape rather than to nothing, because the
+      // live card is drawn on every visit to `/plan` and a page test that
+      // never saw it would be testing a page the owner does not have.
+      return res(next || { captures: [], next: [], waiting: [], active: [],
+                           projects: [], claimsReadable: true }, nextStatus);
     }
     if (url.includes("/api/plan")) {
       // No fixture default, for the reason `/api/retro` has none: both
@@ -8139,6 +8146,66 @@ describe("the plan page", () => {
       },
     ],
   };
+
+  /* The live card above the prose (idea #38). The owner, on the 2026-08-30
+   * survey: *"I have no idea on your plan for the next cycle or what
+   * different projects are currently prioritised"*. The two documents
+   * below it were last rewritten on 2026-08-16, which is the failure mode
+   * a hand-written plan has and a computed one cannot. */
+  const liveNext = {
+    captures: [{ board: "issues", text: "look at the NAS", priority: "" }],
+    active: [{ item: "idea-38", cycle: 668, title: "Real goals, and progress against them",
+               board: "idea", number: 38 }],
+    next: [{ board: "idea", number: 83, title: "A dreaming pass over my own memory",
+             priority: "🟠 High", project: "Nova", heldBy: null },
+           { board: "issue", number: 94, title: "Agora workflows are dead code",
+             priority: "🔵 Medium", project: "Agora", heldBy: 667 }],
+    waiting: [],
+    projects: [{ name: "Nova", open: 134, top: "A dreaming pass over my own memory" },
+               { name: "Agora", open: 6, top: "Agora workflows are dead code" }],
+    claimsReadable: true,
+  };
+
+  test("the live card leads with what a cycle is holding right now", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments, next: liveNext });
+    const card = window.document.querySelector(".next-card");
+    assert.ok(card, "the live card is drawn");
+    assert.match(card.textContent, /cycle 668/);
+    assert.match(card.textContent, /Real goals, and progress against them/);
+  });
+
+  test("his unfiled captures are shown above the ranked rows, in that order", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments, next: liveNext });
+    const headings = [...window.document.querySelectorAll(".next-card .next-heading")].map((h) => h.textContent);
+    assert.deepEqual(headings, ["Right now", "Your unfiled notes — these come first",
+                               "Then, in this order", "Projects, most urgent first"]);
+  });
+
+  test("a ranked row names its number, its rating and its project", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments, next: liveNext });
+    const rows = [...window.document.querySelectorAll(".next-card .next-row")];
+    const held = rows.find((r) => /Agora workflows/.test(r.textContent));
+    assert.match(held.textContent, /issue #94/);
+    assert.match(held.textContent, /🔵 Medium/);
+    assert.match(held.textContent, /Agora/);
+    // A row another cycle is on says so, rather than reading as free work.
+    assert.match(held.textContent, /cycle 667 is on it/);
+  });
+
+  test("an unreadable ledger says so instead of showing an idle loop", async () => {
+    const window = await loadSite("/plan", {
+      plan: twoDocuments,
+      next: { ...liveNext, active: [], claimsReadable: false },
+    });
+    assert.match(window.document.querySelector(".next-card").textContent,
+                 /could not read the claims ledger/i);
+  });
+
+  test("the prose still paints when the live half fails to load", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments, nextStatus: 500 });
+    assert.equal(window.document.querySelectorAll(".next-card").length, 0);
+    assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
+  });
 
   test("both documents paint, with their headings at their own depth", async () => {
     const window = await loadSite("/plan", { plan: twoDocuments });

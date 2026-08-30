@@ -7741,6 +7741,106 @@
     return card;
   }
 
+  /* The live half of the plan page -- what a cycle waking up right now
+   * would take, and which project it is filed under.
+   *
+   * The owner, 2026-08-30 survey, rating my legibility 2 of 5: *"I have no
+   * idea on your plan for the next cycle or what different projects are
+   * currently prioritised"*. Everything under this card is prose I wrote
+   * on 2026-08-16 and have not rewritten since, which is exactly how a
+   * hand-maintained plan fails -- so this one is computed on every request
+   * from his two boards and the claims ledger and cannot go stale without
+   * the boards going stale.
+   *
+   * Order is `prompt.md` step 2's, not a new opinion: his unprocessed
+   * captures first, then the ranked board. `Now` is above both because it
+   * is the only line on this page about this minute rather than the next
+   * hour. */
+  function nextRow(row) {
+    var li = el("li", "next-row");
+    var num = (row.board === "issue" ? "issue #" : "idea #") + row.number;
+    li.appendChild(el("span", "next-num", num));
+    li.appendChild(el("span", "next-title", row.title));
+    if (row.priority) li.appendChild(el("span", "next-chip", row.priority));
+    if (row.project) li.appendChild(el("span", "next-chip next-project", row.project));
+    if (row.heldBy) li.appendChild(el("span", "next-chip next-held", "cycle " + row.heldBy + " is on it"));
+    return li;
+  }
+
+  function renderNextUp(payload) {
+    // Deliberately not a `plan-card`: that class means "one of the two prose
+    // documents" to every existing page test, and quietly becoming a third
+    // one would make those tests count this card as a document.
+    var card = el("article", "next-card");
+    card.appendChild(el("h2", "next-card-title", "What happens next"));
+    card.appendChild(el("p", "next-card-note", "Computed from your two boards every time you open this page — nothing here is hand-written."));
+
+    var active = payload.active || [];
+    var now = el("section", "next-block");
+    now.appendChild(el("h3", "next-heading", "Right now"));
+    if (!active.length) {
+      // Not "nothing is happening": an empty ledger means no cycle holds
+      // anything this minute, which between cycles is the normal state.
+      now.appendChild(el("p", "empty", payload.claimsReadable
+        ? "No cycle is holding an item this minute."
+        : "I could not read the claims ledger, so I cannot say."));
+    } else {
+      var live = el("ul", "next-list");
+      active.forEach(function (claim) {
+        var li = el("li", "next-row");
+        li.appendChild(el("span", "next-num", "cycle " + claim.cycle));
+        li.appendChild(el("span", "next-title", claim.title || claim.item));
+        live.appendChild(li);
+      });
+      now.appendChild(live);
+    }
+    card.appendChild(now);
+
+    var captures = payload.captures || [];
+    if (captures.length) {
+      var cap = el("section", "next-block");
+      cap.appendChild(el("h3", "next-heading", "Your unfiled notes — these come first"));
+      var capList = el("ul", "next-list");
+      captures.forEach(function (capture) {
+        var li = el("li", "next-row");
+        li.appendChild(el("span", "next-num", capture.board));
+        li.appendChild(el("span", "next-title", capture.text));
+        capList.appendChild(li);
+      });
+      cap.appendChild(capList);
+      card.appendChild(cap);
+    }
+
+    var rows = payload.next || [];
+    var upcoming = el("section", "next-block");
+    upcoming.appendChild(el("h3", "next-heading", "Then, in this order"));
+    if (!rows.length) {
+      upcoming.appendChild(el("p", "empty", "Nothing open on either board."));
+    } else {
+      var list = el("ul", "next-list");
+      rows.forEach(function (row) { list.appendChild(nextRow(row)); });
+      upcoming.appendChild(list);
+    }
+    card.appendChild(upcoming);
+
+    var projects = payload.projects || [];
+    if (projects.length) {
+      var proj = el("section", "next-block");
+      proj.appendChild(el("h3", "next-heading", "Projects, most urgent first"));
+      var plist = el("ul", "next-list");
+      projects.forEach(function (project) {
+        var li = el("li", "next-row");
+        li.appendChild(el("span", "next-num", project.name));
+        li.appendChild(el("span", "next-title", project.top));
+        li.appendChild(el("span", "next-chip", project.open + " open"));
+        plist.appendChild(li);
+      });
+      proj.appendChild(plist);
+      card.appendChild(proj);
+    }
+    return card;
+  }
+
   function renderPlan(payload) {
     stopPolling();
     markNav();
@@ -7750,8 +7850,12 @@
     statusEl.appendChild(el("p", "status-line", "What I would do next, and what it is for"));
     if (payload.replayed) statusEl.appendChild(savedCopyLine());
     feed.textContent = "";
+    // The live card is rendered whether or not the two prose documents
+    // loaded: it is the half he said was missing, and a failed fetch of
+    // the roadmap is no reason to hide what happens next.
+    if (payload.nextUp) feed.appendChild(renderNextUp(payload.nextUp));
     if (!docs.length) {
-      feed.appendChild(el("p", "empty", "Nothing here yet."));
+      if (!payload.nextUp) feed.appendChild(el("p", "empty", "Nothing here yet."));
       return;
     }
     docs.forEach(function (doc) {
@@ -7760,8 +7864,17 @@
   }
 
   function loadPlan() {
-    fetchPage("/api/plan")
-      .then(function (payload) {
+    // Two fetches, joined here rather than merged on the server: the plan
+    // documents are cached because they change on the day I rewrite them,
+    // and the live card must not inherit that. A failed `/api/next` still
+    // paints the prose -- `nextUp` is simply absent.
+    Promise.all([
+      fetchPage("/api/plan"),
+      fetchPage("/api/next").catch(function () { return null; })
+    ])
+      .then(function (both) {
+        var payload = both[0] || {};
+        payload.nextUp = both[1];
         // The same guard the retro and costs fetches carry: two taps in
         // quick succession leave two fetches in flight and the loser must
         // not paint over the winner.
