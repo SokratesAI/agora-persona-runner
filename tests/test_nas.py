@@ -761,8 +761,13 @@ def test_nzbget_credential_reads_the_compose_file_over_the_hop():
 
 
 def test_nzbget_credential_is_none_when_the_hop_fails():
+    # stdout deliberately carries a parseable file: a failed ssh that still
+    # printed something is the case where ignoring the exit status hands back a
+    # credential that was never really read. An empty stdout would make this
+    # test pass whether or not the status is checked at all.
     def run(argv, **kwargs):
-        return types.SimpleNamespace(returncode=1, stdout="", stderr="Permission denied")
+        return types.SimpleNamespace(returncode=255, stdout=COMPOSE_SAMPLE,
+                                     stderr="ssh: connect to host nas.example port 22: refused")
 
     assert nas.nzbget_credential({}, ssh=SSH_STUB, run=run) is None
 
