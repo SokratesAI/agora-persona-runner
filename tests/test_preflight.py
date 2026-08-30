@@ -406,3 +406,156 @@ def test_a_one_line_caveat_is_not_printed_under_itself():
     _, text = render([("source_revision", 0, only + "\n", 0.1)])
     assert text.count(only) == 1
     assert "could not fully judge" not in text
+
+
+# --- A standing finding stops being reproduced every sweep --------------------
+#
+# The owner, comments board 2026-08-30: "It is a bit heavy to check this system
+# every day... So spending that many tokens is wasteful." Eight of the twenty-six
+# checks exit non-zero on a normal morning and every one is a finding this loop
+# cannot close, reproduced in full at a 40-minute cadence.
+
+HOUR = 3600.0
+
+# server1's memory finding, with the number that moves on every single run.
+MEM = ("NODE OUT OF MEMORY — server1 has {}Mi available of 7746Mi.\n"
+       "Read 51 Pod(s) from the live cluster.\n")
+
+
+def render_with(results, state, now, keep=None, verbose=False):
+    out = io.StringIO()
+    code = preflight.render(results, stream=out, verbose=verbose,
+                            state=state, now=now, keep=keep)
+    return code, out.getvalue()
+
+
+def test_a_finding_seen_for_the_first_time_prints_in_full():
+    keep = {}
+    code, text = render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                             state={}, now=1000.0, keep=keep)
+    assert code == 2
+    assert "===== workload_health" in text and "NODE OUT OF MEMORY" in text
+    assert "UNCHANGED" not in text
+    assert keep["workload_health"]["printed_at"] == 1000.0
+
+
+def test_the_same_finding_next_sweep_collapses_to_one_line():
+    first = {}
+    render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                state={}, now=1000.0, keep=first)
+    code, text = render_with([("workload_health", 2, MEM.format(1853), 4.1)],
+                             state=first, now=1000.0 + HOUR, keep={})
+    # The verdict is untouched -- this collapses the text, never the finding.
+    assert code == 2
+    assert "workload_health" in text and "ACT" in text
+    assert "UNCHANGED since" in text
+    assert "===== workload_health" not in text
+    assert "1 standing finding(s) were not reproduced" in text
+    # And the footer stops claiming the full output is above, because it is not.
+    assert "0 of them printed in full above" in text
+
+
+def test_only_the_number_moving_still_counts_as_unchanged():
+    # This is the case the whole mechanism exists for: an exact comparison
+    # would say "changed" every run and never collapse anything at all.
+    first = {}
+    render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                state={}, now=1000.0, keep=first)
+    _, text = render_with([("workload_health", 2, MEM.format(1402), 4.3)],
+                          state=first, now=1000.0 + HOUR, keep={})
+    assert "UNCHANGED since" in text and "===== workload_health" not in text
+
+
+def test_an_extra_line_is_never_collapsed():
+    # A second alert, a third unhealthy pod, a newly missing module: they all
+    # add a line, and the line count is compared exactly for that reason.
+    first = {}
+    render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                state={}, now=1000.0, keep=first)
+    _, text = render_with(
+        [("workload_health", 2, MEM.format(1853) + "NODE OUT OF MEMORY — server2.\n", 4.3)],
+        state=first, now=1000.0 + HOUR, keep={})
+    assert "UNCHANGED" not in text
+    assert "===== workload_health" in text and "server2" in text
+
+
+def test_the_full_text_comes_back_after_the_reprint_window():
+    first = {}
+    render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                state={}, now=1000.0, keep=first)
+    keep = {}
+    _, text = render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                          state=first, now=1000.0 + preflight.REPRINT_HOURS * HOUR + 1,
+                          keep=keep)
+    assert "UNCHANGED" not in text
+    assert "===== workload_health" in text
+    assert keep["workload_health"]["printed_at"] == 1000.0 + preflight.REPRINT_HOURS * HOUR + 1
+    # First seen is preserved across the reprint: it is when the finding
+    # started, not when it was last shouted about.
+    assert keep["workload_health"]["first_seen"] == 1000.0
+
+
+def test_a_collapsed_sweep_does_not_reset_the_reprint_clock():
+    # Otherwise a finding collapses once, that collapse marks it "printed now",
+    # and it never prints in full again -- a guard that reports itself working.
+    first = {}
+    render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                state={}, now=1000.0, keep=first)
+    keep = {}
+    render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                state=first, now=1000.0 + HOUR, keep=keep)
+    assert keep["workload_health"]["printed_at"] == 1000.0
+
+
+def test_verbose_prints_a_collapsed_finding_in_full():
+    first = {}
+    render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                state={}, now=1000.0, keep=first)
+    _, text = render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                          state=first, now=1000.0 + HOUR, keep={}, verbose=True)
+    assert "===== workload_health" in text and "UNCHANGED" not in text
+
+
+def test_a_clean_check_is_never_touched_by_any_of_this():
+    _, text = render_with([("doc_integrity", 0, "Whole. Swept 11 document(s)\n", 0.4)],
+                          state={}, now=1000.0, keep={})
+    assert "UNCHANGED" not in text and "standing finding" not in text
+
+
+def test_no_state_means_every_finding_prints():
+    _, text = render_with([("workload_health", 2, MEM.format(1853), 4.3)],
+                          state=None, now=1000.0)
+    assert "===== workload_health" in text
+
+
+def test_an_unreadable_state_file_prints_everything_rather_than_failing(tmp_path):
+    bad = tmp_path / "state.json"
+    bad.write_text("{not json")
+    assert preflight.load_state(str(bad)) == {}
+    assert preflight.load_state(str(tmp_path / "nothing-here.json")) == {}
+
+
+def test_state_survives_a_round_trip(tmp_path):
+    path = str(tmp_path / "state.json")
+    preflight.save_state({"a": {"shape": "x", "lines": 2}}, path)
+    assert preflight.load_state(path) == {"a": {"shape": "x", "lines": 2}}
+
+
+def test_saving_into_an_unwritable_place_is_not_fatal(tmp_path):
+    preflight.save_state({"a": 1}, str(tmp_path / "no" / "such" / "dir" / "s.json"))
+
+
+def test_the_line_breaks_are_part_of_the_fingerprint():
+    # Without a separator in the join, "AB / C" and "A / BC" hash the same --
+    # two different findings reading as one unchanged one.
+    assert preflight.finding_shape("AB\nC\n") != preflight.finding_shape("A\nBC\n")
+
+
+def test_a_one_line_finding_is_not_repeated_underneath_itself():
+    # source_variant of source_revision: the whole report is the summary row,
+    # so there is nothing left to reproduce and nothing to collapse either.
+    _, text = render_with([("source_revision", 2, "BEHIND origin/main by 1 commit(s).", 0.6)],
+                          state={}, now=1000.0, keep={})
+    assert text.count("BEHIND origin/main by 1 commit(s).") == 1
+    assert "UNCHANGED" not in text and "standing finding" not in text
+    assert "===== source_revision" not in text
