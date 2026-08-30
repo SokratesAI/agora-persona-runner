@@ -58,20 +58,53 @@ So the age is context, and the gap is the verdict.
 nzbget is on that box and is not here: its version is behind its password
 (`/jsonrpc/version` answers 401 unauthenticated, measured Cycle 640), so
 reading it needs `NZBGET_USER`/`NZBGET_PASS` handed in, and a check that is
-`NOT JUDGED` on every normal cycle is one nobody reads. Plex is on that box and
-is not judged at all -- it is a Synology package rather than one of these two
-APIs. And an upstream release this pod cannot read is never cleared: it prints
-and exits 1, because an unjudged version must not look like a current one.
+`NOT JUDGED` on every normal cycle is one nobody reads. Plex was in this list
+until Cycle 645 and is now judged -- see below. And an upstream release this
+pod cannot read is never cleared: it prints and exits 1, because an unjudged
+version must not look like a current one.
+
+**Plex is judged now, and it is a different shape from the two *arr apps in
+three ways worth naming before the code says it.** It is a Synology package
+rather than a docker-compose container, so `nas.config` never sees it and it
+needs no API key; its version comes off `/identity`, the one endpoint on
+:32400 that answers without a token. Its upstream is not a GitHub release --
+Plex Media Server is closed source -- so the newest published build is read
+from `https://plex.tv/api/downloads/5.json`, and specifically from the
+**Synology** rows of it, because that is the package he actually installs.
+All three Synology rows (DSM 6, DSM 7, DSM 7.2.2+) carried the same version
+when this was written, so the tool takes the newest of them and says how many
+rows it read rather than pinning a DSM release I have not measured on his box.
+
+**The verdict rule is the same rule, read against Plex's own versioning
+scheme rather than re-derived as a number.** For Sonarr and Radarr the release
+train is the major, so a major gap raises. Plex has shipped as `1.x` for its
+whole published history -- every one of the 13 NAS platforms and the desktop
+line on that endpoint is a `1.` build today -- and the series Plex itself names
+in its release notes is the `major.minor` pair, `1.41` and `1.43`. So for Plex
+the train is `major.minor`, and **a minor gap raises as well as a major one**.
+That is not a second threshold; it is the same "behind by a release train"
+question asked of a project that puts its train in a different field. Measured
+Cycle 645, live: Plex on the NAS runs **1.41.6.9685**, upstream **1.43.3.10896**
+published 2026-08-12 -- two trains behind.
+
+Why it belongs on the same list as the other two: Plex is the one media app on
+that box with a login, but it is also the one with a history of pre-auth
+remote code execution, and it is reachable from the same LAN the *arr apps sit
+on. His decision to leave Sonarr and Radarr unauthenticated is what makes their
+patch level the last control; Plex's patch level is a control regardless.
 
 Exit status, the same three meanings as every check in `tools.preflight`:
 
-* **2** -- an app on the NAS is a major version behind its own project.
+* **2** -- an app on the NAS is behind its own project's release train: a
+  major for sonarr and radarr, a major or a minor for plex.
 * **1** -- something that should have been readable was not: a service never
   came back from key discovery, refused its key, answered something that is
   not a status object, carried no version, carried a version string that
-  cannot be compared, or its upstream release could not be read.
-* **0** -- no app swept is a major behind its own project, and the report
-  names what it swept and how old each build is.
+  cannot be compared, or its upstream release could not be read. Plex counts
+  here the same way -- an unreadable `/identity` or an unreadable downloads
+  manifest is never a clean Plex.
+* **0** -- no app swept is behind its own release train, and the report names
+  what it swept and how old each build is.
 
 On a pod that cannot make the SSH hop this prints `CANNOT SEE FROM THIS POD`
 and exits 0 without judging anything, the same call `tools.nas_health`,
@@ -80,7 +113,10 @@ and exits 0 without judging anything, the same call `tools.nas_health`,
 
 import argparse
 import datetime
+import json
 import sys
+import urllib.error
+import urllib.request
 
 from tools import nas
 from tools import pin_drift
@@ -95,6 +131,56 @@ STATUS_PATH = "/api/v3/system/status"
 #: this maps a service to its upstream, which is the one fact about it that a
 #: file can hold without going stale the way a pinned version does.
 UPSTREAM = {"sonarr": "Sonarr/Sonarr", "radarr": "Radarr/Radarr"}
+
+
+#: Where "what is current" comes from for Plex. It is not a GitHub release --
+#: Plex Media Server is closed source -- so this is the vendor's own public
+#: downloads manifest, the same document its updater reads. No token, no
+#: account, nothing about his library.
+PLEX_DOWNLOADS_URL = "https://plex.tv/api/downloads/5.json"
+
+#: Which rows of that manifest answer for his box. He runs Plex as a Synology
+#: package; the manifest carries a row per DSM generation and they agreed on
+#: one version when this was written, so the tool reads all of them rather
+#: than pinning a DSM release nobody here has measured.
+PLEX_PLATFORM_PREFIX = "Synology"
+
+
+def plex_upstream(url=PLEX_DOWNLOADS_URL, opener=urllib.request.urlopen, timeout=20):
+    """`(version, rows_read, why_not)` for the newest published Plex build.
+
+    `version` is None when the manifest could not be read or carried no
+    Synology row, and `why_not` says which -- an upstream this pod cannot read
+    must never clear a running version, the same contract the *arr half holds.
+    """
+    try:
+        with opener(url, timeout=timeout) as response:
+            body = response.read()
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return None, 0, f"{type(exc).__name__}: {exc}"
+    try:
+        manifest = json.loads(body)
+    except (ValueError, TypeError) as exc:
+        return None, 0, f"the downloads manifest is not JSON: {exc}"
+    if not isinstance(manifest, dict):
+        return None, 0, f"the downloads manifest is {type(manifest).__name__}, not an object"
+    rows = manifest.get("nas")
+    if not isinstance(rows, dict):
+        return None, 0, "the downloads manifest carries no `nas` section"
+    found = []
+    for name, row in rows.items():
+        if not str(name).startswith(PLEX_PLATFORM_PREFIX) or not isinstance(row, dict):
+            continue
+        version = str(row.get("version") or "").strip()
+        if version:
+            found.append(version)
+    if not found:
+        return None, 0, (f"the downloads manifest has no {PLEX_PLATFORM_PREFIX} row "
+                         "carrying a version")
+    # Newest wins when the rows ever disagree, and the count travels with it so
+    # a one-row answer can never read like a three-row one.
+    newest = max(found, key=lambda v: tuple(p or 0 for p in (pin_drift.version_parts(v) or ())))
+    return newest, len(found), None
 
 
 def build_age_days(build_time, now=None):
@@ -126,7 +212,8 @@ def _age_phrase(days):
 
 
 def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
-           latest_release=pin_drift.latest_release, now=None):
+           latest_release=pin_drift.latest_release, now=None,
+           plex_running=nas.plex_version, plex_latest=plex_upstream):
     """Print the report and return the exit status."""
     hop = nas.ssh_config(env) if ssh is nas._UNSET else ssh
     if hop is None:
@@ -148,6 +235,11 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
 
     status = 0
     judged, behind, current, unjudged = [], [], [], []
+    # Plex is counted on its own line and never folded into the *arr
+    # denominator. It is not in `nas.SERVICES`, it is discovered differently
+    # and it is judged against a different upstream, so adding it to a
+    # "2 of 2" would make that sentence mean two different things.
+    plex_behind, plex_current = [], []
     # `nas.unconfigured` is the shared form of this: one transient failure
     # fetching sonarr's `/initialize.js` silently removes sonarr from the
     # sweep, and a denominator of `len(conf_all)` then reports "1 of 1" over
@@ -202,6 +294,9 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         else:
             current.append(line)
 
+    plex_judged = _judge_plex(hop, run, plex_running, plex_latest, plex_behind,
+                              plex_current, unjudged)
+
     if behind:
         print("MAJOR VERSION BEHIND -- an app on the NAS is running a major line its own "
               "project has moved off, so it is no longer getting security fixes.", file=out)
@@ -213,11 +308,27 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
               "database, so it is not one to do unattended.", file=out)
         status = 2
 
+    if plex_behind:
+        print("PLEX IS BEHIND ITS RELEASE TRAIN -- Plex names its series by the "
+              "major.minor pair, so this is the same 'behind a train' verdict the two "
+              "*arr apps get on a major.", file=out)
+        for line in plex_behind:
+            print(f"  {line}", file=out)
+        print("  Plex has a login, unlike the two *arr apps, and it has also had pre-auth "
+              "remote code execution in its history. The fix is his: update the Synology "
+              "package. Nothing here will do it for him.", file=out)
+        status = 2
+
     if unjudged:
         print("CANNOT JUDGE -- neither cleared nor raised:", file=out)
         for service, why in unjudged:
             print(f"  {service}: {why}", file=out)
         status = max(status, 1)
+
+    if plex_current:
+        print("PLEX IS ON ITS RELEASE TRAIN -- printed, not raised:", file=out)
+        for line in plex_current:
+            print(f"  {line}", file=out)
 
     if current:
         # Deliberately not "on its current major": a minor gap and a build
@@ -227,15 +338,50 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         for line in current:
             print(f"  {line}", file=out)
 
-    if not behind and not unjudged:
-        print(f"NO APP IS A MAJOR BEHIND ITS OWN PROJECT on {len(judged)} service(s): "
-              f"{', '.join(judged) or 'none'}.", file=out)
+    if not behind and not plex_behind and not unjudged:
+        print(f"NO APP IS BEHIND ITS OWN RELEASE TRAIN on {len(judged)} service(s): "
+              f"{', '.join(judged) or 'none'}, and plex.", file=out)
 
-    print(f"Judged the running version of {len(judged)} service(s) of {len(nas.SERVICES)}, read "
-          "over the SSH hop. nzbget is not judged -- its version is behind its password -- "
-          "and Plex is not judged at all. A minor or patch gap is printed and does not "
-          "raise.", file=out)
+    plex_phrase = "plus plex" if plex_judged else "and plex could NOT be judged"
+    print(f"Judged the running version of {len(judged)} service(s) of {len(nas.SERVICES)} "
+          f"{plex_phrase}, read over the SSH hop. nzbget is not judged -- its version is "
+          "behind its password. For sonarr and radarr a minor or patch gap is printed and "
+          "does not raise; for plex the train is the major.minor pair, so a minor gap "
+          "raises and only a patch is printed.", file=out)
     return status
+
+
+def _judge_plex(hop, run, plex_running, plex_latest, behind, current, unjudged):
+    """Judge Plex into the caller's lists. Returns whether it got a verdict.
+
+    Plex is read and compared here rather than inside the loop above because
+    nothing about it fits that loop: it is not in `nas.SERVICES`, it has no
+    entry in `nas.config`, and its upstream is a vendor manifest rather than a
+    GitHub release. Folding it in would have meant three `if service ==
+    "plex"` branches inside a function whose whole shape assumes an *arr.
+    """
+    try:
+        version = plex_running(hop) if run is None else plex_running(hop, run=run)
+    except nas.Unreachable as exc:
+        unjudged.append(("plex", f"/identity is unreadable -- {exc}"))
+        return False
+    latest, rows, why_not = plex_latest()
+    if not latest:
+        unjudged.append(("plex", f"the newest published Plex build could not be read -- "
+                                 f"{why_not}"))
+        return False
+    verdict = pin_drift.gap(version, latest)
+    if verdict is None:
+        unjudged.append(("plex", f"version {version!r} cannot be compared against "
+                                 f"plex.tv {latest}"))
+        return False
+    line = (f"plex {version} against plex.tv {latest} "
+            f"(newest of {rows} {PLEX_PLATFORM_PREFIX} row(s))")
+    # `major` and `minor` are both a train for Plex; `patch`, `current` and
+    # `ahead` are not. Spelled as the raising set rather than as "not patch",
+    # so a verdict this function has never seen cannot fall through to clean.
+    (behind if verdict in ("major", "minor") else current).append(line)
+    return True
 
 
 def main(argv=None, env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,

@@ -62,6 +62,7 @@ import re
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ElementTree
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -164,6 +165,20 @@ NZBGET_PORT = 6789
 # never be able to make, so it is not on the list.
 NZBGET_READ_ONLY = {"/jsonrpc/version", "/jsonrpc/config"}
 
+# Plex is the fourth media service on that box and the third shape: a Synology
+# package rather than a docker-compose container, with no API key and no basic
+# auth on the one endpoint this module calls. It is not in `SERVICES` for the
+# same reason nzbget is not -- every function that takes a service assumes the
+# *arr shape.
+PLEX_PORT = 32400
+
+# `/identity` is the whole Plex surface this module may touch. It is the one
+# Plex endpoint that answers without a token (measured Cycle 645: HTTP 200,
+# 213 bytes of XML) and it carries the running version and nothing about the
+# library. Everything else on :32400 needs `X-Plex-Token`, and none of it is
+# on this list, so there is no path from here to his media or his account.
+PLEX_READ_ONLY = {"/identity"}
+
 _UNSET = object()  # `ssh=None` means "no hop"; not passing it at all means "find out"
 
 
@@ -258,6 +273,39 @@ def _fetch_over_ssh(ssh, url, headers=(), run=subprocess.run):
         return body, int(code)
     except ValueError as exc:
         raise Unreachable(f"could not read a status code off curl's output: {out[:120]!r}") from exc
+
+
+def _plex_url(path, port=None):
+    if path not in PLEX_READ_ONLY:
+        raise ValueError(f"{path} is not a read-only endpoint this tool may call")
+    return f"http://127.0.0.1:{port or PLEX_PORT}{path}"
+
+
+def plex_version(ssh, port=None, run=subprocess.run):
+    """The Plex Media Server version running on the NAS, read over the hop.
+
+    Raises `Unreachable` when Plex did not answer in a way that carries one.
+    There is no "assume it is fine" branch: a version this cannot read must
+    never come back looking like a version that is current, which is the same
+    contract `tools.nas_versions` already holds for the two *arr apps.
+
+    `/identity` answers unauthenticated and returns a `MediaContainer` element
+    whose `version` attribute is the build string -- `1.41.6.9685-d301f511a`
+    on the NAS today. It is parsed as XML rather than matched with a regular
+    expression because an attribute is a structure and a substring search over
+    a document is the failure `agora_runner.md_sections` exists to end.
+    """
+    body, code = _fetch_over_ssh(ssh, _plex_url("/identity", port), run=run)
+    if code != 200:
+        raise Unreachable(f"plex answered {code} on /identity")
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as exc:
+        raise Unreachable(f"plex answered {len(body)} bytes that are not XML") from exc
+    version = (root.get("version") or "").strip()
+    if not version:
+        raise Unreachable("plex's /identity carried no `version` attribute")
+    return version
 
 
 def nzbget_credential(env=None):
