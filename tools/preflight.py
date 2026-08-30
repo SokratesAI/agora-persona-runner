@@ -139,6 +139,7 @@ CHECKS = (
     "nas_egress",
     "nas_versions",
     "nas_ports",
+    "survey",
 )
 
 #: Wall-clock ceiling per check. Above any of them by a wide margin --
