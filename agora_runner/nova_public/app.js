@@ -8818,6 +8818,54 @@
     return row;
   }
 
+  /* The pending bubble, which was the word "Thinking…" and nothing else.
+   *
+   * His capture, `issues.md` 2026-08-30 12:56: *"I asked Nova for a status
+   * report, but it just says thinking for a long time. I need feedback. What
+   * is it doing? Did it even recieve my messages? What tools does it use? We
+   * have some of this in Agora, but not in Nova. I have no idea if it broke
+   * or if its working, so i might wait forover for no response."*
+   *
+   * Three separate questions and the bubble now answers all three: the
+   * elapsed time says it is alive, the tool line says what it is doing, and
+   * the fallback line says the question landed even before the first tool
+   * call. `progress` comes from `/api/ask` and is only ever present while the
+   * turn is running (nova_ask.thread).
+   *
+   * The clock advances on the poll rather than on a timer of its own -- one
+   * `setInterval` here would be a second thing `stopPolling` has to know
+   * about, and the poll is every four seconds, so it moves visibly anyway.
+   * The submit handler passes null: it paints the bubble before the first
+   * poll, when the page genuinely knows nothing yet. */
+  function askElapsed(askedAt) {
+    if (!askedAt) return "";
+    var started = Date.parse(askedAt);
+    if (isNaN(started)) return "";
+    var secs = Math.max(0, Math.round((Date.now() - started) / 1000));
+    if (secs < 60) return secs + "s";
+    return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
+  }
+
+  function askPending(progress) {
+    var row = el("div", "ask-msg ask-theirs ask-pending");
+    var elapsed = askElapsed(progress && progress.askedAt);
+    row.appendChild(el("div", "ask-pending-head",
+      elapsed ? "Thinking… · " + elapsed : "Thinking…"));
+    var latest = progress && progress.latest;
+    if (latest) {
+      var step = el("div", "ask-pending-step");
+      step.appendChild(el("span", "ask-pending-tool", latest.capability));
+      if (latest.detail) step.appendChild(el("span", "ask-pending-detail", latest.detail));
+      row.appendChild(step);
+      if (progress.steps > 1) {
+        row.appendChild(el("div", "ask-pending-count", progress.steps + " steps so far"));
+      }
+    } else {
+      row.appendChild(el("div", "ask-pending-step", "Your question is in. No tool calls yet."));
+    }
+    return row;
+  }
+
   function renderAskThread(container, payload) {
     container.textContent = "";
     var messages = payload.messages || [];
@@ -8828,7 +8876,7 @@
     messages.forEach(function (message) {
       container.appendChild(askMessage(message));
     });
-    if (payload.waiting) container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+    if (payload.waiting) container.appendChild(askPending(payload.progress));
   }
 
   /* One route guard, in the `.then` below and nowhere else. The first
@@ -8923,7 +8971,7 @@
           // knows something happened, and four seconds of a box that has
           // gone blank with nothing to show for it reads as a lost message.
           thread.appendChild(askMessage({ sender: "Edvard", text: body }));
-          thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+          thread.appendChild(askPending(null));
           pollAsk(thread, 0);
         })
         .catch(function (err) {
