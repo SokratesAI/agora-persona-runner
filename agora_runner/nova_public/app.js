@@ -66,6 +66,17 @@
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
     if (path === "/ask") return { view: "ask", cycle: null, board: null };
     if (path === "/conversations") return { view: "conversations", cycle: null, board: null };
+    // `/conversation/<id>` -- the URL a push notification opens, so the tap
+    // lands on the thread the notification was about instead of on whatever
+    // page a Nova tab was already showing. Decoded for the same reason
+    // `/project/<name>` is: an id travels through `encodeURIComponent` in
+    // sw.js and must be looked up as the id the listing carries.
+    var conv = /^\/conversation\/(.+)$/.exec(path);
+    if (conv) {
+      var convId = conv[1];
+      try { convId = decodeURIComponent(convId); } catch (e) { /* leave it raw */ }
+      return { view: "conversations", cycle: null, board: null, conversationId: convId };
+    }
     if (path === "/heartbeats") return { view: "heartbeats", cycle: null, board: null };
     if (path === "/catalog") return { view: "catalog", cycle: null, board: null };
     if (path === "/diag") return { view: "diag", cycle: null, board: null };
@@ -8987,6 +8998,12 @@
     back.setAttribute("type", "button");
     back.addEventListener("click", function () {
       convOpenId = null;
+      // The URL moves too, or a reload from here re-opens the thread he
+      // just backed out of -- only reachable since `/conversation/<id>`
+      // became a real URL.
+      if (route(window.location.pathname).conversationId) {
+        history.pushState(null, "", "/conversations");
+      }
       loadConversations();
     });
     feed.appendChild(back);
@@ -9140,6 +9157,30 @@
       list.appendChild(card);
     });
     feed.appendChild(list);
+  }
+
+  /* Open one thread straight from a URL, with no listing tapped first.
+   *
+   * The thread endpoint answers with messages and no name, and the name is
+   * the line above them, so it is resolved from the listing here. A failed
+   * lookup still opens the thread: he tapped a notification to read a
+   * message, and a missing label is worth far less than the message.
+   */
+  function openConversationById(id) {
+    fetchPage("/api/conversations")
+      .then(function (payload) {
+        if (route(window.location.pathname).conversationId !== id) return;
+        var rows = payload.conversations || [];
+        var name = "";
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].id === id) name = rows[i].name || "";
+        }
+        openConversation(id, name);
+      })
+      .catch(function () {
+        if (route(window.location.pathname).conversationId !== id) return;
+        openConversation(id, "");
+      });
   }
 
   function loadConversations() {
@@ -10022,7 +10063,8 @@
       return;
     }
     if (here.view === "conversations") {
-      loadConversations();
+      if (here.conversationId) openConversationById(here.conversationId);
+      else loadConversations();
       return;
     }
     if (here.view === "heartbeats") {

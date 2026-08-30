@@ -714,6 +714,17 @@ def test_a_cycle_deep_link_resolves_on_a_cold_load(path):
     assert "text/html" in head
 
 
+@pytest.mark.parametrize("path", ["/conversation/c-2", "/conversation/c-2/"])
+def test_a_conversation_deep_link_resolves_on_a_cold_load(path):
+    """The URL a push notification opens. A tap is always a cold load --
+    the worker navigates a tab or opens a window at this path, so the
+    server has to answer it with the shell or the notification lands on a
+    404 instead of on the message it was announcing."""
+    status, head, _ = _get(path)
+    assert status == 200
+    assert "text/html" in head
+
+
 def test_static_assets_are_served_with_their_own_types():
     for path, expected in [
         ("/app.js", "javascript"),

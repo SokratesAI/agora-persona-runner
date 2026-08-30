@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -219,7 +219,11 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       return res({ error: "not found" }, 404);
     }
     if (url.includes("/api/conversations")) {
-      return res(convList || { conversations: [] }, convStatus);
+      // Its own status, defaulting to `convStatus`. The listing and the
+      // thread fail independently in real life, and the deep-link path
+      // reads both -- one knob cannot express "the name lookup failed
+      // and the messages arrived", which is the case worth pinning.
+      return res(convList || { conversations: [] }, convListStatus || convStatus);
     }
     /* Only the listing needs a branch: the two writes are POSTs, and
      * `window.fetch` answers every POST from `window.postReply` before
@@ -4958,6 +4962,189 @@ describe("a hole in the record is visible in the feed", () => {
  * test above it still green. So the worker is run for real -- its source
  * evaluated against stubs for the worker globals -- and asked what the
  * page would actually receive. */
+/* ---- Where a notification tap lands -------------------------------------
+ *
+ * His report, 2026-08-30: *"I just got a notification from Nova about
+ * something. This was the first notification from Nova with actual text. I
+ * quickly red it, clicked it and it opened Nova but to the issues page. I
+ * therefore lost the context of the message."*
+ *
+ * The worker focused the first open window and navigated nowhere, so the
+ * destination was whatever page he happened to have left open. These run
+ * the real `sw.js` against stubbed worker globals and ask where the tap
+ * actually goes -- reading the handler cannot tell a `navigate` that runs
+ * from one the fallback swallows.
+ */
+describe("a notification tap opens the thread it names", () => {
+  function runClick({ data, clients }) {
+    const listeners = {};
+    const opened = [];
+    const workerSelf = {
+      addEventListener: (name, fn) => { listeners[name] = fn; },
+      location: { origin: "https://nova.example" },
+      skipWaiting: () => {},
+      registration: { showNotification: () => Promise.resolve() },
+      clients: {
+        claim: () => {},
+        matchAll: () => Promise.resolve(clients),
+        openWindow: (url) => { opened.push(url); return Promise.resolve({ url }); },
+      },
+    };
+    const cacheStub = {
+      open: () => Promise.resolve({ addAll: () => Promise.resolve(), put: () => Promise.resolve() }),
+      keys: () => Promise.resolve([]),
+      match: () => Promise.resolve(undefined),
+    };
+    const source = readFileSync(join(publicDir, "sw.js"), "utf8");
+    new Function("self", "caches", "fetch", "Headers", "Response", "URL", source)(
+      workerSelf, cacheStub, () => Promise.reject(new Error("offline")), Headers, Response, URL);
+
+    let settled;
+    listeners.notificationclick({
+      notification: { data, close: () => {} },
+      waitUntil: (p) => { settled = p; },
+    });
+    return settled.then(() => opened);
+  }
+
+  /** An open Nova tab the worker controls: it can be sent somewhere. */
+  function controlled() {
+    const client = { navigated: [], focused: 0 };
+    client.navigate = (url) => { client.navigated.push(url); return Promise.resolve(client); };
+    client.focus = () => { client.focused += 1; return Promise.resolve(client); };
+    return client;
+  }
+
+  test("an open tab is sent to the conversation, not merely focused", async () => {
+    const tab = controlled();
+    await runClick({ data: { conversationId: "c-2" }, clients: [tab] });
+    // The whole bug: `focused` was 1 and `navigated` was empty, so the tab
+    // came forward still showing the board page he had left open.
+    assert.deepEqual(tab.navigated, ["/conversation/c-2"]);
+    assert.equal(tab.focused, 1);
+  });
+
+  test("with no tab open, the window opens on the conversation", async () => {
+    assert.deepEqual(await runClick({ data: { conversationId: "c-2" }, clients: [] }),
+      ["/conversation/c-2"]);
+  });
+
+  test("an id that needs escaping is escaped", async () => {
+    const tab = controlled();
+    await runClick({ data: { conversationId: "a b" }, clients: [tab] });
+    assert.deepEqual(tab.navigated, ["/conversation/a%20b"]);
+  });
+
+  /* A push with no id is Agora's `/notify` shape and the front page is the
+   * honest answer -- but it must not be the answer for a push that *did*
+   * carry one, which is what the first test above is for. */
+  test("a notification with no conversation still opens the app", async () => {
+    const tab = controlled();
+    await runClick({ data: {}, clients: [tab] });
+    assert.deepEqual(tab.navigated, ["/"]);
+  });
+
+  test("a notification carrying no data at all does not throw", async () => {
+    assert.deepEqual(await runClick({ data: undefined, clients: [] }), ["/"]);
+  });
+
+  /* `navigate` is only defined on a client this worker controls, and
+   * `includeUncontrolled` is on, so a window that cannot be navigated is a
+   * real case rather than a defensive one. Focusing it is still better
+   * than ignoring it. */
+  test("a window that cannot be navigated is focused rather than dropped", async () => {
+    const tab = { focused: 0, focus() { tab.focused += 1; return Promise.resolve(tab); } };
+    const opened = await runClick({ data: { conversationId: "c-2" }, clients: [tab] });
+    assert.equal(tab.focused, 1);
+    assert.deepEqual(opened, [], "it opened a second window on top of the one it focused");
+  });
+
+  test("a navigate that is refused still brings the tab forward", async () => {
+    const tab = controlled();
+    tab.navigate = () => Promise.reject(new Error("not allowed"));
+    await runClick({ data: { conversationId: "c-2" }, clients: [tab] });
+    assert.equal(tab.focused, 1);
+  });
+});
+
+/* The other half of the same tap: the URL the worker opens has to be a URL
+ * the app understands. `/conversation/<id>` did not exist before this, and
+ * a route the server serves but app.js does not read renders the journal --
+ * which would look like the same bug he reported. */
+describe("the /conversation/<id> URL opens one thread", () => {
+  const TWO_CONVS = {
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude", tags: [],
+        updatedAt: "2026-08-25T20:00:00.000Z", cycleThread: false },
+      { id: "c-2", name: "Nova — Cycle 656", personaName: "Nova", tags: [],
+        updatedAt: "2026-08-25T19:00:00.000Z", cycleThread: true },
+    ],
+  };
+  const THREAD = { conversationId: "c-2", waiting: false, messages: [
+    { id: "m", sender: "Nova", text: "the entry is written" },
+  ] };
+
+  test("the thread is on screen, with no row tapped first", async () => {
+    const asked = [];
+    const window = await loadSite("/conversation/c-2", {
+      convList: TWO_CONVS,
+      convThread: (url) => { asked.push(url); return THREAD; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector(".ask-text").textContent,
+      /the entry is written/);
+    assert.equal(asked.length, 1);
+    assert.match(asked[0], /id=c-2/);
+    // Not the listing: landing on the list is the failure he reported,
+    // one page over.
+    assert.equal(window.document.querySelectorAll(".conv-row").length, 0);
+  });
+
+  test("the thread is headed by its own name, read off the listing", async () => {
+    const window = await loadSite("/conversation/c-2", {
+      convList: TWO_CONVS, convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.querySelector("#status .status-line").textContent,
+      "Nova — Cycle 656");
+  });
+
+  /* The name is a label and the messages are the thing he tapped for, so a
+   * listing that fails must not cost him the thread. */
+  test("a listing that fails still opens the thread", async () => {
+    const window = await loadSite("/conversation/c-2", {
+      convListStatus: 500, convList: TWO_CONVS, convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector(".ask-text").textContent,
+      /the entry is written/);
+  });
+
+  test("an id the listing does not carry still opens the thread", async () => {
+    const window = await loadSite("/conversation/c-9", {
+      convList: TWO_CONVS,
+      convThread: () => ({ conversationId: "c-9", waiting: false, messages: [
+        { id: "m", sender: "Nova", text: "still here" },
+      ] }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector(".ask-text").textContent, /still here/);
+  });
+
+  test("backing out lands on the list and leaves the deep link behind", async () => {
+    const window = await loadSite("/conversation/c-2", {
+      convList: TWO_CONVS, convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    click(window, window.document.querySelector(".conv-back"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.querySelectorAll(".conv-row").length, 2);
+    // Without this a reload from the list drops him straight back into the
+    // thread he just backed out of.
+    assert.equal(window.location.pathname, "/conversations");
+  });
+});
+
 describe("the service worker says so when it answers from its cache", () => {
   function runFetchHandler({ networkFails, cached }) {
     const listeners = {};

@@ -152,14 +152,45 @@ self.addEventListener("push", function (event) {
   );
 });
 
+/* Where a tap lands.
+ *
+ * This used to focus the first open Nova window and navigate nowhere, so
+ * the notification opened whatever page that window was already showing.
+ * The owner reported it on 2026-08-30: *"I quickly red it, clicked it and
+ * it opened Nova but to the issues page. I therefore lost the context of
+ * the message."* He had a board page open, so that is what focusing gave
+ * him, and the text he had half-read was gone with the banner.
+ *
+ * The id to land on was already in the payload -- Agora sends
+ * `conversationId` with every push and the `push` handler above has been
+ * storing it on the notification the whole time. Nothing read it.
+ *
+ * `navigate` rather than `focus` alone, because focusing an existing tab
+ * is what loses the destination. It is only defined on a client this
+ * worker controls, and `includeUncontrolled` is deliberately still on:
+ * a window it cannot navigate is still better focused than ignored,
+ * which is what the fallbacks below are for.
+ */
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
+  var data = event.notification.data || {};
+  var target = data.conversationId
+    ? "/conversation/" + encodeURIComponent(data.conversationId)
+    : "/";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (clients) {
       for (var i = 0; i < clients.length; i++) {
-        if ("focus" in clients[i]) return clients[i].focus();
+        var client = clients[i];
+        if (typeof client.navigate === "function") {
+          return client.navigate(target).then(function (moved) {
+            return (moved || client).focus();
+          }).catch(function () {
+            return client.focus();
+          });
+        }
+        if ("focus" in client) return client.focus();
       }
-      return self.clients.openWindow("/");
+      return self.clients.openWindow(target);
     })
   );
 });
