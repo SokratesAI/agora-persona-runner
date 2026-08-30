@@ -170,7 +170,11 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
             (executing if _executes(row) else other).append((service, row))
 
     if unreadable:
-        print("CANNOT JUDGE -- these services were never asked, so nothing below is a claim "
+        # Deliberately not the words `CANNOT JUDGE`: `tools.nas_egress` already
+        # prints that heading for a destination it cannot classify, and two
+        # blocks opening on the same two words in one report is a reader
+        # having to know which is which.
+        print("NOT ASKED -- these services were never read, so nothing below is a claim "
               "about them:", file=out)
         for service, why in sorted(unreadable):
             print(f"  {service}: {why}", file=out)

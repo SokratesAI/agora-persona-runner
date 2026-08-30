@@ -120,7 +120,7 @@ def test_an_unreadable_service_is_1_and_never_reads_as_empty():
                           "radarr": []})
     status, text = _run(get)
     assert status == 1
-    assert "CANNOT JUDGE" in text
+    assert "NOT ASKED" in text
     assert "sonarr" in text
     # It judged one of two, and says so, so a partial sweep cannot be read as
     # a clean one.
@@ -313,7 +313,7 @@ def test_a_service_whose_key_discovery_failed_is_not_a_clean_sweep(monkeypatch):
     monkeypatch.setattr(nas, "config", lambda env=None, ssh=None, run=None: _conf("radarr"))
     status, text = _run(_get_returning({"radarr": []}))
     assert status == 1
-    assert "CANNOT JUDGE" in text
+    assert "NOT ASKED" in text
     assert "sonarr" in text
     assert "NO CODE EXECUTION CONFIGURED" not in text
     assert "Judged the notification list of 1 service(s) of 2" in text

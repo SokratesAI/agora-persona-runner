@@ -155,7 +155,7 @@ def test_an_unreadable_service_is_not_an_empty_list():
         "radarr": [_client()],
     })
     assert status == 1
-    assert "CANNOT JUDGE" in text
+    assert "NOT ASKED" in text
     assert "sonarr: refused the key" in text
     assert "Judged the download clients of 1 service(s) of 2" in text
 
@@ -221,7 +221,7 @@ def test_a_service_whose_key_discovery_failed_is_not_a_clean_sweep():
     """
     status, text = _report({"radarr": [_client()]})
     assert status == 1
-    assert "CANNOT JUDGE" in text
+    assert "NOT ASKED" in text
     assert "sonarr" in text
     assert "EVERY DOWNLOAD CLIENT IS ON HIS OWN NETWORK" not in text
     assert "Judged the download clients of 1 service(s) of 2" in text
