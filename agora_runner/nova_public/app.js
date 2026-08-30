@@ -10756,6 +10756,14 @@
     var loaded = false;
     var lastCount = 0;
     var isOpen = false;
+    /* One-shot: the *next* paint goes to the newest message whatever the
+     * scroll position says, and the paint that uses it clears it. Opening the
+     * dock and sending a question both set it, because in both of those he
+     * has just asked to be at the bottom and the position on screen has not
+     * caught up yet. Every paint after that decides from where he actually
+     * is. It must not latch -- a version of this that stayed true once set
+     * followed the thread down forever, which is the bug it exists to fix. */
+    var stickToBottom = true;
 
     var menuBtn = document.getElementById("chat-menu");
     var listEl = document.getElementById("chat-list");
@@ -10896,6 +10904,22 @@
       btn.classList.toggle("chat-btn-unread", !!on);
     }
 
+    /* How close to the bottom still counts as being at the bottom.
+     *
+     * Not an exact comparison, and the slop is not caution: `scrollTop` is
+     * fractional on a phone at a non-integer zoom while `scrollHeight` and
+     * `clientHeight` are rounded integers, so `scrollHeight - clientHeight
+     * === scrollTop` is false on a thread that is visually at the bottom,
+     * and the dock would then stop following the answer he is waiting for.
+     * 64px is about one message line and its gap -- near enough that the
+     * newest message is on his screen, far enough that one deliberate flick
+     * upwards is not read as staying put. */
+    var STICK_SLOP_PX = 64;
+
+    function atBottom(node) {
+      return node.scrollHeight - node.clientHeight - node.scrollTop <= STICK_SLOP_PX;
+    }
+
     function paint(payload) {
       var messages = (payload && payload.messages) || [];
       /* An answer that arrives while the dock is shut puts a dot on the
@@ -10915,9 +10939,29 @@
        * check only ever tests the mutation I thought of. */
       if (!isOpen && loaded && messages.length > lastCount) setDot(true);
       lastCount = messages.length;
+      /* Both of these are read **before** the repaint and neither can be read
+       * after it: `renderAskThread` empties the container, and emptying it
+       * puts `scrollTop` back to 0. So a version of this that asked where he
+       * was after painting would see every thread pinned to the top. */
+      var follow = stickToBottom || atBottom(thread);
+      var was = thread.scrollTop;
       renderAskThread(thread, payload);
       loaded = true;
-      if (isOpen) thread.scrollTop = thread.scrollHeight;
+      /* The repaint is what moved him, so his place has to be put back either
+       * way -- to the newest message when he was already on it, and to the
+       * message he was rereading when he was not.
+       *
+       * His capture on `issues.md`, 2026-08-30: *"Chat auto-scrolls to the
+       * bottom every time a new message arrives even if I've scrolled up to
+       * reread something -- annoying, should only stick to bottom if I was
+       * already near it."* Making the jump conditional on its own would have
+       * been worse than the bug: without the `was` branch, a poll landing
+       * while he read an old message would have thrown him to the *top* of
+       * the thread instead of the bottom. */
+      if (isOpen) {
+        thread.scrollTop = follow ? thread.scrollHeight : was;
+        stickToBottom = false;
+      }
     }
 
     /* The thread he last read, kept on the device so opening the dock paints
@@ -11605,6 +11649,12 @@
         return;
       }
       setDot(false);
+      /* Opening always lands on the newest message. A shut dock is
+       * `display: none`, where `scrollTop` reads 0 in a real browser, so
+       * without this the first paint after an open would find him "at the
+       * top" and hold him there -- which is the bug this is meant to fix,
+       * pointing the other way. */
+      stickToBottom = true;
       /* Read the remembered thread once per page load, on the first open
        * rather than at construction: `localStorage` is one synchronous
        * read and there is no reason to spend it on a dock he never taps.
@@ -11702,6 +11752,10 @@
           // gone blank with nothing to show for it reads as a lost message.
           thread.appendChild(askMessage({ sender: "Edvard", text: body }));
           thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+          // Sending is him asking to be at the bottom, whatever he was
+          // rereading a second ago -- so the answer to this question lands on
+          // his screen rather than below it.
+          stickToBottom = true;
           thread.scrollTop = thread.scrollHeight;
           // His own message is not an unread answer.
           lastCount += 1;
