@@ -53,12 +53,29 @@ second opinion here would be two places to fix one answer. A non-baseline port
 that times out cannot be told from a firewall drop, so it prints `CANNOT
 JUDGE` and exits 1 -- unjudged must never read as clean.
 
-**The blind spot, said here rather than discovered later: this is a curated
-candidate list, not a sweep of all 65535 ports.** A listener on a port not in
-`CANDIDATES` is invisible to it, and no clean run here is a claim that nothing
-else is open. Widening it to the full range means 65535 transfers over one
-SSH hop, which is not a thing to run every cycle, and narrowing the remote
-command's constancy to get a real scanner is a worse trade than this gap.
+**The candidate list is no longer the whole of what gets swept, and that gap
+was real.** Cycle 649 wrote here that a listener on a port not in `CANDIDATES`
+is invisible, that widening to all 65535 ports means 65535 transfers, and that
+loosening the remote command to get a real scanner is the worse trade. The
+first two are true and the third framed the choice as scanner-or-nothing.
+There is a third option and the box hands it over: `/proc/net/tcp` and
+`/proc/net/tcp6` list every TCP socket in LISTEN with the address it is bound
+to. Reading them is one constant remote command with **no variable part at
+all** -- strictly less attackable than the curl one, which takes stdin -- and
+it is a read rather than a scan. Measured Cycle 658: the box has 29 distinct
+listening TCP ports and 12 of the LAN-reachable ones were not in `CANDIDATES`,
+including Bazarr on 6767 serving its UI to the LAN. So the sweep now probes
+the union of the candidate list and whatever is actually listening.
+
+**The table alone is not the answer either, which is why the probe stays.**
+Measured the same cycle: 9993, 21596 and 56478 are bound to `192.168.0.119`
+according to `/proc`, and a curl at that address from the box itself is
+*refused* on all three. Something between the socket and the interface says
+no. So the listener table says what exists, completely, and the probe says
+what the LAN can actually open -- and only the second one is the security
+question. Neither replaces the other.
+
+What is still unjudged is UDP: this reads the TCP tables only.
 
 Exit status, the same three meanings as every check in `tools.preflight`:
 
@@ -75,6 +92,7 @@ make for the same reason.
 
 import argparse
 import ipaddress
+import socket
 import subprocess
 import sys
 
@@ -137,6 +155,83 @@ BASELINE = {
     8989: "Sonarr, no login (my issue #18)",
     32400: "Plex, behind its login",
 }
+
+#: The one other remote command this module runs. It is a constant with no
+#: variable part at all -- nothing is interpolated into it and nothing arrives
+#: on its stdin -- which is a smaller surface than the `curl --config -` hop
+#: beside it, not a larger one.
+LISTENER_COMMAND = "cat /proc/net/tcp /proc/net/tcp6"
+
+#: The `st` column's value for a socket in LISTEN.
+_LISTEN = "0A"
+
+
+def _bind_address(field):
+    """`'0100007F:B55C'` -> `('127.0.0.1', 46428)`.
+
+    `/proc` writes the address as hex words in **host** byte order, which is
+    little-endian here, so each group of four bytes has to be reversed before
+    it is an address. Getting that wrong does not raise -- it produces a
+    plausible-looking address that is simply the wrong one -- so this is one of
+    the two things `tests/test_nas_ports.py` pins against real captured rows.
+    """
+    raw, _, port = field.partition(":")
+    packed = bytes.fromhex(raw)
+    if len(packed) not in (4, 16):
+        raise ValueError(f"not an address field: {field!r}")
+    packed = b"".join(packed[i:i + 4][::-1] for i in range(0, len(packed), 4))
+    family = socket.AF_INET if len(packed) == 4 else socket.AF_INET6
+    return socket.inet_ntop(family, packed), int(port, 16)
+
+
+def parse_listeners(text):
+    """`{port: [bind address, ...]}` for every TCP socket in LISTEN.
+
+    One port appears on several addresses when a service binds each interface
+    separately, so the addresses are kept rather than collapsed: `127.0.0.1`
+    and `0.0.0.0` are the difference between a service nobody can reach and one
+    the whole LAN can, and that distinction is the entire point of the check.
+    A row this does not understand is skipped rather than guessed at.
+    """
+    found = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 4 or not fields[0].endswith(":"):
+            continue
+        if fields[3] != _LISTEN:
+            continue
+        try:
+            address, port = _bind_address(fields[1])
+        except (ValueError, OSError):
+            continue
+        found.setdefault(port, [])
+        if address not in found[port]:
+            found[port].append(address)
+    return found
+
+
+def listeners(ssh, run=subprocess.run, timeout=30):
+    """Every listening TCP port on the NAS, read off the box's own tables.
+
+    A non-zero exit is `Unreachable` rather than an empty answer, because an
+    empty listener table and an unread one look identical and mean opposite
+    things -- the first would silently shrink the sweep back to the curated
+    list while reporting a complete one.
+    """
+    argv = ["ssh", "-i", ssh["key"], *nas.SSH_OPTS, f"{ssh['user']}@{ssh['host']}",
+            LISTENER_COMMAND]
+    try:
+        done = run(argv, input=None, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise nas.Unreachable(f"the NAS did not answer within {timeout}s") from exc
+    except OSError as exc:
+        raise nas.Unreachable(f"could not start ssh: {exc}") from exc
+    if done.returncode != 0:
+        raise nas.Unreachable(
+            f"reading the listener table failed: "
+            f"{(done.stderr or '').strip() or f'exit {done.returncode}'}")
+    return parse_listeners(done.stdout or "")
+
 
 # curl's exit codes, named where they are read rather than where they are set.
 _HTTP_OK = 0          # a transfer completed; %{http_code} says what it said
@@ -248,8 +343,11 @@ def sweep(ssh, address, ports, run=subprocess.run, timeout=180):
     return seen
 
 
-def _label(port, state, code):
-    what = CANDIDATES.get(port, "unknown to this check")
+def _label(port, state, code, bound=None):
+    what = CANDIDATES.get(port)
+    if what is None:
+        where = ", ".join(bound) if bound else None
+        what = f"not a candidate port, listening on {where}" if where else "unknown to this check"
     if state == ANSWERED:
         return f"{port}/tcp  HTTP {code}  ({what})"
     if state == SPOKE:
@@ -277,7 +375,14 @@ def report(env=None, out=sys.stdout, ssh=nas._UNSET, run=subprocess.run):
         print("Judged 0 port(s). An unswept LAN address is not a clean sweep.", file=out)
         return 1
 
-    ports = sorted(CANDIDATES)
+    try:
+        found = listeners(hop, run=run)
+    except nas.Unreachable as exc:
+        print(f"CANNOT SEE  the listener table did not read, so the sweep is back to the "
+              f"curated candidate list and its old blind spot: {exc}", file=out)
+        found = None
+
+    ports = sorted(set(CANDIDATES) | set(found or {}))
     try:
         seen = sweep(hop, address, ports, run=run)
     except nas.Unreachable as exc:
@@ -302,7 +407,7 @@ def report(env=None, out=sys.stdout, ssh=nas._UNSET, run=subprocess.run):
         print("NEW LISTENER ON THE HOME LAN -- something is reachable on the NAS that is not "
               "on the record.", file=out)
         for port, state, code in new:
-            print(f"  {_label(port, state, code)}", file=out)
+            print(f"  {_label(port, state, code, (found or {}).get(port))}", file=out)
         print("  Sonarr and Radarr on this box have no login by his own decision, so a port "
               "being reachable is the control, not authentication. Ask him what this is before "
               "assuming it is unwanted -- he runs containers on that box himself.", file=out)
@@ -312,27 +417,27 @@ def report(env=None, out=sys.stdout, ssh=nas._UNSET, run=subprocess.run):
         print("CANNOT JUDGE -- these neither answered nor refused, which a silent listener and "
               "a firewall that drops both look like:", file=out)
         for port, state, code in unjudged:
-            print(f"  {_label(port, state, code)}", file=out)
+            print(f"  {_label(port, state, code, (found or {}).get(port))}", file=out)
         status = max(status, 1)
 
     if unswept:
         print("NOT SWEPT -- curl returned no result this understands for these, so they are "
               "neither open nor closed here:", file=out)
         for port in unswept:
-            print(f"  {port}/tcp  ({CANDIDATES[port]})", file=out)
+            print(f"  {port}/tcp  ({CANDIDATES.get(port, 'not a candidate port')})", file=out)
         status = max(status, 1)
 
     if quiet:
         print("GONE QUIET -- on the record and not answering now. Whether a service is down is "
               "tools.nas_health's question, so this prints and does not raise:", file=out)
         for port, state, code in quiet:
-            print(f"  {_label(port, state, code)}  was: {BASELINE[port]}", file=out)
+            print(f"  {_label(port, state, code, (found or {}).get(port))}  was: {BASELINE[port]}", file=out)
 
     if known:
         print("ON THE RECORD -- reachable and already written about, printed and not raised:",
               file=out)
         for port, state, code in known:
-            print(f"  {_label(port, state, code)}  {BASELINE[port]}", file=out)
+            print(f"  {_label(port, state, code, (found or {}).get(port))}  {BASELINE[port]}", file=out)
 
     if not new and not unjudged and not unswept:
         print(f"NOTHING NEW IS REACHABLE on {address}: every port that answered is one already "
@@ -343,10 +448,18 @@ def report(env=None, out=sys.stdout, ssh=nas._UNSET, run=subprocess.run):
     # `NOT JUDGED` line printed last becomes the summary and the sentence
     # saying what was actually swept disappears from the one table I read
     # every cycle. Same rule Cycle 646 learnt one module over.
-    print(f"NOT JUDGED  the other {65535 - len(ports)} TCP port(s) -- this is a curated "
-          "candidate list, not a full scan, so a clean run here is not a claim that nothing "
-          "else is open.", file=out)
-    print(f"Judged {len(seen)} of {len(ports)} candidate port(s) on {address}, asked from the "
+    if found is None:
+        print(f"NOT JUDGED  the other {65535 - len(ports)} TCP port(s) -- without the listener "
+              "table this is a curated candidate list, not a full sweep, so a clean run here "
+              "is not a claim that nothing else is open.", file=out)
+        status = max(status, 1)
+    else:
+        print("NOT JUDGED  every UDP socket on the box -- this reads the TCP listener tables "
+              "only, so a UDP service is invisible to it.", file=out)
+    listed = "" if found is None else (
+        f"{len(found)} of them read from the box's own TCP listener table, so no listening TCP "
+        "port was left out, ")
+    print(f"Judged {len(seen)} of {len(ports)} port(s) on {address}, {listed}asked from the "
           "NAS itself so a loopback-only service refuses. This is current state only.", file=out)
     return status
 
