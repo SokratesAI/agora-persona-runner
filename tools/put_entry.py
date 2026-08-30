@@ -182,10 +182,9 @@ def cycle_already_filed(names, cycle):
     conversation and the weekly architecture heartbeat is its own
     conversation. Neither entry is wrong on its own and neither is a
     mistake to repair; what is broken is the pair. `nova_journal.file_cycle`
-    reads the `-cycle-<n>` token to decide which cycle an entry
-    belongs to, and
-    the owner's comments are keyed by that number, so a reply he leaves on one
-    card can surface on the other.
+    reads the `-cycle-<n>` token to decide which cycle an entry belongs to,
+    and the owner's comments are keyed by that number, so a reply left on
+    one card can surface on the other.
 
     Matched on the whole `-cycle-<n>.md` tail rather than a substring, so
     cycle 64 does not collide with cycle 649.
