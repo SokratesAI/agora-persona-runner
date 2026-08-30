@@ -47,8 +47,25 @@ def _upstream(by_repo):
     return latest_release
 
 
-def _run(services, statuses, upstream, ssh=HOP):
+#: What Plex answers with unless a test says otherwise: on its train, so no
+#: test that is about sonarr and radarr accidentally depends on Plex's verdict.
+PLEX_OK = "1.43.3.10896-cb3ebc72d"
+
+
+def _plex(running=PLEX_OK, latest=PLEX_OK, rows=3, why_not=None):
+    """Fakes for the two Plex seams: `/identity` and the vendor manifest."""
+    def version(hop, **kwargs):
+        if isinstance(running, Exception):
+            raise running
+        return running
+    def upstream(**kwargs):
+        return (latest, rows, why_not)
+    return version, upstream
+
+
+def _run(services, statuses, upstream, ssh=HOP, plex=None):
     out = io.StringIO()
+    plex_version, plex_latest = plex if plex else _plex()
     code = nas_versions.report(
         out=out,
         ssh=ssh,
@@ -57,6 +74,8 @@ def _run(services, statuses, upstream, ssh=HOP):
         now=NOW,
         env={},
         run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no shell in these tests")),
+        plex_running=plex_version,
+        plex_latest=plex_latest,
     )
     return code, out.getvalue()
 
@@ -84,7 +103,7 @@ def test_major_behind_raises(monkeypatch):
     # The age is context and has to actually appear, or the strongest sentence
     # in the report is one nobody reads.
     assert "built 1484 day(s) ago" in text
-    assert "Judged the running version of 2 service(s) of 2" in text
+    assert "Judged the running version of 2 service(s) of 2 plus plex" in text
 
 
 def test_a_minor_gap_is_printed_and_does_not_raise(monkeypatch):
@@ -107,7 +126,7 @@ def test_a_minor_gap_is_printed_and_does_not_raise(monkeypatch):
     assert "MAJOR VERSION BEHIND" not in text
     assert "NOT A MAJOR BEHIND" in text
     assert "sonarr 4.0.14.2939" in text
-    assert "NO APP IS A MAJOR BEHIND ITS OWN PROJECT on 2 service(s)" in text
+    assert "NO APP IS BEHIND ITS OWN RELEASE TRAIN on 2 service(s)" in text
 
 
 def test_a_patch_gap_is_printed_and_does_not_raise(monkeypatch):
@@ -288,3 +307,150 @@ def test_upstream_table_covers_every_service_nas_knows_about():
     about a mapping, which reads like a NAS problem and is a code problem.
     """
     assert set(nas.SERVICES) == set(nas_versions.UPSTREAM)
+
+
+# --- Plex ------------------------------------------------------------------
+#
+# Plex is judged against a different upstream and on a different field, so
+# every one of these pins the boundary rather than a comfortable case. The
+# rule under test: Plex names its release series by the major.minor pair, so a
+# minor gap is a train behind and raises, and only a patch is printed.
+
+
+def test_plex_a_minor_behind_raises(monkeypatch):
+    """The live shape as of Cycle 646: 1.41 against 1.43, exit 2.
+
+    This sits on the boundary on purpose. `1.41.6` against `1.43.3` is a
+    *minor* gap -- the case that separates Plex's rule from sonarr's and
+    radarr's, where a minor is printed and cleared.
+    """
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
+    code, text = _run(
+        ("sonarr", "radarr"),
+        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10514")},
+        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
+        plex=_plex(running="1.41.6.9685-d301f511a", latest="1.43.3.10896-cb3ebc72d"),
+    )
+    assert code == 2
+    assert "PLEX IS BEHIND ITS RELEASE TRAIN" in text
+    assert "plex 1.41.6.9685-d301f511a against plex.tv 1.43.3.10896-cb3ebc72d" in text
+    assert "newest of 3 Synology row(s)" in text
+    # The two *arr apps were current here, so the 2 came from Plex alone.
+    assert "MAJOR VERSION BEHIND" not in text
+
+
+def test_plex_a_patch_behind_is_printed_and_does_not_raise(monkeypatch):
+    """The other side of the same boundary: 1.43.3 against 1.43.5 is a patch."""
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
+    code, text = _run(
+        ("sonarr", "radarr"),
+        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10514")},
+        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
+        plex=_plex(running="1.43.3.10896-cb3ebc72d", latest="1.43.5.11000-aaaaaaaaa"),
+    )
+    assert code == 0
+    assert "PLEX IS BEHIND ITS RELEASE TRAIN" not in text
+    assert "PLEX IS ON ITS RELEASE TRAIN" in text
+    assert "plex 1.43.3.10896-cb3ebc72d" in text
+
+
+def test_plex_identity_unreadable_exits_one_rather_than_clearing(monkeypatch):
+    """An unreachable Plex must never read like a Plex that is up to date."""
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
+    code, text = _run(
+        ("sonarr", "radarr"),
+        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10514")},
+        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
+        plex=_plex(running=nas.Unreachable("plex answered 401 on /identity")),
+    )
+    assert code == 1
+    assert "CANNOT JUDGE" in text
+    assert "plex: /identity is unreadable" in text
+    assert "plex could NOT be judged" in text
+    assert "NO APP IS BEHIND ITS OWN RELEASE TRAIN" not in text
+
+
+def test_plex_upstream_unreadable_exits_one_rather_than_clearing(monkeypatch):
+    """Same contract the *arr half holds: no upstream, no verdict."""
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
+    code, text = _run(
+        ("sonarr", "radarr"),
+        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10514")},
+        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
+        plex=_plex(latest=None, rows=0, why_not="URLError: timed out"),
+    )
+    assert code == 1
+    assert "the newest published Plex build could not be read -- URLError" in text
+
+
+def test_plex_version_that_cannot_be_compared_exits_one(monkeypatch):
+    """A build string with no leading number is unjudged, never cleared."""
+    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
+    code, text = _run(
+        ("sonarr", "radarr"),
+        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10514")},
+        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
+        plex=_plex(running="plexpass-nightly"),
+    )
+    assert code == 1
+    assert "cannot be compared against plex.tv" in text
+
+
+def test_plex_upstream_reads_only_the_synology_rows():
+    """The manifest carries a row per platform; his box is a Synology."""
+    manifest = {
+        "computer": {"Linux": {"version": "9.9.9.1-linux"}},
+        "nas": {
+            "Synology (DSM 6)": {"version": "1.43.3.10896-cb3ebc72d"},
+            "Synology (DSM 7)": {"version": "1.43.3.10896-cb3ebc72d"},
+            "Synology (DSM 7.2.2+)": {"version": "1.43.3.10896-cb3ebc72d"},
+            "QNAP": {"version": "2.0.0.1-qnap"},
+        },
+    }
+    version, rows, why_not = nas_versions.plex_upstream(opener=_manifest_opener(manifest))
+    assert (version, rows, why_not) == ("1.43.3.10896-cb3ebc72d", 3, None)
+
+
+def test_plex_upstream_takes_the_newest_when_the_rows_disagree():
+    """They agree today. If a DSM generation ever lags, the newest is upstream."""
+    manifest = {"nas": {"Synology (DSM 6)": {"version": "1.41.6.9685-x"},
+                        "Synology (DSM 7)": {"version": "1.43.3.10896-y"}}}
+    version, rows, _ = nas_versions.plex_upstream(opener=_manifest_opener(manifest))
+    assert (version, rows) == ("1.43.3.10896-y", 2)
+
+
+def test_plex_upstream_with_no_synology_row_is_a_failure_not_an_empty_answer():
+    manifest = {"nas": {"QNAP": {"version": "2.0.0.1-qnap"}}}
+    version, rows, why_not = nas_versions.plex_upstream(opener=_manifest_opener(manifest))
+    assert version is None and rows == 0
+    assert "Synology" in why_not
+
+
+def test_plex_upstream_that_is_not_json_is_a_failure():
+    version, _, why_not = nas_versions.plex_upstream(opener=_raw_opener(b"<html>nope"))
+    assert version is None and "not JSON" in why_not
+
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _raw_opener(body):
+    def opener(url, timeout=None):
+        return _FakeResponse(body)
+    return opener
+
+
+def _manifest_opener(manifest):
+    import json as _json
+    return _raw_opener(_json.dumps(manifest).encode())

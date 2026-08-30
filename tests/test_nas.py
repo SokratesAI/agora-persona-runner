@@ -650,3 +650,56 @@ def test_nzbget_unlocked_sends_no_credential_at_all(monkeypatch):
     url, headers = fetch.calls[0]
     assert headers == ()
     assert "@" not in url
+
+
+# --- Plex ------------------------------------------------------------------
+
+PLEX_IDENTITY = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<MediaContainer size="0" apiVersion="0.2.0" claimed="1" '
+    'machineIdentifier="43313b331031cf9a62524719a06e0ef3116ddd49" '
+    'version="1.41.6.9685-d301f511a">\n</MediaContainer>\n'
+)
+
+
+def test_plex_read_only_refuses_anything_but_identity():
+    # Everything else on :32400 needs a token and reaches his library. The
+    # allowlist is what guarantees this module cannot ask for any of it.
+    assert nas.PLEX_READ_ONLY == {"/identity"}
+    for path in ("/library/sections", "/:/prefs", "/status/sessions"):
+        with pytest.raises(ValueError):
+            nas._plex_url(path)
+
+
+def test_plex_version_reads_the_attribute_off_identity(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning((PLEX_IDENTITY, 200)))
+    assert nas.plex_version({"host": "h"}) == "1.41.6.9685-d301f511a"
+
+
+def test_plex_version_sends_no_credential_and_asks_only_for_identity(monkeypatch):
+    fetch = _hop_returning((PLEX_IDENTITY, 200))
+    monkeypatch.setattr(nas, "_fetch_over_ssh", fetch)
+    nas.plex_version({"host": "h"})
+    url, headers = fetch.calls[0]
+    assert headers == ()
+    assert url == f"http://127.0.0.1:{nas.PLEX_PORT}/identity"
+
+
+def test_plex_version_refuses_a_non_200(monkeypatch):
+    # A Plex that wants a token, or a proxy in front of it, is unreadable --
+    # never a version that happens to be current.
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("", 401)))
+    with pytest.raises(nas.Unreachable, match="401"):
+        nas.plex_version({"host": "h"})
+
+
+def test_plex_version_refuses_a_200_that_is_not_xml(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("<html>login", 200)))
+    with pytest.raises(nas.Unreachable, match="not XML"):
+        nas.plex_version({"host": "h"})
+
+
+def test_plex_version_refuses_xml_with_no_version_attribute(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("<MediaContainer/>", 200)))
+    with pytest.raises(nas.Unreachable, match="no `version` attribute"):
+        nas.plex_version({"host": "h"})
