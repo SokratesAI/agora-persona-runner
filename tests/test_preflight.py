@@ -316,3 +316,93 @@ def test_a_stale_tree_names_the_check_modules_it_is_missing(tmp_path):
     assert code == 2, report
     assert "Missing from this tree: nas_watch" in report
     assert "old_check" not in report
+
+
+# --- a clean check that could not judge part of its own scope -----------------
+# Cycle 646 found `nas_watch` exiting 0 with "2 service(s) of 2" over a box with
+# three code-execution surfaces, and repaired it by pushing the missing digit
+# into that check's summary line so the collapse would carry it. The constraint
+# it was satisfying lives in `summary_line` and nowhere a check's author looks,
+# so the collapse itself is what stops hiding the caveat now.
+
+NZBGET = ("NOT JUDGED  nzbget's extension list -- reading it needs NZBGET_USER "
+          "and NZBGET_PASS in this pod's environment and neither is set.")
+
+
+def test_a_clean_check_still_says_what_it_could_not_judge():
+    code, text = render([(
+        "nas_watch", 0,
+        "locked: nzbget's control port answered and refused without a credential\n"
+        + NZBGET + "\n"
+        "Judged the code-execution surface of 2 service(s) of 3, read over the SSH hop.\n",
+        2.3,
+    )])
+    assert code == 0
+    assert NZBGET in text
+    # The rest of the body is still collapsed away -- this is not --verbose.
+    assert "locked: nzbget's control port" not in text
+
+
+def test_the_caveat_marker_has_to_start_the_line():
+    # A footnote *about* the exit contract is prose, not a thing the sweep
+    # failed to judge. Measured over a real 25-check sweep: anchoring and
+    # containment select exactly the same lines, so this only ever narrows.
+    _, text = render([(
+        "preflight_like", 0,
+        "An unreadable check is UNREADABLE and never reads as clean.\n"
+        "Swept 3 repo(s).\n",
+        0.2,
+    )])
+    assert "never reads as clean" not in text
+
+
+def test_every_caveat_prints_and_there_is_no_cap_on_them():
+    body = "\n".join(f"CANNOT SEE  ActionsSecret/secret-{n}: this account cannot list that kind"
+                     for n in range(6)) + "\nRead 37 managed resource(s).\n"
+    _, text = render([("crossplane_health", 0, body, 11.9)])
+    for n in range(6):
+        assert f"ActionsSecret/secret-{n}" in text
+
+
+def test_a_caveat_on_a_dirty_check_is_not_printed_twice():
+    # exit 2 reproduces the whole body already; repeating the caveat under the
+    # row would say the same thing in two places and mean nothing extra.
+    body = "PIN DRIFT -- 1 pinned version(s) are behind.\n" + NZBGET + "\nJudged 112 pin(s).\n"
+    _, text = render([("pin_drift", 2, body, 62.7)])
+    assert text.count(NZBGET) == 1
+
+
+def test_the_footer_counts_the_clean_checks_that_could_not_judge_everything():
+    _, text = render([
+        ("nas_watch", 0, NZBGET + "\nJudged 2 service(s) of 3.\n", 2.3),
+        ("doc_integrity", 0, "Whole. Swept 11 document(s)\n", 10.2),
+    ])
+    assert "1 check(s) exited 0 over a scope they could not fully judge" in text
+
+
+def test_a_sweep_with_nothing_unjudged_says_nothing_about_caveats():
+    _, text = render([("doc_integrity", 0, "Whole. Swept 11 document(s)\n", 10.2)])
+    assert "could not fully judge" not in text
+
+
+def test_verbose_does_not_report_every_clean_check_as_unclean():
+    # `--verbose` puts every check in the reproduce list, and the footer used to
+    # count that list: a sweep of 25 checks with 8 findings printed "25 check(s)
+    # did not come back clean", which is false in the report's own summary line.
+    results = [
+        ("doc_integrity", 0, "Whole. Swept 11 document(s)\n", 10.2),
+        ("pin_drift", 2, "PIN DRIFT -- 1 pinned version(s) are behind.\n", 62.7),
+    ]
+    out = io.StringIO()
+    preflight.render(results, stream=out, verbose=True)
+    assert "1 check(s) did not come back clean" in out.getvalue()
+
+
+def test_a_one_line_caveat_is_not_printed_under_itself():
+    # `source_revision` with no git checkout exits 0 and its whole report is
+    # one `CANNOT SEE` line, so the collapsed summary and the caveat are the
+    # same sentence. Printing it indented under itself says nothing new.
+    only = "CANNOT SEE -- /x is not a usable git checkout, so there is 1 unknown."
+    _, text = render([("source_revision", 0, only + "\n", 0.1)])
+    assert text.count(only) == 1
+    assert "could not fully judge" not in text
