@@ -33,6 +33,13 @@ tools writes as its summary, naming what it swept -- and a check that exits
 1 or 2 is reproduced **in full, verbatim**, because that is the output a
 cycle actually has to read.
 
+One thing survives the collapse besides that line: **a clean check's own
+statement that it could not judge part of its scope.** A check may honestly
+exit 0 over a surface it never read -- nzbget's extension list sits behind a
+password neither pod holds -- and collapsing that to a summary puts the
+caveat out of sight in the one report a cycle reads every morning. See
+`caveat_lines`; it costs the table one line today, measured.
+
 The uniform exit contract is what makes this possible, and it was already
 there: every one of these modules documents **2 = a finding to act on,
 1 = something was unreadable and never reads as clean, 0 = nothing to act
@@ -206,6 +213,49 @@ def summary_line(output):
     return lines[-1]
 
 
+CAVEAT_MARKERS = ("NOT JUDGED", "NOT ASKED", "CANNOT JUDGE", "CANNOT SEE",
+                  "CANNOT READ", "COULD NOT READ", "UNREADABLE")
+
+
+def caveat_lines(output):
+    """The lines where a check says it could not judge part of its own scope.
+
+    A check is allowed to exit 0 over a scope it did not fully cover, and that
+    is honest: `nas_watch` cannot read nzbget's extension list because nobody
+    has given this pod nzbget's password, and "locked, with no credential" is
+    not a judgement of that list either way. What is *not* honest is that
+    saying so costs the check a line and this report collapses a clean check
+    to one -- so the caveat is in the output and structurally invisible in the
+    one place a cycle reads every morning.
+
+    Cycle 646 hit exactly that and fixed it in the wrong place. `nas_watch`
+    said *"Judged the notification list of 2 service(s) of 2"* about a box with
+    three code-execution surfaces, and the repair was to push the missing digit
+    into that check's own summary line so `summary_line` would carry it. That
+    works for one check and leaves the next one to rediscover the rule, because
+    the constraint it satisfies -- *get your caveat into the last line that
+    carries a digit* -- lives here and is written down nowhere a check's author
+    would look. Three of those and the shape is the bug.
+
+    So the collapse stops hiding them instead: a clean check's caveats are
+    printed under its row, verbatim, however many there are. There is no cap
+    and there should not be one -- the owner's rule (`personality.md`) is that
+    an interface problem is solved with an interface, never by throwing data
+    away, and `--verbose` is already the other end of that. Measured against a
+    real sweep of all 25 checks on 2026-08-30: one clean check carries one
+    caveat line, so this costs the table one line today.
+
+    The marker has to *start* the line, which is narrower than containing it
+    and deliberately so: every emitter prints it at the head of its own line,
+    and a footnote that merely mentions the word -- *"a check that exits 1 is
+    UNREADABLE and never reads as clean"* -- is prose about the contract rather
+    than a thing this sweep failed to judge. Verified on the same sweep: over
+    all 25 checks, anchoring and containment select exactly the same lines.
+    """
+    return [line.strip() for line in output.splitlines()
+            if any(line.strip().startswith(marker) for marker in CAVEAT_MARKERS)]
+
+
 def missing_modules(git, directory):
     """Check modules that exist on `origin/main` and not in this tree, by name.
 
@@ -308,10 +358,17 @@ def render(results, stream=sys.stdout, verbose=False):
     worst = 0
     noisy = []
     print(f"{'check':20}{'verdict':12}{'s':>6}  summary", file=stream)
+    caveated = 0
     for name, code, output, seconds in results:
         worst = max(worst, code)
         word = STATUS_WORD.get(code, f"EXIT {code}")
         print(f"{name:20}{word:12}{seconds:>6.1f}  {summary_line(output)}", file=stream)
+        if code == 0:
+            caveats = caveat_lines(output)
+            if caveats:
+                caveated += 1
+            for line in caveats:
+                print(f"{'':32}  {line}", file=stream)
         if code != 0 or verbose:
             noisy.append((name, code, output))
 
@@ -322,12 +379,18 @@ def render(results, stream=sys.stdout, verbose=False):
 
     print(file=stream)
     print(f"Ran {len(results)} check(s): {', '.join(n for n, _, _, _ in results)}.", file=stream)
+    unclean = sum(1 for _, code, _, _ in results if code != 0)
     if worst == 0:
         print("Every check exited 0 -- nothing to act on, and each line above "
               "names what its check swept.", file=stream)
     else:
-        print(f"{len(noisy)} check(s) did not come back clean; their full output is "
+        print(f"{unclean} check(s) did not come back clean; their full output is "
               f"above, unabridged. Overall exit {worst}.", file=stream)
+    if caveated:
+        print(f"{caveated} check(s) exited 0 over a scope they could not fully judge; "
+              f"their caveats are the indented lines above. Exit 0 is the right "
+              f"status for those and it is not a claim about what they skipped.",
+              file=stream)
     return worst
 
 
