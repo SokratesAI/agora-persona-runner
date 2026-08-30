@@ -219,12 +219,45 @@ def test_a_socket_that_is_not_listening_is_not_a_listener():
 
 
 def test_a_listening_port_outside_the_candidate_list_is_swept():
-    """The whole point: 6767 is Bazarr on the real box and no candidate list
-    written by hand had it."""
-    status, text = _report(answers={**LIVE, 6767: (200, 0)})
+    """The whole point: a port nothing hand-wrote is still probed and still
+    raises. The example used to be 6767, Bazarr on the real box -- it is on
+    the record now (Cycle 670), so this uses a port that is in neither list
+    and would break the same way if that one were ever added."""
+    assert 9999 not in nas_ports.CANDIDATES and 9999 not in nas_ports.BASELINE
+    # One synthetic row, on 0.0.0.0:270F. The byte-order pin lives in its own
+    # test against the captured `PROC_TCP`; all this one needs is a listener
+    # the record has never heard of.
+    unknown = PROC_TCP.replace(
+        "   3: 00000000:1A6F",
+        "   5: 00000000:270F 00000000:0000 0A 00000000:00000000 00:00000000 "
+        "00000000     0        0 12345681 1 ffff880137968c00 100 0 0 10 0\n"
+        "   3: 00000000:1A6F")
+    status, text = _report(answers={**LIVE, 9999: (200, 0)}, table=unknown)
     assert status == 2
     assert "NEW LISTENER ON THE HOME LAN" in text
-    assert "6767/tcp  HTTP 200  (not a candidate port, listening on 0.0.0.0)" in text
+    assert "9999/tcp  HTTP 200  (not a candidate port, listening on 0.0.0.0)" in text
+
+
+def test_a_connection_that_is_not_http_is_a_listener_not_an_unswept_port():
+    """curl 52 and 56 are `synobtrfsreplica` and `tailscaled` on the real box.
+    Both connected; neither spoke HTTP. Read as unswept -- which is what
+    happened until Cycle 670 -- a measured listener reports as unmeasured, and
+    `tools.nas_ports` exits 1 forever on two ports that answered every time."""
+    for code in (52, 56):
+        status, text = _report(answers={**LIVE, 5566: (0, code)})
+        assert "NOT SWEPT" not in text, code
+        assert "5566/tcp  listening, not HTTP" in text, code
+        # 5566 is on the record, so a listener there is printed, not raised.
+        assert status == 0, code
+
+
+def test_the_services_i_installed_myself_are_on_the_record():
+    """Heimdall, Prowlarr and Tautulli are containers I started on that box in
+    cycles 666, 667 and 669, and Bazarr is the Synology package I identified in
+    669. Each one raised as an unrecorded listener on the home LAN until this
+    record caught up with my own journal."""
+    for port in (6767, 8085, 8181, 9696):
+        assert port in nas_ports.BASELINE, port
 
 
 def test_an_unreadable_listener_table_says_so_and_does_not_read_as_clean():

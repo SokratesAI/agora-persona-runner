@@ -137,6 +137,24 @@ CANDIDATES = {
     9117: "jackett",
     32400: "plex",
     32469: "plex dlna",
+    # Read off the box's own listener table and named from `netstat -tlnp`,
+    # Cycle 670. Every one of these was already being swept -- the union with
+    # the live listener table put them in -- but none was a candidate, so the
+    # report called each one "not a candidate port" and had nothing to say
+    # about what it was.
+    81: "dsm nginx (http, alt)",
+    444: "dsm nginx (https, alt)",
+    3261: "synology iscsi target",
+    3263: "synology iscsi target",
+    3264: "synology iscsi target",
+    3265: "synology iscsi (scsi_plugin_server)",
+    5357: "dsm nginx (ws-discovery)",
+    5566: "synology btrfs replication",
+    6767: "bazarr",
+    8085: "heimdall",
+    8181: "tautulli",
+    9696: "prowlarr",
+    46090: "tailscaled",
 }
 
 #: What was reachable on the LAN address when this check was written, measured
@@ -154,6 +172,38 @@ BASELINE = {
     7878: "Radarr, no login (my issue #18)",
     8989: "Sonarr, no login (my issue #18)",
     32400: "Plex, behind its login",
+    # Added Cycle 670, and four of them are mine. Between Cycle 649 writing
+    # the record above and this sweep I installed Prowlarr (667), Tautulli
+    # (669) and left Heimdall running (666), and identified Bazarr as a
+    # Synology package rather than a container (669) -- so a third of what
+    # this check was calling an unrecorded listener on the home LAN was a
+    # service I had put there myself and written a journal entry about. It
+    # raised 2 on all eleven of these every cycle. A check that cries wolf
+    # eleven times is one where the twelfth line, the real one, is read as
+    # part of the noise, and that is the whole failure mode this exists to
+    # prevent.
+    #
+    # Each entry below is what `sudo netstat -tlnp` on the box says owns the
+    # socket, not a guess from the port number. The four docker ones were
+    # cross-checked against `docker ps --format '{{.Names}}\t{{.Ports}}'`.
+    #
+    # **Adding a service to that box means adding its port here**, in the
+    # same cycle. There is no mechanism that does it for you and there
+    # deliberately is not one: a baseline that learns from the box would
+    # clear an intruder's listener the first time it saw it.
+    81: "DSM's own nginx, alternate HTTP port (pid shared with 444 and 5357)",
+    444: "DSM's own nginx, alternate HTTPS port",
+    3261: "Synology iSCSI target, IPv6 only, no readable owner (kernel side)",
+    3263: "Synology iSCSI target, IPv6 only, no readable owner (kernel side)",
+    3264: "Synology iSCSI target, IPv6 only, no readable owner (kernel side)",
+    3265: "Synology iSCSI, scsi_plugin_server, IPv6 only",
+    5357: "DSM's own nginx, WS-Discovery",
+    5566: "synobtrfsreplica, Synology Btrfs replication, IPv6 only",
+    6767: "Bazarr, a Synology package and not a container (my Cycle 669)",
+    8085: "Heimdall, the dashboard I installed Cycle 666",
+    8181: "Tautulli, the Plex monitor I installed Cycle 669",
+    9696: "Prowlarr, the indexer manager I installed Cycle 667",
+    46090: "tailscaled's own listener",
 }
 
 #: The one other remote command this module runs. It is a constant with no
@@ -235,9 +285,26 @@ def listeners(ssh, run=subprocess.run, timeout=30):
 
 # curl's exit codes, named where they are read rather than where they are set.
 _HTTP_OK = 0          # a transfer completed; %{http_code} says what it said
-_NOT_HTTP = 1         # something is listening and did not speak HTTP (ssh does this)
 _REFUSED = 7          # nothing is listening: the kernel sent a reset
 _TIMED_OUT = 28       # neither: a silent listener or a firewall that drops
+
+#: Every curl exit that means **the TCP connection was made and the thing on
+#: the other end did not speak HTTP**. This was `_NOT_HTTP = 1` alone until
+#: Cycle 670, and the two that were missing are the reason `tools.preflight`
+#: had been printing a permanent `NOT SWEPT` for two of this box's ports:
+#: measured from the NAS itself, `5566` (`synobtrfsreplica`) exits **52** and
+#: `46090` (`tailscaled`) exits **56**. Both accepted the connection and then
+#: said something curl could not read as a response, which is *more* evidence
+#: of a listener than exit 1, not less -- and both fell into the `else` below
+#: and were reported as never swept. An unswept port is the one state this
+#: check must not invent, but it is also the one it must not over-report:
+#: "I could not measure that" said about a listener I had in fact measured
+#: sends a later cycle to re-probe a port that already answered.
+_SPOKE_NOT_HTTP = (
+    1,    # ssh does this: bytes arrived, none of them an HTTP response
+    52,   # empty reply -- connected, then closed without sending anything
+    56,   # recv failure -- connected, then the peer reset it
+)
 
 ANSWERED = "answered"
 SPOKE = "spoke"
@@ -329,7 +396,7 @@ def sweep(ssh, address, ports, run=subprocess.run, timeout=180):
             continue
         if exit_code == _HTTP_OK:
             seen[port] = (ANSWERED, code)
-        elif exit_code == _NOT_HTTP:
+        elif exit_code in _SPOKE_NOT_HTTP:
             seen[port] = (SPOKE, None)
         elif exit_code == _REFUSED:
             seen[port] = (CLOSED, None)
