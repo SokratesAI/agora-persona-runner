@@ -28,14 +28,44 @@ HOP = {"host": "nas.example", "user": "nova", "key": "/etc/nas-ssh/id_ed25519"}
 LIVE = {22: (0, 1), 139: (0, 28), 445: (0, 28), 5000: (200, 0), 5001: (400, 0),
         6789: (401, 0), 7878: (200, 0), 8989: (200, 0), 32400: (401, 0)}
 
+#: Real rows off the NAS, captured 2026-08-30 12:07 Oslo, byte for byte. They
+#: are here rather than hand-written because the byte order of the address
+#: field is the one thing in this module that fails silently: a wrong reversal
+#: yields a plausible address rather than an error.
+PROC_TCP = """\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:B55C 00000000:0000 0A 00000000:00000000 00:00000000 00000000 297536        0 48391736 1 ffff880137968000 100 0 0 10 0
+   1: 7744A8C0:545C 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 917681096 1 ffff880137968700 100 0 0 10 0
+   2: 00000000:231D 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345678 1 ffff880137968800 100 0 0 10 0
+   3: 00000000:1A6F 00000000:0000 0A 00000000:00000000 00:00000000 00000000 244383        0 12345679 1 ffff880137968900 100 0 0 10 0
+   4: 0100007F:1538 0100007F:2710 01 00000000:00000000 00:00000000 00000000     0        0 12345680 1 ffff880137968a00 100 0 0 10 0
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:7E90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 297536        0 48391737 1 ffff880137968b00 100 0 0 10 0
+"""
 
-def _runner(answers=None, returncode=7, stderr="", ports=None):
-    """A fake `subprocess.run` that replies for every candidate port."""
+#: The ports `PROC_TCP` holds, in the shape `parse_listeners` returns.
+PROC_PORTS = {46428: ["127.0.0.1"], 21596: ["192.168.68.119"], 8989: ["0.0.0.0"],
+              6767: ["0.0.0.0"], 32400: ["::"]}
+
+
+def _runner(answers=None, returncode=7, stderr="", ports=None, table=PROC_TCP,
+            table_returncode=0):
+    """A fake `subprocess.run` standing in for both remote commands.
+
+    It dispatches on the command argv ends with, because this module now makes
+    two different SSH calls and a fake that answers curl's shape to both would
+    make the listener read look permanently broken.
+    """
     answers = LIVE if answers is None else answers
 
     def run(argv, input=None, capture_output=None, text=None, timeout=None):
+        if argv[-1] == nas_ports.LISTENER_COMMAND:
+            return subprocess.CompletedProcess(argv, table_returncode, table, stderr)
+        swept = ports
+        if swept is None:
+            swept = sorted(set(nas_ports.CANDIDATES) | set(nas_ports.parse_listeners(table)))
         lines = []
-        for port in (ports if ports is not None else sorted(nas_ports.CANDIDATES)):
+        for port in swept:
             code, exit_code = answers.get(port, (0, 7))
             lines.append(f"PORT {port} {code:03d} {exit_code}")
         return subprocess.CompletedProcess(argv, returncode, "\n".join(lines) + "\n", stderr)
@@ -58,7 +88,7 @@ def test_the_live_baseline_is_clean_and_still_printed():
     # kept and nothing hidden.
     assert "8989/tcp  HTTP 200" in text
     assert "22/tcp  listening, not HTTP" in text
-    assert "Judged 28 of 28 candidate port(s)" in text
+    assert "read from the box's own TCP listener table" in text
 
 
 def test_a_new_http_listener_raises_two():
@@ -98,7 +128,6 @@ def test_a_port_curl_said_nothing_about_is_not_read_as_closed():
     assert status == 1
     assert "NOT SWEPT" in text
     assert "8989/tcp  (sonarr)" in text
-    assert "Judged 27 of 28" in text
 
 
 def test_a_baseline_port_gone_quiet_prints_without_raising():
@@ -176,3 +205,48 @@ def test_every_baseline_port_is_a_candidate():
     """A baseline entry for a port nothing asks about would silently never be
     checked."""
     assert set(nas_ports.BASELINE) <= set(nas_ports.CANDIDATES)
+
+
+def test_the_address_field_is_read_in_the_right_byte_order():
+    """The one silent failure in this module: a wrong reversal yields a
+    plausible address, not an error. Pinned against real captured rows."""
+    assert nas_ports.parse_listeners(PROC_TCP) == PROC_PORTS
+
+
+def test_a_socket_that_is_not_listening_is_not_a_listener():
+    """Row 4 of the fixture is an ESTABLISHED connection (`st` 01)."""
+    assert 5432 not in nas_ports.parse_listeners(PROC_TCP)
+
+
+def test_a_listening_port_outside_the_candidate_list_is_swept():
+    """The whole point: 6767 is Bazarr on the real box and no candidate list
+    written by hand had it."""
+    status, text = _report(answers={**LIVE, 6767: (200, 0)})
+    assert status == 2
+    assert "NEW LISTENER ON THE HOME LAN" in text
+    assert "6767/tcp  HTTP 200  (not a candidate port, listening on 0.0.0.0)" in text
+
+
+def test_an_unreadable_listener_table_says_so_and_does_not_read_as_clean():
+    """An empty table and an unread one look identical and mean opposite
+    things, so the fallback to the curated list has to raise."""
+    status, text = _report(table_returncode=1, stderr="cat: /proc/net/tcp: no")
+    assert status == 1
+    assert "the listener table did not read" in text
+    assert "curated candidate list" in text
+
+
+def test_the_listener_command_carries_nothing_variable():
+    """It is a constant, and that is what makes a second remote command a
+    smaller surface than the curl one rather than a larger one."""
+    seen = []
+
+    def run(argv, input=None, capture_output=None, text=None, timeout=None):
+        seen.append((argv[-1], input))
+        return _runner()(argv, input=input, capture_output=capture_output,
+                         text=text, timeout=timeout)
+
+    nas_ports.report(env={}, out=io.StringIO(), ssh=HOP, run=run)
+    table_calls = [c for c in seen if c[0] == nas_ports.LISTENER_COMMAND]
+    assert table_calls == [(nas_ports.LISTENER_COMMAND, None)]
+    assert nas_ports.LISTENER_COMMAND == "cat /proc/net/tcp /proc/net/tcp6"
