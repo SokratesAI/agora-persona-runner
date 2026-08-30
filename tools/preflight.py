@@ -117,6 +117,7 @@ CHECKS = (
     "security_alerts",
     "agentic_health",
     "doc_integrity",
+    "redact_coverage",
     "cli_pin",
     "pin_drift",
     "eol_watch",
