@@ -543,3 +543,19 @@ def test_state_survives_a_round_trip(tmp_path):
 
 def test_saving_into_an_unwritable_place_is_not_fatal(tmp_path):
     preflight.save_state({"a": 1}, str(tmp_path / "no" / "such" / "dir" / "s.json"))
+
+
+def test_the_line_breaks_are_part_of_the_fingerprint():
+    # Without a separator in the join, "AB / C" and "A / BC" hash the same --
+    # two different findings reading as one unchanged one.
+    assert preflight.finding_shape("AB\nC\n") != preflight.finding_shape("A\nBC\n")
+
+
+def test_a_one_line_finding_is_not_repeated_underneath_itself():
+    # source_variant of source_revision: the whole report is the summary row,
+    # so there is nothing left to reproduce and nothing to collapse either.
+    _, text = render_with([("source_revision", 2, "BEHIND origin/main by 1 commit(s).", 0.6)],
+                          state={}, now=1000.0, keep={})
+    assert text.count("BEHIND origin/main by 1 commit(s).") == 1
+    assert "UNCHANGED" not in text and "standing finding" not in text
+    assert "===== source_revision" not in text

@@ -263,12 +263,16 @@ def finding_shape(output):
     time -- so an exact comparison would say "changed" every cycle and this
     whole mechanism would never fire once.
 
-    So digits are blinded and **the line count is compared separately and
-    exactly**. That is the part that keeps it honest: a second alert, a third
-    unhealthy pod, a newly-missing module all *add a line*, and a change in
-    line count is never collapsed. What a digit-blind match does forgive is
-    the same finding restated with a different number in it, which is the
-    case this exists for.
+    So digits are blinded. **Every other byte is not**, including the line
+    breaks: the hash is taken over the whole joined text, so a second alert, a
+    third unhealthy pod or a newly-missing module changes it and is printed in
+    full. The one thing a digit-blind match forgives is the same finding
+    restated with a different number in it, which is the case this exists for.
+
+    The count is returned alongside for the message to quote and is not part
+    of the comparison. It was, for one commit, and a mutation round showed
+    that removing it changed nothing -- the join already carries it. A second
+    guard that cannot fail is not a second guard.
 
     It is not a free ride even then: `REPRINT_HOURS` puts the full text back
     in front of me on a fixed clock regardless of whether anything moved.
@@ -314,12 +318,12 @@ def repeat_verdict(name, code, output, state, now):
     """
     count, shape = finding_shape(output)
     entry = state.get(name) or {}
-    same = entry.get("shape") == shape and entry.get("lines") == count
+    same = entry.get("shape") == shape
     first_seen = entry.get("first_seen", now) if same else now
     printed = entry.get("printed_at", 0.0) if same else 0.0
     hours = (now - printed) / 3600.0
 
-    if code == 0 or not same or hours >= REPRINT_HOURS:
+    if not same or hours >= REPRINT_HOURS:
         return False, "", {"shape": shape, "lines": count,
                            "first_seen": first_seen, "printed_at": now}
 
@@ -499,6 +503,13 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
                 caveated += 1
             for line in caveats:
                 print(f"{'':32}  {line}", file=stream)
+        # A check whose entire output IS its summary line has already been
+        # reproduced, in the row above. `source_revision` is the live case:
+        # it reports one sentence, so a "===== full output =====" block would
+        # repeat it and an UNCHANGED note would cost a line to hide nothing.
+        # Same reasoning as the caveat de-duplication a few lines up.
+        if code != 0 and output.strip() == summary_line(output):
+            continue
         if code != 0 and state is not None and not verbose:
             collapse, note, entry = repeat_verdict(name, code, output, state, now)
             if keep is not None:
