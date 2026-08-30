@@ -25,8 +25,8 @@ owns can each see only one of them:
   `curl` made *on* the NAS, because port 8989 is not open from here. Needs an
   `ssh` binary and the sealed key, which today exist on the runner pod and
   not on the bridge pod.
-* **The other three services on that box.** nzbget, Plex and Bazarr also run there and
-  were judged by nothing here until Cycle 648: this check printed *"Judged 1
+* **The other three services on that box.** nzbget, Plex and Bazarr also run
+  there and were judged by nothing here until Cycle 648: this check printed *"Judged 1
   host and 2 service(s) on it"* with no denominator, so a dead nzbget and a
   dead Plex both read as a clean NAS. Neither needs a credential to answer
   that it is alive -- nzbget's `/jsonrpc/version` returns 401 when it is up

@@ -198,7 +198,8 @@ PLEX_READ_ONLY = {"/identity"}
 BAZARR_PORT = 6767
 
 # The whole Bazarr surface this module may touch: the front page, which is
-# where the key is, and the status object, which carries the running version.
+# where the key is, and the release list, which carries the verdict. Two paths
+# it deliberately does not name, for two different reasons.
 #
 # `/api/system/settings` is deliberately absent and it is the one that matters
 # by its absence. Measured Cycle 661: it answers 200 to that same
