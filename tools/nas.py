@@ -639,6 +639,29 @@ def status(conf_all, get=_get):
     return lines, ok
 
 
+#: What a service that never answered gets said about it. `config` drops a
+#: service whose API-key discovery failed -- `discover_key` swallows an
+#: unreachable app and returns None, and `config` continues past it -- so a
+#: consumer that iterates its result alone silently stops judging that app.
+UNDISCOVERED_REASON = ("no configuration came back for it -- its API key could not be "
+                       "discovered, so it was never asked")
+
+
+def unconfigured(conf_all):
+    """The services in `SERVICES` that `config` did not return, sorted.
+
+    Every check over the *arr apps has to reconcile what came back against
+    what exists, because the failure is silent on both ends: one transient
+    fetch of sonarr's `/initialize.js` removes sonarr from `config`, and a
+    report whose denominator is `len(conf_all)` then prints `1 of 1` and
+    exits 0 over an app it never asked. `tools.nas_versions` carried that
+    reconciliation inline and `tools.nas_watch` and `tools.nas_egress` did
+    not; three copies of one rule is the rule living in the wrong place, so
+    it lives here and the denominator is always `len(SERVICES)`.
+    """
+    return sorted(set(SERVICES) - set(conf_all or {}))
+
+
 UNCONFIGURED_HELP = (
     "Nothing on this NAS is reachable from here, and it is worth knowing which half\n"
     "is missing before changing anything.\n"

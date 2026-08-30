@@ -130,7 +130,8 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         print("SERVICES UNREADABLE -- the SSH hop exists but no *arr service could be configured "
               "through it.", file=out)
         print(nas.UNCONFIGURED_HELP, file=out)
-        print("Judged 0 of 2 *arr service(s). An unreadable service is not a clean sweep.", file=out)
+        print(f"Judged 0 of {len(nas.SERVICES)} *arr service(s). An unreadable service is not "
+              "a clean sweep.", file=out)
         # nzbget is still judged. It needs no API key, so the thing that made
         # the other two unreadable does not reach it, and an open control
         # interface is exactly the finding that must not be lost to an
@@ -141,24 +142,42 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
     judged = []
     executing = []
     other = []
+    unreadable = []
+    for service in nas.unconfigured(conf_all):
+        # The denominator is what `tools.nas` says exists, never what came
+        # back: `nas.config` drops a service whose key discovery failed, so
+        # counting its result reports "1 of 1" over an app nobody asked --
+        # and this is the check that finds a Custom Script.
+        unreadable.append((service, nas.UNDISCOVERED_REASON))
+        status = max(status, 1)
     for service in sorted(conf_all):
         try:
             rows = get(service, conf_all[service], NOTIFICATION_PATH)
         except nas.Unreachable as exc:
-            print(f"UNREADABLE  {service}: {exc}", file=out)
+            unreadable.append((service, str(exc)))
             status = max(status, 1)
             continue
         if not isinstance(rows, list):
             # A proxy or a login page can answer 200 with JSON that is not a
             # list. `[]` and "something that is not a list" are opposite
             # findings and only one of them is "no notifications".
-            print(f"UNREADABLE  {service}: {NOTIFICATION_PATH} answered "
-                  f"{type(rows).__name__}, not a list", file=out)
+            unreadable.append((service, f"{NOTIFICATION_PATH} answered "
+                                        f"{type(rows).__name__}, not a list"))
             status = max(status, 1)
             continue
         judged.append(service)
         for row in rows:
             (executing if _executes(row) else other).append((service, row))
+
+    if unreadable:
+        # Deliberately not the words `CANNOT JUDGE`: `tools.nas_egress` already
+        # prints that heading for a destination it cannot classify, and two
+        # blocks opening on the same two words in one report is a reader
+        # having to know which is which.
+        print("NOT ASKED -- these services were never read, so nothing below is a claim "
+              "about them:", file=out)
+        for service, why in sorted(unreadable):
+            print(f"  {service}: {why}", file=out)
 
     if executing:
         print("CODE EXECUTION CONFIGURED -- a notification on the NAS runs a command when an "
@@ -180,11 +199,13 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         for service, row in other:
             print(f"  {service}: {_row_label(row)}", file=out)
 
-    if not executing:
+    if not executing and not unreadable:
+        # Guarded on `unreadable` too: an everything-is-fine headline printed
+        # directly under a service nobody asked is the finding inverted.
         print(f"NO CODE EXECUTION CONFIGURED on {len(judged)} service(s): "
               f"{', '.join(judged) or 'none'}.", file=out)
 
-    print(f"Judged the notification list of {len(judged)} service(s) of {len(conf_all)}, read "
+    print(f"Judged the notification list of {len(judged)} service(s) of {len(nas.SERVICES)}, read "
           "over the SSH hop. This is current state only: a notification added and removed "
           "between two cycles leaves no trace here.", file=out)
 
