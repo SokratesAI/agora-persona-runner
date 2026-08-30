@@ -122,9 +122,10 @@ def test_an_unreadable_service_is_1_and_never_reads_as_empty():
     assert status == 1
     assert "NOT ASKED" in text
     assert "sonarr" in text
-    # It judged one of two, and says so, so a partial sweep cannot be read as
-    # a clean one.
-    assert "1 service(s) of 2" in text
+    # It judged one of three, and says so, so a partial sweep cannot be read as
+    # a clean one. Three, not two: nzbget's extension list is the third
+    # code-execution surface on that box.
+    assert "1 service(s) of 3" in text
 
 
 def test_a_finding_outranks_an_unreadable_service():
@@ -316,4 +317,71 @@ def test_a_service_whose_key_discovery_failed_is_not_a_clean_sweep(monkeypatch):
     assert "NOT ASKED" in text
     assert "sonarr" in text
     assert "NO CODE EXECUTION CONFIGURED" not in text
-    assert "Judged the notification list of 1 service(s) of 2" in text
+    assert "Judged the code-execution surface of 1 service(s) of 3" in text
+
+
+def _sweep_line(text):
+    """The line `tools.preflight` collapses this check to: the last one with a digit."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    for line in reversed(lines):
+        if any(ch.isdigit() for ch in line):
+            return line
+    return ""
+
+
+def test_an_unjudged_nzbget_is_short_of_the_denominator():
+    """The whole point of the sweep line: nzbget is a surface, not a footnote.
+
+    Locked with no credential is the live state of both pods, and it is exit 0
+    -- correctly, an unprovisioned credential is a fact about this pod. What
+    was wrong until Cycle 646 is that the sweep line then read "2 service(s) of
+    2", a complete-sweep sentence about a box whose third code-execution
+    surface nobody had asked.
+    """
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}))
+    assert status == 0
+    assert "NOT JUDGED" in text
+    assert "2 service(s) of 3" in _sweep_line(text)
+
+
+def test_the_line_preflight_reads_carries_the_unjudged_third():
+    """`preflight` shows one line per clean check and picks the last with a digit.
+
+    The three lines `_nzbget` prints when it has no credential carry no digit,
+    so they never reached that table -- the `NOT JUDGED` was in the full output
+    and invisible in the only place a cycle reads it every morning.
+    """
+    _, text = _run(_get_returning({"sonarr": [], "radarr": []}))
+    line = _sweep_line(text)
+    assert line.startswith("Judged the code-execution surface of")
+    assert "of 3" in line
+
+
+def test_a_judged_nzbget_completes_the_denominator():
+    """With the credential in hand all three surfaces are judged, and it says 3 of 3."""
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}),
+                        env={"NZBGET_USER": "u", "NZBGET_PASS": "p"},
+                        config={"scriptdir": "/scripts", "extensions": ""})
+    assert status == 0
+    assert "3 service(s) of 3" in text
+    assert "not a clean sweep of the box" not in text
+
+
+def test_an_open_nzbget_counts_as_judged_while_raising():
+    """An open control interface is a finding about that surface, so it was judged.
+
+    A raise beside a short denominator would say "I found this on a service I
+    did not look at", which is two opposite claims in one report.
+    """
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}), unlocked=True)
+    assert status == 2
+    assert "NZBGET CONTROL IS OPEN" in text
+    assert "3 service(s) of 3" in text
+
+
+def test_an_unreadable_nzbget_is_not_counted_as_judged():
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}),
+                        unlocked=nas.Unreachable("nzbget did not answer"))
+    assert status == 1
+    assert "2 service(s) of 3" in text
+    assert "not a clean sweep of the box" in text

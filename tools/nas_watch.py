@@ -130,13 +130,14 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         print("SERVICES UNREADABLE -- the SSH hop exists but no *arr service could be configured "
               "through it.", file=out)
         print(nas.UNCONFIGURED_HELP, file=out)
-        print(f"Judged 0 of {len(nas.SERVICES)} *arr service(s). An unreadable service is not "
-              "a clean sweep.", file=out)
         # nzbget is still judged. It needs no API key, so the thing that made
         # the other two unreadable does not reach it, and an open control
         # interface is exactly the finding that must not be lost to an
         # unrelated failure one line above it.
-        return max(1, _nzbget(hop, out, env=env, run=run, unlocked=unlocked, config=config))
+        nzb_status, nzb_judged = _nzbget(hop, out, env=env, run=run, unlocked=unlocked,
+                                         config=config)
+        _print_sweep(0, nzb_judged, out)
+        return max(1, nzb_status)
 
     status = 0
     judged = []
@@ -205,29 +206,67 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         print(f"NO CODE EXECUTION CONFIGURED on {len(judged)} service(s): "
               f"{', '.join(judged) or 'none'}.", file=out)
 
-    print(f"Judged the notification list of {len(judged)} service(s) of {len(nas.SERVICES)}, read "
-          "over the SSH hop. This is current state only: a notification added and removed "
-          "between two cycles leaves no trace here.", file=out)
-
-    status = max(status, _nzbget(hop, out, env=env, run=run, unlocked=unlocked, config=config))
+    nzb_status, nzb_judged = _nzbget(hop, out, env=env, run=run, unlocked=unlocked, config=config)
+    status = max(status, nzb_status)
+    _print_sweep(len(judged), nzb_judged, out)
     return status
 
 
+# Every place on the NAS that can be configured to run a command: the two *arr
+# notification lists, plus nzbget's extension settings. `nas.SERVICES` is the
+# *arr pair only, so counting the sweep against it counts two thirds of the box.
+SURFACES = len(nas.SERVICES) + 1
+
+
+def _print_sweep(arr_judged, nzbget_judged, out):
+    """The one line `tools.preflight` shows for this check.
+
+    It has to carry nzbget, and until Cycle 646 it did not. The summary said
+    *"Judged the notification list of 2 service(s) of 2"* -- true about the two
+    *arr apps and a complete-sweep sentence about the box -- while nzbget's
+    extension list went unjudged on every run, because reading it needs a
+    credential this pod has never had. `preflight` collapses a clean check to
+    its last line carrying a digit, and the three lines `_nzbget` prints below
+    that summary carry none, so the `NOT JUDGED` never reached the table a
+    cycle actually reads. That is `tools.nas_egress`'s and `tools.nas.config`'s
+    lesson one module over: **the denominator is what exists, not what
+    answered** -- and here the unjudged third is the one carrying the remote
+    code-execution path.
+    """
+    judged = arr_judged + (1 if nzbget_judged else 0)
+    print(f"Judged the code-execution surface of {judged} service(s) of {SURFACES}, read over "
+          "the SSH hop. This is current state only: a notification added and removed between "
+          "two cycles leaves no trace here.", file=out)
+    if not nzbget_judged:
+        print("  nzbget's extension list is one of those surfaces and was not judged -- so this "
+              "is not a clean sweep of the box, whatever the exit status says.", file=out)
+
+
 def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=nas.nzbget_config):
-    """The nzbget half. Returns its own exit status; see the module docstring."""
+    """The nzbget half. Returns `(exit status, was its extension list judged)`.
+
+    The second element is not the same question as the first. A locked control
+    interface with no credential here is exit 0 -- an unprovisioned credential
+    is a fact about this pod, not a finding about the NAS -- and it is also
+    *not a judgement of nzbget's extension list*, so it must not be counted as
+    one in the sweep line. See `_print_sweep`.
+    """
     kwargs = {} if run is None else {"run": run}
     try:
         open_to_anyone = unlocked(hop, **kwargs)
     except nas.Unreachable as exc:
         print(f"UNREADABLE  nzbget: {exc}", file=out)
-        return 1
+        return 1, False
 
     if open_to_anyone:
         print("NZBGET CONTROL IS OPEN -- /jsonrpc answers with no credential, and it carries "
               "saveconfig.", file=out)
         print("  Anything that can reach 127.0.0.1:6789 can set ScriptDir and Extensions, which "
               "makes the NAS run an executable on every download.", file=out)
-        return 2
+        # An open control interface is a finding about nzbget's code-execution
+        # surface, so it counts as judged: the sweep line must not print a
+        # short denominator beside a raise about the very service it dropped.
+        return 2, True
 
     print("NZBGET CONTROL IS LOCKED -- /jsonrpc refuses an unauthenticated call. That is the "
           "lock being on, not the key being strong.", file=out)
@@ -238,13 +277,13 @@ def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=n
               "NZBGET_PASS in this pod's environment and neither is set.", file=out)
         print("  This does not raise: an unprovisioned credential is a fact about this pod, not "
               "a finding about the NAS.", file=out)
-        return 0
+        return 0, False
 
     try:
         conf = config(hop, credential, **kwargs)
     except nas.Unreachable as exc:
         print(f"UNREADABLE  nzbget: {exc}", file=out)
-        return 1
+        return 1, False
 
     configured = [(name, value) for name, value in sorted(conf.items())
                   if _runs_a_script(name) and value.strip()]
@@ -254,10 +293,10 @@ def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=n
             print(f"  nzbget: {name} = {value}", file=out)
         print(f"    scripts are looked up in ScriptDir = {conf.get('scriptdir', '(unset)')}", file=out)
         print("  Ask him before removing it -- he may have added it himself.", file=out)
-        return 2
+        return 2, True
 
     print(f"  No extension or script task is configured; {len(conf)} setting(s) read.", file=out)
-    return 0
+    return 0, True
 
 
 def _runs_a_script(name):
