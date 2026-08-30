@@ -241,3 +241,78 @@ def test_a_fetch_that_fails_still_measures_against_the_local_ref(tmp_path):
     assert code == 2, report
     assert "fetch failed" in report
     assert "BEHIND origin/main by 1 commit(s)" in report
+
+
+def test_an_unresolvable_origin_main_is_unreadable_and_never_reads_as_clean(tmp_path):
+    # Reachable, not theoretical: a checkout whose remote is gone, or a repo
+    # whose default branch is not `main`. My reviewer mutated this branch from
+    # 1 to 0 and the suite stayed green -- the one contract the whole module
+    # rests on, untested.
+    import subprocess
+
+    path, run = _repo(tmp_path, "solo")
+    code, report = preflight.source_revision(directory=str(path))
+    assert code == 1, report
+    assert "UNREADABLE" in report
+    assert "origin/main could not be resolved" in report
+
+
+def test_git_answering_something_that_is_not_two_counts_is_unreadable(tmp_path, monkeypatch):
+    import subprocess
+
+    path, _ = _repo(tmp_path, "solo")
+    real = subprocess.run
+
+    def fake(args, **kwargs):
+        if "--left-right" in args:
+            return subprocess.CompletedProcess(args, 0, stdout="not two numbers\n", stderr="")
+        return real(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    code, report = preflight.source_revision(directory=str(path), fetch=False)
+    assert code == 1, report
+    assert "UNREADABLE" in report
+
+
+def test_a_behind_branch_with_its_own_work_is_told_to_merge_not_to_check_main_out(tmp_path):
+    import subprocess
+
+    upstream, up_run = _repo(tmp_path, "upstream")
+    work = tmp_path / "work"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work)], check=True)
+    run = lambda *a: subprocess.run(["git", "-C", str(work)] + list(a),
+                                    capture_output=True, text=True, check=True)
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    run("checkout", "-qb", "feature")
+    (work / "mine").write_text("mine")
+    run("add", "-A")
+    run("commit", "-qm", "mine")
+    (upstream / "f").write_text("two")
+    up_run("commit", "-qam", "two")
+
+    code, report = preflight.source_revision(directory=str(work))
+    assert code == 2, report
+    assert "1 ahead" in report
+    assert "git merge origin/main" in report
+    assert "git checkout main" not in report
+
+
+def test_a_stale_tree_names_the_check_modules_it_is_missing(tmp_path):
+    import subprocess
+
+    upstream, up_run = _repo(tmp_path, "upstream")
+    (upstream / "tools").mkdir()
+    (upstream / "tools" / "old_check.py").write_text("")
+    up_run("add", "-A")
+    up_run("commit", "-qm", "tools")
+    work = tmp_path / "work"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work)], check=True)
+    (upstream / "tools" / "nas_watch.py").write_text("")
+    up_run("add", "-A")
+    up_run("commit", "-qm", "add nas_watch")
+
+    code, report = preflight.source_revision(directory=str(work))
+    assert code == 2, report
+    assert "Missing from this tree: nas_watch" in report
+    assert "old_check" not in report

@@ -60,8 +60,14 @@ So `source_revision` runs first, always, and it is deliberately *not* in
 because a module would be missing from exactly the stale tree it is meant
 to catch. It names the commit these checks came from and how far behind
 `origin/main` it is, and **being behind raises 2** -- the sweep is a
-partial one and the tool cannot say which part is missing. Being *ahead*
-(an ordinary feature branch) prints and does not raise. A crash inside a
+partial one. Where the gap is whole missing files it names them, because
+"missing: nas_watch, nas_egress" beats "some unknown subset"; the commit
+count stays the trigger, since a tree can also carry an older *version* of
+a check that still exists and no name diff would see that. A branch that is
+behind and also ahead is told to merge rather than to check main out.
+Being only *ahead* (an ordinary feature branch) prints and does not raise.
+It is timed and counted in the footer like any other row, and it is the one
+row that runs serially, because everything after it depends on the answer. A crash inside a
 check is a non-zero exit and gets the loud treatment, so the failure mode
 of this tool is noisy, not silent -- which is the direction "How to work"
 asks for when a negative result could otherwise be guaranteed in advance.
@@ -200,6 +206,29 @@ def summary_line(output):
     return lines[-1]
 
 
+def missing_modules(git, directory):
+    """Check modules that exist on `origin/main` and not in this tree, by name.
+
+    The commit count is the trigger, because a tree can also carry an *older
+    version* of a check that still exists and no name diff would see that. But
+    where the gap is whole missing files, saying so beats saying "some unknown
+    subset" -- it would have named the five Cycle 644 lost. Absent on any git
+    failure, which is a smaller report and never a wrong one.
+    """
+    listed = git("ls-tree", "--name-only", "origin/main", "tools/")
+    if listed.returncode != 0:
+        return []
+    try:
+        here = set(os.listdir(os.path.join(directory, "tools")))
+    except OSError:
+        return []
+    return sorted(
+        os.path.basename(line)[:-3]
+        for line in listed.stdout.split()
+        if line.endswith(".py") and os.path.basename(line) not in here
+    )
+
+
 def source_revision(directory=None, fetch=True):
     """(exit code, one-line report) for the git revision these checks came from.
 
@@ -257,10 +286,18 @@ def source_revision(directory=None, fetch=True):
 
     where = f"on {branch} at {head}"
     if behind:
-        return 2, (f"BEHIND origin/main by {behind} commit(s) -- {where}{fetched}. "
-                   f"Some of the checks on main do not exist in this tree, and nothing "
-                   f"above can tell you which: run `git checkout main && git pull` and "
-                   f"re-run before trusting this sweep.")
+        absent = missing_modules(git, directory)
+        named = (f" Missing from this tree: {', '.join(absent)}." if absent else
+                 " Every check module on main exists here, so what is stale is their contents.")
+        if ahead:
+            fix = ("this branch carries its own work, so `git merge origin/main` "
+                   "rather than checking main out")
+            own = f" and {ahead} ahead"
+        else:
+            fix = "`git checkout main && git pull`"
+            own = ""
+        return 2, (f"BEHIND origin/main by {behind} commit(s){own} -- {where}{fetched}."
+                   f"{named} Run {fix}, then re-run before trusting this sweep.")
     if ahead:
         return 0, (f"Current: {where}, {ahead} commit(s) ahead of origin/main and 0 behind"
                    f"{fetched} -- every check on main exists here.")
@@ -319,8 +356,12 @@ def main(argv=None):
               file=sys.stderr)
         return 1
 
+    import time
+
+    rev_started = time.monotonic()
     rev_code, rev_report = source_revision(fetch=not args.no_fetch)
-    results = [("source_revision", rev_code, rev_report, 0.0)] + [None] * len(names)
+    rev_seconds = time.monotonic() - rev_started
+    results = [("source_revision", rev_code, rev_report, rev_seconds)] + [None] * len(names)
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(run_check, name): i + 1 for i, name in enumerate(names)}
         for future in concurrent.futures.as_completed(futures):
