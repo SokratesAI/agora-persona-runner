@@ -29,7 +29,7 @@ It refuses to start without the first two rather than running as a watchdog that
 
 ## The NAS cannot reach the tailnet, and that blocks this before the secrets do
 
-Measured 2026-08-30 (Cycle 664) over the SSH hop, which is the first cycle that had a shell on that box. **Every ordinary program on the NAS — `curl`, `python3`, and therefore this container — cannot reach a tailnet address at all.** The default `NOVA_WATCH_URL` is a tailnet name, so as things stand this watcher would start and never once poll successfully.
+Measured 2026-08-30 (Cycle 664) over the SSH hop. Earlier cycles have had a shell on that box since 2026-08-29; none of them had asked it this question. **Every ordinary program on the NAS — `curl`, `python3`, and therefore this container — cannot reach a tailnet address at all.** The default `NOVA_WATCH_URL` is a tailnet name, so as things stand this watcher would start and never once poll successfully.
 
 What was measured, and what each measurement rules out:
 
