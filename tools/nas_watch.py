@@ -112,7 +112,6 @@ def _tautulli_label(row):
     return f"{name} | {agent}"
 
 
-
 def _row_label(row):
     """`name | implementation` for a notification, tolerant of a thin row.
 
