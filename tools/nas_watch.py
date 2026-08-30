@@ -114,7 +114,8 @@ def _executes(row):
 
 
 def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
-           unlocked=nas.nzbget_unlocked, config=nas.nzbget_config):
+           unlocked=nas.nzbget_unlocked, config=nas.nzbget_config,
+           credential=nas.nzbget_credential):
     """Print the report and return the exit status."""
     hop = nas.ssh_config(env) if ssh is nas._UNSET else ssh
     if hop is None:
@@ -134,7 +135,7 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         # the other two unreadable does not reach it, and an open control
         # interface is exactly the finding that must not be lost to an
         # unrelated failure one line above it.
-        nzb_status, nzb_judged = _nzbget(hop, out, env=env, run=run, unlocked=unlocked,
+        nzb_status, nzb_judged = _nzbget(hop, out, env=env, run=run, credential=credential, unlocked=unlocked,
                                          config=config)
         _print_sweep(0, nzb_judged, out)
         return max(1, nzb_status)
@@ -206,7 +207,7 @@ def report(env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
         print(f"NO CODE EXECUTION CONFIGURED on {len(judged)} service(s): "
               f"{', '.join(judged) or 'none'}.", file=out)
 
-    nzb_status, nzb_judged = _nzbget(hop, out, env=env, run=run, unlocked=unlocked, config=config)
+    nzb_status, nzb_judged = _nzbget(hop, out, env=env, run=run, credential=credential, unlocked=unlocked, config=config)
     status = max(status, nzb_status)
     _print_sweep(len(judged), nzb_judged, out)
     return status
@@ -242,7 +243,8 @@ def _print_sweep(arr_judged, nzbget_judged, out):
               "is not a clean sweep of the box, whatever the exit status says.", file=out)
 
 
-def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=nas.nzbget_config):
+def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=nas.nzbget_config,
+            credential=nas.nzbget_credential):
     """The nzbget half. Returns `(exit status, was its extension list judged)`.
 
     The second element is not the same question as the first. A locked control
@@ -271,16 +273,17 @@ def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=n
     print("NZBGET CONTROL IS LOCKED -- /jsonrpc refuses an unauthenticated call. That is the "
           "lock being on, not the key being strong.", file=out)
 
-    credential = nas.nzbget_credential(env)
-    if credential is None:
+    found = credential(env, ssh=hop, **kwargs)
+    if found is None:
         print("  NOT JUDGED  nzbget's extension list -- reading it needs NZBGET_USER and "
-              "NZBGET_PASS in this pod's environment and neither is set.", file=out)
+              "NZBGET_PASS, and neither this pod's environment nor "
+              f"{nas.NZBGET_COMPOSE_FILE} on the NAS carries both.", file=out)
         print("  This does not raise: an unprovisioned credential is a fact about this pod, not "
               "a finding about the NAS.", file=out)
         return 0, False
 
     try:
-        conf = config(hop, credential, **kwargs)
+        conf = config(hop, found, **kwargs)
     except nas.Unreachable as exc:
         print(f"UNREADABLE  nzbget: {exc}", file=out)
         return 1, False
@@ -314,12 +317,14 @@ def _runs_a_script(name):
 
 
 def main(argv=None, env=None, out=sys.stdout, get=nas._get, ssh=nas._UNSET, run=None,
-         unlocked=nas.nzbget_unlocked, config=nas.nzbget_config):
+         unlocked=nas.nzbget_unlocked, config=nas.nzbget_config,
+         credential=nas.nzbget_credential):
     argparse.ArgumentParser(
         prog="python3 -m tools.nas_watch",
         description=__doc__.split("\n")[0],
     ).parse_args(argv)
-    return report(env=env, out=out, get=get, ssh=ssh, run=run, unlocked=unlocked, config=config)
+    return report(env=env, out=out, get=get, ssh=ssh, run=run, unlocked=unlocked, config=config,
+                  credential=credential)
 
 
 if __name__ == "__main__":

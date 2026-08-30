@@ -157,6 +157,8 @@ SERVICES = ("sonarr", "radarr")
 # a service assumes the *arr shape, and widening that shape to fit one
 # different service would make three call sites lie about what they accept.
 NZBGET_PORT = 6789
+# Where the live nzbget control credential actually is -- see `nzbget_credential`.
+NZBGET_COMPOSE_FILE = "/volume1/docker/docker-compose.yml"
 
 # The nzbget half of the read-only boundary, and the same rule as `READ_ONLY`
 # above: exactly the two paths this module calls and nothing else. Both are
@@ -322,7 +324,7 @@ def plex_version(ssh, port=None, run=subprocess.run):
     return version
 
 
-def nzbget_credential(env=None):
+def nzbget_credential(env=None, ssh=None, run=subprocess.run):
     """`(user, password)` for nzbget's control interface, or `None`.
 
     There is no discovery path for this one and the absence is measured, not
@@ -335,17 +337,84 @@ def nzbget_credential(env=None):
     `Protocol "file" not supported or disabled in libcurl` (measured Cycle
     640 against `file:///volume1/docker/nzbget/nzbget.conf`).
 
-    So the credential has to be handed in, and when it has not been, the
-    caller says which check it could not run rather than guessing at a
-    password. Nothing in this repo carries a default to try: a list of vendor
-    default passwords in source is a credential-stuffing list, and it would
-    also be the wrong instrument -- `nzbget_unlocked` below answers "is the
-    lock on" without needing to open it.
+    That paragraph was right about `nzbget.conf` and wrong about the
+    conclusion, and Cycle 651 measured both halves. The conf file on the NAS
+    still carries nzbget's shipped default `nzbget:tegbzn6789`, because the
+    linuxserver image applies `NZBGET_USER`/`NZBGET_PASS` from the container
+    environment at start and never writes them back -- so that file is a stale
+    credential that authenticates nothing, and reading it would have been worse
+    than not reading it. The live value is in the compose file that sets those
+    variables, `/volume1/docker/docker-compose.yml`, which is mode 755 and
+    readable by the unprivileged `nova` account this loop already has.
+
+    So there is a discovery path after all, and the reason it looked closed is
+    that the only remote command in this module is `curl`, and `curl` on that
+    box is built without the `file` protocol. `cat` is not `curl`. The hop was
+    never the obstacle.
+
+    `ssh` is optional and the environment still wins: a credential handed in
+    deliberately should beat one scraped off his disk, and the environment is
+    also the only path that works from a pod with no SSH hop. Nothing here
+    carries a default to try -- a list of vendor default passwords in source is
+    a credential-stuffing list, and `nzbget_unlocked` below already answers "is
+    the lock on" without needing to open it.
     """
     env = os.environ if env is None else env
     user = (env.get("NZBGET_USER") or "").strip()
     password = (env.get("NZBGET_PASS") or "").strip()
+    if user and password:
+        return (user, password)
+    if ssh is None:
+        return None
+    try:
+        return _credential_from_compose(_read_compose(ssh, run=run))
+    except Unreachable:
+        return None
+
+
+def _compose_value(line):
+    """The value of one `- KEY=value` line in a compose `environment:` block.
+
+    The trailing ` #optional` comments in his file are the whole reason this is
+    a function: a naive split on `=` reads the password as `potatopass #optional`
+    and authenticates as nobody, which looks identical to a wrong password.
+    """
+    value = line.split("=", 1)[1]
+    return value.split("#", 1)[0].strip()
+
+
+def _credential_from_compose(text):
+    """`(user, password)` out of the compose file, or `None` if either is absent."""
+    user = password = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("- NZBGET_USER="):
+            user = _compose_value(line)
+        elif line.startswith("- NZBGET_PASS="):
+            password = _compose_value(line)
     return (user, password) if user and password else None
+
+
+def _read_compose(ssh, run=subprocess.run):
+    """The compose file's text, read over the SSH hop.
+
+    The remote command is a constant, the same rule `_run_ssh` is built on:
+    nothing variable crosses to the far side, so no input this loop reads all
+    cycle can turn this into a different command.
+    """
+    argv = ["ssh", "-i", ssh["key"], *SSH_OPTS, f"{ssh['user']}@{ssh['host']}",
+            f"cat {NZBGET_COMPOSE_FILE}"]
+    try:
+        done = run(argv, capture_output=True, text=True, timeout=25)
+    except subprocess.TimeoutExpired as exc:
+        raise Unreachable(f"the NAS did not answer within 25s") from exc
+    except OSError as exc:
+        raise Unreachable(f"could not start ssh: {exc}") from exc
+    if done.returncode != 0:
+        raise Unreachable(
+            f"could not read {NZBGET_COMPOSE_FILE}: ssh exited {done.returncode}: "
+            f"{(done.stderr or '').strip() or 'no detail'}")
+    return done.stdout or ""
 
 
 def _nzbget_url(path, port=None):
