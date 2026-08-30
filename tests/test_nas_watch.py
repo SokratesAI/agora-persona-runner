@@ -42,7 +42,7 @@ def _get_returning(by_service):
     return get
 
 
-def _run(get, conf=None, ssh=HOP, env=None, unlocked=False, config=None):
+def _run(get, conf=None, ssh=HOP, env=None, unlocked=False, config=None, credential=None):
     """Run the check. `unlocked`/`config` stand in for nzbget.
 
     nzbget defaults to "locked, no credential in the environment", which is
@@ -71,6 +71,11 @@ def _run(get, conf=None, ssh=HOP, env=None, unlocked=False, config=None):
         run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no subprocess in tests")),
         unlocked=_unlocked,
         config=_config,
+        # Environment only. The real `nzbget_credential` falls back to reading
+        # the compose file off the NAS, and a unit test must not go there --
+        # `test_the_hop_is_offered_to_the_credential_lookup` below covers that
+        # it is offered the hop at all.
+        credential=credential or (lambda env, ssh=None, **k: nas.nzbget_credential(env)),
     )
     return status, out.getvalue()
 
@@ -385,3 +390,24 @@ def test_an_unreadable_nzbget_is_not_counted_as_judged():
     assert status == 1
     assert "2 service(s) of 3" in text
     assert "not a clean sweep of the box" in text
+
+
+def test_the_hop_is_offered_to_the_credential_lookup():
+    # The seam above lets every other test stay environment-only, so this is
+    # the one that holds the real behaviour: `_nzbget` must hand the SSH hop
+    # down, or nzbget goes back to being the third service nothing judges.
+    seen = {}
+
+    def credential(env, ssh=None, **kwargs):
+        seen["ssh"] = ssh
+        return ("admin", "potatopass")
+
+    status, text = _run(
+        _get_returning({"sonarr": [], "radarr": []}),
+        unlocked=False,
+        config={"scriptdir": "/downloads/scripts"},
+        credential=credential,
+    )
+    assert seen["ssh"] == HOP
+    assert status == 0
+    assert "3 service(s) of 3" in text
