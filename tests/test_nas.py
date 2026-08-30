@@ -21,6 +21,8 @@ import pytest
 
 from tools import nas
 
+SSH_STUB = {"host": "nas.example", "user": "nova", "key": "/etc/nas-ssh/id_ed25519"}
+
 
 # --- the read-only boundary -------------------------------------------------
 
@@ -703,3 +705,67 @@ def test_plex_version_refuses_xml_with_no_version_attribute(monkeypatch):
     monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("<MediaContainer/>", 200)))
     with pytest.raises(nas.Unreachable, match="no `version` attribute"):
         nas.plex_version({"host": "h"})
+
+
+COMPOSE_SAMPLE = """version: "2.1"
+services:
+  nzbget:
+    image: lscr.io/linuxserver/nzbget:latest
+    environment:
+      - PUID=1000
+      - TZ=Europe/London
+      - NZBGET_USER=admin #optional
+      - NZBGET_PASS=potatopass #optional
+"""
+
+
+def test_compose_credential_strips_the_trailing_comment():
+    # `- NZBGET_PASS=potatopass #optional` is what his file actually says. A
+    # split on `=` alone reads the password as `potatopass #optional`, which
+    # authenticates as nobody and looks exactly like a wrong password.
+    assert nas._credential_from_compose(COMPOSE_SAMPLE) == ("admin", "potatopass")
+
+
+def test_compose_credential_needs_both_halves():
+    only_user = COMPOSE_SAMPLE.replace("      - NZBGET_PASS=potatopass #optional\n", "")
+    assert nas._credential_from_compose(only_user) is None
+    assert nas._credential_from_compose("services:\n  nzbget:\n") is None
+
+
+def test_nzbget_credential_prefers_the_environment_over_the_nas():
+    # A credential handed in deliberately beats one scraped off his disk, and
+    # it must not cost an ssh call to find that out.
+    calls = []
+
+    def run(*a, **k):
+        calls.append(a)
+        raise AssertionError("should not have reached the NAS")
+
+    got = nas.nzbget_credential({"NZBGET_USER": "handed", "NZBGET_PASS": "in"},
+                                ssh=SSH_STUB, run=run)
+    assert got == ("handed", "in")
+    assert calls == []
+
+
+def test_nzbget_credential_reads_the_compose_file_over_the_hop():
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen["argv"] = argv
+        return types.SimpleNamespace(returncode=0, stdout=COMPOSE_SAMPLE, stderr="")
+
+    assert nas.nzbget_credential({}, ssh=SSH_STUB, run=run) == ("admin", "potatopass")
+    # The remote command is a constant -- nothing variable crosses to the far
+    # side, the same rule `_run_ssh` is built on.
+    assert seen["argv"][-1] == f"cat {nas.NZBGET_COMPOSE_FILE}"
+
+
+def test_nzbget_credential_is_none_when_the_hop_fails():
+    def run(argv, **kwargs):
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="Permission denied")
+
+    assert nas.nzbget_credential({}, ssh=SSH_STUB, run=run) is None
+
+
+def test_nzbget_credential_without_a_hop_never_shells_out():
+    assert nas.nzbget_credential({}, ssh=None) is None

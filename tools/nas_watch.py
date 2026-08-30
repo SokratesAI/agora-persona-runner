@@ -271,10 +271,11 @@ def _nzbget(hop, out, env=None, run=None, unlocked=nas.nzbget_unlocked, config=n
     print("NZBGET CONTROL IS LOCKED -- /jsonrpc refuses an unauthenticated call. That is the "
           "lock being on, not the key being strong.", file=out)
 
-    credential = nas.nzbget_credential(env)
+    credential = nas.nzbget_credential(env, ssh=hop, **kwargs)
     if credential is None:
         print("  NOT JUDGED  nzbget's extension list -- reading it needs NZBGET_USER and "
-              "NZBGET_PASS in this pod's environment and neither is set.", file=out)
+              "NZBGET_PASS, and neither this pod's environment nor "
+              f"{nas.NZBGET_COMPOSE_FILE} on the NAS carries both.", file=out)
         print("  This does not raise: an unprovisioned credential is a fact about this pod, not "
               "a finding about the NAS.", file=out)
         return 0, False
