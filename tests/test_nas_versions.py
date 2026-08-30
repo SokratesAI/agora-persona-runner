@@ -63,21 +63,7 @@ def _plex(running=PLEX_OK, latest=PLEX_OK, rows=3, why_not=None):
     return version, upstream
 
 
-#: What Bazarr answers with unless a test says otherwise: running its own
-#: newest published release, so no test about the other four depends on it.
-#: The tuple is `(newest, date, current, listed)`.
-BAZARR_OK = ("v1.6.0", "2026-07-04", True, 5)
-
-
-def _bazarr(standing=BAZARR_OK):
-    def read(hop, **kwargs):
-        if isinstance(standing, Exception):
-            raise standing
-        return standing
-    return read
-
-
-def _run(services, statuses, upstream, ssh=HOP, plex=None, bazarr=None):
+def _run(services, statuses, upstream, ssh=HOP, plex=None):
     out = io.StringIO()
     plex_version, plex_latest = plex if plex else _plex()
     code = nas_versions.report(
@@ -90,7 +76,6 @@ def _run(services, statuses, upstream, ssh=HOP, plex=None, bazarr=None):
         run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no shell in these tests")),
         plex_running=plex_version,
         plex_latest=plex_latest,
-        bazarr_standing=bazarr if bazarr else _bazarr(),
     )
     return code, out.getvalue()
 
@@ -471,28 +456,14 @@ def _manifest_opener(manifest):
     return _raw_opener(_json.dumps(manifest).encode())
 
 
-# --- bazarr -----------------------------------------------------------------
-#
-# Added Cycle 661, and judged by its own `current` flag rather than by a
-# version comparison -- the endpoint carrying its version does not answer.
+# --- the denominator --------------------------------------------------------
 
 
-def test_bazarr_not_on_any_listed_release_raises(monkeypatch):
-    """The live shape as of Cycle 661: five stable rows and `current` on none."""
-    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
-    code, text = _run(
-        ("sonarr", "radarr"),
-        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10514")},
-        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
-        bazarr=_bazarr(("v1.6.0", "2026-07-04", False, 5)),
-    )
-    assert code == 2
-    assert "BAZARR IS BEHIND ITS OWN PUBLISHED RELEASES" in text
-    assert "none of the 5 newest published release(s)" in text
-    assert "the newest is v1.6.0 (2026-07-04)" in text
-
-
-def test_bazarr_on_its_newest_release_is_printed_and_does_not_raise(monkeypatch):
+def test_a_clean_sweep_names_plex_in_the_denominator(monkeypatch):
+    """Four apps run on that box. Bazarr was the fifth until Cycle 676
+    uninstalled it at the owner's ask. The count comes from `nas.MEDIA_SERVICES`
+    rather than from a literal in this file, which is the point of pinning
+    it."""
     _patch_config(monkeypatch, _conf("sonarr", "radarr"))
     code, text = _run(
         ("sonarr", "radarr"),
@@ -500,30 +471,5 @@ def test_bazarr_on_its_newest_release_is_printed_and_does_not_raise(monkeypatch)
         {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
     )
     assert code == 0
-    assert "BAZARR IS ON ITS NEWEST PUBLISHED RELEASE" in text
-    assert "BAZARR IS BEHIND" not in text
-
-
-def test_bazarr_unreadable_exits_one_rather_than_clearing(monkeypatch):
-    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
-    code, text = _run(
-        ("sonarr", "radarr"),
-        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10514")},
-        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
-        bazarr=_bazarr(nas.Unreachable("bazarr's front page carried no `apiKey`")),
-    )
-    assert code == 1
-    assert "bazarr: its release standing is unreadable" in text
-    assert "bazarr could NOT be judged" in text
-
-
-def test_a_clean_sweep_names_bazarr_in_the_denominator(monkeypatch):
-    _patch_config(monkeypatch, _conf("sonarr", "radarr"))
-    code, text = _run(
-        ("sonarr", "radarr"),
-        {"sonarr": _status("4.0.19.2979"), "radarr": _status("6.3.0.10514")},
-        {"Sonarr/Sonarr": "v4.0.19.2979", "Radarr/Radarr": "v6.3.0.10514"},
-    )
-    assert code == 0
-    assert "plus plex plus bazarr" in text
-    assert "5 app(s) run on that box" in text
+    assert "plus plex" in text
+    assert "4 app(s) run on that box" in text
