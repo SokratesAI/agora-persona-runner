@@ -191,3 +191,10 @@ def test_a_shape_mismatch_counts_even_when_no_field_can_be_compared():
         bare, _manifest("svc", deployment_name="svc-web", with_pvc=False))
     assert all(o is None for _f, o, _d in rows)
     assert cd.is_drifted(rows, has_deployment, has_pvc) is True
+
+
+def test_an_env_var_sourced_from_valuefrom_reads_as_absent_not_as_none():
+    deployment = {"spec": {"template": {"spec": {"containers": [
+        {"name": "svc", "env": [{"name": "PORT", "valueFrom": {
+            "secretKeyRef": {"name": "s", "key": "k"}}}]}]}}}}
+    assert cd._env_value(deployment, "PORT") is None

@@ -153,9 +153,15 @@ def _env_value(deployment, key):
     for container in spec.get("containers", []) or []:
         for env in container.get("env", []) or []:
             if env.get("name") == key:
+                value = env.get("value")
+                # An env var sourced from `valueFrom` carries no literal, and
+                # `str(None)` would report the string "None" as the deployed
+                # value. There is nothing to compare, so say absent.
+                if value is None:
+                    return None
                 # Kubernetes env values are strings; the claim's ports are
                 # integers. Compare as text so 8080 and '8080' agree.
-                return str(env.get("value"))
+                return str(value)
     return None
 
 
