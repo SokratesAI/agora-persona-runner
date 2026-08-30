@@ -53,6 +53,11 @@ landed at. Nothing is written to the vault unless the lint passes.
 Exit codes: **0 written, 2 no free sequence number inside `--attempts`,
 1 anything else** -- 2 is deliberately the same "somebody else has it,
 this is an answer not a fault" code `tools/claim.py` uses.
+
+It also refuses, before it claims anything, a `--cycle <n>` whose
+`-cycle-<n>.md` entry is already in the folder. That is a 1 rather than a
+2: unlike a held sequence number there is no next one to bump to, and the
+caller has a decision to make -- see `cycle_already_filed`.
 """
 
 import argparse
@@ -165,6 +170,32 @@ def next_seq(names):
     """The previous highest plus one, or 1 for an empty folder."""
     found = taken_seqs(names)
     return max(found) + 1 if found else 1
+
+
+def cycle_already_filed(names, cycle):
+    """Entries in the folder listing that already carry `-cycle-<cycle>.md`.
+
+    The `<seq>` half of the filename is guarded by the claims ledger above.
+    The `<n>` half was guarded by nothing, and on 2026-08-30 that produced
+    `715-cycle-649.md` and `716-cycle-649.md` -- two different runs, both
+    honestly stamped 649, because Agora holds a separate counter per
+    conversation and the weekly architecture heartbeat is its own
+    conversation. Neither entry is wrong on its own and neither is a
+    mistake to repair; what is broken is the pair. `nova_journal.file_cycle`
+    reads the `-cycle-<n>` token to decide which cycle an entry
+    belongs to, and
+    the owner's comments are keyed by that number, so a reply he leaves on one
+    card can surface on the other.
+
+    Matched on the whole `-cycle-<n>.md` tail rather than a substring, so
+    cycle 64 does not collide with cycle 649.
+    """
+    tail = f"-cycle-{int(cycle)}.md"
+    return sorted(
+        name.rsplit("/", 1)[-1]
+        for name in names
+        if name.rsplit("/", 1)[-1].endswith(tail)
+    )
 
 
 def reserve_seq(cycle, existing, claim_once, start=None, attempts=DEFAULT_ATTEMPTS):
@@ -341,6 +372,25 @@ def main(argv=None):
     vault = Vault()
     try:
         existing = vault.ls(JOURNAL_DIR)
+    except RuntimeError as exc:
+        print(f"put_entry: {exc}", file=sys.stderr)
+        return 1
+    if not args.weekly:
+        clash = cycle_already_filed(existing, args.cycle)
+        if clash:
+            print(
+                f"put_entry: cycle {args.cycle} is already filed as "
+                f"{', '.join(clash)} -- refusing to write a second entry under "
+                "that number. If this is a weekly run, pass "
+                "`--weekly <slug>`: its heartbeat is a separate Agora "
+                "conversation with its own counter, so its number is not the "
+                "hourly loop's. If it is an hourly run, read the filed entry "
+                "before writing anything -- two entries under one number "
+                "misroute the owner's comments, which are keyed by it.",
+                file=sys.stderr,
+            )
+            return 1
+    try:
         seq, trail = reserve_seq(
             args.cycle, existing,
             vault_claim_once(vault, args.workdir, args.note),
