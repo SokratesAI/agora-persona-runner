@@ -187,6 +187,23 @@ def compare(claim, docs):
     return rows, deployment is not None, pvc is not None
 
 
+def is_drifted(rows, has_deployment, has_pvc):
+    """Does this claim still describe its service?
+
+    A field the claim sets and the manifest does not carry counts, not
+    only a field the two spell differently: the composition templates an
+    env var for every port, so an absent one means the manifest has moved
+    away from the shape the claim ordered. A shape mismatch -- no
+    Deployment under that name, no `<service>-data` PVC -- counts on its
+    own, because with nothing to read every field would otherwise report
+    as agreeing by default.
+    """
+    if not has_deployment or not has_pvc:
+        return True
+    return any(ordered is not None and ordered != deployed
+               for _field, ordered, deployed in rows)
+
+
 def format_report(results, problems):
     out = []
     drifted = [r for r in results if r["drift"]]
@@ -246,8 +263,7 @@ def main(argv=None):
             problems.append("%s: %s" % (claim["name"], why))
             continue
         rows, has_deployment, has_pvc = compare(claim, docs)
-        drift = (not has_deployment or not has_pvc
-                 or any(o is not None and o != d for _f, o, d in rows))
+        drift = is_drifted(rows, has_deployment, has_pvc)
         results.append({"name": claim["name"],
                         "namespace": claim["namespace"],
                         "rows": rows,

@@ -145,3 +145,38 @@ def test_the_report_names_both_values_for_a_drifted_field():
 def test_the_report_says_an_unreadable_repo_out_loud():
     report = cd.format_report([], ["svc: gh failed: Not Found"])
     assert "PROBLEM  svc: gh failed: Not Found" in report
+
+
+def test_env_values_compare_as_text_even_when_the_manifest_holds_an_int():
+    # A YAML author who writes `value: 8080` unquoted gets an int back, and
+    # the claim's port is an int too -- but the report prints both sides, so
+    # every read has to come back as the same type.
+    deployment = {"spec": {"template": {"spec": {"containers": [
+        {"name": "svc", "env": [{"name": "PORT", "value": 8080}]}]}}}}
+    assert cd._env_value(deployment, "PORT") == "8080"
+
+
+def test_a_renamed_deployment_counts_as_drift():
+    rows, has_deployment, has_pvc = cd.compare(
+        _claim("svc"), _manifest("svc", deployment_name="svc-web"))
+    assert cd.is_drifted(rows, has_deployment, has_pvc) is True
+
+
+def test_a_missing_pvc_counts_as_drift():
+    rows, has_deployment, has_pvc = cd.compare(
+        _claim("svc"), _manifest("svc", with_pvc=False))
+    assert cd.is_drifted(rows, has_deployment, has_pvc) is True
+
+
+def test_a_field_absent_from_the_manifest_counts_as_drift():
+    docs = _manifest("svc")
+    envs = docs[1]["spec"]["template"]["spec"]["containers"][0]["env"]
+    docs[1]["spec"]["template"]["spec"]["containers"][0]["env"] = [
+        e for e in envs if e["name"] != "METRICS_PORT"]
+    rows, has_deployment, has_pvc = cd.compare(_claim("svc"), docs)
+    assert cd.is_drifted(rows, has_deployment, has_pvc) is True
+
+
+def test_a_fully_matching_claim_is_not_drift():
+    rows, has_deployment, has_pvc = cd.compare(_claim("svc"), _manifest("svc"))
+    assert cd.is_drifted(rows, has_deployment, has_pvc) is False
