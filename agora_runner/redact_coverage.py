@@ -56,6 +56,23 @@ those keys means reading the Secret object, and this loop's RBAC refuses
 that at both the tool and the cluster level. An unenumerable Secret is a
 caveat, never a clean sweep of it.
 
+**A subset sweep needs its complement, and this is it.** Everything above
+judges the set Kubernetes *declares* -- which is the right set to judge and
+is not the set this process *holds*. A credential arriving through
+`envFrom`, through the base image, or through the harness that started the
+process is in `os.environ` and in no declaration, so the paragraphs above
+would report a clean sweep and never mention it. So the run also subtracts:
+every declared `env[].name`, and every variable the kubelet injects for a
+Service -- **generated from the live Service list, not from a list in this
+file** -- and names what is left as `NOT SWEPT`. It is context rather than a
+finding, because `PATH` is unmasked and should be; what makes it worth
+printing is that it is the honest size of the hole beside the RBAC caveat,
+and that `redact()` masking one of them would mean a credential arrived by a
+route nothing here declares. Measured on the bridge pod 2026-08-31: 28
+names, all base-image, shell or Claude Code harness variables, none of them
+a credential -- so the unreadable `envFrom secretRef` on that pod delivered
+nothing, which is the first evidence about it that is not a shrug.
+
 This module lives in `agora_runner/` rather than in `tools/` for that
 reason alone: `tools/` is not in the runner image, so a check that could
 only ever run on one of the two pods it is about would print `CANNOT
@@ -161,6 +178,81 @@ def running_workload(environ=None, hostname=None):
     return None
 
 
+def service_link_names(services):
+    """Every env name the kubelet injects for a list of Services.
+
+    Kubernetes sets a fixed family of variables per Service in the pod's own
+    namespace, plus the `kubernetes` Service in `default`. Deriving them from
+    the live Service list is what keeps the complement pass below from being a
+    word list: these names are generated, not guessed, and a Service added
+    tomorrow is covered without anyone editing this file.
+
+    A name generated here that the pod does not actually carry is harmless --
+    the set is only ever subtracted.
+    """
+    names = set()
+    items = list((services or {}).get("items") or [])
+    items.append({"metadata": {"name": "kubernetes"},
+                  "spec": {"ports": [{"name": "https", "port": 443,
+                                      "protocol": "TCP"}]}})
+    for service in items:
+        raw = (service.get("metadata") or {}).get("name") or ""
+        if not raw:
+            continue
+        prefix = raw.upper().replace("-", "_")
+        ports = (service.get("spec") or {}).get("ports") or []
+        names.update({f"{prefix}_SERVICE_HOST", f"{prefix}_SERVICE_PORT",
+                      f"{prefix}_PORT"})
+        for port in ports:
+            named = port.get("name")
+            if named:
+                names.add(f"{prefix}_SERVICE_PORT_{named.upper().replace('-', '_')}")
+            proto = (port.get("protocol") or "TCP").upper()
+            stem = f"{prefix}_PORT_{port.get('port')}_{proto}"
+            names.update({stem, f"{stem}_ADDR", f"{stem}_PORT", f"{stem}_PROTO"})
+    return names
+
+
+def unaccounted(environ, declared, links):
+    """Env names this process holds that no readable declaration explains.
+
+    `declared` is every `env[].name` on the pod spec -- including the plain
+    ones, not only the secret-sourced -- and `links` is `service_link_names`.
+    What is left arrived through `envFrom`, through the image, or through the
+    harness that started the process, and **nothing readable from here says
+    which**. That is the honest complement of the sweep above.
+    """
+    return sorted(n for n in environ if n not in declared and n not in links)
+
+
+def declared_env_names(pods, workload):
+    """Every `env[].name` a workload declares, secret-sourced or not."""
+    names = set()
+    for pod in (pods or {}).get("items") or []:
+        if _workload(pod) != workload:
+            continue
+        for container in (pod.get("spec") or {}).get("containers") or []:
+            for entry in container.get("env") or []:
+                if entry.get("name"):
+                    names.add(entry["name"])
+    return names
+
+
+def read_services(run=subprocess.run, namespace=NAMESPACE):
+    """The Service list as a dict, or `None` if kubectl could not answer."""
+    try:
+        done = run(["kubectl", "get", "svc", "-n", namespace, "-o", "json"],
+                   capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        return json.loads(done.stdout)
+    except ValueError:
+        return None
+
+
 def read_pods(run=subprocess.run, namespace=NAMESPACE):
     """The pod list as a dict, or `None` if kubectl could not answer."""
     try:
@@ -176,7 +268,8 @@ def read_pods(run=subprocess.run, namespace=NAMESPACE):
         return None
 
 
-def report(pods, environ=None, here=None, out=sys.stdout):
+def report(pods, environ=None, here=None, out=sys.stdout,
+           services=None):
     env = os.environ if environ is None else environ
     if pods is None:
         print("CANNOT READ — kubectl could not list pods in " + NAMESPACE
@@ -217,6 +310,26 @@ def report(pods, environ=None, here=None, out=sys.stdout):
                   f"not read.", file=out)
         print(f"{workload}: {len(masked)} of {len(names)} declared secret(s) masked "
               f"({', '.join(masked) or 'none'}).", file=out)
+        if services is None:
+            print(f"CANNOT JUDGE — {workload}: the Service list is unreadable, so "
+                  f"the variables this process holds that the pod spec does not "
+                  f"declare could not be separated from Kubernetes' own service "
+                  f"links and were not named.", file=out)
+        else:
+            rest = unaccounted(env, declared_env_names(pods, workload),
+                               service_link_names(services))
+            rest_masked = [n for n in rest
+                           if isinstance(env.get(n), str) and env[n].strip()
+                           and redact(env[n], env) != env[n]]
+            tail = (f" redact() masks {len(rest_masked)} of them "
+                    f"({', '.join(rest_masked)}), which means a credential reached "
+                    f"this process through a route nothing here declares."
+                    if rest_masked else "")
+            print(f"NOT SWEPT — {workload}: {len(rest)} variable(s) in this "
+                  f"process's environment are declared nowhere in the pod spec and "
+                  f"are not Kubernetes service links, so no declaration says whether "
+                  f"any of them is a credential: {', '.join(rest) or 'none'}."
+                  + tail, file=out)
     for workload, secret in unenumerable:
         print(f"CANNOT JUDGE — {workload} also takes envFrom secret/{secret}, which "
               f"names no keys; reading the Secret to enumerate them is refused by "
@@ -241,7 +354,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--namespace", default=NAMESPACE)
     args = parser.parse_args(argv)
-    return report(read_pods(namespace=args.namespace))
+    return report(read_pods(namespace=args.namespace),
+                  services=read_services(namespace=args.namespace))
 
 
 if __name__ == "__main__":
