@@ -3045,6 +3045,27 @@ body.has-full-chart { overflow: hidden; }
   line-height: 1.55;
 }
 
+/* His own words, back on the card he wrote them on. Full-strength text
+ * rather than `--dim` and left-marked in the accent, the same call
+ * `.pool-history-said` made: a comment he cannot read is the write not
+ * having landed, from where he is sitting. `white-space: pre-wrap` because
+ * the box is a textarea and a two-paragraph note is stored as one. */
+.pool-said {
+  margin: 0 0 0.6rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--accent);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.pool-said-when {
+  color: var(--dim);
+  font-size: 0.78rem;
+  margin-right: 0.45rem;
+}
+
 .pool-comment {
   width: 100%;
   box-sizing: border-box;
@@ -3082,6 +3103,7 @@ body.has-full-chart { overflow: hidden; }
 
 .pool-approve { color: var(--good); border-color: var(--good); }
 .pool-reject { color: var(--danger); border-color: var(--danger); }
+.pool-comment-btn { color: var(--accent); border-color: var(--accent); }
 .pool-skip { color: var(--dim); }
 
 .pool-count {

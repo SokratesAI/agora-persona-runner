@@ -7941,6 +7941,17 @@
 
     if (candidate.body) card.appendChild(el("p", "pool-body", candidate.body));
 
+    /* Anything he has already noted on this candidate, oldest first. It is
+     * drawn before the box rather than after it so the card reads as a
+     * short thread: my proposal, then what he said about it, then the box
+     * he says the next thing in. */
+    (candidate.comments || []).forEach(function (said) {
+      var line = el("p", "pool-said");
+      if (said.dated) line.appendChild(el("span", "pool-said-when", said.dated));
+      line.appendChild(document.createTextNode(said.text));
+      card.appendChild(line);
+    });
+
     var note = el("p", "pool-note");
     var box = el("textarea", "pool-comment");
     box.setAttribute("placeholder", "Why, or what you would change (optional)");
@@ -7995,14 +8006,54 @@
     approve.addEventListener("click", function () { decide("approve"); });
     var reject = el("button", "pool-btn pool-reject", "Reject");
     reject.addEventListener("click", function () { decide("reject"); });
+    /* Comment is the third answer idea #92 asks for and Skip is the fourth,
+     * not a substitute for it. Skip writes nothing on purpose; what was
+     * wrong until now is that it was the *only* way past a card, so text
+     * typed into the box below — on a card he was not ready to decide —
+     * was thrown away by the one button that looked safe. This keeps the
+     * candidate in the pool and puts his words on it.
+     *
+     * It re-fetches and stays on the same card rather than advancing.
+     * Advancing would be one tap fewer and would show him nothing: the
+     * proof that a write landed is his own sentence appearing above the
+     * box, and this loop has shipped enough writes that reported success
+     * without evidence. */
+    var saveNote = el("button", "pool-btn pool-comment-btn", "Comment");
+    saveNote.addEventListener("click", function () {
+      if (!box.value.trim()) {
+        note.textContent = "Nothing to note — the box is empty.";
+        return;
+      }
+      buttons.forEach(function (b) { b.disabled = true; });
+      note.textContent = "Noting…";
+      fetch("/api/pool/comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          index: candidate.index,
+          title: candidate.title,
+          comment: box.value
+        })
+      })
+        .then(json)
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+          loadPool();
+        })
+        .catch(function (err) {
+          buttons.forEach(function (b) { b.disabled = false; });
+          note.textContent = "Could not save: " + err;
+        });
+    });
     var skip = el("button", "pool-btn pool-skip", "Skip");
     skip.addEventListener("click", function () {
       poolAt += 1;
       renderPool(payload);
     });
-    buttons = [approve, reject, skip];
+    buttons = [approve, reject, saveNote, skip];
     actions.appendChild(approve);
     actions.appendChild(reject);
+    actions.appendChild(saveNote);
     actions.appendChild(skip);
     card.appendChild(actions);
     card.appendChild(note);
