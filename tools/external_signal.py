@@ -36,11 +36,18 @@ share of a corpus is only honest if the reader can go and disagree with the
 individual calls. The phrases are his: I took them by counting the corpus
 rather than by imagining how he writes.
 
+**The second corpus is `notes.md`, added Cycle 673.** It is the other place
+he types at me, and it was excluded from here for one reason: a note carries
+no timestamp, and an undated event cannot join a weekly trend. It can be
+dated from outside the vault -- the `vault-backup` CronJob pushes a snapshot
+of the whole vault to `SokratesAI/vault` roughly hourly, so the first
+snapshot holding a bullet dates that bullet to within an hour, by a clock
+neither he nor I wrote. A note no snapshot holds is reported as undated and
+left out of the trend rather than counted as a clean week.
+
 **What this cannot see, printed on every run.** A correction he made in
-chat, in the vault directly, or out loud is not here -- only the app's
-comment box writes this file. `notes.md` and his board captures carry
-corrections too and are deliberately excluded, because neither is
-timestamped and an undated event cannot join a trend. The marker list is
+chat or out loud is not here. His board captures still carry corrections
+with no timestamp to trend. The marker list is
 mine even though the words are his, so a correction phrased in language it
 does not hold is missed, and a comment that merely quotes the word "wrong"
 is counted. And silence is ambiguous in both directions: a week he did not
@@ -58,6 +65,20 @@ from collections import Counter
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 COMMENTS = "projects/sokrates/projects/agora/nova/resources/comments.md"
+
+# The second corpus, added Cycle 673. `notes.md` is the other place he types
+# at me, and it was excluded from this instrument for one reason only: a note
+# carries no timestamp, and an undated event cannot join a weekly trend. It
+# can be dated from outside the vault. `SokratesAI/vault` is the backup
+# mirror the `vault-backup` CronJob pushes to roughly hourly, so the first
+# snapshot whose copy of `notes.md` contains a bullet dates that bullet to
+# within an hour -- by a clock neither he nor I wrote.
+NOTES = "projects/sokrates/projects/nova/notes.md"
+MIRROR_REPO = "SokratesAI/vault"
+
+# His notes are the top-level bullets. Mine are indented under them, and the
+# empty `- ` placeholder at the top of the list is the file waiting for him.
+OWNER_BULLET = re.compile(r"^- (?P<body>\S.*)$", re.M)
 
 # the owner's headings, written by the app. Mine are `#### Nova · <date>` and are
 # not matched here on purpose -- the point of the instrument is that no line
@@ -100,6 +121,101 @@ def parse_comments(text):
     return sorted(found, key=lambda row: (row[1], row[0]))
 
 
+def parse_notes(text):
+    """Every note the owner wrote in `notes.md`, in file order.
+
+    His notes are top-level bullets; my replies are indented beneath them and
+    are not matched here, for the same reason `parse_comments` skips my
+    headings -- no line of the measured text may come from this loop. The bare
+    `- ` placeholder at the top of the list carries no body and is skipped.
+    """
+    return [m.group("body").strip() for m in OWNER_BULLET.finditer(text or "")]
+
+
+def _anchor(body, width=60):
+    """The prefix of a note used to look for it in an older snapshot.
+
+    A prefix rather than the whole note because I edit the tail of his bullets
+    -- moving one under `## Read` appends nothing but the indented reply, and
+    the frontmatter repair in Cycle 619 reflowed the block around them.
+    """
+    return body[:width]
+
+
+def _gh_json(args, timeout=120):
+    """`gh api` returning parsed JSON, or `None` if the call did not answer."""
+    import json
+    try:
+        done = subprocess.run(["gh", "api", *args],
+                              capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0 or not done.stdout.strip():
+        return None
+    try:
+        return json.loads(done.stdout)
+    except ValueError:
+        return None
+
+
+def mirror_snapshots(path=NOTES, repo=MIRROR_REPO):
+    """`(sha, YYYY-MM-DD)` for every backup commit touching `path`, oldest first.
+
+    `None` -- not `[]` -- when the mirror could not be read, because an empty
+    history and an unreachable one would otherwise both date nothing, and only
+    one of those is a fact about the corpus.
+    """
+    payload = _gh_json(["--paginate",
+                        f"repos/{repo}/commits?path={path}&per_page=100"])
+    if not isinstance(payload, list) or not payload:
+        return None
+    snaps = []
+    for entry in payload:
+        sha = entry.get("sha")
+        when = (entry.get("commit") or {}).get("committer", {}).get("date")
+        if sha and when:
+            snaps.append((sha, when[:10]))
+    return sorted(snaps, key=lambda row: row[1]) or None
+
+
+def snapshot_body(sha, path=NOTES, repo=MIRROR_REPO):
+    """`path` as it stood at `sha` on the mirror, or `None`."""
+    try:
+        done = subprocess.run(
+            ["gh", "api", "-H", "Accept: application/vnd.github.raw",
+             f"repos/{repo}/contents/{path}?ref={sha}"],
+            capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 and done.stdout.strip() else None
+
+
+def date_notes(bullets, snapshots=None, body_of=snapshot_body):
+    """`(dated, undated)` -- each note against the date it first appeared.
+
+    `dated` maps a note to a `YYYY-MM-DD`; `undated` lists the notes no
+    snapshot held. A note is undated when it was written and answered inside
+    one gap between hourly backups, or when it predates the mirror -- both are
+    real, both are printed, and neither is silently counted as a clean week.
+    Returns `(None, bullets)` when the mirror itself could not be read.
+    """
+    snaps = mirror_snapshots() if snapshots is None else snapshots
+    if not snaps:
+        return None, list(bullets)
+    dated, pending = {}, list(bullets)
+    for sha, when in snaps:
+        if not pending:
+            break
+        body = body_of(sha)
+        if body is None:
+            continue
+        for note in list(pending):
+            if _anchor(note) in body:
+                dated[note] = when
+                pending.remove(note)
+    return dated, pending
+
+
 def _matches(body, markers):
     """Every marker phrase present in `body`, as it appears there."""
     hits = []
@@ -126,17 +242,28 @@ def _week_complete(date):
     return dt.date.fromisoformat(date).isoweekday() == 7
 
 
-def measure(text):
-    """`(rows, weeks)` -- every comment classified, and the weekly tally.
+def measure(text, dated_notes=None):
+    """`(rows, weeks)` -- every comment and note classified, and the weekly tally.
 
-    `rows` are `(cycle, date, corrections, repeats)`. `weeks` maps an ISO
-    week label to a `Counter` with `comments`, `corrected` and `repeated`.
-    A comment counts once for the week however many markers it carries.
+    `rows` are `(cycle, date, corrections, repeats, source)`; `source` is
+    `"comment"` or `"note"`, and `cycle` is `None` for a note, which carries no
+    cycle number. `weeks` maps an ISO week label to a `Counter` with
+    `comments`, `corrected` and `repeated`. An item counts once for the week
+    however many markers it carries.
+
+    `dated_notes` is `date_notes`' first return value. Passing `None` measures
+    the comments alone, which is what this did before Cycle 673 and is still
+    the honest answer when the mirror cannot be read.
     """
     rows, weeks = [], {}
-    for cycle, date, body in parse_comments(text):
+    items = [(cycle, date, body, "comment")
+             for cycle, date, body in parse_comments(text)]
+    items += [(None, date, body, "note")
+              for body, date in sorted((dated_notes or {}).items(),
+                                       key=lambda pair: pair[1])]
+    for cycle, date, body, source in sorted(items, key=lambda row: row[1]):
         corrections, repeats = classify(body)
-        rows.append((cycle, date, corrections, repeats))
+        rows.append((cycle, date, corrections, repeats, source))
         tally = weeks.setdefault(week_of(date), Counter())
         tally["comments"] += 1
         tally["corrected"] += 1 if corrections else 0
@@ -164,15 +291,18 @@ def _fetch(path):
     return done.stdout
 
 
-def report(rows, weeks, show=False, out=sys.stdout):
+def report(rows, weeks, show=False, out=sys.stdout, undated=(), mirror_read=True):
     """Print the trend, and return the exit code it deserves."""
     if not rows:
         print("NO CORPUS — comments.md parsed to zero comments from the owner.", file=out)
         print("    That is no instrument, not a clean week; the heading format may have changed.", file=out)
         return 1
 
+    comments = sum(1 for row in rows if row[4] == "comment")
+    notes = len(rows) - comments
     print("THE OWNER'S CORRECTIONS — an outside reading of this loop", file=out)
-    print(f"  corpus: {len(rows)} comment(s) he wrote, {rows[0][1]} to {rows[-1][1]}", file=out)
+    print(f"  corpus: {len(rows)} thing(s) he wrote, {rows[0][1]} to {rows[-1][1]} "
+          f"— {comments} journal comment(s), {notes} note(s)", file=out)
     print(file=out)
     print("  week        comments   corrected   repeated   corrected share", file=out)
     labels = sorted(weeks)
@@ -193,19 +323,31 @@ def report(rows, weeks, show=False, out=sys.stdout):
     print(f"  Overall {corrected}/{total} corrected ({100.0 * corrected / total:.0f}%), "
           f"{repeated} carrying a repetition marker.", file=out)
 
+    if not mirror_read:
+        print(file=out)
+        print("  NOTES UNDATED — the backup mirror did not answer, so notes.md is not in", file=out)
+        print("    the trend above. That is a missing instrument, not a quiet corpus.", file=out)
+    elif undated:
+        print(file=out)
+        print(f"  {len(undated)} note(s) matched no snapshot and are not in the trend —", file=out)
+        print("    written and answered inside one gap between hourly backups, or older", file=out)
+        print("    than the mirror. Not counted rather than guessed at.", file=out)
+
     if show:
         print(file=out)
-        for cycle, date, corrections, repeats in rows:
+        for cycle, date, corrections, repeats, source in rows:
             if corrections or repeats:
                 phrases = ", ".join(sorted(set(corrections + repeats)))
-                print(f"  {date}  cycle {cycle:<5} {phrases}", file=out)
+                where = f"cycle {cycle}" if cycle is not None else "note"
+                print(f"  {date}  {where:<11} {phrases}", file=out)
 
     print(file=out)
     print("  Nothing measured above was written by this loop — the words and the", file=out)
     print("  timestamps are his. The rule that sorts them is mine: --rules prints it,", file=out)
     print("  --show lists every comment it matched so the calls can be argued with.", file=out)
-    print("  Blind to: corrections made in chat, in the vault, or out loud; notes.md", file=out)
-    print("  and board captures, which carry corrections but no timestamp to trend.", file=out)
+    print("  Blind to: corrections made in chat or out loud, and his board captures,", file=out)
+    print("  which carry corrections but no timestamp to trend. notes.md is in since", file=out)
+    print("  Cycle 673, dated by first appearance in the vault's own backup mirror.", file=out)
     print("  A quiet week is not a good week — silence is ambiguous in both directions.", file=out)
     return 0
 
@@ -228,6 +370,8 @@ def main(argv=None):
     parser.add_argument("--rules", action="store_true",
                         help="print the marker lists and exit")
     parser.add_argument("--path", default=COMMENTS, help="vault path of the corpus")
+    parser.add_argument("--no-notes", action="store_true",
+                        help="measure the journal comments alone, without reading the backup mirror")
     args = parser.parse_args(argv)
 
     if args.rules:
@@ -239,8 +383,18 @@ def main(argv=None):
         print(f"COULD NOT READ — {args.path}", file=sys.stdout)
         print("    That is no instrument, not no corrections.", file=sys.stdout)
         return 1
-    rows, weeks = measure(text)
-    return report(rows, weeks, show=args.show)
+    dated, undated, mirror_read = None, (), True
+    if not args.no_notes:
+        notes_text = _fetch(NOTES)
+        if notes_text is None:
+            mirror_read = False
+        else:
+            dated, undated = date_notes(parse_notes(notes_text))
+            if dated is None:
+                dated, mirror_read = None, False
+    rows, weeks = measure(text, dated)
+    return report(rows, weeks, show=args.show,
+                  undated=undated, mirror_read=mirror_read)
 
 
 if __name__ == "__main__":

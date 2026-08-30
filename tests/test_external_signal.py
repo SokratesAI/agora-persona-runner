@@ -8,6 +8,7 @@ possible score, and it is exactly what a broken parser produces.
 """
 
 import io
+import sys
 
 import pytest
 
@@ -146,3 +147,113 @@ def test_rules_print_both_lists():
 def test_each_grounded_marker_is_actually_wired_up(phrase):
     corrections, _ = es.classify(f"I think you {phrase} write it that way.")
     assert corrections, f"{phrase!r} is in the rules but matches nothing"
+
+
+# --- the second corpus: notes.md, dated off the vault's backup mirror -------
+# Two-sided the same way the rest of this file is. The one that matters is the
+# unreachable-mirror case: dating nothing would drop every note from the
+# trend, which reads as a week he did not correct me.
+
+NOTES = """---
+type: log
+contract: Edvard writes in the bare bullet list at the top.
+---
+
+- 
+
+## Read
+
+- You often say nobody had read it. That is wrong.
+  - Read Cycle 328. Agreed, and I have written it down.
+
+- Just testing out the new notes page. Hello there.
+  - Read Cycle 380. Hello. It arrived.
+"""
+
+
+def test_notes_parses_his_bullets_and_not_my_replies():
+    notes = es.parse_notes(NOTES)
+    assert notes == ["You often say nobody had read it. That is wrong.",
+                     "Just testing out the new notes page. Hello there."]
+    # The empty placeholder is the file waiting for him, not a note.
+    assert "" not in notes
+    # My indented reply is never a note, even though it is a bullet.
+    assert not any("Read Cycle" in note for note in notes)
+
+
+def test_a_note_is_dated_by_the_first_snapshot_that_holds_it():
+    notes = es.parse_notes(NOTES)
+    snapshots = [("aaa", "2026-08-16"), ("bbb", "2026-08-24")]
+    bodies = {
+        "aaa": "- You often say nobody had read it. That is wrong.\n",
+        "bbb": NOTES,
+    }
+    dated, undated = es.date_notes(notes, snapshots, body_of=bodies.get)
+    assert dated[notes[0]] == "2026-08-16"   # present in the older snapshot
+    assert dated[notes[1]] == "2026-08-24"   # first seen in the newer one
+    assert undated == []
+
+
+def test_a_note_no_snapshot_holds_is_reported_undated_not_dated_today():
+    notes = es.parse_notes(NOTES)
+    dated, undated = es.date_notes(notes, [("aaa", "2026-08-16")],
+                                   body_of=lambda sha: "- something else\n")
+    assert dated == {}
+    assert undated == notes
+    out = io.StringIO()
+    rows, weeks = es.measure(CORPUS, dated)
+    es.report(rows, weeks, out=out, undated=undated)
+    assert "matched no snapshot" in out.getvalue()
+
+
+def test_an_unreachable_mirror_is_a_missing_instrument_not_a_quiet_corpus(monkeypatch):
+    monkeypatch.setattr(es, "mirror_snapshots", lambda: None)
+    dated, undated = es.date_notes(es.parse_notes(NOTES),
+                                   body_of=lambda sha: None)
+    assert dated is None
+    assert undated == es.parse_notes(NOTES)
+    rows, weeks = es.measure(CORPUS, None)
+    out = io.StringIO()
+    es.report(rows, weeks, out=out, mirror_read=False)
+    assert "NOTES UNDATED" in out.getvalue()
+    # And it must not print the undated-notes line instead, which would read
+    # as "the mirror answered and held none of them".
+    assert "matched no snapshot" not in out.getvalue()
+
+
+def test_mirror_snapshots_returns_none_when_the_call_does_not_answer(monkeypatch):
+    monkeypatch.setattr(es, "_gh_json", lambda *a, **k: None)
+    assert es.mirror_snapshots() is None
+    monkeypatch.setattr(es, "_gh_json", lambda *a, **k: [
+        {"sha": "bbb", "commit": {"committer": {"date": "2026-08-24T10:00:00Z"}}},
+        {"sha": "aaa", "commit": {"committer": {"date": "2026-08-16T10:00:00Z"}}},
+    ])
+    assert es.mirror_snapshots() == [("aaa", "2026-08-16"), ("bbb", "2026-08-24")]
+
+
+def test_notes_join_the_weekly_trend_and_are_labelled_in_show():
+    notes = es.parse_notes(NOTES)
+    dated = {notes[0]: "2026-08-16"}
+    rows, weeks = es.measure(CORPUS, dated)
+    # W33 held 2 comments before the note landed in it.
+    assert weeks["2026-W33"]["comments"] == 3
+    assert weeks["2026-W33"]["corrected"] == 2
+    loud = io.StringIO()
+    es.report(rows, weeks, show=True, out=loud)
+    assert "note " in loud.getvalue()
+    assert "22 note(s)" not in loud.getvalue()
+    assert "1 note(s)" in loud.getvalue()
+
+
+def test_measuring_without_notes_is_unchanged():
+    assert es.measure(CORPUS, None)[1] == es.measure(CORPUS)[1]
+
+
+def test_no_notes_flag_skips_the_mirror_entirely(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("--no-notes must not touch the mirror")
+    monkeypatch.setattr(es, "mirror_snapshots", refuse)
+    monkeypatch.setattr(es, "_fetch", lambda path: CORPUS)
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    assert es.main(["--no-notes"]) == 0
