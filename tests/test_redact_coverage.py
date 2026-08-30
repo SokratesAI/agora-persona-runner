@@ -155,3 +155,86 @@ def test_read_pods_returns_none_rather_than_raising_on_a_failed_kubectl():
 def test_the_preflight_wrapper_exposes_the_same_main():
     import tools.redact_coverage as wrapper
     assert wrapper.main is rc.main
+
+
+def _svc(name, ports):
+    return {"metadata": {"name": name},
+            "spec": {"ports": [{"name": n, "port": p, "protocol": "TCP"}
+                               for n, p in ports]}}
+
+
+def test_service_link_names_are_generated_from_the_live_service_list():
+    """Not a word list: a Service added tomorrow is covered without an edit."""
+    names = rc.service_link_names({"items": [_svc("nova-site", [("http", 8083)])]})
+    assert {"NOVA_SITE_SERVICE_HOST", "NOVA_SITE_SERVICE_PORT",
+            "NOVA_SITE_SERVICE_PORT_HTTP", "NOVA_SITE_PORT",
+            "NOVA_SITE_PORT_8083_TCP", "NOVA_SITE_PORT_8083_TCP_ADDR",
+            "NOVA_SITE_PORT_8083_TCP_PORT",
+            "NOVA_SITE_PORT_8083_TCP_PROTO"} <= names
+    # The default namespace's own Service is injected too and is never listed
+    # in `agents`, so it is added rather than read.
+    assert "KUBERNETES_SERVICE_HOST" in names
+    assert "KUBERNETES_PORT_443_TCP_ADDR" in names
+
+
+def test_unaccounted_subtracts_the_declaration_and_the_links():
+    rest = rc.unaccounted({"GH_TOKEN": "x", "AGORA_SERVICE_HOST": "1.2.3.4",
+                           "GPG_KEY": "abc"},
+                          declared={"GH_TOKEN"}, links={"AGORA_SERVICE_HOST"})
+    assert rest == ["GPG_KEY"]
+
+
+def test_declared_env_names_takes_the_plain_ones_too():
+    pod = _pod("agora-claude-bridge-1", "agora-claude-bridge", env=["CDB_PASS"])
+    pod["spec"]["containers"][0]["env"].append({"name": "PORT", "value": "8090"})
+    assert rc.declared_env_names(_pods(pod), "agora-claude-bridge") == {"CDB_PASS", "PORT"}
+
+
+def test_the_sweep_names_what_no_declaration_explains():
+    """The clean summary must not imply it read the whole environment."""
+    out = io.StringIO()
+    code = rc.report(
+        _pods(_pod("agora-claude-bridge-1", "agora-claude-bridge", env=["CDB_PASS"])),
+        environ={"CDB_PASS": "q" * 16, "AGORA_SERVICE_HOST": "10.0.0.1",
+                 "GPG_KEY": "a-base-image-thing"},
+        here="agora-claude-bridge", out=out,
+        services={"items": [_svc("agora", [("http", 8080)])]})
+    text = out.getvalue()
+    assert code == 0, text
+    assert "NOT SWEPT" in text
+    assert "1 variable(s)" in text and "GPG_KEY" in text
+    assert "AGORA_SERVICE_HOST" not in text
+
+
+def test_an_undeclared_variable_redact_masks_is_called_out():
+    """redact() masking something nothing declares means a credential arrived
+    by a route the pod spec does not describe -- the one case in the
+    complement that is worth a sentence rather than a name."""
+    out = io.StringIO()
+    rc.report(
+        _pods(_pod("agora-claude-bridge-1", "agora-claude-bridge", env=["CDB_PASS"])),
+        environ={"CDB_PASS": "q" * 16, "SOME_TOKEN": "z" * 40},
+        here="agora-claude-bridge", out=out, services={"items": []})
+    text = out.getvalue()
+    assert "redact() masks 1 of them (SOME_TOKEN)" in text
+    assert "a route nothing here declares" in text
+
+
+def test_an_unreadable_service_list_is_a_caveat_not_a_silent_pass():
+    out = io.StringIO()
+    code = rc.report(
+        _pods(_pod("agora-claude-bridge-1", "agora-claude-bridge", env=["CDB_PASS"])),
+        environ={"CDB_PASS": "q" * 16}, here="agora-claude-bridge", out=out,
+        services=None)
+    text = out.getvalue()
+    assert code == 0, text
+    assert "CANNOT JUDGE" in text and "Service list is unreadable" in text
+    assert "NOT SWEPT" not in text
+
+
+def test_read_services_returns_none_rather_than_raising():
+    class Done:
+        returncode = 1
+        stdout = ""
+    assert rc.read_services(run=lambda *a, **k: Done()) is None
+    assert rc.read_services(run=lambda *a, **k: (_ for _ in ()).throw(OSError())) is None
