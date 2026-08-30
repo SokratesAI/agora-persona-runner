@@ -536,6 +536,51 @@ def test_discover_key_reads_the_key_off_initialize_js():
     assert "X-Api-Key" not in run.calls[0]["input"]
 
 
+class _SeqRun:
+    """Answers each call from a list, so the two initialize paths differ."""
+
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+
+    def __call__(self, argv, input=None, capture_output=None, text=None, timeout=None):
+        self.calls.append({"argv": argv, "input": input, "timeout": timeout})
+        stdout = self.replies[len(self.calls) - 1]
+        return types.SimpleNamespace(stdout=stdout, returncode=0, stderr="")
+
+
+def test_discover_key_reads_the_json_page_sonarr_4_serves():
+    # Sonarr 4 / Radarr 6 answer 404 on /initialize.js and publish the key as
+    # JSON instead. Measured live Cycle 659, minutes after upgrading both on
+    # the NAS: every check in this package went UNREADABLE at once.
+    run = _FakeRun(stdout='{\n  "apiKey": "0123456789abcdef0123456789abcdef",\n  "urlBase": ""\n}\n200')  # gitleaks:allow — fabricated
+    assert nas.discover_key("radarr", SSH_HOP, run=run) == "0123456789abcdef0123456789abcdef"  # gitleaks:allow — fabricated
+    assert "7878/initialize.json" in run.calls[0]["input"]
+
+
+def test_discover_key_falls_back_to_the_old_js_page_on_a_404():
+    # A box that has not been upgraded still answers only the old path, so the
+    # newest spelling must not be the only one tried.
+    run = _SeqRun([
+        '{"title":"Not Found","status":404}\n404',
+        "window.Sonarr = {\n  apiKey: '0123456789abcdef0123456789abcdef',\n};\n200",  # gitleaks:allow — fabricated
+    ])
+    assert nas.discover_key("sonarr", SSH_HOP, run=run) == "0123456789abcdef0123456789abcdef"  # gitleaks:allow — fabricated
+    assert "8989/initialize.json" in run.calls[0]["input"]
+    assert "8989/initialize.js" in run.calls[1]["input"]
+
+
+def test_discover_key_stops_at_the_first_page_that_carries_a_key():
+    run = _SeqRun(["{\"apiKey\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n200", "unused\n200"])  # gitleaks:allow — fabricated
+    assert nas.discover_key("sonarr", SSH_HOP, run=run) == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"  # gitleaks:allow — fabricated
+    assert len(run.calls) == 1
+
+
+def test_discover_key_returns_none_when_neither_page_carries_a_key():
+    run = _SeqRun(["\n404", "\n404"])
+    assert nas.discover_key("sonarr", SSH_HOP, run=run) is None
+    assert len(run.calls) == 2
+
+
 def test_discover_key_returns_none_rather_than_guessing_when_the_page_is_locked():
     assert nas.discover_key("sonarr", SSH_HOP, run=_FakeRun(stdout="\n401")) is None
     assert nas.discover_key("sonarr", SSH_HOP, run=_FakeRun(stdout="no key here\n200")) is None

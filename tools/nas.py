@@ -480,8 +480,21 @@ def nzbget_config(ssh, credential, port=None, run=subprocess.run):
     return {str(r.get("Name", "")).lower(): str(r.get("Value", "")) for r in rows if isinstance(r, dict)}
 
 
+# Where an *arr app publishes its own API key, newest spelling first. Sonarr 3
+# and Radarr 4 served `/initialize.js`, a JavaScript assignment; Sonarr 4 and
+# Radarr 6 serve `/initialize.json` and answer 404 on the old path. Cycle 659
+# upgraded both on the NAS and every check in this package went UNREADABLE in
+# the same minute, because one 404 removes the service from `config` and the
+# tools then honestly report a sweep of zero. Both paths are tried so the same
+# code reads a box that has been upgraded and one that has not.
+INITIALIZE_PATHS = ("/initialize.json", "/initialize.js")
+
+# `apiKey: '...'` in the JS file, `"apiKey": "..."` in the JSON one.
+_API_KEY = re.compile(r"""["']?apiKey["']?\s*:\s*['"]([0-9a-fA-F]{16,})['"]""")
+
+
 def discover_key(service, ssh, run=subprocess.run):
-    """Read a service's API key off its own unauthenticated `/initialize.js`.
+    """Read a service's API key off its own unauthenticated initialize page.
 
     This is not a clever trick and it is not a new exposure: Cycle 630
     measured that Sonarr and Radarr serve that file to anyone who loads the
@@ -491,19 +504,22 @@ def discover_key(service, ssh, run=subprocess.run):
     nothing. `SONARR_API_KEY` in the environment still wins, so the day he
     puts a login on these, this stops being the path.
 
-    Returns the key, or `None` if the page did not carry one.
+    Returns the key, or `None` if no known page carried one.
     """
     port = LOOPBACK_PORTS.get(service)
     if not port:
         return None
-    try:
-        body, code = _fetch_over_ssh(ssh, f"http://127.0.0.1:{port}/initialize.js", run=run)
-    except Unreachable:
-        return None
-    if code != 200:
-        return None
-    found = re.search(r"""apiKey:\s*['"]([0-9a-fA-F]{16,})['"]""", body)
-    return found.group(1) if found else None
+    for path in INITIALIZE_PATHS:
+        try:
+            body, code = _fetch_over_ssh(ssh, f"http://127.0.0.1:{port}{path}", run=run)
+        except Unreachable:
+            return None
+        if code != 200:
+            continue
+        found = _API_KEY.search(body)
+        if found:
+            return found.group(1)
+    return None
 
 
 def config(env=None, ssh=_UNSET, run=subprocess.run):
@@ -861,7 +877,7 @@ UNCONFIGURED_HELP = (
     "is missing before changing anything.\n"
     "  * On the runner pod this should just work: it has ssh, and the sealed key at\n"
     "    /etc/nas-ssh/id_ed25519. The request is then made on the NAS itself, and the\n"
-    "    API key is read off each app's own unauthenticated /initialize.js.\n"
+    "    API key is read off each app's own unauthenticated initialize page.\n"
     "  * On the bridge pod there is no ssh binary at all, so this cannot run there.\n"
     "  * A direct HTTP call is not the path today: allow-nas-ssh-egress in the agents\n"
     "    namespace opens port 22 and nothing else, so :8989 and :7878 are refused by\n"
