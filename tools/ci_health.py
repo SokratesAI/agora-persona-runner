@@ -26,8 +26,9 @@ after the wrong half: a single number reads as a diagnosis. So this asks
 1. **Is GitHub Actions itself healthy?** The `Actions` component on
    `githubstatus.com`. This is the question no amount of poking at our own
    repos can answer, and it is the one that was true.
-2. **Are my own runs actually starting jobs?** For every repo this loop
-   has a checkout of, any run still `queued` past the grace, and the job
+2. **Are my own runs actually starting jobs?** For every non-archived repo
+   in the org — not just the ones with a checkout here, see
+   `_repos_to_sweep` — any run still `queued` past the grace, and the job
    count on it. **Zero jobs is the symptom**; a run with jobs is merely
    slow, which is a different sentence.
 
@@ -94,6 +95,7 @@ cause is GitHub's as when it is ours.
 """
 
 import argparse
+import concurrent.futures
 import json
 import subprocess
 import sys
@@ -106,6 +108,9 @@ USER_AGENT = "nova-ci-health/1"
 # Every complete build in agora-persona-runner on 2026-08-26 finished inside
 # 2m54s, queue included. Five minutes with zero jobs created is not slow.
 DEFAULT_GRACE_MINUTES = 5
+# Three `gh` calls per repo across ~23 repos. Eight at a time keeps the
+# sweep inside `preflight`'s window without opening a connection per repo.
+DEFAULT_MAX_WORKERS = 8
 
 # githubstatus' own vocabulary. `degraded_performance` is deliberately not
 # here: Actions has answered that on days this loop merged fine, so treating
@@ -457,23 +462,76 @@ def blocked_repo(repo, run=subprocess.run, sample=5):
              f"{cause}")], None
 
 
-def _repos_to_sweep():
-    """The repos this loop could open a PR on today: the ones it has a checkout of.
+def _sweep_repo(repo, grace_minutes, run, now):
+    """Every per-repo probe for one repo, in order.
 
-    Same derivation as `security_alerts._repos_from_workspace`, and for the
-    same reason — a hardcoded list of "the repos we touch" has gone stale in
-    this repo twice. Unlike that sweep there is no org widening here: a repo
-    with no checkout is one this cycle cannot push to anyway, so its queue
-    says nothing about whether *my* work can land.
+    Returns `(lines, blocked, unreadable, cannot_go_green)`. Lifted out of
+    `check` Cycle 688 for one reason: it is three `gh` calls per repo, the
+    sweep below went from five repos to the whole org, and serially that is
+    a minute and a half inside a `preflight` whose whole budget is fifty
+    seconds. The probes stay in order and a probe that cannot read still
+    short-circuits the two after it — an unreadable repo is unreadable, and
+    asking it two more questions does not make it less so.
     """
-    from tools.tidy_workspace import origin_repos, workspace_roots
+    verdicts, why = stalled_runs(repo, grace_minutes, run, now)
+    if verdicts is None:
+        return [f"COULD NOT READ  {repo}: {why}"], False, True, False
+    lines = [text for _state, text in verdicts]
+    blocked = any(state == "stalled" for state, _text in verdicts)
 
-    repos, unplaceable = origin_repos(workspace_roots())
-    return sorted(repos), unplaceable
+    verdicts, why = unrun_pushes(repo, grace_minutes, run, now)
+    if verdicts is None:
+        lines.append(f"COULD NOT READ  {repo}: {why}")
+        return lines, blocked, True, False
+    lines.extend(text for _state, text in verdicts)
+    blocked = blocked or any(state == "norun" for state, _text in verdicts)
+
+    verdicts, why = blocked_repo(repo, run)
+    if verdicts is None:
+        lines.append(f"COULD NOT READ  {repo}: {why}")
+        return lines, blocked, True, False
+    lines.extend(text for _state, text in verdicts)
+    cannot = any(state == "blocked" for state, _text in verdicts)
+    return lines, blocked, False, cannot
+
+
+def _repos_to_sweep():
+    """`(repos, unplaceable, notes, incomplete)` — every non-archived repo in
+    the org, not just the ones with a checkout here.
+
+    **This used to be the workspace checkouts alone, and the reason written
+    down for that was measurably wrong.** It said "a repo with no checkout is
+    one this cycle cannot push to anyway, so its queue says nothing about
+    whether *my* work can land". Cycle 688 opened and merged a pull request
+    on `SokratesAI/sokrates-cli` — a repo no cycle has ever cloned — with the
+    `create_pr` tool, which commits and opens in one call and needs no
+    checkout at all. So the premise was false, and the cost of it was that
+    `sokrates-cli`'s default branch had been failing since 2026-08-28 and no
+    instrument in this loop said so; the only cycle that could ever have
+    found it was one that happened to look at that repo for something else,
+    which is the accidental-noticing `security_alerts` was widened to the org
+    to kill, for the same reason, in Cycle 432.
+
+    That widening is where this now gets its repos: `security_alerts`
+    derives the orgs from the checkouts rather than naming one, so nothing
+    here hardcodes `SokratesAI`, and the workspace repos are unioned back in
+    so a checkout outside any of those orgs cannot drop out of the sweep.
+    """
+    from tools.security_alerts import _repos_to_sweep as org_sweep
+
+    # `check`'s `run` is deliberately not forwarded, and taking no injector
+    # here is the point: this module's `run` is `subprocess.run` and returns a
+    # `CompletedProcess`, while `security_alerts` injects a callable returning
+    # `(code, out, err)`. Handing one to the other raised
+    # `FileNotFoundError: 'repo'` on the first live run of this widening —
+    # every test here stubs this whole function, so nothing but running it
+    # against the real org would have found that.
+    return org_sweep()
 
 
 def check(opener=urllib.request.urlopen, run=subprocess.run,
-          grace_minutes=DEFAULT_GRACE_MINUTES, repos=None, now=None):
+          grace_minutes=DEFAULT_GRACE_MINUTES, repos=None, now=None,
+          max_workers=DEFAULT_MAX_WORKERS):
     """Return `(exit_status, lines)`."""
     lines, unreadable, blocked, cannot_go_green = [], [], False, []
 
@@ -491,45 +549,35 @@ def check(opener=urllib.request.urlopen, run=subprocess.run,
         lines.append(f"ok       githubstatus.com reports Actions `{status}`")
 
     if repos is None:
-        repos, unplaceable = _repos_to_sweep()
+        repos, unplaceable, notes, incomplete = _repos_to_sweep()
         for clone in unplaceable:
             lines.append(f"⚠ {clone}: could not place this checkout on GitHub, not swept")
+        lines.extend(notes)
+        if incomplete:
+            unreadable.append("org listing")
     if not repos:
         lines.append("COULD NOT READ: no checkout here names a GitHub repo, so no queue was measured.")
         unreadable.append("workspace")
 
+    # Concurrent, then replayed in repo order: the report has to read the same
+    # way on every run, and `as_completed` order is whichever `gh` answered first.
+    results = {}
+    if repos:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_sweep_repo, repo, grace_minutes, run, now): repo
+                       for repo in repos}
+            for future in concurrent.futures.as_completed(futures):
+                results[futures[future]] = future.result()
     for repo in repos:
-        verdicts, repo_why = stalled_runs(repo, grace_minutes, run, now)
-        if verdicts is None:
-            lines.append(f"COULD NOT READ  {repo}: {repo_why}")
+        repo_lines, repo_blocked, repo_unreadable, repo_cannot = results[repo]
+        lines.extend(repo_lines)
+        blocked = blocked or repo_blocked
+        if repo_unreadable:
             unreadable.append(repo)
-            continue
-        for state, text in verdicts:
-            lines.append(text)
-            if state == "stalled":
-                blocked = True
+        if repo_cannot:
+            cannot_go_green.append(repo)
 
-        verdicts, repo_why = unrun_pushes(repo, grace_minutes, run, now)
-        if verdicts is None:
-            lines.append(f"COULD NOT READ  {repo}: {repo_why}")
-            unreadable.append(repo)
-            continue
-        for state, text in verdicts:
-            lines.append(text)
-            if state == "norun":
-                blocked = True
-
-        verdicts, repo_why = blocked_repo(repo, run)
-        if verdicts is None:
-            lines.append(f"COULD NOT READ  {repo}: {repo_why}")
-            unreadable.append(repo)
-            continue
-        for state, text in verdicts:
-            lines.append(text)
-            if state == "blocked":
-                cannot_go_green.append(repo)
-
-    lines.append(f"Swept {len(repos)} repo(s) with a checkout here, grace {grace_minutes}m: "
+    lines.append(f"Swept {len(repos)} repo(s), grace {grace_minutes}m: "
                  f"{', '.join(repos) or 'none'}.")
     lines.append("A repo with nothing queued is not evidence that Actions works — "
                  "it is evidence that nobody pushed. The `NO RUN` line above is the "
@@ -555,7 +603,7 @@ def main(argv=None):
     parser.add_argument("--grace-minutes", type=float, default=DEFAULT_GRACE_MINUTES,
                         help="how long a run may sit with zero jobs before it is stalled")
     parser.add_argument("--repo", action="append", dest="repos",
-                        help="sweep this repo instead of the workspace checkouts (repeatable)")
+                        help="sweep this repo instead of every repo in the org (repeatable)")
     args = parser.parse_args(argv)
     status, lines = check(grace_minutes=args.grace_minutes, repos=args.repos)
     for line in lines:
