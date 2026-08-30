@@ -17,6 +17,7 @@ from agora_runner.nova_claims import dumps, load, take
 from agora_runner.nova_journal import file_cycle
 from tools.put_entry import (
     GRANTED,
+    cycle_already_filed,
     LOST,
     REFUSED,
     entry_name,
@@ -262,3 +263,100 @@ def test_the_refusal_is_not_vacuous():
     """
     with pytest.raises(ValueError):
         reserve_seq(343, FOLDER, lambda slug, cycle: "something-else")
+
+
+# --- the other half of the filename: `-cycle-<n>` ------------------------
+#
+# The seq is guarded by the ledger above. The cycle number was guarded by
+# nothing, and on 2026-08-30 the weekly architecture run and the hourly run
+# both filed under 649.
+
+REAL_649 = [
+    "projects/sokrates/projects/agora/nova/journal/714-cycle-648.md",
+    "projects/sokrates/projects/agora/nova/journal/715-cycle-649.md",
+    "projects/sokrates/projects/agora/nova/journal/716-cycle-649.md",
+]
+
+
+def test_a_cycle_number_already_filed_is_found():
+    assert cycle_already_filed(REAL_649, 649) == ["715-cycle-649.md",
+                                                  "716-cycle-649.md"]
+    assert cycle_already_filed(REAL_649, 650) == []
+
+
+def test_a_shorter_cycle_number_is_not_a_prefix_of_a_longer_one():
+    """`64` must not match `-cycle-649.md`; the tail is matched whole."""
+    assert cycle_already_filed(REAL_649, 64) == []
+    assert cycle_already_filed(REAL_649, 49) == []
+    assert cycle_already_filed(
+        ["projects/sokrates/projects/agora/nova/journal/070-cycle-64.md"], 64
+    ) == ["070-cycle-64.md"]
+
+
+def test_a_weekly_entry_does_not_occupy_a_cycle_number():
+    """`715-architecture-critique.md` is what the run should have written.
+
+    Written as the fix rather than the bug: with the weekly run named off
+    its own slug there is no clash for the hourly 649 to hit.
+    """
+    fixed = [
+        "projects/sokrates/projects/agora/nova/journal/714-cycle-648.md",
+        "projects/sokrates/projects/agora/nova/journal/715-architecture-critique.md",
+    ]
+    assert cycle_already_filed(fixed, 649) == []
+
+
+class _ListOnlyVault:
+    """A vault that answers `ls` and fails loudly on anything else.
+
+    The refusal has to happen before a sequence number is claimed -- a
+    burnt claim would make the retry, after the caller fixes the flag, land
+    on a different number for no reason. Any other call here is the bug.
+    """
+
+    def __init__(self, names):
+        self.names = names
+
+    def ls(self, prefix):
+        return list(self.names)
+
+    def get(self, path, rev_file):  # pragma: no cover - must not run
+        raise AssertionError("put_entry claimed a number before it refused")
+
+    def put(self, path, local, rev_file):  # pragma: no cover - must not run
+        raise AssertionError("put_entry wrote before it refused")
+
+
+def test_main_refuses_a_second_entry_under_one_cycle_number(monkeypatch, tmp_path, capsys):
+    import tools.put_entry as put_entry
+
+    draft = tmp_path / "entry.md"
+    draft.write_text("### 06:00 (Oslo) - Cycle 649\n\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(put_entry, "Vault", lambda *a, **k: _ListOnlyVault(REAL_649))
+
+    code = put_entry.main([str(draft), "--cycle", "649",
+                           "--workdir", str(tmp_path)])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "715-cycle-649.md" in err and "716-cycle-649.md" in err
+    assert "--weekly" in err
+
+
+def test_main_lets_a_weekly_run_through_the_same_clash(monkeypatch, tmp_path):
+    """`--weekly` names the file off a slug, so the cycle number is not its own.
+
+    This is the half that keeps the guard from being a wall: the run that
+    caused the collision is exactly the run allowed past it, once it names
+    itself correctly. Asserted by the refusal *not* firing -- `_ListOnlyVault`
+    raises on the first call after `ls`, so reaching that raise is the pass.
+    """
+    import tools.put_entry as put_entry
+
+    draft = tmp_path / "entry.md"
+    draft.write_text("### body\n", encoding="utf-8")
+    monkeypatch.setattr(put_entry, "Vault", lambda *a, **k: _ListOnlyVault(REAL_649))
+
+    with pytest.raises(AssertionError, match="claimed a number before it refused"):
+        put_entry.main([str(draft), "--cycle", "649",
+                        "--weekly", "architecture-critique",
+                        "--workdir", str(tmp_path)])
