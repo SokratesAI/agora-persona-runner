@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import re
 import subprocess
 import sys
@@ -144,7 +145,6 @@ def _anchor(body, width=60):
 
 def _gh_json(args, timeout=120):
     """`gh api` returning parsed JSON, or `None` if the call did not answer."""
-    import json
     try:
         done = subprocess.run(["gh", "api", *args],
                               capture_output=True, text=True, timeout=timeout)
