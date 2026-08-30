@@ -179,6 +179,20 @@ PLEX_PORT = 32400
 # on this list, so there is no path from here to his media or his account.
 PLEX_READ_ONLY = {"/identity"}
 
+# Everything on that box this loop knows about, in one place.
+#
+# `SERVICES` above is narrower on purpose -- it is the set of *arr apps whose
+# shape `config`, `status`, `calendar` and `airing` all assume -- and every
+# check here has so far written its own idea of the denominator beside it:
+# `nas_watch` counts three code-execution surfaces, `nas_egress` counts two
+# download clients, `nas_versions` counts two plus plex, and `nas_health`
+# counted two and printed no denominator at all. Three of those four numbers
+# answer a genuinely different question and are right to differ. What was
+# missing is the one they are all measured against: how many things run on
+# that box. It is here so a check can say "2 of 4" without hand-copying a 4
+# that nothing keeps true.
+MEDIA_SERVICES = SERVICES + ("nzbget", "plex")
+
 _UNSET = object()  # `ssh=None` means "no hop"; not passing it at all means "find out"
 
 
