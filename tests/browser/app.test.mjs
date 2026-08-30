@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -192,6 +192,22 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // never saw it would be testing a page the owner does not have.
       return res(next || { captures: [], next: [], waiting: [], active: [],
                            projects: [], claimsReadable: true }, nextStatus);
+    }
+    /* The history panel first: it hangs off the same prefix, and a
+     * `/api/pool` branch that matched it would answer the History tap with
+     * the deck -- a panel that renders empty rather than failing. */
+    if (url.includes("/api/pool/history")) {
+      return res(poolHistory || { approved: [], rejected: [], missing: false }, poolStatus);
+    }
+    if (url.includes("/api/pool")) {
+      // A function, because a decision or a comment re-fetches the deck and
+      // the whole point is that the second answer differs from the first --
+      // a fixed body could never show his own words arriving back on the
+      // card. No default beyond the empty shape: an undecided pool that has
+      // never been refilled really is empty.
+      const body = typeof pool === "function" ? pool(url) : pool;
+      return res(body || { candidates: [], generateRequested: false, missing: false },
+                 poolStatus);
     }
     if (url.includes("/api/plan")) {
       // No fixture default, for the reason `/api/retro` has none: both
@@ -12632,3 +12648,119 @@ describe("the project page", () => {
     assert.deepEqual(on, ["/projects"]);
   });
 });
+
+/* The Pool page's third button -- idea #92, *"i can approve or comment on
+ * these"*. Phase 1 shipped Approve, Reject and Skip, and Skip writes
+ * nothing, so the comment box on a card he was not ready to decide had
+ * nowhere to send what he typed. */
+describe("the pool card keeps what he types without making him decide", () => {
+  const CANDIDATE = {
+    index: 0,
+    title: "Watch for a heartbeat that stopped firing",
+    project: "Agora",
+    priority: "🟠 High",
+    priorityKey: "high",
+    body: "There are five heartbeats now and nothing notices when one stops.",
+    comments: [],
+  };
+  const deck = (candidate) => ({
+    candidates: [candidate], generateRequested: false, missing: false });
+
+  test("Comment sits with the other answers rather than replacing Skip", async () => {
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    const labels = [...window.document.querySelectorAll(".pool-actions .pool-btn")]
+      .map((b) => b.textContent);
+    assert.deepEqual(labels, ["Approve", "Reject", "Comment", "Skip"]);
+  });
+
+  test("tapping Comment sends his words with the candidate's own address", async () => {
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    window.document.querySelector(".pool-comment").value = "only the cheap half";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(window.posted.map((p) => p.url), ["/api/pool/comment"]);
+    assert.deepEqual(window.posted[0].body, {
+      index: 0,
+      // The title rides with the index for the reason a decision's does: a
+      // refill that ran while the card was open renumbers everything below
+      // it, and annotating the wrong idea is worse than refusing.
+      title: CANDIDATE.title,
+      comment: "only the cheap half",
+    });
+  });
+
+  test("every answer is dead while the note is in flight", async () => {
+    /* Not cosmetic. Two taps are two requests on two threads, and the
+     * server's staleness check passes for both -- the same reason Approve
+     * disables itself, which it only learned to do after a reviewer said
+     * so. Read synchronously after the click, because the disabling happens
+     * before `fetch` and the harness resolves the POST straight away. */
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    window.document.querySelector(".pool-comment").value = "something";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    const buttons = [...window.document.querySelectorAll(".pool-actions .pool-btn")];
+    assert.equal(buttons.length, 4);
+    assert.ok(buttons.every((b) => b.disabled), "a second tap can still be sent");
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  test("an empty box notes nothing and says so rather than posting", async () => {
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    window.document.querySelector(".pool-comment").value = "   ";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(window.posted, []);
+    assert.match(window.document.querySelector(".pool-note").textContent, /empty/i);
+  });
+
+  test("his own words come back onto the card he wrote them on", async () => {
+    /* The proof a write landed, and the reason Comment re-fetches and stays
+     * on the same card instead of advancing past it. */
+    let asked = 0;
+    const window = await loadSite("/pool", {
+      pool: () => {
+        asked += 1;
+        return deck(asked === 1 ? CANDIDATE : Object.assign({}, CANDIDATE, {
+          comments: [{ dated: "2026-08-30", text: "only the cheap half" }],
+        }));
+      },
+    });
+    assert.equal(window.document.querySelectorAll(".pool-said").length, 0);
+    window.document.querySelector(".pool-comment").value = "only the cheap half";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    await new Promise((r) => setTimeout(r, 0));
+    const said = [...window.document.querySelectorAll(".pool-said")];
+    assert.equal(said.length, 1, "the pool was not re-read after the comment landed");
+    assert.match(said[0].textContent, /only the cheap half/);
+    assert.match(said[0].textContent, /2026-08-30/);
+    // And the candidate is still here to decide, which is the whole point.
+    assert.ok(window.document.querySelector(".pool-approve"));
+  });
+
+  test("a two-paragraph note draws as two lines, not as one run-on", async () => {
+    /* jsdom reports no computed layout, so the observable half is the
+     * `white-space` the stylesheet sets -- a note stored with a newline in
+     * it and drawn without one is a note he wrote more of than he can see. */
+    const window = await loadSite("/pool", {
+      install: withStyle,
+      pool: deck(Object.assign({}, CANDIDATE, {
+        comments: [{ dated: "2026-08-30", text: "the first half\nand the second" }],
+      })),
+    });
+    const said = window.document.querySelector(".pool-said");
+    assert.match(said.textContent, /the first half\nand the second/);
+    assert.equal(window.getComputedStyle(said).whiteSpace, "pre-wrap");
+  });
+
+  test("a failed comment re-enables the buttons and says what went wrong", async () => {
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    window.postReply = { ok: false, message: "no longer in the pool" };
+    window.document.querySelector(".pool-comment").value = "something";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    await new Promise((r) => setTimeout(r, 0));
+    const buttons = [...window.document.querySelectorAll(".pool-actions .pool-btn")];
+    assert.ok(buttons.every((b) => !b.disabled), "he is left with a card he cannot act on");
+    assert.match(window.document.querySelector(".pool-note").textContent, /no longer in the pool/);
+  });
+});
+
