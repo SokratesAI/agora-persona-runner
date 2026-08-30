@@ -774,3 +774,91 @@ def test_nzbget_credential_is_none_when_the_hop_fails():
 
 def test_nzbget_credential_without_a_hop_never_shells_out():
     assert nas.nzbget_credential({}, ssh=None) is None
+
+
+def test_calendar_comes_back_in_date_order_not_text_order():
+    # The bug this replaces: `main` printed `sorted(lines)`, comparing the
+    # rendered text, so `07 Oct` sorted above `16 Sep`. Seven days hides it
+    # because the rows share a month; sixty days made his real calendar
+    # unreadable. The API is free to return rows in any order, so these come
+    # back deliberately shuffled.
+    def get(service, conf, path, params=None):
+        if service == "radarr":
+            return []
+        return [
+            _ep("Slow Horses", 6, 4, "2026-10-07T04:00:00Z"),
+            _ep("Slow Horses", 6, 1, "2026-09-16T04:00:00Z"),
+            _ep("Grey's Anatomy", 23, 1, "2026-10-16T01:00:00Z"),
+            _ep("Slow Horses", 6, 2, "2026-09-23T04:00:00Z"),
+        ]
+
+    lines, failures = nas.calendar(CONF, days=60, get=get, today=dt.date(2026, 8, 30))
+    assert failures == []
+    assert [line.split("  ")[0] for line in lines] == [
+        "16 Sep 06:00",
+        "23 Sep 06:00",
+        "07 Oct 06:00",
+        "16 Oct 03:00",
+    ]
+
+
+def test_a_movie_sorts_and_prints_the_release_that_put_it_in_the_window():
+    # His live calendar, 30 August 2026: Radarr returned `Hadestown` for a
+    # window starting that day and the row printed `2026-07-23`, five weeks
+    # earlier -- the cinema date, which is not why Radarr matched it.
+    def get(service, conf, path, params=None):
+        if service == "sonarr":
+            return [_ep("Slow Horses", 6, 1, "2026-09-16T04:00:00Z")]
+        return [
+            {
+                "title": "Hadestown: The Musical",
+                "year": 2026,
+                "inCinemas": "2026-07-23T00:00:00Z",
+                "digitalRelease": "2026-09-30T00:00:00Z",
+                "hasFile": True,
+            }
+        ]
+
+    lines, failures = nas.calendar(CONF, days=60, get=get, today=dt.date(2026, 8, 30))
+    assert failures == []
+    assert lines[0].startswith("16 Sep 06:00")
+    assert lines[1] == "2026-09-30  Hadestown: The Musical (2026) (have it)"
+
+
+def test_a_row_with_no_air_date_sorts_last_rather_than_first():
+    # An empty key is the smallest string there is, so a row with nothing to
+    # sort on would head the page it is least useful on.
+    def get(service, conf, path, params=None):
+        if service == "radarr":
+            return []
+        return [
+            _ep("No Date", 1, 1, None),
+            _ep("Has A Date", 1, 1, "2026-09-16T04:00:00Z"),
+        ]
+
+    lines, _ = nas.calendar(CONF, days=60, get=get, today=dt.date(2026, 8, 30))
+    assert "Has A Date" in lines[0]
+    assert "No Date" in lines[1]
+
+
+def _ep(series, season, number, air_date_utc):
+    return {
+        "series": {"title": series},
+        "seasonNumber": season,
+        "episodeNumber": number,
+        "title": "TBA",
+        "airDateUtc": air_date_utc,
+        "hasFile": False,
+    }
+
+
+def test_a_movie_sorts_above_the_same_days_episodes_not_two_hours_into_it():
+    # Radarr's dates arrive already folded to an Oslo day. Re-parsing one as a
+    # timestamp reads its midnight as UTC and lands it at 02:00 Oslo, which
+    # sorts a film below an episode that airs at 01:00 on the same day.
+    assert nas._sort_key("2026-10-20") == "2026-10-20"
+    assert nas._sort_key("2026-10-20") < nas._sort_key("2026-10-20T00:30:00Z")
+    # 23:00Z on the 19th is 01:00 Oslo on the 20th, so it belongs *after* the
+    # film with no time on the 20th -- the day is the Oslo day, not the UTC one.
+    assert nas._sort_key("2026-10-20") < nas._sort_key("2026-10-19T23:00:00Z")
+    assert nas._sort_key("2026-10-19T18:00:00Z") < nas._sort_key("2026-10-20")
