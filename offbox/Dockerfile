@@ -9,7 +9,12 @@
 #     -e VAPID_PRIVATE_KEY=... -e VAPID_PUBLIC_KEY=... \
 #     nova-watch
 #
-# The NAS also needs Tailscale, so NOVA_WATCH_URL can reach the tailnet.
+# The NAS also needs Tailscale, and having the package installed is not
+# enough: measured 2026-08-30, DSM runs tailscaled in userspace-networking
+# mode, which serves inbound connections and installs no host route, so a
+# container there cannot reach NOVA_WATCH_URL at all. `README.md` has the
+# measurements and the fix; do not build this expecting it to poll until
+# `ip route get <nova tailnet ip>` on that box names a tailscale interface.
 FROM python:3.12-slim
 
 # pywebpush is the only dependency, and it is only needed to send. The
