@@ -506,7 +506,14 @@ def client_tool_schemas(caps, active_step=None):
                 "'cron@0 8 * * 1-5' is 08:00 on weekdays, 'cron@0 8,20 * * *' is twice a day, "
                 "'cron@0 8-22/2 * * *' is every two hours from 08:00 to 22:00. "
                 "Give conversationId for an existing channel, or "
-                "newConversationName to create a fresh empty one just for this heartbeat."
+                "newConversationName to create a fresh empty one just for this heartbeat. "
+                "workflowId binds a workflow (see create_workflow) to this heartbeat: a "
+                "heartbeat WITHOUT one runs `task` as a single turn, and a heartbeat WITH "
+                "one runs that workflow's steps instead -- binding is the only way a "
+                "workflow ever executes, so a workflow you never bind never runs. "
+                "Set enabled false to create it dormant; you can then trigger one run by "
+                "hand with forceRun (PATCH /heartbeats/:id) instead of waiting for the "
+                "schedule, which is how to try a new workflow without putting it on a timer."
             ),
             "input_schema": {
                 "type": "object",
@@ -517,6 +524,14 @@ def client_tool_schemas(caps, active_step=None):
                     "newConversationName": {"type": "string"},
                     "schedule": {"type": "string"},
                     "task": {"type": "string"},
+                    "workflowId": {
+                        "type": "string",
+                        "description": "Workflow.id -- its steps run instead of `task`.",
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Defaults to true. False creates it dormant.",
+                    },
                 },
                 "required": ["name", "personaId", "schedule"],
             },
@@ -525,9 +540,19 @@ def client_tool_schemas(caps, active_step=None):
             "name": "create_workflow",
             "description": (
                 "Create a new workflow (a named sequence of steps for Heartbeat-triggered "
-                "multi-persona execution, Decisions/0009). steps is a list of "
-                "{prompt, loopCount} objects -- pass an empty list for a workflow you'll fill "
-                "in later from the Studio."
+                "multi-persona execution, Decisions/0009). A workflow only ever runs when a "
+                "heartbeat is bound to it by workflowId -- see create_heartbeat. steps is a "
+                "list of step objects; pass an empty list for a workflow you'll fill in later "
+                "from the Studio. Each step is `prompt` (additive, layered onto each "
+                "participant's own personality for that step only) and `loopCount` (rounds of "
+                "round-robin turn-taking, a positive integer), plus four optional fields the "
+                "engine has always accepted: `personaIds` to give this step its own "
+                "participants instead of the conversation's full list (each must already be "
+                "one of the conversation's personas), `toolWhitelist` to hard-limit which "
+                "tools the step may call (empty means unrestricted), `filepath` to scope "
+                "writes -- required when scoped_write is in toolWhitelist, trailing / means a "
+                "folder -- and `workflowRef` to run another workflow's steps in place of this "
+                "one (cycles are refused at save time)."
             ),
             "input_schema": {
                 "type": "object",
@@ -541,7 +566,18 @@ def client_tool_schemas(caps, active_step=None):
                             "properties": {
                                 "prompt": {"type": "string"},
                                 "loopCount": {"type": "integer"},
+                                "personaIds": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "toolWhitelist": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "filepath": {"type": "string"},
+                                "workflowRef": {"type": "string"},
                             },
+                            "required": ["prompt", "loopCount"],
                         },
                     },
                 },
