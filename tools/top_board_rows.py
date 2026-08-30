@@ -87,9 +87,14 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
-    BLOCKED_STATUS, BOARD_PATHS, _CLOSED_STATUS_KEYS, is_relayed, parse_board,
-    split_capture_done, split_capture_priority, status_key,
-    unanswered_comment_bodies,
+    BOARD_PATHS, is_relayed, parse_board, status_key, unanswered_comment_bodies,
+)
+# The ranking itself lives in `agora_runner` now, not here. The site had to
+# be able to import it and could not: `tools/` is not in the image. Same
+# functions, one definition -- see `nova_next`'s docstring.
+from agora_runner.nova_next import (
+    _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims, open_rows,
+    rank, row_slug, unboarded_captures,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_claims import (
@@ -125,26 +130,6 @@ IDEAS_PATH = BOARD_PATHS["ideas"]["edvard"]
 # once will be wrong the next time it moves.
 NOTES_PATH = CAPTURE_TARGETS["notes"]
 
-# Ranking order, best first. Unrated sorts last rather than first: a
-# blank cell means nobody has looked, which is a reason to rate it, not
-# a reason to work on it ahead of something the owner called High.
-_RANK = {"immediate": 0, "high": 1, "medium": 2, "low": 3, "": 4}
-
-# Imported rather than re-spelled, underscore and all. A local copy of
-# `{"done", "outdated"}` reads fine today and drifts silently the day a
-# fifth closed status is added -- no test here would fail, because the
-# tests build their rows from `STATUS_LABELS`, which would have the new
-# status in it and this set would not. `prompt.md` step 2 is explicit
-# that the answer to a duplication is deleting it rather than shipping
-# guard number ten against it, so: one definition, in the module that
-# owns the board vocabulary.
-_CLOSED = _CLOSED_STATUS_KEYS
-
-# Derived from the label rather than typed, for the reason directly above:
-# the day the wording changes, a hand-typed `"blocked-on-edvard"` here goes
-# on matching nothing and this tool quietly returns to ranking a row nobody
-# can take at the top of the list.
-_BLOCKED = status_key(BLOCKED_STATUS)
 
 
 def _fetch(path):
@@ -224,112 +209,6 @@ def unread_notes(markdown):
             for index, text in enumerate(parse_board(markdown or "")["captures"])]
 
 
-def unboarded_captures(markdown, board):
-    """The bare bullets above `## Board` -- the owner talking, unfiled.
-
-    These outrank every row this tool ranks. `prompt.md` step 2 puts an
-    unprocessed capture above a live incident, above the board and above
-    the handoff; step 1c calls them *"the strongest signal you will get
-    all cycle"*. This tool nonetheless could not see them, because
-    `open_rows` asked `parse_board` for `items` and dropped the
-    `captures` key sitting beside it in the same return value.
-
-    That is not a theoretical gap. Cycle 241 ran this tool, took the row
-    it named, and three of the owner's captures were sitting above the board
-    unread -- only the delegated subagent found them, and the tool whose
-    entire job is to stop exactly that had reported a confident top row.
-    Filed by that cycle as `[top-board-rows-blind-to-captures]`.
-
-    Rating rides at the front of the bullet rather than in a column, so
-    `split_capture_priority` is what reads it -- the same function the
-    site and the boarding path use, not a second matcher.
-
-    **A capture a cycle already closed is not one of these**, and that is
-    the whole of `split_capture_done`. Marking the bullet `DONE (Cycle
-    N):` is what `prompt.md` step 6 asks for and nothing read it, so at
-    Cycle 251 this function returned five finished items and the renderer
-    printed them under *"these outrank every row below. Take one"*. A
-    section that is entirely noise is worse than no section, because the
-    next cycle learns to skip it -- which is issue #88, the one this tool
-    exists to fix, coming back inverted.
-    """
-    captures = []
-    # `index` counts every bullet in the list, including the finished ones
-    # skipped below, because it is the address `/api/capture/comment`
-    # resolves against and that route reads the same list unfiltered. A
-    # position taken after filtering would answer the wrong bullet.
-    for index, bullet in enumerate(parse_board(markdown or "")["captures"]):
-        done, rest = split_capture_done(bullet)
-        if done:
-            continue
-        priority, text = split_capture_priority(rest)
-        captures.append({"board": board, "priority": priority, "text": text,
-                         # A capture is the same signal as a comment, one
-                         # file over, and the same distinction applies: a
-                         # bullet that says Sokrates typed it is not the
-                         # owner typing it. It stays in the section -- it is
-                         # still unprocessed and still owed an answer -- and
-                         # sinks within it.
-                         "relayed": is_relayed(text),
-                         # The two halves of the reply address: which bullet,
-                         # and proof it has not moved. `original` is his own
-                         # sentence, rating prefix and all, and *not* any
-                         # reply written under it -- the board page stopped
-                         # folding those in on 2026-08-25, because the folded
-                         # spelling is an address no write can resolve.
-                         # `reply_under_capture` still accepts it for anything
-                         # built off an older payload; nothing here makes one.
-                         # It also means `slug` below no longer moves when a
-                         # cycle answers a capture, which it used to.
-                         "index": index, "original": bullet,
-                         # Hashed off the bullet the owner typed, not off the
-                         # rating or the DONE marker a cycle may prepend
-                         # later -- so the slug survives him re-rating it.
-                         "slug": slug_for_capture(text)})
-    return captures
-
-
-def open_rows(markdown, board):
-    """Open rows of one board file, each tagged with which board it is on."""
-    rows = []
-    waiting = unanswered_comment_bodies(markdown or "")
-    for item in parse_board(markdown or "")["items"]:
-        if item["done"] or item["statusKey"] in _CLOSED:
-            continue
-        rows.append({
-            "board": board,
-            "number": item["number"],
-            "title": item["title"],
-            "status": item["status"],
-            "priority": item["priority"],
-            "priorityKey": item["priorityKey"],
-            "statusKey": item["statusKey"],
-            "updated": item["updated"],
-            # A row whose write-up ends on one of his comments. Read off the
-            # same markdown the rows come from, so a row and its thread can
-            # never be sourced from two different reads of the file.
-            "waiting": item["number"] in waiting,
-            # Whether that comment says of itself that Sokrates relayed it.
-            # Read off the comment body, not the row, because the row does
-            # not change identity -- one thread can hold a relayed note and
-            # a typed one, and it is the newest that decides the queue jump.
-            "relayed": is_relayed(waiting.get(item["number"], "")),
-            "slug": slug_for_row(board, item["number"]),
-            # Named after his comment, not after the row -- see
-            # `slug_for_comment`. `None` on a row nobody is waiting on, so
-            # `reply_slug` never invents a claim for a thread that does
-            # not exist.
-            "replySlug": _reply_slug(board, item["number"], waiting),
-        })
-    return rows
-
-
-def _reply_slug(board, number, bodies):
-    """The reply slug for `number`, or `None` if that row is not waiting."""
-    text = bodies.get(number)
-    return None if text is None else slug_for_comment(board, number, text)
-
-
 def _reply_claim(row):
     """`  [reply-claim: <slug>]`, or nothing if this row cannot name one.
 
@@ -347,62 +226,6 @@ def _reply_claim(row):
     """
     slug = row.get("replySlug")
     return f"  [reply-claim: {slug}]" if slug else ""
-
-
-def row_slug(item):
-    """The claim slug for a row or capture, derived if it is not carried.
-
-    `open_rows` and `unboarded_captures` both stamp `slug` as they build,
-    and this returns that. The fallback is for a row assembled anywhere
-    else -- the tests build them by hand, and `closed_rows_waiting` builds
-    a shape with no rating -- because a slug that is *derived* from the
-    board and the number is the same slug either way, and a line printing
-    no claim name at all is the one outcome that would quietly leave a row
-    unclaimable.
-    """
-    carried = item.get("slug")
-    if carried:
-        return carried
-    if "number" in item:
-        return slug_for_row(item["board"], item["number"])
-    return slug_for_capture(item.get("text", ""))
-
-
-def apply_claims(items, live, my_cycle=None):
-    """Stamp `heldBy` on anything another live cycle has already claimed.
-
-    The owner, `comments.md` 2026-08-23 13:31, on moving the heartbeat from 72
-    minutes to 18: *"The average cycle is 18min, so we are guaranteed to have
-    some paralell cycles run, and i want that."* (He wrote it on the comments
-    board, not on `issues.md` -- the bullet on his board is my paraphrase of
-    it, and citing the paraphrase as his words is the thing `personality.md`
-    keeps telling me not to do.) At 72 minutes this tool could
-    name one top row and be sure only one cycle was reading it. At 18 it
-    hands the identical row to three cycles at once, and each of them takes
-    it, because taking it is what the line says to do.
-
-    `nova_claims` already had the atomic half -- a ledger in the vault with
-    CouchDB compare-and-swap under it -- and it only ever covered handoff
-    slugs, which is the list a cycle reads *second*. The board is the list
-    it reads first.
-
-    Own claims are not held: a cycle that claims a row and then re-runs this
-    tool must not be told its own row is taken.
-
-    **`replyHeldBy` is a separate answer to a separate question.** Replying
-    to a comment is work this tool tells a cycle to do *whether or not* it
-    takes the row, so "somebody is on this row" and "somebody is answering
-    this comment" can each be true without the other. Two cycles that both
-    read `💬 UNANSWERED` before either replies both reply, and the row
-    claim never came into it -- that was the hole this covers.
-    """
-    for item in items:
-        holder = live.get(row_slug(item))
-        item["heldBy"] = None if holder is None or holder == my_cycle else holder
-        reply = item.get("replySlug")
-        holder = live.get(reply) if reply else None
-        item["replyHeldBy"] = None if holder is None or holder == my_cycle else holder
-    return items
 
 
 def closed_rows_waiting(markdown, board):
@@ -442,91 +265,6 @@ def closed_rows_waiting(markdown, board):
     } for item in parse_board(markdown or "")["items"]
         if (item["done"] or item["statusKey"] in _CLOSED)
         and item["number"] in waiting]
-
-
-_DATE_RE = re.compile(r"(\d{2})-(\d{2})\s*$")
-
-
-def age_key(updated):
-    """`08-04` and `2026-08-04` have to sort against each other.
-
-    Every row on both live boards writes the short form, and a plain
-    string compare puts any full date *below* every short one (`2` > `0`)
-    -- so one hand-typed `2026-08-04` would sink the oldest row in its
-    rating to the bottom of the list, which is the one place it must
-    never be. Both reduce to their trailing `MM-DD`.
-
-    That leaves the year out, and it is left out knowingly: these boards
-    began 2026-08-03 and every row is within one year, so a year is not
-    yet information. Across a new year `01-05` will sort above `12-30`
-    and this needs a real date parse. Filed rather than guessed at,
-    because inferring a missing year is a rule that would be wrong
-    silently.
-    """
-    found = _DATE_RE.search(updated or "")
-    return found.group(0) if found else "99-99"
-
-
-def rank(rows):
-    """Best pick first. See the module docstring for why age is the tiebreak.
-
-    **An unanswered comment outranks every rating**, including a 🔴 on
-    another row. `prompt.md` step 1c already says why in the general
-    case -- *"his unprocessed captures are the strongest signal you will
-    get all cycle"* -- and a comment on a row is a capture that happens
-    to have landed somewhere a cycle was already going to look. It is
-    also the one signal here with no other home: a rating persists until
-    someone changes it, and an unanswered comment stops existing the
-    moment a cycle replies, so nothing is lost by putting it first and a
-    question of his is lost by not.
-
-    **And a row blocked on the owner sinks below every actionable one,
-    whatever its rating.** The point of this tool is to name the row a
-    cycle should take, and a row whose only remaining step is a click in
-    a settings page is one no cycle can take at any rating. It is ranked
-    down rather than hidden, and `render` names it separately, because
-    the failure being fixed is a cycle *skipping* it silently -- issue
-    #94 topped this list for five days while every cycle walked past.
-    An unanswered comment still beats it: if he has just written on a
-    blocked row, that is very likely the thing that unblocks it.
-    """
-    return sorted(rows, key=lambda r: (
-        # **A row another live cycle is holding sinks below everything**,
-        # under the unanswered comment as well. Every other key here orders
-        # rows by how much they deserve a cycle's hour; this one says the
-        # hour is already being spent, which is not a ranking question. It
-        # sinks rather than hides for the same reason a blocked row does --
-        # `render` names it, and a cycle that cannot see the row cannot
-        # notice the claim is wrong.
-        1 if r.get("heldBy") else 0,
-        # **A comment another cycle is already answering stops raising the
-        # row.** The raise exists to make sure somebody replies, so once
-        # somebody is, it has done its job -- and leaving it in place points
-        # the next two cycles at the same comment, which is the duplicate
-        # this claim was added to prevent. The row still ranks on its own
-        # rating; it just stops jumping the queue on a question that is
-        # being handled.
-        # **And a comment that says it was relayed does not jump the
-        # queue at all.** His ask, relayed on `issues.md` 2026-08-29:
-        # *"a Sokrates comment relaying something [the owner] actually
-        # said should not automatically inherit the same 'unread comment
-        # from [the owner] jumps the queue, act now' treatment a comment
-        # genuinely typed by him gets."* The raise above exists because a question
-        # he typed stops existing the moment somebody answers it; a relay
-        # is Sokrates deciding what is worth passing on, which is a
-        # judgement rather than a fact about what the owner wants now.
-        # The row keeps `waiting` and still appears in the reply list, so
-        # a reply is still owed -- it just ranks on its own rating like
-        # every other row. See `nova_boards.is_relayed` for why acting on
-        # a self-declared signal is safe in this direction only.
-        0 if r.get("waiting") and not r.get("replyHeldBy")
-        and not r.get("relayed") else 1,
-        1 if r.get("statusKey") == _BLOCKED else 0,
-        _RANK.get(r["priorityKey"], len(_RANK)),
-        age_key(r["updated"]),
-        0 if r["board"] == "issue" else 1,
-        r["number"],
-    ))
 
 
 def _line(row):

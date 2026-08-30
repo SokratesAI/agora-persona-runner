@@ -15,6 +15,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_catalog import CATALOG_PATH
+from agora_runner.nova_claims import CLAIMS_PATH
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_costs import COST_LEDGER_PATH
 from agora_runner.nova_plan import PLAN_DOCUMENTS
@@ -213,6 +214,22 @@ def retro_ledger_json():
     ledger is empty by design until the first Friday.
     """
     return vault_read_path(RETRO_LEDGER_PATH) or ""
+
+
+def claims_ledger_json():
+    """The claims ledger, raw -- who is holding which item right now.
+
+    Third JSON fetch here, and the only one written mid-cycle rather than
+    at the end of one: `tools/claim.py` takes a row before the work
+    starts and releases it after, so this is the only document on the
+    server that says what is happening *now* instead of what happened.
+    Shaping is `nova_next.next_payload`, which does no I/O.
+
+    `""` when the document does not exist, which the shaping reports as
+    an unreadable ledger rather than an empty one -- the two look
+    identical and mean opposite things.
+    """
+    return vault_read_path(CLAIMS_PATH) or ""
 
 
 def board_markdown(name):
