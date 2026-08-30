@@ -535,3 +535,74 @@ def test_a_cancelled_run_is_not_a_refused_account():
     body = "\n".join(lines)
     assert "CANNOT GO GREEN" not in body
     assert "not a run GitHub refused to start" in body
+
+
+def test_the_sweep_reaches_a_repo_with_no_checkout_here():
+    """The blind spot this widening was built for.
+
+    `sokrates-cli` has never been cloned by this loop and its default branch
+    had been failing since 2026-08-28 with nobody looking. The old derivation
+    was the workspace checkouts alone, on the reasoning that a repo with no
+    checkout is one a cycle cannot push to — which `create_pr` disproves: it
+    commits and opens a pull request with no clone at all, and Cycle 688
+    merged one on exactly that repo. So the repos come from the org listing
+    now, and this asserts the org repo is swept rather than that the call was
+    made: a delegation test that only checks the callee would pass with the
+    result thrown away.
+    """
+    swept = {}
+
+    def fake_org_sweep(run=None):
+        return ["Org/cloned", "Org/never-cloned"], [], ["Swept Org: 2 repo(s) in the org."], False
+
+    original = ci_health._repos_to_sweep
+    ci_health._repos_to_sweep = fake_org_sweep
+    try:
+        status, lines = run_check(
+            repos=None,
+            run=gh(history={"Org/cloned": [{"id": 1, "conclusion": "success"}],
+                            "Org/never-cloned": [failed(9)]},
+                   job_payload={9: [{"id": 900, "steps": []}]},
+                   annotations={900: [{"annotation_level": "failure", "message": BILLING}]}))
+    finally:
+        ci_health._repos_to_sweep = original
+    body = "\n".join(lines)
+    assert "CANNOT GO GREEN  Org/never-cloned" in body, body
+    assert "Swept Org: 2 repo(s) in the org." in body, body
+    assert "Swept 2 repo(s), grace" in body, body
+    assert status == 0, lines
+
+
+def test_an_org_listing_that_failed_is_not_a_clean_sweep():
+    """`incomplete` from the org listing is the sweep saying it is smaller than
+    it claims, and a smaller sweep must not read as nothing to find."""
+    def fake_org_sweep(run=None):
+        return ["Org/repo"], [], ["⚠ Org: COULD NOT LIST THE ORG — boom."], True
+
+    original = ci_health._repos_to_sweep
+    ci_health._repos_to_sweep = fake_org_sweep
+    try:
+        status, lines = run_check(repos=None)
+    finally:
+        ci_health._repos_to_sweep = original
+    assert status == 1, lines
+    assert "COULD NOT LIST THE ORG" in "\n".join(lines)
+
+
+def test_the_report_is_in_repo_order_not_in_whichever_gh_answered_first():
+    """The sweep runs the repos concurrently now. A report whose line order
+    depends on which `gh` returned first is one no cycle can diff against the
+    last run, so the results are replayed in the order the repo list gives."""
+    import time
+
+    def slow_first(args, **kwargs):
+        if "Org/aaa" in " ".join(args):
+            time.sleep(0.05)
+        return gh(history={"Org/aaa": [{"id": 1, "conclusion": "success"}],
+                           "Org/zzz": [{"id": 2, "conclusion": "success"}]})(args, **kwargs)
+
+    status, lines = run_check(repos=["Org/aaa", "Org/zzz"], run=slow_first)
+    assert status == 0, lines
+    first = next(i for i, l in enumerate(lines) if "Org/aaa" in l)
+    last = next(i for i, l in enumerate(lines) if "Org/zzz" in l)
+    assert first < last, lines
