@@ -44,7 +44,11 @@ ROW = {
     "lastResult": "running",
 }
 
-PERSONAS = [{"id": "p-1", "name": "Nova"}, {"id": "p-2", "name": "K3s Sentinel"}]
+PERSONAS = [{"id": "p-1", "name": "Nova"}, {"id": "p-2", "name": "K3s Sentinel"},
+            # Nova's real id carries a name here on purpose: without it,
+            # `test_novas_own_heartbeat_does_not_repeat_her_name_on_the_row`
+            # would pass on an unmapped id whether or not the rule exists.
+            {"id": nova_conversations.NOVA_PERSONA_ID, "name": "Nova"}]
 
 
 def _list(rows, list_status=200, persona_status=200, convs=None, conv_status=200):
@@ -84,6 +88,18 @@ def test_a_row_carries_the_persona_name_rather_than_its_uuid():
     rows = _list([ROW])["heartbeats"]
     assert rows[0]["personaName"] == "Nova"
     assert rows[0]["personaId"] == "p-1"
+
+
+def test_novas_own_heartbeat_does_not_repeat_her_name_on_the_row():
+    """Same rule as the conversations list (idea #95, slice 4): eight of the
+    nine heartbeats Agora holds are Nova's, so the name was chrome on all of
+    them. `personaId` stays on the row -- this blanks the label, not the
+    link."""
+    mine = dict(ROW, personaId=nova_conversations.NOVA_PERSONA_ID)
+    rows = _list([mine])["heartbeats"]
+    assert rows[0]["personaName"] == ""
+    assert rows[0]["personaId"] == nova_conversations.NOVA_PERSONA_ID
+    assert rows[0]["schedule"] == "every@20m@16:20"
 
 
 def test_lastresult_running_is_what_says_a_cycle_is_in_flight():

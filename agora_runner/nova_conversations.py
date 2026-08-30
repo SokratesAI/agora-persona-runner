@@ -28,6 +28,7 @@ from him, so any other sender writes a message nothing ever answers.
 """
 
 from agora_runner.audit import narration_passage
+from agora_runner.config import NOVA_PERSONA_ID
 from agora_runner.http_util import agora_get, agora_internal, agora_public
 from agora_runner.log import log
 from agora_runner.nova_conversation_reads import is_unread, load_reads
@@ -114,6 +115,32 @@ def _visible(messages):
     return out
 
 
+def visible_persona_name(persona_id, name):
+    """The persona to write on a row, or "" when the persona is Nova itself.
+
+    Idea #95, slice 4: *"We might revisor the personas, but more of a simple
+    pre-written prompt that get injected and thats it."* One persona per
+    conversation has been enforced since `agora#67`, and 687 of the 700
+    conversations Agora holds carry this same persona -- so the word "Nova"
+    was printed on the meta line of nearly every conversation row and nearly
+    every heartbeat row in an app that is Nova-only. A label that is the same
+    on every row tells the reader nothing; it is only the 13 rows answered by
+    somebody else that carry information.
+
+    Matched on the id, not on the name, and that is not pedantry: two
+    distinct personas in the live store are both called "Nova"
+    (`08ffac94...`, on 687 conversations, and `8972a54d...`, on 2). Matching
+    the string would blank a persona that genuinely is not me.
+
+    The three render sites in `app.js` join their meta line with
+    `.filter(Boolean)`, so an empty name simply drops out and the model or
+    the schedule stands alone. Nothing on the client side changes.
+    """
+    if (persona_id or "") == NOVA_PERSONA_ID:
+        return ""
+    return name or ""
+
+
 def conversations():
     """Every conversation Agora holds, newest activity first.
 
@@ -133,9 +160,11 @@ def conversations():
         if c.get("archived"):
             continue
         curator = ""
+        curator_id = ""
         for p in c.get("personas") or []:
             if p.get("role") == "curator" or not curator:
                 curator = p.get("name") or ""
+                curator_id = p.get("personaId") or ""
         rows.append({
             "id": cid,
             "name": c.get("name") or "(unnamed)",
@@ -144,7 +173,7 @@ def conversations():
             # off the row and got "" for every conversation in the store --
             # the page would have rendered 454 threads with nobody in them.
             # Measured against the live listing, Cycle 441.
-            "personaName": curator,
+            "personaName": visible_persona_name(curator_id, curator),
             "model": c.get("model") or "",
             "tags": c.get("tags") or [],
             "updatedAt": c.get("lastMessageAt") or c.get("createdAt") or "",
