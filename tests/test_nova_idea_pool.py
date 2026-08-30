@@ -13,7 +13,10 @@ from unittest.mock import patch
 
 from agora_runner import nova_idea_pool
 from agora_runner.nova_idea_pool import (
+    COMMENT_HEADING,
     STALE_CANDIDATE,
+    add_comment,
+    comment as pool_comment,
     decide,
     find_candidate,
     insert_board_row,
@@ -513,3 +516,117 @@ def test_a_multi_line_approval_comment_is_not_cut_at_the_first_line():
     assert [a["comment"] for a in approved] == [
         "This is worth doing.\nPlease raise the priority too.",
     ]
+
+
+# --- The Comment button (idea #92's third answer) --------------------------
+#
+# What phase 1 shipped was Approve, Reject and Skip, and Skip writes
+# nothing, so a card he was not ready to decide had exactly two outcomes:
+# decide it anyway, or lose whatever he had typed into the box.
+
+
+def test_a_comment_keeps_the_candidate_and_writes_only_the_pool():
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+    ok, message = _run(vault, lambda: pool_comment(0, title, "narrower than this", "2026-08-30"))
+    assert ok, message
+    # His ideas file is not touched at all: this is not a decision.
+    assert vault.writes == [nova_idea_pool.POOL_PATH]
+    pool = parse_pool(vault.docs[nova_idea_pool.POOL_PATH])
+    assert [c["title"] for c in pool["candidates"]] == [
+        c["title"] for c in parse_pool(LIVE_POOL)["candidates"]]
+    assert pool["candidates"][0]["comments"] == [
+        {"dated": "2026-08-30", "text": "narrower than this"}]
+    # And it landed on the one he was looking at, not on its neighbour.
+    assert pool["candidates"][1]["comments"] == []
+
+
+def test_a_comment_does_not_leak_into_the_body_i_wrote():
+    """`body` is what `decide` copies into his write-up. His own words
+    arriving back on his board under my byline is the failure here."""
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+    _run(vault, lambda: pool_comment(0, title, "not convinced", "2026-08-30"))
+    after = parse_pool(vault.docs[nova_idea_pool.POOL_PATH])["candidates"][0]
+    assert after["body"] == parse_pool(LIVE_POOL)["candidates"][0]["body"]
+    assert "not convinced" not in after["body"]
+
+
+def test_a_second_comment_appends_rather_than_replacing():
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+    _run(vault, lambda: pool_comment(0, title, "first thought", "2026-08-30"))
+    _run(vault, lambda: pool_comment(0, title, "second thought", "2026-08-31"))
+    said = parse_pool(vault.docs[nova_idea_pool.POOL_PATH])["candidates"][0]["comments"]
+    assert [c["text"] for c in said] == ["first thought", "second thought"]
+    # One heading, not one per comment.
+    assert vault.docs[nova_idea_pool.POOL_PATH].count(COMMENT_HEADING) == 1
+
+
+def test_a_two_paragraph_comment_survives_the_round_trip():
+    """The box is a textarea. A note stored as one line is a note he wrote
+    twice as much of as the card shows him."""
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+    _run(vault, lambda: pool_comment(0, title, "the first half\nand the second", "2026-08-30"))
+    said = parse_pool(vault.docs[nova_idea_pool.POOL_PATH])["candidates"][0]["comments"]
+    assert said == [{"dated": "2026-08-30", "text": "the first half\nand the second"}]
+
+
+def test_an_earlier_comment_rides_onto_the_row_when_he_finally_approves():
+    """He notes something today and approves next week. Without this the
+    note goes to the grave with the pool document."""
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+    _run(vault, lambda: pool_comment(0, title, "only the cheap half", "2026-08-30"))
+    ok, _ = _run(vault, lambda: decide(0, title, "approve", "and rename it", "08-31"))
+    assert ok
+    ideas = vault.docs[nova_idea_pool.IDEAS_PATH]
+    assert "only the cheap half" in ideas
+    assert "and rename it" in ideas
+    # One `You said:` block, because `parse_history` keeps only the last one
+    # and two blocks would show him the newer note as the whole of it.
+    assert ideas.count("You said:") == 1
+    approved = parse_history(ideas)["approved"]
+    assert approved[0]["comment"] == "only the cheap half\nand rename it"
+
+
+def test_an_earlier_comment_becomes_the_discard_reason():
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+    _run(vault, lambda: pool_comment(0, title, "we already have this", "2026-08-30"))
+    _run(vault, lambda: decide(0, title, "reject", "", "08-31"))
+    assert "| we already have this |" in vault.docs[nova_idea_pool.IDEAS_PATH]
+
+
+def test_an_empty_comment_is_refused_before_any_write():
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+    ok, message = _run(vault, lambda: pool_comment(0, title, "   ", "2026-08-30"))
+    assert not ok
+    assert "empty" in message
+    assert vault.writes == []
+
+
+def test_a_stale_comment_writes_nothing_at_all():
+    """A refill that ran while the card was open renumbers everything below
+    it, and annotating the wrong idea is worse than refusing."""
+    vault = _Vault()
+    ok, message = _run(vault, lambda: pool_comment(0, "an idea that left the pool", "x", "2026-08-30"))
+    assert not ok
+    assert message == STALE_CANDIDATE
+    assert vault.writes == []
+
+
+def test_a_comment_block_stays_inside_its_own_candidate():
+    """`remove_candidate` cuts to the next `## `, so a comment appended past
+    the end of a block would be deleted with the wrong idea -- or survive
+    the right one."""
+    markdown, error = add_comment(LIVE_POOL, parse_pool(LIVE_POOL)["candidates"][0]["title"],
+                                  "mine", "2026-08-30")
+    assert error == ""
+    remaining = remove_candidate(markdown, parse_pool(LIVE_POOL)["candidates"][0]["title"])
+    assert "mine" not in remaining
+    assert COMMENT_HEADING not in remaining
+    assert len(parse_pool(remaining)["candidates"]) == 1
+

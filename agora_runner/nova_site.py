@@ -193,6 +193,7 @@ from agora_runner.nova_ask import (
 )
 from agora_runner.nova_idea_pool import (
     STALE_CANDIDATE,
+    comment as pool_comment,
     decide as pool_decide,
     history_payload as pool_history,
     pool_payload,
@@ -3372,6 +3373,61 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(
             409 if message == STALE_CANDIDATE else 502, {"ok": False, "message": message})
 
+    def _post_pool_comment(self, payload):
+        """`POST /api/pool/comment` -- the owner noting something on a candidate.
+
+        Idea #92's third answer, and the one phase 1 shipped as Skip:
+        *"i can approve or comment on these"*. Skip writes nothing, so
+        anything typed into the comment box on a card he was not ready to
+        decide went nowhere. This keeps the candidate in the pool and puts
+        the text on it, where the Tue/Thu/Sat refill run reads it.
+
+        Same `index` + `title` address as `/api/pool/decide` and the same
+        409 on a stale one, because the failure is identical: a refill that
+        ran while the page was open renumbers everything below it, and
+        annotating the wrong idea is worse than refusing.
+        """
+        index = payload.get("index")
+        title = payload.get("title")
+        comment = payload.get("comment") or ""
+        if not isinstance(title, str) or not title.strip():
+            self._send_json(400, {"error": "title must be a non-empty string"})
+            return
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            self._send_json(400, {"error": "index must be a non-negative number"})
+            return
+        if not isinstance(comment, str) or not comment.strip():
+            self._send_json(400, {"error": "comment must be a non-empty string"})
+            return
+        if len(comment.encode("utf-8")) > MAX_BODY_BYTES:
+            self._send_json(400, {"error": "comment is too long"})
+            return
+
+        dated = datetime.now(OSLO).strftime("%Y-%m-%d")
+        try:
+            ok, message = pool_comment(index, title, comment, dated)
+        except Exception as e:
+            log(f"nova-site pool comment failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_idea_pool",
+            f"Pool comment · {'ok' if ok else message}",
+            before=title[:MAX_BODY_BYTES],
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        # Nothing here writes to his ideas file, so there is no half-done
+        # state and no cache to invalidate -- a failure means the pool
+        # document is exactly as it was.
+        self._send_json(
+            409 if message == STALE_CANDIDATE else 502, {"ok": False, "message": message})
+
     def _post_pool_generate(self, payload):
         """`POST /api/pool/generate` -- the owner asking for more candidates.
 
@@ -4138,7 +4194,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/conversations/move", "/api/conversations/delete",
             "/api/conversations/folder", "/api/conversations/model",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
-            "/api/pool/decide", "/api/pool/generate",
+            "/api/pool/decide", "/api/pool/comment", "/api/pool/generate",
             "/api/goal/status", "/api/push/subscribe",
             "/api/project/comment",
         ):
@@ -4221,6 +4277,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path == "/api/pool/decide":
             self._post_pool_decide(payload)
             return
+        if path == "/api/pool/comment":
+            self._post_pool_comment(payload)
+            return
+
         if path == "/api/pool/generate":
             self._post_pool_generate(payload)
             return

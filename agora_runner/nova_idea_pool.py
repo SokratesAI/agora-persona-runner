@@ -63,6 +63,27 @@ STALE_CANDIDATE = "no longer in the pool"
 _FRONTMATTER_FLAG = re.compile(r"^generate-requested:\s*(.*)$", re.MULTILINE)
 _FIELD = re.compile(r"^(project|priority):\s*(.*)$", re.IGNORECASE)
 
+# Where his words live inside a candidate block. Idea #92 asks for three
+# answers -- *"i can approve or comment on these"* -- and the third one is
+# the only one that leaves the candidate where it is, so it needs somewhere
+# to put the text that is not his ideas file.
+#
+# A `###` sub-heading rather than a third field line, and the reason is the
+# field parser directly above: `project:` and `priority:` are one line each
+# and are only read *before* any body text, so a comment written after the
+# fact could not be a field without either escaping his newlines onto one
+# line or rewriting the whole block to put it up top. A textarea produces
+# paragraphs. It also reads correctly in Obsidian, which is where the
+# Tue/Thu/Sat refill run actually opens this file.
+COMMENT_HEADING = "### You said"
+
+# `- <when> — <text>`, with indented continuation lines. The date token is
+# matched as one non-space run rather than as a shape, because the two
+# writers here already disagree about the shape -- `decide` stamps `%m-%d`
+# and the comment button stamps `%Y-%m-%d` -- and a bullet this refuses to
+# read is one of his comments silently dropped.
+_COMMENT_BULLET = re.compile(r"^-\s+(\S+)\s+—\s+(.*)$")
+
 # The one sentence that says a write-up came from the pool rather than from
 # something he typed, and the only thing `decision_history` can key on. It is
 # a constant because `insert_detail` writes it and the history parser reads
@@ -120,9 +141,20 @@ def parse_pool(markdown):
         if line.startswith("## "):
             if current:
                 candidates.append(current)
-            current = {"title": line[3:].strip(), "project": "", "priority": "", "body": []}
+            current = {"title": line[3:].strip(), "project": "", "priority": "",
+                       "body": [], "said": [], "in_said": False}
             continue
         if current is None:
+            continue
+        # Everything after `### You said` is his, to the end of the block.
+        # It is taken out of `body` deliberately: `body` is what `decide`
+        # copies into his ideas write-up, and leaving his comment in it
+        # would board his own words back to him as if I had proposed them.
+        if line.strip() == COMMENT_HEADING:
+            current["in_said"] = True
+            continue
+        if current["in_said"]:
+            current["said"].append(line)
             continue
         field = _FIELD.match(line.strip())
         # Only before any body *text*: a `priority:` line halfway down a
@@ -153,8 +185,33 @@ def parse_pool(markdown):
             # mapping is the duplication that generates drift checks.
             "priorityKey": priority_key(priority),
             "body": "\n".join(c["body"]).strip(),
+            "comments": _parse_comments(c["said"]),
         })
     return {"candidates": out, "generateRequested": requested}
+
+
+def _parse_comments(lines):
+    """The `### You said` block -> `[{"dated": ..., "text": ...}]`.
+
+    A line that is not a bullet extends the bullet above it, so a comment
+    he wrote as two paragraphs comes back whole. A stray line *before* any
+    bullet starts an undated entry rather than being dropped: this file is
+    hand-edited by the refill run, and text of his that the parser cannot
+    place is text that disappears off the card without anything saying so.
+    """
+    out = []
+    for line in lines:
+        bullet = _COMMENT_BULLET.match(line.strip())
+        if bullet:
+            out.append({"dated": bullet.group(1), "text": bullet.group(2).strip()})
+            continue
+        if not line.strip():
+            continue
+        if not out:
+            out.append({"dated": "", "text": line.strip()})
+            continue
+        out[-1]["text"] = (out[-1]["text"] + "\n" + line.strip()).strip()
+    return [c for c in out if c["text"]]
 
 
 def find_candidate(markdown, index, title):
@@ -183,6 +240,14 @@ def remove_candidate(markdown, title):
     be the same lookup done twice with two chances to disagree.
     """
     lines = (markdown or "").split("\n")
+    start, end = _block_span(lines, title)
+    if start is None:
+        return markdown
+    return "\n".join(lines[:start] + lines[end:])
+
+
+def _block_span(lines, title):
+    """`(start, end)` of the `## <title>` block, or `(None, None)`."""
     want = (title or "").strip()
     start = None
     for i, line in enumerate(lines):
@@ -190,13 +255,74 @@ def remove_candidate(markdown, title):
             start = i
             break
     if start is None:
-        return markdown
+        return None, None
     end = len(lines)
     for i in range(start + 1, len(lines)):
         if lines[i].startswith("## "):
             end = i
             break
-    return "\n".join(lines[:start] + lines[end:])
+    return start, end
+
+
+def add_comment(markdown, title, text, dated):
+    """Attach his words to a candidate, in place. Returns `(markdown, error)`.
+
+    Appends, never replaces. A second comment on the same idea is a second
+    bullet under the same heading, because the alternative is overwriting
+    something he took the trouble to type — and this is the one write in
+    this module whose whole content is his own words rather than mine.
+    """
+    lines = (markdown or "").split("\n")
+    start, end = _block_span(lines, title)
+    if start is None:
+        return markdown, STALE_CANDIDATE
+    block = lines[start:end]
+    while block and not block[-1].strip():
+        block.pop()
+
+    paragraphs = [p.strip() for p in text.strip().split("\n")]
+    # Continuation lines are indented by two spaces so the bullet reads as
+    # one item in Obsidian; `_parse_comments` strips it back off.
+    bullet = [f"- {dated} — {paragraphs[0]}"] + [
+        f"  {p}" for p in paragraphs[1:] if p]
+    if COMMENT_HEADING not in [b.strip() for b in block]:
+        block += ["", COMMENT_HEADING, ""]
+    return "\n".join(lines[:start] + block + bullet + [""] + lines[end:]), ""
+
+
+def comment(index, title, text, dated):
+    """Note his words on a candidate and leave it in the pool. `(ok, message)`.
+
+    The third answer idea #92 asks for — *"i can approve or comment on
+    these"* — and the one that was missing. What shipped in phase 1 was
+    Approve, Reject and Skip, and Skip writes nothing at all, so a card
+    with something typed into its comment box had exactly two outcomes:
+    decide it now, or lose the text. The box says *"Why, or what you would
+    change"*, which is an invitation to write the thing that is not yet a
+    decision, and there was nowhere for it to go.
+
+    Unlike `decide` this touches one document, so there is no half-done
+    state to choose: the candidate stays where it is and his text goes on
+    it. The refill run reads it on the next Tue/Thu/Sat pass.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False, "nothing to note — the comment box was empty"
+
+    pool_markdown, _ = vault_read_path_rev(POOL_PATH)
+    if pool_markdown is None:
+        return False, f"{POOL_PATH} not found"
+    candidate, why = find_candidate(pool_markdown, index, title)
+    if candidate is None:
+        return False, why
+
+    ok, message = _write_with_retry(
+        POOL_PATH,
+        lambda current: add_comment(current, candidate["title"], text, dated))
+    if not ok:
+        return False, message
+    log(f"nova-pool comment on {candidate['title']!r}")
+    return True, "noted on this idea"
 
 
 def set_generate_flag(markdown, requested):
@@ -401,6 +527,19 @@ def decide(index, title, decision, comment, dated):
         return False, why
 
     comment = (comment or "").strip()
+    # Anything he noted on this candidate on an earlier visit, oldest
+    # first, with whatever is in the box right now last. Without this the
+    # Comment button would be a way of losing his words on a longer
+    # timescale: he writes a note today, approves next week, and the note
+    # goes to the pool document's grave with the candidate. Joined into one
+    # `You said:` block rather than several, because `_parse_approved`
+    # keeps only the last such line and would show him the newest note as
+    # though it were the whole of what he wrote.
+    said = [c["text"] for c in candidate.get("comments", []) if c.get("text")]
+    if comment:
+        said.append(comment)
+    said_text = "\n".join(said)
+
     if decision == "approve":
         priority = candidate["priority"] or "🔵 Medium"
 
@@ -423,13 +562,13 @@ def decide(index, title, decision, comment, dated):
             if error:
                 return current, error
             body = candidate["body"]
-            if comment:
-                body = (body + "\n\n" + f"You said: {comment}").strip()
+            if said_text:
+                body = (body + "\n\n" + f"You said: {said_text}").strip()
             return insert_detail(updated, number, candidate["title"], body, dated)
 
         landed = "boarded on ideas"
     else:
-        why_text = comment or f"Rejected {dated}"
+        why_text = said_text or f"Rejected {dated}"
 
         def mutate(current):
             return insert_discarded(current, candidate["title"], why_text)
