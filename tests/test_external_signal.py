@@ -231,6 +231,13 @@ def test_mirror_snapshots_returns_none_when_the_call_does_not_answer(monkeypatch
     assert es.mirror_snapshots() == [("aaa", "2026-08-16"), ("bbb", "2026-08-24")]
 
 
+def test_an_empty_history_is_no_history(monkeypatch):
+    # A mirror that answers with zero commits for this path cannot date
+    # anything, and must not read as "answered, held none of them".
+    monkeypatch.setattr(es, "_gh_json", lambda *a, **k: [])
+    assert es.mirror_snapshots() is None
+
+
 def test_notes_join_the_weekly_trend_and_are_labelled_in_show():
     notes = es.parse_notes(NOTES)
     dated = {notes[0]: "2026-08-16"}
