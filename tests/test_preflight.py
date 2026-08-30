@@ -122,3 +122,89 @@ def test_a_check_that_crashes_carries_its_stderr_into_the_report():
     name, code, output, _ = preflight.run_check("preflight_no_such_module_xyz")
     assert code != 0
     assert output.strip()
+
+
+# --- source_revision: the roster itself can be out of date ------------------
+#
+# Cycle 644 ran preflight from a checkout left on a merged branch, nineteen
+# commits behind main. It printed a clean table and the four NAS checks plus
+# cadence_control were absent from that tree entirely -- so they were absent
+# from CHECKS too, and unknown_checks had nothing to refuse. These tests sit
+# on that boundary: behind raises, ahead does not, no repo does not.
+
+
+def _repo(tmp_path, name):
+    import subprocess
+
+    path = tmp_path / name
+    path.mkdir()
+    run = lambda *a: subprocess.run(["git", "-C", str(path)] + list(a),
+                                    capture_output=True, text=True, check=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (path / "f").write_text("one")
+    run("add", "-A")
+    run("commit", "-qm", "one")
+    return path, run
+
+
+def test_a_checkout_behind_main_raises_and_says_it_cannot_name_what_is_missing(tmp_path):
+    upstream, up_run = _repo(tmp_path, "upstream")
+    import subprocess
+    subprocess.run(["git", "clone", "-q", str(upstream), str(tmp_path / "work")], check=True)
+    (upstream / "f").write_text("two")
+    up_run("commit", "-qam", "two")
+
+    code, report = preflight.source_revision(directory=str(tmp_path / "work"))
+    assert code == 2, report
+    assert "BEHIND origin/main by 1 commit(s)" in report
+
+
+def test_a_feature_branch_ahead_of_main_is_not_a_finding(tmp_path):
+    upstream, _ = _repo(tmp_path, "upstream")
+    import subprocess
+    work = tmp_path / "work"
+    subprocess.run(["git", "clone", "-q", str(upstream), str(work)], check=True)
+    run = lambda *a: subprocess.run(["git", "-C", str(work)] + list(a),
+                                    capture_output=True, text=True, check=True)
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    run("checkout", "-qb", "feature")
+    (work / "f").write_text("mine")
+    run("commit", "-qam", "mine")
+
+    code, report = preflight.source_revision(directory=str(work))
+    assert code == 0, report
+    assert "1 commit(s) ahead" in report
+
+
+def test_no_git_checkout_cannot_see_rather_than_clean_or_broken(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    code, report = preflight.source_revision(directory=str(plain))
+    assert code == 0
+    assert "CANNOT SEE" in report
+
+
+def test_source_revision_is_not_in_the_roster_because_a_stale_tree_would_not_have_it():
+    # It is computed in-process on purpose: a tools/ module would be missing
+    # from exactly the out-of-date checkout it exists to catch.
+    assert "source_revision" not in preflight.CHECKS
+
+
+def test_source_revision_runs_even_when_only_names_one_check(monkeypatch):
+    # --only is how a cycle re-runs one check, and that is exactly when it is
+    # most likely to be sitting on the wrong branch. The row is not optional.
+    seen = {}
+    monkeypatch.setattr(preflight, "run_check",
+                        lambda name: (name, 0, "swept 1 thing", 0.1))
+    monkeypatch.setattr(preflight, "source_revision",
+                        lambda **kw: (2, "BEHIND origin/main by 3 commit(s)"))
+    monkeypatch.setattr(preflight, "render",
+                        lambda results, **kw: seen.setdefault("r", results) and 0)
+
+    preflight.main(["--only", "doc_integrity", "--no-fetch"])
+    names = [r[0] for r in seen["r"]]
+    assert names == ["source_revision", "doc_integrity"]
+    assert seen["r"][0][1] == 2
