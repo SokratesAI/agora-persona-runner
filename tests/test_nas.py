@@ -1071,8 +1071,11 @@ def test_tautulli_a_refused_key_is_unreachable_and_not_an_empty_list(monkeypatch
     This is the failure `nas_watch` cannot survive -- a confident "nothing on
     the NAS runs a script on an event" produced by never having been let in.
     """
-    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning(("", 401)))
-    with pytest.raises(nas.Unreachable):
+    # A well-formed, entirely believable success envelope carried on a 401.
+    # An empty body would be caught by the JSON parse instead, which would let
+    # the status check itself be deleted with every test still green.
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning((_tautulli_body([]), 401)))
+    with pytest.raises(nas.Unreachable, match="401"):
         nas.tautulli_notifiers(SSH_STUB, "wrong")
 
 
@@ -1082,9 +1085,12 @@ def test_tautulli_an_error_envelope_is_unreachable_even_at_200(monkeypatch):
     So the status code alone is not the check: without reading `result` an
     error envelope carries `data: null` straight through as no agents.
     """
+    # `data` is a real list here, so the shape checks below cannot catch this
+    # one: reading `result` is the only thing standing between an error and a
+    # clean "no agents configured".
     monkeypatch.setattr(nas, "_fetch_over_ssh",
-                        _hop_returning((_tautulli_body(None, result="error"), 200)))
-    with pytest.raises(nas.Unreachable):
+                        _hop_returning((_tautulli_body([], result="error"), 200)))
+    with pytest.raises(nas.Unreachable, match="refused"):
         nas.tautulli_notifiers(SSH_STUB, "deadbeef")
 
 
