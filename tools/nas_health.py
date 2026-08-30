@@ -109,11 +109,10 @@ def probe(host, port=22, timeout=10.0, connect=socket.create_connection):
     return True, f"{host}:{port} answered {greeting.strip().decode('ascii', 'replace')} in {seconds:.3f}s", seconds
 
 
-
-#: The services on that box that answer with no credential at all, and the
-#: `tools.nas` call that asks each one. The return value of both is thrown
-#: away on purpose -- see the docstring: this asks whether the service
-#: answered, which is the one question its owning check never asks.
+#: The services on that box that answer with no credential at all. This is the
+#: probe list *and* what the summary line names, deliberately in one place --
+#: a second copy of it here would be the duplication this whole check is about.
+#: The return value of each call is thrown away on purpose: see the docstring.
 CREDENTIAL_FREE = ("nzbget", "plex")
 
 
@@ -126,11 +125,12 @@ def liveness(hop, nzbget, plex):
     heading answers "were they up". A service that raises `Unreachable` is
     down and is the same 2 as a dead Sonarr, because it is the same finding.
     """
+    calls = {"nzbget": nzbget, "plex": plex}
     lines, judged, status = [], 0, 0
-    for name, call in (("nzbget", lambda: nzbget(hop)), ("plex", lambda: plex(hop))):
+    for name in CREDENTIAL_FREE:
         judged += 1
         try:
-            call()
+            calls[name](hop)
         except nas.Unreachable as exc:
             lines.append(f"{name} did not answer over the hop: {exc}")
             status = 2
