@@ -5233,6 +5233,110 @@ def test_execute_tool_create_heartbeat_ignores_same_name_different_persona(runne
     assert mock_call.call_count == 2
 
 
+def test_execute_tool_create_heartbeat_binds_a_workflow(runner):
+    """idea #94: a workflow only ever runs when a heartbeat carries its id.
+    POST /heartbeats has accepted workflowId since July; this payload dropped
+    it, which is why the row said 'I cannot bind one'."""
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       side_effect=[(200, {"heartbeats": []}), (201, {"heartbeat": {"id": "h1"}})]) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool(
+            "create_heartbeat",
+            {"name": "HB", "personaId": "p1", "schedule": "daily@08:00",
+             "newConversationName": "Fresh", "workflowId": "w1"},
+            persona, "c1",
+        )
+    assert "h1" in result
+    payload = mock_call.call_args[0][2]
+    assert payload["workflowId"] == "w1"
+
+
+def test_execute_tool_create_heartbeat_omits_workflow_id_when_absent(runner):
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       side_effect=[(200, {"heartbeats": []}), (201, {"heartbeat": {"id": "h1"}})]) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        runner.execute_tool(
+            "create_heartbeat",
+            {"name": "HB", "personaId": "p1", "schedule": "daily@08:00", "newConversationName": "Fresh"},
+            persona, "c1",
+        )
+    assert "workflowId" not in mock_call.call_args[0][2]
+
+
+def test_execute_tool_create_heartbeat_sends_enabled_false(runner):
+    """`enabled: False` is falsy, so a truthiness check would drop the one
+    value the field exists for -- creating a heartbeat dormant so a new
+    workflow can be fired once with forceRun instead of put on a timer."""
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       side_effect=[(200, {"heartbeats": []}), (201, {"heartbeat": {"id": "h1"}})]) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        runner.execute_tool(
+            "create_heartbeat",
+            {"name": "HB", "personaId": "p1", "schedule": "daily@08:00",
+             "newConversationName": "Fresh", "enabled": False},
+            persona, "c1",
+        )
+    payload = mock_call.call_args[0][2]
+    assert payload["enabled"] is False
+
+
+def test_execute_tool_create_heartbeat_omits_enabled_when_not_a_bool(runner):
+    """A string "false" is not a boolean; sending it on would be the same
+    wrongly-typed-field-accepted-silently bug agora#71/#74 closed one door
+    over, so it is left off and the server's default applies."""
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       side_effect=[(200, {"heartbeats": []}), (201, {"heartbeat": {"id": "h1"}})]) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        runner.execute_tool(
+            "create_heartbeat",
+            {"name": "HB", "personaId": "p1", "schedule": "daily@08:00",
+             "newConversationName": "Fresh", "enabled": "false"},
+            persona, "c1",
+        )
+    assert "enabled" not in mock_call.call_args[0][2]
+
+
+def test_create_workflow_schema_exposes_every_step_field(runner):
+    """The Step interface in agora's workflow-store.ts has six fields and this
+    schema advertised two. A field the model cannot see is a field it will
+    never send, which is what made a working engine read as dead code."""
+    caps = dict(runner.NO_CAPS, manageAgora=True)
+    tools = {t["name"]: t for t in runner.client_tool_schemas(caps)}
+    step = tools["create_workflow"]["input_schema"]["properties"]["steps"]["items"]
+    assert set(step["properties"]) == {
+        "prompt", "loopCount", "personaIds", "toolWhitelist", "filepath", "workflowRef",
+    }
+    assert step["required"] == ["prompt", "loopCount"]
+
+
+def test_create_heartbeat_schema_exposes_workflow_id(runner):
+    caps = dict(runner.NO_CAPS, manageAgora=True)
+    tools = {t["name"]: t for t in runner.client_tool_schemas(caps)}
+    props = tools["create_heartbeat"]["input_schema"]["properties"]
+    assert "workflowId" in props
+    assert "enabled" in props
+
+
+def test_execute_tool_create_workflow_passes_full_steps_through(runner):
+    persona = {"name": "Test"}
+    steps = [{
+        "prompt": "Critique the prior turn.",
+        "loopCount": 2,
+        "personaIds": ["p1"],
+        "toolWhitelist": ["scoped_write"],
+        "filepath": "notes/",
+    }]
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       return_value=(201, {"workflow": {"id": "w1"}})) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        runner.execute_tool("create_workflow", {"name": "WF", "steps": steps}, persona, "c1")
+    assert mock_call.call_args[0][2]["steps"] == steps
+
+
 def test_execute_tool_create_workflow_calls_internal_api(runner):
     persona = {"name": "Test"}
     with patch.object(runner.tools_dispatch, "agora_internal", return_value=(201, {"workflow": {"id": "w1"}})), \

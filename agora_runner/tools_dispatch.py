@@ -552,6 +552,20 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
                 payload["newConversationName"] = str(args["newConversationName"])
             else:
                 return "[create_heartbeat error: conversationId or newConversationName is required]"
+            # POST /heartbeats has validated and stored workflowId since July
+            # (server.ts registerCreateHeartbeatRoute), and binding a workflow
+            # to a heartbeat is the ONLY way a workflow ever executes -- but
+            # this payload was built field by field and dropped it, so idea #94
+            # recorded "I cannot bind one" as a fact about the platform when it
+            # was a fact about this dict. `enabled` rides along for the same
+            # reason: creating the heartbeat dormant and firing it once with
+            # forceRun is how you try a workflow without putting it on a timer.
+            if args.get("workflowId"):
+                payload["workflowId"] = str(args["workflowId"])
+            # Explicit isinstance, not truthiness: `enabled: false` is the whole
+            # point of the field and `if args.get("enabled")` would drop it.
+            if isinstance(args.get("enabled"), bool):
+                payload["enabled"] = args["enabled"]
             # Issues.md: "creating heartbeats using agent tool seems to
             # create two heartbeats instead of one" -- root cause is
             # the retry path FAILURE_BACKOFF_CAP guards (see config.py):
