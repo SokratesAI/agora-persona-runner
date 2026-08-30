@@ -2754,6 +2754,14 @@ body.has-full-chart { overflow: hidden; }
 .chat-actions .attach-btn { margin-left: auto; }
 
 .ask-pending { color: var(--dim); font-style: italic; }
+/* The pending bubble carries three lines now (issues.md, 2026-08-30): the
+   clock, the tool it is on, and how many it has run. Only the head keeps the
+   italic -- a tool name set in italics reads as prose, and it is not. */
+.ask-pending-head { font-style: italic; }
+.ask-pending-step { font-style: normal; margin-top: 0.35rem; font-size: 0.9em; }
+.ask-pending-tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+.ask-pending-detail { margin-left: 0.5rem; opacity: 0.8; word-break: break-word; }
+.ask-pending-count { font-style: normal; margin-top: 0.2rem; font-size: 0.85em; opacity: 0.7; }
 /* A passage the answer is still being written in -- issue #129. Softened,
    not hidden: it is real text and he asked to see the work as it happens. */
 .ask-partial { opacity: 0.75; }

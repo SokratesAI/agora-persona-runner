@@ -18,6 +18,7 @@ which looks fine from the outside:
 from unittest.mock import patch
 
 import agora_runner.nova_ask as nova_ask
+from agora_runner.audit import NARRATION_TEXT
 
 
 def _fakes(conversations, messages=None, create_id="c-new"):
@@ -246,3 +247,93 @@ def test_the_thread_keeps_the_passages_the_answer_is_being_written_in():
     assert payload["messages"][1]["partial"] is True
     # And the page must keep polling: the turn is still running.
     assert payload["waiting"] is True
+
+
+# ---------------------------------------------------------------------------
+# The pending bubble's progress block. His capture, `issues.md` 2026-08-30
+# 12:56: *"I asked Nova for a status report, but it just says thinking for a
+# long time ... What is it doing? Did it even recieve my messages? What tools
+# does it use? We have some of this in Agora, but not in Nova."*
+# ---------------------------------------------------------------------------
+
+def _asked_then(*activity):
+    return [{"id": "1", "sender": "Edvard", "text": "status report?", "createdAt": "t1"}] + list(activity)
+
+
+def test_progress_names_the_newest_tool_and_counts_the_steps():
+    messages = _asked_then(
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods"}, "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "vault_read: journal",
+         "activity": {"capability": "vault_read", "detail": "Read vault file · journal.md"},
+         "createdAt": "t3"},
+    )
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["waiting"] is True
+    assert payload["progress"]["steps"] == 2
+    assert payload["progress"]["latest"]["capability"] == "vault_read"
+    assert payload["progress"]["latest"]["detail"] == "Read vault file · journal.md"
+    # The clock the page counts up from is when *he* asked, not when the
+    # newest tool ran -- "how long has this been going" is his question.
+    assert payload["progress"]["askedAt"] == "t1"
+
+
+def test_a_turn_that_has_run_nothing_yet_still_says_the_question_landed():
+    """His first question of the three: 'Did it even recieve my messages?'
+    An empty `latest` is what the page turns into that sentence, so the
+    block has to be present even before the first tool call."""
+    payload, _ = _run(nova_ask.thread, TAGGED, _asked_then())
+    assert payload["progress"] == {"askedAt": "t1", "steps": 0, "latest": None}
+
+
+def test_there_is_no_progress_block_once_the_answer_has_landed():
+    """A progress block on a settled thread is a clock the page would keep
+    counting up forever."""
+    messages = _asked_then(
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls"}, "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "Seven.", "createdAt": "t3"},
+    )
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["waiting"] is False
+    assert "progress" not in payload
+
+
+def test_a_follow_up_question_does_not_inherit_the_previous_turns_tools():
+    """One long-lived conversation, so every tool the thread has ever run is
+    in the fetch. Counting them all would tell him the new question had made
+    nine tool calls before it started."""
+    messages = [
+        {"id": "1", "sender": "Edvard", "text": "first", "createdAt": "t1"},
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls"}, "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "Seven.", "createdAt": "t3"},
+        {"id": "4", "sender": "Edvard", "text": "why?", "createdAt": "t4"},
+    ]
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["progress"] == {"askedAt": "t4", "steps": 0, "latest": None}
+
+
+def test_a_narration_passage_is_not_counted_as_a_tool_step():
+    """It is already drawn as its own bubble by the issue #129 change. Counting
+    it here would show 'two steps' for one tool call and a paragraph."""
+    messages = _asked_then(
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls"}, "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "assistant_text: Counting.",
+         "activity": {"capability": NARRATION_TEXT, "detail": "Counting."},
+         "createdAt": "t3"},
+    )
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["progress"]["steps"] == 1
+    assert payload["progress"]["latest"]["capability"] == "Bash"
+
+
+def test_an_activity_message_with_no_capability_dict_is_not_a_step():
+    """Older rows in the store carry `activity: true` rather than the dict.
+    They are still machinery, but there is no tool name to show."""
+    messages = _asked_then(
+        {"id": "2", "sender": "Nova Answers", "text": "running a tool", "activity": True},
+    )
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["progress"] == {"askedAt": "t1", "steps": 0, "latest": None}

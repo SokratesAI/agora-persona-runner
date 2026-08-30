@@ -8700,6 +8700,65 @@ describe("the questions page", () => {
     assert.equal(timers.queued.length, 0, "still polling after the answer landed");
   });
 
+  /* His capture, `issues.md` 2026-08-30 12:56: *"I asked Nova for a status
+   * report, but it just says thinking for a long time. I need feedback. What
+   * is it doing? Did it even recieve my messages? What tools does it use?"*
+   * Three questions, three lines in the bubble, one test each. */
+  test("the pending bubble says how long it has been thinking and what it is doing", async () => {
+    const window = await loadSite("/ask", {
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "status report?" }],
+        progress: {
+          askedAt: new Date(Date.now() - 74000).toISOString(),
+          steps: 9,
+          latest: { capability: "vault_read", detail: "Read vault file \u00b7 journal.md" },
+        },
+      }),
+    });
+    const pending = window.document.querySelector(".ask-pending");
+    assert.ok(pending, "a thread owed an answer should say so");
+    // The clock: it is alive, and it has been alive for a while.
+    assert.match(pending.querySelector(".ask-pending-head").textContent, /1m 1[34]s/);
+    // The tool: what it is actually doing right now.
+    assert.equal(pending.querySelector(".ask-pending-tool").textContent, "vault_read");
+    assert.match(pending.querySelector(".ask-pending-detail").textContent, /journal\.md/);
+    assert.match(pending.querySelector(".ask-pending-count").textContent, /9 steps/);
+  });
+
+  test("a turn that has run nothing yet still says the question landed", async () => {
+    const window = await loadSite("/ask", {
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "status report?" }],
+        progress: { askedAt: new Date().toISOString(), steps: 0, latest: null },
+      }),
+    });
+    const pending = window.document.querySelector(".ask-pending");
+    assert.match(pending.querySelector(".ask-pending-step").textContent, /Your question is in/);
+    // Nothing has run, so nothing claims a step count.
+    assert.equal(pending.querySelector(".ask-pending-count"), null);
+  });
+
+  test("an old thread with no progress block still draws a pending bubble", async () => {
+    /* The server only sends `progress` while the turn is running, and a
+     * cached page or an older pod sends none at all. The bubble must not
+     * disappear -- that would be the same lost feedback, from the other end. */
+    const window = await loadSite("/ask", {
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "q" }],
+      }),
+    });
+    const pending = window.document.querySelector(".ask-pending");
+    assert.ok(pending);
+    assert.equal(pending.querySelector(".ask-pending-head").textContent, "Thinking\u2026");
+  });
+
+
   test("a failed poll keeps waiting instead of painting an error over a live question", async () => {
     let timers;
     let fail = false;

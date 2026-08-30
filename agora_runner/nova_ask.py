@@ -167,6 +167,42 @@ def watching():
     return True, "watching"
 
 
+def _chip(message):
+    """A one-line label for a tool call the turn has made, or None.
+
+    His capture, `issues.md` 2026-08-30 12:56: *"I asked Nova for a status
+    report, but it just says thinking for a long time. I need feedback. What
+    is it doing? Did it even recieve my messages? What tools does it use? We
+    have some of this in Agora, but not in Nova."*
+
+    The data was already in the thread and this page was dropping it. Agora
+    posts one `activity` message per capability call (`audit.audit`), and
+    `thread()` above skips every one of them that is not a narration passage.
+    That is right for the *transcript* -- a tool chip is not something anyone
+    said -- and wrong for the pending bubble, which had nothing to show and so
+    showed a word that never changes.
+
+    `capability` is the tool name and `detail` is the chip label Agora renders
+    ("Read vault file · journal.md"). Both are returned rather than joined
+    here: how they read on a phone is the page's call, not this module's.
+
+    No guard against NARRATION_TEXT here, deliberately: the caller reaches
+    this only after `narration_passage` has come back None, so a passage
+    never arrives. A mutation pass showed the guard could be deleted with
+    every test still green, which is what dead code looks like.
+    """
+    activity = message.get("activity")
+    if not isinstance(activity, dict):
+        return None
+    capability = (activity.get("capability") or "").strip()
+    if not capability:
+        return None
+    return {
+        "capability": capability,
+        "detail": (activity.get("detail") or "").strip(),
+    }
+
+
 def thread():
     """What the page renders: the visible tail of the questions thread.
 
@@ -182,6 +218,12 @@ def thread():
     if status != 200:
         raise RuntimeError(f"conversation fetch returned {status}")
     messages = []
+    # What the turn is doing right now, for the pending bubble. Reset on
+    # every settled message he sends, so a follow-up question does not
+    # inherit the previous turn's step count.
+    asked_at = ""
+    steps = 0
+    latest = None
     for m in detail.get("messages", []):
         if m.get("forgotten") or m.get("system") or m.get("thinking"):
             continue
@@ -192,7 +234,19 @@ def thread():
         # instead of as one block after four minutes of nothing.
         passage = narration_passage(m)
         if m.get("activity") and passage is None:
+            # Dropped from the thread and read here instead. Agora's own
+            # Activity feed renders these as chips; this page threw them
+            # away, which is exactly the gap he reported -- a static
+            # "Thinking…" that says nothing about whether the turn is alive.
+            chip = _chip(m)
+            if chip:
+                steps += 1
+                latest = chip
             continue
+        if (m.get("sender") or "") == "Edvard":
+            asked_at = m.get("createdAt") or ""
+            steps = 0
+            latest = None
         messages.append({
             "id": m.get("id"),
             "sender": m.get("sender") or "",
@@ -211,4 +265,9 @@ def thread():
     # is still going, never that it finished.
     settled = [m for m in messages if not m["partial"]]
     waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
-    return {"conversationId": cid, "messages": messages[-MAX_THREAD:], "waiting": waiting}
+    payload = {"conversationId": cid, "messages": messages[-MAX_THREAD:], "waiting": waiting}
+    if waiting:
+        # Only while the turn is running: a progress block on a finished
+        # thread is a stale clock the page would keep counting up.
+        payload["progress"] = {"askedAt": asked_at, "steps": steps, "latest": latest}
+    return payload
