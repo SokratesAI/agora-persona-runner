@@ -495,7 +495,7 @@ def _sweep_repo(repo, grace_minutes, run, now):
     return lines, blocked, False, cannot
 
 
-def _repos_to_sweep(run=None):
+def _repos_to_sweep():
     """`(repos, unplaceable, notes, incomplete)` — every non-archived repo in
     the org, not just the ones with a checkout here.
 
@@ -519,7 +519,14 @@ def _repos_to_sweep(run=None):
     """
     from tools.security_alerts import _repos_to_sweep as org_sweep
 
-    return org_sweep(run=run)
+    # `check`'s `run` is deliberately not forwarded, and taking no injector
+    # here is the point: this module's `run` is `subprocess.run` and returns a
+    # `CompletedProcess`, while `security_alerts` injects a callable returning
+    # `(code, out, err)`. Handing one to the other raised
+    # `FileNotFoundError: 'repo'` on the first live run of this widening —
+    # every test here stubs this whole function, so nothing but running it
+    # against the real org would have found that.
+    return org_sweep()
 
 
 def check(opener=urllib.request.urlopen, run=subprocess.run,
@@ -542,7 +549,7 @@ def check(opener=urllib.request.urlopen, run=subprocess.run,
         lines.append(f"ok       githubstatus.com reports Actions `{status}`")
 
     if repos is None:
-        repos, unplaceable, notes, incomplete = _repos_to_sweep(run=run)
+        repos, unplaceable, notes, incomplete = _repos_to_sweep()
         for clone in unplaceable:
             lines.append(f"⚠ {clone}: could not place this checkout on GitHub, not swept")
         lines.extend(notes)
