@@ -59,7 +59,7 @@ nzbget is on that box and is not here: its version is behind its password
 (`/jsonrpc/version` answers 401 unauthenticated, measured Cycle 640), so
 reading it needs `NZBGET_USER`/`NZBGET_PASS` handed in, and a check that is
 `NOT JUDGED` on every normal cycle is one nobody reads. Plex was in this list
-until Cycle 646 and is now judged -- see below. And an upstream release this
+until Cycle 645 and is now judged -- see below. And an upstream release this
 pod cannot read is never cleared: it prints and exits 1, because an unjudged
 version must not look like a current one.
 
@@ -84,7 +84,7 @@ in its release notes is the `major.minor` pair, `1.41` and `1.43`. So for Plex
 the train is `major.minor`, and **a minor gap raises as well as a major one**.
 That is not a second threshold; it is the same "behind by a release train"
 question asked of a project that puts its train in a different field. Measured
-Cycle 646, live: Plex on the NAS runs **1.41.6.9685**, upstream **1.43.3.10896**
+Cycle 645, live: Plex on the NAS runs **1.41.6.9685**, upstream **1.43.3.10896**
 published 2026-08-12 -- two trains behind.
 
 Why it belongs on the same list as the other two: Plex is the one media app on

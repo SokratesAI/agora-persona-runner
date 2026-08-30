@@ -318,7 +318,7 @@ def test_upstream_table_covers_every_service_nas_knows_about():
 
 
 def test_plex_a_minor_behind_raises(monkeypatch):
-    """The live shape as of Cycle 646: 1.41 against 1.43, exit 2.
+    """The live shape as of Cycle 645: 1.41 against 1.43, exit 2.
 
     This sits on the boundary on purpose. `1.41.6` against `1.43.3` is a
     *minor* gap -- the case that separates Plex's rule from sonarr's and

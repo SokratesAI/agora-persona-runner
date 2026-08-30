@@ -173,7 +173,7 @@ NZBGET_READ_ONLY = {"/jsonrpc/version", "/jsonrpc/config"}
 PLEX_PORT = 32400
 
 # `/identity` is the whole Plex surface this module may touch. It is the one
-# Plex endpoint that answers without a token (measured Cycle 646: HTTP 200,
+# Plex endpoint that answers without a token (measured Cycle 645: HTTP 200,
 # 213 bytes of XML) and it carries the running version and nothing about the
 # library. Everything else on :32400 needs `X-Plex-Token`, and none of it is
 # on this list, so there is no path from here to his media or his account.
