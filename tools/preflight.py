@@ -42,7 +42,32 @@ one, so `preflight` exiting 0 means every check exited 0.
 **A check that did not run must never look like a check that came back
 clean.** So the roster is verified against the `tools/` directory before
 anything runs, an unknown name is a hard error rather than a skip, and the
-footer names every check that ran with its elapsed time. A crash inside a
+footer names every check that ran with its elapsed time.
+
+That guard reads `CHECKS` against the `tools/` directory, so it cannot see
+the failure one level up: **a roster that is itself out of date.** Cycle 644
+ran this from a checkout still sitting on `nova/doc-integrity-frontmatter`,
+a branch a previous cycle had merged and left behind, nineteen commits
+behind `main`. It printed `Ran 19 check(s)` and a clean table, and the four
+NAS checks -- the ones the owner calls the highest priority on this estate --
+plus `cadence_control`, which moves my own heartbeat, did not exist in that
+tree at all. They were absent from `CHECKS`, so `unknown_checks` had nothing
+to compare and nothing to refuse. A check missing from the roster is
+invisible to a guard that validates the roster.
+
+So `source_revision` runs first, always, and it is deliberately *not* in
+`CHECKS`: it is computed in this process rather than as a `tools/` module,
+because a module would be missing from exactly the stale tree it is meant
+to catch. It names the commit these checks came from and how far behind
+`origin/main` it is, and **being behind raises 2** -- the sweep is a
+partial one. Where the gap is whole missing files it names them, because
+"missing: nas_watch, nas_egress" beats "some unknown subset"; the commit
+count stays the trigger, since a tree can also carry an older *version* of
+a check that still exists and no name diff would see that. A branch that is
+behind and also ahead is told to merge rather than to check main out.
+Being only *ahead* (an ordinary feature branch) prints and does not raise.
+It is timed and counted in the footer like any other row, and it is the one
+row that runs serially, because everything after it depends on the answer. A crash inside a
 check is a non-zero exit and gets the loud treatment, so the failure mode
 of this tool is noisy, not silent -- which is the direction "How to work"
 asks for when a negative result could otherwise be guaranteed in advance.
@@ -181,6 +206,103 @@ def summary_line(output):
     return lines[-1]
 
 
+def missing_modules(git, directory):
+    """Check modules that exist on `origin/main` and not in this tree, by name.
+
+    The commit count is the trigger, because a tree can also carry an *older
+    version* of a check that still exists and no name diff would see that. But
+    where the gap is whole missing files, saying so beats saying "some unknown
+    subset" -- it would have named the five Cycle 644 lost. Absent on any git
+    failure, which is a smaller report and never a wrong one.
+    """
+    listed = git("ls-tree", "--name-only", "origin/main", "tools/")
+    if listed.returncode != 0:
+        return []
+    try:
+        here = set(os.listdir(os.path.join(directory, "tools")))
+    except OSError:
+        return []
+    return sorted(
+        os.path.basename(line)[:-3]
+        for line in listed.stdout.split()
+        if line.endswith(".py") and os.path.basename(line) not in here
+    )
+
+
+def source_revision(directory=None, fetch=True):
+    """(exit code, one-line report) for the git revision these checks came from.
+
+    The one thing a stale checkout cannot tell you is what it is missing, so
+    this measures the only number that covers every absence at once: commits
+    on `origin/main` that are not in `HEAD`. Zero means the roster above is
+    the current one. Anything else means some unknown subset of the checks
+    does not exist here.
+
+    `fetch` is on because a local `origin/main` is itself a checkout of
+    unknown age, and a guard against staleness that reads a stale reference
+    is the negative-guaranteed-in-advance failure. A fetch that fails is not
+    fatal -- it falls back to the local ref and says so, since a measured
+    "behind by 19" off a stale ref is still a true finding.
+
+    No git repository at all is `CANNOT SEE` and does not raise, matching
+    `nas_health` on a pod with no hop: a verdict no change here could ever
+    clear is one every cycle re-derives.
+    """
+    directory = directory or os.path.dirname(tools_dir())
+
+    failed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+
+    def git(*args):
+        """Never raises. A git that hangs or is missing must not take the sweep down with it."""
+        try:
+            return subprocess.run(["git", "-C", directory] + list(args),
+                                  capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return failed
+
+    inside = git("rev-parse", "--is-inside-work-tree")
+    if inside.returncode != 0:
+        return 0, (f"CANNOT SEE -- {directory} is not a usable git checkout, so there is "
+                   f"no revision to name.")
+
+    head = git("rev-parse", "--short", "HEAD").stdout.strip() or "?"
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "?"
+
+    fetched = ""
+    if fetch:
+        got = git("fetch", "--quiet", "origin", "main")
+        if got.returncode != 0:
+            fetched = " (fetch failed, so this is measured against a local origin/main of unknown age)"
+
+    counts = git("rev-list", "--left-right", "--count", "origin/main...HEAD")
+    if counts.returncode != 0:
+        return 1, (f"UNREADABLE -- on {branch} at {head}, and origin/main could not be "
+                   f"resolved, so I cannot say whether these checks are the current ones.")
+    try:
+        behind, ahead = (int(n) for n in counts.stdout.split())
+    except ValueError:
+        return 1, (f"UNREADABLE -- on {branch} at {head}, and git answered "
+                   f"{counts.stdout.strip()!r} rather than two counts.")
+
+    where = f"on {branch} at {head}"
+    if behind:
+        absent = missing_modules(git, directory)
+        named = (f" Missing from this tree: {', '.join(absent)}." if absent else
+                 " Every check module on main exists here, so what is stale is their contents.")
+        if ahead:
+            fix = ("this branch carries its own work, so `git merge origin/main` "
+                   "rather than checking main out")
+            own = f" and {ahead} ahead"
+        else:
+            fix = "`git checkout main && git pull`"
+            own = ""
+        return 2, (f"BEHIND origin/main by {behind} commit(s){own} -- {where}{fetched}."
+                   f"{named} Run {fix}, then re-run before trusting this sweep.")
+    if ahead:
+        return 0, (f"Current: {where}, {ahead} commit(s) ahead of origin/main and 0 behind"
+                   f"{fetched} -- every check on main exists here.")
+    return 0, f"Current: {where}, level with origin/main{fetched}."
+
 def render(results, stream=sys.stdout, verbose=False):
     """Print the collapsed report. `results` is a list of (name, code, output, seconds)."""
     worst = 0
@@ -215,6 +337,8 @@ def main(argv=None):
                         help="run just these checks, by module name")
     parser.add_argument("--list", action="store_true",
                         help="print the roster and exit")
+    parser.add_argument("--no-fetch", action="store_true",
+                        help="skip the git fetch in the source_revision check")
     parser.add_argument("--verbose", action="store_true",
                         help="reproduce every check in full, clean ones included")
     args = parser.parse_args(argv)
@@ -232,9 +356,14 @@ def main(argv=None):
               file=sys.stderr)
         return 1
 
-    results = [None] * len(names)
+    import time
+
+    rev_started = time.monotonic()
+    rev_code, rev_report = source_revision(fetch=not args.no_fetch)
+    rev_seconds = time.monotonic() - rev_started
+    results = [("source_revision", rev_code, rev_report, rev_seconds)] + [None] * len(names)
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(run_check, name): i for i, name in enumerate(names)}
+        futures = {pool.submit(run_check, name): i + 1 for i, name in enumerate(names)}
         for future in concurrent.futures.as_completed(futures):
             results[futures[future]] = future.result()
 
