@@ -195,8 +195,11 @@ def is_drifted(rows, has_deployment, has_pvc):
     env var for every port, so an absent one means the manifest has moved
     away from the shape the claim ordered. A shape mismatch -- no
     Deployment under that name, no `<service>-data` PVC -- counts on its
-    own, because with nothing to read every field would otherwise report
-    as agreeing by default.
+    own. For a claim carrying the XRD's defaults the field rule already
+    catches that, since every templated value then reads as absent; the
+    guard is for a claim that sets none of the four, where the field rule
+    has nothing to compare and would call a manifest of some other shape
+    an agreement.
     """
     if not has_deployment or not has_pvc:
         return True

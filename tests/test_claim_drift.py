@@ -180,3 +180,14 @@ def test_a_field_absent_from_the_manifest_counts_as_drift():
 def test_a_fully_matching_claim_is_not_drift():
     rows, has_deployment, has_pvc = cd.compare(_claim("svc"), _manifest("svc"))
     assert cd.is_drifted(rows, has_deployment, has_pvc) is False
+
+
+def test_a_shape_mismatch_counts_even_when_no_field_can_be_compared():
+    # `serviceName` is the XRD's only required field, so a claim can carry
+    # none of the four templated values. The field rule then has nothing to
+    # compare and a manifest of some other shape would read as agreement.
+    bare = {"name": "svc", "namespace": "n", "spec": {"serviceName": "svc"}}
+    rows, has_deployment, has_pvc = cd.compare(
+        bare, _manifest("svc", deployment_name="svc-web", with_pvc=False))
+    assert all(o is None for _f, o, _d in rows)
+    assert cd.is_drifted(rows, has_deployment, has_pvc) is True
