@@ -42,13 +42,26 @@ def _get_returning(by_service):
     return get
 
 
-def _run(get, conf=None, ssh=HOP, env=None, unlocked=False, config=None, credential=None):
-    """Run the check. `unlocked`/`config` stand in for nzbget.
+def _raises(exc):
+    """A seam that raises whatever it was given, for the unreadable-app cases."""
+    def call(*a, **k):
+        raise exc
+    return call
+
+
+def _run(get, conf=None, ssh=HOP, env=None, unlocked=False, config=None, credential=None,
+         key=None, notifiers=None):
+    """Run the check. `unlocked`/`config` stand in for nzbget, `key`/`notifiers` for Tautulli.
 
     nzbget defaults to "locked, no credential in the environment", which is
     the live state of the pods today and contributes nothing to the status --
     so every *arr test below reads as if nzbget were not there, which is what
     those tests are about.
+
+    Tautulli defaults to "readable, no agents configured", which is what the
+    live box answered on 2026-08-30. It contributes nothing to the status
+    either, and it does move the sweep line -- deliberately: a judged surface
+    counts in both halves of that fraction.
     """
     out = io.StringIO()
     conf = _conf("sonarr", "radarr") if conf is None else conf
@@ -76,6 +89,8 @@ def _run(get, conf=None, ssh=HOP, env=None, unlocked=False, config=None, credent
         # `test_the_hop_is_offered_to_the_credential_lookup` below covers that
         # it is offered the hop at all.
         credential=credential or (lambda env, ssh=None, **k: nas.nzbget_credential(env)),
+        key=key or (lambda hop, env=None, **k: "tautulli-key"),
+        notifiers=notifiers or (lambda hop, k_, **k: []),
     )
     return status, out.getvalue()
 
@@ -130,7 +145,7 @@ def test_an_unreadable_service_is_1_and_never_reads_as_empty():
     # It judged one of three, and says so, so a partial sweep cannot be read as
     # a clean one. Three, not two: nzbget's extension list is the third
     # code-execution surface on that box.
-    assert "1 service(s) of 3" in text
+    assert "2 service(s) of 4" in text
 
 
 def test_a_finding_outranks_an_unreadable_service():
@@ -322,7 +337,7 @@ def test_a_service_whose_key_discovery_failed_is_not_a_clean_sweep(monkeypatch):
     assert "NOT ASKED" in text
     assert "sonarr" in text
     assert "NO CODE EXECUTION CONFIGURED" not in text
-    assert "Judged the code-execution surface of 1 service(s) of 3" in text
+    assert "Judged the code-execution surface of 2 service(s) of 4" in text
 
 
 def _sweep_line(text):
@@ -346,7 +361,7 @@ def test_an_unjudged_nzbget_is_short_of_the_denominator():
     status, text = _run(_get_returning({"sonarr": [], "radarr": []}))
     assert status == 0
     assert "NOT JUDGED" in text
-    assert "2 service(s) of 3" in _sweep_line(text)
+    assert "3 service(s) of 4" in _sweep_line(text)
 
 
 def test_the_line_preflight_reads_carries_the_unjudged_third():
@@ -359,7 +374,7 @@ def test_the_line_preflight_reads_carries_the_unjudged_third():
     _, text = _run(_get_returning({"sonarr": [], "radarr": []}))
     line = _sweep_line(text)
     assert line.startswith("Judged the code-execution surface of")
-    assert "of 3" in line
+    assert "of 4" in line
 
 
 def test_a_judged_nzbget_completes_the_denominator():
@@ -368,7 +383,7 @@ def test_a_judged_nzbget_completes_the_denominator():
                         env={"NZBGET_USER": "u", "NZBGET_PASS": "p"},
                         config={"scriptdir": "/scripts", "extensions": ""})
     assert status == 0
-    assert "3 service(s) of 3" in text
+    assert "4 service(s) of 4" in text
     assert "not a clean sweep of the box" not in text
 
 
@@ -381,14 +396,14 @@ def test_an_open_nzbget_counts_as_judged_while_raising():
     status, text = _run(_get_returning({"sonarr": [], "radarr": []}), unlocked=True)
     assert status == 2
     assert "NZBGET CONTROL IS OPEN" in text
-    assert "3 service(s) of 3" in text
+    assert "4 service(s) of 4" in text
 
 
 def test_an_unreadable_nzbget_is_not_counted_as_judged():
     status, text = _run(_get_returning({"sonarr": [], "radarr": []}),
                         unlocked=nas.Unreachable("nzbget did not answer"))
     assert status == 1
-    assert "2 service(s) of 3" in text
+    assert "3 service(s) of 4" in text
     assert "not a clean sweep of the box" in text
 
 
@@ -410,4 +425,79 @@ def test_the_hop_is_offered_to_the_credential_lookup():
     )
     assert seen["ssh"] == HOP
     assert status == 0
-    assert "3 service(s) of 3" in text
+    assert "4 service(s) of 4" in text
+
+
+# --- Tautulli ---------------------------------------------------------------
+#
+# Tautulli is the fourth code-execution surface on that box and the check did
+# not ask it anything until Cycle 671. I installed it myself in Cycle 669; its
+# Script notification agent runs an executable on the NAS when an event fires,
+# which is the same shape as the *arr `CustomScript` type this check was built
+# for. The tests below hold the same contract in both directions the *arr ones
+# do: a script agent raises, an ordinary agent does not, and nothing unreadable
+# is ever allowed to read as an empty list.
+
+
+def test_a_tautulli_script_agent_raises_and_names_it():
+    rows = [{"id": 3, "agent_name": "scripts", "agent_label": "Script",
+             "friendly_name": "on play"}]
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}),
+                        notifiers=lambda hop, key, **k: rows)
+    assert status == 2
+    assert "CODE EXECUTION CONFIGURED" in text
+    assert "on play | Script" in text
+
+
+def test_a_tautulli_discord_agent_is_printed_and_does_not_raise():
+    """Same judgement `EXECUTES` makes for the *arr apps: posting somewhere is not running something.
+
+    A check that goes red the day he adds a Discord notification is one that
+    stops being read, so the row is printed in full and the status stays 0.
+    """
+    rows = [{"id": 1, "agent_name": "discord", "agent_label": "Discord",
+             "friendly_name": "family"}]
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}),
+                        notifiers=lambda hop, key, **k: rows)
+    assert status == 0
+    assert "family | Discord" in text
+    assert "Tautulli is set to run a script" not in text
+
+
+def test_an_unreadable_tautulli_is_not_counted_as_judged():
+    """The failure this check cannot afford: an app that refused, reported as clean.
+
+    A 401 from Tautulli reads as zero notifiers unless the reader raises, and
+    "no script agent is configured" produced by never having been let in is
+    exactly the confident wrong answer this whole module exists to avoid.
+    """
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}),
+                        notifiers=_raises(nas.Unreachable("tautulli answered 401 on get_notifiers")))
+    assert status == 1
+    assert "UNREADABLE  tautulli" in text
+    assert "2 service(s) of 4" in text
+    assert "not a clean sweep of the box" in text
+
+
+def test_an_unreadable_tautulli_key_does_not_raise_but_shortens_the_sweep():
+    """An unreadable key is a fact about this pod, not a finding about the NAS.
+
+    Same contract `_nzbget` holds for a missing credential: status 0, and the
+    surface is explicitly not counted as judged, so the sweep line cannot say
+    it swept a box it did not.
+    """
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}),
+                        key=_raises(nas.Unreachable("config.ini carried no api_key")))
+    assert status == 0
+    assert "NOT JUDGED" in text
+    assert "Tautulli's notification agents" in text
+    assert "2 service(s) of 4" in text
+
+
+def test_a_judged_tautulli_and_nzbget_together_complete_the_denominator():
+    status, text = _run(_get_returning({"sonarr": [], "radarr": []}),
+                        env={"NZBGET_USER": "u", "NZBGET_PASS": "p"},
+                        config={"scriptdir": "/scripts", "extensions": ""})
+    assert status == 0
+    assert "4 service(s) of 4" in text
+    assert "not a clean sweep of the box" not in text

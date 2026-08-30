@@ -1050,3 +1050,80 @@ def test_bazarr_is_in_the_media_inventory_and_not_in_services():
     assert "bazarr" not in nas.SERVICES
     assert len(nas.MEDIA_SERVICES) == 5
 
+
+
+# --- Tautulli ---------------------------------------------------------------
+
+
+def _tautulli_body(rows, result="success"):
+    return json.dumps({"response": {"result": result, "message": None, "data": rows}})
+
+
+def test_tautulli_notifiers_reads_the_configured_agents(monkeypatch):
+    rows = [{"id": 1, "agent_name": "scripts", "agent_label": "Script"}]
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning((_tautulli_body(rows), 200)))
+    assert nas.tautulli_notifiers(SSH_STUB, "deadbeef") == rows
+
+
+def test_tautulli_a_refused_key_is_unreachable_and_not_an_empty_list(monkeypatch):
+    """Measured on the box: a wrong key answers 401, and 401 must not read as "no agents".
+
+    This is the failure `nas_watch` cannot survive -- a confident "nothing on
+    the NAS runs a script on an event" produced by never having been let in.
+    """
+    # A well-formed, entirely believable success envelope carried on a 401.
+    # An empty body would be caught by the JSON parse instead, which would let
+    # the status check itself be deleted with every test still green.
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning((_tautulli_body([]), 401)))
+    with pytest.raises(nas.Unreachable, match="401"):
+        nas.tautulli_notifiers(SSH_STUB, "wrong")
+
+
+def test_tautulli_an_error_envelope_is_unreachable_even_at_200(monkeypatch):
+    """Tautulli answers its own errors with HTTP 200 and `result: error`.
+
+    So the status code alone is not the check: without reading `result` an
+    error envelope carries `data: null` straight through as no agents.
+    """
+    # `data` is a real list here, so the shape checks below cannot catch this
+    # one: reading `result` is the only thing standing between an error and a
+    # clean "no agents configured".
+    monkeypatch.setattr(nas, "_fetch_over_ssh",
+                        _hop_returning((_tautulli_body([], result="error"), 200)))
+    with pytest.raises(nas.Unreachable, match="refused"):
+        nas.tautulli_notifiers(SSH_STUB, "deadbeef")
+
+
+def test_tautulli_a_non_list_payload_is_unreachable(monkeypatch):
+    monkeypatch.setattr(nas, "_fetch_over_ssh", _hop_returning((_tautulli_body({}), 200)))
+    with pytest.raises(nas.Unreachable):
+        nas.tautulli_notifiers(SSH_STUB, "deadbeef")
+
+
+def test_tautulli_key_prefers_the_environment_over_the_box(monkeypatch):
+    monkeypatch.setattr(nas, "_run_ssh_fixed",
+                        lambda *a, **k: pytest.fail("the box must not be asked when the env has it"))
+    assert nas.tautulli_key(SSH_STUB, env={"TAUTULLI_API_KEY": "from-env"}) == "from-env"
+
+
+def test_tautulli_key_from_the_config_file_is_stripped_of_its_quotes(monkeypatch):
+    monkeypatch.setattr(nas, "_run_ssh_fixed", lambda *a, **k: '"abc123"\n')
+    assert nas.tautulli_key(SSH_STUB, env={}) == "abc123"
+
+
+def test_tautulli_an_absent_key_is_unreachable_rather_than_none(monkeypatch):
+    """`nas_watch` has to tell "no key" from "no notifier"; a None collapses them."""
+    monkeypatch.setattr(nas, "_run_ssh_fixed", lambda *a, **k: "\n")
+    with pytest.raises(nas.Unreachable):
+        nas.tautulli_key(SSH_STUB, env={})
+
+
+def test_only_a_declared_command_may_run_on_the_nas():
+    """`_run_ssh` keeps the remote command a literal; the fixed runner must too."""
+    with pytest.raises(ValueError):
+        nas._run_ssh_fixed(SSH_STUB, "rm -rf /volume1", run=lambda *a, **k: pytest.fail("never"))
+
+
+def test_the_tautulli_url_refuses_a_command_that_is_not_read_only():
+    with pytest.raises(ValueError):
+        nas._tautulli_url("delete_notifier", "deadbeef")

@@ -231,6 +231,24 @@ BAZARR_READ_ONLY = {"/", "/api/system/releases"}
 # missing is the one they are all measured against: how many things run on
 # that box. It is here so a check can say "2 of 4" without hand-copying a 4
 # that nothing keeps true.
+# Tautulli is the Plex watch-stats app, installed on that box Cycle 669. It
+# matters here for one reason: `Settings -> Notification Agents` has a
+# **Script** agent that runs an executable on the NAS when an event fires,
+# which is the same code-execution shape as the *arr `CustomScript` type and
+# nzbget's `Extensions`. Unlike those two its API refuses an unauthenticated
+# call, so reading its notifier list needs the key out of its own config file
+# -- which is why this is the only service here whose key does not come off a
+# page every device on the LAN can already load.
+TAUTULLI_PORT = 8181
+TAUTULLI_CONFIG_FILE = "/volume1/docker/tautulli/config.ini"
+
+# The whole Tautulli surface this module may ask for. `get_notifiers` returns
+# the configured agents and nothing about his library or his account; the
+# commands that read watch history, sessions or the Plex token are
+# deliberately absent, the same way `BAZARR_READ_ONLY` leaves out the endpoint
+# carrying his provider passwords.
+TAUTULLI_READ_ONLY = {"get_notifiers"}
+
 MEDIA_SERVICES = SERVICES + ("nzbget", "plex", "bazarr")
 
 _UNSET = object()  # `ssh=None` means "no hop"; not passing it at all means "find out"
@@ -288,6 +306,38 @@ def _run_ssh(ssh, stdin, timeout=25, run=subprocess.run):
         raise Unreachable(f"ssh to {ssh['host']} failed: {(done.stderr or '').strip() or 'no detail'}")
     if done.returncode != 0:
         raise Unreachable(f"curl on the NAS exited {done.returncode}: {(done.stderr or '').strip()}")
+    return done.stdout
+
+
+#: Remote commands this module is allowed to run over the hop that are not a
+#: curl. `_run_ssh` exists so that nothing variable ever reaches a shell on the
+#: far side; this keeps that property by allowing only constants declared here.
+#: `sudo -n` is what reads Tautulli's config, which is root-owned mode 600.
+TAUTULLI_KEY_COMMAND = f"sudo -n sed -n 's/^api_key *= *//p' {TAUTULLI_CONFIG_FILE}"
+FIXED_COMMANDS = frozenset({TAUTULLI_KEY_COMMAND})
+
+
+def _run_ssh_fixed(ssh, command, timeout=25, run=subprocess.run):
+    """Run one constant remote command over the hop and return its stdout.
+
+    The allowlist is the point rather than a formality: `_run_ssh` above is
+    built so the remote command is a literal and everything variable travels
+    on stdin, and a second entry point that took an arbitrary string would
+    quietly undo that for the whole module.
+    """
+    if command not in FIXED_COMMANDS:
+        raise ValueError(f"not a command this tool may run on the NAS: {command!r}")
+    argv = ["ssh", "-i", ssh["key"], *SSH_OPTS, f"{ssh['user']}@{ssh['host']}", command]
+    try:
+        done = run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise Unreachable(f"the NAS did not answer within {timeout}s") from exc
+    except OSError as exc:
+        raise Unreachable(f"could not start ssh: {exc}") from exc
+    if done.returncode == 255:
+        raise Unreachable(f"ssh to {ssh['host']} failed: {(done.stderr or '').strip() or 'no detail'}")
+    if done.returncode != 0:
+        raise Unreachable(f"the command exited {done.returncode}: {(done.stderr or '').strip()}")
     return done.stdout
 
 
@@ -360,6 +410,56 @@ def plex_version(ssh, port=None, run=subprocess.run):
     if not version:
         raise Unreachable("plex's /identity carried no `version` attribute")
     return version
+
+
+def _tautulli_url(command, key, port=None):
+    if command not in TAUTULLI_READ_ONLY:
+        raise ValueError(f"{command} is not a read-only command this tool may call")
+    query = urllib.parse.urlencode({"apikey": key, "cmd": command})
+    return f"http://127.0.0.1:{port or TAUTULLI_PORT}/api/v2?{query}"
+
+
+def tautulli_key(ssh, env=None, run=subprocess.run):
+    """Tautulli's API key, read off its config file over the hop.
+
+    `TAUTULLI_API_KEY` in the environment wins, so this stops touching the
+    file the day the key is provisioned to this pod properly.
+
+    Raises `Unreachable` rather than returning None when the file carried no
+    key: `nas_watch` has to be able to tell "no key" from "no notifier", and a
+    None here would collapse the two into one clean-looking answer.
+    """
+    supplied = (env or os.environ).get("TAUTULLI_API_KEY", "").strip()
+    if supplied:
+        return supplied
+    found = _run_ssh_fixed(ssh, TAUTULLI_KEY_COMMAND, run=run).strip().strip('"')
+    if not found:
+        raise Unreachable(f"{TAUTULLI_CONFIG_FILE} carried no api_key")
+    return found
+
+
+def tautulli_notifiers(ssh, key, port=None, run=subprocess.run):
+    """The notification agents configured in Tautulli, as a list of rows.
+
+    Raises `Unreachable` on anything that is not a 200 carrying a list --
+    including Tautulli's own `{"result": "error"}` shape, which it answers
+    with HTTP 200 when it refuses the key. A refused key that read as an
+    empty list would be this check's worst possible failure: a confident
+    "nothing runs a script here" produced by never having been let in.
+    """
+    body, code = _fetch_over_ssh(ssh, _tautulli_url("get_notifiers", key, port), run=run)
+    if code != 200:
+        raise Unreachable(f"tautulli answered {code} on get_notifiers")
+    try:
+        payload = json.loads(body)["response"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise Unreachable("tautulli's reply was not the JSON envelope this expects") from exc
+    if payload.get("result") != "success":
+        raise Unreachable(f"tautulli refused the call: {payload.get('message') or 'no detail'}")
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        raise Unreachable("tautulli's notifier list was not a list")
+    return rows
 
 
 def _bazarr_url(path, port=None):
