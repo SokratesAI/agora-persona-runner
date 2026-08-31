@@ -713,7 +713,7 @@ def attribution(meminfo, pod_working_set, node_cgroups=None, cgroups_why=None,
         "A Pod's working set counts some page cache too, so that figure is a "
         "lower bound on the host's own share, not an exact one.")
     lines.extend(name_the_host_share(node_cgroups, cgroups_why, node_rss))
-    lines.extend(name_the_swap(meminfo, node_swap))
+    lines.extend(name_the_swap(node_swap))
     return lines
 
 
@@ -724,7 +724,7 @@ def _resident(cgroup, node_rss):
     reclaims that before it kills anything -- so "k3s 2369Mi" on its own does
     not say whether k3s actually needs 2.4GB or is merely sitting on files it
     read. `container_memory_rss` is the anonymous part, and on server1 it is
-    2129Mi of that 2369Mi, which is what makes it a real claim on the box
+    2118Mi of that 2359Mi, which is what makes it a real claim on the box
     rather than a reclaimable one. Same lesson as `memory.peak` on Cycle 711:
     a high number built from cache is not a finding.
     """
@@ -767,7 +767,7 @@ def name_the_host_share(node_cgroups, why, node_rss=None):
     return [line]
 
 
-def name_the_swap(meminfo, node_swap):
+def name_the_swap(node_swap):
     """Which cgroup filled the swap, as lines. Context, never a verdict.
 
     Issue #131's own title is "its 2GB of swap is completely full", and until
@@ -803,6 +803,9 @@ def name_the_swap(meminfo, node_swap):
         line += (f", leaving {unnamed:.0f}Mi swapped by processes in no cgroup "
                  "cAdvisor breaks out — host daemons outside k3s, not the workloads.")
     else:
+        # Below a whole MiB, or negative because each series is sampled at its
+        # own instant. Neither is a quantity worth printing, so name nobody
+        # rather than name a remainder that is an artefact of the sampling.
         line += "."
     return [line]
 

@@ -845,13 +845,12 @@ def test_a_series_the_endpoint_does_not_carry_is_absent_not_empty():
     # would be a claim; a missing key is the truth, and `name_the_swap` below
     # is what turns that into silence rather than into a number.
     assert wh.CADVISOR_SWAP_SERIES not in series
-    assert wh.name_the_swap(MEMINFO_FULL_HOST, series.get(wh.CADVISOR_SWAP_SERIES)) == []
+    assert wh.name_the_swap(series.get(wh.CADVISOR_SWAP_SERIES)) == []
 
 
 def test_the_swap_line_names_the_share_that_is_neither_k3s_nor_the_pods():
     series, _ = wh.read_node_cgroup_series("server1", runner=_cadvisor())
-    line = "\n".join(wh.name_the_swap(MEMINFO_FULL_HOST,
-                                      series[wh.CADVISOR_SWAP_SERIES]))
+    line = "\n".join(wh.name_the_swap(series[wh.CADVISOR_SWAP_SERIES]))
     # 1663Mi at the root, 1Mi in every Pod together, 169Mi in k3s. The whole
     # point of issue #131's swap half is that the remaining ~1.5GB is neither.
     assert "1663Mi swapped out" in line
@@ -861,7 +860,7 @@ def test_the_swap_line_names_the_share_that_is_neither_k3s_nor_the_pods():
 
 
 def test_a_node_with_nothing_swapped_says_so_rather_than_naming_shares():
-    line = "\n".join(wh.name_the_swap(MEMINFO_FULL_HOST, {"/": 0.0}))
+    line = "\n".join(wh.name_the_swap({"/": 0.0}))
     assert "Nothing on this node is swapped out" in line
     assert "holds" not in line
 
