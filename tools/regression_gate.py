@@ -175,7 +175,21 @@ def _check_unattended_metered() -> Optional[str]:
     if not reached:
         return ("an unattended subscription turn never reached the model, so the refusal above "
                 "is refusing something other than the metered provider")
-    return None
+
+    # Third arm, 2026-08-31 (idea #85): a call site that says nothing at all.
+    # The two arms above both pass `unattended=True`, so they prove the guard
+    # works when it is asked to and say nothing about whether it is asked. The
+    # default carries every call site a later cycle writes without reading this
+    # file, which is the difference between spend enforced and spend remembered.
+    try:
+        reply_mod.generate_reply(persona, {}, "s", history, "conv-1")
+    except reply_mod.MeteredProviderBlocked:
+        return None
+    except Exception as e:
+        return (f"a call site that passed no `unattended` argument raised {type(e).__name__} "
+                f"instead of MeteredProviderBlocked ({e}) -- the default is not the guard")
+    return ("`unattended` defaults open again: a call site that says nothing spends the metered "
+            "balance, so the guard only covers the call sites someone remembered to mark")
 
 
 def _check_ask_opens_with_a_question() -> Optional[str]:
@@ -739,7 +753,8 @@ CORPUS = [
         surface="drove the code",
         failure=("A scheduled turn could run on the raw `anthropic:` API and spend the owner's "
                  "prepaid balance forever with nobody watching. His hard rule against it lived "
-                 "only in a markdown file until this guard was written."),
+                 "only in a markdown file until this guard was written. And until 2026-08-31 the "
+                 "guard was opt-in per call site, so a fifth call site would have reopened it."),
         check=_check_unattended_metered,
     ),
     Regression(

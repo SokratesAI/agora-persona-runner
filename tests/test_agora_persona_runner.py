@@ -1510,7 +1510,7 @@ def test_speak_reads_sticky_fallback_from_conversation_detail(runner):
               "name": "Test", "stickyFallback": True}
     captured = {}
 
-    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None):
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None, unattended=True):
         captured["sticky"] = sticky
         return "reply text"
 
@@ -1529,7 +1529,7 @@ def test_speak_defaults_sticky_false_when_conversation_field_unset(runner):
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
     captured = {}
 
-    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None):
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None, unattended=True):
         captured["sticky"] = sticky
         return "reply text"
 
@@ -2534,7 +2534,7 @@ def test_speak_streams_each_chunk_with_push_only_on_the_final_one(runner):
     notify_calls = []
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_text("preamble", False)
         on_text("final answer", True)
         return "final answer"
@@ -2558,7 +2558,7 @@ def _speak_capturing_model(runner, detail, persona, model_override=None):
     seen = {}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         seen["model_override"] = model_override
         return "ok"
 
@@ -2611,7 +2611,7 @@ def test_speak_streams_thinking_chunks_with_thinking_true_and_push_false(runner)
     notify_calls = []
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_thinking("pondering the question...")
         on_text("final answer", True)
         return "final answer"
@@ -2643,7 +2643,7 @@ def test_speak_rolls_back_thinking_chunks_too_when_a_later_round_fails(runner):
     notify_calls = {"n": 0}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_thinking("thinking that got posted")
         raise RuntimeError("simulated failure")
 
@@ -2678,7 +2678,7 @@ def test_speak_rolls_back_posted_chunks_when_a_later_round_fails(runner):
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_text("preamble that got posted", False)
         raise RuntimeError("simulated failure on the next round")
 
@@ -2708,7 +2708,7 @@ def test_speak_rollback_is_best_effort_and_still_raises_the_original_error(runne
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_text("preamble", False)
         raise RuntimeError("original failure")
 
@@ -7827,14 +7827,48 @@ def test_unattended_turn_on_metered_provider_is_refused_before_any_spend(runner)
 
 def test_attended_turn_on_metered_provider_still_runs(runner):
     """The owner kept testing and research allowed -- a person typing in the app
-    is bounded by the person. Blocking this would be over-reading the rule."""
+    is bounded by the person. Blocking this would be over-reading the rule.
+    `unattended=False` is passed rather than left to the default, because the
+    default is now the closed one."""
     persona = {"name": "Test", "model": "anthropic:claude-haiku-4-5-20251001"}
 
     with patch.object(runner.reply, "anthropic_generate", return_value="billed reply") as mock_gen:
         result = runner.generate_reply(
             persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}], "conv-1",
+            unattended=False,
         )
     assert result == "billed reply"
+    mock_gen.assert_called_once()
+
+
+def test_a_call_site_that_says_nothing_is_treated_as_unattended(runner):
+    """Idea #85 -- spend enforced rather than remembered. The two halves above
+    only cover the call sites that exist today; this covers the one a later
+    cycle writes. Omitting the keyword entirely must refuse a metered model,
+    so forgetting the guard costs a failed turn rather than the balance."""
+    persona = {"name": "Test", "model": "anthropic:claude-haiku-4-5-20251001"}
+
+    with patch.object(runner.reply, "anthropic_generate") as mock_gen:
+        with pytest.raises(runner.reply.MeteredProviderBlocked):
+            runner.generate_reply(
+                persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}],
+                "conv-1",
+            )
+    mock_gen.assert_not_called()
+
+
+def test_a_call_site_that_says_nothing_still_runs_a_subscription_model(runner):
+    """The closed default must cost nothing on the paths that were never about
+    money. A forgotten keyword on a `claude-cli:` turn behaves exactly as it
+    did before -- otherwise defaulting closed would be a blanket ban wearing a
+    guard's name."""
+    persona = {"name": "Test", "model": "claude-cli:claude-opus-5"}
+
+    with patch.object(runner.reply, "claude_cli_generate", return_value="cycle reply") as mock_gen:
+        result = runner.generate_reply(
+            persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}], "conv-1",
+        )
+    assert result == "cycle reply"
     mock_gen.assert_called_once()
 
 
@@ -7919,6 +7953,31 @@ def test_blocked_heartbeat_records_the_refusal_as_its_result(runner):
     mock_gen.assert_not_called()
     mock_notify.assert_not_called()
     assert "metered" in updates[-1]["lastResult"]
+
+
+def test_speak_declares_itself_attended(runner):
+    """The mirror of the two `unattended=True` call-site tests. `speak` is the
+    one production path with a person on the other end, so it is the one that
+    may reach a metered model -- and now that reply.py defaults closed, it has
+    to say so. Without this, defaulting closed would silently break the owner
+    typing to an `anthropic:` persona and no test would notice."""
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-sonnet-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    conversation = {"id": "conv-1"}
+    detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
+        captured["unattended"] = unattended
+        return "reply text"
+
+    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+         patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.conversations, "notify", return_value=200):
+        runner.speak(conversation, detail, [], "Test")
+
+    assert captured["unattended"] is False
 
 
 def test_workflow_round_declares_itself_unattended(runner):
@@ -8557,6 +8616,7 @@ def _invoke_capturing_the_model(body):
         seen["effective"] = model_override or persona_arg.get("model")
         seen["override"] = model_override
         seen["persona_model"] = persona_arg.get("model")
+        seen["unattended"] = kwargs.get("unattended")
         return "ok"
 
     handler, sent = _invoke_handler(body)
@@ -8586,6 +8646,17 @@ def test_invoke_runs_the_conversation_model_not_the_personas(clean_grants):
     # fetch_persona caches and shares its dict -- an override must never
     # write through to it, or one Ask repoints every later turn.
     assert persona["model"] == "claude-cli:claude-opus-5"
+
+
+def test_invoke_declares_itself_attended(clean_grants):
+    """/invoke serves Ask and Preview, both of which are a person pressing a
+    button. reply.py defaults closed now, so this route has to opt out
+    explicitly or the Ask box stops answering on a metered model."""
+    _, seen, _ = _invoke_capturing_the_model({
+        "personaId": "p1",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert seen["unattended"] is False
 
 
 def test_invoke_without_a_model_still_falls_back_to_the_persona(clean_grants):

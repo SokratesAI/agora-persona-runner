@@ -218,8 +218,11 @@ class InvokeHandler(BaseHTTPRequestHandler):
             if not isinstance(model_override, str) or not model_override:
                 model_override = None
             system = build_system(persona)
+            # /invoke serves Ask and Preview, both of which are a person
+            # pressing a button, so this is an attended turn and may use a
+            # metered model. Said out loud because reply.py defaults closed.
             reply = generate_reply(persona, dict(NO_CAPS), system, merged, None,
-                                   model_override=model_override)
+                                   model_override=model_override, unattended=False)
             self._send(200, {"reply": reply})
         except Exception as e:
             log(f"/invoke failed: {e}")
