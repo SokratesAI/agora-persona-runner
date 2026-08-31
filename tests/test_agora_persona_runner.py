@@ -6198,7 +6198,7 @@ def test_grant_returns_a_token_and_report_posts_a_chip(clean_grants):
     # tool's return value, which does not exist yet when this one is sent.
     assert posted == [("Nova", "conv-1", "Bash", "pytest tests/",
                        {"ephemeral": True, "tool_use_id": "", "output": None,
-                        "is_error": False})]
+                        "is_error": False, "retracted": False})]
 
 
 def test_grant_is_declined_when_there_is_no_conversation_to_post_into(clean_grants):
@@ -6356,7 +6356,58 @@ def test_tool_activity_endpoint_records_a_chip(clean_grants):
     assert sent["status"] == 202
     assert posted == [("Nova", "conv-1", "Bash", "pytest tests/",
                        {"ephemeral": True, "tool_use_id": "", "output": None,
-                        "is_error": False})]
+                        "is_error": False, "retracted": False})]
+
+
+def test_tool_activity_endpoint_withdraws_a_streamed_passage(clean_grants):
+    """The bridge streams a passage as it is written and only learns at the
+    end of the turn which one was the reply. It withdraws that one by posting
+    a step under the same toolUseId with `retracted`, so the owner does not
+    read his answer twice -- once growing in the drawer and once in the
+    bubble (agora/public/app.js mergeTextStreams). This endpoint dropped the
+    field entirely until now, so the retracting half never reached Agora."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    handler, sent = _tool_activity_handler({
+        "token": token, "capability": "assistant_text",
+        "toolUseId": "text-3", "retracted": True,
+    })
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
+        handler.do_POST()
+    assert sent["status"] == 202
+    assert posted[0][4]["retracted"] is True
+
+
+def test_tool_activity_endpoint_leaves_an_ordinary_chip_unretracted(clean_grants):
+    """Agora treats any present `retracted` as the withdrawing half, so a
+    truthy-looking value on a normal chip would erase a real passage."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    handler, sent = _tool_activity_handler({
+        "token": token, "capability": "Bash", "toolUseId": "toolu_c",
+        "retracted": "no",
+    })
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
+        handler.do_POST()
+    assert posted[0][4]["retracted"] is False
+
+
+def test_audit_sends_retracted_only_when_it_is_true():
+    """Agora reads `body.retracted === true` and stores anything else as
+    undefined, so an ordinary chip must not carry the key at all -- a chip
+    that carried `retracted: false` would still be a well-formed step, but it
+    puts a field on every one of a cycle's hundreds of posts for nothing."""
+    import importlib
+    audit_mod = importlib.import_module("agora_runner.audit")
+    sent = []
+    with patch.object(audit_mod, "agora_internal",
+                      lambda method, path, payload: sent.append(payload)):
+        audit_mod.audit("Nova", "conv-1", "assistant_text", "half a passage",
+                        tool_use_id="text-3")
+        audit_mod.audit("Nova", "conv-1", "assistant_text", "",
+                        tool_use_id="text-3", retracted=True)
+    assert "retracted" not in sent[0]
+    assert sent[1]["retracted"] is True
 
 
 def test_tool_activity_endpoint_records_what_a_tool_returned(clean_grants):

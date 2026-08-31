@@ -112,6 +112,7 @@ class InvokeHandler(BaseHTTPRequestHandler):
             tool_use_id=str(payload.get("toolUseId", "")),
             output=payload.get("output"),
             is_error=payload.get("isError") is True,
+            retracted=payload.get("retracted") is True,
         ):
             self._send(401, {"error": "unknown or expired activity token"})
             return
