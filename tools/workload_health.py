@@ -702,6 +702,13 @@ def name_the_host_share(node_cgroups, why):
     if root is not None:
         line += (f" Its root cgroup reads {root:.0f}Mi and {KUBEPODS} {kubepods:.0f}Mi, "
                  f"leaving {unnamed:.0f}Mi in no cgroup it breaks out.")
+        if unnamed < 0:
+            # Each series is sampled at its own instant, so the parts can
+            # briefly exceed the root they came from. "-50Mi in no cgroup" is
+            # a sentence with no meaning; say the parts do not add up instead.
+            line += (" That remainder is negative, which means these readings "
+                     "were taken at different instants and do not add up — "
+                     "read the parts, not the difference.")
     return [line]
 
 

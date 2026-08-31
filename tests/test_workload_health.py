@@ -798,3 +798,11 @@ def test_main_asks_cadvisor_about_the_node_that_matched_this_meminfo():
     with mock.patch.object(wh, "read_meminfo", lambda *a, **k: (meminfo, None)):
         assert wh.main([], runner=runner, now=NOW) == 0
     assert raw == ["/api/v1/nodes/server1/proxy/metrics/cadvisor"]
+
+
+def test_a_negative_remainder_is_named_as_skew_not_printed_as_a_quantity():
+    """cAdvisor samples each series at its own instant, so the parts can cross."""
+    cgroups = {"/": 3000.0, "/kubepods.slice": 2000.0, "/system.slice": 1500.0}
+    joined = "\n".join(wh.name_the_host_share(cgroups, None))
+    assert "-500Mi in no cgroup" in joined
+    assert "do not add up" in joined
