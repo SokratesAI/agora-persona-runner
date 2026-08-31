@@ -35,7 +35,7 @@ own context is bounded by `conversations.FETCH_LIMIT` exactly as it is for
 every other conversation.
 """
 
-from agora_runner.audit import narration_passage
+from agora_runner.audit import fold_text_streams, narration_passage
 from agora_runner.nova_conversations import (
     ANSWER_PERSONA_ID, clamp_thread_limit, keep_only_live_passages)
 from agora_runner.http_util import agora_get, agora_internal
@@ -232,7 +232,7 @@ def thread(limit=MAX_THREAD):
     asked_at = ""
     steps = 0
     latest = None
-    for m in detail.get("messages", []):
+    for m in fold_text_streams(detail.get("messages", [])):
         if m.get("forgotten") or m.get("system") or m.get("thinking"):
             continue
         # Keep exactly one kind of activity message: a passage the persona

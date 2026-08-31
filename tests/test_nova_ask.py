@@ -133,6 +133,35 @@ def test_the_thread_drops_machinery_messages_and_keeps_the_conversation():
     assert payload["messages"][1]["text"] == "Seven."
 
 
+def test_the_ask_page_folds_a_streamed_passage():
+    """The Ask page builds its thread here instead of in Agora's client, so
+    it needs the same fold: the bridge posts a step at every paragraph break,
+    each carrying the whole passage so far, and un-folded they arrive as
+    three separate bubbles that are prefixes of each other."""
+    def step(mid, detail, stream_id, retracted=False):
+        act = {"capability": "assistant_text", "detail": detail,
+               "toolUseId": stream_id}
+        if retracted:
+            act["retracted"] = True
+        return {"id": mid, "sender": "Nova Answers", "createdAt": "t" + mid,
+                "text": "assistant_text: " + detail, "activity": act}
+
+    messages = [
+        {"id": "1", "sender": "Edvard", "text": "how many pods?", "createdAt": "t1"},
+        step("2", "Let me look.", "text-1"),
+        step("3", "Let me look.\n\nChecking the namespace.", "text-1"),
+        step("4", "Seven.", "text-2"),
+        step("5", "", "text-2", retracted=True),
+    ]
+    # The turn is still running -- keep_only_live_passages drops mid-turn
+    # passages once the settled reply lands under them, which is why this
+    # stops before that message rather than after it.
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert [m["id"] for m in payload["messages"]] == ["1", "2"]
+    assert payload["messages"][1]["text"] == "Let me look.\n\nChecking the namespace."
+    assert payload["messages"][1]["partial"] is True
+
+
 def test_waiting_is_true_only_while_an_answer_is_owed():
     asked = [{"id": "1", "sender": "Edvard", "text": "q", "createdAt": "t1"}]
     payload, _ = _run(nova_ask.thread, TAGGED, asked)

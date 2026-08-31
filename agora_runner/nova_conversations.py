@@ -27,7 +27,7 @@ convention: `decide_turn` speaks only when the last visible message came
 from him, so any other sender writes a message nothing ever answers.
 """
 
-from agora_runner.audit import narration_passage
+from agora_runner.audit import fold_text_streams, narration_passage
 from agora_runner.config import NOVA_PERSONA_ID
 from agora_runner.http_util import agora_get, agora_internal, agora_public
 from agora_runner.log import log
@@ -109,7 +109,7 @@ def _visible(messages):
     reply taking shape rather than as separate finished messages.
     """
     out = []
-    for m in messages:
+    for m in fold_text_streams(messages):
         if m.get("forgotten") or m.get("system") or m.get("thinking"):
             continue
         passage = narration_passage(m)

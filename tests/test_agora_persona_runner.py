@@ -6392,6 +6392,107 @@ def test_tool_activity_endpoint_leaves_an_ordinary_chip_unretracted(clean_grants
     assert posted[0][4]["retracted"] is False
 
 
+def _step(msg_id, detail, stream_id="", retracted=False):
+    activity = {"capability": "assistant_text", "detail": detail}
+    if stream_id:
+        activity["toolUseId"] = stream_id
+    if retracted:
+        activity["retracted"] = True
+    return {"id": msg_id, "sender": "Nova", "text": "assistant_text: " + detail,
+            "activity": activity}
+
+
+def test_a_streamed_passage_folds_into_one_message():
+    """The bridge posts a step at every paragraph break, each carrying the
+    whole passage so far. Un-folded, one three-paragraph passage is three
+    messages, each a longer prefix of the next."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "one.", "text-1"),
+        _step("m2", "one.\n\ntwo.", "text-1"),
+        _step("m3", "one.\n\ntwo.\n\nthree.", "text-1"),
+    ])
+    assert len(folded) == 1
+    assert folded[0]["activity"]["detail"] == "one.\n\ntwo.\n\nthree."
+
+
+def test_the_fold_keeps_the_first_steps_slot():
+    """Every later step folds into the anchor, so a page redrawing mid-turn
+    keeps its scroll position while the passage grows underneath."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "one.", "text-1"),
+        _step("m2", "one.\n\ntwo.", "text-1"),
+    ])
+    assert folded[0]["id"] == "m1"
+
+
+def test_a_retracted_passage_is_dropped_from_the_thread():
+    """It is the reply, and the reply bubble is already carrying it."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "narration.", "text-1"),
+        _step("m2", "the answer.", "text-2"),
+        _step("m3", "", "text-2", retracted=True),
+    ])
+    assert [m["id"] for m in folded] == ["m1"]
+
+
+def test_a_retraction_whose_stream_fell_outside_the_window_still_drops():
+    """The page loads the newest N messages. A retraction can arrive with the
+    steps it withdraws already off the end of that window."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([_step("m3", "", "text-2", retracted=True)])
+    assert folded == []
+
+
+def test_a_passage_sent_whole_is_untouched():
+    """Every passage written before streaming existed, and every one from an
+    older bridge. No stream id, so nothing to fold."""
+    from agora_runner.audit import fold_text_streams
+    messages = [_step("m1", "one whole passage."),
+                {"id": "m2", "sender": "Edvard", "text": "thanks"}]
+    assert fold_text_streams(messages) == messages
+
+
+def test_two_passages_do_not_fold_into_each_other():
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "first.", "text-1"),
+        _step("m2", "second.", "text-2"),
+        _step("m3", "second.\n\nmore.", "text-2"),
+    ])
+    assert [m["activity"]["detail"] for m in folded] == \
+        ["first.", "second.\n\nmore."]
+
+
+def test_a_tool_chip_is_never_folded():
+    """Chips carry a toolUseId too -- it is what pairs a call with its
+    output -- so folding on the id alone would collapse every tool call."""
+    from agora_runner.audit import fold_text_streams
+    messages = [
+        {"id": "m1", "activity": {"capability": "Bash", "detail": "ls",
+                                  "toolUseId": "toolu_a"}},
+        {"id": "m2", "activity": {"capability": "Bash", "output": "a\nb",
+                                  "toolUseId": "toolu_a"}},
+    ]
+    assert fold_text_streams(messages) == messages
+
+
+def test_the_chat_thread_folds_a_streamed_passage():
+    """nova_conversations._visible is one of the two surfaces that builds its
+    thread here instead of in Agora's client, so the fold has to happen on
+    this side of it or the Nova app shows the passage three times."""
+    from agora_runner import nova_conversations
+    out = nova_conversations._visible([
+        _step("m1", "one.", "text-1"),
+        _step("m2", "one.\n\ntwo.", "text-1"),
+        _step("m3", "the answer.", "text-2"),
+        _step("m4", "", "text-2", retracted=True),
+    ])
+    assert [m["text"] for m in out] == ["one.\n\ntwo."]
+
+
 def test_audit_sends_retracted_only_when_it_is_true():
     """Agora reads `body.retracted === true` and stores anything else as
     undefined, so an ordinary chip must not carry the key at all -- a chip
