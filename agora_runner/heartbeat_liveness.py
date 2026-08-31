@@ -28,7 +28,9 @@ assumed healthy.
 
 import json
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+from agora_runner.config import OSLO
 
 # How long the site is willing to wait on Agora before calling the read a
 # failure. The CLI tool allows 20 seconds because a human is watching it;
@@ -45,6 +47,16 @@ AGORA_PUBLIC = "http://agora.agents.svc.cluster.local:8080"
 # Two missed turns. One is a scheduler under load; two is a scheduler
 # that is not running this row.
 _MISSED_TURNS_BEFORE_STOPPED = 2
+
+# How late a *named* slot may be before it counts as missed. Measured
+# 2026-08-31 against the five schedules Agora was carrying: it started them
+# 0m, 8m, 9m, 13m and 13m after the minute they asked for. Six hours is
+# twenty-seven times the worst of those, and it is an absolute number
+# rather than a share of the period on purpose --- a weekly heartbeat is
+# not allowed to be a week late just because its period is a week. It also
+# covers the two hours `OSLO` moves by if `agora_runner.config` falls back
+# to UTC on an image with no tzdata.
+_SLOT_GRACE_SECONDS = 6 * 3600
 
 # The marker that says an off state is deliberate and written where a
 # reader of the Heartbeats page can see it.
@@ -117,6 +129,84 @@ def interval_seconds(schedule):
     return None, f"unrecognised schedule {text!r}"
 
 
+def _slot_time(schedule):
+    """`(hour, minute, days)` --- the wall-clock slot a schedule names.
+
+    `days` is the set of `datetime.weekday()` values the slot falls on, or
+    `None` for every day. Returns `None` for a schedule that names no slot
+    at all --- `every@20m@16:20` repeats through the day and its anchor is
+    not a slot in this sense, so it keeps the averaged rule below.
+    """
+    text = (schedule or "").strip()
+    if text.startswith("daily@"):
+        body = text[len("daily@") :].strip()
+        parts = body.split(":")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            return None
+        hour, minute = int(parts[0]), int(parts[1])
+        if hour > 23 or minute > 59:
+            return None
+        return hour, minute, None
+    if text.startswith("cron@"):
+        fields = text[len("cron@") :].split()
+        if len(fields) != 5:
+            return None
+        minute, hour, dom, mon, dow = fields
+        if dom != "*" or mon != "*":
+            return None
+        if not minute.isdigit() or not hour.isdigit():
+            return None
+        minute, hour = int(minute), int(hour)
+        if hour > 23 or minute > 59:
+            return None
+        if dow == "*":
+            return hour, minute, None
+        days = set()
+        for part in dow.split(","):
+            part = part.strip()
+            if not part.isdigit():
+                return None
+            # cron counts Sunday as 0; `weekday()` counts Monday as 0.
+            days.add((int(part) % 7 - 1) % 7)
+        if not days:
+            return None
+        return hour, minute, days
+    return None
+
+
+def last_due_slot(schedule, now):
+    """The most recent moment this schedule asked to be run at, or `None`.
+
+    Agora reads `cron@` and `daily@` in Europe/Oslo --- see
+    `agora_runner.tools_schemas`, and measured against the fleet on
+    2026-08-31, where every one of the five schedules fired exactly its
+    stated hour in Oslo and therefore two hours before that hour in UTC.
+    So the slot has to be built in Oslo and compared in UTC.
+
+    This exists because the averaged interval below cannot see a slot. A
+    weekly heartbeat gets `7 * 86400 * 2` of grace, so one that stops firing
+    is green for a fortnight --- which is the exact fourteen-day blindness
+    this module was written to end, reproduced for anything that runs less
+    often than daily.
+    """
+    found = _slot_time(schedule)
+    if found is None:
+        return None
+    hour, minute, days = found
+    local = now.astimezone(OSLO)
+    for back in range(0, 8):
+        day = (local - timedelta(days=back)).date()
+        candidate = datetime(
+            day.year, day.month, day.day, hour, minute, tzinfo=OSLO
+        )
+        if candidate > now:
+            continue
+        if days is not None and candidate.weekday() not in days:
+            continue
+        return candidate
+    return None
+
+
 def _parse_stamp(value):
     if not value:
         return None
@@ -167,6 +257,29 @@ def judge(heartbeat, now):
         f"{note}; {anchor} {stamp}, {_duration(gap)} ago, "
         f"allowed {_duration(allowed)}"
     )
+
+    # The sharper instrument first, where the schedule names a slot. A slot
+    # that came round after this heartbeat existed, is more than the grace
+    # in the past, and is not covered by `lastRunAt`, was missed --- and
+    # that is true however long the period is. `reference` is not used here
+    # on purpose: measuring a never-run heartbeat from its creation is right
+    # for the averaged rule and wrong for this one, because creation is not
+    # a run and the question is whether a slot went unanswered.
+    slot = last_due_slot(schedule, now)
+    if slot is not None and (created is None or slot > created):
+        late = (now - slot).total_seconds()
+        if late > _SLOT_GRACE_SECONDS and (last is None or last < slot):
+            slot_stamp = slot.astimezone(OSLO).strftime("%Y-%m-%d %H:%M Oslo")
+            never = "has never run" if last is None else f"last ran {stamp}"
+            return dict(
+                base,
+                verdict="overdue",
+                detail=(
+                    f"{note}; asked to run at {slot_stamp}, "
+                    f"{_duration(late)} ago, and {never}"
+                ),
+            )
+
     if gap > allowed:
         return dict(base, verdict="overdue", detail=evidence)
     return dict(base, verdict="ok", detail=evidence)
