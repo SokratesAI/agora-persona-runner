@@ -261,7 +261,7 @@ CAVEAT_STEMS = ("NOT JUDGED", "NOT ASKED", "NOT READ", "UNJUDGED",
 #: shows up inside one of these headers, from the first character. A line that
 #: starts with an ordinary sentence has a one-character head and can never
 #: carry a stem.
-SHOUTED_HEAD = re.compile(r"^[A-Z][A-Z0-9 \'/-]*")
+SHOUTED_HEAD = re.compile(r"^[A-Z][A-Z0-9 '/-]*")
 
 
 def shouted_head(line):
@@ -413,8 +413,9 @@ def caveat_lines(output):
     and there should not be one -- the owner's rule (`personality.md`) is that
     an interface problem is solved with an interface, never by throwing data
     away, and `--verbose` is already the other end of that. Measured against a
-    real sweep of all 25 checks on 2026-08-30: one clean check carries one
-    caveat line, so this costs the table one line today.
+    real sweep of all 25 checks on 2026-08-30: one clean check carried one
+    caveat line. On 2026-08-31 it is four, and the rule below widens that
+    again -- ten lines across nine checks that were being dropped.
 
     What counts as a caveat is `is_caveat`, and the reasoning for its shape is
     on `CAVEAT_STEMS`. The short version: the line has to *open* in shouted
