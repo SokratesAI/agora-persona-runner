@@ -285,3 +285,107 @@ def test_a_run_that_stopped_with_no_outcome_raises():
 def test_a_cycle_that_is_still_running_never_raises():
     _, status = format_report([row(606, "still running")], 607, None)
     assert status == 0
+
+
+# --- did a change fix it? (idea #170, --split-at) ----------------------
+
+from collections import Counter  # noqa: E402
+
+from tools.cycle_postmortem import (  # noqa: E402
+    _created,
+    format_rate_split,
+    main as postmortem_main,
+    rate_split,
+)
+
+
+def _conversations(pairs):
+    """`{number: conversation}` from `(number, 'YYYY-MM-DDTHH:MM:SSZ')` pairs."""
+    return {number: {"id": f"c{number}", "createdAt": stamp}
+            for number, stamp in pairs}
+
+
+def _hourly(first, count, start="2026-08-28T00:00:00Z"):
+    """`count` conversations one hour apart, numbered from `first`."""
+    begin = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    return _conversations(
+        (first + i, (begin + timedelta(hours=i)).isoformat().replace("+00:00", "Z"))
+        for i in range(count))
+
+
+def _at(stamp):
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def test_the_before_window_is_the_same_length_as_the_after_window():
+    """A count cannot answer idea #170 -- the cadence has changed four
+    times, so more silent cycles per day can just mean more cycles per
+    day. Both sides have to be rates over equal spans."""
+    conversations = _hourly(1, 21)          # cycle N starts at hour N-1
+    split = rate_split([], conversations, _at("2026-08-28T15:00:00Z"), newest=21)
+    # after: cycles 16..20, 15:00 to 19:00 -- cycle 21 is the one asking
+    assert split["hours"] == 4.0
+    assert (split["after"]["lo"], split["after"]["hi"]) == (16, 20)
+    # before: the matched 4 hours, 11:00 to 14:00
+    assert split["before"]["cycles"] == 4
+    assert (split["before"]["lo"], split["before"]["hi"]) == (12, 15)
+
+
+def test_the_cycle_asking_the_question_is_in_neither_side():
+    """It has not written its entry yet, so counting it would report the
+    running cycle as a gap on whichever side it fell."""
+    conversations = _hourly(1, 6)
+    split = rate_split([], conversations, _at("2026-08-28T03:00:00Z"), newest=6)
+    assert 6 not in split["after"]["numbers"]
+    assert split["after"]["hi"] == 5
+
+
+def test_the_verdicts_are_counted_apart_not_summed():
+    """`failed: Connection refused` is the bridge being down and no CLI
+    version changes it. One summed number merges that into the answer."""
+    conversations = _hourly(1, 11)          # cycle N starts at hour N-1
+    results = [row(5, "failed"), row(6, "failed"), row(8, "lost")]
+    split = rate_split(results, conversations, _at("2026-08-28T06:00:00Z"), newest=11)
+    assert split["before"]["verdicts"] == Counter({"failed": 2})
+    assert split["after"]["verdicts"] == Counter({"lost": 1})
+    assert "2 failed" in "\n".join(format_rate_split(split))
+
+
+def test_a_conversation_with_no_readable_createdat_is_named_not_dropped():
+    """It is in neither window, so a silent drop would shrink a
+    denominator and move the rate without saying so."""
+    conversations = _hourly(1, 6)
+    conversations[3] = {"id": "c3", "createdAt": "not a date"}
+    split = rate_split([], conversations, _at("2026-08-28T02:00:00Z"), newest=6)
+    assert split["undated"] == 1
+    assert "NOT COUNTED" in "\n".join(format_rate_split(split))
+
+
+def test_no_cycle_after_the_split_says_so_rather_than_dividing_by_zero():
+    conversations = _hourly(1, 4)
+    assert rate_split([], conversations, _at("2026-09-30T00:00:00Z"), newest=4) is None
+    assert "nothing on the after side" in "\n".join(format_rate_split(None))
+
+
+def test_created_reads_agoras_z_stamp_and_refuses_anything_else():
+    assert _created({"createdAt": "2026-08-28T23:14:42Z"}) == _at("2026-08-28T23:14:42Z")
+    assert _created({"createdAt": ""}) is None
+    assert _created({"createdAt": 17}) is None
+    assert _created(None) is None
+
+
+def test_split_at_never_moves_the_exit_status(monkeypatch, capsys):
+    """A rate that has not moved is a report, not a fault -- and a rate
+    that HAS moved is still not one. The exit code stays the postmortem's
+    own, so `preflight` cannot be turned red by a measurement."""
+    conversations = _hourly(600, 6)
+    monkeypatch.setattr("tools.cycle_postmortem.collect",
+                        lambda window=None: ([], 605, None, conversations))
+    status = postmortem_main(["--split-at", "2026-08-28T03:00:00Z"])
+    assert status == 0
+    assert "ENTRYLESS RATE" in capsys.readouterr().out
+
+
+def test_an_unparseable_split_at_refuses_rather_than_reporting_on_nothing(capsys):
+    assert postmortem_main(["--split-at", "last tuesday"]) == 1
+    assert "COULD NOT READ" in capsys.readouterr().out
