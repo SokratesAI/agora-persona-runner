@@ -58,7 +58,21 @@ PORT_MAX = 5203
 #: need it -- the tool that starts a demo, the tool that promotes one, and
 #: `turns.py`, which has to hand the URL shape to a chat turn that is being
 #: asked for a demo. A third copy of a hostname is how a hostname rots.
-PUBLIC_BASE = "https://nova.tailc83eb3.ts.net/demo"
+#:
+#: **The hostname is `nova-demos`, not `nova`, and that is the whole point
+#: of this constant.** The owner's note, 2026-08-31: a PWA demo served under
+#: `nova.tailc83eb3.ts.net` cannot be installed as its own Android app,
+#: because Nova's own `manifest.webmanifest` declares `scope: "/"` -- the
+#: installed Nova WebAPK claims the entire origin, so Chrome hands the
+#: demo's URL to Nova rather than offering to install it. Manifest scope is
+#: a prefix with no exclude, so no edit to Nova's manifest carves `/demo/`
+#: out of it without narrowing Nova's own app. `nova-demos-tailscale`
+#: (agora-persona-runner-config#16) points a second tailnet hostname at the
+#: same `nova-site` Service: same bytes, different origin, outside the
+#: WebAPK's scope, installable. The old `nova.tailc83eb3.ts.net/demo/...`
+#: path still serves -- that Ingress was not removed -- so a link already
+#: open on his phone keeps working; it just is not the one to hand out.
+PUBLIC_BASE = "https://nova-demos.tailc83eb3.ts.net/demo"
 
 #: Same rule as a claim slug, and for the same reason: the whole mechanism
 #: is string equality, so `Foo` and `foo` must not be two demos. Also the
