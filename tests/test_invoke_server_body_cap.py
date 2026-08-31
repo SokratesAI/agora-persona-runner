@@ -38,11 +38,18 @@ class _RecordingReader:
         raise AssertionError(f"the body was read: {n} bytes")
 
 
+class _ResettingReader:
+    """An rfile whose read fails the way a dropped connection does."""
+
+    def read(self, n):
+        raise ConnectionResetError(104, "Connection reset by peer")
+
+
 def _handler(path, length):
     handler = invoke_server.InvokeHandler.__new__(invoke_server.InvokeHandler)
     handler.path = path
     handler.rfile = _RecordingReader()
-    handler.headers = {"Content-Length": str(length)}
+    handler.headers = {} if length is None else {"Content-Length": str(length)}
     sent = {}
 
     def fake_send(status, payload):
@@ -64,10 +71,17 @@ def test_an_oversized_body_is_refused_without_being_read(path):
 
 
 @pytest.mark.parametrize("path", ["/invoke", "/mcp", "/tool-activity"])
-def test_a_missing_content_length_is_refused_without_being_read(path):
+@pytest.mark.parametrize("length", [0, None])
+def test_a_missing_content_length_is_refused_without_being_read(path, length):
     """No length is not a zero-length body -- `rfile.read` on a socket with
-    no length would block on the peer rather than return."""
-    handler, sent = _handler(path, 0)
+    no length would block on the peer rather than return.
+
+    `None` means the header is absent entirely, which is what the name says
+    and what the version of this test my reviewer read did not do: it passed
+    `0`, an explicitly present zero, and the implementation treats the two
+    identically only because `headers.get` defaults to `"0"`.
+    """
+    handler, sent = _handler(path, length)
     with patch.object(invoke_server, "AGORA_TOKEN", ""):
         handler.do_POST()
     assert handler.rfile.asked == []
@@ -109,3 +123,17 @@ def test_a_normal_body_still_reaches_the_route():
                       lambda *a, **k: True):
         handler.do_POST()
     assert sent["status"] == 202
+
+
+@pytest.mark.parametrize("path", ["/invoke", "/mcp", "/tool-activity"])
+def test_a_connection_dropped_mid_body_is_a_400_not_a_traceback(path):
+    """A reset connection is an `OSError`, and `handle_one_request` catches
+    only `TimeoutError` -- so an unguarded read escapes the handler entirely,
+    sends no response and prints a stack trace. Before this cap existed the
+    read sat inside each route's own `except Exception` and produced a 400.
+    """
+    handler, sent = _handler(path, 1024)
+    handler.rfile = _ResettingReader()
+    with patch.object(invoke_server, "AGORA_TOKEN", ""):
+        handler.do_POST()
+    assert sent["status"] == 400

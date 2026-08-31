@@ -62,7 +62,21 @@ class InvokeHandler(BaseHTTPRequestHandler):
         if length > MAX_REQUEST_BYTES:
             self._send(413, {"error": f"body over {MAX_REQUEST_BYTES} bytes"})
             return None
-        return self.rfile.read(length)
+        try:
+            return self.rfile.read(length)
+        except Exception:
+            # The read used to sit inside each route's own `except Exception`
+            # alongside the JSON parse, so a client that dropped mid-body got
+            # a 400. Lifting it into this helper without the guard turned a
+            # reset connection -- an OSError, not a TimeoutError, so
+            # `handle_one_request` does not catch it either -- into an
+            # unhandled exception, a dropped connection and a traceback in
+            # this pod's log. My reviewer found it; nothing in the suite could
+            # have, because every fixture here either succeeds or refuses
+            # outright. `nova_site._handle_mcp`, the route this helper cites
+            # as precedent, keeps the same net.
+            self._send(400, {"error": "could not read the request body"})
+            return None
 
     def _handle_tool_activity(self):
         """One tool call, reported by the bridge mid-session, rendered as an
