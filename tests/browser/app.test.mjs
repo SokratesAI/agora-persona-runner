@@ -12647,6 +12647,142 @@ describe("the project page", () => {
       .map((el) => el.getAttribute("href"));
     assert.deepEqual(on, ["/projects"]);
   });
+
+  /* Idea #166 -- *"tabs/buttons that say issues, ideas, conversation. When
+   * one of them is pressed the relevant items are displayed and the others
+   * are hidden."* */
+
+  const tabs = (window) =>
+    [...window.document.querySelectorAll(".project-tab")].map((b) => b.textContent);
+
+  const press = (window, key) =>
+    window.document.querySelector('.project-tab[data-tab="' + key + '"]').click();
+
+  test("the tab strip names only the parts this project actually has", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    assert.deepEqual(tabs(window), ["All", "Issues · 2", "Conversation · 2"],
+      "an Ideas tab was drawn for a board with no rows under this project");
+  });
+
+  test("with nothing said yet the conversation tab says so rather than showing a zero", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    assert.deepEqual(tabs(window), ["All", "Issues · 2", "Conversation"]);
+  });
+
+  test("All is where the page opens and it draws both halves", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    const on = [...window.document.querySelectorAll(".project-tab.on")]
+      .map((b) => b.textContent);
+    assert.deepEqual(on, ["All"]);
+    assert.ok(window.document.querySelector(".project-board"), "no rows on the All tab");
+    assert.ok(window.document.querySelector(".project-thread"), "no conversation on the All tab");
+  });
+
+  test("pressing Conversation hides the rows and leaves the thread", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    press(window, "conversation");
+    assert.equal(window.document.querySelectorAll(".project-board").length, 0,
+      "the boards are still on screen after pressing Conversation");
+    assert.ok(window.document.querySelector(".project-thread"), "the conversation went away too");
+    // The jump exists to scroll past the boards. With no boards there is
+    // nothing to scroll past, and a button that goes nowhere is noise.
+    assert.equal(window.document.querySelectorAll(".project-jump").length, 0,
+      "the way down to the conversation is still drawn on the conversation itself");
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".project-tab.on")].map((b) => b.textContent),
+      ["Conversation · 2"]);
+  });
+
+  test("pressing Issues hides the conversation and leaves the rows", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    press(window, "issues");
+    assert.equal(window.document.querySelectorAll(".project-thread").length, 0,
+      "the conversation is still on screen after pressing Issues");
+    const heads = [...window.document.querySelectorAll(".project-board-head")]
+      .map((el) => el.firstChild.textContent);
+    assert.deepEqual(heads, ["Issues · 2"]);
+  });
+
+  test("a tab can be pressed twice without the page forgetting what it holds", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    press(window, "conversation");
+    press(window, "all");
+    press(window, "conversation");
+    // The order has to survive a redraw: reversing the payload in place
+    // would flip it back on the second press.
+    const said = [...window.document.querySelectorAll(".project-thread .note-msg-name")]
+      .map((el) => el.textContent);
+    assert.deepEqual(said, ["Nova", "Edvard"]);
+  });
+
+  test("a project with no rows at all draws no tab strip", async () => {
+    const bare = Object.assign({}, NOVA, {
+      boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } },
+    });
+    // Both halves in one test on purpose. On its own the empty assertion is
+    // unfailable -- with the whole feature reverted there is no
+    // `.project-tab` anywhere either, so it cannot tell "correctly
+    // suppressed" from "never built". My reviewer's finding.
+    const drawn = await loadSite("/project/Nova", { project: TALKED });
+    assert.ok(drawn.document.querySelectorAll(".project-tab").length > 1,
+      "a project with rows draws no strip, so the empty case below proves nothing");
+    const window = await loadSite("/project/Nova", { project: bare });
+    assert.equal(window.document.querySelectorAll(".project-tab").length, 0,
+      "a strip reading All / Conversation is two names for one screen");
+  });
+
+  /* My reviewer's finding. The tab is held in a variable across renders, so
+   * a board that empties between two visits to the same project used to
+   * leave him on a page with no strip, no rows and no comment box. */
+  test("a tab whose board has emptied falls back to All rather than to nothing", async () => {
+    const bare = Object.assign({}, TALKED, {
+      boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } },
+    });
+    // The same project answered twice, the second time with its last issue
+    // gone. Posting a comment is the real path that refetches it.
+    let call = 0;
+    const window = await loadSite("/project/Nova", {
+      project: () => (call++ === 0 ? TALKED : bare),
+    });
+    press(window, "conversation");
+    window.document.querySelector(".project-thread .item-comment-box").value = "still here?";
+    window.document.querySelector(".project-thread .item-comment-send").click();
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.document.querySelectorAll(".project-tab").length, 0,
+      "a strip was drawn for a project with nothing to split");
+    // The tell that the held tab was dropped rather than kept: `all` says
+    // there is nothing filed here, and a stale `conversation` suppresses
+    // that line, so he would be looking at a page that never mentions the
+    // rows are gone and offers no way back.
+    assert.match(window.document.querySelector(".empty").textContent,
+      /Nothing is filed/, "the page is still rendering the tab he can no longer see");
+    assert.ok(window.document.querySelector(".project-thread .item-comment-box"),
+      "there is nowhere to type");
+  });
+
+  /* Idea #166 -- *"The input field is at the top and the comments are below
+   * it with the newest reply at the top."* */
+  test("the box is above the thread and the newest reply is at the top of it", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    const thread = window.document.querySelector(".project-thread");
+    const kids = [...thread.children];
+    const boxAt = kids.findIndex((n) => n.classList.contains("item-comment"));
+    const msgsAt = kids.findIndex((n) => n.classList.contains("project-thread-messages"));
+    assert.ok(boxAt >= 0 && msgsAt >= 0, "the conversation is missing a part");
+    assert.ok(boxAt < msgsAt, "the box is still below the messages");
+    const said = [...thread.querySelectorAll(".note-msg-name")]
+      .map((el) => el.textContent);
+    assert.deepEqual(said, ["Nova", "Edvard"], "the oldest message is still first");
+  });
+
+  test("a project nobody has said anything about still puts the box first", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const thread = window.document.querySelector(".project-thread");
+    const kids = [...thread.children];
+    assert.ok(kids.findIndex((n) => n.classList.contains("item-comment"))
+      < kids.findIndex((n) => n.classList.contains("empty")),
+      "the box is below the 'nothing said yet' line");
+  });
 });
 
 /* The Pool page's third button -- idea #92, *"i can approve or comment on
