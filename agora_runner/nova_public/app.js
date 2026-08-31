@@ -11276,14 +11276,19 @@
       if (loadingOlder || !hasMore || !isOpen) return;
       loadingOlder = true;
       pageLimit += PAGE_STEP;
-      // Measured before the fetch and used after the paint. It is where his
-      // reading position is relative to the bottom of the thread, which is
-      // the one thing a prepended page does not change.
-      pendingAnchor = thread.scrollHeight;
+      /* Measured before the fetch and handed to `paint` only in the `.then`.
+       * Setting `pendingAnchor` here instead would give it to whichever paint
+       * happens next -- and while he is waiting for a reply the four-second
+       * poll is repainting the same thread, so an ordinary poll landing
+       * first would consume the anchor against unchanged content, compute a
+       * growth of zero, and drop him at the top of the thread. That is the
+       * exact moment this feature is for. */
+      var anchor = thread.scrollHeight;
       var token = sourceToken;
       fetchPage(threadUrl())
         .then(function (payload) {
           if (token !== sourceToken) return;
+          pendingAnchor = anchor;
           paint(payload);
         })
         .catch(function () {
@@ -11292,7 +11297,6 @@
           // page he never got, and the retry on the next flick impossible.
           if (token !== sourceToken) return;
           pageLimit -= PAGE_STEP;
-          pendingAnchor = null;
         })
         .then(function () { loadingOlder = false; });
     }
