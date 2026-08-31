@@ -135,6 +135,7 @@ CHECKS = (
     "claim_schema",
     "running_images",
     "workload_health",
+    "host_memory_trend",
     "ci_health",
     "nas_health",
     "nas_watch",
