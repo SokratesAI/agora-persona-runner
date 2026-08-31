@@ -584,11 +584,12 @@ def declared_ceiling(pods):
     """What the pods on this host are collectively allowed to take.
 
     `largest_limit` asks whether the biggest single container can still
-    start. That is a real question and it is not this one: on 2026-08-31 the
-    largest limit was 2048Mi against 1966Mi available, so that check passed,
-    while the limits already declared across the node summed to 7978Mi
-    against a 7746Mi box. The host was over its own budget and every
-    per-container question came back fine.
+    start. That is a real question and it is not this one, and the case that
+    separates them is eight 1Gi containers on this box: every one of them
+    fits in what is available, so the per-container check is quiet, and
+    together they are over the machine. On 2026-08-31 the limits declared
+    across server1 summed to 7978Mi against a 7746Mi box while the scheduler
+    saw 2519Mi of requests and packed happily.
 
     Returns (total MiB, containers that set a limit, containers that do not).
     Only Running and Pending Pods are counted -- a Succeeded Job pod holds no
