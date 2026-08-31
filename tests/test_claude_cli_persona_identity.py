@@ -32,8 +32,8 @@ def _send(persona):
 
 
 def test_the_persona_id_reaches_the_bridge_request_body():
-    sent = _send({"name": "Vergil", "id": "08ffac94-7c4a-4506-897f-968c592358cb"})
-    assert sent["persona_id"] == "08ffac94-7c4a-4506-897f-968c592358cb"
+    sent = _send({"name": "Vergil", "id": "7c4a4506-897f-4a50-9682-968c59235800"})
+    assert sent["persona_id"] == "7c4a4506-897f-4a50-9682-968c59235800"
 
 
 def test_two_personas_send_two_different_ids():
@@ -54,3 +54,18 @@ def test_a_persona_with_no_id_sends_an_empty_string_not_null(persona):
     has no id."""
     sent = _send(persona)
     assert sent["persona_id"] == ""
+
+
+def test_nova_sends_no_persona_id_so_its_memory_does_not_split():
+    """Nova is an ordinary persona with an ordinary id, and the bridge picks
+    its memory directory off the heartbeat text rather than off an id. A
+    non-heartbeat turn addressed to Nova -- the owner replying in a live Nova
+    conversation -- would therefore be pinned to `persona-memory/<nova id>`,
+    a second working memory that no cycle reads and that never sees a
+    cycle's notes. Sending nothing leaves that turn as inert as it was
+    before this field existed."""
+    from agora_runner.config import NOVA_PERSONA_ID
+    sent = _send({"name": "Nova", "id": NOVA_PERSONA_ID})
+    assert sent["persona_id"] == ""
+    other = _send({"name": "Vergil", "id": "cccccccc-0000-0000-0000-000000000000"})
+    assert other["persona_id"] == "cccccccc-0000-0000-0000-000000000000"
