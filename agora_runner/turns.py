@@ -457,8 +457,13 @@ def build_system(persona, conversation=None, heartbeat_extra=None):
             )
         if caps.get("githubMerge"):
             gh_parts.append(
-                "You have merge_pr — merges an open PR, but only once every check-run "
-                "on it is green. It refuses otherwise; there is no override."
+                "You have merge_pr — merges an open PR, but only once GitHub itself "
+                "says it may merge: it asks GitHub for the PR's own merge status rather than "
+                "judging every check-run, so a red check the repo does not require no "
+                "longer blocks you, while a conflict, a required check or a review "
+                "GitHub is waiting on still does. It also refuses while a check is "
+                "still running, and refuses when no check has run at all on a repo "
+                "that has active workflows. There is no override."
             )
         parts.append(" ".join(gh_parts))
     if caps.get("terminalExec"):

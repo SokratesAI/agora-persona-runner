@@ -5466,80 +5466,177 @@ def test_create_pr_surfaces_file_write_failure(runner):
     assert "failed writing notes.md" in result
 
 
+def _merge_pr_http(pr=None, check_runs=None, workflows=None, merged_sha="mergedsha4567"):
+    """One fake for every merge_pr test: a PR object, its check-runs, and the
+    repo's workflow list. Anything a test leaves out is a call it asserts is
+    never made."""
+    pr_body = {"state": "open", "mergeable_state": "clean", "head": {"sha": "headsha"}}
+    pr_body.update(pr or {})
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+        if url.endswith("/pulls/42"):
+            return 200, pr_body
+        if url.endswith("/commits/headsha/check-runs"):
+            if check_runs is None:
+                raise AssertionError("check-runs must not be fetched here")
+            return 200, {"check_runs": check_runs}
+        if url.endswith("/actions/workflows"):
+            if workflows is None:
+                raise AssertionError("the workflow list must not be fetched here")
+            return 200, {"workflows": workflows}
+        if method == "PUT" and url.endswith("/pulls/42/merge"):
+            return 200, {"sha": merged_sha}
+        raise AssertionError(f"unexpected call {method} {url}")
+
+    return fake_http_json
+
+
+def _run_merge_pr(runner, fake, **kwargs):
+    kwargs.setdefault("_delay", 0)
+    kwargs.setdefault("_sleep", lambda _: None)
+    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+         patch.object(runner.tools_github, "http_json", side_effect=fake):
+        return runner.merge_pr("agora", 42, **kwargs)
+
+
 def test_merge_pr_refuses_when_not_open(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+    """And asks once. A closed PR carries no mergeable_state, so the retry
+    loop would otherwise spend its whole budget reaching a refusal the first
+    answer already justified."""
+    seen = []
+
+    def fake(method, url, body=None, headers=None, timeout=30):
         if url.endswith("/pulls/42"):
-            return 200, {"state": "closed", "head": {"sha": "headsha"}}
+            seen.append(1)
+            return 200, {"state": "closed", "mergeable_state": "unknown", "head": {"sha": "headsha"}}
         raise AssertionError(f"unexpected call {method} {url}")
 
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
+    result = _run_merge_pr(runner, fake)
     assert "not open" in result
+    assert len(seen) == 1
 
 
-def test_merge_pr_refuses_with_no_check_runs(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+def test_merge_pr_refuses_when_github_says_blocked(runner):
+    """`blocked` is GitHub's word for a check or review the repo actually
+    requires. That is the one red this tool must still stop on."""
+    result = _run_merge_pr(runner, _merge_pr_http(pr={"mergeable_state": "blocked"}))
+    assert "'blocked'" in result
+    assert "refusing to merge" in result
+
+
+def test_merge_pr_refuses_when_github_says_dirty_or_behind(runner):
+    for state in ("dirty", "behind", "draft"):
+        result = _run_merge_pr(runner, _merge_pr_http(pr={"mergeable_state": state}))
+        assert f"'{state}'" in result, state
+        assert "refusing to merge" in result, state
+
+
+def test_merge_pr_refuses_on_an_unrecognised_mergeable_state(runner):
+    """A state this tool has no opinion about is not a licence to merge."""
+    result = _run_merge_pr(runner, _merge_pr_http(pr={"mergeable_state": "brand_new_state"}))
+    assert "does not recognise" in result
+
+
+def test_merge_pr_retries_while_github_still_computing_mergeable_state(runner):
+    """GitHub answers `unknown` for a second or two after a push. Asking once
+    and refusing turns normal GitHub latency into a failed merge."""
+    seen = []
+
+    def fake(method, url, body=None, headers=None, timeout=30):
         if url.endswith("/pulls/42"):
-            return 200, {"state": "open", "head": {"sha": "headsha"}}
+            seen.append(1)
+            state = "unknown" if len(seen) < 3 else "clean"
+            return 200, {"state": "open", "mergeable_state": state, "head": {"sha": "headsha"}}
         if url.endswith("/commits/headsha/check-runs"):
-            return 200, {"check_runs": []}
-        raise AssertionError(f"unexpected call {method} {url}")
-
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
-    assert "no CI checks found" in result
-
-
-def test_merge_pr_refuses_while_checks_pending(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
-        if url.endswith("/pulls/42"):
-            return 200, {"state": "open", "head": {"sha": "headsha"}}
-        if url.endswith("/commits/headsha/check-runs"):
-            return 200, {"check_runs": [{"name": "build", "status": "in_progress", "conclusion": None}]}
-        raise AssertionError(f"unexpected call {method} {url}")
-
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
-    assert "still running" in result
-    assert "build" in result
-
-
-def test_merge_pr_refuses_on_failing_check(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
-        if url.endswith("/pulls/42"):
-            return 200, {"state": "open", "head": {"sha": "headsha"}}
-        if url.endswith("/commits/headsha/check-runs"):
-            return 200, {"check_runs": [{"name": "test", "status": "completed", "conclusion": "failure"}]}
-        raise AssertionError(f"unexpected call {method} {url}")
-
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
-    assert "failing checks" in result
-    assert "test" in result
-
-
-def test_merge_pr_succeeds_when_all_checks_green(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
-        if url.endswith("/pulls/42"):
-            return 200, {"state": "open", "head": {"sha": "headsha"}}
-        if url.endswith("/commits/headsha/check-runs"):
-            return 200, {"check_runs": [
-                {"name": "build", "status": "completed", "conclusion": "success"},
-                {"name": "test", "status": "completed", "conclusion": "success"},
-            ]}
+            return 200, {"check_runs": [{"name": "test", "status": "completed", "conclusion": "success"}]}
         if method == "PUT" and url.endswith("/pulls/42/merge"):
             return 200, {"sha": "mergedsha4567"}
         raise AssertionError(f"unexpected call {method} {url}")
 
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
+    result = _run_merge_pr(runner, fake)
+    assert len(seen) == 3
+    assert "merged PR #42" in result
+
+
+def test_merge_pr_gives_up_when_mergeable_state_stays_unknown(runner):
+    result = _run_merge_pr(runner, _merge_pr_http(pr={"mergeable_state": "unknown"}), _attempts=2)
+    assert "has not finished computing" in result
+
+
+def test_merge_pr_merges_past_a_failing_check_the_repo_does_not_require(runner):
+    """The bug this whole change exists for: platform-config#580 was refused
+    over an advisory secret-scan that GitHub itself was happy to merge past.
+    `unstable` is GitHub saying exactly that."""
+    result = _run_merge_pr(runner, _merge_pr_http(
+        pr={"mergeable_state": "unstable"},
+        check_runs=[
+            {"name": "test", "status": "completed", "conclusion": "success"},
+            {"name": "secret-scan", "status": "completed", "conclusion": "failure"},
+        ],
+    ))
+    assert "merged PR #42 (squash)" in result
+    assert "secret-scan" in result and "non-required" in result
+
+
+def test_merge_pr_refuses_while_checks_pending(runner):
+    """`clean` is what GitHub says before CI has started too, so the pending
+    check is the only thing standing between a fresh push and a blind merge."""
+    result = _run_merge_pr(runner, _merge_pr_http(
+        check_runs=[{"name": "build", "status": "in_progress", "conclusion": None}],
+    ))
+    assert "still running" in result
+    assert "build" in result
+
+
+def test_merge_pr_refuses_with_no_check_runs_when_the_repo_has_workflows(runner):
+    result = _run_merge_pr(runner, _merge_pr_http(
+        check_runs=[], workflows=[{"name": "test", "state": "active"}],
+    ))
+    assert "refusing to merge blind" in result
+    assert "test" in result
+
+
+def test_merge_pr_merges_with_no_check_runs_when_the_repo_runs_no_workflows(runner):
+    """The `*-config` repos have zero workflows, so a check-run was never
+    coming and the old refusal was waiting for nothing."""
+    result = _run_merge_pr(runner, _merge_pr_http(check_runs=[], workflows=[]))
+    assert "merged PR #42 (squash)" in result
+    assert "no workflows" in result
+
+
+def test_merge_pr_ignores_a_disabled_workflow_when_no_check_ran(runner):
+    """A workflow someone switched off never produces a check-run, so counting
+    it means waiting forever for something that cannot arrive."""
+    result = _run_merge_pr(runner, _merge_pr_http(
+        check_runs=[], workflows=[{"name": "old-build", "state": "disabled_manually"}],
+    ))
+    assert "merged PR #42 (squash)" in result
+
+
+def test_merge_pr_refuses_with_no_check_runs_when_the_workflow_list_is_unreadable(runner):
+    """An unreadable workflow list is not an empty one."""
+    def fake(method, url, body=None, headers=None, timeout=30):
+        if url.endswith("/pulls/42"):
+            return 200, {"state": "open", "mergeable_state": "clean", "head": {"sha": "headsha"}}
+        if url.endswith("/commits/headsha/check-runs"):
+            return 200, {"check_runs": []}
+        if url.endswith("/actions/workflows"):
+            return 403, {"message": "Forbidden"}
+        raise AssertionError(f"unexpected call {method} {url}")
+
+    result = _run_merge_pr(runner, fake)
+    assert "could not read" in result
+    assert "merged" not in result
+
+
+def test_merge_pr_succeeds_when_all_checks_green(runner):
+    result = _run_merge_pr(runner, _merge_pr_http(check_runs=[
+        {"name": "build", "status": "completed", "conclusion": "success"},
+        {"name": "test", "status": "completed", "conclusion": "success"},
+    ]))
     assert "merged PR #42 (squash)" in result
     assert "mergeds" in result
+    assert "non-required" not in result
 
 
 def test_github_comment_requires_repo_number_and_body(runner):
