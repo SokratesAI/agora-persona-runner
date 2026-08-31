@@ -335,46 +335,110 @@ async function probeReplayHeader(browser) {
  * elsewhere the links very nearly fit, and a probe that is green before
  * the fix measures nothing.
  *
- * The assertion is the user's sentence, not the implementation: scroll
- * the drawer as far down as it goes and the last link must be inside the
- * viewport. `scrollable` is reported beside it rather than asserted, so
- * a future layout that makes every link fit outright still passes. The
- * count is deliberately not written down here -- it was "thirteen" until
- * Cycle 461 grouped the menu, and a probe whose comment names a number
- * the page can change is a comment that goes stale on its own.
+ * **Three things this probe got wrong for as long as the menu has had
+ * folds, and each of them is a way to measure something that is not the
+ * user's sentence.** Cycle 461 grouped the menu into `<details>` folds;
+ * this probe went on reading the last `.nav-tab` in the drawer, and from
+ * that day the link it read was inside a *shut* fold.
+ *
+ * 1. **A rect inside a shut `<details>` is a phantom.** Chromium skips
+ *    the subtree's rendering without zeroing its box, so
+ *    `getBoundingClientRect()` hands back a full layout for links that
+ *    are not painted and cannot be tapped. `style.css` says this in the
+ *    `.nav-fold` comment and this probe read past it. Measured
+ *    2026-08-31 on the live site: with every fold shut, `Device` reports
+ *    `bottom: 728` in a 697 viewport and `checkVisibility()` is `false`.
+ *    That is the FAIL this probe had been printing -- a phantom box,
+ *    below a fold nobody had opened, and it says nothing either way
+ *    about a link the owner can actually reach. So every tab is filtered through
+ *    `checkVisibility()` first, which is the one call that cannot be
+ *    fooled this way.
+ * 2. **A link inside a fold is only reachable after the fold is open,
+ *    so the probe has to open it.** With the folds shut there is
+ *    genuinely nothing to scroll -- four visible links in a
+ *    one-viewport box -- and asserting reachability against that state
+ *    asks a question the layout does not have. Opening every fold is
+ *    what the owner does before he can tap anything in one, and it is
+ *    the state where the drawer actually overflows: 1038px of content
+ *    in 697.
+ * 3. **`nav.scrollTop = ...` is not the gesture.** It is script, and
+ *    script scrolls a box the user cannot -- the same trap
+ *    `probeChatScrollLock` below is built around, in the other
+ *    direction. `mouse.wheel` is a real input event. Measured both ways:
+ *    the wheel moves the drawer 341px and lands `Device` at 681; with
+ *    `overflow-y: hidden` injected the same wheel moves it 0 and leaves
+ *    `Device` at 1022. So the assertion below is one a broken drawer
+ *    fails, which the `scrollTop` version was not.
+ *
+ * The context is deliberately not `PHONE`: a wheel is not dispatched
+ * into a touch-only context, and the thing under test is the CSS, which
+ * does not know which input moved the box.
+ *
+ * `neededScroll` is reported beside the verdict rather than asserted, so
+ * a future layout where every link fits outright still passes. The count
+ * is deliberately not written down here -- it was "thirteen" until Cycle
+ * 461 grouped the menu, and a probe whose comment names a number the
+ * page can change is a comment that goes stale on its own.
  */
 async function probeNavReachable(browser, path) {
-  const ctx = await browser.newContext({ ...PHONE, viewport: { width: 360, height: 697 } });
+  const ctx = await browser.newContext({ viewport: { width: 360, height: 697 } });
   const page = await ctx.newPage();
   const errors = watch(page);
   await page.goto(base + path, { waitUntil: 'networkidle', timeout: 30000 });
 
-  await page.locator('.menu-btn').tap();
+  await page.locator('.menu-btn').click();
   await page.waitForTimeout(400); // the slide is 220ms
 
-  const detail = await page.evaluate(() => {
+  // A link inside a shut fold is not reachable and is not meant to be.
+  // Open every fold, which is what he does before tapping one, and only
+  // then ask whether the last link he could tap is on the screen.
+  await page.evaluate(() => document.querySelectorAll('.nav details').forEach((d) => { d.open = true; }));
+  await page.waitForTimeout(200);
+
+  const before = await page.evaluate(() => {
     const nav = document.querySelector('.nav');
-    const tabs = nav ? nav.querySelectorAll('.nav-tab') : [];
+    const tabs = nav ? [...nav.querySelectorAll('.nav-tab')].filter((t) => t.checkVisibility()) : [];
     const last = tabs.length ? tabs[tabs.length - 1] : null;
-    if (!nav || !last) return { open: false };
-    // Ask for the bottom before scrolling too, so the report says
-    // whether this drawer needed the scroll at all.
-    const before = last.getBoundingClientRect().bottom;
-    nav.scrollTop = nav.scrollHeight;
-    const after = last.getBoundingClientRect().bottom;
+    if (!nav || !last) return { open: false, tabs: tabs.length };
     return {
       open: nav.classList.contains('open'),
       tabs: tabs.length,
+      // Every link in the drawer, visible or not. The verdict below
+      // requires the two to match, so a fold that failed to open turns
+      // into a failure rather than into a quiet pass over the four
+      // links that were never behind one.
+      tabsInDrawer: nav.querySelectorAll('.nav-tab').length,
       viewport: window.innerHeight,
       scrollable: nav.scrollHeight > nav.clientHeight,
-      lastBottomBeforeScroll: Math.round(before),
-      lastBottomAfterScroll: Math.round(after),
+      lastBottomBeforeScroll: Math.round(last.getBoundingClientRect().bottom),
       lastText: last.textContent.trim(),
     };
   });
+
+  let detail = before;
+  if (before.open) {
+    const box = await page.locator('.nav').boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, 2000);
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(() => {
+      const nav = document.querySelector('.nav');
+      const tabs = [...nav.querySelectorAll('.nav-tab')].filter((t) => t.checkVisibility());
+      const last = tabs[tabs.length - 1];
+      return {
+        scrolledBy: Math.round(nav.scrollTop),
+        lastBottomAfterScroll: Math.round(last.getBoundingClientRect().bottom),
+      };
+    });
+    detail = { ...before, ...after, neededScroll: before.lastBottomBeforeScroll > before.viewport };
+  }
   await ctx.close();
 
-  const ok = !!detail.open && detail.tabs > 0 && detail.lastBottomAfterScroll <= detail.viewport;
+  const ok =
+    !!detail.open &&
+    detail.tabs > 0 &&
+    detail.tabs === detail.tabsInDrawer &&
+    detail.lastBottomAfterScroll <= detail.viewport;
   return { probe: 'nav-reachable' + path, ok, detail, errors };
 }
 
