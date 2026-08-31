@@ -71,6 +71,73 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
         log(f"audit post failed: {e}")
 
 
+def fold_text_streams(messages):
+    """Collapse a passage streamed in steps back into one message.
+
+    The bridge streams the persona's prose as it is written: every step of
+    one passage shares a `toolUseId` and carries the whole passage so far,
+    and the passage that turned out to be the reply is withdrawn by a step
+    setting `retracted` (agora-claude-bridge bridge/cli.py). Rendered
+    un-folded, one three-paragraph passage arrives as three messages, each a
+    longer prefix of the next -- which is the duplication this whole feature
+    exists to remove, on a different page.
+
+    This is Agora's own `mergeTextStreams` (agora/public/app.js) in Python,
+    for the two Nova surfaces that build their thread here instead of in that
+    client. It has to stay in step with it: same three rules, same order.
+
+    Every later step folds into the first one's slot, so a page redrawing
+    mid-turn keeps its scroll position and its expanded state while the
+    passage grows underneath. A message with no stream id is a passage the
+    bridge sent whole -- which is every passage written before streaming
+    existed, and every one from an older bridge -- and is untouched.
+    """
+    streams = {}
+    for message in messages:
+        stream_id = _stream_id(message)
+        if not stream_id:
+            continue
+        stream = streams.setdefault(
+            stream_id, {"anchor": None, "latest": None, "retracted": False})
+        if message.get("activity", {}).get("retracted"):
+            stream["retracted"] = True
+        else:
+            if stream["anchor"] is None:
+                stream["anchor"] = message
+            stream["latest"] = message
+
+    folded = []
+    for message in messages:
+        stream_id = _stream_id(message)
+        if not stream_id:
+            folded.append(message)
+            continue
+        stream = streams[stream_id]
+        # The reply bubble is carrying this text, so the thread must not.
+        if stream["retracted"]:
+            continue
+        if message is not stream["anchor"]:
+            continue
+        if stream["latest"] is stream["anchor"]:
+            folded.append(message)
+            continue
+        activity = dict(message["activity"],
+                        detail=stream["latest"]["activity"].get("detail"))
+        folded.append(dict(message, activity=activity))
+    return folded
+
+
+def _stream_id(message):
+    """The id every step of one streamed passage shares, or "" for anything
+    else -- a tool chip, an ordinary message, a passage sent whole."""
+    activity = message.get("activity")
+    if not isinstance(activity, dict):
+        return ""
+    if activity.get("capability") != NARRATION_TEXT:
+        return ""
+    return str(activity.get("toolUseId") or "")
+
+
 def narration_passage(message):
     """The passage a persona wrote on its way to the answer, or None.
 
