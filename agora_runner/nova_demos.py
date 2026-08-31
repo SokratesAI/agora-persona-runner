@@ -52,6 +52,14 @@ DEMOS_PATH = "projects/sokrates/projects/agora/nova/resources/demos.json"
 PORT_MIN = 5174
 PORT_MAX = 5203
 
+#: Where the owner opens a demo. One hostname, path-routed, rather than a
+#: tailnet device per demo that would outlive the demo it was minted for.
+#: It lives here rather than in `tools/demo.py` because three callers now
+#: need it -- the tool that starts a demo, the tool that promotes one, and
+#: `turns.py`, which has to hand the URL shape to a chat turn that is being
+#: asked for a demo. A third copy of a hostname is how a hostname rots.
+PUBLIC_BASE = "https://nova.tailc83eb3.ts.net/demo"
+
 #: Same rule as a claim slug, and for the same reason: the whole mechanism
 #: is string equality, so `Foo` and `foo` must not be two demos. Also the
 #: slug lands in a URL path, so nothing here may need escaping.
