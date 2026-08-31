@@ -8392,18 +8392,21 @@
   var projectTab = "all";
   var projectTabFor = "";
 
-  function projectTabState(name) {
-    if (projectTabFor !== name) {
-      projectTabFor = name;
-      projectTab = "all";
-    }
-    return projectTab;
-  }
-
-  /* The tab strip. Drawn only when there is something to split: on a
-   * project with no rows at all the strip would read `All / Conversation`,
-   * which is two names for one screen. */
-  function renderProjectTabs(payload, redraw) {
+  /* The tabs this payload can actually offer. Drawn only when there is
+   * something to split: on a project with no rows at all the strip would
+   * read `All / Conversation`, which is two names for one screen, and an
+   * empty list here means no strip.
+   *
+   * Separate from the drawing because the state below has to be checked
+   * against it. My reviewer found the hole: holding the tab in a variable
+   * and resetting it only when the *name* changes leaves it pointing at a
+   * board that has since emptied -- he presses Issues, moves the last issue
+   * to another project, comes back, and the boards loop skips Ideas because
+   * the tab says `issues` while the strip is gone because there is nothing
+   * to split. No strip, no rows, no comment box, and nothing on screen to
+   * press. A tab has to be re-checked against every payload, not just
+   * against the name. */
+  function projectTabs(payload) {
     var boards = (payload && payload.boards) || {};
     var tabs = [{ key: "all", label: "All" }];
     if (boards.issues && boards.issues.total) {
@@ -8412,11 +8415,25 @@
     if (boards.ideas && boards.ideas.total) {
       tabs.push({ key: "ideas", label: "Ideas · " + boards.ideas.total });
     }
-    if (tabs.length < 2) return null;
+    if (tabs.length < 2) return [];
     var count = ((payload && payload.comments) || []).length;
     tabs.push({ key: "conversation",
                 label: count ? "Conversation · " + count : "Conversation" });
+    return tabs;
+  }
 
+  function projectTabState(name, tabs) {
+    if (projectTabFor !== name) {
+      projectTabFor = name;
+      projectTab = "all";
+    }
+    var offered = tabs.some(function (tab) { return tab.key === projectTab; });
+    if (!offered) projectTab = "all";
+    return projectTab;
+  }
+
+  function renderProjectTabs(tabs, redraw) {
+    if (!tabs.length) return null;
     var row = el("div", "filters project-tabs");
     tabs.forEach(function (tab) {
       var on = projectTab === tab.key;
@@ -8460,8 +8477,9 @@
         "Nothing is filed under “" + asked + "” yet."));
       return;
     }
-    var tab = projectTabState(name);
-    var tabRow = renderProjectTabs(payload, function () { renderProject(payload); });
+    var tabs = projectTabs(payload);
+    var tab = projectTabState(name, tabs);
+    var tabRow = renderProjectTabs(tabs, function () { renderProject(payload); });
     if (tabRow) feed.appendChild(tabRow);
     // Built before the boards so the jump under the pills can point at it,
     // appended after them so the reading order does not change.

@@ -12715,13 +12715,49 @@ describe("the project page", () => {
     assert.deepEqual(said, ["Nova", "Edvard"]);
   });
 
-  test("a project with rows but nothing to split draws no tab strip", async () => {
+  test("a project with no rows at all draws no tab strip", async () => {
     const bare = Object.assign({}, NOVA, {
       boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } },
     });
+    // Both halves in one test on purpose. On its own the empty assertion is
+    // unfailable -- with the whole feature reverted there is no
+    // `.project-tab` anywhere either, so it cannot tell "correctly
+    // suppressed" from "never built". My reviewer's finding.
+    const drawn = await loadSite("/project/Nova", { project: TALKED });
+    assert.ok(drawn.document.querySelectorAll(".project-tab").length > 1,
+      "a project with rows draws no strip, so the empty case below proves nothing");
     const window = await loadSite("/project/Nova", { project: bare });
     assert.equal(window.document.querySelectorAll(".project-tab").length, 0,
       "a strip reading All / Conversation is two names for one screen");
+  });
+
+  /* My reviewer's finding. The tab is held in a variable across renders, so
+   * a board that empties between two visits to the same project used to
+   * leave him on a page with no strip, no rows and no comment box. */
+  test("a tab whose board has emptied falls back to All rather than to nothing", async () => {
+    const bare = Object.assign({}, TALKED, {
+      boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } },
+    });
+    // The same project answered twice, the second time with its last issue
+    // gone. Posting a comment is the real path that refetches it.
+    let call = 0;
+    const window = await loadSite("/project/Nova", {
+      project: () => (call++ === 0 ? TALKED : bare),
+    });
+    press(window, "conversation");
+    window.document.querySelector(".project-thread .item-comment-box").value = "still here?";
+    window.document.querySelector(".project-thread .item-comment-send").click();
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.document.querySelectorAll(".project-tab").length, 0,
+      "a strip was drawn for a project with nothing to split");
+    // The tell that the held tab was dropped rather than kept: `all` says
+    // there is nothing filed here, and a stale `conversation` suppresses
+    // that line, so he would be looking at a page that never mentions the
+    // rows are gone and offers no way back.
+    assert.match(window.document.querySelector(".empty").textContent,
+      /Nothing is filed/, "the page is still rendering the tab he can no longer see");
+    assert.ok(window.document.querySelector(".project-thread .item-comment-box"),
+      "there is nowhere to type");
   });
 
   /* Idea #166 -- *"The input field is at the top and the comments are below
