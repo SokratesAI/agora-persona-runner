@@ -444,14 +444,14 @@ def test_a_burst_with_no_uptime_says_it_cannot_judge_rather_than_passing():
 
 def test_every_blind_line_starts_with_a_marker_preflight_actually_matches():
     """A caveat preflight cannot match is dropped from the collapsed report."""
-    from tools.preflight import CAVEAT_MARKERS
+    from tools.preflight import is_caveat
     blind = []
     blind += hmt.judge_harm({"_at": BASE, "host": "server1"}, [])[0]
     blind += hmt.judge_harm(harm_row(uptime=None), [])[0]
     stated = [line for line in blind if line.startswith("CANNOT")]
     assert stated
     for line in stated:
-        assert any(line.startswith(marker) for marker in CAVEAT_MARKERS), line
+        assert is_caveat(line), line
 
 
 def test_main_prints_why_the_uptime_could_not_be_read(tmp_path, monkeypatch, capsys):
@@ -637,7 +637,7 @@ def test_main_says_why_it_could_not_split_by_pod(tmp_path, monkeypatch, capsys):
 
 
 def test_every_attribution_blind_line_starts_with_a_marker_preflight_matches():
-    from tools.preflight import CAVEAT_MARKERS
+    from tools.preflight import is_caveat
     short = series([1800] * 7, field="mem_available_mib")
     blind = hmt.attribute_slope(short, current_from(short))
     no_current = split_series([2000] * 7, [3020] * 7)
@@ -645,7 +645,7 @@ def test_every_attribution_blind_line_starts_with_a_marker_preflight_matches():
     stated = [line for line in blind if line.startswith("CANNOT")]
     assert len(stated) == 2
     for line in stated:
-        assert any(line.startswith(marker) for marker in CAVEAT_MARKERS), line
+        assert is_caveat(line), line
 
 
 def test_a_window_carrying_only_one_half_of_the_split_says_so():
