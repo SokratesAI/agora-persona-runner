@@ -119,10 +119,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.workload_health import (  # noqa: E402
+    CADVISOR_RSS_SERIES,
+    CADVISOR_SWAP_SERIES,
+    KUBEPODS,
     read_meminfo,
     read_node_capacity,
+    read_node_cgroup_series,
     read_pod_working_set,
 )
+
+#: The one machine-level cgroup cAdvisor breaks out on this node besides the
+#: root and the Pods. Measured 2026-08-31 from the live endpoint: the *only*
+#: `id=` labels it publishes outside `/kubepods.slice` are `/` and this, so
+#: there is no third slice being filtered out here -- the kubelet instruments
+#: the cgroups it is told to and nothing else on the box has one.
+K3S_CGROUP = "/system.slice/k3s.service"
+
 
 #: The ledger, on the pod's persistent volume. `$NOVA_WORKSPACE` is
 #: deliberately not used: it points at a per-cycle worktree when cycles run
@@ -271,7 +283,7 @@ def read_uptime_days(path="/proc/uptime"):
 
 
 def reading_now(meminfo, nodes, at=None, pressure=None, oom_kills=None,
-                uptime_days=None, pod_working_set=None):
+                uptime_days=None, pod_working_set=None, cgroup_split=None):
     """One ledger row for this instant, or `(None, why)`.
 
     `why` is always about the instrument, never about the box. The pressure
@@ -327,7 +339,121 @@ def reading_now(meminfo, nodes, at=None, pressure=None, oom_kills=None,
             # not anonymous, so the two instruments overlap and can cross.
             # `attribute_slope` says so rather than clamping it.
             row["host_anon_mib"] = round(anon / 1024 - pods_mib, 1)
+    if cgroup_split is not None:
+        row.update(cgroup_split)
     return row, None
+
+
+def read_cgroup_split(host, reader=read_node_cgroup_series):
+    """`({k3s_rss_mib, k3s_swap_mib, unowned_swap_mib}, None)`, or `(None, why)`.
+
+    The swap half of issue #131, turned from an instant into a series. The
+    cAdvisor read this wraps already names how much of the box k3s itself
+    holds -- 2,123Mi resident and 168Mi swapped on 2026-08-31 -- and every
+    cycle that has read it read it once and threw it away. A level answers
+    "is k3s big" (it is) and cannot answer the question the row actually
+    turns on, which is whether it is *getting* bigger. Eleven days of stale
+    `claude.exe` children passed every level check ever taken on this box.
+
+    `unowned_swap_mib` is the number I most want a slope on and the one I
+    can least explain: the root cgroup reports 1,664Mi swapped, k3s.service
+    168Mi and `/kubepods.slice` 1Mi, so ~1,495Mi of this box's swap belongs
+    to processes in no cgroup the kubelet instruments. Naming them needs a
+    host process list, which nothing here can reach -- no Pod on this node
+    sets `hostPID`, runs privileged, or mounts the host `/proc` (measured
+    Cycle 717), so `ps aux` is a thing only the owner can run. What does not
+    need him is the *direction*: a remainder that is flat is a steady state
+    to live with, and one that climbs is the 2026-08-29 outage happening
+    again slowly.
+
+    A missing series comes back as a missing key rather than a zero, for the
+    reason `read_node_cgroup_series` gives: "cAdvisor publishes no swap here"
+    and "nothing is swapped" are opposite facts that must not print the same.
+    """
+    series, why = reader(host)
+    if series is None:
+        return None, why
+    rss = series.get(CADVISOR_RSS_SERIES, {})
+    swap = series.get(CADVISOR_SWAP_SERIES, {})
+    if not swap:
+        return None, (
+            f"the cAdvisor read for {host} carried no {CADVISOR_SWAP_SERIES} "
+            "series, so how much of the swap is k3s cannot be told from how "
+            "much of it is nothing at all.")
+    split = {}
+    if K3S_CGROUP in rss:
+        split["k3s_rss_mib"] = round(rss[K3S_CGROUP], 1)
+    if K3S_CGROUP in swap:
+        split["k3s_swap_mib"] = round(swap[K3S_CGROUP], 1)
+    if "/" in swap and K3S_CGROUP in swap:
+        # kubepods holds ~1Mi here, but it is subtracted rather than ignored
+        # so the remainder stays a remainder if that ever changes.
+        remainder = swap["/"] - swap[K3S_CGROUP] - swap.get(KUBEPODS, 0.0)
+        split["unowned_swap_mib"] = round(remainder, 1)
+        split["swap_used_mib"] = round(swap["/"], 1)
+    if not split:
+        return None, (
+            f"the cAdvisor read for {host} carried no {K3S_CGROUP} row, so the "
+            "one machine-level cgroup outside the Pods was not instrumented.")
+    return split, None
+
+
+def attribute_swap(rows, current, min_readings=MIN_READINGS,
+                   min_span_hours=MIN_SPAN_HOURS):
+    """Whose swap is growing -- k3s's, or the processes nobody here can name.
+
+    Reported beside `attribute_slope` and, like it, this does not raise.
+    `judge` already raises on free swap falling toward zero; a second alarm
+    on the same event is one alarm nobody reads. What this adds is which of
+    the two halves is moving, because they have completely different fixes:
+    k3s growing is a control plane to restart, and the unowned half growing
+    is the 2026-08-29 incident recurring and needs the owner's `ps aux`.
+    """
+    if "unowned_swap_mib" not in current and "k3s_rss_mib" not in current:
+        return ["CANNOT SEE whose swap this is on this reading, so there is "
+                "nothing to compare the window against."]
+    lines = []
+    level = []
+    if "k3s_rss_mib" in current:
+        level.append(f"k3s.service {current['k3s_rss_mib']:.0f}Mi resident")
+    if "k3s_swap_mib" in current:
+        level.append(f"{current['k3s_swap_mib']:.0f}Mi of it swapped")
+    if "unowned_swap_mib" in current:
+        level.append(f"{current['unowned_swap_mib']:.0f}Mi swapped by processes "
+                     "in no cgroup the kubelet instruments")
+    lines.append("SWAP OWNERS  " + ", ".join(level) + ".")
+
+    k3s_rate, k3s_n, k3s_span = gated_slope(
+        rows, "k3s_rss_mib", min_readings, min_span_hours)
+    unowned_rate, unowned_n, unowned_span = gated_slope(
+        rows, "unowned_swap_mib", min_readings, min_span_hours)
+    if k3s_rate is None or unowned_rate is None:
+        lines.append(
+            f"  CANNOT SEE which of them is moving — k3s_rss_mib is on {k3s_n} "
+            f"reading(s) spanning {k3s_span:.1f}h and unowned_swap_mib on "
+            f"{unowned_n} spanning {unowned_span:.1f}h; a slope needs at least "
+            f"{min_readings} over {min_span_hours:.0f}h. Readings taken before "
+            "this split was recorded do not carry one, so this fills in as the "
+            "window rolls forward.")
+        return lines
+    lines.append(f"  k3s resident {k3s_rate:+.0f}Mi/day, unowned swap "
+                 f"{unowned_rate:+.0f}Mi/day over this window.")
+    rising = [name for name, rate in (("k3s.service", k3s_rate),
+                                      ("the unowned swap", unowned_rate))
+              if rate > 0]
+    if not rising:
+        lines.append("  Neither is growing over this window.")
+    elif len(rising) == 2:
+        lines.append("  Both are growing; this does not pick between them.")
+    elif rising[0] == "k3s.service":
+        lines.append("  Only k3s.service is growing — a control plane that can be "
+                     "restarted, and the one process on this box that is named.")
+    else:
+        lines.append("  Only the unowned swap is growing — processes on the host "
+                     "outside k3s and outside every Pod, which is the shape of the "
+                     "2026-08-29 outage and needs `ps aux --sort=-rss` from a host "
+                     "shell to name.")
+    return lines
 
 
 def load(path):
@@ -687,9 +813,18 @@ def main(argv=None):
     oom_kills, oom_why = read_oom_kills()
     uptime_days, uptime_why = read_uptime_days()
     pod_working_set, pods_why = read_pod_working_set()
+    # The host is only known after `reading_now` matches /proc/meminfo to a
+    # node, so this reads on the node whose capacity matched, or on the single
+    # node when there is one. A failure here costs the cgroup keys on this
+    # reading and nothing else -- the slope worked before they existed.
     current, why = reading_now(meminfo, nodes, pressure=pressure,
                                oom_kills=oom_kills, uptime_days=uptime_days,
                                pod_working_set=pod_working_set)
+    cgroup_why = None
+    if current is not None:
+        cgroup_split, cgroup_why = read_cgroup_split(current["host"])
+        if cgroup_split:
+            current.update(cgroup_split)
     if current is None:
         print(f"CANNOT ATTRIBUTE MEMORY — {why}")
         return 1
@@ -741,6 +876,11 @@ def main(argv=None):
         print(line)
     for line in attribute_slope(inside, current):
         print(line)
+    if cgroup_why is not None:
+        print(f"  CANNOT SEE whose swap it is — {cgroup_why}")
+    else:
+        for line in attribute_swap(inside, current):
+            print(line)
 
     if harmed or actionable:
         print("This is tools.workload_health's blind spot on purpose: it judges the "
