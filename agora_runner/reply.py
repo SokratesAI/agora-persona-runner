@@ -29,8 +29,27 @@ class MeteredProviderBlocked(RuntimeError):
     """An unattended turn tried to spend the prepaid metered API balance."""
 
 
+# `unattended` defaults to True, and the default is the whole guard.
+#
+# It defaulted to False until 2026-08-31, which meant the protection was
+# opt-in at every call site: `heartbeats.py` and `workflows.py` each pass
+# `unattended=True` and a test asserts they do, but a *fifth* call site
+# added by a later cycle would have spent the prepaid balance on a schedule
+# and nothing would have said so. That is the shape idea #85 is about --
+# spend enforced rather than remembered -- and a guard whose coverage
+# depends on every future author recalling one keyword argument is the
+# remembered kind.
+#
+# Defaulting closed inverts who has to remember: a new call site is guarded
+# until it argues its way out, and the two paths that genuinely have a
+# person behind them (`conversations.py`, a human typing in Agora, and
+# `/invoke`, the Ask and Preview boxes) now say `unattended=False` out loud
+# next to the reason. Failing this direction is cheap in the other
+# direction too -- a call site wrongly marked unattended still runs every
+# `claude-cli:` and `gemini:` model exactly as before; the only thing it
+# loses is the ability to spend money.
 def generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False,
-                    on_text=None, active_step=None, on_thinking=None, unattended=False):
+                    on_text=None, active_step=None, on_thinking=None, unattended=True):
     model = model_override or persona.get("model") or ""
     provider, _, model_id = model.partition(":")
     if unattended and provider in METERED_PROVIDERS and not ALLOW_METERED_UNATTENDED:

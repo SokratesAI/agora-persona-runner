@@ -130,8 +130,11 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
             posted_ids.append(message_id)
 
     try:
+        # `unattended=False` is stated rather than inherited: this is the one
+        # production path with a person on the other end of it, so it is the
+        # one allowed to reach a metered provider. reply.py defaults closed.
         reply = generate_reply(persona, caps, system, history, conversation["id"], model_override, sticky,
-                                on_text=on_text, on_thinking=on_thinking)
+                                on_text=on_text, on_thinking=on_thinking, unattended=False)
     except Exception:
         for message_id in posted_ids:
             try:
