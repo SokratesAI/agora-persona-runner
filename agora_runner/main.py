@@ -88,7 +88,11 @@ def _serve_while_draining():
     The wait itself is not shortened by a single second and must not be:
     it lasts exactly as long as the in-flight cycle, which is why an idle
     pod still exits within a tick. What changes is that the wait is spent
-    working. Starting a *new* heartbeat run stays forbidden -- that run
+    working. It can be *lengthened*, by at most one conversation turn: a
+    tick runs synchronously, so if the cycle finishes early in a tick the
+    replacement pod waits out the rest of it. That is the honest cost and
+    it is bounded by one turn, against a window that is otherwise up to
+    the full 48 minutes with every persona silent. Starting a *new* heartbeat run stays forbidden -- that run
     would be killed part-way, which is the regression the drain was built
     for -- so this passes `start_heartbeats=False`.
 
