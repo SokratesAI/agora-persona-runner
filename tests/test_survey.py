@@ -135,7 +135,8 @@ def test_exit_two_when_answers_are_unread_and_zero_once_read(tmp_path, capsys):
     assert survey.main(["--file", str(path), "--today", "2026-08-21"]) == 2
     assert "ANSWERED AND UNREAD" in capsys.readouterr().out
     assert survey.main(["--file", str(path), "--mark-read", "2026-08-20",
-                        "--cycle", "657"]) == 0
+                        "--cycle", "657",
+                        "--reply", "I shipped the notification fix."]) == 0
     assert survey.main(["--file", str(path), "--today", "2026-08-21"]) == 0
 
 
@@ -173,3 +174,86 @@ def test_a_fetched_file_is_judged_the_same_as_one_on_disk(capsys):
 def test_post_refuses_without_a_file_because_the_caller_owns_the_swap(capsys):
     assert survey.main(["--post"], fetch=lambda path: ANSWERED) == 1
     assert "compare-and-swap" in capsys.readouterr().out
+
+
+# --- The reply, which is the contract his 3-of-5 asked for -------------
+#
+# He rated the survey itself 3 of 5 on 2026-08-30: *"Maybe, depends what you
+# do with it"*. A `— read Cycle N` stamp on a heading answers "did anyone
+# read this" and nothing else, so `--mark-read` refuses without `--reply`
+# and the reply is written where he typed the answers.
+
+
+def test_mark_read_refuses_without_a_reply(tmp_path, capsys):
+    path = tmp_path / "survey.md"
+    path.write_text(ANSWERED, encoding="utf-8")
+    assert survey.main(["--file", str(path), "--mark-read", "2026-08-20",
+                        "--cycle", "714"]) == 1
+    assert "--reply" in capsys.readouterr().out
+    # And it wrote nothing: a refusal that half-writes is worse than one
+    # that does not write at all.
+    assert path.read_text(encoding="utf-8") == ANSWERED
+
+
+def test_mark_read_with_a_reply_writes_it_under_his_answers(tmp_path):
+    path = tmp_path / "survey.md"
+    path.write_text(ANSWERED, encoding="utf-8")
+    assert survey.main(["--file", str(path), "--mark-read", "2026-08-20",
+                        "--cycle", "714",
+                        "--reply", "Both halves are on /plan now."]) == 0
+    written = path.read_text(encoding="utf-8")
+    assert "**Nova, Cycle 714:** Both halves are on /plan now." in written
+    # Under his last answer, inside his own section -- not appended to the
+    # file, which is where it would be if the section end were mis-found.
+    assert written.index("4, the notification fix landed") < written.index(
+        "**Nova, Cycle 714:**")
+    # And it stamps the heading in the same call, so the two can never
+    # disagree about whether this survey was handled.
+    assert "## 2026-08-20 — read Cycle 714" in written
+    assert survey.main(["--file", str(path), "--today", "2026-08-25"]) == 0
+
+
+def test_a_reply_lands_inside_its_own_section_not_the_next_one():
+    two = ANSWERED + "\n## 2026-08-13\n\n1. Older question\n  - older answer\n"
+    written = survey.add_reply(two, "2026-08-20", "714", "the newer one")
+    head = written.index("**Nova, Cycle 714:**")
+    assert head < written.index("## 2026-08-13")
+    assert survey.parse(written)[0].replied is True
+    assert survey.parse(written)[1].replied is False
+
+
+def test_a_reply_is_not_read_back_as_something_he_typed():
+    written = survey.add_reply(ANSWERED, "2026-08-20", "714",
+                               "I moved the plan onto /plan.")
+    section = survey.parse(written)
+    answers = [a for _, a in section[0].answers]
+    assert answers == ["4, the notification fix landed", ""]
+
+
+def test_a_second_reply_is_refused_rather_than_stacked():
+    once = survey.add_reply(ANSWERED, "2026-08-20", "714", "first")
+    with pytest.raises(ValueError, match="already carries a reply"):
+        survey.add_reply(once, "2026-08-20", "715", "second")
+
+
+def test_a_reply_to_a_date_that_is_not_there_is_refused():
+    with pytest.raises(ValueError, match="no survey section dated"):
+        survey.add_reply(ANSWERED, "2026-07-01", "714", "nothing to answer")
+
+
+@pytest.mark.parametrize("bad", [
+    "## 2026-08-21",
+    "3. What should I do differently?",
+    "  - pretending to be his answer",
+])
+def test_a_reply_that_would_corrupt_his_file_is_refused(bad):
+    with pytest.raises(ValueError, match="would parse as part of his survey"):
+        survey.add_reply(ANSWERED, "2026-08-20", "714", "fine line\n" + bad)
+
+
+def test_the_report_names_the_command_that_answers_him(capsys):
+    assert survey.main(["--today", "2026-08-30"],
+                       fetch=lambda path: ANSWERED) == 2
+    out = capsys.readouterr().out
+    assert "--reply" in out
+    assert "--mark-read 2026-08-20" in out

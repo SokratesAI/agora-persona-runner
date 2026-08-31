@@ -40,6 +40,17 @@ exits 1 rather than reporting a clean cadence it never measured.
 is due, or he has answered one nobody has read. 1 when the file could not
 be read at all. 0 when the newest survey is fresh, or is waiting on him.
 
+**Reading his answers is not enough; the reply is the contract.** He rated
+the survey itself 3 of 5 on 2026-08-30 and said why: *"Maybe, depends what
+you do with it"*. Every other channel he writes to already answers him back
+-- `notes.md` moves a bullet under `## Read` with one line on what was done,
+`comments.md` moves one under `## Acknowledged`, a board row gets a comment
+-- and this one gave him a `— read Cycle N` stamp on a heading and nothing
+else. So `--mark-read` now **refuses without `--reply`**, and the reply is
+written into his file directly under his own answers, where he is already
+looking. A rule that lives only in a prompt is a rule a cycle forgets; this
+one is the argument parser.
+
 **An unanswered survey is never re-asked and never stacked.** Due means the
 newest section is at least `INTERVAL_DAYS` old *and answered*, or that the
 file holds no survey at all. Nagging him weekly for an answer he has
@@ -86,14 +97,21 @@ _ANSWER = re.compile(r"^  - ?(.*)$")
 
 READ_MARKER = "— read Cycle "
 
+#: How a reply is written into his file. It deliberately matches none of
+#: `_HEADER`, `_QUESTION` or `_ANSWER`: a reply that parsed as one of his
+#: own answer bullets would come back out of `parse` as something he
+#: typed, and the next cycle would read my words as his.
+REPLY_PREFIX = "**Nova, Cycle "
+
 
 class Section:
     """One survey: its date, its question/answer pairs, and who has read it."""
 
-    def __init__(self, date, answers, read_by=None):
+    def __init__(self, date, answers, read_by=None, replied=False):
         self.date = date
         self.answers = answers
         self.read_by = read_by
+        self.replied = replied
 
     @property
     def answered(self):
@@ -134,6 +152,12 @@ def parse(text):
             pending = None
             continue
         if current is None:
+            continue
+        if line.startswith(REPLY_PREFIX):
+            # Checked before the answer patterns on purpose: a reply is a
+            # paragraph of mine sitting inside his section, and the only
+            # thing `parse` has to know about it is that it is there.
+            current.replied = True
             continue
         question = _QUESTION.match(line)
         if question:
@@ -204,6 +228,55 @@ def mark_read(text, date_str, cycle):
     return "\n".join(out) + "\n"
 
 
+def add_reply(text, date_str, cycle, reply):
+    """`text` with my answer written under his answers in that section.
+
+    Placed inside his own section rather than appended to the file or
+    written somewhere else, because the whole complaint is that he could
+    not tell what came of what he typed. His answers and my reply read as
+    one exchange when they are three lines apart, and as two documents
+    when they are not.
+
+    One line per paragraph and no hard wrapping -- `personality.md`, and
+    the reason is Obsidian: a single newline renders as a real line break,
+    so a wrapped paragraph lands on his phone with one word on a line of
+    its own.
+
+    Raises `ValueError` rather than writing something wrong: an unknown
+    date would otherwise write a reply into a file where nobody would find
+    it, a second reply would leave two answers to one survey with nothing
+    saying which is current, and a reply line that parses as one of his
+    answer bullets or as a section header corrupts the document for every
+    later read.
+    """
+    for line in reply.splitlines():
+        if _HEADER.match(line) or _QUESTION.match(line) or _ANSWER.match(line):
+            raise ValueError(
+                "a reply line would parse as part of his survey: %r" % line)
+    lines = text.splitlines()
+    start = None
+    for n, line in enumerate(lines):
+        header = _HEADER.match(line)
+        if header and header.group(1) == date_str:
+            start = n
+            break
+    if start is None:
+        raise ValueError("no survey section dated %s" % date_str)
+    end = len(lines)
+    for n in range(start + 1, len(lines)):
+        if _HEADER.match(lines[n]):
+            end = n
+            break
+    for line in lines[start + 1:end]:
+        if line.startswith(REPLY_PREFIX):
+            raise ValueError("the %s survey already carries a reply" % date_str)
+    at = end
+    while at > start + 1 and not lines[at - 1].strip():
+        at -= 1
+    block = ["", "%s%s:** %s" % (REPLY_PREFIX, cycle, reply.strip())]
+    return "\n".join(lines[:at] + block + lines[at:]) + "\n"
+
+
 def _fetch(path):
     """`vault_tool.py get` as text, or `None` if it did not really return one.
 
@@ -235,6 +308,14 @@ def report(sections, today, out=None):
         for question, answer in section.answers:
             print("    %s" % question, file=out)
             print("      %s" % (answer.strip() or "(no answer)"), file=out)
+        # The command, not just the verdict. Every other check here names
+        # its own fix, and this one asks for a sentence I have to write --
+        # which is exactly the step a cycle skips when it has to go and
+        # look up how.
+        print("    Answer him where he asked, then stamp it: "
+              "python3 -m tools.survey --file survey.md --mark-read %s "
+              "--cycle <N> --reply '<what I did about it>'" % section.date,
+              file=out)
     if due:
         print("DUE  post a new survey -- %s" % reason, file=out)
     print("Judged %d survey(s) in his own vault file; weekly cadence, "
@@ -257,6 +338,8 @@ def main(argv=None, fetch=_fetch, out=None):
     parser.add_argument("--mark-read", metavar="DATE",
                         help="stamp that section's answers as read")
     parser.add_argument("--cycle", help="the cycle number for --mark-read")
+    parser.add_argument("--reply", help="what I did about his answers; "
+                                        "written into his file under them")
     args = parser.parse_args(argv)
 
     today = (_dt.date.fromisoformat(args.today) if args.today
@@ -286,7 +369,18 @@ def main(argv=None, fetch=_fetch, out=None):
             if not args.cycle:
                 print("--mark-read needs --cycle", file=out)
                 return 1
-            new = mark_read(text, args.mark_read, args.cycle)
+            if not (args.reply or "").strip():
+                print("--mark-read needs --reply: a stamp on the heading "
+                      "tells him a cycle read this and nothing about what "
+                      "came of it, which is the 3-of-5 he gave the survey "
+                      "itself", file=out)
+                return 1
+            try:
+                new = add_reply(text, args.mark_read, args.cycle, args.reply)
+            except ValueError as exc:
+                print("CANNOT REPLY  %s" % exc, file=out)
+                return 1
+            new = mark_read(new, args.mark_read, args.cycle)
         else:
             new = post(text, today.isoformat())
         with open(args.file, "w", encoding="utf-8") as handle:
