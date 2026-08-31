@@ -658,8 +658,69 @@ def test_a_window_carrying_only_one_half_of_the_split_says_so():
     for row in rows[:-1]:
         del row["pods_working_set_mib"]
     lines = hmt.attribute_slope(rows, current_from(rows))
-    assert lines == [
-        "CANNOT SEE the host/Pod split over this window — readings taken "
-        "before it was recorded do not carry one, so this fills in as the "
-        "window rolls forward."
-    ]
+    assert lines[0] == ("ATTRIBUTION  outside every Pod cgroup: 2000Mi now. "
+                        "Pods: 3020Mi now.")
+    assert lines[1].startswith("CANNOT SEE which side is moving")
+    assert "pods_working_set_mib on 1 spanning 0.0h" in lines[1]
+    assert len(lines) == 2
+    assert not any("Mi/day" in line for line in lines)
+
+
+def test_a_rate_is_never_fitted_to_a_thinner_series_than_the_gate_allows():
+    """The window passed the gate; the field's own sub-series did not.
+
+    Measured on the live ledger 2026-08-31: 19 readings over 6.0h in the
+    window, `host_anon_mib` on 4 of them spanning 49 minutes, and the
+    printed attribution was -7207Mi/day against a 1912Mi value. The gate
+    was on the window, and `slope_per_day` silently drops the rows that do
+    not carry the field, so it was never on the sample being fitted.
+    """
+    rows = split_series([2000, 2100, 2200, 2300, 2400, 2500, 2600],
+                        [3020] * 7)
+    for row in rows[:-4]:
+        del row["host_anon_mib"]
+        del row["pods_working_set_mib"]
+    lines = hmt.attribute_slope(rows, current_from(rows))
+    assert not any("Mi/day" in line for line in lines)
+    assert any(line.startswith("CANNOT SEE which side is moving") for line in lines)
+    assert any("host_anon_mib is on 4 reading(s) spanning 3.0h" in line
+               for line in lines)
+    # The levels were measured on this reading and are not thrown away with
+    # the rate that could not be fitted.
+    assert lines[0].startswith("ATTRIBUTION")
+    assert "2600Mi now" in lines[0]
+
+
+def test_a_sparse_tracked_field_is_not_projected_to_zero():
+    """`judge` has the same hole and the same fix; its output is the loud one."""
+    rows = series([1800] * 7, field="swap_free_mib", other=1800.0)
+    for row in rows[:-3]:
+        del row["mem_available_mib"]
+    rows[-3]["mem_available_mib"] = 900.0
+    rows[-2]["mem_available_mib"] = 600.0
+    rows[-1]["mem_available_mib"] = 300.0
+    lines, actionable, judged = hmt.judge(rows, current_from(rows), 7.0)
+    assert judged
+    assert not actionable
+    assert any(line.startswith("CANNOT TREND available memory") for line in lines)
+    assert any("3 of the 7 reading(s) in the window carry it" in line
+               for line in lines)
+    assert not any(line.startswith("FALLING") and "available memory" in line
+                   for line in lines)
+
+
+def test_a_tracked_field_missing_from_this_reading_says_which_half_is_missing():
+    rows = series([1800] * 7, field="mem_available_mib", other=1800.0)
+    current = current_from(rows)
+    del current["mem_available_mib"]
+    lines, _, _ = hmt.judge(rows, current, 7.0)
+    assert any(line == "CANNOT TREND available memory — this reading does not carry it."
+               for line in lines)
+
+
+def test_gated_slope_reports_the_series_it_actually_fitted():
+    rows = split_series([2000, 2100, 2200, 2300, 2400, 2500, 2600], [3020] * 7)
+    rate, count, span = hmt.gated_slope(rows, "host_anon_mib")
+    assert count == 7
+    assert span == pytest.approx(6.0)
+    assert rate == pytest.approx(2400.0)
