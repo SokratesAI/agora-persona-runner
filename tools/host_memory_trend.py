@@ -54,10 +54,35 @@ projection.
 
 Cycle 705 added the third thing that needs no grant: *which side of the pod
 boundary* the memory sits on, trended rather than read once. `nodes/proxy`
-is Forbidden for both of this loop's service accounts -- measured this cycle
-from the bridge pod and from the runner pod, and note that
-`kubectl auth can-i get nodes/proxy` answers `yes` while the call itself is
-refused, so that check is not the one to trust. What is readable from here
+is Forbidden for both of this loop's service accounts -- measured Cycle 705
+from the bridge pod and from the runner pod, and re-measured Cycle 709.
+
+The note that used to sit here said `kubectl auth can-i get nodes/proxy`
+answers `yes` while the call is refused, and concluded "that check is not
+the one to trust". The check was fine; the question was wrong. In
+`kubectl auth can-i`, `<resource>/<name>` is a **named object**, not a
+subresource -- `can-i get nodes/definitely-not-a-real-node` also answers
+`yes` (measured Cycle 709), because this loop holds `get list watch` on
+`nodes` and every node name is covered by it. Ask about a subresource with
+the flag that means one:
+
+    kubectl auth can-i get --subresource=proxy nodes
+
+which answers `no`, and agrees with the 403 the call itself returns. So
+there is a working instrument for "may I read this subresource", and it is
+one call, and it costs nothing.
+
+Measured Cycle 709 in that form: `proxy`, `metrics` and `stats` are all
+`no`. That third answer closes an avenue nobody had tested -- the kubelet
+listens on `:10250` and serves `/metrics/cadvisor` (which carries a line
+per cgroup on the node, including `/system.slice`, i.e. exactly the
+attribution below) without going through `nodes/proxy` at all, but it
+authorizes that path against `nodes/metrics`, and this loop does not have
+it. The port is also refused by this namespace's own egress policy, in
+0.0003s from both pods. Opening the NetworkPolicy alone would not have
+worked, and now nobody has to build it to find that out.
+
+What is readable from here
 is `AnonPages` minus every pod's working set, and that is the number which
 grew for eleven days before the 08-29 outage. `workload_health.attribution`
 reads it at one instant; nothing trended it, and the headroom this file

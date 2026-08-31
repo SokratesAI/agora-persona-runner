@@ -613,6 +613,42 @@ def _check_dream_pass_sees_the_done_marker_the_loop_writes() -> Optional[str]:
     return None
 
 
+def _check_subresource_access_is_asked_with_the_flag() -> Optional[str]:
+    """`can-i get nodes/proxy` asks about a node *named* `proxy`.
+
+    Cycle 705 measured a 403 on `nodes/proxy`, saw `kubectl auth can-i get
+    nodes/proxy` answer `yes`, and wrote "that check is not the one to
+    trust" into `tools/host_memory_trend.py` -- where four later cycles read
+    it, and where it also reached this loop's persistent memory. The
+    instrument was never wrong. In `kubectl auth can-i`, `<resource>/<name>`
+    is a named object, and this loop holds `get list watch` on `nodes`, so
+    every node name answers `yes` -- including ones that do not exist.
+    Asked as `--subresource=proxy`, it answers `no` and agrees with the call.
+
+    That mattered rather than being a curiosity: `nodes/metrics` and
+    `nodes/stats` answer `no` in the same form, which is what closes the
+    kubelet's own `:10250/metrics/cadvisor` -- the one path that carries a
+    line per host cgroup, and the one a cycle would otherwise have opened a
+    NetworkPolicy for before finding out.
+
+    Two-sided: the file must not carry the discredited advice, and it must
+    carry the form that works, since deleting the sentence teaches nobody
+    the question to ask instead.
+    """
+    body = Path(__file__).with_name("host_memory_trend.py").read_text(encoding="utf-8")
+    if "that check is not the one to trust" in body:
+        return ("tools/host_memory_trend.py still tells a cycle not to trust "
+                "`kubectl auth can-i` on a subresource -- the check was fine, the "
+                "question was wrong, and the note sent four cycles past a working "
+                "instrument")
+    if "--subresource=" not in body:
+        return ("tools/host_memory_trend.py names no way to ask whether a subresource "
+                "is readable -- `kubectl auth can-i get --subresource=proxy nodes` is "
+                "the form that agrees with the 403, and without it the next cycle "
+                "re-derives the wrong one")
+    return None
+
+
 CORPUS = [
     Regression(
         slug="a-done-marker-the-matcher-could-not-see",
@@ -754,6 +790,18 @@ CORPUS = [
                  "cycles began overlapping, two of them writing there at once would clobber "
                  "each other's working tree."),
         check=_check_prompt_does_not_hardcode_the_shared_checkout,
+    ),
+    Regression(
+        slug="can-i-was-asked-about-a-node-named-proxy",
+        cycle="709",
+        date="2026-08-31",
+        surface="read the text",
+        failure=("A 403 on `nodes/proxy` alongside a `yes` from `kubectl auth can-i get "
+                 "nodes/proxy` was written up as the instrument lying. It was not: that "
+                 "form asks about a node *named* `proxy`. Four cycles carried the wrong "
+                 "lesson, and it hid that `nodes/metrics` is denied too -- which is what "
+                 "actually closes the kubelet's own cadvisor endpoint."),
+        check=_check_subresource_access_is_asked_with_the_flag,
     ),
 ]
 
