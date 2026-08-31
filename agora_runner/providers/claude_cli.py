@@ -143,6 +143,17 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         # on, a second heartbeat blocks on the bridge's lock rather than
         # overlapping the first.
         "allow_concurrent": CLAUDE_CLI_CONCURRENT,
+        # Which persona is speaking. The bridge uses it for one thing --
+        # pinning this persona's own auto-memory directory, so a chat
+        # persona remembers across conversations the way a Nova cycle
+        # remembers across cycles (idea #165). Until this field existed the
+        # bridge had no idea who it was running, so it pinned a memory
+        # directory only for a Nova cycle and every other turn fell back to
+        # the CLI's per-working-directory default -- which on a concurrent
+        # slot is a fresh, empty directory every single turn. That is why
+        # all three of Agora's memory stores measured empty: not a missing
+        # feature, a missing identity on this request.
+        "persona_id": persona.get("id") or "",
     }
     if attachments:
         body["attachments"] = attachments
