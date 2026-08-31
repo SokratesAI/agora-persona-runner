@@ -676,6 +676,17 @@ CADVISOR = "\n".join([
     'container_memory_working_set_bytes{container="",id="/system.slice/k3s.service",image="",name="",namespace="",pod=""} 2.437492736e+09 1788176240125',
     'container_memory_working_set_bytes{container="agora",id="/kubepods.slice/pod-abc/xyz",image="i",name="n",namespace="agents",pod="agora-1"} 1.048576e+08 1788176240125',
     "container_memory_rss{container=\"\",id=\"/\",image=\"\",name=\"\",namespace=\"\",pod=\"\"} 4.0e+09 1788176238682",
+    # Cycle 716, issue #131: the swap and rss series ride the same fetch.
+    'container_memory_rss{container="",id="/system.slice/k3s.service",image="",name="",namespace="",pod=""} 2.202009600e+09 1788176240125',
+    # Two of the dozen other container_memory_* series the real endpoint
+    # carries, so the reader is asked to ignore something rather than only
+    # being handed what it wants.
+    'container_memory_cache{container="",id="/",image="",name="",namespace="",pod=""} 1.979711488e+09 1788176238682',
+    'container_memory_usage_bytes{container="",id="/",image="",name="",namespace="",pod=""} 6.81836544e+09 1788176238682',
+    'container_memory_swap{container="",id="/",image="",name="",namespace="",pod=""} 1.7433624576e+09 1788176238682',
+    'container_memory_swap{container="",id="/kubepods.slice",image="",name="",namespace="",pod=""} 1.048576e+06 1788176238732',
+    'container_memory_swap{container="",id="/system.slice/k3s.service",image="",name="",namespace="",pod=""} 1.77209344e+08 1788176240125',
+    'container_memory_swap{container="agora",id="/kubepods.slice/pod-abc/xyz",image="i",name="n",namespace="agents",pod="agora-1"} 9.0e+08 1788176240125',
 ])
 
 
@@ -806,3 +817,66 @@ def test_a_negative_remainder_is_named_as_skew_not_printed_as_a_quantity():
     joined = "\n".join(wh.name_the_host_share(cgroups, None))
     assert "-500Mi in no cgroup" in joined
     assert "do not add up" in joined
+
+
+# --- Cycle 716, issue #131: whose swap is it, and is the working set real. ---
+
+
+def test_one_fetch_carries_the_swap_and_rss_series_beside_the_working_set():
+    series, why = wh.read_node_cgroup_series("server1", runner=_cadvisor())
+    assert why is None
+    # Three series off one read: a second fetch would be a second sample of a
+    # moving machine, and the parts would disagree for no real reason.
+    assert set(series) == {wh.CADVISOR_SERIES, wh.CADVISOR_RSS_SERIES,
+                           wh.CADVISOR_SWAP_SERIES}
+    swap = series[wh.CADVISOR_SWAP_SERIES]
+    # The Pod line is 900Mi of swap and must not land here: `/kubepods.slice`
+    # already charges it, and counting it twice inflates the workloads' share.
+    assert "/kubepods.slice/pod-abc/xyz" not in swap
+    assert round(swap["/kubepods.slice"]) == 1
+
+
+def test_a_series_the_endpoint_does_not_carry_is_absent_not_empty():
+    body = "\n".join(l for l in CADVISOR.splitlines()
+                     if not l.startswith("container_memory_swap"))
+    series, why = wh.read_node_cgroup_series("server1", runner=_cadvisor(body=body))
+    assert why is None
+    # A kernel without swap accounting publishes no such series. "0Mi swapped"
+    # would be a claim; a missing key is the truth, and `name_the_swap` below
+    # is what turns that into silence rather than into a number.
+    assert wh.CADVISOR_SWAP_SERIES not in series
+    assert wh.name_the_swap(MEMINFO_FULL_HOST, series.get(wh.CADVISOR_SWAP_SERIES)) == []
+
+
+def test_the_swap_line_names_the_share_that_is_neither_k3s_nor_the_pods():
+    series, _ = wh.read_node_cgroup_series("server1", runner=_cadvisor())
+    line = "\n".join(wh.name_the_swap(MEMINFO_FULL_HOST,
+                                      series[wh.CADVISOR_SWAP_SERIES]))
+    # 1663Mi at the root, 1Mi in every Pod together, 169Mi in k3s. The whole
+    # point of issue #131's swap half is that the remaining ~1.5GB is neither.
+    assert "1663Mi swapped out" in line
+    assert "/kubepods.slice holds 1Mi" in line
+    assert "/system.slice/k3s.service 169Mi" in line
+    assert "1493Mi swapped by processes in no cgroup" in line
+
+
+def test_a_node_with_nothing_swapped_says_so_rather_than_naming_shares():
+    line = "\n".join(wh.name_the_swap(MEMINFO_FULL_HOST, {"/": 0.0}))
+    assert "Nothing on this node is swapped out" in line
+    assert "holds" not in line
+
+
+def test_the_named_share_says_how_much_of_it_is_resident_not_cache():
+    series, _ = wh.read_node_cgroup_series("server1", runner=_cadvisor())
+    line = "\n".join(wh.name_the_host_share(series[wh.CADVISOR_SERIES], None,
+                                            series[wh.CADVISOR_RSS_SERIES]))
+    # Working set counts reclaimable page cache; 2100Mi of k3s's 2325Mi is
+    # anonymous, which is what makes it a real claim on the box.
+    assert "/system.slice/k3s.service 2325Mi (2100Mi of it resident anonymous)" in line
+
+
+def test_the_named_share_stays_silent_about_residency_when_rss_is_unread():
+    series, _ = wh.read_node_cgroup_series("server1", runner=_cadvisor())
+    line = "\n".join(wh.name_the_host_share(series[wh.CADVISOR_SERIES], None, None))
+    assert "/system.slice/k3s.service 2325Mi." in line
+    assert "resident" not in line
