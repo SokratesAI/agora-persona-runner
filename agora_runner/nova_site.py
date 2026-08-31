@@ -2599,7 +2599,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # change, and a CACHE_FRESH_SECONDS window would show
                 # the owner a thread that stays "waiting" after the answer
                 # has already landed.
-                self._send_json(200, ask_thread())
+                # `limit` is how he scrolls back: the dock opens on
+                # `MAX_THREAD` and asks for one page more each time he
+                # reaches the top. `nova_ask.thread` clamps it.
+                self._send_json(200, ask_thread((query.get("limit") or [""])[0]))
                 return
             if path == "/api/conversations":
                 # Not cached, for `/api/ask`'s reason: this is the list he
@@ -2615,7 +2618,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # second kind of matching for a query parameter would be a
                 # cost with no reader.
                 wanted = (query.get("id") or [""])[0]
-                payload = conversation_thread(wanted)
+                # Same `limit` as `/api/ask`, same clamp, same reason.
+                payload = conversation_thread(
+                    wanted, (query.get("limit") or [""])[0])
                 # Opening a thread is what marks it seen. It is here rather
                 # than inside `conversation_thread` so the reader stays a
                 # reader: this route is the only caller that means "he is

@@ -9086,6 +9086,119 @@ describe("the chat dock", () => {
     assert.notEqual(thread.scrollTop, 0, "the repaint put him at the top of the thread");
   });
 
+  /* Scrolling back past the first page.
+   *
+   * His capture, `issues.md` 2026-08-31, with a screenshot of this dock:
+   * *"I can only see the latest messages in the chat. I can't scroll upwards
+   * and see the earlier messages."* The endpoints answer with the newest 40
+   * and took no parameter, so 79 of the 720 conversations in the store had a
+   * tail he could not reach.
+   *
+   * These need the same faked layout as the three above and for a sharper
+   * reason: the whole mechanism is `scrollTop` against `scrollHeight`, and
+   * on jsdom's real numbers (0 and 0) the trigger fires on every thread and
+   * the anchor arithmetic is 0 - 0. */
+  function pagedThread(pages) {
+    const urls = [];
+    let call = 0;
+    return {
+      urls,
+      ask: (url) => {
+        urls.push(url);
+        const page = pages[Math.min(call, pages.length - 1)];
+        call += 1;
+        return page;
+      },
+    };
+  }
+
+  function threadOf(count, hasMore) {
+    const messages = [];
+    for (let i = 0; i < count; i += 1) {
+      messages.push({ id: "m" + i, sender: "Nova Answers", text: "message " + i });
+    }
+    return { conversationId: "c", waiting: false, hasMore, messages };
+  }
+
+  test("reaching the top of a long thread fetches the page before it", async () => {
+    let timers;
+    const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: paged.ask,
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.equal(threadTexts(window), 40, "the first page did not paint");
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new window.Event("scroll"));
+    await timers.fire();
+    assert.equal(threadTexts(window), 80, "reaching the top fetched nothing older");
+    assert.ok(paged.urls[paged.urls.length - 1].includes("limit=80"),
+      "the second fetch did not ask for a bigger page: " + paged.urls.join(" "));
+  });
+
+  test("an older page leaves him on the message he was reading", async () => {
+    let timers;
+    const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: paged.ask,
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    // 1000px of thread in a 200px panel, and he has scrolled to the top of it.
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new window.Event("scroll"));
+    // The older page doubles the thread: 2000px, and everything added went in
+    // above him, so the message he was looking at is now 1000px down.
+    scrollable(thread, 2000, 200);
+    await timers.fire();
+    assert.equal(thread.scrollTop, 1000,
+      "the older page moved him off the message he asked for it from");
+  });
+
+  test("a thread with nothing older does not fetch when he reaches the top", async () => {
+    let timers;
+    const paged = pagedThread([threadOf(12, false)]);
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: paged.ask,
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const before = paged.urls.length;
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new window.Event("scroll"));
+    await timers.fire();
+    assert.equal(paged.urls.length, before,
+      "the dock asked for messages the server had already said do not exist");
+  });
+
+  test("a flick at the top does not send one fetch per scroll event", async () => {
+    let timers;
+    const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: paged.ask,
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const before = paged.urls.length;
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 0;
+    // Three scroll events before any of them can have been answered.
+    thread.dispatchEvent(new window.Event("scroll"));
+    thread.dispatchEvent(new window.Event("scroll"));
+    thread.dispatchEvent(new window.Event("scroll"));
+    await timers.fire();
+    assert.equal(paged.urls.length - before, 1,
+      "one flick at the top sent " + (paged.urls.length - before) + " fetches");
+  });
+
   /* The growing composer -- his capture, issues.md 2026-08-25: *"make the
    * input field start at one line, then when the content is two lines it
    * gets tall enough to fit two lines and dynamicly scales up to 10 lines
@@ -11617,7 +11730,7 @@ describe("the chat dock's conversation switcher", () => {
     assert.equal(rows.length, 2, "the switcher did not render the conversation row");
     rows[1].dispatchEvent(new window.Event("click"));
     await tick();
-    assert.deepEqual(asked, ["/api/conversations/thread?id=c-1"]);
+    assert.deepEqual(asked, ["/api/conversations/thread?id=c-1&limit=40"]);
     assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
       .map((n) => n.textContent), ["Two coats."]);
     assert.equal(window.document.getElementById("chat-title").textContent, "Roofing");
@@ -11793,7 +11906,7 @@ describe("the chat dock folds the heartbeat threads away", () => {
     assert.equal(rows.length, 2, "the heartbeat fold rendered no rows to tap");
     rows[1].dispatchEvent(new window.Event("click"));
     await tick();
-    assert.deepEqual(asked, ["/api/conversations/thread?id=c-b2"]);
+    assert.deepEqual(asked, ["/api/conversations/thread?id=c-b2&limit=40"]);
     assert.equal(window.document.getElementById("chat-title").textContent, "Nova — Cycle 470");
   });
 

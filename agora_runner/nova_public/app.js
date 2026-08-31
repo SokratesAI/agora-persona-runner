@@ -10915,6 +10915,28 @@
      * followed the thread down forever, which is the bug it exists to fix. */
     var stickToBottom = true;
 
+    /* Scrolling back through a thread.
+     *
+     * His capture, `issues.md` 2026-08-31, with a screenshot of this dock:
+     * *"I can only see the latest messages in the chat. I can't scroll
+     * upwards and see the earlier messages."* Both endpoints answer with the
+     * newest `MAX_THREAD` messages and there was no way to ask for the ones
+     * before them, so a thread longer than a page had a hard floor -- 79 of
+     * the 720 conversations in the store are longer than that.
+     *
+     * The page grows rather than paging in chunks he has to stitch: reaching
+     * the top asks for one `PAGE_STEP` more of the same thread, so the
+     * payload is always "the newest N" and nothing has to merge two fetches.
+     * `hasMore` comes from the server and is the only thing that stops it.
+     * `pendingAnchor` is the scroll height measured before an older page is
+     * painted -- the difference after it is exactly how far down the message
+     * he was reading has moved. */
+    var PAGE_STEP = 40;
+    var pageLimit = PAGE_STEP;
+    var hasMore = false;
+    var loadingOlder = false;
+    var pendingAnchor = null;
+
     var menuBtn = document.getElementById("chat-menu");
     var listEl = document.getElementById("chat-list");
     var titleEl = document.getElementById("chat-title");
@@ -10973,9 +10995,10 @@
 
     function threadUrl() {
       if (source.kind === "conv") {
-        return "/api/conversations/thread?id=" + encodeURIComponent(source.id);
+        return "/api/conversations/thread?id=" + encodeURIComponent(source.id)
+          + "&limit=" + pageLimit;
       }
-      return "/api/ask";
+      return "/api/ask?limit=" + pageLimit;
     }
 
     /* The composer grows with what he types. His capture, issues.md
@@ -11093,8 +11116,13 @@
        * after it: `renderAskThread` empties the container, and emptying it
        * puts `scrollTop` back to 0. So a version of this that asked where he
        * was after painting would see every thread pinned to the top. */
+      // `hasMore` absent means an older server or the empty-thread reply;
+      // both are honestly "nothing more to fetch", so the default is false.
+      hasMore = !!(payload && payload.hasMore);
       var follow = stickToBottom || atBottom(thread);
       var was = thread.scrollTop;
+      var grewFrom = pendingAnchor;
+      pendingAnchor = null;
       renderAskThread(thread, payload);
       loaded = true;
       /* The repaint is what moved him, so his place has to be put back either
@@ -11109,7 +11137,16 @@
        * while he read an old message would have thrown him to the *top* of
        * the thread instead of the bottom. */
       if (isOpen) {
-        thread.scrollTop = follow ? thread.scrollHeight : was;
+        if (grewFrom !== null) {
+          /* An older page has just been prepended. Neither branch below is
+           * right for it: the bottom would throw away the scroll back he
+           * just asked for, and `was` would leave him at the top of messages
+           * he has not read yet. What keeps him on the message he was
+           * looking at is the growth -- everything added went in above him. */
+          thread.scrollTop = thread.scrollHeight - grewFrom;
+        } else {
+          thread.scrollTop = follow ? thread.scrollHeight : was;
+        }
         stickToBottom = false;
       }
     }
@@ -11165,6 +11202,12 @@
     function cacheThread(payload) {
       var store = localStore();
       if (!store) return;
+      /* Only the newest page is worth keeping. The cache exists to paint the
+       * dock before the network answers (`issues.md` #111), and a 500-message
+       * thread he happened to scroll back through would be the thing every
+       * later open pays to parse -- and `localStorage` is shared by every
+       * thread in `held`, so one long one can push the rest out. */
+      if (pageLimit > PAGE_STEP) return;
       // Not null: `readThreads` only returns null when there is no store, and
       // that is the line above.
       var held = readThreads();
@@ -11222,6 +11265,47 @@
           });
       }, ASK_POLL_MS);
     }
+
+    /* One more page of the same thread, asked for by reaching the top.
+     *
+     * The guard is `loadingOlder` rather than a debounce on the scroll event:
+     * a fetch takes long enough that a phone flicking at the top would send
+     * several, and each answer repaints, so the second one would land on a
+     * thread the first had already moved under him. */
+    function loadOlder() {
+      if (loadingOlder || !hasMore || !isOpen) return;
+      loadingOlder = true;
+      pageLimit += PAGE_STEP;
+      // Measured before the fetch and used after the paint. It is where his
+      // reading position is relative to the bottom of the thread, which is
+      // the one thing a prepended page does not change.
+      pendingAnchor = thread.scrollHeight;
+      var token = sourceToken;
+      fetchPage(threadUrl())
+        .then(function (payload) {
+          if (token !== sourceToken) return;
+          paint(payload);
+        })
+        .catch(function () {
+          // Put the page size back: a failed fetch has painted nothing, so
+          // leaving it raised would make the next poll silently ask for a
+          // page he never got, and the retry on the next flick impossible.
+          if (token !== sourceToken) return;
+          pageLimit -= PAGE_STEP;
+          pendingAnchor = null;
+        })
+        .then(function () { loadingOlder = false; });
+    }
+
+    /* How close to the top counts as asking for more. Bigger than
+     * `STICK_SLOP_PX`'s job -- this one wants to fire slightly *before* he
+     * hits the ceiling, so the older messages are already arriving by the
+     * time he gets there rather than after a visible stop. */
+    var OLDER_TRIGGER_PX = 96;
+
+    thread.addEventListener("scroll", function () {
+      if (thread.scrollTop <= OLDER_TRIGGER_PX) loadOlder();
+    });
 
     function loadThread() {
       var token = sourceToken;
@@ -11558,6 +11642,12 @@
       // looking at right now.
       loaded = false;
       lastCount = 0;
+      // A new thread opens on its newest page, whatever he had scrolled back
+      // to on the last one.
+      pageLimit = PAGE_STEP;
+      hasMore = false;
+      loadingOlder = false;
+      pendingAnchor = null;
       titleEl.textContent = source.name;
       thread.textContent = "";
       // Only the thread the cache actually holds paints instantly; every

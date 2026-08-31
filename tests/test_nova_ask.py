@@ -114,7 +114,8 @@ def test_empty_and_oversized_questions_are_refused_without_reaching_agora():
 
 def test_a_reader_who_asked_nothing_does_not_manufacture_a_conversation():
     payload, calls = _run(nova_ask.thread, [])
-    assert payload == {"conversationId": None, "messages": [], "waiting": False}
+    assert payload == {"conversationId": None, "messages": [], "waiting": False,
+                       "hasMore": False}
     assert [c for c in calls if c[0] == "POST"] == []
 
 

@@ -36,7 +36,8 @@ every other conversation.
 """
 
 from agora_runner.audit import narration_passage
-from agora_runner.nova_conversations import ANSWER_PERSONA_ID, keep_only_live_passages
+from agora_runner.nova_conversations import (
+    ANSWER_PERSONA_ID, clamp_thread_limit, keep_only_live_passages)
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.log import log
 
@@ -203,7 +204,7 @@ def _chip(message):
     }
 
 
-def thread():
+def thread(limit=MAX_THREAD):
     """What the page renders: the visible tail of the questions thread.
 
     Activity, thinking, forgotten and system messages are dropped for the
@@ -213,10 +214,17 @@ def thread():
     """
     cid = conversation_id()
     if not cid:
-        return {"conversationId": None, "messages": [], "waiting": False}
-    status, detail = agora_get(f"/conversations/{cid}/messages?limit={MAX_THREAD}")
+        return {"conversationId": None, "messages": [], "waiting": False,
+                "hasMore": False}
+    # `limit + 1` and `hasMore` mean exactly what they mean in
+    # `nova_conversations.thread`, and the clamp is imported from there
+    # rather than re-derived: this is the same dock asking the same
+    # question of a thread that happens to be found by tag instead of by id.
+    limit = clamp_thread_limit(limit)
+    status, detail = agora_get(f"/conversations/{cid}/messages?limit={limit + 1}")
     if status != 200:
         raise RuntimeError(f"conversation fetch returned {status}")
+    has_more = len(detail.get("messages", [])) > limit
     messages = []
     # What the turn is doing right now, for the pending bubble. Reset on
     # every settled message he sends, so a follow-up question does not
@@ -265,7 +273,8 @@ def thread():
     # is still going, never that it finished.
     settled = [m for m in messages if not m["partial"]]
     waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
-    payload = {"conversationId": cid, "messages": messages[-MAX_THREAD:], "waiting": waiting}
+    payload = {"conversationId": cid, "messages": messages[-limit:],
+               "waiting": waiting, "hasMore": has_more}
     if waiting:
         # Only while the turn is running: a progress block on a finished
         # thread is a stale clock the page would keep counting up.
