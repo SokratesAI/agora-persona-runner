@@ -138,6 +138,7 @@ CHECKS = (
     "running_images",
     "workload_health",
     "host_memory_trend",
+    "memory_headroom",
     "ci_health",
     "nas_health",
     "nas_watch",
