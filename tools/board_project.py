@@ -1,11 +1,14 @@
 """Set the `Project` cell on one or more board rows, on his boards or my own.
 
 `agora_runner.nova_boards.set_row_project` has existed since the project
-dashboard shipped and **nothing has ever called it.** The only hits outside
-the module and its tests are its own docstring. So the `Project` column that
-`/projects` is built on could only ever be filled in by hand-splitting a row
-on `|` — which is the exact corruption `set_row_project` was written to end —
-and the result is that the page has almost nothing on it.
+dashboard shipped and **nothing in this repo has ever called it.** The only
+hits outside the module and its tests are its own docstring. The `Project`
+column that `/projects` is built on is not empty — measured on 2026-08-31,
+his issues board carried `Agora` on 4 rows and `Sokrates Post` on 1, and his
+ideas board `Agora` on 8, `Sokrates Post` on 4 and `WhatsApp bridge` on 1,
+with everything else falling back to `DEFAULT_PROJECT`. So the cells do get
+filled; every one of them was filled by hand-splitting a row on `|`, which
+is the exact corruption `set_row_project` was written to end.
 
 The owner, capture 2026-08-31: *"Make the nas project a Nova project. I want
 you to also make more Nova projects for ideas and issues for other future
