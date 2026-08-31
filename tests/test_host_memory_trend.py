@@ -56,7 +56,8 @@ def current_from(rows):
 CALM = (0.03, 0.02, 104934927170.0)  # a live calm reading off server1
 
 
-def calm_host(monkeypatch, pressure=CALM, oom_kills=627.0, uptime_days=136.0):
+def calm_host(monkeypatch, pressure=CALM, oom_kills=627.0, uptime_days=136.0,
+              pod_working_set=None, pods_why="kubectl top failed: no kubectl here"):
     """Pin the two host readings so a test asserts on the ledger, not on CI's box.
 
     Without this every `main` test below would read the real `/proc` of
@@ -66,6 +67,11 @@ def calm_host(monkeypatch, pressure=CALM, oom_kills=627.0, uptime_days=136.0):
     monkeypatch.setattr(hmt, "read_pressure", lambda *a, **k: (pressure, None))
     monkeypatch.setattr(hmt, "read_oom_kills", lambda *a, **k: (oom_kills, None))
     monkeypatch.setattr(hmt, "read_uptime_days", lambda *a, **k: (uptime_days, None))
+    # ...and the Pod split, for the same reason: unpinned it shells out to a
+    # kubectl that CI has not got, which is slow and machine-dependent rather
+    # than wrong. Tests that want the split pass one in.
+    monkeypatch.setattr(hmt, "read_pod_working_set",
+                        lambda *a, **k: (pod_working_set, pods_why))
 
 
 # --- attribution -----------------------------------------------------
@@ -485,3 +491,175 @@ def test_a_zero_baseline_still_respects_the_floor():
     current = harm_row(at=BASE + timedelta(hours=6), kills=2.0, uptime=136.0)
     lines, actionable = hmt.judge_harm(current, [earlier, current])
     assert not actionable
+
+
+# --- which side of the Pod boundary ----------------------------------
+
+
+def split_series(host_values, pod_values, start=BASE, step_hours=1.0):
+    """Readings carrying both halves of the split, oldest first."""
+    rows = []
+    for i, (host_mib, pods_mib) in enumerate(zip(host_values, pod_values)):
+        at = start + timedelta(hours=step_hours * i)
+        rows.append({
+            "_at": at,
+            "at": at.isoformat(),
+            "host": "server1",
+            "mem_total_mib": 7745.7,
+            "mem_available_mib": 1800.0,
+            "swap_total_mib": 2048.0,
+            "swap_free_mib": 1800.0,
+            "anon_mib": float(host_mib) + float(pods_mib),
+            "pods_working_set_mib": float(pods_mib),
+            "pod_count": 43,
+            "host_anon_mib": float(host_mib),
+        })
+    return rows
+
+
+def test_a_reading_records_which_side_of_the_pod_boundary_the_memory_is_on():
+    info = dict(meminfo(), AnonPages=5045000.0)
+    reading, why = hmt.reading_now(info, {"server1": 7745.7}, at=BASE,
+                                   pod_working_set=(3020.0, 43))
+    assert why is None
+    assert reading["anon_mib"] == pytest.approx(4926.8, abs=0.2)
+    assert reading["pods_working_set_mib"] == 3020.0
+    assert reading["pod_count"] == 43
+    assert reading["host_anon_mib"] == pytest.approx(1906.8, abs=0.2)
+
+
+def test_a_reading_without_a_pod_read_still_records_the_rest():
+    """The slope worked before the split existed and must not start failing."""
+    info = dict(meminfo(), AnonPages=5045000.0)
+    reading, why = hmt.reading_now(info, {"server1": 7745.7}, at=BASE,
+                                   pod_working_set=None)
+    assert why is None
+    assert reading["anon_mib"] == pytest.approx(4926.8, abs=0.2)
+    assert "host_anon_mib" not in reading
+    assert reading["mem_available_mib"] > 0
+
+
+def test_a_meminfo_without_anonpages_records_no_split_rather_than_a_wrong_one():
+    reading, why = hmt.reading_now(meminfo(), {"server1": 7745.7}, at=BASE,
+                                   pod_working_set=(3020.0, 43))
+    assert why is None
+    assert "anon_mib" not in reading
+    assert "host_anon_mib" not in reading
+
+
+def test_a_negative_split_is_recorded_as_measured_rather_than_clamped():
+    """The two instruments overlap and can cross; clamping would hide that."""
+    info = dict(meminfo(), AnonPages=1024000.0)
+    reading, _ = hmt.reading_now(info, {"server1": 7745.7}, at=BASE,
+                                 pod_working_set=(2000.0, 43))
+    assert reading["host_anon_mib"] < 0
+
+
+def test_a_leak_outside_every_pod_cgroup_is_named_as_the_host_side():
+    """The 2026-08-29 shape: Pods flat, host climbing, headroom falling."""
+    rows = split_series([2000, 2100, 2200, 2300, 2400, 2500, 2600],
+                        [3020, 3020, 3020, 3020, 3020, 3020, 3020])
+    lines = hmt.attribute_slope(rows, current_from(rows))
+    assert any(line.startswith("ATTRIBUTION") for line in lines)
+    assert any("Only the host is growing" in line for line in lines)
+    assert not any("Only the Pods" in line for line in lines)
+
+
+def test_a_leak_inside_a_pod_is_named_as_the_pod_side():
+    rows = split_series([2000, 2000, 2000, 2000, 2000, 2000, 2000],
+                        [3020, 3120, 3220, 3320, 3420, 3520, 3620])
+    lines = hmt.attribute_slope(rows, current_from(rows))
+    assert any("Only the Pods are growing" in line for line in lines)
+    assert not any("Only the host" in line for line in lines)
+
+
+def test_both_sides_growing_picks_neither():
+    """A comparison of two positive rates needs a threshold I did not measure."""
+    rows = split_series([2000, 2050, 2100, 2150, 2200, 2250, 2300],
+                        [3020, 3070, 3120, 3170, 3220, 3270, 3320])
+    lines = hmt.attribute_slope(rows, current_from(rows))
+    assert any("Both sides are growing" in line for line in lines)
+    assert not any("Only the" in line for line in lines)
+
+
+def test_a_flat_split_names_no_side():
+    rows = split_series([2000] * 7, [3020] * 7)
+    lines = hmt.attribute_slope(rows, current_from(rows))
+    assert any("Neither side is growing" in line for line in lines)
+
+
+def test_attribution_is_silent_when_the_window_is_too_short_to_trend():
+    """judge() already says NOT ENOUGH HISTORY; a second copy is noise."""
+    rows = split_series([2000, 2100, 2200], [3020, 3020, 3020])
+    assert hmt.attribute_slope(rows, current_from(rows)) == []
+
+
+def test_a_window_without_the_split_says_so_rather_than_going_quiet():
+    rows = series([1800] * 7, field="mem_available_mib", step_hours=1.0)
+    lines = hmt.attribute_slope(rows, current_from(rows))
+    assert lines and lines[0].startswith("CANNOT SEE")
+
+
+def test_a_crossed_split_says_it_is_not_measurable_rather_than_naming_a_side():
+    rows = split_series([-50] * 7, [3020] * 7)
+    lines = hmt.attribute_slope(rows, current_from(rows))
+    assert any("the split is not measurable on this reading" in line for line in lines)
+    assert not any("Only the" in line for line in lines)
+
+
+def test_attribution_never_raises_the_exit_status(tmp_path, monkeypatch, capsys):
+    """It explains a finding judge() already made; a second alarm is noise."""
+    monkeypatch.setattr(hmt, "read_meminfo",
+                        lambda *a: (dict(meminfo(), AnonPages=5045000.0), None))
+    monkeypatch.setattr(hmt, "read_node_capacity", lambda: ({"server1": 7745.7}, None))
+    calm_host(monkeypatch, pod_working_set=(3020.0, 43), pods_why=None)
+    ledger = tmp_path / "l.jsonl"
+    rows = split_series([2000, 2100, 2200, 2300, 2400, 2500, 2600],
+                        [3020] * 7, start=BASE, step_hours=1.0)
+    hmt.save(str(ledger), rows, 2000)
+    code = hmt.main(["--ledger", str(ledger), "--no-record"])
+    out = capsys.readouterr().out
+    assert "ATTRIBUTION" in out
+    assert "outside every Pod cgroup" in out
+    assert code == 0
+
+
+def test_main_says_why_it_could_not_split_by_pod(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(hmt, "read_meminfo",
+                        lambda *a: (dict(meminfo(), AnonPages=5045000.0), None))
+    monkeypatch.setattr(hmt, "read_node_capacity", lambda: ({"server1": 7745.7}, None))
+    calm_host(monkeypatch, pod_working_set=None,
+              pods_why="kubectl top returned no Pod rows")
+    hmt.main(["--ledger", str(tmp_path / "l.jsonl")])
+    out = capsys.readouterr().out
+    assert "CANNOT SEE the Pod split" in out
+    assert "kubectl top returned no Pod rows" in out
+
+
+def test_every_attribution_blind_line_starts_with_a_marker_preflight_matches():
+    from tools.preflight import CAVEAT_MARKERS
+    short = series([1800] * 7, field="mem_available_mib")
+    blind = hmt.attribute_slope(short, current_from(short))
+    no_current = split_series([2000] * 7, [3020] * 7)
+    blind += hmt.attribute_slope(no_current, {"host": "server1"})
+    stated = [line for line in blind if line.startswith("CANNOT")]
+    assert len(stated) == 2
+    for line in stated:
+        assert any(line.startswith(marker) for marker in CAVEAT_MARKERS), line
+
+
+def test_a_window_carrying_only_one_half_of_the_split_says_so():
+    """A half-present window formatted a `None` rate into a sentence and crashed.
+
+    The ledger is a file rather than a schema, so a window can hold rows from
+    more than one writer; both halves have to be there before either is used.
+    """
+    rows = split_series([2000] * 7, [3020] * 7)
+    for row in rows[:-1]:
+        del row["pods_working_set_mib"]
+    lines = hmt.attribute_slope(rows, current_from(rows))
+    assert lines == [
+        "CANNOT SEE the host/Pod split over this window — readings taken "
+        "before it was recorded do not carry one, so this fills in as the "
+        "window rolls forward."
+    ]
