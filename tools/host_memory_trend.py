@@ -50,10 +50,20 @@ written. `/proc/pressure/memory` is the kernel's own account of how long
 *everything* was blocked on memory, and `/proc/vmstat`'s `oom_kill` is how
 many tasks it has ended since boot -- both host-wide, both readable from
 this pod with no grant, and both about harm already done rather than a
-projection. That matters here specifically: naming the ~4.7GB outside every
-pod cgroup still needs `nodes/proxy` or a `ps aux` from the owner, and
-neither has arrived, so these two are what can be measured from where I
-actually stand. `tools.workload_health` reads container states, so an OOM
+projection.
+
+Cycle 705 added the third thing that needs no grant: *which side of the pod
+boundary* the memory sits on, trended rather than read once. `nodes/proxy`
+is Forbidden for both of this loop's service accounts -- measured this cycle
+from the bridge pod and from the runner pod, and note that
+`kubectl auth can-i get nodes/proxy` answers `yes` while the call itself is
+refused, so that check is not the one to trust. What is readable from here
+is `AnonPages` minus every pod's working set, and that is the number which
+grew for eleven days before the 08-29 outage. `workload_health.attribution`
+reads it at one instant; nothing trended it, and the headroom this file
+already trends falls the same way whether a pod or a host process is the
+cause. Naming the individual host *processes* still needs a `ps aux` from
+the owner. `tools.workload_health` reads container states, so an OOM
 kill of a host process -- the 2026-08-29 shape, twelve stale `claude.exe`
 children -- is invisible to it by construction.
 
@@ -77,7 +87,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.workload_health import read_meminfo, read_node_capacity  # noqa: E402
+from tools.workload_health import (  # noqa: E402
+    read_meminfo,
+    read_node_capacity,
+    read_pod_working_set,
+)
 
 #: The ledger, on the pod's persistent volume. `$NOVA_WORKSPACE` is
 #: deliberately not used: it points at a per-cycle worktree when cycles run
@@ -226,7 +240,7 @@ def read_uptime_days(path="/proc/uptime"):
 
 
 def reading_now(meminfo, nodes, at=None, pressure=None, oom_kills=None,
-                uptime_days=None):
+                uptime_days=None, pod_working_set=None):
     """One ledger row for this instant, or `(None, why)`.
 
     `why` is always about the instrument, never about the box. The pressure
@@ -270,6 +284,18 @@ def reading_now(meminfo, nodes, at=None, pressure=None, oom_kills=None,
         row["oom_kills"] = oom_kills
     if uptime_days is not None:
         row["uptime_days"] = round(uptime_days, 3)
+    anon = meminfo.get("AnonPages")
+    if anon is not None:
+        row["anon_mib"] = round(anon / 1024, 1)
+        if pod_working_set is not None:
+            pods_mib, counted = pod_working_set
+            row["pods_working_set_mib"] = round(pods_mib, 1)
+            row["pod_count"] = counted
+            # Can be negative, and that is a real reading rather than an error:
+            # a Pod's working set counts page cache its cgroup holds, which is
+            # not anonymous, so the two instruments overlap and can cross.
+            # `attribute_slope` says so rather than clamping it.
+            row["host_anon_mib"] = round(anon / 1024 - pods_mib, 1)
     return row, None
 
 
@@ -386,6 +412,76 @@ def judge(rows, current, horizon_days, min_readings=MIN_READINGS,
         else:
             lines.append(detail + f", beyond the {horizon_days:.0f}-day horizon.")
     return lines, actionable, True
+
+
+def attribute_slope(rows, current, min_readings=MIN_READINGS,
+                    min_span_hours=MIN_SPAN_HOURS):
+    """Which side of the Pod boundary the memory moved on, as lines.
+
+    `judge` above trends the host's *headroom*, which falls the same way
+    whether a Pod is leaking or a process on the host is. On 2026-08-29 that
+    distinction was the whole diagnosis and it took a host shell to get:
+    Pods were using 2,086Mi of a 7,745Mi box while `AnonPages` was 6,842Mi,
+    so ~4,756Mi of anonymous memory belonged to something outside every Pod
+    cgroup -- thirteen stale `claude.exe` children, as it turned out. Every
+    other check in this loop reads Pods, so a leak on the host side is
+    invisible to all of them by construction, and `workload_health`'s own
+    `attribution` reads that split at one instant only.
+
+    This does not raise. `judge` already raises on the headroom falling, and
+    a second alarm on the same event is one alarm nobody reads -- the same
+    call `security_alerts` makes on an already-fixed advisory. What this adds
+    is the direction, so a cycle reading a FALLING line knows which side to
+    go and look at.
+
+    It names a side only when exactly one of the two is rising. When both
+    are, it prints both rates and picks neither: "the larger of two positive
+    numbers" is a comparison that means nothing at 1.0 against 0.9Mi/day, and
+    the threshold that would make it mean something is a number I would have
+    had to invent.
+    """
+    span_hours = ((rows[-1]["_at"] - rows[0]["_at"]).total_seconds() / 3600.0
+                  if rows else 0.0)
+    if len(rows) < min_readings or span_hours < min_span_hours:
+        # `judge` has already said NOT ENOUGH HISTORY in the same report.
+        return []
+    host_rate = slope_per_day(rows, "host_anon_mib")
+    pods_rate = slope_per_day(rows, "pods_working_set_mib")
+    if host_rate is None or pods_rate is None:
+        return ["CANNOT SEE the host/Pod split over this window — readings "
+                "taken before it was recorded do not carry one, so this "
+                "fills in as the window rolls forward."]
+    host_now = current.get("host_anon_mib")
+    pods_now = current.get("pods_working_set_mib")
+    if host_now is None or pods_now is None:
+        return ["CANNOT SEE the host/Pod split on this reading, so there is "
+                "nothing to compare the window against."]
+    lines = [
+        f"ATTRIBUTION  outside every Pod cgroup: {host_now:.0f}Mi now, "
+        f"{host_rate:+.0f}Mi/day. Pods: {pods_now:.0f}Mi now, "
+        f"{pods_rate:+.0f}Mi/day."
+    ]
+    if host_now <= 0:
+        lines.append(
+            "  The Pods' working set is at or above the host's anonymous total, "
+            "so they are holding page cache as well and the split is not "
+            "measurable on this reading. The two figures come from different "
+            "instruments and overlap.")
+        return lines
+    rising = [name for name, rate in (("the host is", host_rate),
+                                      ("the Pods are", pods_rate))
+              if rate > 0]
+    if not rising:
+        lines.append("  Neither side is growing over this window.")
+    elif len(rising) == 2:
+        lines.append("  Both sides are growing; this does not pick between them.")
+    else:
+        where = ("processes on the host itself (k3s, containerd, anything "
+                 "hand-run), which no other check here can see"
+                 if rising[0].startswith("the host")
+                 else "the Pods, which tools.workload_health reads per container")
+        lines.append(f"  Only {rising[0]} growing over this window — {where}.")
+    return lines
 
 
 def judge_harm(current, rows, full_stall_percent=FULL_STALL_PERCENT,
@@ -513,8 +609,10 @@ def main(argv=None):
     pressure, pressure_why = read_pressure()
     oom_kills, oom_why = read_oom_kills()
     uptime_days, uptime_why = read_uptime_days()
+    pod_working_set, pods_why = read_pod_working_set()
     current, why = reading_now(meminfo, nodes, pressure=pressure,
-                               oom_kills=oom_kills, uptime_days=uptime_days)
+                               oom_kills=oom_kills, uptime_days=uptime_days,
+                               pod_working_set=pod_working_set)
     if current is None:
         print(f"CANNOT ATTRIBUTE MEMORY — {why}")
         return 1
@@ -547,6 +645,14 @@ def main(argv=None):
         print(f"  {oom_why}")
     if uptime_days is None:
         print(f"  {uptime_why}")
+    if pod_working_set is None:
+        print(f"  CANNOT SEE the Pod split — {pods_why}. This reading records "
+              "no host/Pod split, so it is not part of any attribution.")
+    elif "host_anon_mib" in current:
+        print(f"  of which {current['host_anon_mib']:.0f}Mi of anonymous memory is "
+              f"outside every Pod cgroup ({current['anon_mib']:.0f}Mi anonymous "
+              f"total, {current['pod_count']} Pod(s) using "
+              f"{current['pods_working_set_mib']:.0f}Mi).")
 
     inside = window(rows, current["host"], current["_at"], args.window_hours)
     harm_lines, harmed = judge_harm(current, inside)
@@ -555,6 +661,8 @@ def main(argv=None):
 
     lines, actionable, judged = judge(inside, current, args.horizon_days)
     for line in lines:
+        print(line)
+    for line in attribute_slope(inside, current):
         print(line)
 
     if harmed or actionable:
