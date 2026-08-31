@@ -112,6 +112,8 @@ real incident is never reported as "not enough history".
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -134,6 +136,30 @@ from tools.workload_health import (  # noqa: E402
 #: there is no third slice being filtered out here -- the kubelet instruments
 #: the cgroups it is told to and nothing else on the box has one.
 K3S_CGROUP = "/system.slice/k3s.service"
+
+
+#: The hostPID sweep that names the processes behind `unowned_swap_mib`.
+#: Cycle 718 built it on issue #131 (`platform-config#586`): a CronJob in
+#: `infra`, twice an hour, uid 65534, every capability dropped, read-only
+#: root, no host mount, and it never reads `/proc/<pid>/cmdline` because
+#: command lines carry secrets and it writes to a Pod log. Reading that log
+#: was a `kubectl logs` a cycle had to know to run, so the one measurement
+#: that answers issue #131 was surfaced to nobody. This reads it.
+SWAP_HOLDER_NAMESPACE = "infra"
+SWAP_HOLDER_JOB = "host-process-memory"
+
+#: How many named processes to print. The sweep already prints its own top
+#: 20; repeating all of them here would put the same wall of text in front of
+#: every preflight, and the tail of that list holds single megabytes.
+SWAP_HOLDER_TOP = 6
+
+#: A row of the sweep's report: pid, comm, resident, swapped, cgroup path.
+SWAP_HOLDER_ROW = re.compile(
+    r"^\s*(\d+)\s+(.+?)\s+rss\s+(\d+)Mi\s+swap\s+(\d+)Mi\s*(\S*)\s*$")
+
+#: ...and its `total` line, which is the denominator every share below is of.
+SWAP_HOLDER_TOTAL = re.compile(
+    r"^\s*total\s+rss\s+(\d+)Mi\s+swap\s+(\d+)Mi\s*$")
 
 
 #: The ledger, on the pod's persistent volume. `$NOVA_WORKSPACE` is
@@ -358,13 +384,15 @@ def read_cgroup_split(host, reader=read_node_cgroup_series):
     `unowned_swap_mib` is the number I most want a slope on and the one I
     can least explain: the root cgroup reports 1,664Mi swapped, k3s.service
     168Mi and `/kubepods.slice` 1Mi, so ~1,495Mi of this box's swap belongs
-    to processes in no cgroup the kubelet instruments. Naming them needs a
-    host process list, which nothing here can reach -- no Pod on this node
-    sets `hostPID`, runs privileged, or mounts the host `/proc` (measured
-    Cycle 717), so `ps aux` is a thing only the owner can run. What does not
-    need him is the *direction*: a remainder that is flat is a steady state
-    to live with, and one that climbs is the 2026-08-29 outage happening
-    again slowly.
+    to processes in no cgroup the kubelet instruments. This docstring said
+    naming them needed a host process list nothing here could reach and that
+    `ps aux` was the owner's to run; it was true when Cycle 717 measured it
+    and stopped being true the next day, when Cycle 718 shipped the hostPID
+    CronJob that reads exactly that list. `read_swap_holders` reads its
+    report, so the remainder below has names beside it now. What the names
+    still do not give is the *direction*: a remainder that is flat is a
+    steady state to live with, and one that climbs is the 2026-08-29 outage
+    happening again slowly, and that is what this series is for.
 
     A missing series comes back as a missing key rather than a zero, for the
     reason `read_node_cgroup_series` gives: "cAdvisor publishes no swap here"
@@ -398,6 +426,160 @@ def read_cgroup_split(host, reader=read_node_cgroup_series):
     return split, None
 
 
+def _parse_at(stamp):
+    """A Kubernetes RFC3339 timestamp as an aware datetime, or None.
+
+    `fromisoformat` on this interpreter takes the trailing `Z`, but a stamp
+    that ever loses it would come back naive and every age computed from it
+    would be off by the local offset, so the tzinfo is asserted rather than
+    assumed.
+    """
+    try:
+        at = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def holder_scope(cgroup):
+    """Which of `read_cgroup_split`'s three buckets a process sits in.
+
+    The same three cAdvisor accounts for, so a named process can be checked
+    against the remainder it is supposed to explain. The sweep's cgroup column
+    is read through its own cgroup namespace and is both relativized and
+    truncated -- `/../../../../system.slice/claude-remote.` is a real value --
+    so this matches on a substring rather than parsing a path.
+    """
+    if "kubepods" in cgroup:
+        return "pods"
+    if "k3s.service" in cgroup:
+        return "k3s"
+    return "unowned"
+
+
+def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
+                      job=SWAP_HOLDER_JOB, now=None):
+    """The newest hostPID sweep's report, or `(None, why)`.
+
+    Two calls: the Pod list, to find the newest completed run of the sweep,
+    and its log. A Pod that is still running is skipped rather than read --
+    its log is half a report, and half a report of a top-N list is not the
+    top N.
+
+    An absent sweep is a missing instrument and says so. Three Pods are
+    retained, so at twice an hour this goes blind about ninety minutes after
+    the CronJob stops running, which is exactly the window in which somebody
+    should be told the instrument died rather than shown nothing.
+    """
+    try:
+        proc = runner(["kubectl", "get", "pods", "-n", namespace, "-o", "json"],
+                      capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl get pods -n {namespace} failed: {exc}"
+    if proc.returncode != 0:
+        return None, (f"kubectl get pods -n {namespace} failed: "
+                      f"{proc.stderr.strip() or proc.stdout.strip()}")
+    try:
+        body = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return None, f"kubectl get pods -n {namespace} returned no JSON: {exc}"
+
+    best, best_at = None, None
+    for item in body.get("items") or []:
+        meta = item.get("metadata") or {}
+        name = meta.get("name") or ""
+        if not name.startswith(job + "-"):
+            continue
+        if ((item.get("status") or {}).get("phase")) != "Succeeded":
+            continue
+        at = _parse_at(meta.get("creationTimestamp"))
+        if at is None:
+            continue
+        if best_at is None or at > best_at:
+            best, best_at = name, at
+    if best is None:
+        return None, (f"no completed {job} Pod is left in {namespace}, so the "
+                      "one sweep that can name these processes has either not "
+                      "run or has been reaped")
+
+    try:
+        proc = runner(["kubectl", "logs", "-n", namespace, best],
+                      capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl logs {best} failed: {exc}"
+    if proc.returncode != 0:
+        return None, (f"kubectl logs {best} failed: "
+                      f"{proc.stderr.strip() or proc.stdout.strip()}")
+
+    total_swap, rows, in_swap = None, [], False
+    for line in proc.stdout.splitlines():
+        total = SWAP_HOLDER_TOTAL.match(line)
+        if total:
+            total_swap = float(total.group(2))
+            continue
+        if line.startswith("TOP") and "BY SWAP" in line:
+            in_swap = True
+            continue
+        if line.startswith("TOP") and "BY SWAP" not in line:
+            in_swap = False
+            continue
+        if not in_swap:
+            continue
+        row = SWAP_HOLDER_ROW.match(line)
+        if row:
+            rows.append({"pid": int(row.group(1)), "comm": row.group(2).strip(),
+                         "rss_mib": float(row.group(3)),
+                         "swap_mib": float(row.group(4)),
+                         "cgroup": row.group(5)})
+    if not rows:
+        return None, (f"{best} carried no parseable 'TOP n BY SWAP' rows, so "
+                      "its report format has moved and this reader has not")
+    now = now or datetime.now(timezone.utc)
+    return {"pod": best, "at": best_at, "rows": rows, "total_swap_mib": total_swap,
+            "age_hours": (now - best_at).total_seconds() / 3600.0}, None
+
+
+def name_swap_holders(report, top=SWAP_HOLDER_TOP):
+    """Who holds the swap, by name, from the sweep's own report.
+
+    This is the half of issue #131 that no slope can supply. `attribute_swap`
+    says the unowned remainder is 1,495Mi and whether it is growing; it cannot
+    say that six `claude.exe` children hold 87% of the box's swap, which is the
+    fact that turns the row into something the owner can act on.
+
+    Like `attribute_swap`, it does not raise. `judge` already raises on free
+    swap falling and this is the same event named better, not a second one.
+    A stale report is printed with its age rather than withheld: the processes
+    it names have lived for days, so an hour-old list is still true, and the
+    age is there so a reader can tell an old list from a current one.
+    """
+    rows = sorted(report["rows"], key=lambda r: r["swap_mib"], reverse=True)
+    by_scope = {"unowned": 0.0, "k3s": 0.0, "pods": 0.0}
+    for row in rows:
+        by_scope[holder_scope(row["cgroup"])] += row["swap_mib"]
+    named = sum(by_scope.values())
+    total = report["total_swap_mib"]
+
+    head = (f"SWAP HOLDERS  {len(rows)} process(es) named by {report['pod']}, "
+            f"read {report['age_hours']:.1f}h ago, hold {named:.0f}Mi swapped")
+    if total:
+        head += f" of {total:.0f}Mi on the box ({100.0 * named / total:.0f}%)"
+    lines = [head + "."]
+    lines.append(f"  {by_scope['unowned']:.0f}Mi of that is outside k3s.service and "
+                 "outside every Pod — the same processes unowned_swap_mib counts, "
+                 "now with names.")
+    for row in rows[:top]:
+        lines.append(f"  {row['swap_mib']:.0f}Mi swapped, {row['rss_mib']:.0f}Mi "
+                     f"resident — {row['comm']} (pid {row['pid']}, "
+                     f"{holder_scope(row['cgroup'])})")
+    if len(rows) > top:
+        rest = sum(r["swap_mib"] for r in rows[top:])
+        lines.append(f"  the other {len(rows) - top} named process(es) hold "
+                     f"{rest:.0f}Mi between them; `kubectl logs -n "
+                     f"{SWAP_HOLDER_NAMESPACE} {report['pod']}` has all of it.")
+    return lines
+
+
 def attribute_swap(rows, current, min_readings=MIN_READINGS,
                    min_span_hours=MIN_SPAN_HOURS):
     """Whose swap is growing -- k3s's, or the processes nobody here can name.
@@ -407,7 +589,8 @@ def attribute_swap(rows, current, min_readings=MIN_READINGS,
     on the same event is one alarm nobody reads. What this adds is which of
     the two halves is moving, because they have completely different fixes:
     k3s growing is a control plane to restart, and the unowned half growing
-    is the 2026-08-29 incident recurring and needs the owner's `ps aux`.
+    is the 2026-08-29 incident recurring. `name_swap_holders` prints who the
+    unowned half is; this prints whether it is getting worse.
     """
     if "unowned_swap_mib" not in current and "k3s_rss_mib" not in current:
         return ["CANNOT SEE whose swap this is on this reading, so there is "
@@ -451,8 +634,7 @@ def attribute_swap(rows, current, min_readings=MIN_READINGS,
     else:
         lines.append("  Only the unowned swap is growing — processes on the host "
                      "outside k3s and outside every Pod, which is the shape of the "
-                     "2026-08-29 outage and needs `ps aux --sort=-rss` from a host "
-                     "shell to name.")
+                     "2026-08-29 outage. The SWAP HOLDERS line below names them.")
     return lines
 
 
@@ -880,6 +1062,13 @@ def main(argv=None):
         print(f"  CANNOT SEE whose swap it is — {cgroup_why}")
     else:
         for line in attribute_swap(inside, current):
+            print(line)
+
+    holders, holders_why = read_swap_holders()
+    if holders is None:
+        print(f"  CANNOT NAME the swap holders — {holders_why}")
+    else:
+        for line in name_swap_holders(holders):
             print(line)
 
     if harmed or actionable:

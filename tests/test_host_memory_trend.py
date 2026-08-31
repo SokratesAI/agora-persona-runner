@@ -10,6 +10,7 @@ The mirror of it is `test_a_flat_series_is_not_a_finding` -- a check that
 cannot come back clean is as useless as one that cannot fire.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -810,7 +811,7 @@ def test_a_growing_unowned_remainder_is_named_as_the_2026_08_29_shape():
     lines = hmt.attribute_swap(rows, current_from(rows))
     assert lines[0].startswith("SWAP OWNERS")
     assert "Only the unowned swap is growing" in lines[-1]
-    assert "ps aux" in lines[-1]
+    assert "SWAP HOLDERS" in lines[-1]
 
 
 def test_a_growing_k3s_is_named_as_a_control_plane_not_as_the_unowned_half():
@@ -905,3 +906,132 @@ def test_naming_the_swap_owner_never_raises_the_exit_status(tmp_path, monkeypatc
     assert "SWAP OWNERS" in out
     assert "Both are growing" in out
     assert code == 0
+
+
+SWEEP_LOG = """HOST PROCESS MEMORY -- 367 process(es) read, 0 exited mid-sweep
+  total    rss   6213Mi  swap   1634Mi
+  cgroup paths below are read through this container's own cgroup namespace and may be relativized -- context, not a verdict.
+TOP 20 BY SWAP
+  3848650 claude.exe           rss     68Mi  swap    407Mi  /../../../../system.slice/claude-remote.
+  2621643 claude.exe           rss     66Mi  swap    350Mi  /../../../../system.slice/claude-remote.
+   242153 k3s-server           rss   1878Mi  swap    115Mi  /../../../../system.slice/k3s.service
+  2460615 claude               rss    101Mi  swap     60Mi  /../../../../system.slice/claude-remote.
+   242185 containerd           rss    142Mi  swap     10Mi  /../../../../system.slice/k3s.service
+   999999 someapp              rss     20Mi  swap      4Mi  /../../kubepods-burstable-podfeedface
+TOP 20 BY RSS
+   242153 k3s-server           rss   1878Mi  swap    115Mi  /../../../../system.slice/k3s.service
+  2630610 argocd-applicat      rss    372Mi  swap      0Mi  /../../../kubepods-besteffort.slice/kube
+"""
+
+
+class FakeProc:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+
+def sweep_runner(pods=None, log=SWEEP_LOG, logs_rc=0):
+    """A `subprocess.run` that answers the two calls `read_swap_holders` makes."""
+    if pods is None:
+        pods = [("host-process-memory-29803110-t79dw", "Succeeded",
+                 "2026-08-31T14:30:00Z")]
+    body = {"items": [
+        {"metadata": {"name": n, "creationTimestamp": at},
+         "status": {"phase": p}} for n, p, at in pods]}
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        if argv[1] == "get":
+            return FakeProc(stdout=json.dumps(body))
+        return FakeProc(stdout=log, returncode=logs_rc,
+                        stderr="" if logs_rc == 0 else "not found")
+
+    run.seen = seen
+    return run
+
+
+NOW = datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc)
+
+
+def test_the_sweep_report_is_read_off_the_newest_completed_pod():
+    run = sweep_runner(pods=[
+        ("host-process-memory-29803000-old", "Succeeded", "2026-08-31T13:30:00Z"),
+        ("host-process-memory-29803110-t79dw", "Succeeded", "2026-08-31T14:30:00Z"),
+    ])
+    report, why = hmt.read_swap_holders(runner=run, now=NOW)
+    assert why is None
+    assert report["pod"] == "host-process-memory-29803110-t79dw"
+    assert run.seen[-1][-1] == "host-process-memory-29803110-t79dw"
+    assert report["age_hours"] == pytest.approx(0.5)
+    assert report["total_swap_mib"] == 1634.0
+
+
+def test_a_running_pod_is_not_read_because_half_a_top_n_is_not_a_top_n():
+    run = sweep_runner(pods=[
+        ("host-process-memory-29803000-old", "Succeeded", "2026-08-31T13:30:00Z"),
+        ("host-process-memory-29803110-t79dw", "Running", "2026-08-31T14:59:00Z"),
+    ])
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    assert report["pod"] == "host-process-memory-29803000-old"
+
+
+def test_only_the_swap_section_is_parsed_so_the_rss_table_is_not_counted_twice():
+    report, _ = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
+    pids = [row["pid"] for row in report["rows"]]
+    assert pids.count(242153) == 1
+    assert 2630610 not in pids
+    assert len(report["rows"]) == 6
+
+
+def test_a_reaped_sweep_is_a_missing_instrument_not_an_empty_list():
+    report, why = hmt.read_swap_holders(
+        runner=sweep_runner(pods=[("some-other-pod", "Succeeded",
+                                   "2026-08-31T14:30:00Z")]), now=NOW)
+    assert report is None
+    assert "host-process-memory" in why
+
+
+def test_a_report_whose_format_moved_says_so_rather_than_reporting_nothing():
+    report, why = hmt.read_swap_holders(
+        runner=sweep_runner(log="HOST PROCESS MEMORY -- 0 read\nTOP 20 BY SWAP\n"),
+        now=NOW)
+    assert report is None
+    assert "format has moved" in why
+
+
+def test_a_failed_logs_call_carries_its_own_reason_through():
+    report, why = hmt.read_swap_holders(runner=sweep_runner(logs_rc=1), now=NOW)
+    assert report is None
+    assert "not found" in why
+
+
+def test_the_named_processes_are_split_by_the_same_three_buckets_as_the_remainder():
+    report, _ = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
+    lines = hmt.name_swap_holders(report, top=2)
+    # 407 + 350 + 60 outside k3s.service and outside every Pod.
+    assert "817Mi of that is outside k3s.service" in lines[1]
+    assert lines[0].startswith("SWAP HOLDERS")
+    assert "946Mi swapped of 1634Mi on the box (58%)" in lines[0]
+
+
+def test_the_biggest_holder_is_named_first_and_the_rest_are_summed():
+    report, _ = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
+    lines = hmt.name_swap_holders(report, top=2)
+    assert "407Mi swapped, 68Mi resident — claude.exe (pid 3848650, unowned)" in lines[2]
+    assert "350Mi swapped" in lines[3]
+    # 115 + 60 + 10 + 4 left over, and the log that holds them is named.
+    assert "the other 4 named process(es) hold 189Mi" in lines[-1]
+    assert "kubectl logs -n infra host-process-memory-29803110-t79dw" in lines[-1]
+
+
+def test_a_k3s_process_is_not_counted_against_the_unowned_remainder():
+    assert hmt.holder_scope("/../../../../system.slice/k3s.service") == "k3s"
+    assert hmt.holder_scope("/../../kubepods-burstable-podfeedface") == "pods"
+    assert hmt.holder_scope("/../../../../system.slice/claude-remote.") == "unowned"
+
+
+def test_naming_the_holders_never_raises_because_judge_already_does():
+    report, _ = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
+    lines = hmt.name_swap_holders(report)
+    assert not any(line.startswith(("SWAP FALLING", "MEMORY")) for line in lines)
+    assert all("exit 2" not in line for line in lines)
