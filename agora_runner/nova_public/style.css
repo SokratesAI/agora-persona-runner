@@ -3881,6 +3881,14 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 /* The way down to the conversation, so the box at the bottom of a long
    project page is one tap rather than a scroll. Shaped like a pill because
    it sits directly under the row of them. */
+/* The project tab strip -- idea #166. `.filters` already lays chips out in
+ * a wrapping row and `.filter` already draws them, so this only sets what
+ * is different: the strip sits directly under the project pills, and the
+ * chips size to their own labels rather than stretching to equal widths,
+ * because "All" and "Conversation · 12" are very different lengths. */
+.project-tabs { margin: -0.4rem 0 1rem; }
+.project-tab { flex: 0 0 auto; }
+
 .project-jump-row { margin: -0.5rem 0 1rem; }
 .project-jump {
   border: 1px solid var(--line);

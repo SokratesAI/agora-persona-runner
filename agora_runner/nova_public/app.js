@@ -8298,14 +8298,6 @@
     // already reading it.
     section.appendChild(el("h2", "project-thread-head", "Conversation"));
     var messages = (payload && payload.comments) || [];
-    if (!messages.length) {
-      section.appendChild(el("p", "empty",
-        "Nothing said about " + name + " yet."));
-    } else {
-      var thread = el("div", "project-thread-messages");
-      renderRowConversation(thread, messages);
-      section.appendChild(thread);
-    }
 
     var wrap = el("div", "item-comment");
     var box = el("textarea", "item-comment-box");
@@ -8359,8 +8351,88 @@
     actions.appendChild(status);
     actions.appendChild(send);
     wrap.appendChild(actions);
+    // The box goes above the thread and the newest reply goes to the top of
+    // it. The owner, idea #166: *"The input field is at the top and the
+    // comments are below it with the newest reply at the top (basicly
+    // inverted for everything else we have)."* Inverted is the word -- the
+    // notes page and every row thread read oldest-first, and he wants this
+    // one the other way round, because a project conversation is something
+    // he checks rather than something he reads through.
     section.appendChild(wrap);
+    if (!messages.length) {
+      section.appendChild(el("p", "empty",
+        "Nothing said about " + name + " yet."));
+    } else {
+      var thread = el("div", "project-thread-messages");
+      // A copy. `payload.comments` is read again every time a tab is
+      // pressed, and reversing it in place would flip the order back on
+      // the second press.
+      renderRowConversation(thread, messages.slice().reverse());
+      section.appendChild(thread);
+    }
     return section;
+  }
+
+  /* Which part of a project is on screen -- idea #166.
+   *
+   * The owner: *"Maybe the best is to have \"tabs\"/buttons that say issues,
+   * ideas, conversation. When one of them is pressed the relevant items are
+   * displayed and the others are hidden."* He described tabs and I answered
+   * on the row suggesting chips that hide rather than switch; he did not
+   * press for either, so this builds what he asked for. `All` is the fourth
+   * one and it is the default, because the page he has today is the
+   * combined view and a tab strip that can only take things away is a
+   * regression for anyone who liked it.
+   *
+   * Held in a variable rather than in the URL. A tab is a view of a page,
+   * not a page -- and `loadProject` refetches after every comment, so this
+   * has to survive a re-render either way. The cost is that a tab is not
+   * linkable, which is worth one line here if he ever asks for it.
+   */
+  var projectTab = "all";
+  var projectTabFor = "";
+
+  function projectTabState(name) {
+    if (projectTabFor !== name) {
+      projectTabFor = name;
+      projectTab = "all";
+    }
+    return projectTab;
+  }
+
+  /* The tab strip. Drawn only when there is something to split: on a
+   * project with no rows at all the strip would read `All / Conversation`,
+   * which is two names for one screen. */
+  function renderProjectTabs(payload, redraw) {
+    var boards = (payload && payload.boards) || {};
+    var tabs = [{ key: "all", label: "All" }];
+    if (boards.issues && boards.issues.total) {
+      tabs.push({ key: "issues", label: "Issues · " + boards.issues.total });
+    }
+    if (boards.ideas && boards.ideas.total) {
+      tabs.push({ key: "ideas", label: "Ideas · " + boards.ideas.total });
+    }
+    if (tabs.length < 2) return null;
+    var count = ((payload && payload.comments) || []).length;
+    tabs.push({ key: "conversation",
+                label: count ? "Conversation · " + count : "Conversation" });
+
+    var row = el("div", "filters project-tabs");
+    tabs.forEach(function (tab) {
+      var on = projectTab === tab.key;
+      var chip = el("button", "filter project-tab" + (on ? " on" : ""), tab.label);
+      chip.type = "button";
+      chip.setAttribute("data-tab", tab.key);
+      chip.addEventListener("click", function () {
+        projectTab = tab.key;
+        // Redrawn from the payload already in hand rather than refetched:
+        // switching tab shows him rows the page is holding, and a round
+        // trip would blank them first.
+        redraw();
+      });
+      row.appendChild(chip);
+    });
+    return row;
   }
 
   function renderProject(payload) {
@@ -8388,16 +8460,22 @@
         "Nothing is filed under “" + asked + "” yet."));
       return;
     }
+    var tab = projectTabState(name);
+    var tabRow = renderProjectTabs(payload, function () { renderProject(payload); });
+    if (tabRow) feed.appendChild(tabRow);
     // Built before the boards so the jump under the pills can point at it,
     // appended after them so the reading order does not change.
     var thread = renderProjectThread(name, payload);
-    feed.appendChild(projectThreadJump(thread, payload));
+    // Only in the combined view. On the conversation tab the thread is the
+    // whole page, so a button that scrolls to it has nowhere to go.
+    if (tab === "all") feed.appendChild(projectThreadJump(thread, payload));
     var boards = (payload && payload.boards) || {};
     var drew = false;
     var names = { issues: "Issues", ideas: "Ideas" };
     var order = ["issues", "ideas"];
     for (var b = 0; b < order.length; b++) {
       var key = order[b];
+      if (tab !== "all" && tab !== key) continue;
       var board = boards[key];
       if (!board || !board.total) continue;
       drew = true;
@@ -8414,14 +8492,17 @@
       section.appendChild(cols);
       feed.appendChild(section);
     }
-    if (!drew) {
+    // Only when he is looking at rows. On the conversation tab there are no
+    // rows on screen by his own choice, and saying nothing is filed would
+    // be the page arguing with the button he just pressed.
+    if (!drew && tab !== "conversation") {
       feed.appendChild(el("p", "empty",
         "Nothing is filed under “" + name + "” yet."));
     }
     // Below the boards on purpose: the rows are what the project *is* and
     // the conversation is what has been said about them, which is the same
     // order a board row puts its write-up above its thread.
-    feed.appendChild(thread);
+    if (tab === "all" || tab === "conversation") feed.appendChild(thread);
   }
 
   /* The jump from the top of a project page to its conversation.
