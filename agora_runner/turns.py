@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 from agora_runner.config import MAX_HISTORY, OSLO
+from agora_runner.nova_demos import DURABLE_ROOT, PUBLIC_BASE
 
 
 def decide_turn(thread, personas):
@@ -323,6 +324,53 @@ def pending_user_turn(history):
     return None
 
 
+def runs_on_the_bridge(persona):
+    """Whether this persona's turn executes inside a Claude Code CLI session
+    on the bridge pod, with that pod's own shell.
+
+    Only the `claude-cli:` provider does: the other two are stateless HTTP
+    calls made from this process, and their persona reaches the world through
+    Agora's capability tools alone. `claudeCliRestricted` asks the bridge for
+    its full known-tool denylist, which takes the shell away again.
+
+    This is a *provider* question and not a capability checkbox, which is why
+    it cannot be folded into the `caps` sections below. The same rule as
+    `test_system_prompt_matches_tools` enforces still applies to whatever it
+    gates: do not describe something the persona cannot reach.
+    """
+    model = persona.get("model") or ""
+    if persona.get("claudeCliRestricted"):
+        return False
+    return model.startswith("claude-cli:")
+
+
+#: What a chat turn is told about live demos. Idea #137: the channel for
+#: "build me something I can look at" already exists -- the chat dock on
+#: every Nova page is a live conversation with a session that has the
+#: bridge pod's shell -- and `tools.demo` has been able to serve one since
+#: idea #135. Nothing joined the two, so a turn asked for a demo had no way
+#: to find out it could make one. Same failure as being handed an image in
+#: a comment and reporting blindness while the bytes sat in the vault: a
+#: capability a session does not know it has is one it does not have.
+DEMO_SECTION = (
+    "## Live demos\n"
+    "You can build a throwaway app and hand Edvard a link he can open on his "
+    "phone, in this same thread. Scaffold it under "
+    f"`{DURABLE_ROOT}/<slug>` -- never in this turn's own workspace "
+    "directory, which is deleted the moment the turn ends while the dev "
+    "server keeps running and serving the hole it left. Then, from the "
+    "runner checkout at `${NOVA_WORKSPACE:-/data/workspace}/agora-persona-runner`: "
+    "`python3 -m tools.demo start <slug> " + DURABLE_ROOT + "/<slug>`, which "
+    "allocates a port and prints the URL, plus `list` and `stop`. "
+    f"He opens it at `{PUBLIC_BASE}/<slug>/` -- reply with that link, "
+    "because a demo nobody was handed is not a demo. "
+    "His next message is the edit: change the files in place and the dev "
+    "server reloads, so the URL does not change and the tab he already has "
+    "open on his phone just updates. A demo he has never opened is stopped "
+    "after eighteen hours, and two hours after he last looked at one."
+)
+
+
 def build_system(persona, conversation=None, heartbeat_extra=None):
     parts = [persona.get("personality") or "You are a helpful assistant."]
     shared = (persona.get("sharedMemory") or "").strip()
@@ -423,6 +471,8 @@ def build_system(persona, conversation=None, heartbeat_extra=None):
             "a pod restart. This is your highest-blast-radius tool — prefer a "
             "narrower tool when one already does the job."
         )
+    if runs_on_the_bridge(persona):
+        parts.append(DEMO_SECTION)
     if heartbeat_extra:
         parts.append(heartbeat_extra)
     return "\n\n".join(parts)

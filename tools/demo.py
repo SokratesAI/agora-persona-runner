@@ -60,6 +60,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     DEMOS_PATH,
     POD_GONE,
     PROCESS_GONE,
+    PUBLIC_BASE,
     STARTING,
     DemoError,
     check_promotable,
@@ -85,10 +86,6 @@ VAULT_TOOL = "/app/bridge/vault_tool.py"
 #: happens after the socket is listening, so this does not have to cover
 #: it.
 SPAWN_CHECK_SECONDS = 1.0
-
-#: Where the owner opens it. One hostname, path-routed, rather than a tailnet
-#: device per demo that would outlive the demo it was minted for.
-PUBLIC_BASE = "https://nova.tailc83eb3.ts.net/demo"
 
 #: The site's in-cluster address. Every request for a demo goes through its
 #: `/demo/<slug>/` proxy, so it is the only thing that knows whether anyone
@@ -498,7 +495,7 @@ def cmd_reap(args):
 
 
 PLATFORM_CONFIG = "SokratesAI/platform-config"
-DEMO_BASE = "https://nova.tailc83eb3.ts.net/demo"
+DEMO_BASE = PUBLIC_BASE
 
 
 def _workspace_repo(name):
