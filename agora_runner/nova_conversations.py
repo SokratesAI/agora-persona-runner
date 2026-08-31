@@ -39,6 +39,20 @@ from agora_runner.nova_conversation_reads import is_unread, load_reads
 # between his phone and a year of transcript.
 MAX_THREAD = 40
 
+# The ceiling on a `limit` the page may ask for when he scrolls back through
+# a thread. His capture, `issues.md` 2026-08-31: *"I can only see the latest
+# messages in the chat. I can't scroll upwards and see the earlier
+# messages."* `MAX_THREAD` above is what a thread *opens* on; without a way
+# to ask for more it was also all he could ever reach, and 79 of the 720
+# conversations in the store hold more than 40 messages (measured against
+# the live store 2026-08-31, from the runner pod).
+#
+# 500 rather than a round number: the longest thread in the store that
+# morning was 500 messages, so this admits every conversation that exists
+# whole and still bounds a `?limit=` somebody typed by hand. It is a bound
+# on one fetch, not on what he can read -- the page pages.
+MAX_THREAD_CEILING = 500
+
 # The one persona this app talks to. `nova_ask` re-exports it under its
 # own name; it lives here because `nova_ask` already imports from this
 # module and the other direction would be a cycle.
@@ -199,6 +213,22 @@ def conversations():
             "models": _model_rows()}
 
 
+def clamp_thread_limit(limit):
+    """A `?limit=` off the wire, made into a number this app will fetch.
+
+    Anything unreadable falls back to `MAX_THREAD` rather than raising: the
+    caller is the page asking for a thread, and a typo in a query string
+    should show him the thread, not an error.
+    """
+    try:
+        wanted = int(limit)
+    except (TypeError, ValueError):
+        return MAX_THREAD
+    if wanted < MAX_THREAD:
+        return MAX_THREAD
+    return min(wanted, MAX_THREAD_CEILING)
+
+
 def thread(conversation_id, limit=MAX_THREAD):
     """The visible tail of one conversation.
 
@@ -208,12 +238,25 @@ def thread(conversation_id, limit=MAX_THREAD):
     rule that really lives in `decide_turn`.
     """
     if not conversation_id:
-        return {"conversationId": None, "messages": [], "waiting": False}
+        return {"conversationId": None, "messages": [], "waiting": False,
+                "hasMore": False}
+    limit = clamp_thread_limit(limit)
+    # One more than he asked for, and that extra row is the whole of
+    # `hasMore`: Agora answers with the *newest* N, so being handed N+1 means
+    # there is at least one message older than the page, and being handed
+    # fewer means the page is the whole thread.
     status, detail = agora_get(
-        f"/conversations/{conversation_id}/messages?limit={int(limit)}")
+        f"/conversations/{conversation_id}/messages?limit={limit + 1}")
     if status != 200:
         raise RuntimeError(f"conversation fetch returned {status}")
-    messages = keep_only_live_passages(_visible(detail.get("messages", [])))
+    raw = detail.get("messages", [])
+    # Counted on the raw rows rather than the visible ones on purpose.
+    # `_visible` drops narration, and a page whose older half is all
+    # narration would report "nothing older" while older messages exist.
+    # The question this answers is "is another fetch worth making", which is
+    # about what Agora holds, not about what survives the filter.
+    has_more = len(raw) > limit
+    messages = keep_only_live_passages(_visible(raw))
     # Blind to the partial passages `_visible` now keeps, for the reason
     # `nova_ask.thread` spells out: a passage arriving mid-turn is evidence
     # the turn is still running, and reading it as "answered" would stop the
@@ -222,8 +265,10 @@ def thread(conversation_id, limit=MAX_THREAD):
     waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
     return {
         "conversationId": conversation_id,
-        "messages": messages[-int(limit):],
+        "messages": messages[-limit:],
         "waiting": waiting,
+        # Whether scrolling to the top of the thread should fetch again.
+        "hasMore": has_more,
         # What the caller stamps as seen. Settled only, for `waiting`'s
         # reason one line up: a passage arriving mid-turn is the reply still
         # being written, and marking it seen would clear the highlight

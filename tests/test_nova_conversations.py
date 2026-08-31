@@ -184,7 +184,8 @@ def test_an_empty_id_reads_as_an_empty_thread_without_calling_agora():
     # and it must not become an Agora fetch for the id "".
     (none_id, calls) = _run(lambda: convs.thread(None),
                             messages=[{"id": "m", "sender": "x"}])
-    assert none_id == {"conversationId": None, "messages": [], "waiting": False}
+    assert none_id == {"conversationId": None, "messages": [], "waiting": False,
+                       "hasMore": False}
     assert calls == []
     (empty, calls) = _run(lambda: convs.thread(""), messages=[])
     assert empty["messages"] == [] and calls == []
