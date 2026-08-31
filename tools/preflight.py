@@ -129,6 +129,7 @@ CHECKS = (
     "hook_cost",
     "heartbeat_health",
     "cycle_postmortem",
+    "reply_health",
     "schedule_health",
     "helm_repo_health",
     "argocd_health",
