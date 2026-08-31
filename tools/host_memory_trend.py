@@ -43,9 +43,29 @@ is that `MemTotal` equals a node's capacity. If some future runtime fakes
 it per container, this would record a container's memory as the host's
 and every slope below would be about the wrong machine.
 
-Exit 0 means it judged the trend and nothing is falling toward zero
-inside the horizon. Exit 2 means something is. Exit 1 means it could not
-judge.
+Cycle 699 added the two readings that need no history at all, because
+"NOT ENOUGH HISTORY" was the whole of what this said for its first three
+hours and the box it watches was two days from an incident when it was
+written. `/proc/pressure/memory` is the kernel's own account of how long
+*everything* was blocked on memory, and `/proc/vmstat`'s `oom_kill` is how
+many tasks it has ended since boot -- both host-wide, both readable from
+this pod with no grant, and both about harm already done rather than a
+projection. That matters here specifically: naming the ~4.7GB outside every
+pod cgroup still needs `nodes/proxy` or a `ps aux` from the owner, and
+neither has arrived, so these two are what can be measured from where I
+actually stand. `tools.workload_health` reads container states, so an OOM
+kill of a host process -- the 2026-08-29 shape, twelve stale `claude.exe`
+children -- is invisible to it by construction.
+
+Both thresholds are calibrated against this box rather than picked: the
+stall line is eleven times server1's own since-boot average, and the
+OOM-kill line is a multiple of its own since-boot rate. See the constants.
+
+Exit 0 means it judged the trend and nothing is falling toward zero inside
+the horizon, and the box is neither stalling nor killing at a rate above
+its own. Exit 2 means one of those three is true. Exit 1 means it could not
+judge -- and note the order: a stall raises 2 even on a fresh ledger, so a
+real incident is never reported as "not enough history".
 """
 
 import argparse
@@ -93,11 +113,126 @@ TRACKED = (
     ("swap_free_mib", "free swap"),
 )
 
+#: Where the kernel publishes system-wide stall time and the OOM-kill count.
+#: Both are read from the same `/proc` this file already proves is the host's
+#: by matching `MemTotal` to a node's capacity -- so the attribution below
+#: covers them too, and neither needs a permission this loop does not have.
+PRESSURE_PATH = "/proc/pressure/memory"
+VMSTAT_PATH = "/proc/vmstat"
 
-def reading_now(meminfo, nodes, at=None):
+#: Percent of the last five minutes during which *every* runnable task was
+#: stalled on memory before this calls it harm. Derived from this box rather
+#: than picked: on 2026-08-31, at 136 days of uptime, `/proc/pressure/memory`
+#: read `full total=104934927170` microseconds against 1.175e13 microseconds
+#: of uptime -- 0.89% since boot. Ten percent is eleven times the box's own
+#: long-run average and means one second in ten with nothing able to run.
+#: `some` is deliberately not judged: it trips on a single process waiting
+#: for one page and this box has averaged 1.42% of it while healthy.
+FULL_STALL_PERCENT = 10.0
+
+#: An OOM-kill rate this many times the box's own since-boot rate is the
+#: finding. A rate rather than a count, and calibrated against the same box
+#: rather than against a number I invented: 627 kills over 136 days is 4.6 a
+#: day, so about one per five hours, and a check that raised on a single kill
+#: would raise several times a day forever -- which is the "will I ever be
+#: able to ignore this?" test that `journal-digest.md` says 13 of my checks
+#: already fail.
+OOM_RATE_MULTIPLE = 3.0
+
+#: ...and never on fewer than this many kills in the window, so a quiet box
+#: with a near-zero baseline cannot be tripped by one kill.
+OOM_MIN_KILLS = 3
+
+
+def read_pressure(path=PRESSURE_PATH):
+    """`(some_avg300, full_avg300, full_total_us)` from PSI, or `(None, why)`.
+
+    A kernel without `CONFIG_PSI` has no such file; that is a missing
+    instrument, not a healthy host, and it is reported as one.
+    """
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None, (
+            f"{path} could not be read, so nothing here knows whether the box "
+            "is actually stalling on memory."
+        )
+    fields = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        for token in parts[1:]:
+            key, _, value = token.partition("=")
+            try:
+                fields[f"{parts[0]}_{key}"] = float(value)
+            except ValueError:
+                continue
+    missing = [k for k in ("some_avg300", "full_avg300", "full_total")
+               if k not in fields]
+    if missing:
+        return None, (
+            f"{path} carries no {', '.join(missing)}, so its format is not the "
+            "one this reads."
+        )
+    return (fields["some_avg300"], fields["full_avg300"], fields["full_total"]), None
+
+
+def read_oom_kills(path=VMSTAT_PATH):
+    """The host's cumulative OOM-kill count, or `(None, why)`.
+
+    Counts every task the kernel's OOM killer has ended since boot, in a pod
+    cgroup or outside every one of them. `tools.workload_health` reads
+    container states, so a killed host process -- the 2026-08-29 shape -- is
+    invisible to it by construction.
+    """
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None, f"{path} could not be read, so host OOM kills go uncounted."
+    for line in raw.splitlines():
+        name, _, value = line.partition(" ")
+        if name == "oom_kill":
+            try:
+                return float(value), None
+            except ValueError:
+                return None, f"{path} carries an unparseable oom_kill line: {line!r}"
+    return None, (
+        f"{path} carries no oom_kill counter, so this kernel does not publish one."
+    )
+
+
+def read_uptime_days(path="/proc/uptime"):
+    """`(days, None)` since this host booted, or `(None, why)`.
+
+    It returns a `why` for the same reason its two siblings do, and the
+    reason is sharper here: this is the denominator of the OOM-kill
+    baseline, so losing it does not lose a printed number -- it turns the
+    burst detector off. A bare `None` made that invisible.
+    """
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+        return float(raw.split()[0]) / 86400.0, None
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, (
+            f"{path} could not be read ({exc.__class__.__name__}), so the "
+            "OOM-kill baseline has no denominator."
+        )
+    except (ValueError, IndexError):
+        return None, (
+            f"{path} does not start with a number of seconds, so the OOM-kill "
+            "baseline has no denominator."
+        )
+
+
+def reading_now(meminfo, nodes, at=None, pressure=None, oom_kills=None,
+                uptime_days=None):
     """One ledger row for this instant, or `(None, why)`.
 
-    `why` is always about the instrument, never about the box.
+    `why` is always about the instrument, never about the box. The pressure
+    and OOM-kill readings are passed in rather than read here so that a
+    kernel that publishes neither still produces a row -- the slope was
+    working before they existed and must not start failing because of them.
     """
     total_mib = meminfo.get("MemTotal", 0) / 1024
     host = next((name for name, mib in nodes.items() if abs(mib - total_mib) < 1), None)
@@ -115,7 +250,7 @@ def reading_now(meminfo, nodes, at=None):
             "the only field that says what can still be allocated."
         )
     when = (at or datetime.now(timezone.utc)).replace(microsecond=0)
-    return {
+    row = {
         # `_at` is the parsed instant every comparison here uses; `save`
         # strips underscore keys, so it never reaches the file.
         "_at": when,
@@ -125,7 +260,17 @@ def reading_now(meminfo, nodes, at=None):
         "mem_available_mib": round(available / 1024, 1),
         "swap_total_mib": round(meminfo.get("SwapTotal", 0) / 1024, 1),
         "swap_free_mib": round(meminfo.get("SwapFree", 0) / 1024, 1),
-    }, None
+    }
+    if pressure is not None:
+        some_avg300, full_avg300, full_total_us = pressure
+        row["psi_some_avg300"] = round(some_avg300, 2)
+        row["psi_full_avg300"] = round(full_avg300, 2)
+        row["psi_full_total_us"] = full_total_us
+    if oom_kills is not None:
+        row["oom_kills"] = oom_kills
+    if uptime_days is not None:
+        row["uptime_days"] = round(uptime_days, 3)
+    return row, None
 
 
 def load(path):
@@ -243,6 +388,99 @@ def judge(rows, current, horizon_days, min_readings=MIN_READINGS,
     return lines, actionable, True
 
 
+def judge_harm(current, rows, full_stall_percent=FULL_STALL_PERCENT,
+               oom_rate_multiple=OOM_RATE_MULTIPLE, oom_min_kills=OOM_MIN_KILLS):
+    """`(lines, actionable)` for the two readings that need no history.
+
+    The slope above cannot say anything until it has six readings over six
+    hours. These can, on the very first run, because they are the box's own
+    account of harm already done rather than a projection: PSI is how long
+    everything was stalled, and `oom_kill` is how many tasks the kernel ended.
+    A fresh ledger is still no trend -- it is just no longer no instrument.
+    """
+    lines, actionable = [], False
+
+    full = current.get("psi_full_avg300")
+    some = current.get("psi_some_avg300")
+    if full is None or some is None:
+        lines.append("CANNOT READ PRESSURE — no PSI in this reading, so nothing "
+                     "here knows whether the box is stalling.")
+    else:
+        detail = (f"  stall: {full:.2f}% of the last 5 min with every task blocked "
+                  f"on memory, {some:.2f}% with any task blocked")
+        if full >= full_stall_percent:
+            actionable = True
+            lines.append(
+                f"STALLING — {current['host']} spent {full:.2f}% of the last five "
+                f"minutes with every runnable task blocked on memory, at or over "
+                f"the {full_stall_percent:.0f}% line. Free memory is a forecast; "
+                "this is the box already losing time."
+            )
+        else:
+            lines.append(detail + ".")
+
+    kills = current.get("oom_kills")
+    uptime = current.get("uptime_days")
+    if kills is None:
+        # "CANNOT READ", not "CANNOT COUNT": `tools.preflight.CAVEAT_MARKERS`
+        # matches on the prefix, and a caveat it does not match is dropped from
+        # the collapsed report on an otherwise-clean run -- visible only under
+        # --verbose, which is the one place nobody looks.
+        lines.append("CANNOT READ OOM KILLS — no oom_kill in this reading.")
+        return lines, actionable
+
+    baseline = kills / uptime if uptime else None
+    if baseline is None:
+        lines.append(
+            f"CANNOT READ OOM RATE — {kills:.0f} kill(s) since boot, but no uptime "
+            "to divide by, so the burst detector below cannot judge anything."
+        )
+    prior = [r for r in rows if r.get("oom_kills") is not None and r is not current]
+    if not prior:
+        lines.append(
+            f"  OOM kills: {kills:.0f} since boot"
+            + (f", {baseline:.1f}/day over {uptime:.0f} day(s) of uptime" if baseline
+               else "")
+            + " — no earlier reading carries the counter, so no recent rate yet."
+        )
+        return lines, actionable
+
+    first = prior[0]
+    span_days = (current["_at"] - first["_at"]).total_seconds() / 86400.0
+    delta = kills - first["oom_kills"]
+    if delta < 0:
+        lines.append(
+            f"  OOM kills: the counter went backwards ({first['oom_kills']:.0f} to "
+            f"{kills:.0f}), so the box rebooted and the window is not comparable."
+        )
+        return lines, actionable
+    if span_days <= 0:
+        lines.append(f"  OOM kills: {kills:.0f} since boot; the window has no duration.")
+        return lines, actionable
+
+    rate = delta / span_days
+    summary = (f"  OOM kills: {delta:.0f} in the last {span_days * 24:.1f}h "
+               f"({rate:.1f}/day) against {kills:.0f} since boot")
+    if baseline is not None:
+        summary += f" ({baseline:.1f}/day)"
+    # `baseline is not None`, not `baseline` -- a box that has never OOM-killed
+    # anything has a baseline of exactly zero, and the truthiness test silently
+    # made such a box unraisable. Zero needs no special case beyond that:
+    # `rate >= 0` is true of any burst, so `oom_min_kills` is the judgement there.
+    if (baseline is not None and delta >= oom_min_kills
+            and rate >= baseline * oom_rate_multiple):
+        actionable = True
+        lines.append(
+            f"OOM KILLING — {current['host']} killed {delta:.0f} task(s) in the last "
+            f"{span_days * 24:.1f}h, {rate:.1f}/day against its own since-boot rate of "
+            f"{baseline:.1f}/day. This counts kills outside every pod cgroup too, "
+            "which is the half tools.workload_health cannot see."
+        )
+    else:
+        lines.append(summary + ".")
+    return lines, actionable
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--ledger", default=DEFAULT_LEDGER,
@@ -272,7 +510,11 @@ def main(argv=None):
               "cannot be attributed to a host.")
         return 1
 
-    current, why = reading_now(meminfo, nodes)
+    pressure, pressure_why = read_pressure()
+    oom_kills, oom_why = read_oom_kills()
+    uptime_days, uptime_why = read_uptime_days()
+    current, why = reading_now(meminfo, nodes, pressure=pressure,
+                               oom_kills=oom_kills, uptime_days=uptime_days)
     if current is None:
         print(f"CANNOT ATTRIBUTE MEMORY — {why}")
         return 1
@@ -299,18 +541,29 @@ def main(argv=None):
           f"{current['mem_total_mib']:.0f}Mi available, "
           f"{current['swap_free_mib']:.0f}Mi of {current['swap_total_mib']:.0f}Mi swap free.")
 
+    if pressure is None:
+        print(f"  {pressure_why}")
+    if oom_kills is None:
+        print(f"  {oom_why}")
+    if uptime_days is None:
+        print(f"  {uptime_why}")
+
     inside = window(rows, current["host"], current["_at"], args.window_hours)
+    harm_lines, harmed = judge_harm(current, inside)
+    for line in harm_lines:
+        print(line)
+
     lines, actionable, judged = judge(inside, current, args.horizon_days)
     for line in lines:
         print(line)
 
-    if not judged:
-        return 1
-    if actionable:
+    if harmed or actionable:
         print("This is tools.workload_health's blind spot on purpose: it judges the "
               "level, which is right for a spike and passes every reading of a leak "
               "until the last one.")
         return 2
+    if not judged:
+        return 1
     return 0
 
 
