@@ -57,7 +57,8 @@ CALM = (0.03, 0.02, 104934927170.0)  # a live calm reading off server1
 
 
 def calm_host(monkeypatch, pressure=CALM, oom_kills=627.0, uptime_days=136.0,
-              pod_working_set=None, pods_why="kubectl top failed: no kubectl here"):
+              pod_working_set=None, pods_why="kubectl top failed: no kubectl here",
+              cgroup_split=None, cgroup_why="no kubectl here"):
     """Pin the two host readings so a test asserts on the ledger, not on CI's box.
 
     Without this every `main` test below would read the real `/proc` of
@@ -72,6 +73,9 @@ def calm_host(monkeypatch, pressure=CALM, oom_kills=627.0, uptime_days=136.0,
     # than wrong. Tests that want the split pass one in.
     monkeypatch.setattr(hmt, "read_pod_working_set",
                         lambda *a, **k: (pod_working_set, pods_why))
+    # ...and the cAdvisor read, which shells out to the same absent kubectl.
+    monkeypatch.setattr(hmt, "read_cgroup_split",
+                        lambda *a, **k: (cgroup_split, cgroup_why))
 
 
 # --- attribution -----------------------------------------------------
@@ -724,3 +728,180 @@ def test_gated_slope_reports_the_series_it_actually_fitted():
     assert count == 7
     assert span == pytest.approx(6.0)
     assert rate == pytest.approx(2400.0)
+
+
+# --- whose swap is it (issue #131) -----------------------------------
+
+
+def swap_series(k3s_values, unowned_values, start=BASE, step_hours=1.0):
+    """Readings carrying the cgroup swap split, oldest first."""
+    rows = []
+    for i, (k3s, unowned) in enumerate(zip(k3s_values, unowned_values)):
+        at = start + timedelta(hours=step_hours * i)
+        rows.append({
+            "_at": at,
+            "at": at.isoformat(),
+            "host": "server1",
+            "mem_total_mib": 7745.7,
+            "mem_available_mib": 1800.0,
+            "swap_total_mib": 2048.0,
+            "swap_free_mib": 1800.0,
+            "k3s_rss_mib": float(k3s),
+            "k3s_swap_mib": 168.0,
+            "unowned_swap_mib": float(unowned),
+            "swap_used_mib": 1664.0,
+        })
+    return rows
+
+
+def cadvisor(root_swap=1664.0, k3s_swap=168.0, kubepods_swap=1.0, k3s_rss=2123.0):
+    return {
+        hmt.CADVISOR_RSS_SERIES: {"/": 4637.0, hmt.K3S_CGROUP: k3s_rss},
+        hmt.CADVISOR_SWAP_SERIES: {
+            "/": root_swap,
+            hmt.K3S_CGROUP: k3s_swap,
+            hmt.KUBEPODS: kubepods_swap,
+        },
+    }
+
+
+def test_the_remainder_is_the_root_minus_the_two_cgroups_that_have_a_name():
+    """The live 2026-08-31 numbers: 1664 root, 168 k3s, 1 kubepods."""
+    split, why = hmt.read_cgroup_split("server1", reader=lambda h: (cadvisor(), None))
+    assert why is None
+    assert split["k3s_rss_mib"] == 2123.0
+    assert split["k3s_swap_mib"] == 168.0
+    assert split["unowned_swap_mib"] == 1495.0
+    assert split["swap_used_mib"] == 1664.0
+
+
+def test_kubepods_is_subtracted_rather_than_assumed_to_be_nothing():
+    """It is ~1Mi today. A remainder that ignores it stops being a remainder."""
+    split, _ = hmt.read_cgroup_split(
+        "server1", reader=lambda h: (cadvisor(kubepods_swap=400.0), None))
+    assert split["unowned_swap_mib"] == 1096.0
+
+
+def test_a_read_carrying_no_swap_series_is_a_missing_instrument_not_a_zero():
+    series = cadvisor()
+    del series[hmt.CADVISOR_SWAP_SERIES]
+    split, why = hmt.read_cgroup_split("server1", reader=lambda h: (series, None))
+    assert split is None
+    assert "container_memory_swap" in why
+
+
+def test_a_read_carrying_no_k3s_row_says_so_rather_than_reporting_a_split():
+    series = cadvisor()
+    del series[hmt.CADVISOR_SWAP_SERIES][hmt.K3S_CGROUP]
+    del series[hmt.CADVISOR_RSS_SERIES][hmt.K3S_CGROUP]
+    split, why = hmt.read_cgroup_split("server1", reader=lambda h: (series, None))
+    assert split is None
+    assert hmt.K3S_CGROUP in why
+
+
+def test_a_refused_cadvisor_read_carries_its_own_reason_through():
+    split, why = hmt.read_cgroup_split("server1", reader=lambda h: (None, "403 Forbidden"))
+    assert split is None
+    assert why == "403 Forbidden"
+
+
+def test_a_growing_unowned_remainder_is_named_as_the_2026_08_29_shape():
+    rows = swap_series([2123] * 7, [1200, 1250, 1300, 1350, 1400, 1450, 1495])
+    lines = hmt.attribute_swap(rows, current_from(rows))
+    assert lines[0].startswith("SWAP OWNERS")
+    assert "Only the unowned swap is growing" in lines[-1]
+    assert "ps aux" in lines[-1]
+
+
+def test_a_growing_k3s_is_named_as_a_control_plane_not_as_the_unowned_half():
+    rows = swap_series([1800, 1850, 1900, 1950, 2000, 2050, 2123], [1495] * 7)
+    lines = hmt.attribute_swap(rows, current_from(rows))
+    assert "Only k3s.service is growing" in lines[-1]
+    assert "unowned" not in lines[-1]
+
+
+def test_a_flat_pair_names_neither():
+    rows = swap_series([2123] * 7, [1495] * 7)
+    lines = hmt.attribute_swap(rows, current_from(rows))
+    assert lines[-1] == "  Neither is growing over this window."
+
+
+def test_both_growing_picks_neither():
+    rows = swap_series([1800, 1850, 1900, 1950, 2000, 2050, 2123],
+                       [1200, 1250, 1300, 1350, 1400, 1450, 1495])
+    lines = hmt.attribute_swap(rows, current_from(rows))
+    assert lines[-1] == "  Both are growing; this does not pick between them."
+
+
+def test_a_window_too_thin_to_fit_says_so_rather_than_printing_a_rate():
+    rows = swap_series([2123] * 7, [1495] * 7)
+    for row in rows[:-1]:
+        del row["unowned_swap_mib"]
+    lines = hmt.attribute_swap(rows, current_from(rows))
+    assert lines[0].startswith("SWAP OWNERS")
+    assert lines[1].startswith("  CANNOT SEE which of them is moving")
+    assert "unowned_swap_mib on 1 spanning 0.0h" in lines[1]
+    assert not any("Mi/day" in line for line in lines)
+
+
+def test_a_reading_without_the_cgroup_keys_says_so_rather_than_going_quiet():
+    rows = swap_series([2123] * 7, [1495] * 7)
+    lines = hmt.attribute_swap(rows, {"host": "server1"})
+    assert len(lines) == 1
+    assert lines[0].startswith("CANNOT SEE whose swap this is")
+
+
+def test_every_swap_blind_line_starts_with_a_marker_preflight_matches():
+    from tools.preflight import is_caveat
+    rows = swap_series([2123] * 7, [1495] * 7)
+    blind = hmt.attribute_swap(rows, {"host": "server1"})
+    thin = swap_series([2123] * 7, [1495] * 7)
+    for row in thin[:-1]:
+        del row["unowned_swap_mib"]
+    blind += hmt.attribute_swap(thin, current_from(thin))
+    stated = [line for line in blind if line.strip().startswith("CANNOT")]
+    assert len(stated) == 2
+    for line in stated:
+        assert is_caveat(line), line
+
+
+def test_reading_now_records_the_split_it_is_handed():
+    reading, why = hmt.reading_now(meminfo(), {"server1": 7745.7}, at=BASE,
+                                   cgroup_split={"k3s_rss_mib": 2123.0,
+                                                 "unowned_swap_mib": 1495.0})
+    assert why is None
+    assert reading["k3s_rss_mib"] == 2123.0
+    assert reading["unowned_swap_mib"] == 1495.0
+
+
+def test_main_says_why_it_could_not_name_the_swap(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(hmt, "read_meminfo",
+                        lambda *a: (dict(meminfo(), AnonPages=5045000.0), None))
+    monkeypatch.setattr(hmt, "read_node_capacity", lambda: ({"server1": 7745.7}, None))
+    calm_host(monkeypatch, cgroup_split=None,
+              cgroup_why="nodes/proxy is Forbidden for this account")
+    hmt.main(["--ledger", str(tmp_path / "l.jsonl")])
+    out = capsys.readouterr().out
+    assert "CANNOT SEE whose swap it is" in out
+    assert "nodes/proxy is Forbidden" in out
+
+
+def test_naming_the_swap_owner_never_raises_the_exit_status(tmp_path, monkeypatch,
+                                                            capsys):
+    """judge() already raises on free swap falling; a second alarm is noise."""
+    monkeypatch.setattr(hmt, "read_meminfo",
+                        lambda *a: (dict(meminfo(), AnonPages=5045000.0), None))
+    monkeypatch.setattr(hmt, "read_node_capacity", lambda: ({"server1": 7745.7}, None))
+    calm_host(monkeypatch, pod_working_set=(3020.0, 43), pods_why=None,
+              cgroup_split={"k3s_rss_mib": 2123.0, "k3s_swap_mib": 168.0,
+                            "unowned_swap_mib": 1495.0, "swap_used_mib": 1664.0},
+              cgroup_why=None)
+    ledger = tmp_path / "l.jsonl"
+    rows = swap_series([1800, 1850, 1900, 1950, 2000, 2050, 2123],
+                       [1200, 1250, 1300, 1350, 1400, 1450, 1495])
+    hmt.save(str(ledger), rows, 2000)
+    code = hmt.main(["--ledger", str(ledger), "--no-record"])
+    out = capsys.readouterr().out
+    assert "SWAP OWNERS" in out
+    assert "Both are growing" in out
+    assert code == 0
