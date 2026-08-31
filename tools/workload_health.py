@@ -43,6 +43,19 @@ container and every percentage would be about the wrong machine while
 looking perfectly reasonable, so the equality is asserted against the
 node's own capacity and an unmatched reading exits 1 rather than 0.
 
+**Cycle 706 added the budget beside the headroom, because every
+per-container question can pass while the node is over its own ceiling.**
+The check above asks whether the largest single container can still start.
+On 2026-08-31 it could -- 2048Mi against 1889Mi available was the one red,
+and the largest limit was the only limit anyone had compared to anything.
+Meanwhile the memory limits declared across the node summed to 7978Mi on a
+7746Mi box, 103%, and 27 further running containers declared no limit at
+all, so that sum is a floor rather than a ceiling. Nothing stops them all
+claiming what they are allowed at once; the scheduler only ever guarded
+*requests*, which came to 2519Mi, a third of the box. That is why server1
+can look comfortably scheduled and still OOMKill the persona runner
+(issue #130), and it is the half of issue #131 that needs no host shell.
+
 **It reads the live cluster, never git** — the same call `helm_repo_health`
 and `argocd_health` make, and for the same reason: a manifest ArgoCD has
 not synced is not what is running.
@@ -196,6 +209,10 @@ def read_pods(runner=subprocess.run):
             "containers": status.get("containerStatuses") or [],
             "conditions": status.get("conditions") or [],
             "limits": limits,
+            # How many containers the Pod declares, not how many set a limit.
+            # `limits` only records the ones that did, so the two counts
+            # together are what say a limit is missing rather than zero.
+            "container_count": len(spec.get("containers") or []),
         })
     return pods, None
 
@@ -563,6 +580,45 @@ def largest_limit(pods):
     return biggest, where
 
 
+def declared_ceiling(pods):
+    """What the pods on this host are collectively allowed to take.
+
+    `largest_limit` asks whether the biggest single container can still
+    start. That is a real question and it is not this one, and the case that
+    separates them is eight 1Gi containers on this box: every one of them
+    fits in what is available, so the per-container check is quiet, and
+    together they are over the machine. On 2026-08-31 the limits declared
+    across server1 summed to 7978Mi against a 7746Mi box while the scheduler
+    saw 2519Mi of requests and packed happily.
+
+    Returns (total MiB, containers that set a limit, containers that do not).
+    Only Running and Pending Pods are counted -- a Succeeded Job pod holds no
+    memory and would inflate the sum with workloads that finished days ago.
+
+    The third number is why the first is a floor rather than a ceiling. A
+    container with no memory limit can take the whole machine, so a sum over
+    only the ones that declared is the *least* this node can be asked for,
+    never the most.
+    """
+    total = 0.0
+    with_limit = without_limit = 0
+    for pod in pods:
+        if pod.get("phase") not in ("Running", "Pending"):
+            continue
+        limits = pod.get("limits") or {}
+        for quantity in limits.values():
+            mib = _mib(quantity)
+            if mib is None:
+                continue
+            total += mib
+            with_limit += 1
+        declared = pod.get("container_count")
+        if declared is None:
+            continue
+        without_limit += max(0, declared - len(limits))
+    return total, with_limit, without_limit
+
+
 def memory_headroom(meminfo, nodes, pods):
     """Can this host still start the largest container it is configured to run?
 
@@ -622,6 +678,30 @@ def memory_headroom(meminfo, nodes, pods):
             f"MEMORY  {host}: {available_mib:.0f}Mi of {total:.0f}Mi available "
             f"({available_mib / total * 100:.1f}%), above the largest configured "
             f"container limit ({biggest:.0f}Mi, {where}).")
+
+    ceiling, limited, unlimited = declared_ceiling(pods)
+    if limited == 0:
+        lines.append(
+            f"BUDGET  {host}: no running container sets a memory limit, so there "
+            "is no declared budget to compare against the box.")
+    else:
+        share = ceiling / total * 100 if total else 0.0
+        unbounded = (
+            f" {unlimited} more running container(s) set no limit at all, so this "
+            "sum is the least the host can be asked for, not the most."
+            if unlimited else
+            " Every running container sets one, so this sum is the whole of it.")
+        if ceiling > total:
+            actionable = True
+            lines.append(
+                f"MEMORY OVERCOMMITTED — {host} is {total:.0f}Mi and the memory limits "
+                f"declared on it sum to {ceiling:.0f}Mi ({share:.0f}%) across {limited} "
+                f"container(s). Nothing stops them all claiming it at once; the "
+                f"scheduler only ever guarded the requests.{unbounded}")
+        else:
+            lines.append(
+                f"BUDGET  {host}: declared limits sum to {ceiling:.0f}Mi of "
+                f"{total:.0f}Mi ({share:.0f}%) across {limited} container(s).{unbounded}")
 
     swap_total = meminfo.get("SwapTotal", 0) / 1024
     swap_free = meminfo.get("SwapFree", 0) / 1024

@@ -308,6 +308,77 @@ def _pod_with_limit(mib, name="big"):
     return _pod(name=name, limits={"c": f"{mib}Mi"})
 
 
+def _budget_pod(name, limits=None, containers=1, phase="Running"):
+    pod = _pod(name=name, phase=phase, limits=limits or {})
+    pod["container_count"] = containers
+    return pod
+
+
+def test_declared_ceiling_sums_the_limits_of_running_pods_only():
+    total, limited, unlimited = wh.declared_ceiling([
+        _budget_pod("a", {"c": "512Mi"}),
+        _budget_pod("b", {"c": "1Gi"}),
+        _budget_pod("finished", {"c": "4Gi"}, phase="Succeeded"),
+    ])
+    assert total == 1536
+    assert limited == 2
+    assert unlimited == 0
+
+
+def test_declared_ceiling_counts_containers_that_set_no_limit():
+    total, limited, unlimited = wh.declared_ceiling([
+        _budget_pod("two", {"c": "256Mi"}, containers=2),
+        _budget_pod("none", containers=3),
+    ])
+    assert total == 256
+    assert limited == 1
+    assert unlimited == 4
+
+
+def test_the_sum_of_limits_over_the_box_raises_while_every_single_one_fits():
+    """The case largest_limit cannot see, and the reason this check exists.
+
+    Eight 1Gi containers on a 7746Mi node: the biggest is 1024Mi against
+    1889Mi available, so the per-container question passes. The node is
+    still over its own budget by 446Mi.
+    """
+    pods = [_budget_pod(f"p{i}", {"c": "1Gi"}) for i in range(8)]
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), NODES, pods)
+    assert judged is True
+    assert actionable is True
+    text = " ".join(lines)
+    assert "NODE OUT OF MEMORY" not in text, "the per-container check must pass here"
+    assert "MEMORY OVERCOMMITTED" in text
+    assert "8192Mi (106%)" in text
+    assert "8 container(s)" in text
+
+
+def test_limits_inside_the_box_are_reported_without_raising():
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), NODES,
+        [_budget_pod("p", {"c": "1Gi"})])
+    assert actionable is False
+    assert any(line.startswith("BUDGET ") and "1024Mi of 7746Mi (13%)" in line
+               for line in lines)
+
+
+def test_the_sum_says_it_is_a_floor_when_some_container_declares_nothing():
+    lines, _, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), NODES,
+        [_budget_pod("p", {"c": "1Gi"}, containers=3)])
+    text = " ".join(lines)
+    assert "2 more running container(s) set no limit" in text
+    assert "not the most" in text
+
+
+def test_the_sum_says_it_is_the_whole_of_it_when_every_container_declares_one():
+    lines, _, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), NODES,
+        [_budget_pod("p", {"c": "1Gi"}, containers=1)])
+    assert "Every running container sets one" in " ".join(lines)
+
+
 def test_mib_reads_every_suffix_kubernetes_writes():
     assert wh._mib("1Gi") == 1024
     assert wh._mib("512Mi") == 512
@@ -563,3 +634,25 @@ def test_pods_above_the_anonymous_total_never_print_a_negative():
     joined = "\n".join(lines)
     assert "-" not in joined.split("account for")[1]
     assert "no measurable memory outside its Pod cgroups" in joined
+
+
+def test_read_pods_counts_every_container_not_only_the_limited_ones():
+    """`limits` records only the containers that set one, so the count of
+    containers is the other half of saying a limit is missing."""
+    body = {"items": [{
+        "metadata": {"namespace": "agents", "name": "two-sided"},
+        "spec": {"containers": [
+            {"name": "app", "resources": {"limits": {"memory": "512Mi"}}},
+            {"name": "sidecar", "resources": {}},
+        ]},
+        "status": {"phase": "Running"},
+    }]}
+
+    def runner(args, **kwargs):
+        return mock.Mock(returncode=0, stdout=json.dumps(body), stderr="")
+
+    pods, why = wh.read_pods(runner=runner)
+    assert why is None
+    assert pods[0]["limits"] == {"app": "512Mi"}
+    assert pods[0]["container_count"] == 2
+    assert wh.declared_ceiling(pods) == (512, 1, 1)
