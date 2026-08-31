@@ -362,6 +362,30 @@ def slope_per_day(rows, field):
     return sum((x - mean_x) * (y - mean_y) for x, y in points) / denom
 
 
+def gated_slope(rows, field, min_readings=MIN_READINGS,
+                min_span_hours=MIN_SPAN_HOURS):
+    """`(rate, count, span_hours)` for `field`, rate None when its own series is too thin.
+
+    `slope_per_day` skips the rows that do not carry `field`, so a gate the
+    caller applied to the whole window says nothing about the sample the slope
+    was actually fitted to. A field added to the ledger later is present on
+    only the newest few readings, and that gap is not an edge case -- it is
+    every field's first day. Measured 2026-08-31: the window was 19 readings
+    over 6.0h, `host_anon_mib` was on 4 of them spanning 49 minutes, and the
+    ATTRIBUTION line printed -7207Mi/day against a 1912Mi value, a rate that
+    cannot hold for even seven hours. So the gate belongs on the series, not
+    on the window that contains it.
+    """
+    carrying = [r for r in rows if r.get(field) is not None]
+    span_hours = (
+        (carrying[-1]["_at"] - carrying[0]["_at"]).total_seconds() / 3600.0
+        if len(carrying) >= 2 else 0.0
+    )
+    if len(carrying) < min_readings or span_hours < min_span_hours:
+        return None, len(carrying), span_hours
+    return slope_per_day(carrying, field), len(carrying), span_hours
+
+
 def window(rows, host, now, hours):
     """The rows for `host` inside the trailing window, oldest first."""
     cutoff = now - timedelta(hours=hours)
@@ -388,10 +412,19 @@ def judge(rows, current, horizon_days, min_readings=MIN_READINGS,
     )
     for field, label in TRACKED:
         value = current.get(field)
-        rate = slope_per_day(rows, field)
-        if value is None or rate is None:
+        rate, carried, field_span = gated_slope(
+            rows, field, min_readings, min_span_hours)
+        if value is None:
             lines.append(
-                f"CANNOT TREND {label} — no usable series in the window."
+                f"CANNOT TREND {label} — this reading does not carry it."
+            )
+            continue
+        if rate is None:
+            lines.append(
+                f"CANNOT TREND {label}: {value:.0f}Mi now — {carried} of the "
+                f"{len(rows)} reading(s) in the window carry it, spanning "
+                f"{field_span:.1f}h, and a slope needs at least {min_readings} "
+                f"over {min_span_hours:.0f}h."
             )
             continue
         if rate >= 0:
@@ -445,17 +478,28 @@ def attribute_slope(rows, current, min_readings=MIN_READINGS,
     if len(rows) < min_readings or span_hours < min_span_hours:
         # `judge` has already said NOT ENOUGH HISTORY in the same report.
         return []
-    host_rate = slope_per_day(rows, "host_anon_mib")
-    pods_rate = slope_per_day(rows, "pods_working_set_mib")
-    if host_rate is None or pods_rate is None:
-        return ["CANNOT SEE the host/Pod split over this window — readings "
-                "taken before it was recorded do not carry one, so this "
-                "fills in as the window rolls forward."]
     host_now = current.get("host_anon_mib")
     pods_now = current.get("pods_working_set_mib")
     if host_now is None or pods_now is None:
         return ["CANNOT SEE the host/Pod split on this reading, so there is "
                 "nothing to compare the window against."]
+    host_rate, host_n, host_span = gated_slope(
+        rows, "host_anon_mib", min_readings, min_span_hours)
+    pods_rate, pods_n, pods_span = gated_slope(
+        rows, "pods_working_set_mib", min_readings, min_span_hours)
+    if host_rate is None or pods_rate is None:
+        # The levels are real and this reading measured them; only the rates
+        # are unavailable, so the levels stay and the rates go.
+        return [
+            f"ATTRIBUTION  outside every Pod cgroup: {host_now:.0f}Mi now. "
+            f"Pods: {pods_now:.0f}Mi now.",
+            f"CANNOT SEE which side is moving — host_anon_mib is on {host_n} "
+            f"reading(s) spanning {host_span:.1f}h and pods_working_set_mib on "
+            f"{pods_n} spanning {pods_span:.1f}h; a slope needs at least "
+            f"{min_readings} over {min_span_hours:.0f}h. Readings taken before "
+            "the split was recorded do not carry one, so this fills in as the "
+            "window rolls forward.",
+        ]
     lines = [
         f"ATTRIBUTION  outside every Pod cgroup: {host_now:.0f}Mi now, "
         f"{host_rate:+.0f}Mi/day. Pods: {pods_now:.0f}Mi now, "
