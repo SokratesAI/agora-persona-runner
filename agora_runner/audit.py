@@ -16,7 +16,8 @@ NARRATION_TEXT = "assistant_text"
 
 
 def audit(persona_name, conversation_id, capability, detail, before=None, after=None,
-          ephemeral=False, tool_use_id="", output=None, is_error=False):
+          ephemeral=False, tool_use_id="", output=None, is_error=False,
+          retracted=False):
     try:
         # Every field below is text a human reads, assembled from whatever a
         # tool was handed or returned, and this is the one point all of it
@@ -52,6 +53,15 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
         # AuditStore.CONTENT_CHARS_MAX (20_000), same as before/after.
         if tool_use_id:
             payload["toolUseId"] = tool_use_id
+        # Withdraws every narration step posted under this toolUseId. The
+        # bridge streams a passage as it is written and only learns at the
+        # end of the turn which passage was the reply; that one is retracted
+        # so the owner does not read it twice, once growing in the drawer and
+        # once in the bubble (agora/public/app.js mergeTextStreams). Sent only
+        # when true: an ordinary chip must leave the field undefined, because
+        # Agora treats any present value as the retracting half.
+        if retracted:
+            payload["retracted"] = True
         if output is not None:
             payload["output"] = redact(output)
             if is_error:

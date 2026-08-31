@@ -74,7 +74,8 @@ def revoke(token):
             _grants.pop(token, None)
 
 
-def report(token, capability, detail, tool_use_id="", output=None, is_error=False):
+def report(token, capability, detail, tool_use_id="", output=None, is_error=False,
+           retracted=False):
     """Post one chip. Returns False if the token is unknown or expired,
     which is the whole of this endpoint's authentication.
 
@@ -124,5 +125,6 @@ def report(token, capability, detail, tool_use_id="", output=None, is_error=Fals
     # Nothing is lost -- Agora also appends every chip to the conversation
     # itself, which is durable and is where these are actually read.
     audit(persona_name, conversation_id, capability, detail, ephemeral=True,
-          tool_use_id=tool_use_id, output=output, is_error=is_error)
+          tool_use_id=tool_use_id, output=output, is_error=is_error,
+          retracted=retracted)
     return True
