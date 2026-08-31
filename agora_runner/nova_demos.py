@@ -60,7 +60,7 @@ PORT_MAX = 5203
 #: asked for a demo. A third copy of a hostname is how a hostname rots.
 #:
 #: **The hostname is `nova-demos`, not `nova`, and that is the whole point
-#: of this constant.** Edvard's note, 2026-08-31: a PWA demo served under
+#: of this constant.** The owner's note, 2026-08-31: a PWA demo served under
 #: `nova.tailc83eb3.ts.net` cannot be installed as its own Android app,
 #: because Nova's own `manifest.webmanifest` declares `scope: "/"` -- the
 #: installed Nova WebAPK claims the entire origin, so Chrome hands the

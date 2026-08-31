@@ -1,6 +1,6 @@
 """A demo has to live on an origin Nova's own PWA does not claim.
 
-Edvard's note, 2026-08-31: a demo served under `nova.tailc83eb3.ts.net`
+The owner's note, 2026-08-31: a demo served under `nova.tailc83eb3.ts.net`
 could not be installed as its own Android app. Nova's
 `manifest.webmanifest` declares `scope: "/"`, the installed Nova WebAPK
 registers the whole origin, and Chrome opens the demo's URL in Nova
