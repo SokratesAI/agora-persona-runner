@@ -1126,8 +1126,17 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * out and visible with every group closed. `checkVisibility()` is the call
  * that answers the question actually being asked, and a screenshot is what
  * settles it. The browser suite cannot help either way -- jsdom does no
- * layout -- and `tools.poke_page`'s `nav-reachable` probe passes here for the
- * same reason it would pass if the folds did nothing at all. */
+ * layout.
+ *
+ * `tools.poke_page`'s `nav-reachable` probe read past this paragraph and
+ * paid for it: it took the last `.nav-tab` in the drawer, which from the
+ * day these folds shipped was a link inside a shut one, and asserted on
+ * that phantom box. What I measured on 2026-08-31 is the red: `Device`'s
+ * phantom sits at 728px in a 697 viewport with `checkVisibility()` false,
+ * while the same link after opening its fold lands at 681 and is
+ * reachable. I did not re-run the older green, so read that verdict as
+ * unexplained rather than as a pass. It opens every fold
+ * and filters on `checkVisibility()` before it measures anything now. */
 .nav-fold {
   margin-top: 0.75rem;
 }
