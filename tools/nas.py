@@ -308,13 +308,22 @@ def _run_ssh_fixed(ssh, command, timeout=25, run=subprocess.run):
     return done.stdout
 
 
-def _curl_config(url, headers=()):
-    """A curl config file, as text, carrying the URL and headers on stdin.
+#: What `_curl_config` asks curl to print after the body. The status code on
+#: its own last line, because curl's exit status alone does not separate a 401
+#: from a 200 and this module reports "refused the API key" differently from
+#: "answered 500". The two characters backslash-n, not a newline -- see the
+#: comment on the `write-out` line below.
+STATUS_WRITE_OUT = "\\n%{http_code}"
 
-    `write-out` puts the status code on its own last line, because curl's
-    exit status alone does not separate a 401 from a 200 and this module
-    reports "refused the API key" differently from "answered 500".
-    """
+#: The same, plus the URL a 3xx points at on the line before the status. curl
+#: fills `redirect_url` only when it did *not* follow the redirect, which is
+#: exactly this module's posture: nothing here follows one, because a followed
+#: redirect would carry the API key to whatever host the far end named.
+REDIRECT_WRITE_OUT = "\\n%{redirect_url}\\n%{http_code}"
+
+
+def _curl_config(url, headers=(), write_out=STATUS_WRITE_OUT):
+    """A curl config file, as text, carrying the URL and headers on stdin."""
     for value in (url, *headers):
         # A quote, a backslash or a newline in a value ends or re-opens the
         # entry, which is the same class of bug as the one measured on the NAS
@@ -332,7 +341,7 @@ def _curl_config(url, headers=()):
     # line, silently dropped every line after it, and returned a body with no
     # status code and no API key header, which reads exactly like a service
     # that answered.
-    lines += ['max-time = 15', 'silent', 'show-error', 'write-out = "\\n%{http_code}"']
+    lines += ['max-time = 15', 'silent', 'show-error', f'write-out = "{write_out}"']
     return "\n".join(lines) + "\n"
 
 
@@ -344,6 +353,18 @@ def _fetch_over_ssh(ssh, url, headers=(), run=subprocess.run):
         return body, int(code)
     except ValueError as exc:
         raise Unreachable(f"could not read a status code off curl's output: {out[:120]!r}") from exc
+
+
+def _redirect_over_ssh(ssh, url, run=subprocess.run):
+    """The URL a 3xx at `url` points at, or `None` if it did not redirect."""
+    out = _run_ssh(ssh, _curl_config(url, write_out=REDIRECT_WRITE_OUT), run=run)
+    rest, _, code = out.rpartition("\n")
+    _, _, target = rest.rpartition("\n")
+    try:
+        int(code)
+    except ValueError as exc:
+        raise Unreachable(f"could not read a status code off curl's output: {out[:120]!r}") from exc
+    return target.strip() or None
 
 
 def _plex_url(path, port=None):
@@ -593,7 +614,41 @@ INITIALIZE_PATHS = ("/initialize.json", "/initialize.js")
 _API_KEY = re.compile(r"""["']?apiKey["']?\s*:\s*['"]([0-9a-fA-F]{16,})['"]""")
 
 
-def discover_key(service, ssh, run=subprocess.run):
+def discover_base(service, ssh, run=subprocess.run):
+    """The URL base the app is served under -- `/sonarr` -- or `""`.
+
+    Sonarr and Radarr can be given a URL base so a reverse proxy can serve
+    them under a path. Setting one moves *every* path the app answers, and
+    the old paths then return a 307 rather than a 404, so nothing about the
+    box looks down. Measured 2026-08-31: both apps on this NAS answered 307
+    to `Location: /sonarr/initialize.json` and `/radarr/initialize.json`, and
+    all four *arr checks in this package had been UNREADABLE since 20:29 the
+    previous evening -- `discover_key` saw a non-200, returned `None`, and
+    `config` honestly dropped the service.
+
+    The base is read off the redirect rather than guessed from the service
+    name, because the two are only equal by convention and a wrong guess
+    would report a working app as unreachable exactly the way this bug did.
+    A redirect pointing anywhere that is not the same page under a prefix --
+    a login page, another host -- is not a base and returns `""`.
+    """
+    port = LOOPBACK_PORTS.get(service)
+    if not port:
+        return ""
+    probe = INITIALIZE_PATHS[0]
+    try:
+        target = _redirect_over_ssh(ssh, f"http://127.0.0.1:{port}{probe}", run=run)
+    except Unreachable:
+        return ""
+    if not target:
+        return ""
+    path = urllib.parse.urlsplit(target).path
+    if not path.endswith(probe) or path == probe:
+        return ""
+    return path[: -len(probe)].rstrip("/")
+
+
+def discover_key(service, ssh, base="", run=subprocess.run):
     """Read a service's API key off its own unauthenticated initialize page.
 
     This is not a clever trick and it is not a new exposure: Cycle 630
@@ -611,7 +666,7 @@ def discover_key(service, ssh, run=subprocess.run):
         return None
     for path in INITIALIZE_PATHS:
         try:
-            body, code = _fetch_over_ssh(ssh, f"http://127.0.0.1:{port}{path}", run=run)
+            body, code = _fetch_over_ssh(ssh, f"http://127.0.0.1:{port}{base}{path}", run=run)
         except Unreachable:
             return None
         if code != 200:
@@ -641,8 +696,9 @@ def config(env=None, ssh=_UNSET, run=subprocess.run):
             # Over SSH the request is made on the NAS, so the service's own
             # loopback address is the right one and the env URL is only an
             # override for a box that runs these on other ports.
-            url = url or f"http://127.0.0.1:{LOOPBACK_PORTS[name]}"
-            key = key or (discover_key(name, ssh, run=run) or "")
+            base = discover_base(name, ssh, run=run) if not url else ""
+            url = url or f"http://127.0.0.1:{LOOPBACK_PORTS[name]}{base}"
+            key = key or (discover_key(name, ssh, base=base, run=run) or "")
         if not url or not key:
             continue
         if "://" not in url:
@@ -975,10 +1031,13 @@ def unconfigured(conf_all):
 UNCONFIGURED_HELP = (
     "Nothing on this NAS is reachable from here, and it is worth knowing which half\n"
     "is missing before changing anything.\n"
-    "  * On the runner pod this should just work: it has ssh, and the sealed key at\n"
-    "    /etc/nas-ssh/id_ed25519. The request is then made on the NAS itself, and the\n"
-    "    API key is read off each app's own unauthenticated initialize page.\n"
-    "  * On the bridge pod there is no ssh binary at all, so this cannot run there.\n"
+    "  * Both pods should be able to do this: each has ssh and the sealed key at\n"
+    "    /etc/nas-ssh/id_ed25519 (bridge#87 put them on the bridge pod too). The\n"
+    "    request is then made on the NAS itself, and the API key is read off each\n"
+    "    app's own unauthenticated initialize page.\n"
+    "  * A URL base set on the app moves every path it answers and the old ones\n"
+    "    then 307 rather than 404, so nothing about the box looks down. `discover_base`\n"
+    "    reads the prefix off that redirect; a 3xx pointing anywhere else is not one.\n"
     "  * A direct HTTP call is not the path today: allow-nas-ssh-egress in the agents\n"
     "    namespace opens port 22 and nothing else, so :8989 and :7878 are refused by\n"
     "    this pod's own kernel before a packet leaves.\n"

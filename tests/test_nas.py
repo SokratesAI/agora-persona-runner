@@ -587,6 +587,70 @@ def test_discover_key_returns_none_rather_than_guessing_when_the_page_is_locked(
     assert nas.discover_key("plex", SSH_HOP, run=_FakeRun(stdout="\n200")) is None
 
 
+def test_discover_base_reads_the_prefix_off_the_redirect():
+    # Measured live 2026-08-31: both apps answered 307 with
+    # `Location: /sonarr/initialize.json`. curl fills `%{redirect_url}` with
+    # the resolved absolute URL, which is the line before the status code.
+    run = _FakeRun(stdout="\nhttp://127.0.0.1:8989/sonarr/initialize.json\n307")
+    assert nas.discover_base("sonarr", SSH_HOP, run=run) == "/sonarr"
+
+
+def test_discover_base_is_empty_when_the_app_is_served_at_the_root():
+    # No redirect: curl leaves `redirect_url` empty and the line is blank.
+    run = _FakeRun(stdout='{"apiKey": "0123456789abcdef0123456789abcdef"}\n\n200')  # gitleaks:allow -- fabricated
+    assert nas.discover_base("sonarr", SSH_HOP, run=run) == ""
+
+
+def test_discover_base_refuses_a_redirect_that_is_not_the_same_page_under_a_prefix():
+    # A login page, or a redirect to another host, is not a URL base. Guessing
+    # `/sonarr` from the service name would have "worked" here and been wrong.
+    for target in ("http://127.0.0.1:8989/login", "https://elsewhere.example/initialize.json.html"):
+        run = _FakeRun(stdout=f"\n{target}\n302")
+        assert nas.discover_base("sonarr", SSH_HOP, run=run) == ""
+
+
+def test_discover_key_asks_under_the_base_it_was_given():
+    run = _FakeRun(stdout='{"apiKey": "0123456789abcdef0123456789abcdef"}\n200')  # gitleaks:allow -- fabricated
+    assert nas.discover_key("sonarr", SSH_HOP, base="/sonarr", run=run) == "0123456789abcdef0123456789abcdef"  # gitleaks:allow -- fabricated
+    assert "8989/sonarr/initialize.json" in run.calls[0]["input"]
+
+
+def test_config_carries_the_url_base_into_every_later_request():
+    # The bug this covers: setting a URL base moves every path the app
+    # answers, `discover_key` saw a 307 rather than a 200, and `config`
+    # honestly dropped both services -- so all four *arr checks reported a
+    # sweep of zero while the apps were up and healthy.
+    key = "0123456789abcdef0123456789abcdef"  # gitleaks:allow -- fabricated
+    run = _SeqRun([
+        "\nhttp://127.0.0.1:8989/sonarr/initialize.json\n307",
+        f'{{"apiKey": "{key}"}}\n200',
+        "\nhttp://127.0.0.1:7878/radarr/initialize.json\n307",
+        f'{{"apiKey": "{key}"}}\n200',
+    ])
+    conf = nas.config({}, ssh=SSH_HOP, run=run)
+    assert conf["sonarr"]["url"] == "http://127.0.0.1:8989/sonarr"
+    assert conf["radarr"]["url"] == "http://127.0.0.1:7878/radarr"
+    assert nas.unconfigured(conf) == []
+    # The key is discovered under the base too, not just used under it. Without
+    # this line a `discover_key(name, ssh, run=run)` that drops the base passes,
+    # because the canned reply is positional and answers either URL.
+    assert "8989/sonarr/initialize.json" in run.calls[1]["input"]
+    assert "7878/radarr/initialize.json" in run.calls[3]["input"]
+    get = _FakeRun(stdout='{"version": "4.0.19.2979"}\n200')
+    nas._get("sonarr", conf["sonarr"], "/api/v3/system/status", run=get)
+    assert 'url = "http://127.0.0.1:8989/sonarr/api/v3/system/status"' in get.calls[0]["input"]
+
+
+def test_an_explicit_env_url_is_taken_as_written_and_not_prefixed():
+    run = _FakeRun(stdout="\nhttp://127.0.0.1:8989/sonarr/initialize.json\n307")
+    conf = nas.config(
+        {"SONARR_URL": "nas.local:8989/tv", "SONARR_API_KEY": "aaaabbbbccccdddd"},  # gitleaks:allow -- fabricated
+        ssh=SSH_HOP,
+        run=run,
+    )
+    assert conf["sonarr"]["url"] == "http://nas.local:8989/tv"
+
+
 def test_config_over_ssh_fills_in_loopback_and_a_discovered_key():
     run = _FakeRun(stdout="apiKey: 'aaaabbbbccccdddd'\n200")
     conf = nas.config({}, ssh=SSH_HOP, run=run)
