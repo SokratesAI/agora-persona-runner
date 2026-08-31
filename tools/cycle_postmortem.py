@@ -78,6 +78,30 @@ gap in the window is explained.
 everything outside it is still counted and still printed, it just does
 not raise. Pass `--window` to widen it, `--all` to raise on every gap
 ever.
+
+**`--split-at <instant>` answers "did that change fix it?"** --- idea
+#170, on the Claude Code 2.1.251 pin whose changelog names a bug that
+leaves a thinking-only turn stuck, which is a cycle that writes nothing:
+
+    python3 -m tools.cycle_postmortem --split-at 2026-08-28T23:14:42Z
+
+It prints the entryless *rate* on each side of that instant over
+equal-length windows, with the verdicts kept apart. Three things it is
+deliberately not: it is not a count (the cadence has changed four times,
+so more silent cycles per day can just mean more cycles per day), it is
+not a rate against all of history (the loop's early weeks were a
+different machine), and it is not one summed number (`failed: Connection
+refused` is the bridge being down, and no CLI version changes that). It
+never moves the exit status --- it is a report, and a rate that has not
+moved is not a fault.
+
+**For a CLI pin, the instant is when the pod carrying it was created,
+not when the commit merged.** `kubectl get rs -n agents -o
+custom-columns=NAME:.metadata.name,CREATED:.metadata.creationTimestamp,IMAGE:.spec.template.spec.containers[0].image`
+gives it. The 2.1.251 merge and its replica set are five minutes apart,
+which is under one cycle here, but the bridge Deployment is `Recreate`
+with a 2880-second grace, so a cycle that starts inside the roll can run
+on either binary and this cannot tell you which.
 """
 
 import argparse
@@ -295,24 +319,114 @@ def _fetch_messages(conversation_id, timeout=30):
     return payload or []
 
 
+def _created(conversation):
+    """A conversation's `createdAt` as a datetime, or `None`.
+
+    This is when the heartbeat opened the conversation, which is the
+    closest thing Agora records to when the cycle started.
+    """
+    stamp = (conversation or {}).get("createdAt")
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def rate_split(results, conversations, split_at, newest):
+    """Entryless rate either side of an instant, over matched-length windows.
+
+    Idea #170 asks whether a Claude Code pin fixed the cycles that run and
+    write nothing: *"count silent cycles for a week against the count
+    before the bump and see whether the rate moves"*. The count alone
+    cannot answer it -- the cadence has changed four times, so more silent
+    cycles per day can mean more cycles per day -- and neither can a rate
+    against all of history, because the loop's early weeks were a
+    different machine. So both sides are rates, and the window before is
+    the *same duration* as the window after.
+
+    The verdicts are kept apart rather than summed, for this module's own
+    reason: `failed: Connection refused` is the bridge being down and has
+    nothing to do with which binary it runs. A single before/after number
+    merges that into the answer.
+
+    `newest` is excluded from both sides -- that is the cycle asking the
+    question, and it has not written its entry yet.
+    """
+    entryless_verdicts = {row["number"]: row["verdict"] for row in results}
+    started = {number: _created(conversation)
+               for number, conversation in conversations.items()
+               if number != newest}
+    started = {n: t for n, t in started.items() if t is not None}
+    after = sorted(n for n, t in started.items() if t >= split_at)
+    if not after:
+        return None
+    span = max(started[n] for n in after) - split_at
+    before = sorted(n for n, t in started.items() if split_at - span <= t < split_at)
+
+    def side(numbers):
+        gaps = [n for n in numbers if n in entryless_verdicts]
+        return {
+            "cycles": len(numbers),
+            "gaps": len(gaps),
+            "verdicts": Counter(entryless_verdicts[n] for n in gaps),
+            "numbers": gaps,
+            "lo": min(numbers) if numbers else None,
+            "hi": max(numbers) if numbers else None,
+        }
+
+    return {"split_at": split_at, "hours": span.total_seconds() / 3600.0,
+            "after": side(after), "before": side(before),
+            "undated": len(conversations) - len(started) - 1}
+
+
+def format_rate_split(split):
+    """The `--split-at` block, as lines. Never changes the exit status."""
+    if split is None:
+        return ["ENTRYLESS RATE — no cycle has run at or after that instant, "
+                "so there is nothing on the after side to compare."]
+    hours = split["hours"]
+    lines = [f"ENTRYLESS RATE, SPLIT AT {split['split_at'].isoformat()} "
+             f"— {hours:.1f}h each side"]
+    for name, label in (("after", "after "), ("before", "before")):
+        side = split[name]
+        share = (100.0 * side["gaps"] / side["cycles"]) if side["cycles"] else 0.0
+        detail = ", ".join(f"{count} {verdict}"
+                           for verdict, count in sorted(side["verdicts"].items()))
+        lines.append(f"  {label}: {side['gaps']} of {side['cycles']} cycle(s) "
+                     f"({share:.2f}%) — cycles {side['lo']}..{side['hi']}"
+                     + (f" — {detail}" if detail else ""))
+        if side["numbers"]:
+            lines.append(f"          {', '.join(str(n) for n in side['numbers'])}")
+    lines.append("  The two sides are equal-length windows and the verdicts are kept "
+                 "apart on purpose: a `failed` is Agora reporting the bridge "
+                 "unreachable, which no CLI version changes. This is a report, not a "
+                 "judgement — it does not move the exit status.")
+    if split["undated"]:
+        lines.append(f"  NOT COUNTED — {split['undated']} conversation(s) carry no "
+                     "readable createdAt, so they are in neither side.")
+    return lines
+
+
 def collect(window=DEFAULT_WINDOW):
-    """`(results, newest, error)` -- one row per entryless cycle number."""
+    """`(results, newest, error, conversations)` -- a row per entryless cycle."""
     paths = journal_paths()
     if paths is None:
-        return [], None, f"could not list {JOURNAL_PREFIX} through {VAULT_TOOL}"
+        return [], None, f"could not list {JOURNAL_PREFIX} through {VAULT_TOOL}", {}
     try:
         payload = _get(f"{AGORA_PUBLIC}/conversations?limit=1000")
     except (urllib.error.URLError, OSError, ValueError) as error:
-        return [], None, f"could not read {AGORA_PUBLIC}/conversations: {error}"
+        return [], None, f"could not read {AGORA_PUBLIC}/conversations: {error}", {}
     try:
         conversations = conversations_by_cycle(payload)
     except (AttributeError, TypeError, ValueError) as error:
         return [], None, (f"{AGORA_PUBLIC}/conversations answered in a shape "
-                          f"this cannot read: {error}")
+                          f"this cannot read: {error}"), {}
     if not conversations:
         return [], None, (f"{AGORA_PUBLIC} answered with no conversations for "
                           "Nova's heartbeat -- this loop runs on them, so that is "
-                          "no instrument, not an empty history")
+                          "no instrument, not an empty history"), {}
     newest = max(conversations)
     gaps = entryless(paths, newest)
     now = datetime.now(timezone.utc)
@@ -339,7 +453,7 @@ def collect(window=DEFAULT_WINDOW):
         results = list(pool.map(one, gaps))
     for row in results:
         row["recent"] = row["number"] > newest - window
-    return results, newest, None
+    return results, newest, None, conversations
 
 
 #: The verdicts that mean "this gap is not explained, or the work it did
@@ -414,11 +528,28 @@ def main(argv=None):
                         help="how many of the newest cycle numbers raise the status")
     parser.add_argument("--all", action="store_true", dest="raise_all",
                         help="raise on every entryless cycle, however old")
+    parser.add_argument("--split-at", metavar="ISO8601",
+                        help="also report the entryless rate either side of this "
+                             "instant, over equal-length windows (idea #170)")
     args = parser.parse_args(argv)
-    results, newest, error = collect(window=args.window)
+    split_at = None
+    if args.split_at:
+        try:
+            split_at = datetime.fromisoformat(args.split_at.replace("Z", "+00:00"))
+        except ValueError:
+            print(f"COULD NOT READ — --split-at {args.split_at!r} is not an ISO 8601 "
+                  "instant, e.g. 2026-08-28T23:14:42Z")
+            return 1
+        if split_at.tzinfo is None:
+            split_at = split_at.replace(tzinfo=timezone.utc)
+    results, newest, error, conversations = collect(window=args.window)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all)
     print(report)
+    if split_at is not None and not error:
+        print()
+        print("\n".join(format_rate_split(
+            rate_split(results, conversations, split_at, newest))))
     return status
 
 
