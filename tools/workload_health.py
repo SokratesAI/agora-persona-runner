@@ -117,6 +117,7 @@ never reads as clean — 0 means everything swept is up.
 import argparse
 import datetime
 import json
+import re
 import subprocess
 import sys
 import zoneinfo
@@ -168,6 +169,11 @@ SWAP_NEARLY_GONE = 0.10
 #: `kubectl top node` on purpose: `top` reports the root cgroup's working set,
 #: which counts reclaimable page cache as used and cannot see swap at all.
 MEMINFO = "/proc/meminfo"
+
+#: The cgroup every Pod on the node lives under, on a systemd-cgroup runtime.
+#: `read_pod_working_set` already counts what is inside it, so the breakdown
+#: in `host_cgroup_shares` treats it as one block and names only what is not.
+KUBEPODS = "/kubepods.slice"
 
 
 def _run(runner, args):
@@ -515,7 +521,116 @@ def read_pod_working_set(runner=subprocess.run):
     return (total, counted), None
 
 
-def attribution(meminfo, pod_working_set):
+#: The one cAdvisor series that answers "which cgroup is holding it".
+#: `container_memory_working_set_bytes` carries a line per cgroup on the node,
+#: not just per Pod, so the machine-level slices -- `/`, `/kubepods.slice`,
+#: `/system.slice/<unit>.service` -- are all in it. The Pod lines carry a
+#: non-empty `pod` label and are dropped here: `read_pod_working_set` already
+#: counts those, and counting them twice is how a breakdown stops adding up.
+CADVISOR_SERIES = "container_memory_working_set_bytes"
+
+_CADVISOR_LINE = re.compile(
+    r"^" + CADVISOR_SERIES + r"\{(?P<labels>[^}]*)\}\s+(?P<value>[^\s]+)")
+_CADVISOR_LABEL = re.compile(r'(?P<key>[A-Za-z_][A-Za-z0-9_]*)="(?P<value>[^"]*)"')
+
+
+def matching_host(meminfo, nodes):
+    """The node whose capacity equals this `/proc/meminfo`, or None.
+
+    Neither pod this loop runs in mounts lxcfs, so `/proc/meminfo` is the
+    host's, and that equality is the proof rather than the assumption. Pulled
+    out of `memory_headroom` in Cycle 713 because `main` needs the same answer
+    to know which node to ask cAdvisor about, and re-deriving the rule in two
+    places is how the two drift apart.
+    """
+    total = meminfo.get("MemTotal", 0) / 1024
+    return next((name for name, mib in nodes.items() if abs(mib - total) < 1), None)
+
+
+def read_node_cgroups(host, runner=subprocess.run):
+    """Working set in MiB per machine-level cgroup on `host`, or (None, why).
+
+    This is the instrument issue #131 was missing. `attribution` below can say
+    how much anonymous memory sits outside every Pod cgroup -- ~1,900Mi on
+    2026-08-31 -- and could not say *whose* it was, so three cycles running
+    reported a number with no name attached to it. The kubelet's cAdvisor
+    endpoint carries the name, and this loop could not read it until
+    2026-08-31, when `nodes/proxy` was granted read-only to both of its
+    service accounts (`monitoring/node-proxy-rbac.yaml`, Cycle 712).
+
+    Ask for it in the subresource form or the answer is about a node *named*
+    proxy: `kubectl auth can-i get --subresource=proxy nodes`.
+
+    A failure here is a missing instrument, never a clean reading -- the
+    caller prints why and stops, rather than falling back to a number without
+    a name and calling that an attribution.
+    """
+    path = f"/api/v1/nodes/{host}/proxy/metrics/cadvisor"
+    try:
+        proc = runner(["kubectl", "get", "--raw", path],
+                      capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl get --raw {path} failed: {exc}"
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        return None, f"kubectl get --raw {path} failed: {detail}"
+
+    cgroups = {}
+    for line in proc.stdout.splitlines():
+        match = _CADVISOR_LINE.match(line)
+        if not match:
+            continue
+        labels = dict(
+            (m.group("key"), m.group("value"))
+            for m in _CADVISOR_LABEL.finditer(match.group("labels")))
+        if labels.get("pod"):
+            continue
+        cgroup = labels.get("id")
+        if not cgroup:
+            continue
+        try:
+            value = float(match.group("value"))
+        except ValueError:
+            continue
+        cgroups[cgroup] = value / 1024 / 1024
+    if not cgroups:
+        # A 200 that carried no such series is no instrument, not an empty
+        # node: this endpoint is 3.4MB of metrics and always carries the root.
+        return None, f"{path} returned no {CADVISOR_SERIES} series for any cgroup"
+    return cgroups, None
+
+
+def host_cgroup_shares(cgroups):
+    """(root, kubepods, [(cgroup, mib), ...], unnamed) in MiB, from a cAdvisor read.
+
+    The third element is every machine-level cgroup outside `/kubepods.slice`,
+    largest first, with descendants of another listed cgroup dropped so the
+    parts do not double-count their own children. `unnamed` is what the root
+    holds that none of them accounts for -- the honest remainder, printed
+    rather than absorbed into the largest slice.
+    """
+    root = cgroups.get("/")
+    # The kubepods slice itself, never the sum of its children: cAdvisor
+    # instruments the parent *and* the besteffort/burstable slices under it,
+    # so adding them up counts every Pod on the node twice.
+    kubepods = cgroups.get(KUBEPODS, 0.0)
+    outside = {cgroup: mib for cgroup, mib in cgroups.items()
+               if cgroup != "/" and not (cgroup == KUBEPODS
+                                         or cgroup.startswith(KUBEPODS + "/"))}
+    # Keep only the outermost of each chain: /system.slice and
+    # /system.slice/k3s.service both appear when both are instrumented, and
+    # adding them together counts k3s twice.
+    tops = [(cgroup, mib) for cgroup, mib in outside.items()
+            if not any(cgroup != other and cgroup.startswith(other + "/")
+                       for other in outside)]
+    tops.sort(key=lambda pair: pair[1], reverse=True)
+    unnamed = None
+    if root is not None:
+        unnamed = root - kubepods - sum(mib for _, mib in tops)
+    return root, kubepods, tops, unnamed
+
+
+def attribution(meminfo, pod_working_set, node_cgroups=None, cgroups_why=None):
     """Where the host's memory went, as lines. Context, never a verdict.
 
     `memory_headroom` above says the host is full and stops there, which
@@ -563,7 +678,31 @@ def attribution(meminfo, pod_working_set):
         "processes on the host itself (k3s, containerd, anything hand-run). "
         "A Pod's working set counts some page cache too, so that figure is a "
         "lower bound on the host's own share, not an exact one.")
+    lines.extend(name_the_host_share(node_cgroups, cgroups_why))
     return lines
+
+
+def name_the_host_share(node_cgroups, why):
+    """Which cgroup holds the memory outside every Pod, as lines.
+
+    The line above says how much and cannot say whose; this says whose. It is
+    still context and still never raises -- k3s using 2.3GB is what k3s does
+    on this box, and the value of naming it is that the next cycle argues
+    about a named process instead of re-deriving an anonymous number.
+    """
+    if node_cgroups is None:
+        return ["  CANNOT NAME THAT SHARE — " + (why or "cAdvisor was not read")
+                + ". The size above stands; the owner of it does not."]
+    root, kubepods, tops, unnamed = host_cgroup_shares(node_cgroups)
+    if not tops:
+        return ["  CANNOT NAME THAT SHARE — cAdvisor carries no machine-level "
+                "cgroup outside " + KUBEPODS + " on this node."]
+    named = ", ".join(f"{cgroup} {mib:.0f}Mi" for cgroup, mib in tops)
+    line = f"  Named on the node by cAdvisor: {named}."
+    if root is not None:
+        line += (f" Its root cgroup reads {root:.0f}Mi and {KUBEPODS} {kubepods:.0f}Mi, "
+                 f"leaving {unnamed:.0f}Mi in no cgroup it breaks out.")
+    return [line]
 
 
 def largest_limit(pods):
@@ -639,7 +778,7 @@ def memory_headroom(meminfo, nodes, pods):
     # checked rather than remembered: if some future runtime starts faking
     # meminfo per container, this reads a container's memory and calls it a
     # node's, and every number below would be wrong while looking right.
-    host = next((name for name, mib in nodes.items() if abs(mib - total) < 1), None)
+    host = matching_host(meminfo, nodes)
     if host is None:
         lines.append(
             "CANNOT ATTRIBUTE MEMORY — /proc/meminfo says "
@@ -858,7 +997,8 @@ def main(argv=None, runner=subprocess.run, now=None):
     # breakdown of it would be worse than printing nothing.
     if headroom[2]:
         working_set, _ = read_pod_working_set(runner)
-        headroom = (headroom[0] + attribution(meminfo, working_set),
+        cgroups, cgroups_why = read_node_cgroups(matching_host(meminfo, nodes), runner)
+        headroom = (headroom[0] + attribution(meminfo, working_set, cgroups, cgroups_why),
                     headroom[1], headroom[2])
 
     lines, status = report(

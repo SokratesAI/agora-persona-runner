@@ -611,6 +611,7 @@ def test_a_reading_off_the_wrong_machine_is_never_broken_down(capsys):
     """If meminfo is a container's view, a breakdown of it is worse than none."""
     def runner(args, **kwargs):
         assert args[:3] != ["kubectl", "top", "pods"], "must not attribute an unattributed reading"
+        assert args[:3] != ["kubectl", "get", "--raw"], "must not name cgroups on the wrong machine"
         if "pods" in args:
             body = {"items": [{"metadata": {"namespace": "agents", "name": "p"},
                                "spec": {"containers": []}, "status": {"phase": "Running"}}]}
@@ -656,3 +657,144 @@ def test_read_pods_counts_every_container_not_only_the_limited_ones():
     assert pods[0]["limits"] == {"app": "512Mi"}
     assert pods[0]["container_count"] == 2
     assert wh.declared_ceiling(pods) == (512, 1, 1)
+
+
+# --- Cycle 713, issue #131: naming the memory outside every Pod cgroup. ---
+#
+# `attribution` above could say ~1,900Mi sat outside every Pod and could not
+# say whose it was; `nodes/proxy` was granted on 2026-08-31 and cAdvisor
+# carries the name. Every fixture below is the real endpoint's shape, trimmed:
+# one series per cgroup, Pod lines carrying a non-empty `pod` label.
+
+CADVISOR = "\n".join([
+    "# HELP container_memory_working_set_bytes Current working set in bytes.",
+    "# TYPE container_memory_working_set_bytes gauge",
+    'container_memory_working_set_bytes{container="",id="/",image="",name="",namespace="",pod=""} 5.50383616e+09 1788176238682',
+    'container_memory_working_set_bytes{container="",id="/kubepods.slice",image="",name="",namespace="",pod=""} 2.937020416e+09 1788176238732',
+    'container_memory_working_set_bytes{container="",id="/kubepods.slice/kubepods-besteffort.slice",image="",name="",namespace="",pod=""} 6.97311232e+08 1788176224254',
+    'container_memory_working_set_bytes{container="",id="/kubepods.slice/kubepods-burstable.slice",image="",name="",namespace="",pod=""} 2.243534848e+09 1788176240729',
+    'container_memory_working_set_bytes{container="",id="/system.slice/k3s.service",image="",name="",namespace="",pod=""} 2.437492736e+09 1788176240125',
+    'container_memory_working_set_bytes{container="agora",id="/kubepods.slice/pod-abc/xyz",image="i",name="n",namespace="agents",pod="agora-1"} 1.048576e+08 1788176240125',
+    "container_memory_rss{container=\"\",id=\"/\",image=\"\",name=\"\",namespace=\"\",pod=\"\"} 4.0e+09 1788176238682",
+])
+
+
+def _cadvisor(body=CADVISOR, returncode=0, stderr="", seen=None):
+    def runner(args, **kwargs):
+        assert args[:3] == ["kubectl", "get", "--raw"]
+        if seen is not None:
+            seen.append(args[3])
+        return type("P", (), {"returncode": returncode,
+                              "stdout": body, "stderr": stderr})()
+    return runner
+
+
+def test_read_node_cgroups_keeps_the_machine_slices_and_drops_the_pod_lines():
+    cgroups, why = wh.read_node_cgroups("server1", runner=_cadvisor())
+    assert why is None
+    # The Pod line is 100Mi and would land under an id of its own if kept;
+    # `read_pod_working_set` already counts it, so counting it here doubles it.
+    assert set(cgroups) == {"/", "/kubepods.slice",
+                            "/kubepods.slice/kubepods-besteffort.slice",
+                            "/kubepods.slice/kubepods-burstable.slice",
+                            "/system.slice/k3s.service"}
+    assert cgroups["/system.slice/k3s.service"] == pytest.approx(2324.5, abs=0.5)
+    assert cgroups["/"] == pytest.approx(5248.7, abs=0.5)
+
+
+def test_read_node_cgroups_asks_the_named_host_for_the_cadvisor_endpoint():
+    seen = []
+    wh.read_node_cgroups("server9", runner=_cadvisor(seen=seen))
+    assert seen == ["/api/v1/nodes/server9/proxy/metrics/cadvisor"]
+
+
+def test_read_node_cgroups_reports_a_forbidden_read_rather_than_an_empty_one():
+    cgroups, why = wh.read_node_cgroups(
+        "server1", runner=_cadvisor(returncode=1, stderr='nodes "server1" is forbidden'))
+    assert cgroups is None
+    assert "forbidden" in why
+
+
+def test_read_node_cgroups_treats_a_200_with_no_series_as_no_instrument():
+    cgroups, why = wh.read_node_cgroups("server1", runner=_cadvisor(body="# nothing\n"))
+    assert cgroups is None
+    assert "no container_memory_working_set_bytes series" in why
+
+
+def test_host_cgroup_shares_counts_kubepods_once_not_once_per_child():
+    cgroups, _ = wh.read_node_cgroups("server1", runner=_cadvisor())
+    root, kubepods, tops, unnamed = wh.host_cgroup_shares(cgroups)
+    # Parent 2801Mi; besteffort + burstable are another 2804Mi of the same Pods.
+    assert kubepods == pytest.approx(2801.0, abs=1.0)
+    assert tops == [("/system.slice/k3s.service", pytest.approx(2324.5, abs=0.5))]
+    assert root == pytest.approx(5248.7, abs=0.5)
+    assert unnamed == pytest.approx(root - kubepods - 2324.5, abs=1.0)
+
+
+def test_host_cgroup_shares_drops_a_slice_nested_inside_another_it_names():
+    cgroups = {"/": 5000.0, "/kubepods.slice": 2000.0,
+               "/system.slice": 2400.0, "/system.slice/k3s.service": 2300.0}
+    _, _, tops, unnamed = wh.host_cgroup_shares(cgroups)
+    # Naming both would charge k3s twice and leave a negative remainder.
+    assert tops == [("/system.slice", 2400.0)]
+    assert unnamed == pytest.approx(600.0)
+
+
+def test_attribution_names_the_cgroup_holding_the_memory_outside_every_pod():
+    cgroups, _ = wh.read_node_cgroups("server1", runner=_cadvisor())
+    joined = "\n".join(wh.attribution(MEMINFO_FULL_HOST, (2086.0, 42), cgroups, None))
+    assert "~4756Mi of anonymous memory outside every Pod cgroup" in joined
+    assert "/system.slice/k3s.service 2325Mi" in joined
+    assert "leaving 123Mi in no cgroup it breaks out" in joined
+    # The Pod line must not appear as a cgroup of its own.
+    assert "/kubepods.slice/pod-abc" not in joined
+
+
+def test_attribution_says_the_owner_is_unread_rather_than_dropping_the_line():
+    joined = "\n".join(wh.attribution(
+        MEMINFO_FULL_HOST, (2086.0, 42), None, "nodes/proxy is forbidden"))
+    assert "~4756Mi of anonymous memory outside every Pod cgroup" in joined
+    assert "CANNOT NAME THAT SHARE" in joined
+    assert "nodes/proxy is forbidden" in joined
+
+
+def test_attribution_still_never_raises_when_it_names_a_cgroup():
+    cgroups, _ = wh.read_node_cgroups("server1", runner=_cadvisor())
+    lines = wh.attribution(MEMINFO_FULL_HOST, (2086.0, 42), cgroups, None)
+    assert not any(line.lstrip().startswith("NODE OUT OF") for line in lines)
+
+
+def test_matching_host_is_the_node_whose_capacity_equals_this_meminfo():
+    assert wh.matching_host(MEMINFO_FULL_HOST,
+                            {"server1": 7746.0, "other": 16000.0}) == "server1"
+    assert wh.matching_host(MEMINFO_FULL_HOST, {"other": 16000.0}) is None
+
+
+def test_main_asks_cadvisor_about_the_node_that_matched_this_meminfo():
+    """The URL carries a node name, so a wrong one reads another box's cgroups."""
+    meminfo = dict(MEMINFO_FULL_HOST, MemAvailable=6000000.0, AnonPages=900000.0,
+                   Cached=800000.0, SwapFree=2000000.0)
+    raw = []
+
+    def runner(args, **kwargs):
+        if args[:3] == ["kubectl", "top", "pods"]:
+            return type("P", (), {"returncode": 0, "stdout": "a b 1m 100Mi", "stderr": ""})()
+        if args[:3] == ["kubectl", "get", "--raw"]:
+            raw.append(args[3])
+            return type("P", (), {"returncode": 0, "stdout": CADVISOR, "stderr": ""})()
+        if "pods" in args:
+            body = {"items": [{"metadata": {"namespace": "agents", "name": "p"},
+                               "spec": {"containers": []}, "status": {"phase": "Running"}}]}
+        elif "nodes" in args:
+            body = {"items": [
+                {"metadata": {"name": "elsewhere"},
+                 "status": {"capacity": {"memory": "16000000Ki"}}},
+                {"metadata": {"name": "server1"},
+                 "status": {"capacity": {"memory": "7931600Ki"}}}]}
+        else:
+            body = {"items": []}
+        return type("P", (), {"returncode": 0, "stdout": json.dumps(body), "stderr": ""})()
+
+    with mock.patch.object(wh, "read_meminfo", lambda *a, **k: (meminfo, None)):
+        assert wh.main([], runner=runner, now=NOW) == 0
+    assert raw == ["/api/v1/nodes/server1/proxy/metrics/cadvisor"]
