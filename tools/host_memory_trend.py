@@ -122,17 +122,17 @@ VMSTAT_PATH = "/proc/vmstat"
 
 #: Percent of the last five minutes during which *every* runnable task was
 #: stalled on memory before this calls it harm. Derived from this box rather
-#: than picked: on 2026-08-31, at 134 days of uptime, `/proc/pressure/memory`
-#: read `full total=104934927170` microseconds against 1.158e13 microseconds
-#: of uptime -- 0.91% since boot. Ten percent is eleven times the box's own
+#: than picked: on 2026-08-31, at 136 days of uptime, `/proc/pressure/memory`
+#: read `full total=104934927170` microseconds against 1.175e13 microseconds
+#: of uptime -- 0.89% since boot. Ten percent is eleven times the box's own
 #: long-run average and means one second in ten with nothing able to run.
 #: `some` is deliberately not judged: it trips on a single process waiting
-#: for one page and this box averages 1.44% of it while healthy.
+#: for one page and this box has averaged 1.42% of it while healthy.
 FULL_STALL_PERCENT = 10.0
 
 #: An OOM-kill rate this many times the box's own since-boot rate is the
 #: finding. A rate rather than a count, and calibrated against the same box
-#: rather than against a number I invented: 627 kills over 134 days is 4.7 a
+#: rather than against a number I invented: 627 kills over 136 days is 4.6 a
 #: day, so about one per five hours, and a check that raised on a single kill
 #: would raise several times a day forever -- which is the "will I ever be
 #: able to ignore this?" test that `journal-digest.md` says 13 of my checks
@@ -203,12 +203,26 @@ def read_oom_kills(path=VMSTAT_PATH):
 
 
 def read_uptime_days(path="/proc/uptime"):
-    """Days since this host booted, or None. The denominator of the OOM baseline."""
+    """`(days, None)` since this host booted, or `(None, why)`.
+
+    It returns a `why` for the same reason its two siblings do, and the
+    reason is sharper here: this is the denominator of the OOM-kill
+    baseline, so losing it does not lose a printed number -- it turns the
+    burst detector off. A bare `None` made that invisible.
+    """
     try:
         raw = Path(path).read_text(encoding="utf-8")
-        return float(raw.split()[0]) / 86400.0
-    except (OSError, UnicodeDecodeError, ValueError, IndexError):
-        return None
+        return float(raw.split()[0]) / 86400.0, None
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, (
+            f"{path} could not be read ({exc.__class__.__name__}), so the "
+            "OOM-kill baseline has no denominator."
+        )
+    except (ValueError, IndexError):
+        return None, (
+            f"{path} does not start with a number of seconds, so the OOM-kill "
+            "baseline has no denominator."
+        )
 
 
 def reading_now(meminfo, nodes, at=None, pressure=None, oom_kills=None,
@@ -408,10 +422,19 @@ def judge_harm(current, rows, full_stall_percent=FULL_STALL_PERCENT,
     kills = current.get("oom_kills")
     uptime = current.get("uptime_days")
     if kills is None:
-        lines.append("CANNOT COUNT OOM KILLS — no oom_kill in this reading.")
+        # "CANNOT READ", not "CANNOT COUNT": `tools.preflight.CAVEAT_MARKERS`
+        # matches on the prefix, and a caveat it does not match is dropped from
+        # the collapsed report on an otherwise-clean run -- visible only under
+        # --verbose, which is the one place nobody looks.
+        lines.append("CANNOT READ OOM KILLS — no oom_kill in this reading.")
         return lines, actionable
 
     baseline = kills / uptime if uptime else None
+    if baseline is None:
+        lines.append(
+            f"CANNOT READ OOM RATE — {kills:.0f} kill(s) since boot, but no uptime "
+            "to divide by, so the burst detector below cannot judge anything."
+        )
     prior = [r for r in rows if r.get("oom_kills") is not None and r is not current]
     if not prior:
         lines.append(
@@ -438,9 +461,13 @@ def judge_harm(current, rows, full_stall_percent=FULL_STALL_PERCENT,
     rate = delta / span_days
     summary = (f"  OOM kills: {delta:.0f} in the last {span_days * 24:.1f}h "
                f"({rate:.1f}/day) against {kills:.0f} since boot")
-    if baseline:
+    if baseline is not None:
         summary += f" ({baseline:.1f}/day)"
-    if (baseline and delta >= oom_min_kills
+    # `baseline is not None`, not `baseline` -- a box that has never OOM-killed
+    # anything has a baseline of exactly zero, and the truthiness test silently
+    # made such a box unraisable. Zero needs no special case beyond that:
+    # `rate >= 0` is true of any burst, so `oom_min_kills` is the judgement there.
+    if (baseline is not None and delta >= oom_min_kills
             and rate >= baseline * oom_rate_multiple):
         actionable = True
         lines.append(
@@ -485,9 +512,9 @@ def main(argv=None):
 
     pressure, pressure_why = read_pressure()
     oom_kills, oom_why = read_oom_kills()
+    uptime_days, uptime_why = read_uptime_days()
     current, why = reading_now(meminfo, nodes, pressure=pressure,
-                               oom_kills=oom_kills,
-                               uptime_days=read_uptime_days())
+                               oom_kills=oom_kills, uptime_days=uptime_days)
     if current is None:
         print(f"CANNOT ATTRIBUTE MEMORY — {why}")
         return 1
@@ -518,6 +545,8 @@ def main(argv=None):
         print(f"  {pressure_why}")
     if oom_kills is None:
         print(f"  {oom_why}")
+    if uptime_days is None:
+        print(f"  {uptime_why}")
 
     inside = window(rows, current["host"], current["_at"], args.window_hours)
     harm_lines, harmed = judge_harm(current, inside)

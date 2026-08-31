@@ -53,7 +53,7 @@ def current_from(rows):
     return dict(rows[-1])
 
 
-CALM = (1.44, 0.91, 104934927170.0)  # server1's own since-boot averages
+CALM = (0.03, 0.02, 104934927170.0)  # a live calm reading off server1
 
 
 def calm_host(monkeypatch, pressure=CALM, oom_kills=627.0, uptime_days=136.0):
@@ -65,7 +65,7 @@ def calm_host(monkeypatch, pressure=CALM, oom_kills=627.0, uptime_days=136.0):
     """
     monkeypatch.setattr(hmt, "read_pressure", lambda *a, **k: (pressure, None))
     monkeypatch.setattr(hmt, "read_oom_kills", lambda *a, **k: (oom_kills, None))
-    monkeypatch.setattr(hmt, "read_uptime_days", lambda *a, **k: uptime_days)
+    monkeypatch.setattr(hmt, "read_uptime_days", lambda *a, **k: (uptime_days, None))
 
 
 # --- attribution -----------------------------------------------------
@@ -321,7 +321,7 @@ def test_a_stalling_box_is_a_finding_on_the_very_first_reading():
     assert any(line.startswith("STALLING") for line in lines)
 
 
-def test_a_calm_box_is_not_a_finding_however_low_its_memory():
+def test_a_calm_box_is_not_a_finding():
     lines, actionable = hmt.judge_harm(harm_row(full=0.9), [])
     assert not actionable
     assert any("stall:" in line for line in lines)
@@ -370,22 +370,94 @@ def test_a_missing_psi_reading_says_so_rather_than_passing_quietly():
     lines, actionable = hmt.judge_harm(current, [])
     assert not actionable
     assert any(line.startswith("CANNOT READ PRESSURE") for line in lines)
-    assert any(line.startswith("CANNOT COUNT OOM KILLS") for line in lines)
+    assert any(line.startswith("CANNOT READ OOM KILLS") for line in lines)
 
 
 def test_the_new_fields_reach_the_ledger_row():
     row, why = hmt.reading_now(meminfo(), {"server1": 7745.7}, at=BASE,
                                pressure=CALM, oom_kills=627.0, uptime_days=136.0)
     assert why is None
-    assert row["psi_full_avg300"] == 0.91
+    assert row["psi_full_avg300"] == 0.02
     assert row["oom_kills"] == 627.0
     assert row["uptime_days"] == 136.0
 
 
-def test_a_row_is_still_written_when_the_kernel_publishes_neither():
-    """The slope worked before PSI existed and must not start failing on it."""
-    row, why = hmt.reading_now(meminfo(), {"server1": 7745.7}, at=BASE)
-    assert why is None and "psi_full_avg300" not in row and "oom_kills" not in row
+def test_each_reading_is_omitted_only_when_that_one_kernel_file_is_absent():
+    """The slope worked before PSI existed and must not start failing on it.
+
+    Asserting only the absent case pinned nothing: the pre-diff `reading_now`
+    took the same three arguments and produced a row with neither key, so that
+    assertion agreed with the code either way. The complement is what pins it
+    -- one reading present and the other absent, in the same test.
+    """
+    neither, why = hmt.reading_now(meminfo(), {"server1": 7745.7}, at=BASE)
+    assert why is None
+    assert "psi_full_avg300" not in neither and "oom_kills" not in neither
+
+    psi_only, why = hmt.reading_now(meminfo(), {"server1": 7745.7}, at=BASE,
+                                    pressure=CALM)
+    assert why is None
+    assert psi_only["psi_full_avg300"] == 0.02 and "oom_kills" not in psi_only
+
+    oom_only, why = hmt.reading_now(meminfo(), {"server1": 7745.7}, at=BASE,
+                                    oom_kills=627.0, uptime_days=136.0)
+    assert why is None
+    assert oom_only["oom_kills"] == 627.0 and "psi_full_avg300" not in oom_only
+
+
+# --- the uptime reader, which is the OOM baseline's denominator ------
+
+
+def test_uptime_is_read_as_days_off_the_first_field(tmp_path):
+    path = tmp_path / "uptime"
+    path.write_text("11750400.42 98765.43\n")
+    days, why = hmt.read_uptime_days(str(path))
+    assert why is None and abs(days - 136.0) < 0.01
+
+
+def test_a_missing_uptime_file_reports_why_rather_than_a_bare_none(tmp_path):
+    days, why = hmt.read_uptime_days(str(tmp_path / "absent"))
+    assert days is None and "no denominator" in why
+
+
+def test_a_nonsense_uptime_file_reports_why(tmp_path):
+    path = tmp_path / "uptime"
+    path.write_text("not-a-number\n")
+    days, why = hmt.read_uptime_days(str(path))
+    assert days is None and "no denominator" in why
+
+
+def test_a_burst_with_no_uptime_says_it_cannot_judge_rather_than_passing():
+    """Losing the denominator turns the burst detector off; it must say so."""
+    earlier = harm_row(at=BASE, kills=627.0, uptime=None)
+    current = harm_row(at=BASE + timedelta(hours=6), kills=700.0, uptime=None)
+    lines, actionable = hmt.judge_harm(current, [earlier, current])
+    assert not actionable
+    assert any(line.startswith("CANNOT READ OOM RATE") for line in lines)
+
+
+def test_every_blind_line_starts_with_a_marker_preflight_actually_matches():
+    """A caveat preflight cannot match is dropped from the collapsed report."""
+    from tools.preflight import CAVEAT_MARKERS
+    blind = []
+    blind += hmt.judge_harm({"_at": BASE, "host": "server1"}, [])[0]
+    blind += hmt.judge_harm(harm_row(uptime=None), [])[0]
+    stated = [line for line in blind if line.startswith("CANNOT")]
+    assert stated
+    for line in stated:
+        assert any(line.startswith(marker) for marker in CAVEAT_MARKERS), line
+
+
+def test_main_prints_why_the_uptime_could_not_be_read(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(hmt, "read_meminfo", lambda *a: (meminfo(), None))
+    monkeypatch.setattr(hmt, "read_node_capacity", lambda: ({"server1": 7745.7}, None))
+    calm_host(monkeypatch)
+    monkeypatch.setattr(hmt, "read_uptime_days",
+                        lambda *a, **k: (None, "/proc/uptime could not be read, so "
+                                               "the OOM-kill baseline has no "
+                                               "denominator."))
+    hmt.main(["--ledger", str(tmp_path / "l.jsonl")])
+    assert "no denominator" in capsys.readouterr().out
 
 
 def test_main_exits_2_on_a_stall_rather_than_1_on_a_fresh_ledger(tmp_path, monkeypatch,
@@ -397,3 +469,19 @@ def test_main_exits_2_on_a_stall_rather_than_1_on_a_fresh_ledger(tmp_path, monke
     assert hmt.main(["--ledger", str(tmp_path / "l.jsonl")]) == 2
     out = capsys.readouterr().out
     assert "STALLING" in out and "NOT ENOUGH HISTORY" in out
+
+
+def test_a_box_that_has_never_oom_killed_can_still_raise():
+    """No multiple of a zero baseline is ever exceeded; the floor is the judgement."""
+    earlier = harm_row(at=BASE, kills=0.0, uptime=136.0)
+    current = harm_row(at=BASE + timedelta(hours=6), kills=4.0, uptime=136.0)
+    lines, actionable = hmt.judge_harm(current, [earlier, current])
+    assert actionable
+    assert any(line.startswith("OOM KILLING") for line in lines)
+
+
+def test_a_zero_baseline_still_respects_the_floor():
+    earlier = harm_row(at=BASE, kills=0.0, uptime=136.0)
+    current = harm_row(at=BASE + timedelta(hours=6), kills=2.0, uptime=136.0)
+    lines, actionable = hmt.judge_harm(current, [earlier, current])
+    assert not actionable
