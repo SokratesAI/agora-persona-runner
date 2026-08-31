@@ -59,14 +59,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.workload_health import read_meminfo, read_node_capacity  # noqa: E402
 
-#: Two concurrent cycles both running `preflight` read and rewrite this
-#: file, so the later writer can drop the earlier one's sample. That is
-#: deliberate rather than unhandled: this is a sampled series and one lost
+#: The ledger, on the pod's persistent volume. `$NOVA_WORKSPACE` is
+#: deliberately not used: it points at a per-cycle worktree when cycles run
+#: concurrently, so a ledger written there would start empty every other
+#: cycle. Two concurrent cycles do read and rewrite this one file, and the
+#: later writer can drop the earlier one's sample -- that is deliberate
+#: rather than unhandled, because this is a sampled series and one lost
 #: sample changes no slope, whereas a lock would make an instrument able to
 #: block a cycle.
-#: The pod's persistent volume. `$NOVA_WORKSPACE` is deliberately not used:
-#: it points at a per-cycle worktree when cycles run concurrently, so a
-#: ledger written there would start empty every other cycle.
 DEFAULT_LEDGER = os.environ.get("NOVA_HOST_MEMORY_LEDGER", "/data/nova-host-memory.jsonl")
 
 #: How many readings to keep. At the 24-minute heartbeat this loop runs on
