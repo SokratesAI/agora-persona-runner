@@ -43,14 +43,23 @@
 
 <div id="scrim" class="scrim"></div>
 
-<!-- The three the owner named sit at the top with no heading above them,
+<!-- The pages the owner named sit at the top with no heading above them,
      and every other page sits under one. Their ask, `issues.md` 2026-08-26:
      "Now that the sidebar for the Nova app has begun to contain a lot of page
      links, group the by category, but always show the top 3 most used at the
      top. I mostly use journals, issues and ideas. And also, the ask page can
      be cut as i now have the chat bubble."
 
-     The pinned three are a fixed list, not a usage counter. A menu whose
+     `/projects` joined the pinned list on 2026-08-31, on their capture that
+     morning: "make the projects link in the Nova sidebar always show above
+     the issues and ideas links as i want to use the projects page more
+     often." It sits second rather than first because the sentence names
+     Issues and Ideas and does not name Journal, so Journal keeps the top
+     row it was given. It is no longer under `Steering` -- a link in two
+     places is two places to keep right, and `tests/test_nav_is_grouped.py`
+     asserts every route appears exactly once.
+
+     The pinned list is a fixed list, not a usage counter. A menu whose
      order moves under you is a menu you have to read every time, and the
      owner already told me which three they are -- measuring it would be
      re-deriving an answer I was handed, and paying for it with a stored
@@ -79,6 +88,7 @@
      so the highlighted link is never hidden behind a closed group. -->
 <nav id="nav" class="nav" aria-label="Sections" aria-hidden="true">
   <a class="nav-tab" href="/">Journal</a>
+  <a class="nav-tab" href="/projects">Projects</a>
   <a class="nav-tab" href="/issues">Issues</a>
   <a class="nav-tab" href="/ideas">Ideas</a>
 
@@ -88,7 +98,6 @@
       <a class="nav-tab" href="/notes">Notes</a>
       <a class="nav-tab" href="/pool">Pool</a>
       <a class="nav-tab" href="/plan">Plan</a>
-      <a class="nav-tab" href="/projects">Projects</a>
     </div>
   </details>
 

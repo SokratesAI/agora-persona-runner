@@ -40,8 +40,14 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HTML = ROOT / "agora_runner" / "nova_public" / "index.html"
 
-#: The three the owner named, in the order they named them.
-PINNED = ["/", "/issues", "/ideas"]
+#: The pinned rows, in document order. The owner named three on 2026-08-26
+#: and added `/projects` on 2026-08-31: *"make the projects link in the Nova
+#: sidebar always show above the issues and ideas links as i want to use the
+#: projects page more often."* That sentence names Issues and Ideas and does
+#: not name Journal, so Projects goes second and Journal keeps the top row.
+#: The ordering is the assertion — a `set` here would pass with Projects
+#: below Ideas, which is the one arrangement the capture rules out.
+PINNED = ["/", "/projects", "/issues", "/ideas"]
 
 #: The one route deliberately reachable without a menu link. The chat dock
 #: is the same thread, so the page is redundant on the menu; the route stays
