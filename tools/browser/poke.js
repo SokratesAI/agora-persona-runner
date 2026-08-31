@@ -378,8 +378,70 @@ async function probeNavReachable(browser, path) {
   return { probe: 'nav-reachable' + path, ok, detail, errors };
 }
 
+/* The page behind the chat sheet does not scroll while the sheet is up.
+ *
+ * The owner, `issues.md` 2026-08-31: *"When i have the chat modal open, i
+ * should not be able to scroll the page its hovering over. Currently i can
+ * and its wierd."* The dock is `position: fixed`, so the document under it
+ * is a perfectly ordinary scroller and every gesture that misses the
+ * thread -- the head, the composer, a flick past the last message --
+ * scrolls the journal behind. Closing the sheet then lands him somewhere
+ * he never navigated to.
+ *
+ * Both halves are asserted, because only the pair is evidence. With the
+ * sheet shut the page **must** move, or the "it did not move" below is a
+ * negative that was guaranteed in advance by a short page rather than by
+ * the fix. `scrollTo` is the gesture: `overflow: hidden` on the body makes
+ * the document non-scrollable to script and to touch alike, so a
+ * programmatic scroll is the same measurement without the flakiness of a
+ * synthesised swipe.
+ *
+ * The viewport is the owner's own 360x697 from `notes.md`, which is also
+ * the width that puts the dock in its full-screen `max-width: 30rem`
+ * form -- the one he is describing.
+ */
+async function probeChatScrollLock(browser, path) {
+  const ctx = await browser.newContext({ ...PHONE, viewport: { width: 360, height: 697 } });
+  const page = await ctx.newPage();
+  const errors = watch(page);
+  await page.goto(base + path, { waitUntil: 'networkidle', timeout: 30000 });
+
+  // Closed: the page has to be scrollable, or nothing below means anything.
+  const closed = await page.evaluate(() => {
+    window.scrollTo(0, 400);
+    const moved = Math.round(window.scrollY);
+    window.scrollTo(0, 0);
+    return { moved, height: Math.round(document.documentElement.scrollHeight) };
+  });
+
+  await page.locator('#chat-btn').tap();
+  await page.waitForTimeout(400);
+
+  const open = await page.evaluate(() => {
+    window.scrollTo(0, 400);
+    return {
+      marked: document.body.classList.contains('chat-open'),
+      dockOpen: !document.getElementById('chat-dock').hasAttribute('hidden'),
+      moved: Math.round(window.scrollY),
+    };
+  });
+  await ctx.close();
+
+  const detail = {
+    pageScrollsWhenClosed: closed.moved > 0,
+    scrolledWhenClosed: closed.moved,
+    documentHeight: closed.height,
+    chatOpen: open.dockOpen,
+    bodyMarked: open.marked,
+    scrolledWhenOpen: open.moved,
+  };
+  const ok = detail.pageScrollsWhenClosed && detail.chatOpen && detail.scrolledWhenOpen === 0;
+  return { probe: 'chat-scroll-lock' + path, ok, detail, errors };
+}
+
 const PROBES = {
   'nav-reachable': (b) => probeNavReachable(b, '/'),
+  'chat-scroll-lock': (b) => probeChatScrollLock(b, '/'),
   'search-focus': (b) => probeSearchFocus(b, '/issues'),
   'search-focus-ideas': (b) => probeSearchFocus(b, '/ideas'),
   'replay-header': (b) => probeReplayHeader(b),

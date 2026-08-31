@@ -3262,6 +3262,25 @@ body.has-full-chart { overflow: hidden; }
  * than the attribute; every attribute assertion in the suite passed. */
 .chat-dock[hidden] { display: none; }
 
+/* The page behind the sheet is frozen while the sheet is up.
+ *
+ * The owner, `issues.md` 2026-08-31: *"When i have the chat modal open, i
+ * should not be able to scroll the page its hovering over. Currently i can
+ * and its wierd."* The dock is `position: fixed`, so the document under it
+ * stayed an ordinary scroller: every gesture that missed the thread -- the
+ * head, the composer, a flick past the last message -- scrolled the journal
+ * behind, and closing the sheet landed him somewhere he never navigated to.
+ * Measured in a real phone browser on 2026-08-31 before this rule
+ * (`tools.poke_page chat-scroll-lock`, 360x697): the page under an open
+ * sheet scrolled the full 400px it was asked for.
+ *
+ * `body.nav-open` two thousand lines up does exactly this for the menu
+ * drawer, and the class is already on `body` at every width -- the
+ * hamburger rule uses it inside a media query, and a scroll lock has no
+ * reason to be narrower than the sheet it belongs to. On a wide screen the
+ * dock is a small panel and freezing the page is still what he asked for. */
+body.chat-open { overflow: hidden; }
+
 /* Full screen on a phone -- the "atleast for mobile" half of the same
  * capture. This is the stylesheet's first width media query; everything
  * else here is fluid, and a fluid rule cannot express this one, because
