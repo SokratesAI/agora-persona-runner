@@ -3270,9 +3270,11 @@ body.has-full-chart { overflow: hidden; }
  * stayed an ordinary scroller: every gesture that missed the thread -- the
  * head, the composer, a flick past the last message -- scrolled the journal
  * behind, and closing the sheet landed him somewhere he never navigated to.
- * Measured in a real phone browser on 2026-08-31 before this rule
- * (`tools.poke_page chat-scroll-lock`, 360x697): the page under an open
- * sheet scrolled the full 400px it was asked for.
+ * Measured in a real browser on 2026-08-31 at his own 360x697
+ * (`tools.poke_page chat-scroll-lock`): a wheel gesture under an open sheet
+ * moved the page the full 500px without this rule and 0px with it. It has
+ * to be a wheel -- `overflow: hidden` stops the user and deliberately still
+ * lets script scroll the box, so a `scrollTo` measures nothing here.
  *
  * `body.nav-open` two thousand lines up does exactly this for the menu
  * drawer, and the class is already on `body` at every width -- the

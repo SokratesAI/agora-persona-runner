@@ -19,9 +19,12 @@ declaration that class was missing, and it is the same one
 `tools.poke_page chat-scroll-lock`.** The browser suite runs under jsdom,
 which does no layout and resolves no `overflow`, so a computed assertion
 here would pass whatever the stylesheet said. Measured in Chromium at the
-owner's own 360x697 on 2026-08-31: before the rule, the page under an open
-sheet scrolled the full 400px it was asked for; after it, 0, with the same
-run proving the page still scrolls 400px while the sheet is shut. What
+owner's own 360x697 on 2026-08-31: a wheel gesture under an open sheet moved
+the page the full 500px without the rule and 0px with it, in the same run
+that proved the page still scrolls 500px while the sheet is shut. The
+gesture has to be a wheel -- `overflow: hidden` stops the user and goes on
+letting script scroll the box, so a `scrollTo` reads FAIL against the fix
+as loudly as against the bug. What
 this file can catch is the thing that would silently undo it -- someone
 tidying an `overflow` line out of a one-declaration rule.
 """

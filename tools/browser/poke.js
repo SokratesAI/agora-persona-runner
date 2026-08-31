@@ -388,52 +388,60 @@ async function probeNavReachable(browser, path) {
  * scrolls the journal behind. Closing the sheet then lands him somewhere
  * he never navigated to.
  *
+ * **The gesture has to be a wheel, and `window.scrollTo` is the trap.**
+ * `overflow: hidden` stops the *user* scrolling a box; it deliberately
+ * goes on allowing script to scroll it, which is what makes
+ * `scrollTo`-into-a-clipped-container work at all. So a probe built on
+ * `scrollTo` reports the page moving whether or not the lock is there --
+ * measured both ways on 2026-08-31 before this was written, and it read
+ * FAIL against the fix as loudly as against the bug. `mouse.wheel` is a
+ * real input event and is refused by the lock: 500px unlocked, 0px locked,
+ * same page, same run.
+ *
  * Both halves are asserted, because only the pair is evidence. With the
  * sheet shut the page **must** move, or the "it did not move" below is a
- * negative that was guaranteed in advance by a short page rather than by
- * the fix. `scrollTo` is the gesture: `overflow: hidden` on the body makes
- * the document non-scrollable to script and to touch alike, so a
- * programmatic scroll is the same measurement without the flakiness of a
- * synthesised swipe.
+ * negative guaranteed in advance by a short page rather than by the fix.
  *
  * The viewport is the owner's own 360x697 from `notes.md`, which is also
- * the width that puts the dock in its full-screen `max-width: 30rem`
- * form -- the one he is describing.
+ * the width that puts the dock in its full-screen `max-width: 30rem` form
+ * -- the one he is describing. The context is deliberately *not* `PHONE`:
+ * a wheel event is not dispatched into a touch-only context, and the thing
+ * under test is the CSS, which does not know which input moved the page.
  */
+async function wheelScroll(page, distance) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.mouse.move(180, 300);
+  await page.mouse.wheel(0, distance);
+  await page.waitForTimeout(300);
+  return page.evaluate(() => Math.round(window.scrollY));
+}
+
 async function probeChatScrollLock(browser, path) {
-  const ctx = await browser.newContext({ ...PHONE, viewport: { width: 360, height: 697 } });
+  const ctx = await browser.newContext({ viewport: { width: 360, height: 697 } });
   const page = await ctx.newPage();
   const errors = watch(page);
   await page.goto(base + path, { waitUntil: 'networkidle', timeout: 30000 });
 
   // Closed: the page has to be scrollable, or nothing below means anything.
-  const closed = await page.evaluate(() => {
-    window.scrollTo(0, 400);
-    const moved = Math.round(window.scrollY);
-    window.scrollTo(0, 0);
-    return { moved, height: Math.round(document.documentElement.scrollHeight) };
-  });
+  const closed = await wheelScroll(page, 500);
+  const height = await page.evaluate(() => Math.round(document.documentElement.scrollHeight));
 
-  await page.locator('#chat-btn').tap();
+  await page.locator('#chat-btn').click();
   await page.waitForTimeout(400);
-
-  const open = await page.evaluate(() => {
-    window.scrollTo(0, 400);
-    return {
-      marked: document.body.classList.contains('chat-open'),
-      dockOpen: !document.getElementById('chat-dock').hasAttribute('hidden'),
-      moved: Math.round(window.scrollY),
-    };
-  });
+  const open = await wheelScroll(page, 500);
+  const marks = await page.evaluate(() => ({
+    marked: document.body.classList.contains('chat-open'),
+    dockOpen: !document.getElementById('chat-dock').hasAttribute('hidden'),
+  }));
   await ctx.close();
 
   const detail = {
-    pageScrollsWhenClosed: closed.moved > 0,
-    scrolledWhenClosed: closed.moved,
-    documentHeight: closed.height,
-    chatOpen: open.dockOpen,
-    bodyMarked: open.marked,
-    scrolledWhenOpen: open.moved,
+    pageScrollsWhenClosed: closed > 0,
+    scrolledWhenClosed: closed,
+    documentHeight: height,
+    chatOpen: marks.dockOpen,
+    bodyMarked: marks.marked,
+    scrolledWhenOpen: open,
   };
   const ok = detail.pageScrollsWhenClosed && detail.chatOpen && detail.scrolledWhenOpen === 0;
   return { probe: 'chat-scroll-lock' + path, ok, detail, errors };
