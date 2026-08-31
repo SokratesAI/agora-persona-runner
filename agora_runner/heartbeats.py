@@ -703,6 +703,22 @@ def _concurrency_limit(heartbeat):
     return HEARTBEAT_MAX_CONCURRENT
 
 
+def running_heartbeat_count():
+    """How many heartbeat run threads are still alive. -> int
+
+    `join_running_heartbeats` below blocks until this reaches zero. The
+    drain in main.py needs the same fact without blocking on it, because
+    the whole point of that wait is that there is time to spend: while a
+    cycle finishes, the process can still answer ordinary conversation
+    turns instead of ignoring every persona in Agora."""
+    return sum(
+        1
+        for threads in list(_heartbeat_threads.values())
+        for thread in list(threads)
+        if thread.is_alive()
+    )
+
+
 def join_running_heartbeats():
     """Block until every in-flight heartbeat run has finished.
 

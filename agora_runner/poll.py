@@ -13,7 +13,15 @@ from agora_runner.heartbeats import (
 )
 
 
-def poll_once():
+def poll_once(start_heartbeats=True):
+    """One tick. `start_heartbeats=False` answers conversations only.
+
+    That is the draining process's tick. A pod that has been told to shut
+    down must start no new cycle -- the run it starts would be killed
+    part-way -- but it is going to sit here until the in-flight cycle
+    finishes anyway, and until 2026-08-31 it spent that whole wait
+    answering nobody. See main.py's `_serve_while_draining`.
+    """
     clear_persona_cache()
     status, body = agora_get("/conversations")
     if status != 200:
@@ -93,6 +101,8 @@ def poll_once():
                 mark_answered_live(summary)
             except Exception as e:
                 log(f"[{summary.get('name', summary.get('id'))}] answered-live chip failed: {e}")
+    if not start_heartbeats:
+        return
     try:
         run_due_heartbeats(heartbeats_list)
     except Exception as e:
