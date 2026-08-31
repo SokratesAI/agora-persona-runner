@@ -174,7 +174,7 @@ def sweep(site=SITE, grace_minutes=GRACE_MINUTES, window_hours=WINDOW_HOURS,
                      f"{window_hours}h finished without ever answering "
                      "the owner. The journal entry is the recovery: relay what "
                      "the cycle did in your own reply, and say the previous "
-                     "one never reached him.")
+                     "one never reached them.")
         for conversation, narration in silent:
             lines.append(f"  {conversation.get('name')} — last said "
                          f"{narration!r} at {conversation.get('updatedAt')}")
