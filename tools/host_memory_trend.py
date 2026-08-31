@@ -54,8 +54,14 @@ projection.
 
 Cycle 705 added the third thing that needs no grant: *which side of the pod
 boundary* the memory sits on, trended rather than read once. `nodes/proxy`
-is Forbidden for both of this loop's service accounts -- measured Cycle 705
-from the bridge pod and from the runner pod, and re-measured Cycle 709.
+was Forbidden for both of this loop's service accounts when that was written
+-- measured Cycle 705 from the bridge pod and from the runner pod, and
+re-measured Cycle 709. **It is granted now** (`monitoring/node-proxy-rbac.yaml`,
+Cycle 712), so the paragraphs below about not being able to reach cAdvisor are
+history rather than current fact, and `tools.workload_health.read_node_cgroups`
+reads it every sweep. What that grant does *not* change is anything here: this
+file trends a split it computes from `/proc/meminfo` and `kubectl top`, and the
+cAdvisor read is an instant, not a series.
 
 The note that used to sit here said `kubectl auth can-i get nodes/proxy`
 answers `yes` while the call is refused, and concluded "that check is not
