@@ -4400,15 +4400,20 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    // Grouped by category on 2026-08-26, on the owner's ask: the three they
+    // Grouped by category on 2026-08-26, on the owner's ask: the ones they
     // named first with no heading, then Steering / Talking / The loop. `/ask`
     // left this list and kept its route -- the chat dock is the same thread.
+    // `/projects` joined the pinned rows on 2026-08-31 and left Steering with
+    // it, on their capture that morning: "make the projects link in the Nova
+    // sidebar always show above the issues and ideas links". It is second
+    // rather than first because that sentence names Issues and Ideas and does
+    // not name Journal.
     // The order and the grouping are pinned in tests/test_nav_is_grouped.py,
     // which can see the `<summary>` headings this query steps over. The
     // groups became collapsible folds later the same day and this list is
     // unchanged by that -- `querySelectorAll` reads the DOM, not the layout,
     // so a link inside a closed `<details>` is still found here.
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/pool", "/plan", "/projects", "/conversations", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
+    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/conversations", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));

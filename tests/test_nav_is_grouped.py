@@ -40,8 +40,14 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HTML = ROOT / "agora_runner" / "nova_public" / "index.html"
 
-#: The three the owner named, in the order they named them.
-PINNED = ["/", "/issues", "/ideas"]
+#: The pinned rows, in document order. The owner named three on 2026-08-26
+#: and added `/projects` on 2026-08-31: *"make the projects link in the Nova
+#: sidebar always show above the issues and ideas links as i want to use the
+#: projects page more often."* That sentence names Issues and Ideas and does
+#: not name Journal, so Projects goes second and Journal keeps the top row.
+#: The ordering is the assertion — a `set` here would pass with Projects
+#: below Ideas, which is the one arrangement the capture rules out.
+PINNED = ["/", "/projects", "/issues", "/ideas"]
 
 #: The one route deliberately reachable without a menu link. The chat dock
 #: is the same thread, so the page is redundant on the menu; the route stays
@@ -82,35 +88,47 @@ def _page_routes():
     return [m.group(1) for m in re.finditer(r"\"([^\"]+)\"", block.group(1))]
 
 
-def test_the_three_the_owner_named_come_first():
-    """Pinned, ungrouped, in their stated order, and exactly three.
+def test_the_pages_the_owner_named_come_first():
+    """Pinned, ungrouped, in their stated order, and nothing else with them.
 
     My reviewer caught that the first half of this pinned nothing: Journal,
     Issues and Ideas were already the first three anchors before the drawer
-    was grouped, so the order assertion alone passes with the whole change
-    reverted -- rubric item 1, under a test name that implies otherwise.
+    was grouped, so the order assertion alone passed with the whole change
+    reverted -- rubric item 1, under a test name that implied otherwise.
     Measured rather than argued: restoring the pre-grouping `index.html` and
     running this file leaves four of six green, this one among them.
 
-    The order is still worth pinning, so it stays. What makes the test able
-    to fail is the second assertion: **the pinned block is exactly three**,
-    so the item immediately after Ideas is a heading. That is the boundary
-    the owner drew ("the top 3"), it is new with the grouping, and a fourth
-    link creeping into the pinned block is the way it would quietly go.
+    That is no longer true of the order half, and the reason is worth keeping
+    rather than deleting the sentence above: `/projects` was inside a fold
+    before 2026-08-31, so moving it to second is a change the order assertion
+    can see. The second assertion is what makes this test able to fail in
+    general, whatever the list happens to be today: **the pinned block is
+    exactly `PINNED` and no longer**, so the item immediately after the last
+    pinned link is a heading. That boundary is the owner's ("the top 3", then
+    a fourth added by name), and an extra link creeping in behind it is the
+    way it would quietly go.
+
+    This test was called `test_the_three_the_owner_named_come_first` and said
+    "three" in its name, its prose and both of its messages until Cycle 700.
+    The assertions read `len(PINNED)` and were right; every word around them
+    was wrong the moment the list grew, and a wrong assertion message is what
+    a future cycle reads off a red CI run with nobody else in the loop.
     """
     items = _nav_items()
+    named = ", ".join(PINNED)
     assert [href for kind, href in items[: len(PINNED)] if kind == "link"] == PINNED, (
-        "the first three entries in the drawer must be Journal, Issues and Ideas, "
-        f"with no heading above them. Found: {items[: len(PINNED) + 1]}"
+        f"the first {len(PINNED)} entries in the drawer must be {named}, in that "
+        f"order, with no heading above them. Found: {items[: len(PINNED) + 1]}"
     )
     assert len(items) > len(PINNED) and items[len(PINNED)][0] == "group", (
-        "the pinned block must be exactly three links -- the entry after Ideas has "
-        f"to be a category heading. Found: {items[len(PINNED) : len(PINNED) + 1]}"
+        f"the pinned block must be exactly those {len(PINNED)} links -- the entry "
+        f"after {PINNED[-1]} has to be a category heading. "
+        f"Found: {items[len(PINNED) : len(PINNED) + 1]}"
     )
 
 
 def test_every_other_link_sits_under_a_category():
-    """A link after the pinned three with no heading before it is ungrouped."""
+    """A link after the pinned block with no heading before it is ungrouped."""
     seen_group = False
     for index, (kind, value) in enumerate(_nav_items()):
         if kind == "group":
