@@ -53,79 +53,52 @@ every finished cycle in the window spoke.
 On exit 2 the recovery is not a code change. The cycle's journal entry
 exists; relay what it did in your own reply, and say plainly that the
 previous cycle never reached him.
+
+**The judgement itself moved to `agora_runner.reply_check` and this is now
+the CLI over it.** Cycle 724 wired the same rule into `nova-site` as a push
+notice (`agora_runner.reply_notice`), because a check that only ever tells
+*me* leaves the owner finding out by asking -- which is his issue #105 in
+his own words. `tools/` is not copied into the site image, so the notifier
+cannot import this module; the shared half lives in `agora_runner/` and both
+sides call it rather than each keeping a copy of "every message is partial".
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import datetime, timezone
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
+from agora_runner.reply_check import (
+    GRACE_MINUTES,
+    WINDOW_HOURS,
+    cycle_threads,
+    find_silences,
+    judge,
+    last_narration,
+    replied,
+)
 
 SITE = "http://nova-site.agents.svc.cluster.local:8083"
-# A turn is killed at 45 minutes and the cadence is 30, so an hour is past
-# the longest a live cycle can still be owing a reply.
-GRACE_MINUTES = 60
-WINDOW_HOURS = 24
 # Enough for any cycle: the busiest thread measured held 10.
 THREAD_LIMIT = 300
+
+# Re-exported so a reader of this module sees the whole rule from here and
+# `tests/test_reply_health.py` keeps testing it through the tool it names.
+__all__ = ["cycle_threads", "judge", "last_narration", "replied", "sweep",
+           "main", "SITE", "GRACE_MINUTES", "WINDOW_HOURS", "THREAD_LIMIT"]
 
 
 def _get(url, timeout=30):
     with urllib.request.urlopen(url, timeout=timeout) as response:
         return json.load(response)
-
-
-def _parsed(stamp):
-    """Agora's ISO stamps, as an aware UTC datetime, or None."""
-    if not isinstance(stamp, str) or not stamp:
-        return None
-    try:
-        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def cycle_threads(listing):
-    """The cycle threads in nova-site's conversation list.
-
-    `cycleThread` is the site's own flag for a thread a heartbeat opened,
-    so this never has to parse a name. A thread the owner started is
-    not owed a reply by anybody and is not judged here.
-    """
-    conversations = (listing or {}).get("conversations") or []
-    return [c for c in conversations if c.get("cycleThread")]
-
-
-def replied(thread):
-    """True when the thread holds a message that is not narration."""
-    for message in (thread or {}).get("messages") or []:
-        if not message.get("partial"):
-            return True
-    return False
-
-
-def last_narration(thread):
-    """The last thing the cycle said before it stopped, for the relay."""
-    texts = [m.get("text") or "" for m in (thread or {}).get("messages") or []]
-    return texts[-1].strip() if texts else ""
-
-
-def judge(conversation, now, grace_minutes, window_hours):
-    """`"live"`, `"old"` or `"judge"` for one thread, without fetching it.
-
-    Split out from the sweep because the two gates are the whole design and
-    a reader should be able to see them without the I/O around them.
-    """
-    updated = _parsed(conversation.get("updatedAt"))
-    if updated is None:
-        return "unreadable"
-    if now - updated < timedelta(minutes=grace_minutes):
-        return "live"
-    if now - updated > timedelta(hours=window_hours):
-        return "old"
-    return "judge"
 
 
 def sweep(site=SITE, grace_minutes=GRACE_MINUTES, window_hours=WINDOW_HOURS,
@@ -142,49 +115,31 @@ def sweep(site=SITE, grace_minutes=GRACE_MINUTES, window_hours=WINDOW_HOURS,
     if not threads:
         return 1, ["COULD NOT READ: nova-site listed no cycle threads at all."]
 
-    silent, judged, live, old, unreadable = [], 0, 0, 0, 0
-    for conversation in threads:
-        verdict = judge(conversation, now, grace_minutes, window_hours)
-        if verdict == "unreadable":
-            unreadable += 1
-            lines.append("COULD NOT READ: "
-                         f"{conversation.get('name')} carries no timestamp.")
-            continue
-        if verdict == "live":
-            live += 1
-            continue
-        if verdict == "old":
-            old += 1
-            continue
-        try:
-            thread = get(f"{site}/api/conversations/thread"
-                         f"?id={conversation.get('id')}&limit={THREAD_LIMIT}",
-                         timeout=60)
-        except (urllib.error.URLError, OSError, ValueError) as error:
-            unreadable += 1
-            lines.append("COULD NOT READ: "
-                         f"{conversation.get('name')} ({error}).")
-            continue
-        judged += 1
-        if not replied(thread):
-            silent.append((conversation, last_narration(thread)))
+    def fetch_thread(conversation_id):
+        return get(f"{site}/api/conversations/thread"
+                   f"?id={conversation_id}&limit={THREAD_LIMIT}", timeout=60)
 
-    if silent:
-        lines.append(f"NO REPLY — {len(silent)} cycle(s) in the last "
+    found = find_silences(listing, fetch_thread, now=now,
+                          grace_minutes=grace_minutes,
+                          window_hours=window_hours)
+    lines.extend(f"COULD NOT READ: {note}" for note in found.notes)
+
+    if found.silent:
+        lines.append(f"NO REPLY \u2014 {len(found.silent)} cycle(s) in the last "
                      f"{window_hours}h finished without ever answering "
                      "the owner. The journal entry is the recovery: relay what "
                      "the cycle did in your own reply, and say the previous "
                      "one never reached them.")
-        for conversation, narration in silent:
-            lines.append(f"  {conversation.get('name')} — last said "
-                         f"{narration!r} at {conversation.get('updatedAt')}")
+        for silence in found.silent:
+            lines.append(f"  {silence.name} \u2014 last said "
+                         f"{silence.narration!r} at {silence.updated_at}")
     lines.append(f"Read {len(threads)} cycle thread(s) from nova-site: "
-                 f"{judged} judged, {live} still inside the "
-                 f"{grace_minutes}m grace, {old} older than {window_hours}h, "
-                 f"{unreadable} unreadable.")
-    if unreadable:
+                 f"{found.judged} judged, {found.live} still inside the "
+                 f"{grace_minutes}m grace, {found.old} older than "
+                 f"{window_hours}h, {found.unreadable} unreadable.")
+    if found.unreadable:
         return 1, lines
-    if silent:
+    if found.silent:
         return 2, lines
     return 0, lines
 

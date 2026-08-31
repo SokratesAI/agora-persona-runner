@@ -32,6 +32,7 @@ import time
 
 from agora_runner.log import log
 from agora_runner.nova_site import start_nova_site
+from agora_runner.reply_notice import ReplyWatch
 from agora_runner.stall_notice import StallWatch
 
 # Set by the SIGTERM/SIGINT handler, read by the loop below. A plain bool
@@ -68,9 +69,14 @@ def main():
     # calling it once a second is the whole wiring. See stall_notice.py for
     # why this lives in the site process and not in the runner.
     watch = StallWatch()
+    # The second watch is the same wiring for the other half of his issue
+    # #105: a cycle that ran and never answered him is not a stall, so
+    # `StallWatch` is correctly silent about it. See reply_notice.py.
+    replies = ReplyWatch()
     try:
         while not _shutdown_requested:
             watch.tick()
+            replies.tick()
             time.sleep(SHUTDOWN_POLL_SECONDS)
     finally:
         # serve_forever runs on a daemon thread, so shutdown() is called
