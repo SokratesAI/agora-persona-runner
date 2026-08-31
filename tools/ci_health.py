@@ -462,6 +462,86 @@ def blocked_repo(repo, run=subprocess.run, sample=5):
              f"{cause}")], None
 
 
+def billing_meter(org, run=subprocess.run, now=None):
+    """`(lines, None)` or `(None, why)` — what the org's Actions meter actually says.
+
+    `blocked_repo` above answers *that* GitHub is refusing to start jobs and
+    quotes the annotation, which says two different things joined by an
+    "or": *"recent account payments have failed or your spending limit needs
+    to be increased."* Those have different owners and different fixes, and
+    the annotation does not say which one it is. So every cycle that hit
+    this went and derived it by hand — 223, 225, 227, 230, 231, 232, 233,
+    364 and 734 all re-read the same endpoint — and the answer then lived in
+    a board row rather than in an instrument.
+
+    **Measured Cycle 734, and the number is not the one the row assumed.**
+    `SokratesAI` burned 6,257 Actions minutes in August, and **11 of them
+    were on a private repo.** The other 6,246 are on repos that were made
+    public in Cycle 235 precisely so their minutes would stop counting.
+    Every item in the ledger is discounted to `netAmount` 0.00, in August,
+    July and June, so nothing is owed and no payment can have failed. Yet a
+    re-run of a `platform-config` job at 22:07 UTC on 31 August was refused
+    with that same annotation, with 1,989 of the 2,000 included private
+    minutes unused.
+
+    The only model that fits both facts is that the gate counts **every**
+    metered minute, public ones included, against the 2,000 — the cumulative
+    total crossed 2,000 on 15 August, which is the day builds started dying
+    in three seconds. That is an inference from two measurements and not
+    something GitHub documents, so this prints the numbers and says which
+    half each one answers rather than printing the conclusion.
+
+    It reads the current month, because that is the window the allowance is
+    scoped to. Repos are split by visibility from `/orgs/{org}/repos`, one
+    page of 100; more than that and the split is flagged partial rather than
+    quietly wrong.
+    """
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    usage, why = _gh_json(
+        [f"/orgs/{org}/settings/billing/usage?year={now.year}&month={now.month}"], run)
+    if not isinstance(usage, dict) or not isinstance(usage.get("usageItems"), list):
+        return None, why or "the usage endpoint returned no usageItems"
+
+    repos, repo_why = _gh_json([f"/orgs/{org}/repos?per_page=100&type=all"], run)
+    visibility, partial = {}, repo_why
+    if isinstance(repos, list):
+        for repo in repos:
+            if isinstance(repo, dict) and repo.get("name"):
+                visibility[repo["name"]] = "public" if not repo.get("private") else "private"
+        if len(repos) >= 100:
+            partial = "the org has 100 or more repos and only the first page was read"
+    else:
+        partial = repo_why or "could not read repo visibility"
+
+    minutes = {"private": 0.0, "public": 0.0, "unknown": 0.0}
+    net = 0.0
+    for item in usage["usageItems"]:
+        if not isinstance(item, dict) or item.get("product") != "actions":
+            continue
+        try:
+            quantity = float(item.get("quantity") or 0)
+            net += float(item.get("netAmount") or 0)
+        except (TypeError, ValueError):
+            continue
+        minutes[visibility.get(item.get("repositoryName"), "unknown")] += quantity
+
+    total = sum(minutes.values())
+    lines = [
+        f"METER   {org}, {now:%B %Y} so far: {total:.0f} metered Actions minute(s) — "
+        f"{minutes['private']:.0f} on private repo(s), {minutes['public']:.0f} on public, "
+        f"{minutes['unknown']:.0f} on repo(s) whose visibility could not be read.",
+        f"        net owed ${net:.2f} — that is the 'payments have failed' half of the "
+        f"annotation, and $0.00 means nothing is unpaid.",
+        f"        the 2,000 included minutes are scoped to private repos, so "
+        f"{minutes['private']:.0f} of 2,000 is the allowance half. If jobs are refused "
+        f"with that allowance unspent, the gate is counting the public minutes too.",
+    ]
+    if partial:
+        lines.append(f"        partial: {partial}")
+    return lines, None
+
+
 def _sweep_repo(repo, grace_minutes, run, now):
     """Every per-repo probe for one repo, in order.
 
@@ -588,6 +668,14 @@ def check(opener=urllib.request.urlopen, run=subprocess.run,
             f"GitHub is creating the run and refusing to start the job. There is no "
             f"pull request that fixes that and a merge into any other repo above is "
             f"unaffected, so the status is deliberately not raised.")
+        # Only here: the meter answers the question this finding raises, and on a
+        # morning where nothing is refused it is a paragraph nobody reads.
+        for org in sorted({repo.split("/")[0] for repo in cannot_go_green if "/" in repo}):
+            meter_lines, meter_why = billing_meter(org, run=run)
+            if meter_lines is None:
+                lines.append(f"METER   could not read {org}'s Actions meter: {meter_why}")
+            else:
+                lines.extend(meter_lines)
 
     if blocked:
         lines.append("A merge cannot complete right now. Pick a cycle that does not end in one.")

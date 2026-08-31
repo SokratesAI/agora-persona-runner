@@ -54,7 +54,8 @@ def status_page(actions="operational", incidents=(), raw=None):
 
 
 def gh(runs=None, jobs=None, fail=None, completed=None,
-       history=None, job_payload=None, annotations=None):
+       history=None, job_payload=None, annotations=None,
+       usage=None, repo_list=None):
     """A fake `subprocess.run` answering the `gh api` calls this tool makes.
 
     `completed` is the newest completed run, as `{"id": ..., "created_at": ...}`
@@ -79,6 +80,14 @@ def gh(runs=None, jobs=None, fail=None, completed=None,
         path = cmd[2]
         if fail is not None and fail in path:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: not found")
+        if "/settings/billing/usage" in path:
+            # `check` reads the meter once a repo is found blocked, so the fake
+            # has to answer it or every billing-block test dies in the fake.
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"usageItems": usage or []}), stderr="")
+        if "/repos?" in path:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(repo_list or []), stderr="")
         if "/annotations" in path:
             job_id = int(path.split("/check-runs/")[1].split("/")[0])
             return subprocess.CompletedProcess(
@@ -606,3 +615,87 @@ def test_the_report_is_in_repo_order_not_in_whichever_gh_answered_first():
     first = next(i for i, l in enumerate(lines) if "Org/aaa" in l)
     last = next(i for i, l in enumerate(lines) if "Org/zzz" in l)
     assert first < last, lines
+
+
+# --- billing_meter ------------------------------------------------------
+# Cycle 734. `blocked_repo` quotes an annotation that says two different
+# things joined by "or" — payments failed, or the spending limit is $0 — and
+# nine cycles each went and derived which one by hand. These pin the split
+# that made the derivation wrong every time: the private minute count and the
+# public one are separate numbers, and only the private one is measured
+# against the 2,000 included minutes.
+
+def billing_gh(usage=None, repos=None, fail=None):
+    """A fake `subprocess.run` for the two `gh api` calls `billing_meter` makes."""
+    def runner(cmd, **kwargs):
+        assert cmd[:2] == ["gh", "api"], cmd
+        path = cmd[2]
+        if fail is not None and fail in path:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: refused")
+        if "/settings/billing/usage" in path:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"usageItems": usage or []}), stderr="")
+        if "/repos?" in path:
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(repos or []), stderr="")
+        raise AssertionError(f"unexpected call {path}")
+    return runner
+
+
+def usage_item(repo, minutes, net=0.0, product="actions"):
+    return {"product": product, "repositoryName": repo,
+            "quantity": minutes, "netAmount": net}
+
+
+def test_the_meter_splits_private_minutes_from_public_ones():
+    # August's real shape, scaled down: nearly everything is on a public repo,
+    # and a total alone would say "far past 2,000" about an allowance that is
+    # almost untouched. Three distinct numbers so no two can be confused.
+    run = billing_gh(
+        usage=[usage_item("agora-persona-runner", 500.0, net=0.0),
+               usage_item("platform-config", 7.0, net=1.5),
+               usage_item("agora-claude-bridge", 90.0),
+               usage_item("copilot-thing", 1000.0, product="copilot")],
+        repos=[{"name": "agora-persona-runner", "private": False},
+               {"name": "agora-claude-bridge", "private": False},
+               {"name": "platform-config", "private": True}])
+    lines, why = ci_health.billing_meter("SokratesAI", run=run,
+                                         now=datetime(2026, 8, 31, 22, tzinfo=timezone.utc))
+    assert why is None
+    text = "\n".join(lines)
+    assert "597 metered Actions minute(s)" in text      # copilot is not Actions
+    assert "7 on private repo(s)" in text
+    assert "590 on public" in text
+    assert "7 of 2,000" in text
+    assert "net owed $1.50" in text
+
+
+def test_an_unreadable_repo_list_does_not_read_as_zero_private_minutes():
+    # The failure that would matter: if visibility cannot be read and the
+    # minutes default to "public", the report says the allowance is unspent
+    # and a cycle concludes the block cannot be the allowance. Unknown has to
+    # stay unknown, and say so.
+    run = billing_gh(usage=[usage_item("platform-config", 40.0)], fail="/repos?")
+    lines, why = ci_health.billing_meter("SokratesAI", run=run,
+                                         now=datetime(2026, 8, 31, tzinfo=timezone.utc))
+    assert why is None
+    text = "\n".join(lines)
+    assert "0 on private repo(s)" in text
+    assert "40 on repo(s) whose visibility could not be read" in text
+    assert "partial:" in text
+
+
+def test_a_meter_it_cannot_read_is_not_a_clean_meter():
+    run = billing_gh(fail="/settings/billing/usage")
+    lines, why = ci_health.billing_meter("SokratesAI", run=run,
+                                         now=datetime(2026, 8, 31, tzinfo=timezone.utc))
+    assert lines is None
+    assert "gh: refused" in why
+
+
+def test_the_meter_is_printed_only_where_a_repo_cannot_go_green():
+    # On a morning where nothing is refused this is a paragraph nobody reads,
+    # and printing it always is how a report stops being read at all.
+    _status, clean = ci_health.check(
+        opener=status_page(), run=gh(runs={"SokratesAI/a": []}, history={"SokratesAI/a": []}),
+        repos=["SokratesAI/a"], now=NOW)
+    assert not [line for line in clean if line.startswith("METER")]
