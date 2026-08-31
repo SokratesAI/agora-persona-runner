@@ -38,7 +38,9 @@ statement that it could not judge part of its scope.** A check may honestly
 exit 0 over a surface it never read -- nzbget's extension list sits behind a
 password neither pod holds -- and collapsing that to a summary puts the
 caveat out of sight in the one report a cycle reads every morning. See
-`caveat_lines`; it costs the table one line today, measured.
+`caveat_lines`; on this morning's sweep four clean checks carried one,
+measured, and ten more blind lines across nine checks were being dropped
+because the matcher wanted the marker at the front of the line.
 
 The uniform exit contract is what makes this possible, and it was already
 there: every one of these modules documents **2 = a finding to act on,
@@ -225,8 +227,53 @@ def summary_line(output):
     return lines[-1]
 
 
-CAVEAT_MARKERS = ("NOT JUDGED", "NOT ASKED", "CANNOT JUDGE", "CANNOT SEE",
-                  "CANNOT READ", "COULD NOT READ", "UNREADABLE")
+#: The vocabulary a check uses when it says it could not judge part of its
+#: own scope. These are *stems*, matched inside the shouted opening of a line
+#: rather than as whole prefixes of it, and that is the whole of Cycle 710's
+#: change.
+#:
+#: It used to be seven complete phrases, matched with `startswith`. Cycle 699's
+#: reviewer found the hole in one check -- `host_memory_trend` printed
+#: `CANNOT COUNT`, which begins with none of them, so on an otherwise-clean run
+#: that caveat was dropped from the report entirely -- and the repair was a
+#: test in that one module asserting its own lines match. That fixes one check
+#: and leaves the next author to rediscover the rule, which is the same shape
+#: as the Cycle 646 mistake `caveat_lines` below already documents.
+#:
+#: So I measured the rest instead of guessing: parsing every string literal in
+#: all 31 checks turned up ten more blind lines that no marker matched, across
+#: nine modules -- `CANNOT ATTRIBUTE MEMORY` (the issue #131 line, in two
+#: checks), `CANNOT TREND`, `CANNOT GO GREEN`, `COULD NOT PLACE`,
+#: `COULD NOT JUDGE`, `COULD NOT WRITE`, and `SERVICES UNREADABLE` in the four
+#: NAS checks. That last one is the tell that a prefix list was the wrong
+#: shape: the marker is *in* the line, just not at the front of it.
+#:
+#: A stem cannot fix that alone -- "CANNOT" appears in ordinary prose -- so the
+#: anchor moves rather than disappearing: the line still has to *open* with a
+#: shouted run of capitals, and the stem has to be inside that run. The
+#: footnote the old docstring protects against, "a check that exits 1 is
+#: UNREADABLE and never reads as clean", opens with a lowercase word and is
+#: still not selected.
+CAVEAT_STEMS = ("NOT JUDGED", "NOT ASKED", "NOT READ", "UNJUDGED",
+                "CANNOT", "COULD NOT", "UNREADABLE")
+
+#: The shouted opening of a line: capitals, digits and the punctuation that
+#: shows up inside one of these headers, from the first character. A line that
+#: starts with an ordinary sentence has a one-character head and can never
+#: carry a stem.
+SHOUTED_HEAD = re.compile(r"^[A-Z][A-Z0-9 \'/-]*")
+
+
+def shouted_head(line):
+    """The run of capitals a line opens with, or "" if it opens in prose."""
+    match = SHOUTED_HEAD.match(line.strip())
+    return match.group(0) if match else ""
+
+
+def is_caveat(line):
+    """Does this line say the check could not judge part of its own scope?"""
+    head = shouted_head(line)
+    return any(stem in head for stem in CAVEAT_STEMS)
 
 
 #: How long a *standing* finding may go without being reproduced in full.
@@ -369,15 +416,17 @@ def caveat_lines(output):
     real sweep of all 25 checks on 2026-08-30: one clean check carries one
     caveat line, so this costs the table one line today.
 
-    The marker has to *start* the line, which is narrower than containing it
-    and deliberately so: every emitter prints it at the head of its own line,
-    and a footnote that merely mentions the word -- *"a check that exits 1 is
-    UNREADABLE and never reads as clean"* -- is prose about the contract rather
-    than a thing this sweep failed to judge. Verified on the same sweep: over
-    all 25 checks, anchoring and containment select exactly the same lines.
+    What counts as a caveat is `is_caveat`, and the reasoning for its shape is
+    on `CAVEAT_STEMS`. The short version: the line has to *open* in shouted
+    capitals and one of the stems has to be inside that opening. Anchoring on
+    the whole marker was the previous rule and it dropped ten real blind lines
+    across nine checks, because a header like `SERVICES UNREADABLE` carries the
+    marker in its second word. Anchoring on the shout keeps out the footnote
+    the old rule was protecting against -- *"a check that exits 1 is UNREADABLE
+    and never reads as clean"* -- which opens in prose and still is not
+    selected.
     """
-    return [line.strip() for line in output.splitlines()
-            if any(line.strip().startswith(marker) for marker in CAVEAT_MARKERS)]
+    return [line.strip() for line in output.splitlines() if is_caveat(line)]
 
 
 def missing_modules(git, directory):

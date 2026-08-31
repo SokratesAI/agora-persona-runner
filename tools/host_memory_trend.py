@@ -587,10 +587,12 @@ def judge_harm(current, rows, full_stall_percent=FULL_STALL_PERCENT,
     kills = current.get("oom_kills")
     uptime = current.get("uptime_days")
     if kills is None:
-        # "CANNOT READ", not "CANNOT COUNT": `tools.preflight.CAVEAT_MARKERS`
-        # matches on the prefix, and a caveat it does not match is dropped from
-        # the collapsed report on an otherwise-clean run -- visible only under
-        # --verbose, which is the one place nobody looks.
+        # A caveat preflight does not match is dropped from the collapsed
+        # report on an otherwise-clean run -- visible only under --verbose,
+        # which is the one place nobody looks. `tools.preflight.is_caveat`
+        # takes any shouted opening carrying one of its stems, so "CANNOT
+        # COUNT" would match too now; this stays "CANNOT READ" because that is
+        # the truer word for it, not because the matcher needs it.
         lines.append("CANNOT READ OOM KILLS — no oom_kill in this reading.")
         return lines, actionable
 

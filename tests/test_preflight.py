@@ -1,6 +1,7 @@
 """`tools.preflight` collapses clean checks and reproduces dirty ones in full."""
 import io
 import os
+import re
 
 from tools import preflight
 
@@ -559,3 +560,62 @@ def test_a_one_line_finding_is_not_repeated_underneath_itself():
     assert text.count("BEHIND origin/main by 1 commit(s).") == 1
     assert "UNCHANGED" not in text and "standing finding" not in text
     assert "===== source_revision" not in text
+
+
+def test_no_check_prints_a_blind_line_this_report_would_drop():
+    """Every shouted "I could not read this" in every check has to be a caveat.
+
+    Cycle 699's reviewer found `host_memory_trend` printing `CANNOT COUNT`,
+    which the old whole-phrase prefix list did not match, so that caveat was
+    dropped from the collapsed report on an otherwise-clean run. The repair was
+    a test inside that one module. This is the same test asked of all 31 checks
+    at once, and asking it that way is what turned one line into ten across
+    nine modules -- including `CANNOT ATTRIBUTE MEMORY`, the issue #131 line,
+    in two separate checks.
+
+    The detector here is deliberately *not* `is_caveat` re-spelled, or it could
+    not fail: it anchors on three capitals rather than on the shout, and it
+    searches the whole line rather than its opening. So a header that carries
+    the marker in its second word -- `SERVICES UNREADABLE`, in four NAS checks
+    -- is found here and was not found by the rule under test until today.
+    """
+    import ast
+
+    blind_word = re.compile(
+        r"\b(CANNOT|COULD NOT|UNREADABLE|UNJUDGED|NOT JUDGED|NOT ASKED|NOT READ)\b")
+    dropped = []
+    for name in preflight.CHECKS:
+        path = os.path.join(preflight.tools_dir(), name + ".py")
+        with io.open(path, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            for raw in node.value.splitlines():
+                line = raw.strip()
+                if not re.match(r"^[A-Z]{3,}", line):
+                    continue
+                if not blind_word.search(line):
+                    continue
+                if not preflight.is_caveat(line):
+                    dropped.append("%s: %s" % (name, line[:80]))
+    assert not dropped, (
+        "these lines say a check could not judge something and preflight would "
+        "not print them:\n" + "\n".join(sorted(set(dropped))))
+
+
+def test_prose_about_the_exit_contract_is_still_not_a_caveat():
+    # The one thing the old prefix rule got right, kept: a sentence that
+    # merely mentions the word opens in prose, so its shouted head is one
+    # character long and carries no stem.
+    assert not preflight.is_caveat(
+        "An unreadable check is UNREADABLE and never reads as clean.")
+    assert not preflight.is_caveat("Swept 3 repo(s).")
+
+
+def test_a_marker_in_the_second_word_of_a_header_is_a_caveat():
+    # `SERVICES UNREADABLE` is what four NAS checks print, and the prefix list
+    # this replaces matched none of them.
+    assert preflight.is_caveat(
+        "SERVICES UNREADABLE -- the SSH hop exists but no service answered.")
+    assert preflight.is_caveat("CANNOT ATTRIBUTE MEMORY — /proc/meminfo says")
