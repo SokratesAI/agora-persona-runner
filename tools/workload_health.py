@@ -529,8 +529,24 @@ def read_pod_working_set(runner=subprocess.run):
 #: counts those, and counting them twice is how a breakdown stops adding up.
 CADVISOR_SERIES = "container_memory_working_set_bytes"
 
+#: Working set is not demand. It counts the active page cache a cgroup holds,
+#: which the kernel reclaims before it kills anything -- the same trap
+#: `memory.peak` set on Cycle 711, one level up. `container_memory_rss` is the
+#: anonymous part the kernel cannot hand back, and `container_memory_swap` is
+#: the part it already pushed to disk. Issue #131's headline is that this box's
+#: 2GB of swap is full, and only the swap series can say whose it is.
+CADVISOR_RSS_SERIES = "container_memory_rss"
+CADVISOR_SWAP_SERIES = "container_memory_swap"
+
+#: All three are read in one pass over one fetch on purpose. cAdvisor samples
+#: each cgroup at its own instant, so a second fetch would be a second sample
+#: and the parts would disagree with each other for a reason that has nothing
+#: to do with the machine -- which is the exact failure the negative-remainder
+#: branch below already exists to catch.
+CADVISOR_ALL_SERIES = (CADVISOR_SERIES, CADVISOR_RSS_SERIES, CADVISOR_SWAP_SERIES)
+
 _CADVISOR_LINE = re.compile(
-    r"^" + CADVISOR_SERIES + r"\{(?P<labels>[^}]*)\}\s+(?P<value>[^\s]+)")
+    r"^(?P<series>[a-z_]+)\{(?P<labels>[^}]*)\}\s+(?P<value>[^\s]+)")
 _CADVISOR_LABEL = re.compile(r'(?P<key>[A-Za-z_][A-Za-z0-9_]*)="(?P<value>[^"]*)"')
 
 
@@ -547,8 +563,8 @@ def matching_host(meminfo, nodes):
     return next((name for name, mib in nodes.items() if abs(mib - total) < 1), None)
 
 
-def read_node_cgroups(host, runner=subprocess.run):
-    """Working set in MiB per machine-level cgroup on `host`, or (None, why).
+def read_node_cgroup_series(host, runner=subprocess.run):
+    """{series: {cgroup: MiB}} for every machine-level cgroup on `host`, or (None, why).
 
     This is the instrument issue #131 was missing. `attribution` below can say
     how much anonymous memory sits outside every Pod cgroup -- ~1,900Mi on
@@ -563,7 +579,9 @@ def read_node_cgroups(host, runner=subprocess.run):
 
     A failure here is a missing instrument, never a clean reading -- the
     caller prints why and stops, rather than falling back to a number without
-    a name and calling that an attribution.
+    a name and calling that an attribution. A series the endpoint does not
+    carry comes back as a missing key rather than an empty dict, so a caller
+    cannot mistake "cAdvisor publishes no swap here" for "nothing is swapped".
     """
     path = f"/api/v1/nodes/{host}/proxy/metrics/cadvisor"
     try:
@@ -575,10 +593,13 @@ def read_node_cgroups(host, runner=subprocess.run):
         detail = proc.stderr.strip() or proc.stdout.strip()
         return None, f"kubectl get --raw {path} failed: {detail}"
 
-    cgroups = {}
+    series = {}
     for line in proc.stdout.splitlines():
         match = _CADVISOR_LINE.match(line)
         if not match:
+            continue
+        name = match.group("series")
+        if name not in CADVISOR_ALL_SERIES:
             continue
         labels = dict(
             (m.group("key"), m.group("value"))
@@ -592,12 +613,24 @@ def read_node_cgroups(host, runner=subprocess.run):
             value = float(match.group("value"))
         except ValueError:
             continue
-        cgroups[cgroup] = value / 1024 / 1024
-    if not cgroups:
+        series.setdefault(name, {})[cgroup] = value / 1024 / 1024
+    if not series.get(CADVISOR_SERIES):
         # A 200 that carried no such series is no instrument, not an empty
         # node: this endpoint is 3.4MB of metrics and always carries the root.
         return None, f"{path} returned no {CADVISOR_SERIES} series for any cgroup"
-    return cgroups, None
+    return series, None
+
+
+def read_node_cgroups(host, runner=subprocess.run):
+    """Working set in MiB per machine-level cgroup on `host`, or (None, why).
+
+    The working-set half of `read_node_cgroup_series`, kept as its own name
+    because that is what every caller of the size breakdown wants.
+    """
+    series, why = read_node_cgroup_series(host, runner)
+    if series is None:
+        return None, why
+    return series[CADVISOR_SERIES], None
 
 
 def host_cgroup_shares(cgroups):
@@ -630,7 +663,8 @@ def host_cgroup_shares(cgroups):
     return root, kubepods, tops, unnamed
 
 
-def attribution(meminfo, pod_working_set, node_cgroups=None, cgroups_why=None):
+def attribution(meminfo, pod_working_set, node_cgroups=None, cgroups_why=None,
+                node_swap=None, node_rss=None):
     """Where the host's memory went, as lines. Context, never a verdict.
 
     `memory_headroom` above says the host is full and stops there, which
@@ -678,11 +712,31 @@ def attribution(meminfo, pod_working_set, node_cgroups=None, cgroups_why=None):
         "processes on the host itself (k3s, containerd, anything hand-run). "
         "A Pod's working set counts some page cache too, so that figure is a "
         "lower bound on the host's own share, not an exact one.")
-    lines.extend(name_the_host_share(node_cgroups, cgroups_why))
+    lines.extend(name_the_host_share(node_cgroups, cgroups_why, node_rss))
+    lines.extend(name_the_swap(node_swap))
     return lines
 
 
-def name_the_host_share(node_cgroups, why):
+def _resident(cgroup, node_rss):
+    """" (N Mi of it resident)" for a named cgroup, or "" when rss is unread.
+
+    A working set counts the active page cache a cgroup holds, and the kernel
+    reclaims that before it kills anything -- so "k3s 2369Mi" on its own does
+    not say whether k3s actually needs 2.4GB or is merely sitting on files it
+    read. `container_memory_rss` is the anonymous part, and on server1 it is
+    2118Mi of that 2359Mi, which is what makes it a real claim on the box
+    rather than a reclaimable one. Same lesson as `memory.peak` on Cycle 711:
+    a high number built from cache is not a finding.
+    """
+    if not node_rss:
+        return ""
+    rss = node_rss.get(cgroup)
+    if rss is None:
+        return ""
+    return f" ({rss:.0f}Mi of it resident anonymous)"
+
+
+def name_the_host_share(node_cgroups, why, node_rss=None):
     """Which cgroup holds the memory outside every Pod, as lines.
 
     The line above says how much and cannot say whose; this says whose. It is
@@ -697,7 +751,8 @@ def name_the_host_share(node_cgroups, why):
     if not tops:
         return ["  CANNOT NAME THAT SHARE — cAdvisor carries no machine-level "
                 "cgroup outside " + KUBEPODS + " on this node."]
-    named = ", ".join(f"{cgroup} {mib:.0f}Mi" for cgroup, mib in tops)
+    named = ", ".join(f"{cgroup} {mib:.0f}Mi{_resident(cgroup, node_rss)}"
+                      for cgroup, mib in tops)
     line = f"  Named on the node by cAdvisor: {named}."
     if root is not None:
         line += (f" Its root cgroup reads {root:.0f}Mi and {KUBEPODS} {kubepods:.0f}Mi, "
@@ -709,6 +764,49 @@ def name_the_host_share(node_cgroups, why):
             line += (" That remainder is negative, which means these readings "
                      "were taken at different instants and do not add up — "
                      "read the parts, not the difference.")
+    return [line]
+
+
+def name_the_swap(node_swap):
+    """Which cgroup filled the swap, as lines. Context, never a verdict.
+
+    Issue #131's own title is "its 2GB of swap is completely full", and until
+    this cycle every line I printed about that was a total with nobody's name
+    on it. `report` already says how much swap is gone; this says whose it is.
+
+    The subtraction is deliberate and it is the whole point. cAdvisor charges
+    swap to the cgroup that owns the pages, so `/` minus `/kubepods.slice`
+    minus the named machine slices is swap held by processes in none of them --
+    host daemons outside k3s, or anything hand-run. Measured on server1
+    2026-08-31: 1662Mi swapped at the root, 169Mi of it k3s and 1Mi of it every
+    Pod on the box together, so ~1.5GB of the full swap is neither.
+
+    Returns nothing at all when the series is absent rather than guessing: a
+    kernel built without swap accounting publishes no such series, and "0Mi
+    swapped" is a very different sentence from "I could not read it".
+    """
+    if not node_swap:
+        return []
+    root = node_swap.get("/")
+    if root is None:
+        return ["  CANNOT NAME THE SWAP — cAdvisor publishes "
+                + CADVISOR_SWAP_SERIES + " but not for the root cgroup."]
+    if root <= 0:
+        return [f"  Nothing on this node is swapped out: the root cgroup's "
+                f"{CADVISOR_SWAP_SERIES} reads 0Mi."]
+    _, kubepods, tops, unnamed = host_cgroup_shares(node_swap)
+    named = ", ".join(f"{cgroup} {mib:.0f}Mi" for cgroup, mib in tops if mib >= 1) \
+        or "no machine slice holds a whole MiB of it"
+    line = (f"  Of the {root:.0f}Mi swapped out on this node, {KUBEPODS} holds "
+            f"{kubepods:.0f}Mi and {named}")
+    if unnamed is not None and unnamed >= 1:
+        line += (f", leaving {unnamed:.0f}Mi swapped by processes in no cgroup "
+                 "cAdvisor breaks out — host daemons outside k3s, not the workloads.")
+    else:
+        # Below a whole MiB, or negative because each series is sampled at its
+        # own instant. Neither is a quantity worth printing, so name nobody
+        # rather than name a remainder that is an artefact of the sampling.
+        line += "."
     return [line]
 
 
@@ -1004,8 +1102,13 @@ def main(argv=None, runner=subprocess.run, now=None):
     # breakdown of it would be worse than printing nothing.
     if headroom[2]:
         working_set, _ = read_pod_working_set(runner)
-        cgroups, cgroups_why = read_node_cgroups(matching_host(meminfo, nodes), runner)
-        headroom = (headroom[0] + attribution(meminfo, working_set, cgroups, cgroups_why),
+        series, cgroups_why = read_node_cgroup_series(
+            matching_host(meminfo, nodes), runner)
+        cgroups = series[CADVISOR_SERIES] if series else None
+        node_swap = series.get(CADVISOR_SWAP_SERIES) if series else None
+        node_rss = series.get(CADVISOR_RSS_SERIES) if series else None
+        headroom = (headroom[0] + attribution(meminfo, working_set, cgroups,
+                                              cgroups_why, node_swap, node_rss),
                     headroom[1], headroom[2])
 
     lines, status = report(
