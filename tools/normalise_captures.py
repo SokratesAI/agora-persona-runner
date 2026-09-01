@@ -46,6 +46,18 @@ below leaves them where they belong, at the end.
     python3 -m tools.normalise_captures --live issues.md --dry-run
     python3 -m tools.normalise_captures --live issues.md
 
+**There is a second shape and a second mode, and the file grew into it.**
+Measured 2026-09-01: `issues.md` is 1,029 entries with 898 markers and
+**11 ascents**, `ideas.md` 329 with 278 and 3. That is not two streams --
+`split_streams` refuses it, correctly -- it is a file that is 98%
+newest-first with a few blocks sitting in the wrong place, which is what
+the merge era left behind once most cycles started passing the marker.
+`--mode strays` moves only those blocks and never touches an unmarked
+entry. Both modes go through the same `verify`, so neither can lose a
+capture or return something `check_newest_first` would still refuse.
+
+    python3 -m tools.normalise_captures --live issues.md --mode strays
+
 It is a one-time repair, not a scheduled job -- once both streams are
 one, `prompt.md` step 6's append keeps it that way as long as every
 cycle passes the marker. It is idempotent, but by refusing rather than
@@ -64,7 +76,8 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.md_sections import split_at_heading
 from tools.rolling import RollError, join_bullets, split_bullets
-from tools.roll_captures import MARKER, _CYCLE_RE, check_newest_first
+from agora_runner.rolling import _body
+from tools.roll_captures import MARKER, _CYCLE_RE, check_newest_first, spec_for
 
 
 def _cycle(entry):
@@ -122,7 +135,8 @@ def split_streams(entries):
     raise RollError(
         "refusing to normalise: no split point makes the top of this file "
         "descend and the bottom ascend, so it is not two streams and this "
-        "tool cannot say what order it is in"
+        "tool cannot say what order it is in -- if it is mostly newest-first "
+        "with a few blocks out of place, that is --mode strays"
     )
 
 
@@ -171,14 +185,83 @@ def merge(top, bottom):
     return out + top[i:] + bottom[j:]
 
 
-def normalise(live):
+def strays(entries):
+    """Indices of the markered entries that break the descending run.
+
+    Greedy from the top: the first marker sets the run, and any later
+    marker larger than the running minimum is a stray. `split_streams`
+    above cannot help here because these files are no longer two streams
+    -- measured 2026-09-01, `issues.md` has 1,029 entries with 898
+    markers and only **11 ascents**, and no cut point makes the top
+    descend and the bottom ascend, so `split_streams` refuses. That
+    refusal is correct and the shape it describes is real: 98% of the
+    file is already newest-first and a handful of blocks are in the wrong
+    place, which is a different repair from a merge.
+
+    Greedy is deliberate over a longest-non-increasing-subsequence. LNIS
+    would minimise the number of entries that move, and on this file it
+    would decide the 84-entry undated tail is the run to keep and lift
+    the newest captures around it. The run that matters is the one that
+    starts at the top of the file, because that is the end
+    `roll_captures.plan` keeps.
+    """
+    out = []
+    floor = None
+    for index, entry in enumerate(entries):
+        cycle = _cycle(entry)
+        if cycle is None:
+            continue
+        if floor is not None and cycle > floor:
+            out.append(index)
+        else:
+            floor = cycle
+    return out
+
+
+def repair_strays(entries):
+    """Move only the stray markers, each to where its own cycle belongs.
+
+    Unmarked entries never move. They have no key of their own -- `keys`
+    dates them from the next marker *below* -- so relocating one is a
+    guess, and the ones in these files sit in the undated tail that gets
+    archived whichever marker ends up under them.
+
+    A stray is inserted at the first position whose filled key is lower
+    than its own, which is the same placement rule `merge` uses, so a
+    block of same-cycle strays keeps its internal order: after the first
+    lands, that position's key is the block's own cycle and the next one
+    goes below it.
+    """
+    stray = set(strays(entries))
+    if not stray:
+        return list(entries)
+    out = [e for i, e in enumerate(entries) if i not in stray]
+    for index in sorted(stray):
+        entry = entries[index]
+        cycle = _cycle(entry)
+        filled = keys(out)
+        at = next((i for i, k in enumerate(filled) if k < cycle), len(out))
+        out.insert(at, entry)
+    return out
+
+
+def normalise(live, mode="merge"):
     """The whole file, entries reordered, everything else untouched."""
-    parts = split_at_heading(live, MARKER)
-    if parts is None:
+    if split_at_heading(live, MARKER) is None:
         raise RollError(
             f"refusing to normalise: no {MARKER.strip()!r} section in this file"
         )
-    head, body = parts
+    # `_body` and not `split_at_heading`, and this is the whole reason this
+    # tool disagreed with the roller it exists to unblock. The two-piece
+    # split returns *everything* below the marker, and both capture files
+    # carry `## Retired`, `## Board` and `# Details` under it -- 107 of the
+    # 1,029 things `split_bullets` then called entries in `issues.md`, and
+    # 19 of 329 in `ideas.md`. So `check_newest_first` here saw eleven
+    # ascents where the engine, which has bounded the section at the next
+    # heading since `_body` was written, sees exactly one; a repair built
+    # on the wide read moves retired items back into the live list and
+    # rewrites the board table. `roll_captures` was never affected.
+    head, body, tail = _body(live, spec_for(live))
     entries = split_bullets(body)
     try:
         check_newest_first(entries)
@@ -193,10 +276,13 @@ def normalise(live):
         # and reversing that stream shuffles them. Refusing to touch a
         # file that already passes is what makes this idempotent.
         return live
-    top, bottom = split_streams(entries)
-    merged = merge(top, bottom[::-1])
+    if mode == "strays":
+        merged = repair_strays(entries)
+    else:
+        top, bottom = split_streams(entries)
+        merged = merge(top, bottom[::-1])
     verify(entries, merged)
-    return head + "\n" + join_bullets(merged) + "\n"
+    return head + "\n" + join_bullets(merged) + "\n" + tail
 
 
 def verify(before, after):
@@ -224,20 +310,34 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--mode",
+        choices=("merge", "strays"),
+        default="merge",
+        help="merge: two whole streams back into one (the 2026-08-11 shape). "
+        "strays: move only the markers that break the descending run.",
+    )
     args = parser.parse_args(argv)
 
     with open(args.live, encoding="utf-8") as handle:
         live = handle.read()
     try:
-        out = normalise(live)
+        out = normalise(live, mode=args.mode)
     except RollError as error:
         print(error, file=sys.stderr)
         return 1
     if out == live:
         print("already newest-first, nothing to normalise")
         return 0
-    moved = sum(1 for a, b in zip(split_bullets(split_at_heading(live, MARKER)[1]),
-                                  split_bullets(split_at_heading(out, MARKER)[1])) if a != b)
+    before = split_bullets(_body(live, spec_for(live))[1])
+    after = split_bullets(_body(out, spec_for(out))[1])
+    if args.mode == "strays":
+        # A positional diff counts every entry below the first insertion
+        # as moved -- 886 of 1,029 for a repair that relocates 25 -- so
+        # count what the repair actually picked up instead.
+        moved = len(strays(before))
+    else:
+        moved = sum(1 for a, b in zip(before, after) if a != b)
     print(f"{args.live}: {moved} entries move, {len(live)} -> {len(out)} bytes")
     if args.dry_run:
         return 0
