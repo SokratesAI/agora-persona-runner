@@ -47,11 +47,12 @@ below leaves them where they belong, at the end.
     python3 -m tools.normalise_captures --live issues.md
 
 **There is a second shape and a second mode, and the file grew into it.**
-Measured 2026-09-01: `issues.md` is 1,029 entries with 898 markers and
-**11 ascents**, `ideas.md` 329 with 278 and 3. That is not two streams --
-`split_streams` refuses it, correctly -- it is a file that is 98%
-newest-first with a few blocks sitting in the wrong place, which is what
-the merge era left behind once most cycles started passing the marker.
+Measured 2026-09-01, inside the `## Entries` section: `issues.md` is 922
+entries with 874 markers and **three ascents**, `ideas.md` 310 with 274
+and **none at all**. That is not two streams -- `split_streams` refuses
+it, correctly -- it is a file that is almost entirely newest-first with a
+few markers in the wrong place, which is what the merge era left behind
+once most cycles started passing the marker.
 `--mode strays` moves only those blocks and never touches an unmarked
 entry. Both modes go through the same `verify`, so neither can lose a
 capture or return something `check_newest_first` would still refuse.
@@ -191,17 +192,23 @@ def strays(entries):
     Greedy from the top: the first marker sets the run, and any later
     marker larger than the running minimum is a stray. `split_streams`
     above cannot help here because these files are no longer two streams
-    -- measured 2026-09-01, `issues.md` has 1,029 entries with 898
-    markers and only **11 ascents**, and no cut point makes the top
+    -- measured 2026-09-01, `issues.md`'s Entries section has 922 entries
+    with 874 markers and three ascents, and no cut point makes the top
     descend and the bottom ascend, so `split_streams` refuses. That
-    refusal is correct and the shape it describes is real: 98% of the
-    file is already newest-first and a handful of blocks are in the wrong
+    refusal is correct and the shape it describes is real: the file is
+    almost entirely newest-first with a handful of markers in the wrong
     place, which is a different repair from a merge.
+
+    **Count the ascents inside the section or the number is a different
+    number.** The unbounded read this module used to do saw eleven, nine
+    of them retired items and board rows; that is the bug `normalise`
+    fixes below and the reason the count here says which read it came
+    from.
 
     Greedy is deliberate over a longest-non-increasing-subsequence. LNIS
     would minimise the number of entries that move, and on this file it
-    would decide the 84-entry undated tail is the run to keep and lift
-    the newest captures around it. The run that matters is the one that
+    would decide the undated tail at the bottom of the file is the run to
+    keep and lift the newest captures around it. The run that matters is the one that
     starts at the top of the file, because that is the end
     `roll_captures.plan` keeps.
     """
