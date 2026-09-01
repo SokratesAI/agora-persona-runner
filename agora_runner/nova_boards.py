@@ -1612,3 +1612,172 @@ def set_row_project(markdown, number, project):
     lines[index] = "| " + " | ".join(cells) + " |"
     _ensure_project_column(lines, index)
     return "\n".join(lines)
+
+
+#: Where a project's own metadata lives. His two boards are the source of
+#: truth for which projects *exist* -- `board_projects` reads the names off
+#: the `Project` cells and a new name in a cell is how one is created. This
+#: file answers the question the cells structurally cannot: his capture,
+#: 2026-09-01, *"Each project should also be able to be assigned a
+#: priority, making one project and its tasks more important than
+#: others."* A project-level rating belongs to the project, not to any one
+#: of its rows, so there is nowhere on either board to put it.
+#:
+#: It sits in **his** vault folder beside `issues.md` and `ideas.md`, not in
+#: `nova/resources/`, for the reason he gave when he kept his capture files
+#: out of Nova's own database: *"just in case the Nova app malfunctions or
+#: something else goes wrong. Then I have easy access to them."* A rating he
+#: can only change through the app is a rating he loses when the app is
+#: down, and this one orders my own work.
+PROJECT_META_PATH = "projects/sokrates/projects/nova/projects.md"
+
+#: What this file looks like when nothing has ever written it. Written
+#: whole on the first rating rather than asking him to create it, and the
+#: `contract` line is the only prose in it -- `personality.md`'s rule that
+#: his files carry his content and my answers to it, never an explanation
+#: of how the thing works.
+PROJECT_META_TEMPLATE = """\
+---
+type: board
+tags: [agora, projects, board]
+status: built
+contract: Nova writes this from the app's project picker. One row per project that has been rated; a project with no row here is unrated, which is different from Low. The set of projects that exist is read off the Project column on issues.md and ideas.md, never from here — a name in this table that no row carries is a rating waiting for its first row, not a project.
+---
+
+# Projects
+
+| Project | Priority | Updated |
+|---|---|---|
+"""
+
+_PROJECT_META_WIDTH = 3
+
+
+def parse_project_meta(markdown):
+    """`projects.md` -> `{lowercased name: {project, priority, priorityKey, updated}}`.
+
+    Keyed lowercase for the same reason `project_payload` matches
+    case-insensitively: the cell is free text he types on a phone, and
+    `nova` and `Nova` are one project. The `project` field carries the
+    spelling actually written, so a page heading reads the way he typed it.
+
+    A row whose rating is not one of the four is read as unrated rather
+    than dropped -- the row still names a project he has touched, and
+    silently losing it would make a typo look like a deletion.
+    """
+    out = {}
+    for line in (markdown or "").split("\n"):
+        text = line.strip()
+        if not text.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in text.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        name = cells[0]
+        if not name or name.lower() == "project":
+            continue
+        if all(set(cell) <= set("-: ") and cell for cell in cells):
+            continue
+        label = canonical_priority(cells[1]) or ""
+        out[name.lower()] = {
+            "project": name,
+            "priority": label,
+            "priorityKey": priority_key(label),
+            "updated": cells[2] if len(cells) > 2 else "",
+        }
+    return out
+
+
+def set_project_priority(markdown, project, priority, dated=""):
+    """Rate one project. Returns the new markdown, or `None` if refused.
+
+    Refused: a name `set_row_project` would refuse for the same reasons
+    (a `|` splits the row into a fourth column, a `*` leaves unbalanced
+    emphasis in his own file, a line break ends the table, over 40
+    characters is not a name), and a rating outside the four labels.
+
+    `""` is a real rating and means *unrated* -- it clears the cell rather
+    than deleting the row, so a project he has deliberately un-prioritised
+    reads the same as one he has never rated, which is the truth.
+
+    An empty or absent file is written whole from `PROJECT_META_TEMPLATE`.
+    The alternative -- refusing until he creates it -- would make the first
+    rating the one that fails.
+    """
+    name = (project or "").strip()
+    if not name or len(name) > 40:
+        return None
+    if any(c in name for c in "|*\r\n"):
+        return None
+    label = canonical_priority(priority)
+    if label is None:
+        return None
+
+    text = markdown or ""
+    if not text.strip():
+        text = PROJECT_META_TEMPLATE
+    lines = text.split("\n")
+
+    rule = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if all(set(cell) <= set("-: ") and cell for cell in cells):
+            rule = index
+            continue
+        if cells and cells[0].lower() == name.lower():
+            while len(cells) < _PROJECT_META_WIDTH:
+                cells.append("")
+            # `cells[0]` is deliberately left alone. The match above is
+            # case-insensitive because he types the name on a phone, and
+            # writing his casing back would rename the project on his own
+            # page every time he re-rated it from a different spelling.
+            cells[1] = label
+            cells[2] = dated or cells[2]
+            lines[index] = "| " + " | ".join(cells[:_PROJECT_META_WIDTH]) + " |"
+            return "\n".join(lines)
+
+    if rule is None:
+        # A file that exists but has lost its table. Append a whole one
+        # rather than guessing where the old one was: the alternative is
+        # writing a row into prose, where `parse_project_meta` will never
+        # find it again.
+        body = text.rstrip("\n") + "\n\n" + PROJECT_META_TEMPLATE.split("---\n", 2)[-1]
+        lines = body.split("\n")
+        rule = max(
+            i for i, line in enumerate(lines)
+            if line.strip().startswith("|") and set(line.strip().strip("|"))
+            <= set("-| ")
+        )
+
+    row = "| " + " | ".join([name, label, dated]) + " |"
+    # Newest last: this table is small and read whole, and appending keeps
+    # the file's diff to one line so his own edits stay legible in git.
+    insert = rule + 1
+    while insert < len(lines) and lines[insert].strip().startswith("|"):
+        insert += 1
+    lines.insert(insert, row)
+    return "\n".join(lines)
+
+
+def rank_projects(names, meta):
+    """Order a project list by its rating, best first, then as given.
+
+    His capture asks for a priority *"making one project and its tasks more
+    important than others"*, and a rating nothing sorts by is a label. The
+    tiebreak is the order `board_projects` produced -- first appearance on
+    his board -- so two unrated projects keep the order the page has always
+    shown them in rather than falling into alphabetical, which would look
+    like a reshuffle every time he rates something.
+    """
+    rank = {"immediate": 0, "high": 1, "medium": 2, "low": 4}
+    order = []
+    for index, name in enumerate(names or []):
+        key = (meta.get(name.lower()) or {}).get("priorityKey") or ""
+        # Unrated sits between medium and low, not last: every project is
+        # unrated today, so sorting them below Low would bury the whole
+        # board the moment one project is rated Low.
+        order.append((rank.get(key, 3), index, name))
+    return [name for _rank, _index, name in sorted(order)]

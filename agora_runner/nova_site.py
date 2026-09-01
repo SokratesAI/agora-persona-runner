@@ -131,6 +131,8 @@ from agora_runner.nova_capture import (
     remove_row,
     set_priority,
     set_project,
+    set_project_priority,
+    project_priorities,
 )
 from agora_runner.nova_comments import (
     add_comment,
@@ -160,6 +162,7 @@ from agora_runner.nova_replies import (
 from agora_runner.nova_boards import (
     BOARD_PATHS,
     PRIORITY_LABELS,
+    rank_projects,
     STATUS_LABELS,
     board_projects,
     canonical_priority,
@@ -921,7 +924,28 @@ def project_payload(name=None):
             matched = project
             break
 
-    result = {"projects": known, "name": matched, "asked": wanted, "boards": {}}
+    # The ratings, and the ordering they buy. `projects` stays a list of
+    # plain names rather than becoming a list of objects: `app.js` and four
+    # tests index it as strings, and a shape change there would be a
+    # rewrite of the index page to deliver a sort. The ratings ride
+    # alongside in `projectPriority`, keyed lowercase the same way the name
+    # match above is, so a page can look one up without knowing how he
+    # spelled it.
+    meta = project_priorities()
+    known = rank_projects(known, meta)
+    result = {
+        "projects": known,
+        "projectPriority": {
+            name.lower(): {
+                "priority": (meta.get(name.lower()) or {}).get("priority") or "",
+                "priorityKey": (meta.get(name.lower()) or {}).get("priorityKey") or "",
+            }
+            for name in known
+        },
+        "name": matched,
+        "asked": wanted,
+        "boards": {},
+    }
     if not wanted:
         return result
     # The thread hangs off the name he asked for, not off `matched`, so a
@@ -3624,6 +3648,64 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_project_priority(self, payload):
+        """`POST /api/project/priority` -- rating a project, not a row.
+
+        The last line of his 2026-09-01 capture: *"Each project should also
+        be able to be assigned a priority, making one project and its tasks
+        more important than others."*
+
+        **This writes to a document neither board owns, and that is the
+        decision worth naming.** Cycle 770 built the project *picker* on the
+        deliberate design that the set of projects is read off the `Project`
+        cells, so there is no second list that can disagree with the rows. A
+        project-level rating cannot live there: it belongs to the project
+        rather than to any one of its rows, and writing it onto every row
+        would be thirty cells that have to stay equal. So `PROJECT_META_PATH`
+        is a second document, and it is scoped as narrowly as it can be --
+        it holds ratings only, and a name in it that no row carries still
+        does not bring a project into existence.
+
+        `project` is free text bounded by `set_project_priority`, the same
+        boundary `_post_project` leans on and for the same reason. `priority`
+        *is* checked against the four labels here, the same as
+        `_post_priority`: four labels is a closed set, so anything else in
+        that cell is a client writing arbitrary text into his file.
+        """
+        project = payload.get("project")
+        priority = payload.get("priority")
+        if not isinstance(project, str) or not project.strip():
+            self._send_json(400, {"error": "project must be a non-empty string"})
+            return
+        project = project.strip()
+        priority = canonical_priority(priority)
+        if priority is None:
+            self._send_json(
+                400, {"error": f"priority must be one of {sorted(PRIORITY_LABELS.values())}"})
+            return
+
+        try:
+            ok, message = set_project_priority(project, priority)
+        except Exception as e:
+            log(f"nova-site project priority failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        # Nothing to invalidate: `project_payload` reads the ratings
+        # uncached, the same call `/api/comments` makes, because this is one
+        # small table and a stale rating is a page ordered against the
+        # picker he is looking at.
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Rate project {project} \u00b7 {'ok' if ok else message}",
+            after=priority,
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def _post_board_comment(self, payload):
         """`POST /api/board/comment` -- idea #64, the comment half.
 
@@ -4329,6 +4411,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture", "/api/capture/edit", "/api/capture/delete",
             "/api/capture/convert", "/api/capture/promote", "/api/comment",
             "/api/board/priority", "/api/board/project",
+            "/api/project/priority",
             "/api/board/edit", "/api/board/delete",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
@@ -4414,6 +4497,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/project":
             self._post_project(payload)
+            return
+        if path == "/api/project/priority":
+            self._post_project_priority(payload)
             return
         if path in ("/api/board/edit", "/api/board/delete"):
             self._post_board_amend(payload, delete=path.endswith("delete"))

@@ -72,12 +72,39 @@ def _boards(monkeypatch):
     # The thread is a live vault read and is not what these tests are about;
     # `test_project_thread.py` holds it to its own behaviour.
     monkeypatch.setattr(nova_site, "comments_markdown", lambda: "")
+    # The project ratings are a second live vault read, added when a
+    # project became something he can prioritise. Unrated by default here,
+    # which is what every project on his board is today, so these tests
+    # keep asserting the order the boards produce.
+    monkeypatch.setattr(nova_site, "project_priorities", dict)
 
 
 def test_index_lists_every_project_both_boards_name():
     payload = nova_site.project_payload()
     assert payload["projects"] == ["Nova", "Agora", "nova", "Sokrates Post"]
     assert payload["name"] is None
+
+
+def test_a_rated_project_is_ranked_to_the_front_of_the_index(monkeypatch):
+    """His capture's last line, at the level that makes it a priority.
+
+    *"Each project should also be able to be assigned a priority, making
+    one project and its tasks more important than others."* A rating the
+    index does not order by is a label, so this asserts the reorder rather
+    than the field.
+    """
+    monkeypatch.setattr(nova_site, "project_priorities", lambda: {
+        "sokrates post": {"priority": "🔴 Immediately", "priorityKey": "immediate"},
+        "agora": {"priority": "⚪ Low", "priorityKey": "low"},
+    })
+    payload = nova_site.project_payload()
+    # Immediately first, the two unrated in board order under it, Low last.
+    assert payload["projects"] == ["Sokrates Post", "Nova", "nova", "Agora"]
+    # Keyed lowercase, because the cell is free text he types on a phone
+    # and `nova` and `Nova` are two rows of his board but one project name
+    # as far as a rating is concerned.
+    assert payload["projectPriority"]["agora"]["priorityKey"] == "low"
+    assert payload["projectPriority"]["nova"]["priority"] == ""
     assert payload["boards"] == {}
 
 

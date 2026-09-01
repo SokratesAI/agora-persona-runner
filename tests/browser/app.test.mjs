@@ -13449,6 +13449,77 @@ describe("the project page", () => {
     },
   };
 
+  /* The rating of a project, his capture's last line: *"Each project
+   * should also be able to be assigned a priority, making one project and
+   * its tasks more important than others."* The server does the ordering;
+   * what these hold is that the chip is drawn from the server's answer
+   * rather than from a name, and that the picker posts the project rather
+   * than a row. */
+  const RATED = {
+    ...NOVA,
+    projects: ["Marcus", "Nova", "Agora"],
+    projectPriority: {
+      marcus: { priority: "🔴 Immediately", priorityKey: "immediate" },
+      nova: { priority: "", priorityKey: "" },
+      agora: { priority: "⚪ Low", priorityKey: "low" },
+    },
+  };
+
+  test("the index chips only the projects that carry a rating", async () => {
+    const window = await loadSite("/project/Nova", { project: () => RATED });
+    const pills = [...window.document.querySelectorAll(".project-pill")];
+    assert.deepEqual(pills.map((p) => p.getAttribute("href")),
+      ["/project/Marcus", "/project/Nova", "/project/Agora"],
+      "the pills are not in the order the server sent");
+    const chipOf = (pill) => {
+      const chip = pill.querySelector(".chip");
+      return chip ? chip.textContent : null;
+    };
+    // Unrated draws no chip at all -- every project is unrated today, so an
+    // unconditional one would put an empty coloured pill on all of them.
+    assert.deepEqual(pills.map(chipOf), ["🔴 Immediately", null, "⚪ Low"]);
+    assert.ok(pills[0].querySelector(".prio-immediate"),
+      "the chip is not coloured from the server's priorityKey");
+    // The word beside the glyph, never the glyph alone.
+    assert.match(chipOf(pills[0]), /Immediately/);
+  });
+
+  test("rating a project posts the project, not a board row", async () => {
+    const window = await loadSite("/project/Nova", { project: () => RATED });
+    const trigger = window.document.querySelector(".project-prio > .chip.prio");
+    assert.ok(trigger, "no priority trigger on the project page");
+    // It opens on what the server holds for this project, which is unrated.
+    assert.equal(trigger.textContent, "Unrated");
+    click(window, trigger);
+    const high = [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "🟠 High");
+    click(window, high);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const posted = window.posted.find((p) => p.url === "/api/project/priority");
+    assert.ok(posted, "no write reached /api/project/priority");
+    assert.deepEqual(posted.body, { project: "Nova", priority: "🟠 High" });
+    // The project name, not a board target and not a row number -- this is
+    // the one write on this page that belongs to no row.
+    assert.equal(posted.body.number, undefined);
+    assert.equal(posted.body.target, undefined);
+  });
+
+  test("the trigger opens on the rating the server already holds", async () => {
+    const window = await loadSite("/project/Marcus",
+      { project: () => ({ ...RATED, name: "Marcus", asked: "Marcus" }) });
+    const trigger = window.document.querySelector(".project-prio > .chip.prio");
+    assert.equal(trigger.textContent, "🔴 Immediately");
+    assert.equal(trigger.className, "chip prio prio-immediate");
+  });
+
+  test("the index page has no picker, because no project is chosen", async () => {
+    const window = await loadSite("/projects",
+      { project: () => ({ ...RATED, name: null, asked: "" }) });
+    assert.ok(window.document.querySelector(".project-pill"),
+      "the index drew no pills at all, so this proves nothing");
+    assert.equal(window.document.querySelector(".project-prio"), null);
+  });
+
   test("a bookmarked project URL asks the server for the decoded name", async () => {
     let asked = null;
     await loadSite("/project/Sokrates%20Post", {
