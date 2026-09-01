@@ -4069,6 +4069,43 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   border-radius: 999px;
   padding: 2px 8px;
 }
+/* The ordered "what's next" list -- idea #228's backlog half. Numbered
+   with our own span rather than the `<ol>` marker, because the fold below
+   restarts at 1 and the position has to keep counting across it. */
+.project-backlog { margin: 16px 0; }
+.project-backlog-head { font-size: 0.95rem; margin: 0 0 8px; }
+.project-backlog-rows { list-style: none; margin: 0; padding: 0; }
+.project-backlog-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.project-backlog-pos {
+  color: var(--dim);
+  font-size: 0.8rem;
+  min-width: 1.4rem;
+  text-align: right;
+}
+.project-backlog-num { color: var(--dim); font-size: 0.8rem; white-space: nowrap; }
+.project-backlog-link { flex: 1 1 10rem; min-width: 0; color: inherit; }
+.project-backlog-blocked {
+  font-size: 0.8rem;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.project-backlog-fold { margin-top: 4px; }
+.project-backlog-more {
+  cursor: pointer;
+  color: var(--dim);
+  font-size: 0.85rem;
+  padding: 6px 0;
+}
+
 .project-prio { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
 .project-prio-label { color: var(--dim); font-size: 0.9rem; }
 .project-prio-note { color: var(--dim); font-size: 0.85rem; }

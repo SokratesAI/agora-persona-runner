@@ -397,3 +397,137 @@ def test_open_rows_are_counted_by_rating_worst_first(monkeypatch):
 def test_the_index_carries_no_summary():
     """`/projects` asks for no project, so there is nothing to summarise."""
     assert "summary" not in nova_site.project_payload()
+
+
+# --- The ordered backlog (idea #228, the backlog half) -------------------
+#
+# The columns say what state each row is in. `_project_backlog` is the only
+# thing on the page that says which row is *next*, and it says it by
+# reusing `nova_next.rank` -- the same function `tools.top_board_rows`
+# ranks with when a cycle picks its work. The tests below are pointed at
+# the two ways that could go quietly wrong: the page ordering by rating
+# alone (which loses the raise that sinks a row blocked on him), and
+# `project_payload` stamping `board` onto the cached board items in place.
+
+
+def _rank_row(number, project, priority, priority_key, updated,
+              status="⚪ Backlog", status_key="backlog"):
+    return {
+        "number": number,
+        "title": "Row " + str(number),
+        "status": status,
+        "statusKey": status_key,
+        "updated": updated,
+        "where": "",
+        "priority": priority,
+        "priorityKey": priority_key,
+        "project": project,
+        "done": status_key == "done",
+    }
+
+
+def test_backlog_orders_by_rating_then_by_age(monkeypatch):
+    """Worst rating first, and the oldest row first inside a rating.
+
+    The rows are given in an order that is wrong on both counts, so a
+    function that returned them untouched, sorted by number, or sorted by
+    rating alone fails a different assertion each time.
+    """
+    rows = [
+        _rank_row(50, "Ghost", "⚪ Low", "low", "08-01"),
+        _rank_row(51, "Ghost", "🔴 Immediately", "immediate", "08-29"),
+        _rank_row(52, "Ghost", "🟠 High", "high", "08-30"),
+        _rank_row(53, "Ghost", "🟠 High", "high", "08-02"),
+    ]
+    monkeypatch.setattr(
+        nova_site, "board_payload",
+        lambda name: {"items": rows if name == "issues" else []},
+    )
+    backlog = nova_site.project_payload("Ghost")["backlog"]
+    assert [row["number"] for row in backlog] == [51, 53, 52, 50]
+
+
+def test_a_row_blocked_on_him_sinks_below_an_actionable_one(monkeypatch):
+    """The raise a rating-only sort would lose.
+
+    #60 is the worst-rated row on the project and there is nothing a cycle
+    can do about it, so it must not be what the page calls next. Sorting
+    by rating alone puts it first.
+    """
+    rows = [
+        _rank_row(60, "Ghost", "🔴 Immediately", "immediate", "08-01",
+                  status="⏸ Blocked on Edvard", status_key="blocked-on-edvard"),
+        _rank_row(61, "Ghost", "⚪ Low", "low", "08-29"),
+    ]
+    monkeypatch.setattr(
+        nova_site, "board_payload",
+        lambda name: {"items": rows if name == "issues" else []},
+    )
+    backlog = nova_site.project_payload("Ghost")["backlog"]
+    assert [row["number"] for row in backlog] == [61, 60]
+
+
+def test_backlog_leaves_out_closed_rows(monkeypatch):
+    """Delivered and dropped are both closed, and neither is next.
+
+    This is the cut `_project_summary` makes for the bar above the list, so
+    the count in this heading and the "open" count in the summary have to
+    come out equal -- asserted here rather than assumed.
+    """
+    rows = [
+        _rank_row(70, "Ghost", "🟠 High", "high", "08-01",
+                  status="✅ Done", status_key="done"),
+        _rank_row(71, "Ghost", "🟠 High", "high", "08-02",
+                  status="🗑 Outdated", status_key="outdated"),
+        _rank_row(72, "Ghost", "⚪ Low", "low", "08-03"),
+    ]
+    monkeypatch.setattr(
+        nova_site, "board_payload",
+        lambda name: {"items": rows if name == "issues" else []},
+    )
+    payload = nova_site.project_payload("Ghost")
+    assert [row["number"] for row in payload["backlog"]] == [72]
+    assert len(payload["backlog"]) == payload["summary"]["open"]
+
+
+def test_backlog_spans_both_boards_and_breaks_a_tie_toward_the_issue(monkeypatch):
+    """One queue, not one per board -- and each row says which board it is on.
+
+    Both rows are the same rating on the same day, so the only thing left
+    to order them is the board, and `rank` puts the issue first. The
+    `board` key is asserted because the link the page draws is built from
+    it: without it every row would point at `/ideas`.
+    """
+    issues = [_rank_row(80, "Ghost", "🟠 High", "high", "08-10")]
+    ideas = [_rank_row(81, "Ghost", "🟠 High", "high", "08-10")]
+    monkeypatch.setattr(
+        nova_site, "board_payload",
+        lambda name: {"items": issues if name == "issues" else ideas},
+    )
+    backlog = nova_site.project_payload("Ghost")["backlog"]
+    assert [(row["board"], row["number"]) for row in backlog] == [
+        ("issue", 80), ("idea", 81),
+    ]
+
+
+def test_backlog_does_not_stamp_the_board_onto_the_cached_rows(monkeypatch):
+    """`board_payload`'s items are the Issues page's items too.
+
+    `project_payload` needs a `board` key on each row to rank it, and the
+    dicts it is handed come out of the shared board cache. Tagging them in
+    place would put a key on the Issues and Ideas payloads that nothing
+    there put there -- so the tag has to go on a copy, and this fails if it
+    ever stops being one.
+    """
+    rows = [_rank_row(90, "Ghost", "🟠 High", "high", "08-10")]
+    monkeypatch.setattr(
+        nova_site, "board_payload",
+        lambda name: {"items": rows if name == "issues" else []},
+    )
+    assert nova_site.project_payload("Ghost")["backlog"][0]["board"] == "issue"
+    assert "board" not in rows[0]
+
+
+def test_the_index_carries_no_backlog():
+    """`/projects` asks for no project, so there is nothing to order."""
+    assert "backlog" not in nova_site.project_payload()

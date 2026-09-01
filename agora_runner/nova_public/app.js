@@ -8646,6 +8646,89 @@
     return box;
   }
 
+  /* How many of the ordered backlog are visible before the fold. This is
+   * not a cap on the data: the server sends every open row and every one is
+   * in the DOM below. It only decides how many are readable without a tap.
+   * It lives here and only here -- the server does not slice, so there is
+   * no second copy of this number to drift from.
+   */
+  var PROJECT_BACKLOG_VISIBLE = 5;
+
+  /* What to do next on this project, in order -- idea #228's backlog half.
+   *
+   * His idea asks for *"a backlog, roadmap and maybe a burndown chart"* and
+   * for someone to *"pretend to be a project manager and really think 'what
+   * do i need'"*. The columns below say what state every row is in. They do
+   * not say which row is next, and that is the question a project page is
+   * opened with -- on Marcus, forty open rows across two boards, answering
+   * it means reading every card and holding a rating in your head.
+   *
+   * The order is the server's, and it is the same `nova_next.rank` that
+   * decides what a cycle actually picks up. That is the point rather than
+   * reuse for its own sake: if this list ordered itself, the page would be
+   * telling him one thing while I did another. `_project_backlog` carries
+   * the two raises that are missing and why.
+   *
+   * Five rows are visible and the rest are behind a `<details>`. Nothing is
+   * dropped -- every open row is in the payload and every one is in the DOM
+   * -- because a cap on what he can see is the mistake `personality.md`
+   * names, and the fold is the interface that replaces it.
+   */
+  function renderProjectBacklog(payload) {
+    var rows = (payload && payload.backlog) || [];
+    if (!rows.length) return null;
+    var box = el("section", "project-backlog");
+    box.appendChild(el("h2", "project-backlog-head", "What's next · " + rows.length));
+
+    function rowEl(item, position) {
+      var li = el("li", "project-backlog-row");
+      li.appendChild(el("span", "project-backlog-pos", String(position)));
+      var link = el("a", "project-backlog-link", item.title);
+      // The board page, anchored on the row -- the same address the Issues
+      // and Ideas pages use for a card, so a tap here lands where a tap
+      // there does instead of on a second detail view.
+      link.setAttribute("href",
+        "/" + (item.board === "issue" ? "issues" : "ideas") + "#" + item.number);
+      var num = el("span", "project-backlog-num",
+        (item.board === "issue" ? "issue #" : "idea #") + item.number);
+      li.appendChild(num);
+      li.appendChild(link);
+      // Word beside the symbol, never the symbol alone: `item.priority` is
+      // already "🟠 High" off the board cell. An unrated row gets no chip
+      // rather than an empty coloured pill.
+      if (item.priority) {
+        li.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
+      }
+      // Only when it is the reason the row is down here. Every other status
+      // is already the column the row sits in below.
+      if (item.statusKey === "blocked-on-edvard") {
+        li.appendChild(el("span", "project-backlog-blocked", "on you"));
+      }
+      return li;
+    }
+
+    var visible = el("ol", "project-backlog-rows");
+    var i;
+    for (i = 0; i < rows.length && i < PROJECT_BACKLOG_VISIBLE; i++) {
+      visible.appendChild(rowEl(rows[i], i + 1));
+    }
+    box.appendChild(visible);
+
+    if (rows.length > PROJECT_BACKLOG_VISIBLE) {
+      var fold = el("details", "project-backlog-fold");
+      var sum = el("summary", "project-backlog-more",
+        "The other " + (rows.length - PROJECT_BACKLOG_VISIBLE) + ", in order");
+      fold.appendChild(sum);
+      var rest = el("ol", "project-backlog-rows");
+      for (i = PROJECT_BACKLOG_VISIBLE; i < rows.length; i++) {
+        rest.appendChild(rowEl(rows[i], i + 1));
+      }
+      fold.appendChild(rest);
+      box.appendChild(fold);
+    }
+    return box;
+  }
+
   function renderProjectPriority(name, payload) {
     var row = el("div", "project-prio");
     row.appendChild(el("span", "project-prio-label", "Project priority"));
@@ -8892,6 +8975,11 @@
     feed.appendChild(renderProjectPriority(name, payload));
     var summary = renderProjectSummary(payload);
     if (summary) feed.appendChild(summary);
+    // Under the bar and above the tabs: the bar says how far along the
+    // project is, this says what to do about it, and both belong before he
+    // has chosen which board to look at.
+    var backlog = renderProjectBacklog(payload);
+    if (backlog) feed.appendChild(backlog);
     var tabs = projectTabs(payload);
     var tab = projectTabState(name, tabs);
     var tabRow = renderProjectTabs(tabs, function () { renderProject(payload); });

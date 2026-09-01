@@ -13606,6 +13606,103 @@ describe("the project page", () => {
       "the boards did not render, so the page threw");
   });
 
+  /* The ordered backlog -- idea #228, the half that says which row is next.
+   *
+   * The columns below it say what state every row is in; this is the only
+   * thing on the page that answers "what do I do about it". The order is
+   * the server's -- `nova_next.rank`, the same one a cycle picks with --
+   * and these hold the page to printing it rather than sorting for itself,
+   * which is the whole reason the list is trustworthy. */
+  const BACKLOG = [
+    { number: 5, title: "First", board: "issue",
+      priority: "🔴 Immediately", priorityKey: "immediate", statusKey: "in-progress" },
+    { number: 6, title: "Second", board: "idea",
+      priority: "🟠 High", priorityKey: "high", statusKey: "backlog" },
+    { number: 7, title: "Third", board: "issue",
+      priority: "", priorityKey: "", statusKey: "backlog" },
+    { number: 8, title: "Fourth", board: "idea",
+      priority: "⚪ Low", priorityKey: "low", statusKey: "blocked-on-edvard" },
+  ];
+
+  test("the queue is drawn in the order the server sent, numbered", async () => {
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
+    const rows = [...window.document.querySelectorAll(".project-backlog-row")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".project-backlog-link").textContent),
+      ["First", "Second", "Third", "Fourth"]);
+    // Counted with our own span rather than the `<ol>` marker, because the
+    // fold restarts at 1 and the position has to keep counting across it.
+    assert.deepEqual(rows.map((r) => r.querySelector(".project-backlog-pos").textContent),
+      ["1", "2", "3", "4"]);
+    assert.match(window.document.querySelector(".project-backlog-head").textContent,
+      /What's next · 4/);
+  });
+
+  test("each row links to its own board, not all to one", async () => {
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
+    const links = [...window.document.querySelectorAll(".project-backlog-link")];
+    // The `board` key is the only thing that decides this: without it every
+    // row points at the same page and half the links are wrong.
+    assert.deepEqual(links.map((a) => a.getAttribute("href")),
+      ["/issues#5", "/ideas#6", "/issues#7", "/ideas#8"]);
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".project-backlog-num")].map((n) => n.textContent),
+      ["issue #5", "idea #6", "issue #7", "idea #8"]);
+  });
+
+  test("a rating is a word beside its symbol, and an unrated row gets no chip", async () => {
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
+    const rows = [...window.document.querySelectorAll(".project-backlog-row")];
+    assert.deepEqual(rows.map((r) => {
+      const chip = r.querySelector(".chip.prio");
+      return chip ? chip.textContent : null;
+    }), ["🔴 Immediately", "🟠 High", null, "⚪ Low"]);
+    // Only the row that is down here *because* it is on him says so; every
+    // other status is already the column the row sits in below.
+    assert.deepEqual(rows.map((r) => !!r.querySelector(".project-backlog-blocked")),
+      [false, false, false, true]);
+  });
+
+  test("past the fifth row the rest are folded, not dropped", async () => {
+    const many = [];
+    for (let i = 1; i <= 9; i++) {
+      many.push({ number: i, title: "Row " + i, board: "issue",
+                  priority: "🟠 High", priorityKey: "high", statusKey: "backlog" });
+    }
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: many }) });
+    // Every one of the nine is in the DOM -- the fold is an interface, not
+    // a cap. This fails if the extra four are sliced away.
+    const rows = [...window.document.querySelectorAll(".project-backlog-row")];
+    assert.equal(rows.length, 9);
+    assert.deepEqual(rows.map((r) => r.querySelector(".project-backlog-pos").textContent),
+      ["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+    const fold = window.document.querySelector(".project-backlog-fold");
+    assert.ok(fold, "the extra rows were not folded");
+    assert.equal(fold.open, false);
+    assert.equal(fold.querySelectorAll(".project-backlog-row").length, 4);
+    assert.match(window.document.querySelector(".project-backlog-more").textContent,
+      /The other 4/);
+  });
+
+  test("five rows or fewer need no fold", async () => {
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
+    assert.equal(window.document.querySelector(".project-backlog-fold"), null);
+  });
+
+  test("an older payload with no backlog still renders the page", async () => {
+    // Same failure the summary strip guards: the service worker serves a
+    // cached `app.js` against a fresh server and the other way round, so a
+    // page that throws on a missing key is a blank screen on his phone.
+    const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
+    assert.equal(window.document.querySelector(".project-backlog"), null);
+    assert.ok(window.document.querySelector(".project-board"),
+      "the boards did not render, so the page threw");
+  });
+
   test("a bookmarked project URL asks the server for the decoded name", async () => {
     let asked = null;
     await loadSite("/project/Sokrates%20Post", {
